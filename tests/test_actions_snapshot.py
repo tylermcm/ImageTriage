@@ -45,9 +45,47 @@ from image_triage.ui import actions as actions_module
 from image_triage.ui.actions import MainWindowActions, build_main_window_actions
 from tests import builder_snapshot_support as support
 
+def _controllers_by_window_attribute() -> dict[str, type]:
+    from image_triage.ai_run_controller import AiRunController
+    from image_triage.appearance_controller import AppearanceController
+    from image_triage.ai_setup_controller import AiSetupController
+    from image_triage.aiculler_controller import AiCullerController
+    from image_triage.batch_rename_controller import BatchRenameApplyController
+    from image_triage.catalog_controller import CatalogController
+    from image_triage.command_palette_controller import CommandPaletteController
+    from image_triage.folder_ops_controller import FolderOpsController
+    from image_triage.record_ops_controller import RecordOpsController
+    from image_triage.records_view_controller import RecordsViewController
+    from image_triage.recycle_bin_controller import RecycleBinController
+    from image_triage.tool_mode_controller import ToolModeController
+    from image_triage.toolbar_controller import ToolbarController
+    from image_triage.zen_controller import ZenController
+    from image_triage.ui.toolbar_menus import ToolbarMenuController
+
+    return {
+        "_ai_run": AiRunController,
+        "_appearance": AppearanceController,
+        "_ai_setup": AiSetupController,
+        "_aiculler": AiCullerController,
+        "_batch_rename": BatchRenameApplyController,
+        "_catalog": CatalogController,
+        "_command_palette": CommandPaletteController,
+        "_folder_ops": FolderOpsController,
+        "_record_ops": RecordOpsController,
+        "_records_view": RecordsViewController,
+        "_recycle_bin": RecycleBinController,
+        "_tool_mode": ToolModeController,
+        "_toolbar": ToolbarController,
+        "_zen": ZenController,
+        "_toolbar_menus": ToolbarMenuController,
+    }
+
+
+_CONTROLLERS_BY_WINDOW_ATTRIBUTE = _controllers_by_window_attribute()
+
 # case id -> (sha256 of the text, its length in characters)
 _GOLDEN: dict[str, tuple[str, int]] = {
-    "fields+slots": ("e820663b76d0717201bd3fe0d8be97dbd27d00a186db81cee04e64af25b94056", 88794),
+    "fields+slots": ("ff1e667c1d2981bf6c0845ff42329e8fbe1e6610cdf03149603a09cd51cb99f2", 89265),
     "creation-order": ("45c802fdc14fbd2d56cb3ea52f592067d91dada10bcb4835a30e0408ab42e97e", 4939),
 }
 
@@ -235,8 +273,17 @@ def test_every_slot_is_a_real_main_window_handler(built) -> None:
         for calls in support.probe_slots(window, action).values():
             recorded.update(call[0] for call in calls)
     assert recorded, "no slot calls recorded"
-    missing = sorted(name for name in recorded if not callable(getattr(MainWindow, name, None)))
-    assert not missing, f"slots that MainWindow does not define: {missing}"
+
+    def is_real(name: str) -> bool:
+        if "." not in name:
+            return callable(getattr(MainWindow, name, None))
+        # A handler that lives on one of the window's controllers is recorded as "<owner attribute>.<method>".
+        owner, method = name.split(".", 1)
+        controller = _CONTROLLERS_BY_WINDOW_ATTRIBUTE.get(owner)
+        return controller is not None and callable(getattr(controller, method, None))
+
+    missing = sorted(name for name in recorded if not is_real(name))
+    assert not missing, f"slots that MainWindow (or its controllers) does not define: {missing}"
 
 
 def test_every_plain_action_is_connected_to_exactly_one_signal(built) -> None:

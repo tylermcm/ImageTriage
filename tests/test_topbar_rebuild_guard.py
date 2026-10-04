@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QToolButton
 
 from image_triage.ui.display_metrics import STANDARD_DISPLAY
 from image_triage.ui.theme import apply_gamma
+from image_triage.toolbar_controller import ToolbarController
 from image_triage.window import MainWindow
 
 CHECKABLE_ITEMS = {
@@ -45,7 +46,7 @@ def _turn(ms: int = 30) -> None:
 
 
 def _widgets(window, target: str = "manual") -> list:
-    return [widget for _item_id, widget in window._topbar_action_items[target]]
+    return [widget for _item_id, widget in window._toolbar._topbar_action_items[target]]
 
 
 def _all_widgets(window) -> list:
@@ -64,9 +65,8 @@ def window(main_window):
         "_theme": main_window._theme,
         "_display_profile": main_window._display_profile,
         "_toolbar_placement": main_window._toolbar_placement,
-        "_ui_mode": main_window._ui_mode,
     }
-    main_window._rebuild_topbar_action_stack(force=True)
+    main_window._toolbar.rebuild_topbar_action_stack(force=True)
     _turn()
     try:
         yield main_window
@@ -74,7 +74,7 @@ def window(main_window):
         main_window._topbar_slots = saved_slots
         for name, value in saved.items():
             setattr(main_window, name, value)
-        main_window._rebuild_topbar_action_stack(force=True)
+        main_window._toolbar.rebuild_topbar_action_stack(force=True)
         _turn()
 
 
@@ -84,25 +84,25 @@ def _put_items_in_the_bar(window, item_ids: list[str]) -> None:
     for index, item_id in enumerate(item_ids):
         slots[index] = item_id
     window._topbar_slots = {"manual": list(slots), "ai": list(slots)}
-    window._rebuild_topbar_action_stack(force=True)
+    window._toolbar.rebuild_topbar_action_stack(force=True)
     _turn()
 
 
 # ---------------------------------------------------------------- change detection
 def test_unchanged_inputs_keep_the_very_same_widgets(window) -> None:
     before = _all_widgets(window)
-    slot_widgets = {mode: list(widgets) for mode, widgets in window._topbar_slot_widgets.items()}
+    slot_widgets = {mode: list(widgets) for mode, widgets in window._toolbar._topbar_slot_widgets.items()}
     assert before, "the default layout should put buttons in the bar"
-    window._rebuild_topbar_action_stack()
-    window._rebuild_topbar_action_stack("manual")
+    window._toolbar.rebuild_topbar_action_stack()
+    window._toolbar.rebuild_topbar_action_stack("manual")
     assert _same_objects(before, _all_widgets(window))
     for mode, widgets in slot_widgets.items():
-        assert _same_objects(widgets, window._topbar_slot_widgets[mode])
+        assert _same_objects(widgets, window._toolbar._topbar_slot_widgets[mode])
 
 
 def test_force_rebuilds_even_when_nothing_changed(window) -> None:
     before = _all_widgets(window)
-    window._rebuild_topbar_action_stack(force=True)
+    window._toolbar.rebuild_topbar_action_stack(force=True)
     after = _all_widgets(window)
     assert len(before) == len(after)
     assert not any(a is b for a, b in zip(before, after))
@@ -110,8 +110,8 @@ def test_force_rebuilds_even_when_nothing_changed(window) -> None:
 
 def test_a_missing_recorded_key_rebuilds(window) -> None:
     before = _all_widgets(window)
-    window._topbar_rebuild_key = None
-    window._rebuild_topbar_action_stack()
+    window._toolbar._topbar_rebuild_key = None
+    window._toolbar.rebuild_topbar_action_stack()
     assert not any(a is b for a, b in zip(before, _all_widgets(window)))
 
 
@@ -127,16 +127,16 @@ def test_a_changed_slot_list_rebuilds(window) -> None:
     first_used = next(index for index, value in enumerate(slots) if value)
     slots[first_used] = item_id
     window._topbar_slots = {"manual": list(slots), "ai": list(slots)}
-    window._rebuild_topbar_action_stack()
+    window._toolbar.rebuild_topbar_action_stack()
     after = _all_widgets(window)
     assert not any(a is b for a, b in zip(before, after))
-    assert item_id in {built_id for built_id, _widget in window._topbar_action_items["manual"]}
+    assert item_id in {built_id for built_id, _widget in window._toolbar._topbar_action_items["manual"]}
 
 
 def test_a_changed_theme_rebuilds(window) -> None:
     before = _all_widgets(window)
     window._theme = apply_gamma(window._theme, 1.25)
-    window._rebuild_topbar_action_stack()
+    window._toolbar.rebuild_topbar_action_stack()
     assert not any(a is b for a, b in zip(before, _all_widgets(window)))
 
 
@@ -144,21 +144,14 @@ def test_a_changed_display_profile_rebuilds(window) -> None:
     before = _all_widgets(window)
     profile = window._display_profile or STANDARD_DISPLAY
     window._display_profile = replace(profile, topbar_glyph_size=profile.topbar_glyph_size + 2)
-    window._rebuild_topbar_action_stack()
+    window._toolbar.rebuild_topbar_action_stack()
     assert not any(a is b for a, b in zip(before, _all_widgets(window)))
 
 
 def test_a_changed_toolbar_placement_rebuilds(window) -> None:
     before = _all_widgets(window)
     window._toolbar_placement = "docked" if window._toolbar_placement == "floating" else "floating"
-    window._rebuild_topbar_action_stack()
-    assert not any(a is b for a, b in zip(before, _all_widgets(window)))
-
-
-def test_a_changed_ui_mode_rebuilds(window) -> None:
-    before = _all_widgets(window)
-    window._ui_mode = "ai" if window._ui_mode != "ai" else "manual"
-    window._rebuild_topbar_action_stack()
+    window._toolbar.rebuild_topbar_action_stack()
     assert not any(a is b for a, b in zip(before, _all_widgets(window)))
 
 
@@ -166,12 +159,12 @@ def test_a_changed_visible_slot_count_rebuilds_synchronously(window, monkeypatch
     """The overflow path must stay synchronous (a deferred layout on resize drew
     a visible jump on every launch), so no event-loop turn is allowed here."""
     before = _all_widgets(window)
-    visible = window._topbar_visible_slot_count()
-    monkeypatch.setattr(window, "_topbar_visible_slot_count", lambda: max(1, visible - 1))
-    window._update_topbar_overflow("manual")
+    visible = window._toolbar.topbar_visible_slot_count()
+    monkeypatch.setattr(window._toolbar, "topbar_visible_slot_count", lambda: max(1, visible - 1))
+    window._toolbar.update_topbar_overflow("manual")
     after = _all_widgets(window)
     assert not any(a is b for a, b in zip(before, after))
-    assert window._topbar_rendered_slot_count == max(1, visible - 1)
+    assert window._toolbar._topbar_rendered_slot_count == max(1, visible - 1)
 
 
 def test_deleted_widgets_are_detected_and_rebuilt(window) -> None:
@@ -179,37 +172,37 @@ def test_deleted_widgets_are_detected_and_rebuilt(window) -> None:
     victim.setParent(None)
     victim.deleteLater()
     _turn()
-    window._rebuild_topbar_action_stack()
-    grid = window._topbar_action_layouts["manual"]
-    items = window._topbar_action_items["manual"]
+    window._toolbar.rebuild_topbar_action_stack()
+    grid = window._toolbar._topbar_action_layouts["manual"]
+    items = window._toolbar._topbar_action_items["manual"]
     assert grid.count() == len(items) > 0
     assert all(grid.indexOf(widget) >= 0 for _item_id, widget in items)
 
 
 def test_layout_ratio_pass_after_the_first_does_not_rebuild(window) -> None:
-    window._apply_layout_ratios()
+    window._appearance.apply_layout_ratios()
     settled = _all_widgets(window)
-    window._apply_layout_ratios()
-    window._apply_layout_ratios()
+    window._appearance.apply_layout_ratios()
+    window._appearance.apply_layout_ratios()
     assert _same_objects(settled, _all_widgets(window))
 
 
 def test_theme_refresh_always_rebuilds_even_for_an_equal_theme(window) -> None:
     before = _all_widgets(window)
-    window._refresh_themed_chrome_icons()
+    window._appearance.refresh_themed_chrome_icons()
     assert not any(a is b for a, b in zip(before, _all_widgets(window)))
 
 
 def test_placement_change_rebuilds_through_its_setter(window) -> None:
     before = _all_widgets(window)
     target = "docked" if window._toolbar_placement == "floating" else "floating"
-    window._set_toolbar_placement(target)
+    window._toolbar.set_toolbar_placement(target)
     assert not any(a is b for a, b in zip(before, _all_widgets(window)))
 
 
 # ---------------------------------------------------------------- stale checkable buttons
 def _button_for(window, item_id: str, target: str = "manual") -> QToolButton:
-    return next(widget for built_id, widget in window._topbar_action_items[target] if built_id == item_id)
+    return next(widget for built_id, widget in window._toolbar._topbar_action_items[target] if built_id == item_id)
 
 
 @pytest.fixture
@@ -267,12 +260,12 @@ def test_sync_helper_repairs_a_silently_changed_action(checkable_bar) -> None:
     with QSignalBlocker(action):
         action.setChecked(True)
     assert not _button_for(window, "compare").isChecked(), "precondition: a blocked change leaves the button behind"
-    window._sync_topbar_action_buttons()
+    window._toolbar.sync_topbar_action_buttons()
     assert _button_for(window, "compare").isChecked()
     assert _button_for(window, "compare", "ai").isChecked()
     with QSignalBlocker(action):
         action.setChecked(False)
-    window._sync_topbar_action_buttons()
+    window._toolbar.sync_topbar_action_buttons()
     assert not _button_for(window, "compare").isChecked()
 
 
@@ -313,13 +306,13 @@ def test_popup_menus_belong_to_their_buttons(window) -> None:
 def test_forced_rebuilds_do_not_accumulate_menus_or_widgets(window) -> None:
     app = QApplication.instance()
     for _ in range(2):
-        window._rebuild_topbar_action_stack(force=True)
+        window._toolbar.rebuild_topbar_action_stack(force=True)
         _turn(40)
     menus = _menu_count(window)
     widgets = len(app.allWidgets())
     assert menus > 0
     for _ in range(8):
-        window._rebuild_topbar_action_stack(force=True)
+        window._toolbar.rebuild_topbar_action_stack(force=True)
         _turn(40)
     assert _menu_count(window) == menus, "QMenu children of the window grew across rebuilds"
     assert len(app.allWidgets()) <= widgets + 3, "widgets grew across rebuilds"
@@ -328,13 +321,13 @@ def test_forced_rebuilds_do_not_accumulate_menus_or_widgets(window) -> None:
 def test_action_changed_connections_do_not_accumulate(checkable_bar, monkeypatch) -> None:
     window = checkable_bar
     calls = []
-    real = MainWindow._sync_topbar_action_button_for
+    real = ToolbarController.sync_topbar_action_button_for
 
     def counting(self, button, action, item_id):
         calls.append(item_id)
         return real(self, button, action, item_id)
 
-    monkeypatch.setattr(MainWindow, "_sync_topbar_action_button_for", counting)
+    monkeypatch.setattr(ToolbarController, "sync_topbar_action_button_for", counting)
 
     def handlers_per_emit() -> int:
         calls.clear()
@@ -344,7 +337,7 @@ def test_action_changed_connections_do_not_accumulate(checkable_bar, monkeypatch
     baseline = handlers_per_emit()
     assert baseline == 2, "one live handler per page (manual + ai) expected"
     for _ in range(6):
-        window._rebuild_topbar_action_stack(force=True)
+        window._toolbar.rebuild_topbar_action_stack(force=True)
         _turn(40)
     # The handler objects are owned by their buttons, not by Python names, so
     # they must also survive a garbage-collection pass.

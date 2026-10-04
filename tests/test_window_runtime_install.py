@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from image_triage.window import AIRuntimeInstallTask, AISetupSelection, MainWindow
+from image_triage.ai_setup_controller import AiSetupController
+from image_triage.window import AIRuntimeInstallTask, AISetupSelection
 
 
 class _FakeStdout:
@@ -80,7 +81,7 @@ class AIRuntimeInstallTaskTests(unittest.TestCase):
         calls: list[tuple[tuple, dict]] = []
 
         class _SetupStub:
-            def _start_ai_runtime_install(self, *args, **kwargs) -> None:
+            def start_ai_runtime_install(self, *args, **kwargs) -> None:
                 calls.append((args, kwargs))
 
         selection = AISetupSelection(
@@ -93,7 +94,7 @@ class AIRuntimeInstallTaskTests(unittest.TestCase):
             download_semantic_model=False,
         )
 
-        started = MainWindow._start_ai_setup_selection(
+        started = AiSetupController.start_ai_setup_selection(
             _SetupStub(),
             selection,
             force_runtime=False,
@@ -111,10 +112,10 @@ class AIRuntimeInstallTaskTests(unittest.TestCase):
         messages: list[str | None] = []
 
         class _ProgressStub:
-            def _set_ai_setup_busy(self, message: str | None) -> None:
+            def set_ai_setup_busy(self, message: str | None) -> None:
                 messages.append(message)
 
-        MainWindow._handle_ai_runtime_install_progress(
+        AiSetupController.handle_ai_runtime_install_progress(
             _ProgressStub(),
             "Downloading torch-2.8.0-cp313-win_amd64.whl",
         )
@@ -125,10 +126,10 @@ class AIRuntimeInstallTaskTests(unittest.TestCase):
         messages: list[str | None] = []
 
         class _ProgressStub:
-            def _set_ai_setup_busy(self, message: str | None) -> None:
+            def set_ai_setup_busy(self, message: str | None) -> None:
                 messages.append(message)
 
-        MainWindow._handle_ai_model_download_progress(
+        AiSetupController.handle_ai_model_download_progress(
             _ProgressStub(),
             "model.safetensors",
             50,

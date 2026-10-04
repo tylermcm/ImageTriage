@@ -21,7 +21,9 @@ from image_triage.ai_results import (
     inspect_ai_bundle_source,
 )
 from image_triage.ai_workflow import default_ai_workflow_runtime
+from image_triage.ai_run_controller import AiRunController
 from image_triage.catalog import CatalogRepository
+from image_triage.folder_session import FolderSession, session_field
 from image_triage.catalog_controller import CatalogController
 from image_triage.models import ImageRecord
 from image_triage.records_view_controller import RecordsViewController
@@ -57,7 +59,11 @@ class _WindowCacheStub:
 
 
 class _WindowRebuildStub:
+    _scope_kind = session_field("scope_kind")
+    _current_folder = session_field("folder")
+
     def __init__(self, folder: str = "") -> None:
+        self._folder_session = FolderSession()
         self._scope_kind = "folder" if folder else "collection"
         self._current_folder = folder
         self.status_messages: list[str] = []
@@ -114,6 +120,23 @@ class _WindowLaunchStub:
         self.status_messages.append(message)
 
 
+def _ai_run_over(window, **overrides):
+    """A real ``AiRunController`` working on ``window`` (a stand-in).
+
+    ``overrides`` replace controller methods the test wants to record instead of run. The controller is a ``QObject``
+    and needs a parent object to own it; the parent is kept alive on the stand-in.
+    """
+    from PySide6.QtCore import QObject
+
+    window._ai_run_parent = QObject()
+    controller = AiRunController(window._ai_run_parent)
+    controller._window = window
+    for name, value in overrides.items():
+        setattr(controller, name, value)
+    window._ai_run = controller
+    return controller
+
+
 class _ScopeStartStub:
     def __init__(self, repository: CatalogRepository, records: list[ImageRecord]) -> None:
         self._all_records = records
@@ -132,15 +155,13 @@ class _ScopeStartStub:
         self._review_scoring_cache_source = "idle"
         self._review_scoring_cache_detail = ""
         self._refresh_calls = 0
+        _ai_run_over(self)
 
     def _current_scope_key(self) -> str:
         return "catalog:root"
 
     def _cancel_scope_enrichment_task(self) -> None:
         self._active_scope_enrichment_task = None
-
-    def _mark_background_review_work_deferred_for_ai(self, *, reason: str) -> None:
-        MainWindow._mark_background_review_work_deferred_for_ai(self, reason=reason)
 
     def _refresh_catalog_status_indicator(self) -> None:
         self._refresh_calls += 1
@@ -217,8 +238,9 @@ class _WindowAiLoadStub:
         self._settings = _SettingsStub()
         self.refresh_calls = 0
         self.status_messages: list[str] = []
+        _ai_run_over(self, refresh_ai_state=self._count_refresh)
 
-    def _refresh_ai_state(self) -> None:
+    def _count_refresh(self) -> None:
         self.refresh_calls += 1
 
     def statusBar(self):
@@ -233,30 +255,33 @@ class _WindowAiRestoreStub:
 
     def __init__(self, folder: str, saved_path: str) -> None:
         self._current_folder = folder
-        self._ui_mode = "ai"
         self._ai_bundle = None
         self._settings = _SettingsStub()
         self._settings.setValue(self.AI_RESULTS_KEY, saved_path)
         self.load_ai_calls: list[tuple[str, bool]] = []
         self.refresh_calls = 0
         self.toolbar_updates = 0
+        _ai_run_over(
+            self,
+            load_ai_results=self._record_load,
+            clear_ai_results_state=self._clear_results,
+            refresh_ai_state=self._count_refresh,
+            update_ai_toolbar_state=self._count_toolbar,
+        )
 
-    def _load_ai_results(self, path: str, *, show_message: bool = True) -> bool:
+    def _record_load(self, path: str, *, show_message: bool = True) -> bool:
         self.load_ai_calls.append((path, show_message))
         return True
 
-    def _saved_ai_results_belong_to_current_folder(self, saved_path: str) -> bool:
-        return MainWindow._saved_ai_results_belong_to_current_folder(self, saved_path)
-
-    def _clear_ai_results_state(self, *, preserve_setting: bool = False, refresh: bool = True) -> None:
+    def _clear_results(self, *, preserve_setting: bool = False, refresh: bool = True) -> None:
         self._ai_bundle = None
         if refresh:
-            self._refresh_ai_state()
+            self._count_refresh()
 
-    def _refresh_ai_state(self) -> None:
+    def _count_refresh(self) -> None:
         self.refresh_calls += 1
 
-    def _update_ai_toolbar_state(self) -> None:
+    def _count_toolbar(self) -> None:
         self.toolbar_updates += 1
 
 
@@ -443,11 +468,9 @@ class _WindowAiResetStub:
         self._settings.setValue(self.AI_RESULTS_KEY, folder)
         self.refresh_calls = 0
         self.status_messages: list[str] = []
+        _ai_run_over(self, refresh_ai_state=self._count_refresh)
 
-    def _clear_ai_results_state(self, *, preserve_setting: bool = False) -> None:
-        MainWindow._clear_ai_results_state(self, preserve_setting=preserve_setting)
-
-    def _refresh_ai_state(self) -> None:
+    def _count_refresh(self) -> None:
         self.refresh_calls += 1
 
     def statusBar(self):
@@ -464,11 +487,9 @@ class _WindowAiSummaryStub:
         self._current_folder = ""
         self.summary_calls: list[dict[str, object]] = []
         self.status_messages: list[str] = []
+        _ai_run_over(self, show_ai_review_complete_dialog=self._record_dialog)
 
-    def _last_ai_review_summary_for_current_state(self):
-        return MainWindow._last_ai_review_summary_for_current_state(self)
-
-    def _show_ai_review_complete_dialog(self, **kwargs) -> None:
+    def _record_dialog(self, **kwargs) -> None:
         self.summary_calls.append(kwargs)
 
     def statusBar(self):
@@ -525,9 +546,6 @@ class _FilterMetadataResetStub:
 class _ChunkDecisionStub:
     CHUNKED_RESTORE_LOAD_MIN_RECORDS = MainWindow.CHUNKED_RESTORE_LOAD_MIN_RECORDS
 
-    def __init__(self) -> None:
-        self._chunked_load_scan_tokens: set[int] = set()
-
 
 class _WorkflowInsightCacheStub:
     def __init__(self, records: list[ImageRecord]) -> None:
@@ -537,9 +555,7 @@ class _WorkflowInsightCacheStub:
         self._workflow_insights_by_path = {}
         self._all_records_by_path = {record.path: record for record in records}
         self._taste_profile = TasteProfile()
-
-    def _ai_result_for_record(self, record: ImageRecord):
-        return None
+        self._ai_run = SimpleNamespace(ai_result_for_record=lambda record: None)
 
     def _burst_recommendation_for_record(self, record: ImageRecord | None):
         return MainWindow._burst_recommendation_for_record(self, record)
@@ -556,7 +572,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             saved_path=r"K:\Photography\Canada 10-25\.image_triage_ai\ranker_report",
         )
 
-        restored = MainWindow._restore_ai_results(window, force=True)
+        restored = window._ai_run.restore_ai_results(force=True)
 
         self.assertFalse(restored)
         self.assertEqual([], window.load_ai_calls)
@@ -571,8 +587,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
         )
 
         self.assertTrue(
-            MainWindow._saved_ai_results_belong_to_current_folder(
-                window,
+            window._ai_run.saved_ai_results_belong_to_current_folder(
                 window._settings.value(window.AI_RESULTS_KEY, "", str),
             )
         )
@@ -822,7 +837,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             window = _WindowAiLoadStub(repository, folder, [record])
 
             with patch("image_triage.window.load_ai_bundle", side_effect=AssertionError("expected catalog AI cache reuse")):
-                loaded = MainWindow._load_ai_results(window, report_dir, show_message=False)
+                loaded = window._ai_run.load_ai_results(report_dir, show_message=False)
 
             self.assertTrue(loaded)
             self.assertIsNotNone(window._ai_bundle)
@@ -844,7 +859,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             window = _WindowAiRunFinishedStub(repository, folder)
             paths = Path(folder) / ".image_triage_ai" / "ranker_report"
 
-            MainWindow._handle_ai_run_finished(window, folder, str(paths), str(paths / "ranked_clusters_report.html"))
+            AiRunController.handle_ai_run_finished(window, folder, str(paths), str(paths / "ranked_clusters_report.html"))
 
             cached = repository.load_ai_workflow_cache(folder)
             self.assertIsNotNone(cached)
@@ -902,7 +917,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             "bundle": None,
         }
 
-        MainWindow._show_last_ai_review_summary(window)
+        window._ai_run.show_last_ai_review_summary()
 
         self.assertEqual(1, len(window.summary_calls))
         self.assertEqual(window._last_ai_review_summary["report_dir"], window.summary_calls[0]["report_dir"])
@@ -923,7 +938,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             summary={"model": "cached"},
         )
 
-        MainWindow._show_last_ai_review_summary(window)
+        window._ai_run.show_last_ai_review_summary()
 
         self.assertEqual(1, len(window.summary_calls))
         self.assertEqual(folder, window.summary_calls[0]["folder"])
@@ -1042,7 +1057,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             window = _WindowAiResetStub(repository, folder)
 
             with patch("image_triage.window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
-                MainWindow._reset_ai_review_cache(window)
+                window._ai_run.reset_ai_review_cache()
 
             self.assertFalse(artifacts_dir.exists())
             self.assertFalse(report_dir.exists())
@@ -1132,7 +1147,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             task.signals.cache_status.connect(lambda _scope_key, _token, payload: cache_status_payloads.append(payload))
 
             with patch("image_triage.window.DecisionStore.load_correction_events", return_value=correction_events), patch(
-                "image_triage.window.build_burst_recommendations",
+                "image_triage.tasks.annotation_tasks.build_burst_recommendations",
                 side_effect=AssertionError("expected cached review scoring"),
             ):
                 task.run()
@@ -1182,7 +1197,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             task.signals.cache_status.connect(lambda _scope_key, _token, payload: cache_status_payloads.append(payload))
 
             with patch("image_triage.window.DecisionStore.load_correction_events", return_value=correction_events), patch(
-                "image_triage.window.build_burst_recommendations",
+                "image_triage.tasks.annotation_tasks.build_burst_recommendations",
                 return_value=(computed_taste_profile, {records[0].path: computed_recommendation}),
             ):
                 task.run()

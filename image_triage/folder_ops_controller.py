@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 from . import path_policy
 from .file_ops import create_folder, delete_folder, move_folder, rename_folder
 from .scanner import normalized_path_key
+from .folder_session import FolderSession
 
 if TYPE_CHECKING:
     from .window import MainWindow
@@ -33,6 +34,10 @@ class FolderOpsController:
     are shared, UI-visible state that other MainWindow code (the favorites
     panel, recent-folder combos) also owns, so this controller reaches back
     into `window` for them rather than taking a private copy."""
+
+    @property
+    def _session(self) -> FolderSession:
+        return self._window._folder_session
 
     def __init__(self, window: "MainWindow") -> None:
         self._window = window
@@ -131,8 +136,8 @@ class FolderOpsController:
         window._save_recent_folders()
         window._refresh_recent_folder_combos()
 
-        if window._current_folder and self.folder_is_same_or_descendant(window._current_folder, source_root):
-            return self.remap_folder_path(window._current_folder, source_root, destination_root)
+        if self._session.folder and self.folder_is_same_or_descendant(self._session.folder, source_root):
+            return self.remap_folder_path(self._session.folder, source_root, destination_root)
         return destination_root
 
     def create_folder_prompt(self, parent_folder: str, *, select_created: bool) -> str | None:
@@ -259,14 +264,14 @@ class FolderOpsController:
 
         replacement_folder = str(Path(folder).parent)
         window._refresh_folder_tree()
-        if window._current_folder and (
-            _path_key(window._current_folder) == deleted_key
-            or _path_key(window._current_folder).startswith(deleted_key + os.sep)
+        if self._session.folder and (
+            _path_key(self._session.folder) == deleted_key
+            or _path_key(self._session.folder).startswith(deleted_key + os.sep)
         ):
             if not window._dir_confirmed_missing(replacement_folder):
                 window._select_folder(replacement_folder)
             else:
-                window._current_folder = ""
+                self._session.folder = ""
                 window._set_scope_state(kind="folder", scope_id="", label="")
-                window._apply_loaded_records([])
+                window._records_view.apply_loaded_records([])
         window.statusBar().showMessage(f"Deleted folder: {Path(folder).name}")

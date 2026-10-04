@@ -12,6 +12,8 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QToolButton, QWidget
 
+from image_triage.appearance_controller import AppearanceController
+from image_triage.toolbar_controller import ToolbarController
 from image_triage.ui.actions import format_action_tooltip
 from image_triage.ui.theme import build_app_stylesheet, default_theme
 from image_triage.ui.display_metrics import STANDARD_DISPLAY
@@ -33,17 +35,19 @@ class TopbarStyleTests(unittest.TestCase):
 
     def test_topbar_action_uses_icon_over_small_label_layout(self) -> None:
         host = SimpleNamespace(
-            TOPBAR_SLOT_BUTTON_WIDTH=MainWindow.TOPBAR_SLOT_BUTTON_WIDTH,
-            TOPBAR_BUTTON_HEIGHT=MainWindow.TOPBAR_BUTTON_HEIGHT,
-            TOPBAR_HOVER_MARGIN=MainWindow.TOPBAR_HOVER_MARGIN,
-            _toolbar_profile=lambda: STANDARD_DISPLAY,
+            _window=SimpleNamespace(
+                TOPBAR_SLOT_BUTTON_WIDTH=MainWindow.TOPBAR_SLOT_BUTTON_WIDTH,
+                TOPBAR_BUTTON_HEIGHT=MainWindow.TOPBAR_BUTTON_HEIGHT,
+                TOPBAR_HOVER_MARGIN=MainWindow.TOPBAR_HOVER_MARGIN,
+            ),
+            toolbar_profile=lambda: STANDARD_DISPLAY,
         )
         button = QToolButton()
         button.setText("Review")
         pixmap = QPixmap(18, 18)
         pixmap.fill(Qt.GlobalColor.white)
 
-        MainWindow._apply_topbar_button_style(host, button, QIcon(pixmap))
+        ToolbarController.apply_topbar_button_style(host, button, QIcon(pixmap))
 
         self.assertEqual(Qt.ToolButtonStyle.ToolButtonIconOnly, button.toolButtonStyle())
         self.assertEqual("appTopBarIconButton", button.objectName())
@@ -95,7 +99,7 @@ class TopbarStyleTests(unittest.TestCase):
     def test_fluent_icon_has_theme_specific_interaction_states(self) -> None:
         host = SimpleNamespace(_theme=default_theme())
 
-        icon = MainWindow._fluent_toolbar_icon(host, "E710")
+        icon = ToolbarController.fluent_toolbar_icon(host, "E710")
 
         normal = icon.pixmap(QSize(64, 64), QIcon.Mode.Normal, QIcon.State.Off).toImage()
         active = icon.pixmap(QSize(64, 64), QIcon.Mode.Active, QIcon.State.Off).toImage()
@@ -122,9 +126,9 @@ class TopbarStyleTests(unittest.TestCase):
         self.assertEqual([trimmed.availableSizes()[0].width(), trimmed.availableSizes()[0].height()], [24, 22])
 
     def test_pane_toggle_icons_are_true_mirrors_with_bright_checked_panel(self) -> None:
-        host = SimpleNamespace(_theme=default_theme())
-        left_icon = MainWindow._pane_toggle_icon(host, "left")
-        right_icon = MainWindow._pane_toggle_icon(host, "right")
+        host = SimpleNamespace(_window=SimpleNamespace(_theme=default_theme()))
+        left_icon = AppearanceController.pane_toggle_icon(host, "left")
+        right_icon = AppearanceController.pane_toggle_icon(host, "right")
         left = left_icon.pixmap(QSize(64, 64), QIcon.Mode.Normal, QIcon.State.On).toImage()
         right = right_icon.pixmap(QSize(64, 64), QIcon.Mode.Normal, QIcon.State.On).toImage()
 
@@ -188,8 +192,8 @@ class TopbarStyleTests(unittest.TestCase):
         self.assertTrue(expected.issubset(MainWindow.WORKSPACE_TOOLBAR_FLUENT_ICONS))
         self.assertIn("quick_filter", allowed)
 
-        host = SimpleNamespace(actions=_ActionBag())
-        action_specs = MainWindow._workspace_toolbar_action_specs(host)
+        host = SimpleNamespace(_window=SimpleNamespace(actions=_ActionBag()))
+        action_specs = ToolbarController.workspace_toolbar_action_specs(host)
         popup_items = {"projects", "catalog"}
         self.assertTrue((expected - popup_items).issubset(action_specs))
 
@@ -198,9 +202,9 @@ class TopbarStyleTests(unittest.TestCase):
         host.actions = _ActionBag()
         host._toolbar_menus = ToolbarMenuController(host, host.actions)
 
-        review_menu = MainWindow._build_review_toolbar_menu(host)
-        projects_menu = MainWindow._build_projects_toolbar_menu(host)
-        catalog_menu = MainWindow._build_catalog_toolbar_menu(host)
+        review_menu = host._toolbar_menus.build_review_toolbar_menu()
+        projects_menu = host._toolbar_menus.build_projects_toolbar_menu()
+        catalog_menu = host._toolbar_menus.build_catalog_toolbar_menu()
 
         self.assertIn(host.actions.open_preview, review_menu.actions())
         self.assertIn(host.actions.winner_ladder_mode, review_menu.actions())

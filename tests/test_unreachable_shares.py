@@ -565,7 +565,13 @@ def _fake_ai_probe(monkeypatch, *, gate: threading.Event | None = None):
         probe["aiculler_available"] = True
         return probe
 
-    monkeypatch.setattr(window_module, "_compute_ai_folder_probe", fake)
+    import image_triage.tasks.ai_tasks as ai_tasks_module
+
+    # The worker (_AIFolderProbeTask) lives in ai_tasks; the window calls the same function directly for local folders.
+    import image_triage.ai_run_controller as ai_run_module
+
+    for module in (ai_tasks_module, window_module, ai_run_module):  # each imported the function by name
+        monkeypatch.setattr(module, "_compute_ai_folder_probe", fake)
     return calls
 
 
@@ -580,9 +586,9 @@ def test_the_ai_probe_of_a_folder_on_a_share_runs_on_a_worker_and_fills_in_later
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
         window._current_folder = NAS_FOLDER
-        window._invalidate_ai_folder_probe_cache()
+        window._ai_run.invalidate_ai_folder_probe_cache()
         calls.clear()
-        window._update_ai_toolbar_state()
+        window._ai_run.update_ai_toolbar_state()
         assert [on_gui for on_gui, _folder in calls] == [] or not any(on_gui for on_gui, _folder in calls), "never on the GUI thread"
         assert _ingested_enabled(window) is False, "until the worker answers the toolbar says nothing was found"
         assert pump_until(lambda: _ingested_enabled(window), timeout=10), "the arriving answer refreshes the toolbar"
@@ -594,9 +600,9 @@ def test_the_ai_probe_of_a_local_folder_is_still_immediate(dialogs, share, tmp_p
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
         window._current_folder = str(local)
-        window._invalidate_ai_folder_probe_cache()
+        window._ai_run.invalidate_ai_folder_probe_cache()
         calls.clear()
-        window._update_ai_toolbar_state()
+        window._ai_run.update_ai_toolbar_state()
         assert calls == [(True, str(local))] and _ingested_enabled(window) is True
 
 
@@ -606,11 +612,11 @@ def test_an_ai_probe_answer_that_went_stale_is_dropped_and_asked_again(dialogs, 
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
         window._current_folder = NAS_FOLDER
-        window._invalidate_ai_folder_probe_cache()
+        window._ai_run.invalidate_ai_folder_probe_cache()
         calls.clear()
-        window._update_ai_toolbar_state()
+        window._ai_run.update_ai_toolbar_state()
         assert pump_until(lambda: len(calls) == 1, timeout=10)
-        window._invalidate_ai_folder_probe_cache()  # an AI run changed the folder's data while the worker looked
+        window._ai_run.invalidate_ai_folder_probe_cache()  # an AI run changed the folder's data while the worker looked
         gate.set()
         assert pump_until(lambda: len(calls) == 2, timeout=10), "the stale answer is dropped and the folder is probed again"
         assert pump_until(lambda: _ingested_enabled(window), timeout=10)
@@ -622,15 +628,15 @@ def test_an_ai_probe_started_for_the_previous_folder_does_not_leave_the_new_one_
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
         window._current_folder = NAS_FOLDER
-        window._invalidate_ai_folder_probe_cache()
+        window._ai_run.invalidate_ai_folder_probe_cache()
         calls.clear()
-        window._update_ai_toolbar_state()
+        window._ai_run.update_ai_toolbar_state()
         assert pump_until(lambda: len(calls) == 1, timeout=10)
         window._current_folder = NAS_OTHER  # the user opened another folder on the NAS
-        window._update_ai_toolbar_state()
+        window._ai_run.update_ai_toolbar_state()
         gate.set()
         assert pump_until(lambda: [folder for _gui, folder in calls] == [NAS_FOLDER, NAS_OTHER], timeout=10)
-        assert pump_until(lambda: (window._ai_folder_probe_cache or {}).get("folder") == NAS_OTHER, timeout=10)
+        assert pump_until(lambda: (window._ai_run._ai_folder_probe_cache or {}).get("folder") == NAS_OTHER, timeout=10)
 
 
 def test_the_ai_folder_paths_of_a_share_are_built_without_asking_the_share(dialogs, share, tmp_path) -> None:
@@ -638,8 +644,8 @@ def test_the_ai_folder_paths_of_a_share_are_built_without_asking_the_share(dialo
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
         window._current_folder = NAS_FOLDER
-        hidden = window._hidden_ai_paths_for_current_folder()
-        culler = window._aiculler_paths_for_current_folder()
+        hidden = window._ai_run.hidden_ai_paths_for_current_folder()
+        culler = window._aiculler.aiculler_paths_for_current_folder()
         assert str(hidden.folder) == NAS_FOLDER and str(culler.hidden_root).startswith(NAS_FOLDER)
         assert share.gui_resolves == []
 
@@ -648,7 +654,7 @@ def test_the_local_ai_folder_paths_are_still_resolved(dialogs, share, tmp_path) 
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
         window._current_folder = str(local)
-        assert window._hidden_ai_paths_for_current_folder().folder == local.resolve()
+        assert window._ai_run.hidden_ai_paths_for_current_folder().folder == local.resolve()
 
 
 def test_marking_a_photo_in_a_share_folder_does_not_ask_the_share_for_the_telemetry_log(dialogs, share, tmp_path, monkeypatch) -> None:
@@ -668,7 +674,7 @@ def test_marking_a_photo_in_a_share_folder_does_not_ask_the_share_for_the_teleme
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
         window._current_folder = NAS_FOLDER
-        assert window._aiculler_telemetry_logger_for_current_folder() is not None
+        assert window._aiculler.aiculler_telemetry_logger_for_current_folder() is not None
         assert share.gui_resolves == []
 
 
@@ -676,8 +682,8 @@ def test_the_ai_toolbar_refresh_on_a_share_does_not_resolve_the_folder_on_the_gu
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
         window._current_folder = NAS_FOLDER
-        window._invalidate_ai_folder_probe_cache()
-        window._update_ai_toolbar_state()  # must not raise: the share is down and resolve() would fail
+        window._ai_run.invalidate_ai_folder_probe_cache()
+        window._ai_run.update_ai_toolbar_state()  # must not raise: the share is down and resolve() would fail
         pump_until(lambda: False, timeout=0.5)
         assert share.gui_resolves == []
 
@@ -695,8 +701,11 @@ def _fake_prefilter_loader(monkeypatch):
         calls.append((threading.current_thread() is threading.main_thread(), paths.folder))
         return {paths.folder + "\\IMG_0001.jpg": SimpleNamespace(action="keep", reason="test")}
 
-    monkeypatch.setattr(window_module, "build_phash_prefilter_paths", build_paths)
-    monkeypatch.setattr(window_module, "load_phash_prefilter_decisions", load)
+    import image_triage.tasks.ai_tasks as ai_tasks_module
+
+    for module in (ai_tasks_module, window_module):  # the worker task lives in ai_tasks; the window also calls them
+        monkeypatch.setattr(module, "build_phash_prefilter_paths", build_paths)
+        monkeypatch.setattr(module, "load_phash_prefilter_decisions", load)
     return calls
 
 

@@ -621,7 +621,7 @@ class AIWorkflowCenterDialog(QDialog):
             # haven't been imported into the DB yet — that happens at train
             # time — but they DO count toward "you can train now".
             try:
-                pending_labels = self._window._load_aiculler_internal_labels(paths)
+                pending_labels = self._window._aiculler.load_aiculler_internal_labels(paths)
                 pending_label_count = len(pending_labels)
             except Exception:
                 pending_label_count = 0
@@ -717,23 +717,23 @@ class AIWorkflowCenterDialog(QDialog):
             actions=[
                 ActionSpec(
                     label="Set Up AI",
-                    callback=lambda: self._invoke("_install_ai_runtime"),
+                    callback=lambda: self._invoke("_ai_setup.install_ai_runtime"),
                     primary=not snap.runtime_ready,
                     enabled=True,
                 ),
                 ActionSpec(
                     label="Uninstall AI Runtime & Models",
-                    callback=lambda: self._invoke("_uninstall_ai_components"),
+                    callback=lambda: self._invoke("_ai_setup.uninstall_ai_components"),
                     enabled=True,
                 ),
                 ActionSpec(
                     label="Open AI Culler source",
-                    callback=lambda: self._invoke("_open_aiculler_root"),
+                    callback=lambda: self._invoke("_aiculler.open_aiculler_root"),
                     enabled=True,
                 ),
                 ActionSpec(
                     label="Edit category prompts",
-                    callback=lambda: self._invoke("_open_aiculler_categories"),
+                    callback=lambda: self._invoke("_aiculler.open_aiculler_categories"),
                     enabled=True,
                 ),
             ],
@@ -767,13 +767,13 @@ class AIWorkflowCenterDialog(QDialog):
             actions=[
                 ActionSpec(
                     label="Run Cull & Score",
-                    callback=lambda: self._invoke("_run_ai_pipeline"),
+                    callback=lambda: self._invoke("_ai_run.run_ai_pipeline"),
                     primary=True,
                     enabled=snap.runtime_ready and snap.folder_open,
                 ),
                 ActionSpec(
                     label="Quick Rerank",
-                    callback=lambda: self._invoke("_rerank_ai_pipeline"),
+                    callback=lambda: self._invoke("_ai_run.rerank_ai_pipeline"),
                     enabled=snap.can_rerank,
                     tooltip=(
                         "Reuses the existing ingest, categories, and clusters and recalculates the base ranking."
@@ -828,7 +828,7 @@ class AIWorkflowCenterDialog(QDialog):
             actions=[
                 ActionSpec(
                     label="Apply AI Decisions",
-                    callback=lambda: self._invoke("_apply_ai_culling"),
+                    callback=lambda: self._invoke("_ai_run.apply_ai_culling"),
                     primary=True,
                     enabled=results_ready,
                 ),
@@ -842,7 +842,9 @@ class AIWorkflowCenterDialog(QDialog):
         return steps
 
     def _invoke(self, slot_name: str) -> None:
-        slot = getattr(self._window, slot_name, None)
+        slot = self._window
+        for part in slot_name.split("."):  # "_ai_setup.install_ai_runtime" reaches into a controller
+            slot = getattr(slot, part, None)
         if not callable(slot):
             return
         slot()

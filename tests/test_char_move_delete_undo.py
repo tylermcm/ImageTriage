@@ -414,7 +414,7 @@ def test_remove_records_by_paths_refreshes_the_view_exactly_once(window, tmp_pat
         return real_apply_records_view(*args, **kwargs)
 
     with patch.object(window, "_apply_records_view", side_effect=counting_apply_records_view):
-        removed = window._remove_records_by_paths([a, c])
+        removed = window._record_ops.remove_records_by_paths([a, c])
 
     assert removed == 2
     assert len(calls) == 1
@@ -426,9 +426,9 @@ def test_remove_records_by_paths_focuses_the_next_surviving_record(window, tmp_p
     a, b, c, d = make_jpegs(source, ["a.jpg", "b.jpg", "c.jpg", "d.jpg"])
     open_folder(window, source, 4)
 
-    window._remove_records_by_paths([a, b])
+    window._record_ops.remove_records_by_paths([a, b])
 
-    assert window._current_visible_record_path() == c
+    assert window._records_view.current_visible_record_path() == c
 
 
 def test_remove_records_by_paths_falls_back_to_the_nearest_earlier_survivor(window, tmp_path) -> None:
@@ -436,9 +436,9 @@ def test_remove_records_by_paths_falls_back_to_the_nearest_earlier_survivor(wind
     a, b, c, d = make_jpegs(source, ["a.jpg", "b.jpg", "c.jpg", "d.jpg"])
     open_folder(window, source, 4)
 
-    window._remove_records_by_paths([c, d])
+    window._record_ops.remove_records_by_paths([c, d])
 
-    assert window._current_visible_record_path() == b
+    assert window._records_view.current_visible_record_path() == b
 
 
 def test_remove_records_by_paths_removing_everything_does_not_crash(window, tmp_path) -> None:
@@ -446,7 +446,7 @@ def test_remove_records_by_paths_removing_everything_does_not_crash(window, tmp_
     a, b = make_jpegs(source, ["a.jpg", "b.jpg"])
     open_folder(window, source, 2)
 
-    removed = window._remove_records_by_paths([a, b])
+    removed = window._record_ops.remove_records_by_paths([a, b])
 
     assert removed == 2
     assert _names(window) == []
@@ -457,7 +457,7 @@ def test_remove_records_by_paths_ignores_paths_not_in_the_current_view(window, t
     a, b = make_jpegs(source, ["a.jpg", "b.jpg"])
     open_folder(window, source, 2)
 
-    removed = window._remove_records_by_paths([a, str(tmp_path / "nonexistent.jpg")])
+    removed = window._record_ops.remove_records_by_paths([a, str(tmp_path / "nonexistent.jpg")])
 
     assert removed == 1
     assert _names(window) == ["b.jpg"]
@@ -471,7 +471,7 @@ def test_remove_records_by_paths_with_nothing_to_remove_is_a_no_op(window, tmp_p
     real_apply_records_view = window._apply_records_view
     calls: list[None] = []
     with patch.object(window, "_apply_records_view", side_effect=lambda *a, **k: calls.append(None)):
-        removed = window._remove_records_by_paths([str(tmp_path / "nonexistent.jpg")])
+        removed = window._record_ops.remove_records_by_paths([str(tmp_path / "nonexistent.jpg")])
 
     assert removed == 0
     assert calls == []
@@ -489,7 +489,7 @@ def test_move_record_to_path_with_defer_removal_keeps_the_record_visible(window,
     open_folder(window, source, 1)
     dest = tmp_path / "_winners"
 
-    ok = window._move_record_to_path(a, str(dest), defer_removal=True)
+    ok = window._record_ops.move_record_to_path(a, str(dest), defer_removal=True)
 
     assert ok is True
     assert not os.path.exists(a) and (dest / "a.jpg").exists()
@@ -502,7 +502,7 @@ def test_move_record_to_ai_recycle_by_path_with_defer_removal_keeps_the_record_v
     (a,) = make_jpegs(source, ["a.jpg"])
     open_folder(window, source, 1)
 
-    ok = window._move_record_to_ai_recycle_by_path(a, defer_removal=True)
+    ok = window._record_ops.move_record_to_ai_recycle_by_path(a, defer_removal=True)
 
     assert ok is True
     assert not os.path.exists(a)
@@ -526,10 +526,10 @@ def test_deferred_movers_compose_with_the_batch_removal_api(window, tmp_path) ->
         return real_apply_records_view(*args, **kwargs)
 
     with patch.object(window, "_apply_records_view", side_effect=counting_apply_records_view):
-        moved = window._move_record_to_path(a, str(winners_dir), defer_removal=True)
-        recycled = window._move_record_to_ai_recycle_by_path(b, defer_removal=True)
+        moved = window._record_ops.move_record_to_path(a, str(winners_dir), defer_removal=True)
+        recycled = window._record_ops.move_record_to_ai_recycle_by_path(b, defer_removal=True)
         assert calls == [], "no rebuild yet while removal is deferred"
-        removed = window._remove_records_by_paths([a, b])
+        removed = window._record_ops.remove_records_by_paths([a, b])
 
     assert moved is True and recycled is True
     assert removed == 2
@@ -549,9 +549,9 @@ def test_apply_ai_cullings_mixed_move_and_recycle_batch_undoes_together(window, 
     winners_dir = tmp_path / "_winners"
     batch_id = "shared-ai-cull-batch"
 
-    moved = window._move_record_to_path(a, str(winners_dir), defer_removal=True, batch_id=batch_id)
-    recycled = window._move_record_to_ai_recycle_by_path(b, defer_removal=True, batch_id=batch_id)
-    window._remove_records_by_paths([a, b])
+    moved = window._record_ops.move_record_to_path(a, str(winners_dir), defer_removal=True, batch_id=batch_id)
+    recycled = window._record_ops.move_record_to_ai_recycle_by_path(b, defer_removal=True, batch_id=batch_id)
+    window._record_ops.remove_records_by_paths([a, b])
 
     assert moved is True and recycled is True
     assert [action.batch_id for action in window._undo_stack] == [batch_id, batch_id]
@@ -615,7 +615,7 @@ def _set_ai_cull_groups(
         AICullBucket.KEEPER: list(keeper or []),
         AICullBucket.NEEDS_REVIEW: list(review or []),
     }
-    return patch.object(window, "_ai_cull_record_groups", return_value=groups)
+    return patch.object(window._ai_run, "ai_cull_record_groups", return_value=groups)
 
 
 def _accept_apply_ai_dialog(window):
@@ -651,7 +651,7 @@ def test_apply_ai_decisions_shows_the_dialog_with_the_right_records_in_each_grou
     ):
         patch_exec, captured = _accept_apply_ai_dialog(window)
         with patch_exec:
-            window._apply_ai_culling()
+            window._ai_run.apply_ai_culling()
 
     dialog = captured["dialog"]
     assert {record.path for record in dialog.ai_pick_records} == {a, b}
@@ -668,7 +668,7 @@ def test_declining_the_apply_ai_decisions_dialog_makes_no_file_changes(window, t
 
     with _set_ai_cull_groups(window, ai_pick=[by_path[a]], reject=[by_path[b]]):
         with _reject_apply_ai_dialog(window):
-            window._apply_ai_culling()
+            window._ai_run.apply_ai_culling()
 
     assert os.path.exists(a) and os.path.exists(b)
     assert _names(window) == ["a.jpg", "b.jpg"]
@@ -688,7 +688,7 @@ def test_accepting_apply_ai_decisions_moves_winners_and_recycles_rejects_in_one_
     with _set_ai_cull_groups(window, ai_pick=[by_path[a]], reject=[by_path[b]], keeper=[by_path[c]]):
         patch_exec, _captured = _accept_apply_ai_dialog(window)
         with patch_exec:
-            window._apply_ai_culling()
+            window._ai_run.apply_ai_culling()
 
     assert not os.path.exists(a) and (winners_dir / "a.jpg").exists()
     assert not os.path.exists(b)
@@ -750,7 +750,7 @@ def test_apply_ai_decisions_cancel_partway_through_winners_move_leaves_the_rest_
         with patch_exec, patch(
             "image_triage.record_ops_controller.run_file_transfer", return_value=fake_result
         ):
-            window._apply_ai_culling()
+            window._ai_run.apply_ai_culling()
         # Captured immediately: the directory watcher can overwrite the
         # status bar with its own "Detected folder changes" refresh message
         # once the event loop gets pumped again (see the pump_until calls

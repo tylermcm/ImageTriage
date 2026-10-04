@@ -353,7 +353,7 @@ See §11.
   - F-03: the folder menu now calls `self._catalog.start_catalog_refresh(...)`.
   - F-04: the overflow menu reads `self.auto_bracket_button.isChecked()`, which `set_auto_bracket_mode` keeps in sync with the window's setting.
   - Also added the missing `from collections.abc import Callable` that pyflakes flagged for two string annotations in `window.py`.
-- **Full suite after the fixes:** 1,953 passed, 1 skipped, 11 xfailed, 1 failed, in 821 s. The failure is the mask-pane width test described below, and it only appeared once I tried the I-02 redirect, which I then reverted. With the redirect reverted that test passes and nothing else changed. The two `test_aiculler_cli_reports` tests that failed in the earlier run passed in this one; I did not investigate why, so C-02 still stands as a risk, not a resolved item.
+- **Full suite after the fixes** (final tree, I-02 redirect reverted): 1,949 passed, 1 skipped, 11 xfailed, 3 failed, in 723 s. Two failures are the `test_aiculler_cli_reports` tests (`WinError 6` under `pythonw`, see C-02). The third, `test_char_batch_rename_controller::test_apply_preview_renames_files_rekeys_records_and_pushes_undo`, passes when run alone (3 passed); the remediation plan had already recorded it as order-dependent. An earlier run on the same fixes but with the I-02 redirect in place had a different single failure (the mask-pane width test described below), which is what led to reverting the redirect.
 - **I-02 (test sandbox leaks into the real `~\.image-triage\AI`) is still open.** The redirect is straightforward (patch `ai_paths.default_managed_ai_root` in `tests/conftest.py` while `USERPROFILE` is still the real one; redirecting `USERPROFILE` itself is not an option, see below), and I wrote and verified it, but it exposes a defect (N-01), so it was reverted rather than leaving the suite red. The patch is kept in the session scratchpad as `post_audit/conftest_ai_root_redirect.patch`.
 
 ### New findings from that attempt
@@ -374,3 +374,11 @@ See §11.
 - **Next action:** Fix after N-01 is decided, by sandboxing the managed root and making the test state its own precondition.
 
 *Also learned:* redirecting `USERPROFILE` itself in the shared sandbox is not a safe way to do I-02. It also changed the result of that test in my first attempt, so `ai_paths` has to be patched directly.
+
+### 2026-10-03: later changes against this audit
+
+- **F-05** fixed (`download_ai_model` now requires its `installation`), and a further undefined name in `aiculler/cli.py` (an unimported type in an annotation) found by the new gate and fixed. **F-06** fixed (the benchmark of the deleted live-output runner was dropped; the parser benchmark stays).
+- **R-02** addressed: `scripts/check_undefined_names.py` and `scripts/architecture_report.py --check` run in CI, `tests/test_architecture_rules.py` checks that every `self.<name>` in `MainWindow` and the controllers and every internal import resolves, and `tests/test_action_sweep.py` triggers every enabled action of a real window and fails on any exception, including those PySide would otherwise swallow inside a slot.
+- **D-01** done (child-process subsystem deleted; no reader of its state file exists anywhere in the repository). **D-04** partly done (the AI-mode switch is gone; the hidden AI toolbar page and per-mode toolbar layouts remain). **A-01** is being worked under `docs/mainwindow_decomposition_plan.md`.
+- A shared test-harness bug was found by the sweep and fixed: `install_dialog_guards` returned a tuple from `QFileDialog.getExistingDirectory`.
+- **C-02 note:** the two `test_aiculler_cli_reports` tests failed in some full runs and passed in others on unchanged code, so the `WinError 6` explanation holds for some runs but they are not deterministic under `pythonw`. Still unresolved. Two other tests (`test_char_batch_rename_controller`, `test_char_move_delete_undo` apply-AI-decisions) fail intermittently in long full runs and pass alone; the latter was seen failing once, in a run that took 24 minutes instead of 14, so I attribute it to load, which I have not proven.

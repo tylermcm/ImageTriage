@@ -114,15 +114,15 @@ def test_startup_and_everyday_use_never_build_the_preview(tripwire, dialogs, tmp
         _turn(400)  # _post_show_display_setup, _finish_startup_restore, startup focus timers...
         _assert_quiet(tripwire, "show() and the startup timers")
 
-        window._set_appearance_mode(AppearanceMode.LIGHT)
+        window._appearance.set_appearance_mode(AppearanceMode.LIGHT)
         window._ui_gamma = 1.3
-        window._apply_appearance()
+        window._appearance.apply_appearance()
         _turn()
         _assert_quiet(tripwire, "_apply_appearance (theme and gamma change)")
 
         window._interface_size = "compact"
         window._display_profile = None
-        window._apply_display_profile()
+        window._appearance.apply_display_profile()
         window.resize(1180, 720)
         _turn(60)
         _assert_quiet(tripwire, "_apply_display_profile / resize")
@@ -162,8 +162,8 @@ def test_startup_and_everyday_use_never_build_the_preview(tripwire, dialogs, tmp
         window._cancel_collection_mode()
         _assert_quiet(tripwire, "collection mode on and off")
 
-        window._set_zen_mode(True)
-        window._set_zen_mode(False)
+        window._zen.set_zen_mode(True)
+        window._zen.set_zen_mode(False)
         _assert_quiet(tripwire, "zen mode on and off")
 
         with mock.patch.object(window, "_exec_dialog_with_geometry", side_effect=_accept_changed_settings):
@@ -383,9 +383,9 @@ def test_a_lazily_built_viewer_replays_every_setting_changed_before_the_build(di
 
         # Everything the viewer mirrors, changed through the real code paths, with no viewer around.
         window._photoshop_executable = r"C:\Fake\Photoshop.exe"
-        window._set_appearance_mode(AppearanceMode.LIGHT)
+        window._appearance.set_appearance_mode(AppearanceMode.LIGHT)
         window._ui_gamma = 0.85
-        window._apply_appearance()
+        window._appearance.apply_appearance()
         with mock.patch.object(window, "_exec_dialog_with_geometry", side_effect=_accept_changed_settings):
             window._show_settings()  # preload 37, gamma 1.25, spacious, auto-advance flipped
         window._handle_auto_bracket_toggled(True)
@@ -439,14 +439,14 @@ def test_settings_changed_after_the_build_still_reach_the_viewer(dialogs) -> Non
         preview = window.preview
         _assert_viewer_mirrors_window(window, preview)
 
-        window._set_appearance_mode(AppearanceMode.LIGHT)
+        window._appearance.set_appearance_mode(AppearanceMode.LIGHT)
         window._ui_gamma = 0.9
-        window._apply_appearance()
+        window._appearance.apply_appearance()
         assert preview._theme == window._theme and window._theme.name == "light"
 
         window._interface_size = "spacious"
         window._display_profile = None
-        window._apply_display_profile()
+        window._appearance.apply_display_profile()
         assert preview._display_profile == window._display_profile
         assert preview._display_profile == display_profile_for_preference(
             window.central_container.width(), window.central_container.height(), "spacious"

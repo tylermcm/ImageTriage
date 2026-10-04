@@ -448,12 +448,12 @@ def aiculler_face_model_root(*, install_dir: str | Path | None = None) -> Path:
 
 
 def download_ai_model(
-    installation: AIModelInstallation | None = None,
+    installation: AIModelInstallation,
     *,
     force: bool = False,
     progress_callback: AIModelProgressCallback | None = None,
 ) -> AIModelInstallation:
-    resolved = installation or resolve_ai_model_installation()
+    resolved = installation
 
     if bundle_install_dir_matches(resolved):
         # Manifest bundles install transactionally: staged, fully verified and

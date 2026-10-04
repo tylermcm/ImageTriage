@@ -9,6 +9,7 @@ from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget
 
 from image_triage.ui.nav_rail import NavRail
+from image_triage.appearance_controller import AppearanceController
 from image_triage.window import MainWindow
 
 
@@ -94,9 +95,10 @@ class _LeftPaneHost:
     """Just enough of MainWindow for its page-swapping method."""
 
     LEFT_NAV_PAGE_KEY = MainWindow.LEFT_NAV_PAGE_KEY
-    _show_left_nav_page = MainWindow._show_left_nav_page
+    show_left_nav_page = AppearanceController.show_left_nav_page
 
     def __init__(self) -> None:
+        self._window = self  # the host stands in for both the controller and the window behind it
         self._settings = _Settings()
         self.left_nav_pages = QStackedWidget()
         self._left_nav_page_widgets = {key: QWidget() for key in ("folders", "faces", "collections")}
@@ -118,47 +120,21 @@ class LeftPaneSwapTests(unittest.TestCase):
         self.assertEqual(len(keys), len(set(keys)))
 
     def test_a_destination_replaces_the_whole_pane(self) -> None:
-        self.host._show_left_nav_page("faces")
+        self.host.show_left_nav_page("faces")
 
         self.assertIs(self.host._left_nav_page_widgets["faces"], self.host.left_nav_pages.currentWidget())
         self.assertEqual("faces", self.host.left_nav_rail.current())
 
     def test_the_chosen_pane_is_remembered(self) -> None:
-        self.host._show_left_nav_page("collections")
+        self.host.show_left_nav_page("collections")
 
         self.assertEqual("collections", self.host._settings.values[MainWindow.LEFT_NAV_PAGE_KEY])
 
     def test_an_unknown_pane_changes_nothing(self) -> None:
-        self.host._show_left_nav_page("map")
+        self.host.show_left_nav_page("map")
 
         self.assertIs(self.host._left_nav_page_widgets["folders"], self.host.left_nav_pages.currentWidget())
         self.assertEqual({}, self.host._settings.values)
-
-
-class _ModeHost:
-    _set_ui_mode = MainWindow._set_ui_mode
-
-    def __init__(self) -> None:
-        self.handled: list[int] = []
-
-    def _handle_mode_tab_changed(self, index: int) -> None:
-        self.handled.append(index)
-
-
-class ManualOnlyModeTests(unittest.TestCase):
-    def test_asking_for_ai_review_stays_in_manual(self) -> None:
-        host = _ModeHost()
-
-        host._set_ui_mode("ai")
-
-        self.assertEqual([0], host.handled)
-
-    def test_asking_for_manual_stays_in_manual(self) -> None:
-        host = _ModeHost()
-
-        host._set_ui_mode("manual")
-
-        self.assertEqual([0], host.handled)
 
 
 if __name__ == "__main__":

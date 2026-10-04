@@ -11,6 +11,7 @@ from PySide6.QtGui import QAction, QContextMenuEvent, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QStatusBar, QWidget
 
 from image_triage.catalog_controller import CatalogController
+from image_triage.folder_session import FolderSession, session_field
 from image_triage.grid import ThumbnailGridView
 from image_triage.library_store import LibraryStore
 from image_triage.models import ImageRecord
@@ -38,6 +39,8 @@ class _PreviewStub:
 
 
 class _ModeHost(QWidget):
+    _collection_mode = session_field("collection_mode")
+    _browser_view_mode = session_field("browser_view_mode")
     _begin_collection_mode = MainWindow._begin_collection_mode
     _cancel_collection_mode = MainWindow._cancel_collection_mode
     _save_collection_mode = MainWindow._save_collection_mode
@@ -46,6 +49,7 @@ class _ModeHost(QWidget):
 
     def __init__(self, store: LibraryStore) -> None:
         super().__init__()
+        self._folder_session = FolderSession()
         self._library_store = store
         self._collection_mode = ""
         self._collection_target_id = ""

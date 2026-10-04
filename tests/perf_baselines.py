@@ -70,12 +70,12 @@ TOPBAR_REBUILD_BUDGET_MS = 20.0
 
 
 def test_baseline_topbar_rebuild(main_window) -> None:
-    main_window._rebuild_topbar_action_stack(force=True)  # warm the icon cache
-    widgets = sum(len(items) for items in main_window._topbar_action_items.values())
+    main_window._toolbar.rebuild_topbar_action_stack(force=True)  # warm the icon cache
+    widgets = sum(len(items) for items in main_window._toolbar._topbar_action_items.values())
     timings = []
     for _ in range(15):
         begin = time.perf_counter()
-        main_window._rebuild_topbar_action_stack(force=True)
+        main_window._toolbar.rebuild_topbar_action_stack(force=True)
         timings.append(time.perf_counter() - begin)
     median_ms = _ms(statistics.median(timings))
     _record("topbar_rebuild_widgets", widgets)
@@ -83,7 +83,7 @@ def test_baseline_topbar_rebuild(main_window) -> None:
     _record("topbar_rebuild_forced_max_ms", _ms(max(timings)))
 
     begin = time.perf_counter()
-    main_window._rebuild_topbar_action_stack()  # nothing changed since the forced rebuild above
+    main_window._toolbar.rebuild_topbar_action_stack()  # nothing changed since the forced rebuild above
     _record("topbar_rebuild_unchanged_skip_ms", _ms(time.perf_counter() - begin))
 
     assert median_ms < TOPBAR_REBUILD_BUDGET_MS, (

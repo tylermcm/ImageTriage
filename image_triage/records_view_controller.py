@@ -41,6 +41,7 @@ from .semantic_index import (
 )
 from .semantic_search import SearchFilters
 from .ui import AdvancedFilterDialog, PeopleSearchDialog
+from .folder_session import FolderSession
 
 if TYPE_CHECKING:
     from .window import MainWindow
@@ -238,22 +239,62 @@ class RecordsViewController:
     """Folder scanning, the records-view rebuild pipeline, filter/search state,
     saved filter presets, and unified/semantic/face search orchestration.
 
-    Holds no state of its own beyond the window back-reference: every piece of
-    state this cluster reads or writes (`_filter_query`, `_records`,
-    `_folder_records`, `_records_view_cache`, the scan/search/index tokens,
-    `_filter_metadata_*`, `_saved_filter_presets`, etc.) stays on `MainWindow`,
-    same as every other WI-4.4 controller. This is the largest and most
-    interconnected slice of the decomposition (the plan calls it "highest
-    coupling"), so unlike the smaller slices, internal calls between these
-    methods route back through the window's own delegate methods rather than
-    calling each other directly on this class. That costs one extra call hop
-    per intra-cluster call; it buys certainty that every reference here means
-    exactly what the original code meant, which matters far more at this size
-    than at the ~44-method scale of the previous slice.
+    State that only this controller uses (the scan, search and index tokens, the filter-metadata prefetch queue,
+    the chunked-render and deferred-enrichment bookkeeping) lives here, set in ``__init__`` (DC-3.5). State shared
+    with the rest of the window (`_filter_query`, `_records`, `_folder_records`, `_records_view_cache`,
+    `_saved_filter_presets`, ...) still lives on ``MainWindow`` and is reached through the back-reference, as with
+    every other WI-4.4 controller. This is the largest and most interconnected slice of the decomposition, so
+    internal calls between these methods still route back through the window's own delegate methods rather than
+    calling each other directly on this class; that costs one extra hop per call and keeps every reference exactly
+    as the original code meant it.
     """
+
+    @property
+    def _session(self) -> FolderSession:
+        return self._window._folder_session
 
     def __init__(self, window: "MainWindow") -> None:
         self._window = window
+        # State that only this controller uses. It lived on MainWindow until DC-3.5 (docs/mainwindow_decomposition_plan.md).
+        self._semantic_index_token = 0
+        self._semantic_index_scope_key = ""
+        self._semantic_index_signature: tuple[object, ...] = ()
+        self._semantic_index_completed = 0
+        self._semantic_index_total = 0
+        self._face_index_token = 0
+        self._face_index_scope_key = ""
+        self._face_index_signature: tuple[object, ...] = ()
+        self._face_index_people_count = 0
+        self._face_index_completed = 0
+        self._face_index_total = 0
+        self._scan_showed_cached = False
+        self._active_scan_tasks: dict[int, FolderScanTask] = {}
+        self._active_unified_search_task: UnifiedSearchTask | None = None
+        self._unified_search_token = 0
+        self._unified_search_signature: tuple[object, ...] = ()
+        self._unified_search_completed_signature: tuple[object, ...] = ()
+        self._unified_search_path_keys: frozenset[str] = frozenset()
+        self._person_filter_paths: frozenset[str] = frozenset()
+        self._unified_search_rank_by_path: dict[str, float] = {}
+        self._deferred_enrichment_pending = False
+        self._deferred_enrichment_scheduled = False
+        self._deferred_enrichment_scope_key = ""
+        self._deferred_enrichment_token = 0
+        self._last_view_record_paths: tuple[str, ...] = ()
+        self._chunked_load_scan_tokens: set[int] = set()
+        self._records_view_chunk_next_index = 0
+        self._records_view_chunk_current_path: str | None = None
+        self._file_type_actions: dict[FileTypeFilter, QAction] = {}
+        self._review_state_actions: dict[ReviewStateFilter, QAction] = {}
+        self._filter_metadata_record_paths: set[str] = set()
+        self._filter_metadata_loaded_paths: set[str] = set()
+        self._filter_metadata_requested_paths: set[str] = set()
+        self._filter_metadata_queue: deque[str] = deque()
+        self._filter_metadata_queue_keys: set[str] = set()
+        self._filter_metadata_queue_limit = 720
+        self._metadata_membership_dirty_paths: set[str] = set()
+        self._metadata_scroll_last_value = 0
+        self._metadata_scroll_direction = 1
 
     # -- Folder loading / scanning -----------------------------------------
 
@@ -273,27 +314,27 @@ class RecordsViewController:
         pre_scan_start = time.perf_counter() if logger.enabled else 0.0
         slow_source = window._is_slow_source_folder(folder)
         if window._active_tool_mode or window.grid.tool_checkbox_mode():
-            window._cancel_tool_mode(show_message=False)
-        window._cancel_records_view_chunk()
-        folder_changed = _memory_path_key(folder) != _memory_path_key(window._current_folder)
+            window._tool_mode.cancel_tool_mode(show_message=False)
+        window._records_view.cancel_records_view_chunk()
+        folder_changed = _memory_path_key(folder) != _memory_path_key(self._session.folder)
         if folder_changed:
-            if not getattr(window, "_nav_suppress_history", False) and window._current_folder:
+            if not getattr(window._toolbar, "_nav_suppress_history", False) and self._session.folder:
                 nav_back = getattr(window, "_nav_back", None)
                 if nav_back is not None:
-                    nav_back.append(window._current_folder)
+                    nav_back.append(self._session.folder)
                     if len(nav_back) > 100:
                         del nav_back[0]
                     if getattr(window, "_nav_forward", None) is not None:
                         window._nav_forward.clear()
             window._remember_current_folder_view_state()
-            window._cancel_hidden_ai_results_load()
+            window._ai_run.cancel_hidden_ai_results_load()
             window._hidden_ai_results_checked_scope_key = ""
         normalized_focus_path = normalize_filesystem_path(preferred_record_path) if preferred_record_path else ""
         if normalized_focus_path and _memory_path_key(str(Path(normalized_focus_path).parent)) == _memory_path_key(folder):
             window._pending_folder_focus_path = normalized_focus_path
         elif folder_changed:
             window._pending_folder_focus_path = ""
-        window._current_folder = folder
+        self._session.folder = folder
         window._update_nav_history_buttons()
         window._folder_records = []
         window._set_scope_state(kind="folder", scope_id=_memory_path_key(folder), label=folder)
@@ -304,9 +345,9 @@ class RecordsViewController:
         window._scan_token += 1
         token = window._scan_token
         if chunked_restore:
-            window._chunked_load_scan_tokens.add(token)
-        window._chunked_load_scan_tokens = {existing for existing in window._chunked_load_scan_tokens if existing >= token}
-        window._scan_showed_cached = False
+            self._chunked_load_scan_tokens.add(token)
+        self._chunked_load_scan_tokens = {existing for existing in self._chunked_load_scan_tokens if existing >= token}
+        self._scan_showed_cached = False
         window._scan_cached_source = ""
         window._folder_dir_mtime_ns = None
         window._scan_in_progress = True
@@ -332,9 +373,9 @@ class RecordsViewController:
         if window._active_review_intelligence_task is not None:
             window._active_review_intelligence_task.cancel()
             window._active_review_intelligence_task = None
-        window._refresh_recycle_button()
+        window._recycle_bin.refresh_recycle_button()
         if folder_changed:
-            window._clear_ai_results_state(preserve_setting=True, refresh=False)
+            window._ai_run.clear_ai_results_state(preserve_setting=True, refresh=False)
         if logger.enabled:
             logger.duration(
                 "folder.load.pre_scan_setup",
@@ -350,7 +391,7 @@ class RecordsViewController:
         window._folder_records = []
         window._refresh_directory_navigation_buttons()
         window._records = []
-        window._last_view_record_paths = ()
+        self._last_view_record_paths = ()
         window._record_index_by_path = {}
         window._edited_candidates_cache = {}
         window._visible_review_group_rows_by_id = {}
@@ -360,16 +401,15 @@ class RecordsViewController:
         window._unreviewed_count = 0
         window._records_have_resizable = False
         window._records_have_convertible = False
-        window._invalidate_training_label_counts_cache()
         window._summary_ai_text = "AI: Off" if window._ai_bundle is None else window._summary_ai_text
         window._summary_ai_tooltip = "No AI export is currently loaded." if window._ai_bundle is None else window._summary_ai_tooltip
         window._filter_metadata_by_path = {}
-        window._filter_metadata_record_paths = set()
-        window._filter_metadata_loaded_paths = set()
-        window._filter_metadata_requested_paths = set()
-        window._filter_metadata_queue = deque()
-        window._filter_metadata_queue_keys = set()
-        window._metadata_membership_dirty_paths = set()
+        self._filter_metadata_record_paths = set()
+        self._filter_metadata_loaded_paths = set()
+        self._filter_metadata_requested_paths = set()
+        self._filter_metadata_queue = deque()
+        self._filter_metadata_queue_keys = set()
+        self._metadata_membership_dirty_paths = set()
         window._metadata_scroll_prefetch_timer.stop()
         window._metadata_request_timer.stop()
         window.grid.set_empty_message(f"Scanning {Path(folder).name}...")
@@ -377,7 +417,7 @@ class RecordsViewController:
         window.details_view.set_records([])
         window._set_annotation_views()
         window._refresh_viewport_mode()
-        window._update_ai_toolbar_state()
+        window._ai_run.update_ai_toolbar_state()
 
         task = FolderScanTask(
             folder,
@@ -388,7 +428,7 @@ class RecordsViewController:
             read_cached_records=not bypass_catalog_cache,
             include_hidden_folders=window._show_hidden_folders,
         )
-        window._active_scan_tasks[token] = task
+        self._active_scan_tasks[token] = task
         task.signals.children.connect(window._handle_scan_children, Qt.ConnectionType.QueuedConnection)
         task.signals.cached.connect(window._handle_scan_cached, Qt.ConnectionType.QueuedConnection)
         task.signals.finished.connect(window._handle_scan_finished, Qt.ConnectionType.QueuedConnection)
@@ -405,7 +445,7 @@ class RecordsViewController:
     ) -> None:
         window = self._window
         if window._active_tool_mode or window.grid.tool_checkbox_mode():
-            window._cancel_tool_mode(show_message=False)
+            window._tool_mode.cancel_tool_mode(show_message=False)
         window._remember_current_folder_view_state()
         window._pending_folder_scroll_value = None
         window._scan_in_progress = False
@@ -429,19 +469,19 @@ class RecordsViewController:
             window._active_review_intelligence_task.cancel()
             window._active_review_intelligence_task = None
         window._pending_folder_focus_path = ""
-        window._current_folder = ""
+        self._session.folder = ""
         window._folder_records = []
         window._set_scope_state(kind=scope_kind, scope_id=scope_id, label=scope_label)
         window._refresh_directory_navigation_buttons()
         window._refresh_current_folder_watch()
-        window._scan_showed_cached = False
+        self._scan_showed_cached = False
         window._scan_cached_source = ""
         window._catalog_load_source = "idle"
         window._catalog_load_detail = "Virtual scopes are loaded from app state, not folder cache."
         window._reset_review_cache_status()
         window._refresh_catalog_status_indicator()
-        window._clear_ai_results_state(preserve_setting=True)
-        window._refresh_recycle_button()
+        window._ai_run.clear_ai_results_state(preserve_setting=True)
+        window._recycle_bin.refresh_recycle_button()
         window.grid.set_empty_message("Choose a folder to start triaging images.")
         self.apply_loaded_records(
             records,
@@ -453,8 +493,8 @@ class RecordsViewController:
         window = self._window
         window._records_view_chunk_timer.stop()
         window._records_view_chunk_records = []
-        window._records_view_chunk_next_index = 0
-        window._records_view_chunk_current_path = None
+        self._records_view_chunk_next_index = 0
+        self._records_view_chunk_current_path = None
         window._records_view_chunk_post_load_enrichment = ""
 
     def records_view_chunk_active(self) -> bool:
@@ -470,16 +510,16 @@ class RecordsViewController:
         window = self._window
         if requested:
             return True
-        if token is not None and token in window._chunked_load_scan_tokens:
+        if token is not None and token in self._chunked_load_scan_tokens:
             return True
         return bool(records) and len(records) >= window.CHUNKED_RESTORE_LOAD_MIN_RECORDS
 
     def finish_loaded_records_enrichment(self, records: list[ImageRecord], *, defer_enrichment: bool) -> None:
         window = self._window
         if defer_enrichment:
-            window._deferred_enrichment_pending = True
-            window._deferred_enrichment_scope_key = window._current_scope_key()
-            window._deferred_enrichment_token = window._scan_token
+            self._deferred_enrichment_pending = True
+            self._deferred_enrichment_scope_key = window._current_scope_key()
+            self._deferred_enrichment_token = window._scan_token
             if not window._scan_in_progress and not self.records_view_chunk_active():
                 self.schedule_loaded_records_enrichment()
             return
@@ -498,13 +538,12 @@ class RecordsViewController:
         window = self._window
         window._records_repo.reload(records)
         window._refresh_record_capability_cache(records)
-        window._invalidate_training_label_counts_cache()
         window._edited_candidates_cache = {}
         window._review_intelligence = None
-        window._deferred_enrichment_pending = False
-        window._deferred_enrichment_scheduled = False
-        window._deferred_enrichment_scope_key = ""
-        window._deferred_enrichment_token = 0
+        self._deferred_enrichment_pending = False
+        self._deferred_enrichment_scheduled = False
+        self._deferred_enrichment_scope_key = ""
+        self._deferred_enrichment_token = 0
         window._records_view_cache.mark(ViewInvalidationReason.LOAD_CHANGED)
         self.reset_filter_metadata_index(records)
         current_paths = {record.path for record in records}
@@ -527,29 +566,29 @@ class RecordsViewController:
 
     def schedule_loaded_records_enrichment(self) -> None:
         window = self._window
-        if not window._deferred_enrichment_pending or window._deferred_enrichment_scheduled:
+        if not self._deferred_enrichment_pending or self._deferred_enrichment_scheduled:
             return
         if self.records_view_chunk_active():
             return
-        window._deferred_enrichment_scheduled = True
+        self._deferred_enrichment_scheduled = True
         QTimer.singleShot(0, window._run_loaded_records_enrichment)
 
     def run_loaded_records_enrichment(self) -> None:
         window = self._window
-        window._deferred_enrichment_scheduled = False
-        if not window._deferred_enrichment_pending:
+        self._deferred_enrichment_scheduled = False
+        if not self._deferred_enrichment_pending:
             return
         if (
-            window._deferred_enrichment_token != window._scan_token
-            or window._deferred_enrichment_scope_key != window._current_scope_key()
+            self._deferred_enrichment_token != window._scan_token
+            or self._deferred_enrichment_scope_key != window._current_scope_key()
         ):
-            window._deferred_enrichment_pending = False
-            window._deferred_enrichment_scope_key = ""
-            window._deferred_enrichment_token = 0
+            self._deferred_enrichment_pending = False
+            self._deferred_enrichment_scope_key = ""
+            self._deferred_enrichment_token = 0
             return
-        window._deferred_enrichment_pending = False
-        window._deferred_enrichment_scope_key = ""
-        window._deferred_enrichment_token = 0
+        self._deferred_enrichment_pending = False
+        self._deferred_enrichment_scope_key = ""
+        self._deferred_enrichment_token = 0
         records = list(window._all_records)
         window._start_scope_enrichment_task(records)
         window._start_annotation_hydration(records)
@@ -584,7 +623,7 @@ class RecordsViewController:
         start = time.perf_counter() if logger.enabled else 0.0
         if token != window._scan_token or not records:
             return
-        window._scan_showed_cached = True
+        self._scan_showed_cached = True
         window._scan_cached_source = source
         window._catalog_load_source = source or "idle"
         window._catalog_load_detail = f"Loaded from {window._catalog_source_label(source)}; live refresh still running."
@@ -597,9 +636,9 @@ class RecordsViewController:
             chunked_view=chunked_view,
             current_path=window._pending_folder_focus_path or None,
         )
-        window._schedule_hidden_ai_results_load()
+        window._ai_run.schedule_hidden_ai_results_load()
         cache_label = window._catalog_source_label(source)
-        window.statusBar().showMessage(f"Loaded {cache_label.lower()} for {window._current_folder}, refreshing from disk...")
+        window.statusBar().showMessage(f"Loaded {cache_label.lower()} for {self._session.folder}, refreshing from disk...")
         if logger.enabled:
             logger.duration("scan.cached_applied", (time.perf_counter() - start) * 1000.0, folder=folder, source=source, records=len(records), chunked=chunked_view)
 
@@ -607,9 +646,9 @@ class RecordsViewController:
         window = self._window
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
-        finished_task = window._active_scan_tasks.pop(token, None)
+        finished_task = self._active_scan_tasks.pop(token, None)
         if token != window._scan_token:
-            window._chunked_load_scan_tokens.discard(token)
+            self._chunked_load_scan_tokens.discard(token)
             return
 
         window._scan_in_progress = False
@@ -618,8 +657,8 @@ class RecordsViewController:
         window._folder_dir_mtime_ns = getattr(finished_task, "dir_mtime_ns", None)
         window.grid.set_empty_message("Choose a folder to start triaging images.")
         chunked_view = self.should_chunk_loaded_records(records, token=token)
-        window._chunked_load_scan_tokens.discard(token)
-        if window._scan_showed_cached and self.records_match_for_refresh(window._all_records, records):
+        self._chunked_load_scan_tokens.discard(token)
+        if self._scan_showed_cached and self.records_match_for_refresh(window._all_records, records):
             window._catalog_load_source = source or "live"
             if window._scan_cached_source:
                 window._catalog_load_detail = f"Opened from {window._catalog_source_label(window._scan_cached_source)} and confirmed by live scan."
@@ -627,9 +666,9 @@ class RecordsViewController:
                 window._catalog_load_detail = "Live scan confirmed the current folder contents."
             window._refresh_catalog_status_indicator()
             self.schedule_loaded_records_enrichment()
-            window._schedule_hidden_ai_results_load()
-            window._refresh_recycle_button()
-            window.statusBar().showMessage(f"Refreshed {window._current_folder}")
+            window._ai_run.schedule_hidden_ai_results_load()
+            window._recycle_bin.refresh_recycle_button()
+            window.statusBar().showMessage(f"Refreshed {self._session.folder}")
             if window._folder_watch_refresh_pending:
                 window._folder_watch_refresh_timer.start(250)
             window._maybe_open_startup_quick_view()
@@ -645,15 +684,15 @@ class RecordsViewController:
             current_path=window._pending_folder_focus_path or None,
         )
         window._catalog_load_source = source or "live"
-        if window._scan_showed_cached and window._scan_cached_source:
+        if self._scan_showed_cached and window._scan_cached_source:
             window._catalog_load_detail = f"Opened from {window._catalog_source_label(window._scan_cached_source)} and refreshed from disk."
         else:
             window._catalog_load_detail = "Loaded directly from a live folder scan."
         window._refresh_catalog_status_indicator()
-        window._schedule_hidden_ai_results_load()
-        window._refresh_recycle_button()
-        if window._scan_showed_cached:
-            window.statusBar().showMessage(f"Refreshed {window._current_folder}")
+        window._ai_run.schedule_hidden_ai_results_load()
+        window._recycle_bin.refresh_recycle_button()
+        if self._scan_showed_cached:
+            window.statusBar().showMessage(f"Refreshed {self._session.folder}")
         if window._folder_watch_refresh_pending:
             window._folder_watch_refresh_timer.start(250)
         window._finish_quick_view_attempt_if_ready()
@@ -664,7 +703,7 @@ class RecordsViewController:
 
     def handle_scan_children(self, folder: str, token: int, records: object) -> None:
         window = self._window
-        if token != window._scan_token or normalized_path_key(folder) != normalized_path_key(window._current_folder):
+        if token != window._scan_token or normalized_path_key(folder) != normalized_path_key(self._session.folder):
             return
         if not isinstance(records, list):
             return
@@ -676,11 +715,11 @@ class RecordsViewController:
     def handle_scan_failed(self, folder: str, token: int, message: str) -> None:
         window = self._window
         perf_logger().log("scan.failed", folder=folder, token=token, message=message)
-        window._active_scan_tasks.pop(token, None)
+        self._active_scan_tasks.pop(token, None)
         if token != window._scan_token:
-            window._chunked_load_scan_tokens.discard(token)
+            self._chunked_load_scan_tokens.discard(token)
             return
-        window._chunked_load_scan_tokens.discard(token)
+        self._chunked_load_scan_tokens.discard(token)
         self.cancel_records_view_chunk()
         window._pending_folder_scroll_value = None
         window._scan_in_progress = False
@@ -690,10 +729,10 @@ class RecordsViewController:
         window._annotation_hydration_dirty_paths.clear()
         window._annotation_hydration_pending_clear_paths.clear()
         window._annotation_reapply_timer.stop()
-        window._deferred_enrichment_pending = False
-        window._deferred_enrichment_scheduled = False
-        window._deferred_enrichment_scope_key = ""
-        window._deferred_enrichment_token = 0
+        self._deferred_enrichment_pending = False
+        self._deferred_enrichment_scheduled = False
+        self._deferred_enrichment_scope_key = ""
+        self._deferred_enrichment_token = 0
         window._pending_folder_focus_path = ""
         window._review_chunk_flush_timer.stop()
         window._review_chunk_dirty_paths.clear()
@@ -703,7 +742,7 @@ class RecordsViewController:
         window._folder_records = []
         window._refresh_directory_navigation_buttons()
         window._records = []
-        window._last_view_record_paths = ()
+        self._last_view_record_paths = ()
         window._record_index_by_path = {}
         window._edited_candidates_cache = {}
         window._visible_review_group_rows_by_id = {}
@@ -713,7 +752,6 @@ class RecordsViewController:
         window._unreviewed_count = 0
         window._records_have_resizable = False
         window._records_have_convertible = False
-        window._invalidate_training_label_counts_cache()
         window._correction_events = []
         window._taste_profile = TasteProfile()
         window._burst_recommendations = {}
@@ -721,12 +759,12 @@ class RecordsViewController:
         window._summary_ai_text = "AI: Off" if window._ai_bundle is None else window._summary_ai_text
         window._summary_ai_tooltip = "No AI export is currently loaded." if window._ai_bundle is None else window._summary_ai_tooltip
         window._filter_metadata_by_path = {}
-        window._filter_metadata_record_paths = set()
-        window._filter_metadata_loaded_paths = set()
-        window._filter_metadata_requested_paths = set()
-        window._filter_metadata_queue = deque()
-        window._filter_metadata_queue_keys = set()
-        window._metadata_membership_dirty_paths = set()
+        self._filter_metadata_record_paths = set()
+        self._filter_metadata_loaded_paths = set()
+        self._filter_metadata_requested_paths = set()
+        self._filter_metadata_queue = deque()
+        self._filter_metadata_queue_keys = set()
+        self._metadata_membership_dirty_paths = set()
         window._metadata_scroll_prefetch_timer.stop()
         window.grid.set_empty_message(f"Could not scan this folder.\n\n{message}")
         window.grid.set_items([], emit_state_signals=False, request_thumbnails=False)
@@ -737,7 +775,7 @@ class RecordsViewController:
         window._catalog_load_source = "failed"
         window._catalog_load_detail = message
         window._refresh_catalog_status_indicator()
-        window.statusBar().showMessage(f"Could not scan {window._current_folder}: {message}")
+        window.statusBar().showMessage(f"Could not scan {self._session.folder}: {message}")
         window._show_main_window_after_quick_view_failure()
         if window._folder_watch_refresh_pending:
             window._folder_watch_refresh_timer.start(450)
@@ -815,19 +853,19 @@ class RecordsViewController:
         if records and not restored_current and structural_changed:
             window.grid.set_current_index(0)
         step_start = log_step("records_view.finalize.current", step_start, restored_current=restored_current)
-        window._last_view_record_paths = next_record_paths
+        self._last_view_record_paths = next_record_paths
         self.enqueue_filter_metadata_paths(self.metadata_prefetch_seed_paths(), front=True)
         step_start = log_step("records_view.finalize.enqueue_metadata", step_start)
         window._refresh_viewport_mode()
         window._sync_details_view_from_grid()
-        step_start = log_step("records_view.finalize.viewport_sync", step_start, view=window._browser_view_mode)
+        step_start = log_step("records_view.finalize.viewport_sync", step_start, view=self._session.browser_view_mode)
         window._update_action_states()
         step_start = log_step("records_view.finalize.action_states", step_start)
         window._update_status()
         step_start = log_step("records_view.finalize.status", step_start)
-        if structural_changed and window._browser_view_mode == "grid":
+        if structural_changed and self._session.browser_view_mode == "grid":
             window.grid.schedule_visible_thumbnail_requests()
-        step_start = log_step("records_view.finalize.thumbnail_schedule", step_start, view=window._browser_view_mode)
+        step_start = log_step("records_view.finalize.thumbnail_schedule", step_start, view=self._session.browser_view_mode)
         if window._pending_folder_scroll_value is not None:
             QTimer.singleShot(0, window._restore_pending_folder_scroll)
         step_start = log_step("records_view.finalize.pending_scroll", step_start, has_pending_scroll=window._pending_folder_scroll_value is not None)
@@ -852,14 +890,14 @@ class RecordsViewController:
         perf_logger().log("records_view.chunk_start", records=len(records), current_path=current_path or "", post_load_enrichment=post_load_enrichment)
         window._records_view_chunk_timer.stop()
         window._records_view_chunk_records = records
-        window._records_view_chunk_next_index = 0
-        window._records_view_chunk_current_path = current_path
+        self._records_view_chunk_next_index = 0
+        self._records_view_chunk_current_path = current_path
         window._records_view_chunk_post_load_enrichment = post_load_enrichment
         window._records = []
         window._record_index_by_path = {}
         window._visible_review_group_rows_by_id = {}
         window._visible_ai_group_rows_by_id = {}
-        window._last_view_record_paths = ()
+        self._last_view_record_paths = ()
         window.grid.set_items([], emit_state_signals=False, request_thumbnails=False)
         window.details_view.set_records([])
         window._set_annotation_views()
@@ -881,7 +919,7 @@ class RecordsViewController:
         records = window._records_view_chunk_records
         if not records:
             return
-        start = window._records_view_chunk_next_index
+        start = self._records_view_chunk_next_index
         batch_size = max(1, window.CHUNKED_RESTORE_LOAD_BATCH_SIZE)
         end = min(len(records), start + batch_size)
         batch = records[start:end]
@@ -898,7 +936,7 @@ class RecordsViewController:
                 window._record_index_by_path[record.path] = index
             window.grid.append_items(list(batch), request_thumbnails=False)
             window.details_view.append_records(list(batch))
-        window._records_view_chunk_next_index = end
+        self._records_view_chunk_next_index = end
         if end < len(records):
             window._update_status()
             window._records_view_chunk_timer.start(0)
@@ -906,12 +944,12 @@ class RecordsViewController:
                 logger.duration("records_view.chunk_batch", (time.perf_counter() - start_time) * 1000.0, start=start, end=end, total=len(records), done=False)
             return
 
-        current_path = window._records_view_chunk_current_path
+        current_path = self._records_view_chunk_current_path
         post_load_enrichment = window._records_view_chunk_post_load_enrichment
         next_record_paths = tuple(record.path for record in records)
         window._records_view_chunk_records = []
-        window._records_view_chunk_next_index = 0
-        window._records_view_chunk_current_path = None
+        self._records_view_chunk_next_index = 0
+        self._records_view_chunk_current_path = None
         window._records_view_chunk_post_load_enrichment = ""
         self.finalize_records_view_display(
             records=records,
@@ -969,14 +1007,14 @@ class RecordsViewController:
 
     def rank_records_for_unified_search(self, records: list[ImageRecord]) -> list[ImageRecord]:
         window = self._window
-        if not window._filter_query.search_text.strip() or not window._unified_search_rank_by_path:
+        if not window._filter_query.search_text.strip() or not self._unified_search_rank_by_path:
             return records
 
         def record_score(record: ImageRecord) -> float | None:
             scores = [
-                window._unified_search_rank_by_path[key]
+                self._unified_search_rank_by_path[key]
                 for key in (_search_match_path_key(path) for path in record.stack_paths)
-                if key in window._unified_search_rank_by_path
+                if key in self._unified_search_rank_by_path
             ]
             return max(scores) if scores else None
 
@@ -1016,7 +1054,7 @@ class RecordsViewController:
         sorted_records = self.rank_records_for_unified_search(sorted_records)
         visible_folder_records = (
             self.sort_records_for_active_context(list(window._folder_records))
-            if window._scope_kind == "folder" and not window._filter_query.has_active_filters
+            if self._session.scope_kind == "folder" and not window._filter_query.has_active_filters
             else []
         )
         needs_ai = window._filter_query.quick_filter in {FilterMode.AI_TOP_PICKS, FilterMode.AI_GROUPED, FilterMode.AI_DISAGREEMENTS}
@@ -1032,7 +1070,7 @@ class RecordsViewController:
         if needs_prefilter:
             window._refresh_prefilter_decisions_for_current_folder()
         if needs_aiculler_ingested:
-            window._refresh_aiculler_ingested_paths_for_current_folder()
+            window._aiculler.refresh_aiculler_ingested_paths_for_current_folder()
         if not window._filter_query.has_active_filters:
             records = [*visible_folder_records, *sorted_records]
         else:
@@ -1040,13 +1078,13 @@ class RecordsViewController:
             needs_dispute = window._filter_query.quick_filter == FilterMode.AI_DISAGREEMENTS
             for record in sorted_records:
                 annotation = window._annotations.get(record.path, SessionAnnotation())
-                ai_result = window._ai_result_for_record(record) if needs_ai else None
+                ai_result = window._ai_run.ai_result_for_record(record) if needs_ai else None
                 review_insight = window._review_insight_for_record(record) if needs_review else None
                 workflow_insight = window._workflow_insight_for_record(record) if needs_workflow else None
                 metadata = window._filter_metadata_by_path.get(record.path, EMPTY_METADATA) if needs_metadata else None
-                is_disputed = window._is_record_disputed(record) if needs_dispute else False
+                is_disputed = window._aiculler.is_record_disputed(record) if needs_dispute else False
                 prefilter_decision = window._prefilter_decision_for_record(record) if needs_prefilter else None
-                ai_ingested = window._record_was_aiculler_ingested(record) if needs_aiculler_ingested else False
+                ai_ingested = window._aiculler.record_was_aiculler_ingested(record) if needs_aiculler_ingested else False
                 if matches_record_query(
                     record,
                     window._filter_query,
@@ -1058,12 +1096,12 @@ class RecordsViewController:
                     is_disputed=is_disputed,
                     prefilter_decision=prefilter_decision,
                     ai_ingested=ai_ingested,
-                    search_match_paths=window._unified_search_path_keys,
-                    person_match_paths=window._person_filter_paths,
+                    search_match_paths=self._unified_search_path_keys,
+                    person_match_paths=self._person_filter_paths,
                 ):
                     records.append(record)
 
-        previous_record_paths = window._last_view_record_paths
+        previous_record_paths = self._last_view_record_paths
         next_record_paths = tuple(record.path for record in records)
         structural_changed = previous_record_paths != next_record_paths
 
@@ -1077,7 +1115,7 @@ class RecordsViewController:
                 ViewInvalidationReason.REVIEW_CHANGED,
             }
         ):
-            window._refresh_ai_summary_cache()
+            window._ai_run.refresh_ai_summary_cache()
         if structural_changed:
             should_chunk = chunked and len(records) >= window.CHUNKED_RESTORE_LOAD_MIN_RECORDS
             if should_chunk:
@@ -1235,7 +1273,7 @@ class RecordsViewController:
             return
         window._filter_query = RecordFilterQuery()
         window._pending_search_text = ""
-        window._person_filter_paths = frozenset()
+        self._person_filter_paths = frozenset()
         self.reset_unified_search_state()
         self.sync_record_filter_controls()
         self.apply_filter_query_change()
@@ -1268,7 +1306,7 @@ class RecordsViewController:
     def sync_record_filter_controls(self) -> None:
         window = self._window
         search_text = window._filter_query.search_text
-        for field in (window.manual_search_field, window.ai_search_field, getattr(window, "topbar_search_field", None)):
+        for field in (window.manual_search_field, window.ai_search_field, getattr(window._toolbar, "topbar_search_field", None)):
             if field is None:
                 continue
             if field.text() != search_text:
@@ -1280,10 +1318,10 @@ class RecordsViewController:
             with QSignalBlocker(window.filter_combo):
                 window.filter_combo.setCurrentIndex(combo_index)
 
-        for mode, action in window._file_type_actions.items():
+        for mode, action in self._file_type_actions.items():
             with QSignalBlocker(action):
                 action.setChecked(window._filter_query.file_type == mode)
-        for mode, action in window._review_state_actions.items():
+        for mode, action in self._review_state_actions.items():
             with QSignalBlocker(action):
                 action.setChecked(window._filter_query.review_state == mode)
         for mode, action in window._ai_state_actions.items():
@@ -1299,9 +1337,9 @@ class RecordsViewController:
 
     def clear_search_from_workspace_menu(self) -> None:
         window = self._window
-        window._handle_search_text_changed("", source="context_menu")
+        window._records_view.handle_search_text_changed("", source="context_menu")
         window._search_apply_timer.stop()
-        window._commit_search_text_filter()
+        window._records_view.commit_search_text_filter()
         window.statusBar().showMessage("Cleared search")
 
     def annotation_change_affects_active_filter(self) -> bool:
@@ -1327,43 +1365,43 @@ class RecordsViewController:
         window = self._window
         if not window._all_records:
             return
-        if window._filter_metadata_record_paths:
+        if self._filter_metadata_record_paths:
             return
         self.reset_filter_metadata_index(window._all_records)
 
     def reset_filter_metadata_index(self, records: list[ImageRecord]) -> None:
         window = self._window
         window._filter_metadata_by_path = {}
-        window._filter_metadata_loaded_paths = set()
-        window._filter_metadata_requested_paths = set()
-        window._filter_metadata_queue = deque()
-        window._filter_metadata_queue_keys = set()
-        window._metadata_membership_dirty_paths = set()
-        window._metadata_scroll_last_value = window.grid.verticalScrollBar().value()
-        window._metadata_scroll_direction = 1
+        self._filter_metadata_loaded_paths = set()
+        self._filter_metadata_requested_paths = set()
+        self._filter_metadata_queue = deque()
+        self._filter_metadata_queue_keys = set()
+        self._metadata_membership_dirty_paths = set()
+        self._metadata_scroll_last_value = window.grid.verticalScrollBar().value()
+        self._metadata_scroll_direction = 1
         window._metadata_scroll_prefetch_timer.stop()
         window._metadata_request_timer.stop()
-        window._filter_metadata_record_paths = {record.path for record in records}
+        self._filter_metadata_record_paths = {record.path for record in records}
         if len(records) <= window.FILTER_METADATA_EAGER_CACHE_MAX_RECORDS:
             for record in records:
                 cached = window._filter_metadata_manager.get_cached(record)
                 if cached is not None:
                     window._filter_metadata_by_path[record.path] = cached
-                    window._filter_metadata_loaded_paths.add(record.path)
+                    self._filter_metadata_loaded_paths.add(record.path)
         if records:
             self.enqueue_filter_metadata_paths(self.metadata_prefetch_seed_paths(), front=True)
 
     def handle_filter_metadata_ready(self, key, metadata) -> None:
         window = self._window
         record = window._all_records_by_path.get(key.path)
-        if record is None or record.path not in window._filter_metadata_record_paths:
+        if record is None or record.path not in self._filter_metadata_record_paths:
             return
-        window._filter_metadata_requested_paths.discard(record.path)
+        self._filter_metadata_requested_paths.discard(record.path)
         window._filter_metadata_by_path[record.path] = metadata
-        window._filter_metadata_loaded_paths.add(record.path)
+        self._filter_metadata_loaded_paths.add(record.path)
         if window._filter_query.requires_metadata:
             if self.metadata_changes_filter_membership(record, metadata):
-                window._metadata_membership_dirty_paths.add(record.path)
+                self._metadata_membership_dirty_paths.add(record.path)
                 window._metadata_reapply_timer.start()
             else:
                 self.update_filter_summary()
@@ -1372,16 +1410,16 @@ class RecordsViewController:
         current_record = window._record_at(window.grid.current_index())
         if current_record is not None and current_record.path == record.path:
             window._update_inspector_context()
-        if window._filter_metadata_queue and not window._metadata_request_timer.isActive():
+        if self._filter_metadata_queue and not window._metadata_request_timer.isActive():
             window._metadata_request_timer.start()
 
     def handle_metadata_filter_batch_update(self) -> None:
         window = self._window
         current_path = self.current_visible_record_path()
         if window._filter_query.requires_metadata:
-            if not window._metadata_membership_dirty_paths:
+            if not self._metadata_membership_dirty_paths:
                 return
-            window._metadata_membership_dirty_paths.clear()
+            self._metadata_membership_dirty_paths.clear()
             self.apply_records_view(current_path=current_path)
             return
         if window._burst_groups_enabled or window._burst_stacks_enabled:
@@ -1405,7 +1443,7 @@ class RecordsViewController:
             return ordered
         min_visible = min(visible_indexes)
         max_visible = max(visible_indexes)
-        direction = 1 if window._metadata_scroll_direction >= 0 else -1
+        direction = 1 if self._metadata_scroll_direction >= 0 else -1
         if direction >= 0:
             start = max_visible + 1
             end = min(len(window._records), start + max(0, lookahead))
@@ -1438,26 +1476,26 @@ class RecordsViewController:
         for path in paths:
             if not path:
                 continue
-            if path not in window._filter_metadata_record_paths:
+            if path not in self._filter_metadata_record_paths:
                 continue
-            if path in window._filter_metadata_loaded_paths or path in window._filter_metadata_requested_paths:
+            if path in self._filter_metadata_loaded_paths or path in self._filter_metadata_requested_paths:
                 continue
             key = self.metadata_queue_key(path)
-            if key in window._filter_metadata_queue_keys:
+            if key in self._filter_metadata_queue_keys:
                 continue
-            window._filter_metadata_queue_keys.add(key)
+            self._filter_metadata_queue_keys.add(key)
             additions.append(path)
         if not additions:
             return
         if front:
             for path in reversed(additions):
-                window._filter_metadata_queue.appendleft(path)
+                self._filter_metadata_queue.appendleft(path)
         else:
-            window._filter_metadata_queue.extend(additions)
-        if len(window._filter_metadata_queue) > window._filter_metadata_queue_limit:
-            while len(window._filter_metadata_queue) > window._filter_metadata_queue_limit:
-                removed = window._filter_metadata_queue.pop()
-                window._filter_metadata_queue_keys.discard(self.metadata_queue_key(removed))
+            self._filter_metadata_queue.extend(additions)
+        if len(self._filter_metadata_queue) > self._filter_metadata_queue_limit:
+            while len(self._filter_metadata_queue) > self._filter_metadata_queue_limit:
+                removed = self._filter_metadata_queue.pop()
+                self._filter_metadata_queue_keys.discard(self.metadata_queue_key(removed))
         if not window._metadata_request_timer.isActive():
             window._metadata_request_timer.start()
 
@@ -1465,9 +1503,9 @@ class RecordsViewController:
         window = self._window
         if not window._records:
             return
-        if value != window._metadata_scroll_last_value:
-            window._metadata_scroll_direction = 1 if value > window._metadata_scroll_last_value else -1
-            window._metadata_scroll_last_value = value
+        if value != self._metadata_scroll_last_value:
+            self._metadata_scroll_direction = 1 if value > self._metadata_scroll_last_value else -1
+            self._metadata_scroll_last_value = value
         window._metadata_scroll_prefetch_timer.start()
 
     def run_metadata_scroll_prefetch(self) -> None:
@@ -1490,10 +1528,10 @@ class RecordsViewController:
             window._filter_query.quick_filter == FilterMode.AI_DISAGREEMENTS
             or window._filter_query.ai_state == AIStateFilter.DISAGREEMENTS
         )
-        ai_result = window._ai_result_for_record(record) if needs_ai else None
+        ai_result = window._ai_run.ai_result_for_record(record) if needs_ai else None
         review_insight = window._review_insight_for_record(record) if needs_review else None
         workflow_insight = window._workflow_insight_for_record(record) if needs_workflow else None
-        is_disputed = window._is_record_disputed(record)
+        is_disputed = window._aiculler.is_record_disputed(record)
         old_match = matches_record_query(
             record,
             window._filter_query,
@@ -1503,8 +1541,8 @@ class RecordsViewController:
             review_insight=review_insight,
             workflow_insight=workflow_insight,
             is_disputed=is_disputed,
-            search_match_paths=window._unified_search_path_keys,
-            person_match_paths=window._person_filter_paths,
+            search_match_paths=self._unified_search_path_keys,
+            person_match_paths=self._person_filter_paths,
         )
         new_match = matches_record_query(
             record,
@@ -1515,30 +1553,30 @@ class RecordsViewController:
             review_insight=review_insight,
             workflow_insight=workflow_insight,
             is_disputed=is_disputed,
-            search_match_paths=window._unified_search_path_keys,
-            person_match_paths=window._person_filter_paths,
+            search_match_paths=self._unified_search_path_keys,
+            person_match_paths=self._person_filter_paths,
         )
         return old_match != new_match
 
     def drain_filter_metadata_requests(self) -> None:
         window = self._window
-        if not window._filter_metadata_queue:
+        if not self._filter_metadata_queue:
             window._metadata_request_timer.stop()
             return
         requested = 0
-        while window._filter_metadata_queue and requested < 20:
-            path = window._filter_metadata_queue.popleft()
-            window._filter_metadata_queue_keys.discard(self.metadata_queue_key(path))
-            if path in window._filter_metadata_loaded_paths or path in window._filter_metadata_requested_paths:
+        while self._filter_metadata_queue and requested < 20:
+            path = self._filter_metadata_queue.popleft()
+            self._filter_metadata_queue_keys.discard(self.metadata_queue_key(path))
+            if path in self._filter_metadata_loaded_paths or path in self._filter_metadata_requested_paths:
                 continue
             record = window._all_records_by_path.get(path)
             if record is None:
                 continue
-            window._filter_metadata_requested_paths.add(path)
+            self._filter_metadata_requested_paths.add(path)
             priority = max(1, 12_000 - requested * 200)
             window._filter_metadata_manager.request_metadata(record, priority=priority)
             requested += 1
-        if not window._filter_metadata_queue:
+        if not self._filter_metadata_queue:
             window._metadata_request_timer.stop()
 
     def rekey_filter_metadata_after_moves(self, records_by_old_path: dict[str, ImageRecord]) -> None:
@@ -1551,12 +1589,12 @@ class RecordsViewController:
             metadata = window._filter_metadata_by_path.pop(old_path, None)
             if metadata is not None:
                 updated_metadata[renamed_record.path] = replace(metadata, path=renamed_record.path)
-            if old_path in window._filter_metadata_loaded_paths:
-                window._filter_metadata_loaded_paths.discard(old_path)
-                window._filter_metadata_loaded_paths.add(renamed_record.path)
-            if old_path in window._filter_metadata_record_paths:
-                window._filter_metadata_record_paths.discard(old_path)
-                window._filter_metadata_record_paths.add(renamed_record.path)
+            if old_path in self._filter_metadata_loaded_paths:
+                self._filter_metadata_loaded_paths.discard(old_path)
+                self._filter_metadata_loaded_paths.add(renamed_record.path)
+            if old_path in self._filter_metadata_record_paths:
+                self._filter_metadata_record_paths.discard(old_path)
+                self._filter_metadata_record_paths.add(renamed_record.path)
 
         window._filter_metadata_by_path.update(updated_metadata)
 
@@ -1582,7 +1620,7 @@ class RecordsViewController:
             action.setCheckable(True)
             action.triggered.connect(lambda _checked=False, selected=mode: self.set_file_type_filter(selected))
             file_type_group.addAction(action)
-            window._file_type_actions[mode] = action
+            self._file_type_actions[mode] = action
 
         review_group = QActionGroup(window)
         review_group.setExclusive(True)
@@ -1591,7 +1629,7 @@ class RecordsViewController:
             action.setCheckable(True)
             action.triggered.connect(lambda _checked=False, selected=mode: self.set_review_state_filter(selected))
             review_group.addAction(action)
-            window._review_state_actions[mode] = action
+            self._review_state_actions[mode] = action
 
         ai_group = QActionGroup(window)
         ai_group.setExclusive(True)
@@ -1638,11 +1676,11 @@ class RecordsViewController:
         window.filter_toolbar_menu.clear()
         file_type_menu = window.filter_toolbar_menu.addMenu("File Type")
         for mode in FileTypeFilter:
-            file_type_menu.addAction(window._file_type_actions[mode])
+            file_type_menu.addAction(self._file_type_actions[mode])
 
         review_menu = window.filter_toolbar_menu.addMenu("Review State")
         for mode in ReviewStateFilter:
-            review_menu.addAction(window._review_state_actions[mode])
+            review_menu.addAction(self._review_state_actions[mode])
 
         ai_menu = window.filter_toolbar_menu.addMenu("AI State")
         for mode in AIStateFilter:
@@ -1775,9 +1813,9 @@ class RecordsViewController:
         labels = active_filter_labels(window._filter_query)
         preset_label = self.matching_filter_preset_label(window._filter_query)
         metadata_progress = ""
-        if window._filter_query.requires_metadata and window._filter_metadata_record_paths:
-            loaded = len(window._filter_metadata_loaded_paths)
-            total = len(window._filter_metadata_record_paths)
+        if window._filter_query.requires_metadata and self._filter_metadata_record_paths:
+            loaded = len(self._filter_metadata_loaded_paths)
+            total = len(self._filter_metadata_record_paths)
             if loaded < total:
                 metadata_progress = f"Metadata {loaded}/{total}"
         if labels:
@@ -1813,7 +1851,7 @@ class RecordsViewController:
             summary_text = f"{summary_text} | {burst_summary}"
             visible_total = len(window._records)
             if visible_total and window._review_intelligence is None:
-                visible_loaded = sum(1 for record in window._records if record.path in window._filter_metadata_loaded_paths)
+                visible_loaded = sum(1 for record in window._records if record.path in self._filter_metadata_loaded_paths)
                 if visible_loaded < visible_total:
                     tooltip_lines.append(f"Burst detection metadata: {visible_loaded}/{visible_total}")
         tooltip_text = "\n".join(tooltip_lines)
@@ -1861,74 +1899,74 @@ class RecordsViewController:
         window = self._window
         query = window._filter_query
         return (
-            normalized_path_key(window._current_folder) if window._current_folder else "",
+            normalized_path_key(self._session.folder) if self._session.folder else "",
             query.search_text.strip(),
             round(float(query.min_search_confidence or 0.0), 4),
         )
 
     def reset_unified_search_state(self) -> None:
         window = self._window
-        window._unified_search_token += 1
-        if window._active_unified_search_task is not None:
-            window._active_unified_search_task.cancel()
-            window._active_unified_search_task = None
-        window._unified_search_signature = ()
-        window._unified_search_completed_signature = ()
-        window._unified_search_path_keys = frozenset()
-        window._unified_search_rank_by_path = {}
+        self._unified_search_token += 1
+        if self._active_unified_search_task is not None:
+            self._active_unified_search_task.cancel()
+            self._active_unified_search_task = None
+        self._unified_search_signature = ()
+        self._unified_search_completed_signature = ()
+        self._unified_search_path_keys = frozenset()
+        self._unified_search_rank_by_path = {}
 
     def reset_semantic_index_state(self) -> None:
         window = self._window
-        window._semantic_index_token += 1
+        self._semantic_index_token += 1
         if window._active_semantic_index_task is not None:
             window._active_semantic_index_task.cancel()
             window._active_semantic_index_task = None
-        window._semantic_index_scope_key = ""
-        window._semantic_index_signature = ()
-        window._semantic_index_completed = 0
-        window._semantic_index_total = 0
+        self._semantic_index_scope_key = ""
+        self._semantic_index_signature = ()
+        self._semantic_index_completed = 0
+        self._semantic_index_total = 0
         window._semantic_index_active = False
         self.reset_face_index_state()
 
     def reset_face_index_state(self) -> None:
         window = self._window
-        window._face_index_token += 1
+        self._face_index_token += 1
         if window._active_face_index_task is not None:
             window._active_face_index_task.cancel()
             window._active_face_index_task = None
-        window._face_index_scope_key = ""
-        window._face_index_signature = ()
+        self._face_index_scope_key = ""
+        self._face_index_signature = ()
         window._face_index_active = False
-        window._face_index_people_count = 0
+        self._face_index_people_count = 0
 
     def schedule_unified_search_for_current_filter(self) -> str:
         window = self._window
         signature = self.unified_search_current_signature()
-        if signature != window._unified_search_signature:
-            window._unified_search_signature = signature
-            window._unified_search_completed_signature = ()
-            window._unified_search_path_keys = frozenset()
-            window._unified_search_rank_by_path = {}
-            if window._active_unified_search_task is not None:
-                window._active_unified_search_task.cancel()
-                window._active_unified_search_task = None
+        if signature != self._unified_search_signature:
+            self._unified_search_signature = signature
+            self._unified_search_completed_signature = ()
+            self._unified_search_path_keys = frozenset()
+            self._unified_search_rank_by_path = {}
+            if self._active_unified_search_task is not None:
+                self._active_unified_search_task.cancel()
+                self._active_unified_search_task = None
 
         query_text = window._filter_query.search_text.strip()
         if not query_text:
             return ""
-        if window._scope_kind != "folder" or not window._current_folder:
+        if self._session.scope_kind != "folder" or not self._session.folder:
             return "Object and people search requires an opened folder."
-        if window._active_unified_search_task is not None or window._unified_search_completed_signature == signature:
+        if self._active_unified_search_task is not None or self._unified_search_completed_signature == signature:
             return ""
         # Hold the search until background indexing for this folder finishes, so
         # results arrive as one complete set instead of trickling in as each
         # batch of embeddings lands. The search is re-triggered on completion.
         if (
             window._semantic_index_active
-            and normalized_path_key(window._current_folder) == window._semantic_index_scope_key
+            and normalized_path_key(self._session.folder) == self._semantic_index_scope_key
         ):
             return self.semantic_index_status_text()
-        paths = window._aiculler_paths_for_current_folder()
+        paths = window._aiculler.aiculler_paths_for_current_folder()
         if paths is None:
             return "Indexed search is unavailable for this folder."
         db_path = aiculler_db_path(paths)
@@ -1942,10 +1980,10 @@ class RecordsViewController:
         except Exception as exc:
             return f"Indexed search unavailable: {exc}"
 
-        window._unified_search_token += 1
-        token = window._unified_search_token
+        self._unified_search_token += 1
+        token = self._unified_search_token
         task = UnifiedSearchTask(
-            folder=window._current_folder,
+            folder=self._session.folder,
             token=token,
             db_path=db_path,
             runtime=runtime,
@@ -1954,15 +1992,15 @@ class RecordsViewController:
         )
         task.signals.finished.connect(window._handle_unified_search_finished, Qt.ConnectionType.QueuedConnection)
         task.signals.failed.connect(window._handle_unified_search_failed, Qt.ConnectionType.QueuedConnection)
-        window._active_unified_search_task = task
+        self._active_unified_search_task = task
         window._unified_search_pool.start(task)
         return f'Searching indexed photos for "{query_text}"...'
 
     def handle_unified_search_finished(self, folder: str, token: int, result: object) -> None:
         window = self._window
-        if token != window._unified_search_token or normalized_path_key(folder) != normalized_path_key(window._current_folder):
+        if token != self._unified_search_token or normalized_path_key(folder) != normalized_path_key(self._session.folder):
             return
-        window._active_unified_search_task = None
+        self._active_unified_search_task = None
         if not isinstance(result, dict):
             return
         query_text = str(result.get("query", ""))
@@ -1970,9 +2008,9 @@ class RecordsViewController:
             return
         path_keys = frozenset(str(path) for path in result.get("path_keys", ()) if str(path))
         rank_by_path = result.get("rank_by_path", {})
-        window._unified_search_completed_signature = self.unified_search_current_signature()
-        window._unified_search_path_keys = path_keys
-        window._unified_search_rank_by_path = (
+        self._unified_search_completed_signature = self.unified_search_current_signature()
+        self._unified_search_path_keys = path_keys
+        self._unified_search_rank_by_path = (
             {str(path): float(score) for path, score in rank_by_path.items()}
             if isinstance(rank_by_path, dict)
             else {}
@@ -1991,21 +2029,21 @@ class RecordsViewController:
 
     def handle_unified_search_failed(self, folder: str, token: int, message: str) -> None:
         window = self._window
-        if token != window._unified_search_token or normalized_path_key(folder) != normalized_path_key(window._current_folder):
+        if token != self._unified_search_token or normalized_path_key(folder) != normalized_path_key(self._session.folder):
             return
-        window._active_unified_search_task = None
-        window._unified_search_completed_signature = self.unified_search_current_signature()
-        window._unified_search_path_keys = frozenset()
-        window._unified_search_rank_by_path = {}
+        self._active_unified_search_task = None
+        self._unified_search_completed_signature = self.unified_search_current_signature()
+        self._unified_search_path_keys = frozenset()
+        self._unified_search_rank_by_path = {}
         if window._filter_query.search_text.strip():
             window.statusBar().showMessage(f"Indexed search unavailable: {message}")
 
     def semantic_index_status_text(self) -> str:
         window = self._window
-        total = window._semantic_index_total
+        total = self._semantic_index_total
         if total <= 0:
             return "Preparing semantic search..."
-        completed = min(window._semantic_index_completed, total)
+        completed = min(self._semantic_index_completed, total)
         return f"Preparing semantic search: {completed:,} / {total:,}"
 
     def maybe_start_semantic_index(self, records: list[ImageRecord]) -> None:
@@ -2018,7 +2056,7 @@ class RecordsViewController:
         quiet and leave filename search as the fallback.
         """
         window = self._window
-        if window._scope_kind != "folder" or not window._current_folder:
+        if self._session.scope_kind != "folder" or not self._session.folder:
             return
         if not records:
             return
@@ -2027,9 +2065,9 @@ class RecordsViewController:
         window._background_index_records = list(records)
         if window._background_indexing_suspended:
             return  # editor owns the GPU; resume kicks this off again on close
-        if not (window._ai_runtime_available() and window._aiculler_clip_model_available()):
+        if not (window._ai_setup.ai_runtime_available() and window._ai_setup.aiculler_clip_model_available()):
             return
-        paths = window._aiculler_paths_for_current_folder()
+        paths = window._aiculler.aiculler_paths_for_current_folder()
         if paths is None:
             return
         try:
@@ -2049,27 +2087,27 @@ class RecordsViewController:
         except Exception:
             return
 
-        scope_key = normalized_path_key(window._current_folder)
+        scope_key = normalized_path_key(self._session.folder)
         signature = (scope_key, model_identity, len(records))
         if (
             window._active_semantic_index_task is not None
-            and window._semantic_index_scope_key == scope_key
-            and window._semantic_index_signature == signature
+            and self._semantic_index_scope_key == scope_key
+            and self._semantic_index_signature == signature
         ):
             return
         if window._active_semantic_index_task is not None:
             window._active_semantic_index_task.cancel()
             window._active_semantic_index_task = None
 
-        window._semantic_index_token += 1
-        token = window._semantic_index_token
-        window._semantic_index_scope_key = scope_key
-        window._semantic_index_signature = signature
-        window._semantic_index_completed = 0
-        window._semantic_index_total = 0
+        self._semantic_index_token += 1
+        token = self._semantic_index_token
+        self._semantic_index_scope_key = scope_key
+        self._semantic_index_signature = signature
+        self._semantic_index_completed = 0
+        self._semantic_index_total = 0
         window._semantic_index_active = True
         task = SemanticFolderIndexTask(
-            folder=window._current_folder,
+            folder=self._session.folder,
             token=token,
             records=tuple(records),
             db_path=aiculler_db_path(paths),
@@ -2088,16 +2126,16 @@ class RecordsViewController:
     def semantic_index_event_is_current(self, folder: str, token: int) -> bool:
         window = self._window
         return (
-            token == window._semantic_index_token
-            and normalized_path_key(folder) == normalized_path_key(window._current_folder)
+            token == self._semantic_index_token
+            and normalized_path_key(folder) == normalized_path_key(self._session.folder)
         )
 
     def handle_semantic_index_progress(self, folder: str, token: int, completed: int, total: int) -> None:
         window = self._window
         if not self.semantic_index_event_is_current(folder, token):
             return
-        window._semantic_index_completed = int(completed)
-        window._semantic_index_total = int(total)
+        self._semantic_index_completed = int(completed)
+        self._semantic_index_total = int(total)
         # Restrained: only surface progress while the user is waiting on a query.
         if window._filter_query.search_text.strip():
             window.statusBar().showMessage(self.semantic_index_status_text())
@@ -2106,7 +2144,7 @@ class RecordsViewController:
         window = self._window
         if not self.semantic_index_event_is_current(folder, token):
             write_execution_log(
-                f"face-index: semantic finished but STALE (token {token} != {window._semantic_index_token}); "
+                f"face-index: semantic finished but STALE (token {token} != {self._semantic_index_token}); "
                 f"not chaining face pass"
             )
             return
@@ -2141,12 +2179,12 @@ class RecordsViewController:
         window = self._window
         if not window._filter_query.search_text.strip():
             return
-        if window._scope_kind != "folder" or not window._current_folder:
+        if self._session.scope_kind != "folder" or not self._session.folder:
             return
-        window._unified_search_completed_signature = ()
-        if window._active_unified_search_task is not None:
-            window._active_unified_search_task.cancel()
-            window._active_unified_search_task = None
+        self._unified_search_completed_signature = ()
+        if self._active_unified_search_task is not None:
+            self._active_unified_search_task.cancel()
+            self._active_unified_search_task = None
         notice = self.schedule_unified_search_for_current_filter()
         if notice:
             window.statusBar().showMessage(notice)
@@ -2161,19 +2199,19 @@ class RecordsViewController:
         does not populate until the face model is installed).
         """
         window = self._window
-        if window._scope_kind != "folder" or not window._current_folder:
+        if self._session.scope_kind != "folder" or not self._session.folder:
             write_execution_log("face-index: skip (not a folder scope)")
             return
         if window._background_indexing_suspended:
             write_execution_log("face-index: skip (background indexing suspended — editor open)")
             return  # editor owns the GPU; resume kicks this off again on close
-        if not (window._ai_runtime_available() and window._aiculler_face_model_available()):
+        if not (window._ai_setup.ai_runtime_available() and window._ai_setup.aiculler_face_model_available()):
             write_execution_log(
-                f"face-index: skip (runtime_available={window._ai_runtime_available()}, "
-                f"face_model_available={window._aiculler_face_model_available()})"
+                f"face-index: skip (runtime_available={window._ai_setup.ai_runtime_available()}, "
+                f"face_model_available={window._ai_setup.aiculler_face_model_available()})"
             )
             return
-        paths = window._aiculler_paths_for_current_folder()
+        paths = window._aiculler.aiculler_paths_for_current_folder()
         if paths is None:
             write_execution_log("face-index: skip (no aiculler paths)")
             return
@@ -2194,27 +2232,27 @@ class RecordsViewController:
             )
             return
 
-        scope_key = normalized_path_key(window._current_folder)
+        scope_key = normalized_path_key(self._session.folder)
         signature = (scope_key, str(text_model))
         if (
             window._active_face_index_task is not None
-            and window._face_index_scope_key == scope_key
-            and window._face_index_signature == signature
+            and self._face_index_scope_key == scope_key
+            and self._face_index_signature == signature
         ):
             write_execution_log("face-index: skip (already running for this folder)")
             return
         if window._active_face_index_task is not None:
             window._active_face_index_task.cancel()
             window._active_face_index_task = None
-        write_execution_log(f"face-index: STARTING pass for {window._current_folder} (device={getattr(runtime,'device','?')})")
+        write_execution_log(f"face-index: STARTING pass for {self._session.folder} (device={getattr(runtime,'device','?')})")
 
-        window._face_index_token += 1
-        token = window._face_index_token
-        window._face_index_scope_key = scope_key
-        window._face_index_signature = signature
+        self._face_index_token += 1
+        token = self._face_index_token
+        self._face_index_scope_key = scope_key
+        self._face_index_signature = signature
         window._face_index_active = True
         task = FaceFolderIndexTask(
-            folder=window._current_folder,
+            folder=self._session.folder,
             token=token,
             db_path=db_path,
             clip_text_model=text_model,
@@ -2273,8 +2311,8 @@ class RecordsViewController:
     def face_index_event_is_current(self, folder: str, token: int) -> bool:
         window = self._window
         return (
-            token == window._face_index_token
-            and normalized_path_key(folder) == normalized_path_key(window._current_folder)
+            token == self._face_index_token
+            and normalized_path_key(folder) == normalized_path_key(self._session.folder)
         )
 
     def handle_face_index_progress(self, folder: str, token: int, completed: int, total: int) -> None:
@@ -2283,8 +2321,8 @@ class RecordsViewController:
             return
         # Restrained: no chrome yet (People panel lands in Phase 3). Keep it quiet
         # unless diagnostics want it; progress is tracked for that panel to read.
-        window._face_index_completed = int(completed)
-        window._face_index_total = int(total)
+        self._face_index_completed = int(completed)
+        self._face_index_total = int(total)
 
     def handle_face_index_finished(self, folder: str, token: int, faces_indexed: int, people_count: int) -> None:
         window = self._window
@@ -2293,7 +2331,7 @@ class RecordsViewController:
             return
         window._active_face_index_task = None
         window._face_index_active = False
-        window._face_index_people_count = int(people_count)
+        self._face_index_people_count = int(people_count)
 
     def handle_face_index_failed(self, folder: str, token: int, message: str) -> None:
         window = self._window
@@ -2306,7 +2344,7 @@ class RecordsViewController:
 
     def open_people_search_dialog(self) -> None:
         window = self._window
-        paths = window._aiculler_paths_for_current_folder()
+        paths = window._aiculler.aiculler_paths_for_current_folder()
         if paths is None:
             window.statusBar().showMessage("Choose a folder before managing people.")
             return
@@ -2326,9 +2364,9 @@ class RecordsViewController:
         frame.moveCenter(window.frameGeometry().center())
         dialog.move(frame.topLeft())
         if dialog.exec() == dialog.DialogCode.Accepted:
-            window._unified_search_completed_signature = ()
-            window._unified_search_path_keys = frozenset()
-            window._unified_search_rank_by_path = {}
+            self._unified_search_completed_signature = ()
+            self._unified_search_path_keys = frozenset()
+            self._unified_search_rank_by_path = {}
             self.schedule_unified_search_for_current_filter()
             window._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
             self.apply_records_view(current_path=self.current_visible_record_path())
@@ -2353,7 +2391,7 @@ class RecordsViewController:
         keys = frozenset(
             key for key in (_search_match_path_key(path) for path in paths) if key
         )
-        window._person_filter_paths = keys
+        self._person_filter_paths = keys
         window._filter_query.person_label = label
         self.apply_filter_query_change()
         if not keys:
