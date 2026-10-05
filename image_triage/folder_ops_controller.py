@@ -104,8 +104,8 @@ class FolderOpsController:
             seen_favorites.add(key)
             favorites.append(mapped)
         window._favorites = favorites
-        window._save_favorites()
-        window._refresh_favorites_panel()
+        window._settings_ctl.save_favorites()
+        window._navigation.refresh_favorites_panel()
 
         recent_destinations: list[str] = []
         seen_destinations: set[str] = set()
@@ -119,7 +119,7 @@ class FolderOpsController:
             seen_destinations.add(key)
             recent_destinations.append(mapped)
         window._recent_destinations = recent_destinations[:10]
-        window._save_recent_destinations()
+        window._settings_ctl.save_recent_destinations()
 
         recent_folders: list[str] = []
         seen_recent_folders: set[str] = set()
@@ -133,8 +133,8 @@ class FolderOpsController:
             seen_recent_folders.add(key)
             recent_folders.append(mapped)
         window._recent_folders = recent_folders[:12]
-        window._save_recent_folders()
-        window._refresh_recent_folder_combos()
+        window._settings_ctl.save_recent_folders()
+        window._navigation.refresh_recent_folder_combos()
 
         if self._session.folder and self.folder_is_same_or_descendant(self._session.folder, source_root):
             return self.remap_folder_path(self._session.folder, source_root, destination_root)
@@ -158,10 +158,10 @@ class FolderOpsController:
         except (OSError, ValueError) as exc:
             QMessageBox.warning(window, "Create Folder Failed", f"Could not create folder.\n\n{exc}")
             return None
-        window._remember_recent_destination(created)
-        window._refresh_folder_tree()
+        window._navigation.remember_recent_destination(created)
+        window._navigation.refresh_folder_tree()
         if select_created:
-            window._select_folder(created)
+            window._navigation.select_folder(created)
         window.statusBar().showMessage(f"Created folder: {Path(created).name}")
         return created
 
@@ -185,8 +185,8 @@ class FolderOpsController:
             QMessageBox.warning(window, "Rename Failed", f"Could not rename folder.\n\n{exc}")
             return
         target_folder = self.remap_folder_references(folder, destination)
-        window._refresh_folder_tree()
-        window._select_folder(destination if window._dir_confirmed_missing(target_folder) else target_folder)
+        window._navigation.refresh_folder_tree()
+        window._navigation.select_folder(destination if window._dir_confirmed_missing(target_folder) else target_folder)
         window.statusBar().showMessage(f"Renamed folder to {new_name}")
 
     def move_folder_prompt(self, folder: str) -> None:
@@ -204,9 +204,9 @@ class FolderOpsController:
             QMessageBox.warning(window, "Move Folder Failed", f"Could not move folder.\n\n{exc}")
             return
         target_folder = self.remap_folder_references(folder, destination)
-        window._remember_recent_destination(str(Path(destination).parent))
-        window._refresh_folder_tree()
-        window._select_folder(destination if window._dir_confirmed_missing(target_folder) else target_folder)
+        window._navigation.remember_recent_destination(str(Path(destination).parent))
+        window._navigation.refresh_folder_tree()
+        window._navigation.select_folder(destination if window._dir_confirmed_missing(target_folder) else target_folder)
         window.statusBar().showMessage(f"Moved folder to {destination}")
 
     def delete_folder_prompt(self, folder: str) -> None:
@@ -246,32 +246,32 @@ class FolderOpsController:
             for path in window._favorites
             if not (_path_key(path) == deleted_key or _path_key(path).startswith(deleted_key + os.sep))
         ]
-        window._save_favorites()
-        window._refresh_favorites_panel()
+        window._settings_ctl.save_favorites()
+        window._navigation.refresh_favorites_panel()
         window._recent_destinations = [
             path
             for path in window._recent_destinations
             if not (_path_key(path) == deleted_key or _path_key(path).startswith(deleted_key + os.sep))
         ]
-        window._save_recent_destinations()
+        window._settings_ctl.save_recent_destinations()
         window._recent_folders = [
             path
             for path in window._recent_folders
             if not (_path_key(path) == deleted_key or _path_key(path).startswith(deleted_key + os.sep))
         ]
-        window._save_recent_folders()
-        window._refresh_recent_folder_combos()
+        window._settings_ctl.save_recent_folders()
+        window._navigation.refresh_recent_folder_combos()
 
         replacement_folder = str(Path(folder).parent)
-        window._refresh_folder_tree()
+        window._navigation.refresh_folder_tree()
         if self._session.folder and (
             _path_key(self._session.folder) == deleted_key
             or _path_key(self._session.folder).startswith(deleted_key + os.sep)
         ):
             if not window._dir_confirmed_missing(replacement_folder):
-                window._select_folder(replacement_folder)
+                window._navigation.select_folder(replacement_folder)
             else:
                 self._session.folder = ""
-                window._set_scope_state(kind="folder", scope_id="", label="")
+                window._projects.set_scope_state(kind="folder", scope_id="", label="")
                 window._records_view.apply_loaded_records([])
         window.statusBar().showMessage(f"Deleted folder: {Path(folder).name}")

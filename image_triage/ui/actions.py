@@ -184,23 +184,23 @@ def _file_actions(window: "MainWindow") -> dict[str, QAction]:
         open_folder=_create_action(
             window,
             "Open Folder...",
-            slot=window._choose_folder,
+            slot=window._navigation.choose_folder,
             icon=QStyle.StandardPixmap.SP_DialogOpenButton,
             shortcut=QKeySequence.StandardKey.Open,
         ),
         refresh_folder=_create_action(
             window,
             "Refresh Folder",
-            slot=window._refresh_folder,
+            slot=window._scan.refresh_folder,
             icon=QStyle.StandardPixmap.SP_BrowserReload,
             shortcut=QKeySequence.StandardKey.Refresh,
         ),
-        empty_recycle_bin=_create_action(window, "Empty Recycle Bin", slot=window._empty_recycle_bin),
+        empty_recycle_bin=_create_action(window, "Empty Recycle Bin", slot=window._recycle_bin.empty_recycle_bin),
         new_folder=_create_action(window, "New Folder...", slot=window._create_folder_in_current_folder, shortcut="Ctrl+Shift+N"),
         workflow_settings=_create_action(
             window,
             "Settings...",
-            slot=window._show_settings,
+            slot=window._settings_ctl.show_settings,
             shortcut="Ctrl+,",
         ),
         file_associations=_create_action(
@@ -208,7 +208,7 @@ def _file_actions(window: "MainWindow") -> dict[str, QAction]:
             "File Associations...",
             slot=window._open_file_associations_dialog,
         ),
-        reset_layout=_create_action(window, "Reset Window Layout", slot=window._reset_window_layout),
+        reset_layout=_create_action(window, "Reset Window Layout", slot=window._settings_ctl.reset_window_layout),
         exit_app=_create_action(window, "Exit", slot=window.close),
     )
 
@@ -219,7 +219,7 @@ def _edit_and_batch_actions(window: "MainWindow") -> dict[str, QAction]:
         undo=_create_action(
             window,
             "Undo",
-            slot=window._undo_last_action,
+            slot=window._record_ops.undo_last_action,
             shortcut=QKeySequence.StandardKey.Undo,
         ),
         rename_selection=_create_action(window, "Rename Image...", slot=window._rename_selected_record, shortcut="F2"),
@@ -241,7 +241,7 @@ def _edit_and_batch_actions(window: "MainWindow") -> dict[str, QAction]:
             slot=window._tool_mode.start_batch_convert_tool_mode,
             shortcut="Ctrl+Shift+C",
         ),
-        extract_archive=_create_action(window, "Extract Archive...", slot=window._extract_archive_prompt),
+        extract_archive=_create_action(window, "Extract Archive...", slot=window._export_jobs.extract_archive_prompt),
     )
 
 
@@ -264,7 +264,7 @@ def _selection_review_actions(window: "MainWindow") -> dict[str, QAction]:
             icon=QStyle.StandardPixmap.SP_TrashIcon,
         ),
         restore_selection=_create_action(window, "Restore Selection", slot=window._restore_selected_records),
-        open_preview=_create_action(window, "Open Preview", slot=window._open_current_preview),
+        open_preview=_create_action(window, "Open Preview", slot=window._preview_ctl.open_current_preview),
         reveal_in_explorer=_create_action(window, "Reveal In File Explorer", slot=window._reveal_current_selection),
         open_in_photoshop=_create_action(window, "Open In Photoshop", slot=window._open_selected_in_photoshop),
     )
@@ -276,32 +276,32 @@ def _view_toggle_actions(window: "MainWindow") -> dict[str, QAction]:
         compare_mode=_create_action(
             window,
             "Compare",
-            slot=window._handle_compare_toggled,
+            slot=window._views.handle_compare_toggled,
             checkable=True,
             shortcut="C",
         ),
         auto_advance=_create_action(
             window,
             "Auto-Advance",
-            slot=window._handle_auto_advance_toggled,
+            slot=window._views.handle_auto_advance_toggled,
             checkable=True,
         ),
         burst_groups=_create_action(
             window,
             "Smart Groups",
-            slot=window._handle_burst_groups_toggled,
+            slot=window._views.handle_burst_groups_toggled,
             checkable=True,
         ),
         burst_stacks=_create_action(
             window,
             "Smart Stacks",
-            slot=window._handle_burst_stacks_toggled,
+            slot=window._views.handle_burst_stacks_toggled,
             checkable=True,
         ),
         show_hidden_folders=_create_action(
             window,
             "Show Hidden Folders",
-            slot=window._handle_show_hidden_folders_toggled,
+            slot=window._navigation.handle_show_hidden_folders_toggled,
             checkable=True,
         ),
     )
@@ -313,43 +313,43 @@ def _layout_actions(window: "MainWindow") -> dict[str, QAction]:
         grid_view=_create_action(
             window,
             "Grid View",
-            slot=lambda _checked=False: window._set_browser_view_mode("grid"),
+            slot=lambda _checked=False: window._views.set_browser_view_mode("grid"),
             checkable=True,
             shortcut="Ctrl+1",
         ),
         details_view=_create_action(
             window,
             "Details View",
-            slot=lambda _checked=False: window._set_browser_view_mode("details"),
+            slot=lambda _checked=False: window._views.set_browser_view_mode("details"),
             checkable=True,
             shortcut="Ctrl+2",
         ),
         details_density_compact=_create_action(
             window,
             "Compact Details Rows",
-            slot=lambda _checked=False: window._set_details_row_density("compact"),
+            slot=lambda _checked=False: window._views.set_details_row_density("compact"),
             checkable=True,
         ),
         details_density_comfortable=_create_action(
             window,
             "Comfortable Details Rows",
-            slot=lambda _checked=False: window._set_details_row_density("comfortable"),
+            slot=lambda _checked=False: window._views.set_details_row_density("comfortable"),
             checkable=True,
         ),
         details_next_unreviewed=_create_action(
             window,
             "Next Unreviewed In Details",
-            slot=lambda _checked=False: window._jump_details_to_review_state("unreviewed"),
+            slot=lambda _checked=False: window._views.jump_details_to_review_state("unreviewed"),
         ),
         details_next_kept=_create_action(
             window,
             "Next Kept In Details",
-            slot=lambda _checked=False: window._jump_details_to_review_state("kept"),
+            slot=lambda _checked=False: window._views.jump_details_to_review_state("kept"),
         ),
         details_next_rejected=_create_action(
             window,
             "Next Rejected In Details",
-            slot=lambda _checked=False: window._jump_details_to_review_state("rejected"),
+            slot=lambda _checked=False: window._views.jump_details_to_review_state("rejected"),
         ),
         zen_mode=_create_action(
             window,
@@ -409,13 +409,13 @@ def _ai_workflow_actions(window: "MainWindow") -> dict[str, QAction]:
         open_ai_workflow_center=_create_action(
             window,
             "AI Workflow Center...",
-            slot=window._open_ai_workflow_center,
+            slot=window._handoff.open_ai_workflow_center,
             shortcut="Ctrl+Shift+W",
         ),
         run_ai_culling=_create_action(
             window,
             "Run Review",
-            slot=window._open_ai_workflow_center,
+            slot=window._handoff.open_ai_workflow_center,
             icon=QStyle.StandardPixmap.SP_MediaPlay,
         ),
         quick_rerank_ai_culling=_create_action(
@@ -432,7 +432,7 @@ def _ai_workflow_actions(window: "MainWindow") -> dict[str, QAction]:
         sort_ai_semantic_folders=_create_action(
             window,
             "Move To AI Category Folders...",
-            slot=window._sort_images_into_semantic_folders,
+            slot=window._handoff.sort_images_into_semantic_folders,
         ),
         reset_ai_review_cache=_create_action(
             window,
@@ -443,7 +443,7 @@ def _ai_workflow_actions(window: "MainWindow") -> dict[str, QAction]:
         load_ai_results=_create_action(window, "Load AI Results...", slot=window._ai_run.choose_ai_results),
         clear_ai_results=_create_action(window, "Clear AI Results", slot=window._ai_run.clear_ai_results),
         open_ai_report=_create_action(window, "Open AI Report", slot=window._ai_run.open_ai_report),
-        manage_people=_create_action(window, "People...", slot=window._open_people_search_dialog),
+        manage_people=_create_action(window, "People...", slot=window._handoff.open_people_search_dialog),
         show_ai_review_summary=_create_action(window, "Show AI Review Summary", slot=window._ai_run.show_last_ai_review_summary),
         review_ai_adapter_labels=_create_action(
             window,
@@ -471,12 +471,12 @@ def _ai_review_tool_actions(window: "MainWindow") -> dict[str, QAction]:
         review_ai_disagreements=_create_action(
             window,
             "Review AI Disagreements",
-            slot=window._review_ai_disagreements,
+            slot=window._handoff.review_ai_disagreements,
         ),
         winner_ladder_mode=_create_action(
             window,
             "Winner Ladder",
-            slot=window._open_winner_ladder,
+            slot=window._preview_ctl.open_winner_ladder,
             shortcut="Ctrl+Alt+W",
         ),
     )
@@ -488,22 +488,22 @@ def _collection_actions(window: "MainWindow") -> dict[str, QAction]:
         create_virtual_collection=_create_action(
             window,
             "Create Collection...",
-            slot=window._create_virtual_collection_from_selection,
+            slot=window._catalog.create_virtual_collection_from_selection,
         ),
         add_selection_to_collection=_create_action(
             window,
             "Edit Collection Items...",
-            slot=window._add_selection_to_virtual_collection,
+            slot=window._catalog.add_selection_to_virtual_collection,
         ),
         remove_selection_from_collection=_create_action(
             window,
             "Remove Selection From Collection...",
-            slot=window._remove_selection_from_virtual_collection,
+            slot=window._catalog.remove_selection_from_virtual_collection,
         ),
         delete_virtual_collection=_create_action(
             window,
             "Delete Collection...",
-            slot=window._delete_virtual_collection,
+            slot=window._catalog.delete_virtual_collection,
         ),
     )
 
@@ -514,32 +514,32 @@ def _catalog_actions(window: "MainWindow") -> dict[str, QAction]:
         browse_catalog=_create_action(
             window,
             "Browse Library...",
-            slot=window._browse_catalog,
+            slot=window._catalog.browse_catalog,
         ),
         add_current_folder_to_catalog=_create_action(
             window,
             "Add Current Folder To Library",
-            slot=window._add_current_folder_to_catalog,
+            slot=window._catalog.add_current_folder_to_catalog,
         ),
         add_folder_to_catalog=_create_action(
             window,
             "Add Folder To Library...",
-            slot=window._add_folder_to_catalog_prompt,
+            slot=window._catalog.add_folder_to_catalog_prompt,
         ),
         remove_catalog_folder=_create_action(
             window,
             "Remove Folder From Library...",
-            slot=window._remove_catalog_root_prompt,
+            slot=window._catalog.remove_catalog_root_prompt,
         ),
         refresh_catalog=_create_action(
             window,
             "Refresh Library Index",
-            slot=window._refresh_catalog_index,
+            slot=window._catalog.refresh_catalog_index,
         ),
         rebuild_folder_catalog_cache=_create_action(
             window,
             "Rebuild Open Folder Cache",
-            slot=window._rebuild_current_folder_catalog_cache,
+            slot=window._scan.rebuild_current_folder_catalog_cache,
         ),
     )
 
@@ -550,25 +550,25 @@ def _delivery_actions(window: "MainWindow") -> dict[str, QAction]:
         share_to_phone=_create_action(
             window,
             "Send to PocketDrop",
-            slot=window._send_selection_to_pocketdrop,
+            slot=window._handoff.send_selection_to_pocketdrop,
             shortcut="Ctrl+Alt+P",
         ),
         handoff_builder=_create_action(
             window,
             "Deliver / Handoff Builder...",
-            slot=window._open_handoff_builder,
+            slot=window._handoff.open_handoff_builder,
             shortcut="Ctrl+Alt+H",
         ),
         send_to_editor_pipeline=_create_action(
             window,
             "Send To Editor...",
-            slot=window._open_send_to_editor_pipeline,
+            slot=window._handoff.open_send_to_editor_pipeline,
             shortcut="Ctrl+Alt+E",
         ),
         best_of_set_auto_assembly=_create_action(
             window,
             "Best-of-Set Auto Assembly...",
-            slot=window._open_best_of_set_builder,
+            slot=window._handoff.open_best_of_set_builder,
             shortcut="Ctrl+Alt+B",
         ),
     )
@@ -580,12 +580,12 @@ def _workspace_and_tool_actions(window: "MainWindow") -> dict[str, QAction]:
         keyboard_shortcuts=_create_action(
             window,
             "Keyboard Shortcuts...",
-            slot=window._open_keyboard_shortcuts_dialog,
+            slot=window._help_update.open_keyboard_shortcuts_dialog,
         ),
         save_workspace_preset=_create_action(
             window,
             "Save Current Workspace Preset...",
-            slot=window._save_current_workspace_preset,
+            slot=window._settings_ctl.save_current_workspace_preset,
             shortcut="Ctrl+Alt+S",
         ),
         show_workspace_toolbar=_create_action(
@@ -597,19 +597,19 @@ def _workspace_and_tool_actions(window: "MainWindow") -> dict[str, QAction]:
         open_command_palette=_create_action(
             window,
             "Command Palette...",
-            slot=window._open_command_palette,
+            slot=window._command_palette.open,
             auto_repeat=False,
         ),
         performance_logging=_create_action(
             window,
             "Performance Logging",
-            slot=window._handle_performance_logging_toggled,
+            slot=window._settings_ctl.handle_performance_logging_toggled,
             checkable=True,
         ),
         open_performance_log_folder=_create_action(
             window,
             "Open Performance Log Folder",
-            slot=window._open_performance_log_folder,
+            slot=window._settings_ctl.open_performance_log_folder,
         ),
     )
 
@@ -617,23 +617,23 @@ def _workspace_and_tool_actions(window: "MainWindow") -> dict[str, QAction]:
 def _filter_actions(window: "MainWindow") -> dict[str, QAction]:
     """Advanced filters and saved searches."""
     return dict(
-        advanced_filters=_create_action(window, "Advanced Filters...", slot=window._open_advanced_filters_dialog),
-        save_filter_preset=_create_action(window, "Save Current Search...", slot=window._save_current_filter_preset),
-        delete_filter_preset=_create_action(window, "Delete Saved Search", slot=window._delete_current_filter_preset),
-        clear_filters=_create_action(window, "Clear Filters", slot=window._clear_record_filters, shortcut="Ctrl+Shift+X"),
+        advanced_filters=_create_action(window, "Advanced Filters...", slot=window._records_view.open_advanced_filters_dialog),
+        save_filter_preset=_create_action(window, "Save Current Search...", slot=window._records_view.save_current_filter_preset),
+        delete_filter_preset=_create_action(window, "Delete Saved Search", slot=window._records_view.delete_current_filter_preset),
+        clear_filters=_create_action(window, "Clear Filters", slot=window._records_view.clear_record_filters, shortcut="Ctrl+Shift+X"),
     )
 
 
 def _help_actions(window: "MainWindow") -> dict[str, QAction]:
     """Help menu entries and the update check."""
     return dict(
-        documentation=_create_action(window, "Documentation", slot=window._show_documentation, shortcut="F1"),
-        keyboard_help=_create_action(window, "Quick Help", slot=window._show_help),
-        ai_guide=_create_action(window, "AI Guide", slot=window._show_ai_guide),
-        ai_review_tag_legend=_create_action(window, "AI Review Tag Legend", slot=window._show_ai_review_tag_legend),
-        advanced_help=_create_action(window, "Advanced Help", slot=window._show_advanced_help),
-        check_for_updates=_create_action(window, "Check For Updates...", slot=window._check_for_updates),
-        about=_create_action(window, "About Image Triage", slot=window._show_about_dialog),
+        documentation=_create_action(window, "Documentation", slot=window._help_update.show_documentation, shortcut="F1"),
+        keyboard_help=_create_action(window, "Quick Help", slot=window._help_update.show_help),
+        ai_guide=_create_action(window, "AI Guide", slot=window._help_update.show_ai_guide),
+        ai_review_tag_legend=_create_action(window, "AI Review Tag Legend", slot=window._help_update.show_ai_review_tag_legend),
+        advanced_help=_create_action(window, "Advanced Help", slot=window._help_update.show_advanced_help),
+        check_for_updates=_create_action(window, "Check For Updates...", slot=window._help_update.check_for_updates),
+        about=_create_action(window, "About Image Triage", slot=window._help_update.show_about_dialog),
     )
 
 
@@ -680,7 +680,7 @@ def _sort_actions(window: "MainWindow") -> dict[SortMode, QAction]:
         action = _create_action(
             window,
             mode.value,
-            slot=lambda _checked=False, selected=mode: window._set_sort_mode(selected),
+            slot=lambda _checked=False, selected=mode: window._views.set_sort_mode(selected),
             checkable=True,
         )
         group.addAction(action)
@@ -714,7 +714,7 @@ def _column_actions(window: "MainWindow") -> dict[int, QAction]:
         action = _create_action(
             window,
             f"{count} Across",
-            slot=lambda _checked=False, selected=count: window._set_column_count(selected),
+            slot=lambda _checked=False, selected=count: window._views.set_column_count(selected),
             checkable=True,
         )
         group.addAction(action)

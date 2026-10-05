@@ -533,8 +533,8 @@ class AiCullerController(QObject):
                 self._aiculler_review_burst_snapshot = burst_snapshot
                 self._window._burst_groups_enabled = False
                 self._window._burst_stacks_enabled = False
-                self._window._refresh_burst_group_view()
-                self._window._update_action_states()
+                self._window._annotation_ctl.refresh_burst_group_view()
+                self._window._inspector.update_action_states()
             else:
                 self._aiculler_review_burst_snapshot = None
             self._adapter_review_reason_phase = True
@@ -549,7 +549,7 @@ class AiCullerController(QObject):
                 reason_options=self._window.ADAPTER_REASON_TAGS,
             )
             self.refresh_adapter_review_banner()
-            dialog = getattr(self._window, "_ai_workflow_center_dialog", None)
+            dialog = getattr(self._window._handoff, "_ai_workflow_center_dialog", None)
             if dialog is not None:
                 dialog.hide_for_adapter_review()
             self._window.statusBar().showMessage(
@@ -634,8 +634,8 @@ class AiCullerController(QObject):
             self._aiculler_review_burst_snapshot = burst_snapshot
             self._window._burst_groups_enabled = False
             self._window._burst_stacks_enabled = False
-            self._window._refresh_burst_group_view()
-            self._window._update_action_states()
+            self._window._annotation_ctl.refresh_burst_group_view()
+            self._window._inspector.update_action_states()
         else:
             self._aiculler_review_burst_snapshot = None
 
@@ -644,7 +644,7 @@ class AiCullerController(QObject):
         self.clear_adapter_review_reason_tags()
         self._window.grid.set_adapter_review_mode(review_paths, saved_labels)
         self.refresh_adapter_review_banner()
-        dialog = getattr(self._window, "_ai_workflow_center_dialog", None)
+        dialog = getattr(self._window._handoff, "_ai_workflow_center_dialog", None)
         if dialog is not None:
             dialog.hide_for_adapter_review()
         diagnostics = selection.diagnostics
@@ -881,8 +881,8 @@ class AiCullerController(QObject):
         self._aiculler_review_burst_snapshot = None
         if snapshot is not None:
             self._window._burst_groups_enabled, self._window._burst_stacks_enabled = snapshot
-            self._window._refresh_burst_group_view()
-            self._window._update_action_states()
+            self._window._annotation_ctl.refresh_burst_group_view()
+            self._window._inspector.update_action_states()
         banner = getattr(self._window, "adapter_review_banner", None)
         if banner is not None:
             banner.hide()
@@ -890,7 +890,7 @@ class AiCullerController(QObject):
         if timer is not None:
             timer.stop()
         self.flush_adapter_review_action_state_update()
-        dialog = getattr(self._window, "_ai_workflow_center_dialog", None)
+        dialog = getattr(self._window._handoff, "_ai_workflow_center_dialog", None)
         if dialog is not None:
             dialog.restore_after_adapter_review()
 
@@ -1479,7 +1479,7 @@ class AiCullerController(QObject):
     def flush_adapter_review_action_state_update(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
         if logger.enabled:
             logger.duration(
                 "adapter_review.window.deferred_action_states",

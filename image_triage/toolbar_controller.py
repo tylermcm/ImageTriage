@@ -42,8 +42,8 @@ class ToolbarController(QObject):
         The centre is intentionally left empty; the backend action buttons will
         be placed there in a later migration step.
         """
-        self._window._nav_back: list[str] = []
-        self._window._nav_forward: list[str] = []
+        self._nav_back: list[str] = []
+        self._nav_forward: list[str] = []
         self._nav_suppress_history = False
 
         bar = QWidget()
@@ -90,10 +90,10 @@ class ToolbarController(QObject):
         # Menu floats centred over the navigation rail (it is placed by hand,
         # outside the layout) and a spacer starts the breadcrumb at the library
         # pane's edge; _align_app_bar_to_library keeps both lined up.
-        self._window.app_menu_slot = QWidget(bar)
-        menu_slot_layout = QHBoxLayout(self._window.app_menu_slot)
+        self.app_menu_slot = QWidget(bar)
+        menu_slot_layout = QHBoxLayout(self.app_menu_slot)
         menu_slot_layout.setContentsMargins(0, 0, 0, 0)
-        self.app_menu_button = QToolButton(self._window.app_menu_slot)
+        self.app_menu_button = QToolButton(self.app_menu_slot)
         self.app_menu_button.setObjectName("appMenuButton")
         # Icon only: the text is kept for the tooltip and screen readers.
         self.app_menu_button.setText("Menu")
@@ -111,14 +111,14 @@ class ToolbarController(QObject):
         self._app_bar_crumb_spacer = QSpacerItem(0, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
         layout.addItem(self._app_bar_crumb_spacer)
 
-        self._window.app_crumb_stack = QStackedWidget(bar)
-        self._window.app_crumb_stack.setObjectName("appBreadcrumbStack")
-        self._window.app_crumb_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._window.app_breadcrumb = BreadcrumbBar(self._window.app_crumb_stack)
-        self._window.app_breadcrumb.segment_clicked.connect(self.handle_breadcrumb_segment_clicked)
-        self._window.app_breadcrumb.edit_requested.connect(self.begin_breadcrumb_path_edit)
-        self._window.app_crumb_stack.addWidget(self._window.app_breadcrumb)
-        layout.addWidget(self._window.app_crumb_stack, 1)
+        self.app_crumb_stack = QStackedWidget(bar)
+        self.app_crumb_stack.setObjectName("appBreadcrumbStack")
+        self.app_crumb_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.app_breadcrumb = BreadcrumbBar(self.app_crumb_stack)
+        self.app_breadcrumb.segment_clicked.connect(self.handle_breadcrumb_segment_clicked)
+        self.app_breadcrumb.edit_requested.connect(self.begin_breadcrumb_path_edit)
+        self.app_crumb_stack.addWidget(self.app_breadcrumb)
+        layout.addWidget(self.app_crumb_stack, 1)
 
         open_button = make_labeled_nav_button("open", "Open", self._window.actions.open_folder.toolTip())
         open_button.clicked.connect(lambda _checked=False: self._window.actions.open_folder.trigger())
@@ -126,16 +126,16 @@ class ToolbarController(QObject):
             lambda target=open_button, action=self._window.actions.open_folder: target.setToolTip(action.toolTip())
         )
 
-        self._window._topbar_back_button = make_labeled_nav_button("back", "Back", "Back")
-        self._window._topbar_back_button.clicked.connect(lambda: self.navigate_history(-1))
-        self._window._topbar_back_button.setEnabled(False)
+        self._topbar_back_button = make_labeled_nav_button("back", "Back", "Back")
+        self._topbar_back_button.clicked.connect(lambda: self.navigate_history(-1))
+        self._topbar_back_button.setEnabled(False)
 
-        self._window._topbar_forward_button = make_labeled_nav_button("forward", "Fwd", "Forward")
-        self._window._topbar_forward_button.clicked.connect(lambda: self.navigate_history(1))
-        self._window._topbar_forward_button.setEnabled(False)
+        self._topbar_forward_button = make_labeled_nav_button("forward", "Fwd", "Forward")
+        self._topbar_forward_button.clicked.connect(lambda: self.navigate_history(1))
+        self._topbar_forward_button.setEnabled(False)
 
-        self._window._topbar_up_button = make_labeled_nav_button("up", "Up", "Open parent folder")
-        self._window._topbar_up_button.clicked.connect(self._window._navigate_to_parent_folder)
+        self._topbar_up_button = make_labeled_nav_button("up", "Up", "Open parent folder")
+        self._topbar_up_button.clicked.connect(self._window._navigation.navigate_to_parent_folder)
 
         refresh_button = make_labeled_nav_button("refresh", "Refresh", self._window.actions.refresh_folder.toolTip())
         refresh_button.clicked.connect(lambda _checked=False: self._window.actions.refresh_folder.trigger())
@@ -149,7 +149,7 @@ class ToolbarController(QObject):
             lambda target=undo_button, action=self._window.actions.undo: target.setToolTip(action.toolTip())
         )
 
-        self.topbar_search_field = self._window._build_search_field()
+        self.topbar_search_field = self._window._projects.build_search_field()
         self.topbar_search_field.setMinimumWidth(180)
         self.topbar_search_field.setMaximumWidth(16777215)
         self.topbar_search_field.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -175,7 +175,7 @@ class ToolbarController(QObject):
         palette_hint.setAutoRaise(True)
         palette_hint.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         palette_hint.setCursor(Qt.CursorShape.PointingHandCursor)
-        palette_hint.clicked.connect(lambda _checked=False: self._window._open_command_palette(context="main"))
+        palette_hint.clicked.connect(lambda _checked=False: self._window._command_palette.open(context="main"))
         search_layout.addWidget(palette_hint, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self.app_search_box, 1)
         update_button = getattr(self._window, "update_download_button", None)
@@ -190,10 +190,10 @@ class ToolbarController(QObject):
         self.app_settings_button.setAutoRaise(True)
         self.app_settings_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.app_settings_button.setFixedSize(32, 32)
-        self.app_settings_button.clicked.connect(lambda _checked=False: self._window._show_settings())
+        self.app_settings_button.clicked.connect(lambda _checked=False: self._window._settings_ctl.show_settings())
         self._window._left_settings_buttons.append((self.app_settings_button, 18))
         layout.addWidget(self.app_settings_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        self._window._window_control_buttons: dict[str, QToolButton] = {}
+        self._window_control_buttons: dict[str, QToolButton] = {}
         if getattr(self._window, "_custom_frame", False):
             layout.addSpacing(6)
             for key, glyph, tooltip, handler in (
@@ -208,7 +208,7 @@ class ToolbarController(QObject):
                 control.setAutoRaise(True)
                 control.setFocusPolicy(Qt.FocusPolicy.NoFocus)
                 control.clicked.connect(lambda _checked=False, target=handler: target())
-                self._window._window_control_buttons[key] = control
+                self._window_control_buttons[key] = control
                 layout.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._window.topbar_action_stack = self.build_topbar_action_stack()
@@ -236,25 +236,25 @@ class ToolbarController(QObject):
         zoom_small.setObjectName("topbarZoomIconSmall")
         zoom_large = QLabel("⌕", zoom_cluster)
         zoom_large.setObjectName("topbarZoomIconLarge")
-        self._window.topbar_zoom_slider = QSlider(Qt.Orientation.Horizontal, zoom_cluster)
-        self._window.topbar_zoom_slider.setObjectName("topbarZoomSlider")
-        self._window.topbar_zoom_slider.setRange(0, 100)
-        self._window.topbar_zoom_slider.setSingleStep(1)
-        self._window.topbar_zoom_slider.setPageStep(12)
-        self._window.topbar_zoom_slider.setTickPosition(QSlider.TickPosition.NoTicks)
-        self._window.topbar_zoom_slider.setFixedWidth(118)
-        self._window.topbar_zoom_slider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self._window.topbar_zoom_slider.setToolTip("Thumbnail size")
-        self._window.topbar_zoom_slider.setValue(self.initial_zoom_level())
-        self._window.topbar_zoom_slider.valueChanged.connect(self.handle_zoom_slider_changed)
+        self.topbar_zoom_slider = QSlider(Qt.Orientation.Horizontal, zoom_cluster)
+        self.topbar_zoom_slider.setObjectName("topbarZoomSlider")
+        self.topbar_zoom_slider.setRange(0, 100)
+        self.topbar_zoom_slider.setSingleStep(1)
+        self.topbar_zoom_slider.setPageStep(12)
+        self.topbar_zoom_slider.setTickPosition(QSlider.TickPosition.NoTicks)
+        self.topbar_zoom_slider.setFixedWidth(118)
+        self.topbar_zoom_slider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.topbar_zoom_slider.setToolTip("Thumbnail size")
+        self.topbar_zoom_slider.setValue(self.initial_zoom_level())
+        self.topbar_zoom_slider.valueChanged.connect(self.handle_zoom_slider_changed)
         zoom_layout.addWidget(zoom_small, 0)
-        zoom_layout.addWidget(self._window.topbar_zoom_slider, 0)
+        zoom_layout.addWidget(self.topbar_zoom_slider, 0)
         zoom_layout.addWidget(zoom_large, 0)
         view_controls_layout.addWidget(zoom_cluster, 0)
         view_controls_layout.addSpacing(6)
 
         # Directory bar takes the zoom's old (right) position.
-        self._window.topbar_path_combo = self._window._build_path_combo(mode="topbar")
+        self._window.topbar_path_combo = self._window._projects.build_path_combo(mode="topbar")
         self._window.topbar_path_combo.setMinimumWidth(220)
         self._window.topbar_path_combo.setMaximumWidth(460)
         self._window.topbar_path_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -270,8 +270,8 @@ class ToolbarController(QObject):
         self._window.topbar_path_combo.setMaximumWidth(16777215)
         self._window.topbar_path_combo.activated.connect(lambda _index: QTimer.singleShot(0, self._window._appearance.end_breadcrumb_path_edit))
         # The editable path box hides behind the breadcrumb until asked for.
-        self._window.app_crumb_stack.addWidget(self._window.topbar_path_combo)
-        self._window.app_crumb_stack.setCurrentWidget(self._window.app_breadcrumb)
+        self.app_crumb_stack.addWidget(self._window.topbar_path_combo)
+        self.app_crumb_stack.setCurrentWidget(self.app_breadcrumb)
 
         self._topbar_pane_buttons: dict[str, QToolButton] = {}
         for side, tooltip, key in (
@@ -340,11 +340,11 @@ class ToolbarController(QObject):
 
     def handle_breadcrumb_segment_clicked(self, path: str) -> None:
         if path and os.path.normcase(os.path.normpath(path)) != os.path.normcase(os.path.normpath(self._window._current_folder or "")):
-            self._window._select_folder(path)
+            self._window._navigation.select_folder(path)
 
     def begin_breadcrumb_path_edit(self) -> None:
         combo = self._window.topbar_path_combo
-        self._window.app_crumb_stack.setCurrentWidget(combo)
+        self.app_crumb_stack.setCurrentWidget(combo)
         line_edit = combo.lineEdit()
         if line_edit is not None:
             line_edit.setFocus(Qt.FocusReason.MouseFocusReason)
@@ -374,7 +374,7 @@ class ToolbarController(QObject):
                 hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
                 button.setFixedSize(hover_width, hover_height)
                 button.setIconSize(QSize(profile.topbar_glyph_size + 2, profile.topbar_glyph_size + 2))
-        slider = getattr(self._window, "topbar_zoom_slider", None)
+        slider = getattr(self, "topbar_zoom_slider", None)
         if slider is not None:
             slider_width = px(layout_ratios.ZOOM_SLIDER_W, max(1, self._window.width()), minimum=48)
             slider.setFixedWidth(slider_width if compact else profile.topbar_zoom_width)
@@ -466,7 +466,7 @@ class ToolbarController(QObject):
         for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
             self._window._resize_topbar_button(button, profile)
         self._window._appearance.schedule_layout_ratio_update()
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
 
     def apply_toolbar_placement(self) -> None:
         strip = getattr(self, "toolbar_strip", None)
@@ -1468,7 +1468,7 @@ class ToolbarController(QObject):
         result: list[str | None] = [None] * n
         seen: set[str] = set()
         for idx, value in enumerate(list(raw)[:usable]):
-            if not self._window._is_cluster_item(value) or value not in allowed:
+            if not self._window._projects.is_cluster_item(value) or value not in allowed:
                 continue
             if value not in self._window.TOPBAR_REPEATABLE_ITEMS:
                 if value in seen:
@@ -1494,7 +1494,7 @@ class ToolbarController(QObject):
             if isinstance(raw_slots, dict) and isinstance(raw_slots.get(mode), list):
                 mode_slots = self.normalize_slots(mode, raw_slots[mode])
             if mode_slots is None:
-                mode_slots = self._window._items_to_slots(self._window._workspace_toolbar_layouts.get(mode, ()))
+                mode_slots = self._window._projects.items_to_slots(self._window._workspace_toolbar_layouts.get(mode, ()))
             per_mode[mode] = mode_slots
         # Unified bar: both review modes share one arrangement. Only MERGE when the
         # persisted arrays actually differ (a one-time migration from the old
@@ -1551,7 +1551,7 @@ class ToolbarController(QObject):
         queue = list(cluster_order)
         merged: list[str] = []
         for item in self._window._workspace_toolbar_layouts.get(mode, ()):
-            if self._window._is_cluster_item(item):
+            if self._window._projects.is_cluster_item(item):
                 if queue:
                     merged.append(queue.pop(0))
             else:
@@ -1897,17 +1897,17 @@ class ToolbarController(QObject):
         self._window.grid.set_show_ai_annotations(self._window._show_ai_tags_in_grid)
         self.schedule_workspace_toolbar_overflow_update("manual")
         step_start = log_step("mode_switch.chrome", step_start)
-        self._window._refresh_viewport_mode()
+        self._window._views.refresh_viewport_mode()
         step_start = log_step("mode_switch.viewport", step_start)
         self._window._ai_run.update_ai_toolbar_state()
         step_start = log_step("mode_switch.ai_toolbar_initial", step_start)
         self.unlock_burst_toggle_actions()
         if self._window._all_records:
-            self._window._apply_records_view(current_path=self._window._records_view.current_visible_record_path())
+            self._window._views.apply_records_view(current_path=self._window._records_view.current_visible_record_path())
             step_start = log_step("mode_switch.records_view", step_start)
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
         step_start = log_step("mode_switch.action_states", step_start)
-        self._window._update_status()
+        self._window._inspector.update_status()
         step_start = log_step("mode_switch.status", step_start)
         if logger.enabled:
             logger.duration(
@@ -1920,18 +1920,18 @@ class ToolbarController(QObject):
             )
 
     def initial_zoom_level(self) -> int:
-        return self._window._columns_to_zoom_slider_value(self._window.grid.current_columns())
+        return self._window._views.columns_to_zoom_slider_value(self._window.grid.current_columns())
 
     def zoom_slider_value_to_columns(self, value: object) -> int:
         try:
             slider_value = int(value)
         except (TypeError, ValueError):
-            slider_value = self._window._columns_to_zoom_slider_value(self._window.grid.current_columns())
+            slider_value = self._window._views.columns_to_zoom_slider_value(self._window.grid.current_columns())
         slider_value = max(0, min(100, slider_value))
         return self._window._normalize_column_count(round(8 - ((slider_value / 100) * 7)))
 
     def handle_zoom_slider_changed(self, value: int) -> None:
-        self._window._set_column_count(self.zoom_slider_value_to_columns(value), sync_slider=False)
+        self._window._views.set_column_count(self.zoom_slider_value_to_columns(value), sync_slider=False)
 
     def unlock_burst_toggle_actions(self) -> None:
         """Smart Groups / Smart Stacks are always available: put their enabled state and tooltip back to the base."""
@@ -1979,8 +1979,8 @@ class ToolbarController(QObject):
 
     def navigate_history(self, delta: int) -> None:
         """Folder back/forward navigation backed by visited-folder stacks."""
-        back = getattr(self._window, "_nav_back", None)
-        forward = getattr(self._window, "_nav_forward", None)
+        back = getattr(self, "_nav_back", None)
+        forward = getattr(self, "_nav_forward", None)
         if back is None or forward is None:
             return
         if delta < 0:
@@ -1997,7 +1997,7 @@ class ToolbarController(QObject):
                 back.append(self._window._current_folder)
         self._nav_suppress_history = True
         try:
-            self._window._select_folder(target)
+            self._window._navigation.select_folder(target)
         finally:
             self._nav_suppress_history = False
-        self._window._update_nav_history_buttons()
+        self._window._navigation.update_nav_history_buttons()

@@ -11,9 +11,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QMainWindow
 
+from image_triage.context_menu_controller import ContextMenuController
 from image_triage.details_view import PhotoDetailsView
 from image_triage.models import ImageRecord, SortMode, sort_records
 from image_triage.window import MainWindow
+from tests.harness import controller_over
 
 
 class _GridState:
@@ -52,22 +54,24 @@ class WorkspaceContextMenuTests(unittest.TestCase):
         )
         host._filter_query = SimpleNamespace(search_text="mountains")
         host._pending_search_text = "mountains"
-        host._clear_search_from_workspace_menu = lambda: None
+        host._records_view = SimpleNamespace(clear_search_from_workspace_menu=lambda: None)
         host.grid = _GridState()
         host._effective_loupe_card_style = "gallery"
         host._browser_view_mode = "grid"
-        host._allowed_card_styles = lambda: ("detailed", "gallery", "zen")
-        host._set_grid_filenames_visible = lambda _visible: None
+        host._display = SimpleNamespace(
+            allowed_card_styles=lambda: ("detailed", "gallery", "zen"),
+            set_grid_filenames_visible=lambda _visible: None,
+        )
         host._sort_mode = SortMode.NAME
         host._ai_bundle = None
         host._winner_scores_by_path = {}
-        host._set_sort_mode = selected_sorts.append
+        host._views = SimpleNamespace(set_sort_mode=selected_sorts.append)
         host._current_folder = tempfile.gettempdir()
         host._open_current_folder_in_file_manager = lambda: None
         host._is_slow_source_folder = lambda _folder=None: False  # "Open folder" asks whether it is provably gone
         host._dir_confirmed_missing = lambda path: MainWindow._dir_confirmed_missing(host, path)
 
-        menu = MainWindow._build_empty_grid_context_menu(host)
+        menu = controller_over(ContextMenuController, host, "_context_menus").build_empty_grid_context_menu()
         visible_actions = [action.text() for action in menu.actions() if not action.isSeparator()]
         self.assertEqual(
             [

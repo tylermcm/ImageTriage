@@ -23,6 +23,21 @@ if TYPE_CHECKING:
     from .window import MainWindow
 
 
+# TEMPORARY: the window is translucent so it can be laid over the design
+# reference while the layout ratios are tuned. Set this back to 1.0 when done;
+# IMAGE_TRIAGE_OPACITY overrides it without editing (e.g. 1 for opaque).
+WINDOW_OPACITY = 1
+
+
+def window_opacity() -> float:
+    raw = os.environ.get("IMAGE_TRIAGE_OPACITY")
+    try:
+        value = float(raw) if raw else WINDOW_OPACITY
+    except ValueError:
+        value = WINDOW_OPACITY
+    return min(1.0, max(0.1, value))
+
+
 class AppearanceController(QObject):
     """Look and scale: the theme and appearance mode, display profile, chrome size and text ratios, icon colouring and rendering, layout ratios, breadcrumb and left-rail metrics. Extracted from MainWindow (docs/mainwindow_decomposition_plan.md, DC-4.5)."""
 
@@ -120,7 +135,7 @@ class AppearanceController(QObject):
             return
         px = layout_ratios.ratio_px
         self._window.app_top_bar.setFixedHeight(px(layout_ratios.TOP_BAR_H, height, minimum=36))
-        for control in getattr(self._window, "_window_control_buttons", {}).values():
+        for control in getattr(self._window._toolbar, "_window_control_buttons", {}).values():
             control.setFixedSize(round(self._window.app_top_bar.height() * 0.9), self._window.app_top_bar.height())
         search_width = px(layout_ratios.SEARCH_W, width, minimum=200)
         self._window._toolbar.app_search_box.setMinimumWidth(min(240, search_width))
@@ -142,14 +157,14 @@ class AppearanceController(QObject):
             # Hairline dividers: the panes' shares are measured edge to edge, so
             # a wide handle would eat into the grid.
             self._window.workspace_docks.splitter.setHandleWidth(1)
-            self._window.workspace_docks.apply_width_ratios(self._window._pane_width_ratios(), width)
+            self._window.workspace_docks.apply_width_ratios(self._window._settings_ctl.pane_width_ratios(), width)
         if self._window.inspector_panel is not None:
             self._window.inspector_panel.set_ai_box_size(
                 px(layout_ratios.AI_BOX_W, width, minimum=180),
                 px(layout_ratios.AI_BOX_H, height, minimum=120),
             )
             # After the splitter, so the label column measures the settled pane.
-            self._window._apply_inspector_text_ratios(width, height)
+            self._window._display.apply_inspector_text_ratios(width, height)
         base = getattr(self._window, "_display_profile", None) or STANDARD_DISPLAY
         caption_scale = self._window._toolbar.toolbar_profile().topbar_glyph_size / max(1, base.topbar_glyph_size)
         self._window._toolbar.toolbar_strip.setStyleSheet(
@@ -164,23 +179,23 @@ class AppearanceController(QObject):
         for button, _item_id in getattr(self._window._toolbar, "_topbar_labeled_nav_buttons", ()):
             self._window._resize_topbar_button(button, toolbar_profile)
         self._window._toolbar.position_floating_toolbar()
-        self._window._schedule_app_bar_alignment()
+        self._window._display.schedule_app_bar_alignment()
 
     def refresh_breadcrumb(self) -> None:
-        self._window._sync_drive_sections()
-        crumb = getattr(self._window, "app_breadcrumb", None)
+        self._window._navigation.sync_drive_sections()
+        crumb = getattr(self._window._toolbar, "app_breadcrumb", None)
         if crumb is None:
             return
         if self._window._scope_kind == "folder" and self._window._current_folder:
             crumb.set_path(self._window._current_folder)
         else:
-            crumb.set_label(self._window._scope_display_label())
+            crumb.set_label(self._window._projects.scope_display_label())
 
     def end_breadcrumb_path_edit(self) -> None:
-        stack = getattr(self._window, "app_crumb_stack", None)
-        if stack is None or stack.currentWidget() is self._window.app_breadcrumb:
+        stack = getattr(self._window._toolbar, "app_crumb_stack", None)
+        if stack is None or stack.currentWidget() is self._window._toolbar.app_breadcrumb:
             return
-        stack.setCurrentWidget(self._window.app_breadcrumb)
+        stack.setCurrentWidget(self._window._toolbar.app_breadcrumb)
         self.refresh_breadcrumb()
 
     def maybe_end_breadcrumb_path_edit(self) -> None:
@@ -229,7 +244,7 @@ class AppearanceController(QObject):
         if docks is not None:
             docks.apply_display_profile(profile)
         self.apply_main_chrome_display_profile(profile)
-        preview = self._window._preview_if_built()
+        preview = self._window._preview_ctl.preview_if_built()
         if preview is not None:
             preview.apply_display_profile(profile)
 
@@ -241,7 +256,7 @@ class AppearanceController(QObject):
             bar.layout().setContentsMargins(
                 profile.shell_margin,
                 0,
-                0 if getattr(self._window, "_window_control_buttons", None) else profile.shell_margin + 2,
+                0 if getattr(self._window._toolbar, "_window_control_buttons", None) else profile.shell_margin + 2,
                 0,
             )
             bar.layout().setSpacing(profile.inspector_spacing)
@@ -249,7 +264,7 @@ class AppearanceController(QObject):
         if search is not None:
             search.setMinimumWidth(profile.topbar_search_min_width)
             search.setMaximumWidth(profile.topbar_search_max_width)
-        zoom = getattr(self._window, "topbar_zoom_slider", None)
+        zoom = getattr(self._window._toolbar, "topbar_zoom_slider", None)
         if zoom is not None:
             zoom.setFixedWidth(profile.topbar_zoom_width)
         path = getattr(self._window, "topbar_path_combo", None)
@@ -506,7 +521,7 @@ class AppearanceController(QObject):
             self._window.__dict__.pop("_drive_glyph_icon_cache", None)
             tree.set_drive_icon_provider(self.drive_glyph_icon)
         self.apply_left_rail_label_colors()
-        self._window._apply_pocketdrop_background()
+        self._window._handoff.apply_pocketdrop_background()
         if getattr(self._window._toolbar, "left_rail_add_button", None) is not None:
             self._window._toolbar.rebuild_pinned_tools()
         refresh_button = getattr(self._window, "drives_refresh_button", None)
@@ -584,7 +599,7 @@ class AppearanceController(QObject):
         def glyph_px(ratio: float) -> int:
             return px(ratio, height, minimum=glyph_floor)
 
-        crumb = getattr(self._window, "app_breadcrumb", None)
+        crumb = getattr(self._window._toolbar, "app_breadcrumb", None)
         if crumb is not None:
             # Named selectors, not a bare font-size: a bare one cascades into the
             # chevrons between folders and swells them to the text size.
@@ -658,7 +673,7 @@ class AppearanceController(QObject):
             update_icon = glyph(layout_ratios.UPDATE_ICON_H)
             update_button.setIconSize(QSize(update_icon, update_icon))
         window_glyph = glyph(layout_ratios.WINDOW_BUTTON_GLYPH_H)
-        for control in getattr(self._window, "_window_control_buttons", {}).values():
+        for control in getattr(self._window._toolbar, "_window_control_buttons", {}).values():
             self._window._set_widget_font_px(control, window_glyph)
 
         # Drives / Folders headings, and their refresh / + buttons
@@ -836,18 +851,18 @@ class AppearanceController(QObject):
         app.setStyleSheet(build_app_stylesheet(self._window._theme))
         self.refresh_themed_chrome_icons()
         self.update_dynamic_action_icons()
-        self._window._refresh_update_button_state()
+        self._window._help_update.refresh_update_button_state()
         self.refresh_directory_nav_button_icons()
         if self._window.workspace_docks is not None:
             self._window.workspace_docks.apply_theme(self._window._theme)
         self._window.grid.apply_theme(self._window._theme)
         self._window.grid.set_backdrop_painter(self.paint_grid_backdrop if theme_has_backdrop(self._window._theme) else None)
-        preview = self._window._preview_if_built()
+        preview = self._window._preview_ctl.preview_if_built()
         if preview is not None:
             preview.apply_theme(self._window._theme)
         self._window._toolbar.schedule_workspace_toolbar_overflow_update("manual")
         self._window._toolbar.schedule_workspace_toolbar_overflow_update("ai")
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
 
     def update_dynamic_action_icons(self) -> None:
         if self._window.actions is None or self._window._theme is None:

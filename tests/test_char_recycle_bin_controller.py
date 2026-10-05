@@ -2,7 +2,7 @@
 per-drive "recycle bin" (distinct from the OS trash) moved out of MainWindow
 into image_triage.recycle_bin_controller.RecycleBinController.
 
-The move/restore round trip through _delete_record/_undo_last_action is
+The move/restore round trip through the annotation controller's delete_record and _undo_last_action is
 already covered end-to-end by tests/test_char_move_delete_undo.py (which
 patches the _recycle_root_for_folder delegate directly, so it continues to
 exercise this controller unchanged). This file covers the pieces that had
@@ -23,7 +23,7 @@ def test_empty_recycle_bin_does_nothing_off_a_removable_drive(main_window, tmp_p
     open_folder(main_window, tmp_path, 1)
 
     with patch.object(main_window._recycle_bin, "is_temporary_storage_folder", return_value=False):
-        main_window._empty_recycle_bin()
+        main_window._recycle_bin.empty_recycle_bin()
 
     assert "removable-drive" in main_window.statusBar().currentMessage()
 
@@ -34,7 +34,7 @@ def test_empty_recycle_bin_reports_already_empty(main_window, tmp_path) -> None:
     with patch.object(main_window._recycle_bin, "is_temporary_storage_folder", return_value=True), patch.object(
         main_window._recycle_bin, "recycle_root_for_folder", return_value=recycle_root
     ):
-        main_window._empty_recycle_bin()
+        main_window._recycle_bin.empty_recycle_bin()
 
     assert "already empty" in main_window.statusBar().currentMessage()
 
@@ -49,7 +49,7 @@ def test_empty_recycle_bin_deletes_contents_after_confirmation(main_window, tmp_
         "image_triage.recycle_bin_controller.QMessageBox.warning",
         return_value=QMessageBox.StandardButton.Yes,
     ):
-        main_window._empty_recycle_bin()
+        main_window._recycle_bin.empty_recycle_bin()
 
     assert not recycle_root.exists()
 
@@ -64,7 +64,7 @@ def test_empty_recycle_bin_declined_keeps_contents(main_window, tmp_path) -> Non
         "image_triage.recycle_bin_controller.QMessageBox.warning",
         return_value=QMessageBox.StandardButton.No,
     ):
-        main_window._empty_recycle_bin()
+        main_window._recycle_bin.empty_recycle_bin()
 
     assert recycle_root.exists() and (recycle_root / "trashed.jpg").exists()
 

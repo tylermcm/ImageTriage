@@ -158,11 +158,11 @@ def test_toggle_winner_off_tells_the_user_when_it_leaves_a_foreign_file(main_win
     make_jpegs(tmp_path, ["a.jpg"])
     main_window._winner_mode = WinnerMode.COPY
     open_folder(main_window, tmp_path, 1)
-    main_window._toggle_winner(0, advance_override=False)
+    main_window._annotation_ctl.toggle_winner(0, advance_override=False)
     _flush(main_window)
     (tmp_path / "_winners" / "a.jpg").write_bytes(b"replaced by the user")
 
-    main_window._toggle_winner(0, advance_override=False)
+    main_window._annotation_ctl.toggle_winner(0, advance_override=False)
     _flush(main_window)
 
     assert (tmp_path / "_winners" / "a.jpg").read_bytes() == b"replaced by the user"
@@ -175,7 +175,7 @@ def test_toggle_winner_flips_state_copies_and_records_undo(main_window, tmp_path
     open_folder(main_window, tmp_path, 2)
     record = main_window._records[0]
 
-    main_window._toggle_winner(0, advance_override=False)
+    main_window._annotation_ctl.toggle_winner(0, advance_override=False)
     _flush(main_window)
 
     annotation = main_window._annotations[record.path]
@@ -184,7 +184,7 @@ def test_toggle_winner_flips_state_copies_and_records_undo(main_window, tmp_path
     assert main_window._undo_stack[-1].kind == "annotation"
     assert main_window._undo_stack[-1].original_winner is False
 
-    main_window._toggle_winner(0, advance_override=False)
+    main_window._annotation_ctl.toggle_winner(0, advance_override=False)
     _flush(main_window)
     assert not main_window._annotations[record.path].winner
     assert not (tmp_path / "_winners" / Path(record.path).name).exists()
@@ -196,9 +196,9 @@ def test_marking_winner_clears_reject(main_window, tmp_path) -> None:
     open_folder(main_window, tmp_path, 1)
     record = main_window._records[0]
 
-    main_window._toggle_reject(0, advance_override=False)
+    main_window._annotation_ctl.toggle_reject(0, advance_override=False)
     assert main_window._annotations[record.path].reject
-    main_window._toggle_winner(0, advance_override=False)
+    main_window._annotation_ctl.toggle_winner(0, advance_override=False)
     _flush(main_window)
 
     annotation = main_window._annotations[record.path]
@@ -215,7 +215,7 @@ def test_toggle_winner_failure_reverts_the_annotation_via_status_bar(main_window
         "image_triage.annotation_queue.sync_winner_copy_for_paths",
         side_effect=OSError("boom"),
     ):
-        main_window._toggle_winner(0, advance_override=False)
+        main_window._annotation_ctl.toggle_winner(0, advance_override=False)
         _flush(main_window)
 
     annotation = main_window._annotations.get(record.path)
@@ -233,10 +233,10 @@ def test_undoing_a_winner_toggle_removes_the_copy(main_window, tmp_path) -> None
     open_folder(main_window, tmp_path, 1)
     record = main_window._records[0]
 
-    main_window._toggle_winner(0, advance_override=False)
+    main_window._annotation_ctl.toggle_winner(0, advance_override=False)
     _flush(main_window)
     assert (tmp_path / "_winners" / Path(record.path).name).exists()
-    main_window._undo_last_action()
+    main_window._record_ops.undo_last_action()
     _flush(main_window)
 
     assert not (tmp_path / "_winners" / Path(record.path).name).exists()

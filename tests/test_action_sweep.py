@@ -157,7 +157,7 @@ def sweep_window(request, tmp_path, monkeypatch):
         if request.param == "three_selected":
             window.grid.set_selected_indexes([0, 1, 2], current_index=1)
             QApplication.processEvents()
-            window._update_action_states()
+            window._inspector.update_action_states()
         yield window
         janitor.stop()
 

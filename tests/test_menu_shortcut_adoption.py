@@ -1,7 +1,7 @@
 """The hidden menu bar's shortcuts must all be adopted onto the window, every time.
 
 The classic menu bar is hidden (the top bar's Menu button replaces it), and Qt does not fire the
-shortcuts of a hidden menu's actions, so ``MainWindow._adopt_menu_bar_shortcuts`` registers every
+shortcuts of a hidden menu's actions, so ``SettingsController.adopt_menu_bar_shortcuts`` registers every
 menu action that has a shortcut on the window itself.
 
 It used to remember which actions it had visited by ``id(action)`` of the PySide wrappers that
@@ -15,6 +15,7 @@ invariant, which holds on every run now.
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -24,7 +25,7 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget
 
-from image_triage.window import MainWindow
+from image_triage.settings_controller import SettingsController
 
 
 def _menu_actions_with_shortcuts(menu_bar) -> tuple[list, list]:
@@ -71,7 +72,7 @@ def test_every_shortcut_in_a_large_nested_menu_tree_is_adopted_every_time() -> N
     QApplication.instance() or QApplication([])
     for round_number in range(25):
         host, expected = _build_host(menu_count=6, actions_per_menu=20, nesting=4)
-        MainWindow._adopt_menu_bar_shortcuts(host)
+        SettingsController.adopt_menu_bar_shortcuts(SimpleNamespace(_window=host))
         adopted = {action.text() for action in QWidget.actions(host)}
         missing = sorted(expected - adopted)
         assert not missing, f"round {round_number}: {len(missing)} shortcut action(s) not adopted, e.g. {missing[:5]}"
@@ -82,9 +83,9 @@ def test_every_shortcut_in_a_large_nested_menu_tree_is_adopted_every_time() -> N
 def test_adopting_twice_does_not_register_anything_twice() -> None:
     QApplication.instance() or QApplication([])
     host, expected = _build_host(menu_count=3, actions_per_menu=8, nesting=2)
-    MainWindow._adopt_menu_bar_shortcuts(host)
+    SettingsController.adopt_menu_bar_shortcuts(SimpleNamespace(_window=host))
     once = QWidget.actions(host)
-    MainWindow._adopt_menu_bar_shortcuts(host)
+    SettingsController.adopt_menu_bar_shortcuts(SimpleNamespace(_window=host))
     assert len(QWidget.actions(host)) == len(once) == len(expected)
     host.deleteLater()
 

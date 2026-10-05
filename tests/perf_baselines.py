@@ -56,7 +56,7 @@ def test_baseline_folder_open_and_winner_toggle(main_window, tmp_path) -> None:
         timings = []
         for index in range(20):
             begin = time.perf_counter()
-            main_window._toggle_winner(index, advance_override=False)
+            main_window._annotation_ctl.toggle_winner(index, advance_override=False)
             timings.append(time.perf_counter() - begin)
         _record(f"winner_toggle_{mode.name.lower()}_median_ms", _ms(statistics.median(timings)))
         _record(f"winner_toggle_{mode.name.lower()}_max_ms", _ms(max(timings)))

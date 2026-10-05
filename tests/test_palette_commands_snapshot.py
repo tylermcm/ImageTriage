@@ -51,18 +51,18 @@ from tests import builder_snapshot_support as support
 
 # state label -> (sha256 of the dump, its length in characters)
 _GOLDEN: dict[str, tuple[str, int]] = {
-    "main|all-enabled|flags-on|data|docks": ("831cc954c855adc1fa9fe5cad0415e9dd197a3076ea5688476325e399c06e8e5", 45739),
-    "main|all-enabled|flags-off|data|docks-unchecked": ("92010ba3e853b5452742c35efacbc983c0817c12d776f6f10559c4cf2cb59454", 45755),
-    "main|all-disabled|no-data|no-docks": ("79e3153bdaf9a137d8b6fba0e57848e1ceb1ff4eba3bb6c391790ee8308b0416", 13627),
-    "main|alternate-enabled|flags-on|data|docks": ("a42824f5c19949d8f225b050d203191796236362f6e2f1fc55f1fa08de79f7cf", 33461),
-    "main|alternate-enabled|flags-off|no-data|docks": ("25f6ef42fcfadc1007a0ae698b98914b3d3a6b3bd40d89fd82f52e529994bb52", 26822),
-    "main|no-actions|data|no-docks": ("1aa56af6739f9c2473ca560327eb25d95a547e26c20788b8b1b63537a1fba1b2", 20296),
-    "main|visible-preview-ignored": ("b69e932b6ccd599b1f2fab06eb458aa677aa687df50e5aeb21006406530d1230", 45731),
-    "preview|hidden-preview": ("35c2defa1f4b68b83dc6b001ee5646e7870dec68121a4345cd423beab429ef9d", 45728),
-    "preview|no-preview-built": ("7c5e24696e9e27078eed8fe3f2558746dece346b2844bf03b6f6de2c4113807d", 45730),
-    "preview|visible|full": ("b45a4d85d7906ae2acab067469f9dca90ed7f95d47227bcb75c644a5ee7dd277", 51799),
-    "preview|visible|focused-photoshop-missing-exe": ("787b53292124f562b5c00a7d9e65ccef438fe35e6503731628e5cab17b973392", 51551),
-    "preview|visible|bare": ("542aea63f622a9c6b3567bafbdc53b8b300514dab4aefc7188de89aaf1bbcc51", 24856),
+    "main|all-enabled|flags-on|data|docks": ("57984c0711c9647f542ad7a990071c452cf5828eceedd24c4e4b637c43d6ba09", 46142),
+    "main|all-enabled|flags-off|data|docks-unchecked": ("9512e3a1af6cc9c20c9da770c3b63663e0a6e95068bb405a991d47430a8c3f75", 46158),
+    "main|all-disabled|no-data|no-docks": ("ccc2c940bd8f4e2384c01384f4eac2073d9a5dc1a4902f3e80781fbb6ef7f916", 13856),
+    "main|alternate-enabled|flags-on|data|docks": ("6b7450f222d0ea5108001519e0437bae1d490d2705b5bad76e09726237da5205", 33864),
+    "main|alternate-enabled|flags-off|no-data|docks": ("f346eb12a108ea4ee7546c3dd48319dd5dbf45d4378a08d5c28651a2380a5435", 27051),
+    "main|no-actions|data|no-docks": ("b29a6454d15fe941fc6da0e253e33ac62a44bdec8cdd2221a00902a1527116bb", 20699),
+    "main|visible-preview-ignored": ("82f7aa8522844e885d54d1e50ff6c1eff54693c8a4cba40247815a20cd7a22cf", 46134),
+    "preview|hidden-preview": ("4d1ebc0ccbba4b955c2510c167fbeae1d0a14a51209a6861fe39d533c1b92b5a", 46131),
+    "preview|no-preview-built": ("6d48b5908ff713219e419dae8e936985d1ef2dabb6d49d51f9c9ab1dc22c28ac", 46133),
+    "preview|visible|full": ("d7a8090b9630def7a8ed77e7ee5ca60429ae239a525a51a0e360f5355cb60bb3", 52298),
+    "preview|visible|focused-photoshop-missing-exe": ("4dd3abaec11431aa0a74a6b5fcef28af50b1c2c6af281ea95b7fef55caf5797f", 52038),
+    "preview|visible|bare": ("400a228cd112a3e186c833b0725d5edae37257f4a2893fdc58fe7fb6b63b7dc0", 25259),
 }
 
 _COUNTS = {
@@ -88,11 +88,11 @@ _NOTHING_ENABLED = "main|all-disabled|no-data|no-docks"
 def states(_shared_main_window) -> dict[str, tuple[list[str], list[str]]]:
     """State label -> (dump lines, ordered command ids)."""
     window = _shared_main_window
-    enabled_before = [action.isEnabled() for _label, action in support.action_fields(window.actions)]
+    enabled_before = {label: action.isEnabled() for label, action in support.action_fields(window.actions)}
     result = support.synthetic_palette_snapshots(window)
-    assert [action.isEnabled() for _label, action in support.action_fields(window.actions)] == enabled_before, (
-        "the palette states must put every action's enabled flag back"
-    )
+    enabled_after = {label: action.isEnabled() for label, action in support.action_fields(window.actions)}
+    changed = sorted(label for label in enabled_before if enabled_before[label] != enabled_after.get(label))
+    assert not changed, f"the palette states must put every action's enabled flag back; changed: {changed}"
     return result
 
 
@@ -264,11 +264,13 @@ def test_the_states_leave_the_shared_window_as_they_found_it(_shared_main_window
     """The states patch the shared session window; every patch must be undone so
     later tests see the window they expect."""
     window = _shared_main_window
-    for name in support._PALETTE_CALLBACK_TARGETS:
-        assert name not in window.__dict__, f"{name} is still replaced by a recorder"
-    assert "_recent_destination_paths" not in window.__dict__
+    for target in support._PALETTE_CALLBACK_TARGETS:
+        owner, name = target if isinstance(target, tuple) else (None, target)
+        holder = getattr(window, owner) if owner else window
+        assert name not in holder.__dict__, f"{name} is still replaced by a recorder"
+    assert "recent_destination_paths" not in window._navigation.__dict__
     assert "list_collections" not in window._library_store.__dict__
     assert "list_catalog_roots" not in window._library_store.__dict__
-    assert not isinstance(window._preview_if_built(), support.StubPreview)
+    assert not isinstance(window._preview_ctl.preview_if_built(), support.StubPreview)
     assert window.actions is not None
     assert type(window.workspace_docks).__name__ != "SimpleNamespace", "the stand-in dock object leaked"

@@ -165,7 +165,7 @@ def pump_until(condition, timeout: float = 10.0) -> bool:
 
 
 def open_folder(window, folder, expected_count: int) -> None:
-    window._load_folder(str(folder))
+    window._scan.load_folder(str(folder))
     assert pump_until(lambda: len(window._records) == expected_count), (
         f"folder did not load {expected_count} records (got {len(window._records)})"
     )
@@ -178,5 +178,23 @@ def reset_window_state(window) -> None:
     window._annotations.clear()
     window._records = []
     window._current_folder = ""
-    window._update_action_states()
+    window._inspector.update_action_states()
     QApplication.processEvents()
+
+
+def controller_over(controller_class, window, attribute: str, **overrides):
+    """A real controller of ``controller_class`` working on ``window`` (a stand-in), published as ``window.<attribute>``.
+
+    ``overrides`` replace controller methods the test wants to record instead of run. A controller is a ``QObject`` and
+    needs a parent object to own it; the parent is kept alive on the stand-in.
+    """
+    from PySide6.QtCore import QObject
+
+    parent = QObject()
+    setattr(window, f"{attribute}_parent", parent)
+    controller = controller_class(parent)
+    controller._window = window
+    for name, value in overrides.items():
+        setattr(controller, name, value)
+    setattr(window, attribute, controller)
+    return controller

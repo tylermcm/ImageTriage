@@ -93,7 +93,7 @@ class RecycleBinController:
             window.actions.empty_recycle_bin.setEnabled(False)
             window.actions.empty_recycle_bin.setToolTip("Available after the folder finishes loading.")
             if update_action_states:
-                window._update_action_states()
+                window._inspector.update_action_states()
             return
         if self.is_temporary_storage_folder():
             recycle_root = self.recycle_root_for_folder()
@@ -103,14 +103,14 @@ class RecycleBinController:
                 "Permanently delete everything in this folder's local recycle bin."
             )
             if update_action_states:
-                window._update_action_states()
+                window._inspector.update_action_states()
             return
         window.actions.empty_recycle_bin.setEnabled(False)
         window.actions.empty_recycle_bin.setToolTip(
             "Available when browsing a removable drive with items in its Image Triage recycle folder."
         )
         if update_action_states:
-            window._update_action_states()
+            window._inspector.update_action_states()
 
     def empty_recycle_bin(self) -> None:
         window = self._window

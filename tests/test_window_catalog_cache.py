@@ -28,12 +28,16 @@ from image_triage.catalog_controller import CatalogController
 from image_triage.models import ImageRecord
 from image_triage.records_view_controller import RecordsViewController
 from image_triage.review_workflows import BurstRecommendation, TasteProfile, build_review_scoring_cache_key
+from image_triage.inspector_controller import InspectorController
+from image_triage.scan_controller import ScanController
+from image_triage.startup_controller import StartupController
+from image_triage.ui.ai_review_dialogs import AIReviewCompleteDialog
 from image_triage.window import (
-    AIReviewCompleteDialog,
     MainWindow,
     ScopeEnrichmentTask,
     _DirectorySuggestionController,
 )
+from tests.harness import controller_over
 
 
 def _ensure_app() -> QApplication:
@@ -103,6 +107,10 @@ class _WindowLaunchStub:
     _dir_confirmed_missing = MainWindow._dir_confirmed_missing
     _normalize_for_gui = MainWindow._normalize_for_gui
 
+    @property
+    def _navigation(self):
+        return SimpleNamespace(select_folder=self._select_folder)
+
     def _select_folder(
         self,
         folder: str,
@@ -156,6 +164,7 @@ class _ScopeStartStub:
         self._review_scoring_cache_detail = ""
         self._refresh_calls = 0
         _ai_run_over(self)
+        self._projects = SimpleNamespace(current_scope_key=self._current_scope_key)
 
     def _current_scope_key(self) -> str:
         return "catalog:root"
@@ -556,9 +565,7 @@ class _WorkflowInsightCacheStub:
         self._all_records_by_path = {record.path: record for record in records}
         self._taste_profile = TasteProfile()
         self._ai_run = SimpleNamespace(ai_result_for_record=lambda record: None)
-
-    def _burst_recommendation_for_record(self, record: ImageRecord | None):
-        return MainWindow._burst_recommendation_for_record(self, record)
+        controller_over(InspectorController, self, "_inspector")
 
 
 class WindowCatalogCacheTests(unittest.TestCase):
@@ -608,7 +615,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             repository.save_folder_records(folder, records)
             window = _WindowCacheStub(repository)
 
-            loaded_records, source = MainWindow._load_cached_folder_records(window, folder)
+            loaded_records, source = controller_over(ScanController, window, "_scan").load_cached_folder_records(folder)
 
             self.assertEqual(records, loaded_records)
             self.assertEqual("catalog", source)
@@ -627,7 +634,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             ]
             window = _WindowCacheStub(CatalogRepository(db_path))
 
-            MainWindow._persist_folder_record_cache(window, folder, records, source="test-save")
+            controller_over(ScanController, window, "_scan").persist_folder_record_cache(folder, records, source="test-save")
 
             self.assertEqual(records, window._catalog_repository.load_folder_records(folder))
 
@@ -635,7 +642,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
         folder = r"X:\Shots\Set A"
         window = _WindowRebuildStub(folder)
 
-        MainWindow._rebuild_current_folder_catalog_cache(window)
+        controller_over(ScanController, window, "_scan", load_folder=window._load_folder).rebuild_current_folder_catalog_cache()
 
         self.assertEqual([(folder, True, True)], window.load_calls)
         self.assertIn("rebuilding catalog cache", window.status_messages[-1].casefold())
@@ -643,7 +650,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
     def test_rebuild_current_folder_catalog_cache_requires_real_folder(self) -> None:
         window = _WindowRebuildStub("")
 
-        MainWindow._rebuild_current_folder_catalog_cache(window)
+        controller_over(ScanController, window, "_scan", load_folder=window._load_folder).rebuild_current_folder_catalog_cache()
 
         self.assertEqual([], window.load_calls)
         self.assertIn("open a real folder", window.status_messages[-1].casefold())
@@ -651,7 +658,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
     def test_open_launch_target_opens_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             stub = _WindowLaunchStub()
-            opened = MainWindow._open_launch_target(stub, temp_dir, chunked_restore=True)
+            opened = controller_over(StartupController, stub, "_startup").open_launch_target(temp_dir, chunked_restore=True)
         self.assertTrue(opened)
         self.assertEqual([(temp_dir, False, True, None)], stub.select_calls)
 
@@ -660,7 +667,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             image_path = Path(temp_dir) / "frame001.nef"
             image_path.write_text("x", encoding="utf-8")
             stub = _WindowLaunchStub()
-            opened = MainWindow._open_launch_target(stub, str(image_path), chunked_restore=True)
+            opened = controller_over(StartupController, stub, "_startup").open_launch_target(str(image_path), chunked_restore=True)
         self.assertTrue(opened)
         self.assertEqual([(temp_dir, False, True, str(image_path))], stub.select_calls)
 
@@ -683,7 +690,16 @@ class WindowCatalogCacheTests(unittest.TestCase):
             ]
             window = _ScopeStartStub(CatalogRepository(db_path), records)
 
-            MainWindow._start_scope_enrichment_task(window)
+            controller_over(
+                ScanController,
+                window,
+                "_scan",
+                cancel_scope_enrichment_task=window._cancel_scope_enrichment_task,
+                refresh_catalog_status_indicator=window._refresh_catalog_status_indicator,
+                handle_scope_enrichment_cache_status=window._handle_scope_enrichment_cache_status,
+                handle_scope_enrichment_finished=window._handle_scope_enrichment_finished,
+                handle_scope_enrichment_failed=window._handle_scope_enrichment_failed,
+            ).start_scope_enrichment_task()
 
             self.assertIsNotNone(window._active_scope_enrichment_task)
             self.assertEqual("building", window._review_scoring_cache_source)
@@ -704,7 +720,16 @@ class WindowCatalogCacheTests(unittest.TestCase):
             window = _ScopeStartStub(CatalogRepository(db_path), records)
             window._active_ai_task = object()
 
-            MainWindow._start_scope_enrichment_task(window)
+            controller_over(
+                ScanController,
+                window,
+                "_scan",
+                cancel_scope_enrichment_task=window._cancel_scope_enrichment_task,
+                refresh_catalog_status_indicator=window._refresh_catalog_status_indicator,
+                handle_scope_enrichment_cache_status=window._handle_scope_enrichment_cache_status,
+                handle_scope_enrichment_finished=window._handle_scope_enrichment_finished,
+                handle_scope_enrichment_failed=window._handle_scope_enrichment_failed,
+            ).start_scope_enrichment_task()
 
             self.assertIsNone(window._active_scope_enrichment_task)
             self.assertTrue(window._ai_deferred_background_work)
@@ -785,7 +810,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
         window = _WorkflowInsightCacheStub(records)
 
         with patch("image_triage.window.normalized_path_key", side_effect=AssertionError("workflow cache should not resolve paths")):
-            MainWindow._refresh_workflow_insights_cache(window, force_full=True)
+            controller_over(ScanController, window, "_scan").refresh_workflow_insights_cache(force_full=True)
 
         for record in records:
             self.assertIn(record.path, window._workflow_insights_by_path)
@@ -1221,7 +1246,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
     def test_apply_startup_window_state_fixup_forces_real_windows_maximize(self) -> None:
         stub = _WindowStateFixupStub(startup_state="maximized", maximized=True)
 
-        MainWindow._apply_startup_window_state_fixup(stub)
+        controller_over(StartupController, stub, "_startup").apply_startup_window_state_fixup()
 
         self.assertEqual(["normal", "maximized"], stub.calls)
         self.assertTrue(stub.isMaximized())
@@ -1229,7 +1254,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
     def test_apply_startup_window_state_fixup_maximizes_when_not_currently_maximized(self) -> None:
         stub = _WindowStateFixupStub(startup_state="maximized", maximized=False)
 
-        MainWindow._apply_startup_window_state_fixup(stub)
+        controller_over(StartupController, stub, "_startup").apply_startup_window_state_fixup()
 
         self.assertEqual(["maximized"], stub.calls)
         self.assertTrue(stub.isMaximized())

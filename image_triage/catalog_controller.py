@@ -150,12 +150,12 @@ class CatalogController:
                 if root.last_error:
                     tooltip_parts.append(f"Status: {root.last_error}")
                 action.setToolTip("\n".join(tooltip_parts))
-                action.triggered.connect(lambda _checked=False, target=root.path: window._browse_catalog(root_path_override=target))
+                action.triggered.connect(lambda _checked=False, target=root.path: window._catalog.browse_catalog(root_path_override=target))
         else:
             empty_action = window.catalog_menu.addAction("No library folders yet")
             empty_action.setEnabled(False)
         if window.actions is not None:
-            window._update_action_states()
+            window._inspector.update_action_states()
 
     # -- Catalog refresh task lifecycle ---------------------------------
 
@@ -189,7 +189,7 @@ class CatalogController:
     def _handle_progress(self, current: int, total: int, message: str) -> None:
         window = self._window
         dialog = self._show_progress_dialog(total)
-        window._update_progress_dialog(
+        window._export_jobs.update_progress_dialog(
             dialog,
             current=current,
             total=total,
@@ -223,7 +223,7 @@ class CatalogController:
 
     def _show_progress_dialog(self, total_steps: int) -> QProgressDialog:
         window = self._window
-        dialog = window._show_job_progress_dialog(
+        dialog = window._export_jobs.show_job_progress_dialog(
             key="catalog",
             total_steps=total_steps,
             spec=JobSpec(
@@ -239,7 +239,7 @@ class CatalogController:
 
     def _close_progress_dialog(self) -> None:
         window = self._window
-        window._close_job_progress_dialog("catalog")
+        window._export_jobs.close_job_progress_dialog("catalog")
         window._catalog_progress_dialog = None
 
     # -- Folder-records cache glue (also used by move/copy/delete/undo) -
@@ -265,7 +265,7 @@ class CatalogController:
             window.statusBar().showMessage("Open a real folder before rebuilding its catalog cache.")
             return
         window.statusBar().showMessage(f"Rebuilding catalog cache for {self._session.folder}...")
-        window._load_folder(self._session.folder, force_refresh=True, bypass_catalog_cache=True)
+        window._scan.load_folder(self._session.folder, force_refresh=True, bypass_catalog_cache=True)
 
     # -- Virtual collections ---------------------------------------------
 
@@ -370,13 +370,13 @@ class CatalogController:
         window.grid.set_collection_checkbox_mode(True, paths=collection.item_paths if collection is not None else ())
         window.grid.clear_selection(keep_current=True)
         # An unbuilt popout picks collection mode up when it is built.
-        preview = window._preview_if_built()
+        preview = window._preview_ctl.preview_if_built()
         if preview is not None:
             preview.set_collection_browse_mode(True)
         window.inspector_panel.setEnabled(False)
-        window._set_browser_view_mode("grid")
+        window._views.set_browser_view_mode("grid")
         self.refresh_collection_mode_ui()
-        window._update_action_states()
+        window._inspector.update_action_states()
         window.statusBar().showMessage("Collection mode: check images across folders, then save or cancel.")
 
     def refresh_collection_mode_ui(self) -> None:
@@ -405,13 +405,13 @@ class CatalogController:
         self._session.collection_mode = ""
         window._collection_target_id = ""
         window.grid.set_collection_checkbox_mode(False)
-        preview = window._preview_if_built()
+        preview = window._preview_ctl.preview_if_built()
         if preview is not None:
             preview.set_collection_browse_mode(False)
         window.inspector_panel.setEnabled(window._collection_previous_inspector_enabled)
         window.collection_mode_bar.hide()
-        window._set_browser_view_mode(previous_view)
-        window._update_action_states()
+        window._views.set_browser_view_mode(previous_view)
+        window._inspector.update_action_states()
         if show_message:
             window.statusBar().showMessage("Collection mode canceled; no collection changes were saved.")
 
@@ -439,7 +439,7 @@ class CatalogController:
                     scope_id=saved.id,
                     scope_label=f"Collection: {saved.name}",
                 )
-            window._refresh_collections_menu()
+            window._projects.refresh_collections_menu()
             window.statusBar().showMessage(f"Saved collection: {saved.name} ({saved.item_count} items)")
             return
         if not paths:
@@ -479,7 +479,7 @@ class CatalogController:
                 kind=result.kind,
                 item_paths=paths,
             )
-        window._refresh_collections_menu()
+        window._projects.refresh_collections_menu()
         if collection is not None:
             self.cancel_collection_mode(show_message=False)
             window.statusBar().showMessage(f"Saved collection: {collection.name} ({collection.item_count} items)")
@@ -488,7 +488,7 @@ class CatalogController:
         window = self._window
         collection = window._library_store.load_collection(collection_id)
         if collection is None:
-            window._refresh_collections_menu()
+            window._projects.refresh_collections_menu()
             window.statusBar().showMessage("That collection is no longer available.")
             return
         records, missing = self.resolve_records_for_paths(collection.item_paths)
@@ -524,7 +524,7 @@ class CatalogController:
         if collection is None:
             return
         updated = window._library_store.remove_paths_from_collection(collection.id, paths)
-        window._refresh_collections_menu()
+        window._projects.refresh_collections_menu()
         if updated is None:
             return
         if self._session.scope_kind == "collection" and self._session.scope_id == updated.id:
@@ -559,14 +559,14 @@ class CatalogController:
         if confirmation != QMessageBox.StandardButton.Yes:
             return
         deleted = window._library_store.delete_collection(collection.id)
-        window._refresh_collections_menu()
+        window._projects.refresh_collections_menu()
         if deleted and self._session.scope_kind == "collection" and self._session.scope_id == collection.id:
             last_folder = window._settings.value(window.LAST_FOLDER_KEY, "", str)
             if last_folder and not window._dir_confirmed_missing(last_folder):
-                window._select_folder(last_folder)
+                window._navigation.select_folder(last_folder)
             else:
                 self._session.folder = ""
-                window._set_scope_state(kind="folder", scope_id="", label="")
+                window._projects.set_scope_state(kind="folder", scope_id="", label="")
                 window._records_view.apply_loaded_records([])
         if deleted:
             window.statusBar().showMessage(f"Deleted collection: {collection.name}")

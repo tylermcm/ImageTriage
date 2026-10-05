@@ -26,7 +26,7 @@ def _set_raw(window, key, value) -> None:
 def test_view_state_loader_survives_garbage(main_window) -> None:
     for raw in ("", "not json", "[1, 2]", json.dumps({"a": "not a dict"})):
         _set_raw(main_window, MainWindow.FOLDER_VIEW_STATE_KEY, raw)
-        assert main_window._load_folder_view_states() == {}
+        assert main_window._settings_ctl.load_folder_view_states() == {}
 
 
 def test_view_state_loader_sanitises_fields(main_window) -> None:
@@ -36,7 +36,7 @@ def test_view_state_loader_sanitises_fields(main_window) -> None:
     }
     _set_raw(main_window, MainWindow.FOLDER_VIEW_STATE_KEY, json.dumps(payload))
 
-    states = main_window._load_folder_view_states()
+    states = main_window._settings_ctl.load_folder_view_states()
 
     assert states["c:/photos"] == {"sort": "Filename", "scroll": 0}
     assert "c:/other" not in states
@@ -47,7 +47,7 @@ def test_remember_saves_sort_scroll_and_current_photo(main_window, tmp_path) -> 
     main_window._folder_view_states = {}
     open_folder(main_window, tmp_path, 1)
 
-    main_window._remember_current_folder_view_state()
+    main_window._settings_ctl.remember_current_folder_view_state()
 
     saved = json.loads(main_window._settings.value(MainWindow.FOLDER_VIEW_STATE_KEY, "", str))
     state = saved[_memory_path_key(str(tmp_path))]
@@ -60,7 +60,7 @@ def test_view_state_history_is_capped_at_120_folders(main_window, tmp_path) -> N
     open_folder(main_window, tmp_path, 1)
     main_window._folder_view_states = {f"folder-{n}": {"sort": "Filename"} for n in range(130)}
 
-    main_window._remember_current_folder_view_state()
+    main_window._settings_ctl.remember_current_folder_view_state()
 
     assert len(main_window._folder_view_states) == 120
     assert _memory_path_key(str(tmp_path)) in main_window._folder_view_states
@@ -73,7 +73,7 @@ def test_restore_position_on_targets_the_saved_photo(main_window, tmp_path) -> N
         _memory_path_key(str(tmp_path)): {"sort": "Filename", "scroll": 300, "current": str(tmp_path / "b.jpg")}
     }
 
-    main_window._apply_folder_view_state(str(tmp_path))
+    main_window._settings_ctl.apply_folder_view_state(str(tmp_path))
 
     assert main_window._pending_folder_focus_path.endswith("b.jpg")
     assert main_window._pending_focus_scroll_top is True
@@ -87,7 +87,7 @@ def test_restore_position_off_restores_nothing(main_window, tmp_path) -> None:
         _memory_path_key(str(tmp_path)): {"sort": "Filename", "scroll": 300, "current": str(tmp_path / "b.jpg")}
     }
 
-    main_window._apply_folder_view_state(str(tmp_path))
+    main_window._settings_ctl.apply_folder_view_state(str(tmp_path))
 
     assert main_window._pending_folder_focus_path == ""
     assert main_window._pending_folder_scroll_value is None
@@ -98,7 +98,7 @@ def test_without_a_saved_photo_the_scroll_offset_is_used(main_window, tmp_path) 
     main_window._pending_folder_focus_path = ""
     main_window._folder_view_states = {_memory_path_key(str(tmp_path)): {"sort": "Filename", "scroll": 300}}
 
-    main_window._apply_folder_view_state(str(tmp_path))
+    main_window._settings_ctl.apply_folder_view_state(str(tmp_path))
 
     assert main_window._pending_folder_scroll_value == 300
 
@@ -108,7 +108,7 @@ def test_column_count_is_program_wide_not_restored_per_folder(main_window, tmp_p
     main_window._restore_folder_position_enabled = True
     main_window._folder_view_states = {_memory_path_key(str(tmp_path)): {"sort": "Filename", "columns": 7}}
 
-    main_window._apply_folder_view_state(str(tmp_path))
+    main_window._settings_ctl.apply_folder_view_state(str(tmp_path))
 
     assert main_window.grid._columns == before
 
@@ -179,7 +179,7 @@ def test_there_is_now_one_store_for_every_surface(main_window) -> None:
     hardcoded literal."""
     try:
         save_shortcut_overrides({"keep_at_cursor": "Ctrl+Alt+F10"})
-        main_window._apply_shortcut_overrides()
+        main_window._settings_ctl.apply_shortcut_overrides()
 
         assert load_shortcut_overrides().get("keep_at_cursor") == "Ctrl+Alt+F10"
         expected = QKeySequence("Ctrl+Alt+F10")
@@ -188,7 +188,7 @@ def test_there_is_now_one_store_for_every_surface(main_window) -> None:
         assert main_window.preview._review_key_shortcuts["keep_at_cursor"] == expected
     finally:
         save_shortcut_overrides({})
-        main_window._apply_shortcut_overrides()
+        main_window._settings_ctl.apply_shortcut_overrides()
 
 
 def test_the_registry_store_now_shares_the_main_settings_identity(main_window) -> None:

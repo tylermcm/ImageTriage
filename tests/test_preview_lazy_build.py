@@ -108,7 +108,7 @@ def _assert_quiet(calls: list[str], step: str) -> None:
 def test_startup_and_everyday_use_never_build_the_preview(tripwire, dialogs, tmp_path) -> None:
     with _fresh_window() as window:
         _assert_quiet(tripwire, "MainWindow.__init__")
-        assert window._preview_if_built() is None
+        assert window._preview_ctl.preview_if_built() is None
 
         window.show()
         _turn(400)  # _post_show_display_setup, _finish_startup_restore, startup focus timers...
@@ -127,13 +127,13 @@ def test_startup_and_everyday_use_never_build_the_preview(tripwire, dialogs, tmp
         _turn(60)
         _assert_quiet(tripwire, "_apply_display_profile / resize")
 
-        window._update_action_states()
-        window._apply_shortcut_overrides()
+        window._inspector.update_action_states()
+        window._settings_ctl.apply_shortcut_overrides()
         _assert_quiet(tripwire, "_update_action_states / _apply_shortcut_overrides")
 
-        window._handle_auto_advance_toggled(False)
-        window._handle_auto_advance_toggled(True)
-        window._handle_auto_bracket_toggled(False)
+        window._views.handle_auto_advance_toggled(False)
+        window._views.handle_auto_advance_toggled(True)
+        window._views.handle_auto_bracket_toggled(False)
         window.actions.compare_mode.setChecked(True)
         window.actions.compare_mode.setChecked(False)
         _assert_quiet(tripwire, "auto-advance / auto-bracket / compare toggles")
@@ -146,20 +146,20 @@ def test_startup_and_everyday_use_never_build_the_preview(tripwire, dialogs, tmp
 
         window.grid.set_current_index(1)
         window.grid.step_current(1)
-        window._toggle_winner(2)
-        window._toggle_reject(3)
+        window._annotation_ctl.toggle_winner(2)
+        window._annotation_ctl.toggle_reject(3)
         _turn(60)
         _assert_quiet(tripwire, "selection / winner / reject changes")
 
         window._command_palette.build_commands("main")
-        window._open_command_palette()
+        window._command_palette.open()
         assert window._active_command_palette is not None
         window._active_command_palette.reject()
         _turn()
         _assert_quiet(tripwire, "command palette build_commands / open / dismiss")
 
-        window._begin_collection_mode("create")
-        window._cancel_collection_mode()
+        window._catalog.begin_collection_mode("create")
+        window._catalog.cancel_collection_mode()
         _assert_quiet(tripwire, "collection mode on and off")
 
         window._zen.set_zen_mode(True)
@@ -167,21 +167,21 @@ def test_startup_and_everyday_use_never_build_the_preview(tripwire, dialogs, tmp
         _assert_quiet(tripwire, "zen mode on and off")
 
         with mock.patch.object(window, "_exec_dialog_with_geometry", side_effect=_accept_changed_settings):
-            window._show_settings()
+            window._settings_ctl.show_settings()
         _turn()
         _assert_quiet(tripwire, "the Settings dialog applying changes")
 
         window.close()
         _turn()
         _assert_quiet(tripwire, "closing the window")
-        assert window._preview_if_built() is None
+        assert window._preview_ctl.preview_if_built() is None
 
     # Positive control: the wire does fire when something really asks for the viewer.
     with _fresh_window() as window:
         with pytest.raises(RuntimeError, match="tripwire"):
             window.preview
         assert len(tripwire) == 1, "a real use of window.preview must reach the builder"
-        assert window._preview_if_built() is None, "a failed build must not leave a half-built viewer behind"
+        assert window._preview_ctl.preview_if_built() is None, "a failed build must not leave a half-built viewer behind"
 
 
 def _accept_changed_settings(dialog, _key):
@@ -205,8 +205,8 @@ def test_first_access_builds_exactly_once_and_the_accessor_never_builds(dialogs)
         real_init(self, *args, **kwargs)
 
     with _fresh_window() as window:
-        assert window._preview_if_built() is None
-        assert window._preview_is_visible() is False
+        assert window._preview_ctl.preview_if_built() is None
+        assert window._preview_ctl.preview_is_visible() is False
         assert built == []
 
         with mock.patch.object(FullScreenPreview, "__init__", counting):
@@ -214,9 +214,9 @@ def test_first_access_builds_exactly_once_and_the_accessor_never_builds(dialogs)
             second = window.preview
             assert first is second
             assert len(built) == 1
-            assert window._preview_if_built() is first
+            assert window._preview_ctl.preview_if_built() is first
             assert first.parent() is window
-            assert window._preview_is_visible() is False  # built, but not on screen
+            assert window._preview_ctl.preview_is_visible() is False  # built, but not on screen
             assert window._preview_navigation_dirty is False
 
 
@@ -227,7 +227,7 @@ def test_closing_a_window_with_an_unbuilt_preview_does_not_build_it(tripwire, di
         window.close()
         _turn()
         _assert_quiet(tripwire, "closing a window whose preview was never built")
-        assert window._preview_if_built() is None
+        assert window._preview_ctl.preview_if_built() is None
 
 
 # ---------------------------------------------------------------------------------------------
@@ -247,11 +247,11 @@ def test_deferred_build_builds_once_and_is_idempotent(dialogs) -> None:
         with mock.patch.object(FullScreenPreview, "__init__", counting):
             window.schedule_deferred_preview_build(delay_ms=0)
             window.schedule_deferred_preview_build(delay_ms=0)  # already scheduled: no second timer
-            assert window._preview_if_built() is None, "the build must wait for the event loop, not run inline"
-            assert pump_until(lambda: window._preview_if_built() is not None)
+            assert window._preview_ctl.preview_if_built() is None, "the build must wait for the event loop, not run inline"
+            assert pump_until(lambda: window._preview_ctl.preview_if_built() is not None)
             _turn(50)
             assert len(built) == 1
-            preview = window._preview_if_built()
+            preview = window._preview_ctl.preview_if_built()
             window.schedule_deferred_preview_build(delay_ms=0)  # already built: a no-op
             _turn(50)
             assert len(built) == 1
@@ -263,7 +263,7 @@ def test_deferred_build_waits_for_its_delay(dialogs) -> None:
         window.show()
         window.schedule_deferred_preview_build(delay_ms=60_000)
         _turn(100)
-        assert window._preview_if_built() is None
+        assert window._preview_ctl.preview_if_built() is None
 
 
 def test_deferred_build_firing_after_the_window_closed_is_harmless(tripwire, dialogs) -> None:
@@ -274,7 +274,7 @@ def test_deferred_build_firing_after_the_window_closed_is_harmless(tripwire, dia
         window.close()
         _turn(150)
         _assert_quiet(tripwire, "a deferred build firing after the window was closed")
-        assert window._preview_if_built() is None
+        assert window._preview_ctl.preview_if_built() is None
 
 
 def test_deferred_build_for_a_window_that_was_never_shown_is_skipped(tripwire, dialogs) -> None:
@@ -379,7 +379,7 @@ def test_a_lazily_built_viewer_replays_every_setting_changed_before_the_build(di
     with _fresh_window(seed=_seed_returning_user) as window:
         window.show()
         _turn(300)
-        assert window._preview_if_built() is None
+        assert window._preview_ctl.preview_if_built() is None
 
         # Everything the viewer mirrors, changed through the real code paths, with no viewer around.
         window._photoshop_executable = r"C:\Fake\Photoshop.exe"
@@ -387,17 +387,17 @@ def test_a_lazily_built_viewer_replays_every_setting_changed_before_the_build(di
         window._ui_gamma = 0.85
         window._appearance.apply_appearance()
         with mock.patch.object(window, "_exec_dialog_with_geometry", side_effect=_accept_changed_settings):
-            window._show_settings()  # preload 37, gamma 1.25, spacious, auto-advance flipped
-        window._handle_auto_bracket_toggled(True)
+            window._settings_ctl.show_settings()  # preload 37, gamma 1.25, spacious, auto-advance flipped
+        window._views.handle_auto_bracket_toggled(True)
         window.actions.compare_mode.setChecked(True)
         save_shortcut_overrides(
             {"keep_at_cursor": "Ctrl+Alt+F8", "accept_selection": "E", "open_command_palette": "Ctrl+Alt+J"}
         )
-        window._apply_shortcut_overrides()
-        window._begin_collection_mode("create")
+        window._settings_ctl.apply_shortcut_overrides()
+        window._catalog.begin_collection_mode("create")
         _turn(100)
 
-        assert window._preview_if_built() is None, "none of the above may have built the viewer"
+        assert window._preview_ctl.preview_if_built() is None, "none of the above may have built the viewer"
         assert window._preview_preload_batch_size == 37
         assert window._compare_enabled is True
 
@@ -452,29 +452,29 @@ def test_settings_changed_after_the_build_still_reach_the_viewer(dialogs) -> Non
             window.central_container.width(), window.central_container.height(), "spacious"
         )
 
-        window._handle_auto_advance_toggled(True)
+        window._views.handle_auto_advance_toggled(True)
         assert preview._auto_advance_enabled is True
-        window._handle_auto_bracket_toggled(True)
+        window._views.handle_auto_bracket_toggled(True)
         assert preview.auto_bracket_button.isChecked() is True
         window.actions.compare_mode.setChecked(True)
         assert preview.compare_mode() is True
         window.actions.compare_mode.setChecked(False)
         assert preview.compare_mode() is False
 
-        window._begin_collection_mode("create")
+        window._catalog.begin_collection_mode("create")
         assert preview._collection_browse_mode is True
-        window._cancel_collection_mode()
+        window._catalog.cancel_collection_mode()
         assert preview._collection_browse_mode is False
 
         with mock.patch.object(window, "_exec_dialog_with_geometry", side_effect=_accept_changed_settings):
-            window._show_settings()
+            window._settings_ctl.show_settings()
         assert preview.preload_batch_size() == 37 == window._preview_preload_batch_size
         assert preview._auto_advance_enabled == window._auto_advance_enabled
 
         save_shortcut_overrides(
             {"keep_at_cursor": "Ctrl+Alt+F7", "reject_selection": "Ctrl+Alt+Y", "open_command_palette": "Ctrl+Alt+L"}
         )
-        window._apply_shortcut_overrides()
+        window._settings_ctl.apply_shortcut_overrides()
         _assert_viewer_mirrors_window(window, preview)
         assert preview._review_key_shortcuts["keep_at_cursor"] == QKeySequence("Ctrl+Alt+F7")
         assert window._command_palette_shortcut_preview.key() == QKeySequence("Ctrl+Alt+L")
@@ -527,9 +527,9 @@ def test_signals_wired_by_the_builder_reach_the_window(dialogs, tmp_path) -> Non
 def test_a_quick_view_launch_builds_the_viewer_when_it_opens_the_image(dialogs, tmp_path) -> None:
     (image,) = make_jpegs(tmp_path / "launch", ["only.jpg"])
     with _fresh_window(launch_target=image, quick_view=True) as window:
-        assert window._preview_if_built() is None, "construction alone must still not build it"
-        assert pump_until(window._preview_is_visible, timeout=20), "the quick view never opened its image"
-        preview = window._preview_if_built()
+        assert window._preview_ctl.preview_if_built() is None, "construction alone must still not build it"
+        assert pump_until(window._preview_ctl.preview_is_visible, timeout=20), "the quick view never opened its image"
+        preview = window._preview_ctl.preview_if_built()
         assert preview is not None and preview is window.preview
         assert preview.isVisible() and window._pending_quick_view_path == ""
         window._quick_view_mode = False  # closing a real quick view quits the application

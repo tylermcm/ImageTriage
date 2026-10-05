@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QDialog, QMenu
 
+import image_triage.navigation_controller as navigation_module
 import image_triage.window as window_module
 from tests.harness import install_dialog_guards, make_jpegs
 from tests.test_preview_lazy_build import _fresh_window
@@ -26,9 +27,9 @@ def test_show_hidden_folders_toggle_rescans_the_current_folder(tmp_path, monkeyp
     with _fresh_window() as window:
         window._current_folder = str(folder)
         window._scope_kind = "folder"
-        window._handle_show_hidden_folders_toggled(True)
+        window._navigation.handle_show_hidden_folders_toggled(True)
         assert window._show_hidden_folders is True
-        window._handle_show_hidden_folders_toggled(False)
+        window._navigation.handle_show_hidden_folders_toggled(False)
         assert window._show_hidden_folders is False
 
 
@@ -45,6 +46,7 @@ def test_folder_menu_add_to_library_starts_indexing(tmp_path, monkeypatch):
             return next(action for action in self.actions() if action.text() == "Add To Library")
 
     monkeypatch.setattr(window_module, "QMenu", _PickAddToLibraryMenu)
+    monkeypatch.setattr(navigation_module, "QMenu", _PickAddToLibraryMenu)
     with _fresh_window() as window:
         monkeypatch.setattr(window._library_store, "add_catalog_root", lambda path: None)
         monkeypatch.setattr(
@@ -52,7 +54,7 @@ def test_folder_menu_add_to_library_starts_indexing(tmp_path, monkeypatch):
             "start_catalog_refresh",
             lambda roots, *, label: started.append((tuple(roots), label)) or True,
         )
-        window._show_folder_context_menu(str(folder), QPoint(0, 0), is_favorite=False)
+        window._navigation.show_folder_context_menu(str(folder), QPoint(0, 0), is_favorite=False)
     assert started and started[0][0] == (str(folder),)
 
 

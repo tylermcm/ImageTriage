@@ -14,12 +14,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QListWidget, QListWidgetItem
 
 from image_triage.library_store import LibraryStore
-from image_triage.window import (
-    _MAX_VISIBLE_PROJECT_ROWS,
-    _PROJECT_EMPTY_ROW_PX,
-    _PROJECT_ROW_PX,
-    MainWindow,
-)
+from image_triage.projects_controller import ProjectsController
+from image_triage.ui.project_rows import _MAX_VISIBLE_PROJECT_ROWS, _PROJECT_EMPTY_ROW_PX, _PROJECT_ROW_PX
+from image_triage.window import MainWindow
+from tests.harness import controller_over
 
 
 class _PanelHost:
@@ -28,10 +26,8 @@ class _PanelHost:
     def __init__(self, store: LibraryStore) -> None:
         self._library_store = store
         self.projects_list = QListWidget()
+        controller_over(ProjectsController, self, "_projects")
 
-    _refresh_projects_panel = MainWindow._refresh_projects_panel
-    _update_projects_height = MainWindow._update_projects_height
-    _project_id_for_item = MainWindow._project_id_for_item
 
 
 class CollectionsPanelTests(unittest.TestCase):
@@ -64,36 +60,36 @@ class CollectionsPanelTests(unittest.TestCase):
             pass
 
     def test_empty_state_is_shown_and_not_selectable(self) -> None:
-        self.host._refresh_projects_panel()
+        self.host._projects.refresh_projects_panel()
         self.assertEqual(1, self.host.projects_list.count())
         item = self.host.projects_list.item(0)
         self.assertEqual("No collections yet.", item.text())
         self.assertEqual(_PROJECT_EMPTY_ROW_PX, item.sizeHint().height())
         self.assertTrue(item.textAlignment() & Qt.AlignmentFlag.AlignTop)
         self.assertEqual(Qt.ItemFlag.NoItemFlags, item.flags())
-        self.assertEqual("", self.host._project_id_for_item(item))
+        self.assertEqual("", self.host._projects.project_id_for_item(item))
 
     def test_lists_collections_with_their_counts(self) -> None:
         created = self.store.create_collection(name="Client Job", item_paths=("a.jpg", "b.jpg"))
-        self.host._refresh_projects_panel()
+        self.host._projects.refresh_projects_panel()
         self.assertEqual(1, self.host.projects_list.count())
         item = self.host.projects_list.item(0)
         self.assertIn("Client Job", item.text())
         self.assertIn("2", item.text(), "the item count belongs in the label")
-        self.assertEqual(created.id, self.host._project_id_for_item(item))
+        self.assertEqual(created.id, self.host._projects.project_id_for_item(item))
 
     def test_reflects_later_additions(self) -> None:
         collection = self.store.create_collection(name="Portfolio", item_paths=("a.jpg",))
-        self.host._refresh_projects_panel()
+        self.host._projects.refresh_projects_panel()
         self.store.add_paths_to_collection(collection.id, ("b.jpg", "c.jpg"))
-        self.host._refresh_projects_panel()
+        self.host._projects.refresh_projects_panel()
         self.assertIn("3", self.host.projects_list.item(0).text())
 
     def test_height_is_capped_so_it_cannot_crowd_the_pane(self) -> None:
         overflow = _MAX_VISIBLE_PROJECT_ROWS + 4
         for index in range(overflow):
             self.store.create_collection(name=f"Set {index}", item_paths=(f"{index}.jpg",))
-        self.host._refresh_projects_panel()
+        self.host._projects.refresh_projects_panel()
         panel = self.host.projects_list
         self.assertEqual(overflow, panel.count())
 
@@ -106,7 +102,7 @@ class CollectionsPanelTests(unittest.TestCase):
 
     def test_short_list_is_never_taller_than_its_rows(self) -> None:
         self.store.create_collection(name="Only one", item_paths=("a.jpg",))
-        self.host._refresh_projects_panel()
+        self.host._projects.refresh_projects_panel()
         panel = self.host.projects_list
         rows = [panel.item(i).sizeHint().height() for i in range(panel.count())]
         # It may shrink to share the pane, but it never claims more than its
@@ -118,14 +114,14 @@ class CollectionsPanelTests(unittest.TestCase):
         # QSize(-1, h) is invalid and Qt silently drops the hint, so the width
         # must be non-negative for the height to stick at all.
         self.store.create_collection(name="Only one", item_paths=("a.jpg",))
-        self.host._refresh_projects_panel()
+        self.host._projects.refresh_projects_panel()
         hint = self.host.projects_list.item(0).sizeHint()
         self.assertTrue(hint.isValid(), "an invalid hint is discarded by Qt")
         self.assertEqual(_PROJECT_ROW_PX, hint.height())
 
     def test_id_lookup_tolerates_a_missing_item(self) -> None:
-        self.assertEqual("", self.host._project_id_for_item(None))
-        self.assertEqual("", self.host._project_id_for_item(QListWidgetItem("stray")))
+        self.assertEqual("", self.host._projects.project_id_for_item(None))
+        self.assertEqual("", self.host._projects.project_id_for_item(QListWidgetItem("stray")))
 
 
 if __name__ == "__main__":
