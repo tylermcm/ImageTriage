@@ -216,7 +216,7 @@ def checkable_bar(window):
     finally:
         for attr, value in saved_state.items():
             setattr(window, attr, value)
-        window._update_action_states()
+        window._inspector.update_action_states()
 
 
 def test_blocked_checked_state_pushed_by_update_action_states_reaches_the_buttons(checkable_bar) -> None:
@@ -234,7 +234,7 @@ def test_blocked_checked_state_pushed_by_update_action_states_reaches_the_button
 
     for attr in CHECKABLE_ITEMS.values():
         setattr(window, attr, True)
-    window._update_action_states()
+    window._inspector.update_action_states()
     for target in ("manual", "ai"):
         for item_id in CHECKABLE_ITEMS:
             button = _button_for(window, item_id, target)
@@ -246,7 +246,7 @@ def test_blocked_checked_state_pushed_by_update_action_states_reaches_the_button
 
     for attr in CHECKABLE_ITEMS.values():
         setattr(window, attr, False)
-    window._update_action_states()
+    window._inspector.update_action_states()
     for target in ("manual", "ai"):
         for item_id in CHECKABLE_ITEMS:
             button = _button_for(window, item_id, target)

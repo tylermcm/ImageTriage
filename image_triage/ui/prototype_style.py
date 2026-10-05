@@ -11,6 +11,8 @@ import math
 from pathlib import Path
 import time
 
+from .. import path_policy
+
 from PySide6.QtCore import (
     QFileInfo,
     QModelIndex,
@@ -902,6 +904,13 @@ class _FolderTreeDelegate(QStyledItemDelegate):
             path = str(model.filePath(index))
         except (AttributeError, RuntimeError):
             return None
+        usage = getattr(model, "usage_ratio", None)
+        if usage is not None:
+            # The Drives model measures a plain local drive itself and learns every other drive's from a background
+            # check; asking QStorageInfo here would block the window for ~20 s on a network drive that is offline.
+            return usage(path)
+        if not path_policy.is_plain_local(path):
+            return None
         now = time.monotonic()
         cached = self._usage_cache.get(path)
         if cached is not None and now - cached[0] < self._USAGE_CACHE_SECONDS:
@@ -918,6 +927,9 @@ def _index_is_drive(index: QModelIndex) -> bool:
     if not index.isValid() or index.parent().isValid():
         return False
     model = index.model()
+    is_drive = getattr(model, "is_drive", None)
+    if is_drive is not None:  # the Drives list's own model answers without touching any drive
+        return bool(is_drive(index))
     try:
         return bool(model.fileInfo(index).isRoot())
     except (AttributeError, RuntimeError):

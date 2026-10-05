@@ -55,7 +55,7 @@ class ToolModeController(QObject):
     def start_batch_resize_tool_mode(self) -> None:
         if not self._window._current_folder or not self._window._all_records or self._window._is_recycle_folder():
             return
-        if not any(self._window._record_supports_resize(record) for record in self._window._all_records):
+        if not any(self._window._export_jobs.record_supports_resize(record) for record in self._window._all_records):
             return
         if self._window._active_tool_mode == "batch_resize" and self._window.grid.tool_checkbox_mode():
             self._window.statusBar().showMessage("Batch Resize tool is already active.")
@@ -70,7 +70,7 @@ class ToolModeController(QObject):
     def start_batch_convert_tool_mode(self) -> None:
         if not self._window._current_folder or not self._window._all_records or self._window._is_recycle_folder():
             return
-        if not any(self._window._record_supports_convert(record) for record in self._window._all_records):
+        if not any(self._window._export_jobs.record_supports_convert(record) for record in self._window._all_records):
             return
         if self._window._active_tool_mode == "batch_convert" and self._window.grid.tool_checkbox_mode():
             self._window.statusBar().showMessage("Batch Convert tool is already active.")
@@ -88,7 +88,7 @@ class ToolModeController(QObject):
         indexes = [
             index
             for index, record in enumerate(self._window._records)
-            if self._window._record_supports_resize(record)
+            if self._window._export_jobs.record_supports_resize(record)
         ]
         if not indexes:
             self._window.statusBar().showMessage("No resize-eligible images are available in this folder.")
@@ -129,7 +129,7 @@ class ToolModeController(QObject):
                     f"{scope_label}\n"
                     f"{skipped_raw_count} RAW file(s) were skipped because resize can't be used on RAW files."
                 )
-            applied = self._window._open_resize_dialog(
+            applied = self._window._export_jobs.open_resize_dialog(
                 sources,
                 title="Batch Resize Selection",
                 scope_label=scope_label,
@@ -154,7 +154,7 @@ class ToolModeController(QObject):
                 f"{scope_label}\n"
                 f"{skipped_raw_count} RAW file(s) were skipped because convert can't be used on RAW files."
             )
-        applied = self._window._open_convert_dialog(
+        applied = self._window._export_jobs.open_convert_dialog(
             sources,
             title="Batch Convert Selection",
             scope_label=scope_label,
@@ -190,7 +190,7 @@ class ToolModeController(QObject):
         elif self._window._active_tool_mode == "batch_resize":
             eligible_count = len(self.selected_resize_sources_for_tool_mode())
             skipped_raw_count = max(0, selected_count - eligible_count)
-            total_eligible_count = sum(1 for record in self._window._records if self._window._record_supports_resize(record))
+            total_eligible_count = sum(1 for record in self._window._records if self._window._export_jobs.record_supports_resize(record))
             self._window.tool_mode_add_all_button.show()
             self._window.tool_mode_add_all_button.setEnabled(total_eligible_count > 0)
             self._window.tool_mode_title.setText("Batch Resize")
@@ -233,7 +233,7 @@ class ToolModeController(QObject):
             source
             for index in self._window.grid.selected_indexes()
             if 0 <= index < len(self._window._records)
-            for source in [self._window._resize_source_for_index(index)]
+            for source in [self._window._export_jobs.resize_source_for_index(index)]
             if source is not None
         ]
 
@@ -242,6 +242,6 @@ class ToolModeController(QObject):
             source
             for index in self._window.grid.selected_indexes()
             if 0 <= index < len(self._window._records)
-            for source in [self._window._convert_source_for_index(index)]
+            for source in [self._window._export_jobs.convert_source_for_index(index)]
             if source is not None
         ]

@@ -84,7 +84,7 @@ class BatchRenameApplyController:
 
     def _handle_progress(self, current: int, total: int, message: str) -> None:
         dialog = self._show_progress_dialog(total)
-        self._window._update_progress_dialog(
+        self._window._export_jobs.update_progress_dialog(
             dialog,
             current=current,
             total=total,
@@ -119,7 +119,7 @@ class BatchRenameApplyController:
         QMessageBox.warning(window, "Batch Rename Failed", f"Could not apply the batch rename.\n\n{message}")
 
     def _show_progress_dialog(self, total_steps: int) -> QProgressDialog:
-        dialog = self._window._show_job_progress_dialog(
+        dialog = self._window._export_jobs.show_job_progress_dialog(
             key="batch_rename",
             total_steps=total_steps,
             spec=JobSpec(
@@ -135,5 +135,5 @@ class BatchRenameApplyController:
         return dialog
 
     def _close_progress_dialog(self) -> None:
-        self._window._close_job_progress_dialog("batch_rename")
+        self._window._export_jobs.close_job_progress_dialog("batch_rename")
         self._progress_dialog = None

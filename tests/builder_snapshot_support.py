@@ -448,21 +448,21 @@ def stub_menu_snapshots() -> dict[str, list[str]]:
 # --- Command palette -----------------------------------------------------------
 # Window methods that palette callbacks reach; replaced by recorders while a
 # palette is described, so invoking a callback never runs the real handler.
-_PALETTE_CALLBACK_TARGETS = (
-    "_apply_filter_preset",
-    "_run_workflow_recipe",
-    "_apply_workspace_preset",
-    "_open_virtual_collection",
-    "_browse_catalog",
-    "_move_selected_records_to_destination",
-    "_handle_preview_rename_requested",
-    "_handle_preview_winner_requested",
-    "_handle_preview_reject_requested",
-    "_handle_preview_keep_requested",
-    "_handle_preview_move_requested",
-    "_handle_preview_delete_requested",
-    "_handle_preview_tag_requested",
-    "_open_preview_image_in_photoshop",
+_PALETTE_CALLBACK_TARGETS: tuple[str | tuple[str, str], ...] = (
+    ("_records_view", "apply_filter_preset"),
+    ("_export_jobs", "run_workflow_recipe"),
+    ("_settings_ctl", "apply_workspace_preset"),
+    ("_catalog", "open_virtual_collection"),
+    ("_catalog", "browse_catalog"),
+    ("_record_ops", "move_selected_records_to_destination"),
+    ("_preview_ctl", "handle_preview_rename_requested"),
+    ("_preview_ctl", "handle_preview_winner_requested"),
+    ("_preview_ctl", "handle_preview_reject_requested"),
+    ("_preview_ctl", "handle_preview_keep_requested"),
+    ("_preview_ctl", "handle_preview_move_requested"),
+    ("_preview_ctl", "handle_preview_delete_requested"),
+    ("_preview_ctl", "handle_preview_tag_requested"),
+    ("_preview_ctl", "open_preview_image_in_photoshop"),
 )
 
 
@@ -626,11 +626,15 @@ def palette_state(window, state: PaletteState) -> Iterator[tuple[list, StubPrevi
         patch(window, "_saved_workspace_presets", list(fixtures.workspaces) if data else [])
         patch(window._library_store, "list_collections", lambda: list(fixtures.collections) if data else [])
         patch(window._library_store, "list_catalog_roots", lambda: list(fixtures.roots) if data else [])
-        patch(window, "_recent_destination_paths", lambda exclude_current_folder=False: list(fixtures.recents) if data else [])
+        patch(window._navigation, "recent_destination_paths", lambda exclude_current_folder=False: list(fixtures.recents) if data else [])
 
         # Callback targets become recorders.
-        for name in _PALETTE_CALLBACK_TARGETS:
-            patch(window, name, _Recorder(window_calls, name))
+        for target in _PALETTE_CALLBACK_TARGETS:
+            if isinstance(target, tuple):
+                owner, name = target
+                patch(getattr(window, owner), name, _Recorder(window_calls, f"{owner}.{name}"))
+            else:
+                patch(window, target, _Recorder(window_calls, target))
 
         # Action enablement and shortcuts (both restored afterwards) and presence. The
         # palette shows each action's *current* shortcut, which other tests may have

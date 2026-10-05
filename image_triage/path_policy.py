@@ -23,7 +23,10 @@ from pathlib import Path
 
 from .file_ops import is_unc_path, unc_share_root
 
+DRIVE_REMOVABLE = 2
 DRIVE_FIXED = 3
+DRIVE_REMOTE = 4
+DRIVE_CDROM = 5
 
 
 def drive_root(path: str | None) -> str:
@@ -70,3 +73,25 @@ def confirmed_missing(path: str | None) -> bool:
     if not path or not is_plain_local(path):
         return False
     return not os.path.isdir(path)
+
+
+def drive_roots() -> list[tuple[str, int]]:
+    """The drives this machine has right now as ``("C:/", drive_type)``, from the drive-letter bitmask and
+    ``GetDriveTypeW``: neither touches a drive, so an offline mapped drive costs nothing here. (Asking Windows *about* a
+    dead network drive, by existence check, label, size or listing, is what blocks, for ~20 s, and a
+    ``QFileSystemModel`` rooted at "all drives" does exactly that on its single worker thread.)
+
+    Off Windows there is one root, ``/``, and it counts as a plain local drive.
+    """
+    if os.name != "nt":
+        return [("/", DRIVE_FIXED)]
+    try:
+        mask = int(ctypes.windll.kernel32.GetLogicalDrives())  # type: ignore[attr-defined]
+    except Exception:
+        return []
+    roots: list[tuple[str, int]] = []
+    for offset in range(26):
+        if mask & (1 << offset):
+            letter = chr(ord("A") + offset)
+            roots.append((f"{letter}:/", _drive_type(f"{letter}:\\")))
+    return roots

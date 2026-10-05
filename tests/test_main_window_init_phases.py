@@ -275,7 +275,7 @@ def test_cross_phase_ordering_rules_found_in_the_stage_3_audit() -> None:
 
     # actions are built, then the record-filter actions fill actions.ai_state_actions, then the menu bar reads it
     build_actions = _phase_index_calling("build_main_window_actions")
-    filter_actions = _phase_index_calling("_build_record_filter_actions")
+    filter_actions = _phase_index_calling("build_record_filter_actions")
     menu_bar = _phase_index_calling("build_main_menu_bar")
     docks = _phase_index_calling("build_workspace_docks")
     assert build_actions <= filter_actions < menu_bar, "build_main_menu_bar reads actions.ai_state_actions"
@@ -285,7 +285,7 @@ def test_cross_phase_ordering_rules_found_in_the_stage_3_audit() -> None:
     # the top bar hosts actions, so it is built after them
     assert build_actions < _phase_index_calling("build_prototype_top_bar")
     # the window state is restored after the docks it restores exist, and last
-    assert docks < _phase_index_calling("_restore_window_state") == len(INIT_PHASES) - 1
+    assert docks < _phase_index_calling("restore_window_state") == len(INIT_PHASES) - 1
 
 
 # --------------------------------------------------------------------------- a real window

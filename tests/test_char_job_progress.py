@@ -27,7 +27,7 @@ from image_triage.job_controller import JobController
 def test_update_progress_dialog_is_a_real_callable_method(main_window) -> None:
     assert "_update_progress_dialog" not in main_window.__dict__
     dialog = QProgressDialog(main_window)
-    main_window._update_progress_dialog(
+    main_window._export_jobs.update_progress_dialog(
         dialog,
         current=3,
         total=10,
@@ -41,22 +41,22 @@ def test_update_progress_dialog_is_a_real_callable_method(main_window) -> None:
 
 def test_update_progress_dialog_falls_back_to_default_label_when_message_is_empty(main_window) -> None:
     dialog = QProgressDialog(main_window)
-    main_window._update_progress_dialog(
+    main_window._export_jobs.update_progress_dialog(
         dialog, current=1, total=1, message="", default_label="fallback label"
     )
     assert dialog.labelText() == "fallback label"
 
 
 def test_resize_progress_tick_updates_the_dialog_without_raising(main_window) -> None:
-    main_window._handle_resize_started(5)
-    main_window._handle_resize_progress(2, 5, "Saving b.jpg...")
+    main_window._export_jobs.handle_resize_started(5)
+    main_window._export_jobs.handle_resize_progress(2, 5, "Saving b.jpg...")
 
     dialog = main_window._resize_progress_dialog
     assert dialog is not None
     assert dialog.value() == 2
     assert dialog.maximum() == 5
     assert dialog.labelText() == "Saving b.jpg..."
-    main_window._close_resize_progress_dialog()
+    main_window._export_jobs.close_resize_progress_dialog()
 
 
 def test_catalog_refresh_progress_tick_updates_the_dialog_without_raising(main_window) -> None:
@@ -71,14 +71,14 @@ def test_catalog_refresh_progress_tick_updates_the_dialog_without_raising(main_w
 
 
 def test_app_update_dialog_goes_through_job_controller_not_a_shadowed_attribute(main_window) -> None:
-    dialog = main_window._show_update_progress_dialog()
+    dialog = main_window._help_update.show_update_progress_dialog()
     assert isinstance(dialog, QProgressDialog)
     assert isinstance(main_window._job_controllers.get("app_update"), JobController)
 
-    main_window._handle_update_download_progress(5 * 1024 * 1024, 10 * 1024 * 1024, "installer.exe")
+    main_window._help_update.handle_update_download_progress(5 * 1024 * 1024, 10 * 1024 * 1024, "installer.exe")
     assert dialog.labelText() == "Downloading installer.exe (5/10 MB)..."
 
-    main_window._close_update_progress_dialog()
+    main_window._help_update.close_update_progress_dialog()
     assert "app_update" not in main_window._job_controllers
 
 

@@ -319,14 +319,14 @@ class RecordsViewController:
         folder_changed = _memory_path_key(folder) != _memory_path_key(self._session.folder)
         if folder_changed:
             if not getattr(window._toolbar, "_nav_suppress_history", False) and self._session.folder:
-                nav_back = getattr(window, "_nav_back", None)
+                nav_back = getattr(window._toolbar, "_nav_back", None)
                 if nav_back is not None:
                     nav_back.append(self._session.folder)
                     if len(nav_back) > 100:
                         del nav_back[0]
-                    if getattr(window, "_nav_forward", None) is not None:
-                        window._nav_forward.clear()
-            window._remember_current_folder_view_state()
+                    if getattr(window._toolbar, "_nav_forward", None) is not None:
+                        window._toolbar._nav_forward.clear()
+            window._settings_ctl.remember_current_folder_view_state()
             window._ai_run.cancel_hidden_ai_results_load()
             window._hidden_ai_results_checked_scope_key = ""
         normalized_focus_path = normalize_filesystem_path(preferred_record_path) if preferred_record_path else ""
@@ -335,13 +335,13 @@ class RecordsViewController:
         elif folder_changed:
             window._pending_folder_focus_path = ""
         self._session.folder = folder
-        window._update_nav_history_buttons()
+        window._navigation.update_nav_history_buttons()
         window._folder_records = []
-        window._set_scope_state(kind="folder", scope_id=_memory_path_key(folder), label=folder)
-        window._refresh_current_folder_watch()
+        window._projects.set_scope_state(kind="folder", scope_id=_memory_path_key(folder), label=folder)
+        window._scan.refresh_current_folder_watch()
         window._settings.setValue(window.LAST_FOLDER_KEY, folder)
-        window._remember_recent_folder(folder)
-        window._apply_folder_view_state(folder)
+        window._navigation.remember_recent_folder(folder)
+        window._settings_ctl.apply_folder_view_state(folder)
         window._scan_token += 1
         token = window._scan_token
         if chunked_restore:
@@ -355,9 +355,9 @@ class RecordsViewController:
         window._ai_deferred_background_scope_key = ""
         window._catalog_load_source = "scanning"
         window._catalog_load_detail = f"Scanning {folder}..."
-        window._reset_review_cache_status()
-        window._refresh_catalog_status_indicator()
-        window._cancel_scope_enrichment_task()
+        window._scan.reset_review_cache_status()
+        window._scan.refresh_catalog_status_indicator()
+        window._scan.cancel_scope_enrichment_task()
         window._annotation_hydration_token += 1
         if window._active_annotation_hydration_task is not None:
             window._active_annotation_hydration_task.cancel()
@@ -389,7 +389,7 @@ class RecordsViewController:
         window.statusBar().showMessage(f"Scanning {folder}...")
         window._records_repo.clear()
         window._folder_records = []
-        window._refresh_directory_navigation_buttons()
+        window._navigation.refresh_directory_navigation_buttons()
         window._records = []
         self._last_view_record_paths = ()
         window._record_index_by_path = {}
@@ -415,8 +415,8 @@ class RecordsViewController:
         window.grid.set_empty_message(f"Scanning {Path(folder).name}...")
         window.grid.set_items([], emit_state_signals=False, request_thumbnails=False)
         window.details_view.set_records([])
-        window._set_annotation_views()
-        window._refresh_viewport_mode()
+        window._views.set_annotation_views()
+        window._views.refresh_viewport_mode()
         window._ai_run.update_ai_toolbar_state()
 
         task = FolderScanTask(
@@ -424,15 +424,15 @@ class RecordsViewController:
             token,
             window._sort_mode,
             prefer_cached_only=(not force_refresh and window._is_slow_source_folder(folder)),
-            use_catalog_cache=window._catalog_cache_reads_enabled(),
+            use_catalog_cache=window._scan.catalog_cache_reads_enabled(),
             read_cached_records=not bypass_catalog_cache,
             include_hidden_folders=window._show_hidden_folders,
         )
         self._active_scan_tasks[token] = task
-        task.signals.children.connect(window._handle_scan_children, Qt.ConnectionType.QueuedConnection)
-        task.signals.cached.connect(window._handle_scan_cached, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(window._handle_scan_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(window._handle_scan_failed, Qt.ConnectionType.QueuedConnection)
+        task.signals.children.connect(window._scan.handle_scan_children, Qt.ConnectionType.QueuedConnection)
+        task.signals.cached.connect(window._scan.handle_scan_cached, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(window._scan.handle_scan_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(window._scan.handle_scan_failed, Qt.ConnectionType.QueuedConnection)
         window._scan_pool.start(task)
 
     def load_virtual_scope_records(
@@ -446,13 +446,13 @@ class RecordsViewController:
         window = self._window
         if window._active_tool_mode or window.grid.tool_checkbox_mode():
             window._tool_mode.cancel_tool_mode(show_message=False)
-        window._remember_current_folder_view_state()
+        window._settings_ctl.remember_current_folder_view_state()
         window._pending_folder_scroll_value = None
         window._scan_in_progress = False
         window._scan_token += 1
         window._ai_deferred_background_work = False
         window._ai_deferred_background_scope_key = ""
-        window._cancel_scope_enrichment_task()
+        window._scan.cancel_scope_enrichment_task()
         window._annotation_hydration_token += 1
         if window._active_annotation_hydration_task is not None:
             window._active_annotation_hydration_task.cancel()
@@ -471,15 +471,15 @@ class RecordsViewController:
         window._pending_folder_focus_path = ""
         self._session.folder = ""
         window._folder_records = []
-        window._set_scope_state(kind=scope_kind, scope_id=scope_id, label=scope_label)
-        window._refresh_directory_navigation_buttons()
-        window._refresh_current_folder_watch()
+        window._projects.set_scope_state(kind=scope_kind, scope_id=scope_id, label=scope_label)
+        window._navigation.refresh_directory_navigation_buttons()
+        window._scan.refresh_current_folder_watch()
         self._scan_showed_cached = False
         window._scan_cached_source = ""
         window._catalog_load_source = "idle"
         window._catalog_load_detail = "Virtual scopes are loaded from app state, not folder cache."
-        window._reset_review_cache_status()
-        window._refresh_catalog_status_indicator()
+        window._scan.reset_review_cache_status()
+        window._scan.refresh_catalog_status_indicator()
         window._ai_run.clear_ai_results_state(preserve_setting=True)
         window._recycle_bin.refresh_recycle_button()
         window.grid.set_empty_message("Choose a folder to start triaging images.")
@@ -518,14 +518,14 @@ class RecordsViewController:
         window = self._window
         if defer_enrichment:
             self._deferred_enrichment_pending = True
-            self._deferred_enrichment_scope_key = window._current_scope_key()
+            self._deferred_enrichment_scope_key = window._projects.current_scope_key()
             self._deferred_enrichment_token = window._scan_token
             if not window._scan_in_progress and not self.records_view_chunk_active():
                 self.schedule_loaded_records_enrichment()
             return
-        window._start_scope_enrichment_task(records)
-        window._start_annotation_hydration(records)
-        window._start_review_intelligence_analysis()
+        window._scan.start_scope_enrichment_task(records)
+        window._annotation_ctl.start_annotation_hydration(records)
+        window._scan.start_review_intelligence_analysis()
 
     def apply_loaded_records(
         self,
@@ -537,7 +537,7 @@ class RecordsViewController:
     ) -> None:
         window = self._window
         window._records_repo.reload(records)
-        window._refresh_record_capability_cache(records)
+        window._export_jobs.refresh_record_capability_cache(records)
         window._edited_candidates_cache = {}
         window._review_intelligence = None
         self._deferred_enrichment_pending = False
@@ -571,7 +571,7 @@ class RecordsViewController:
         if self.records_view_chunk_active():
             return
         self._deferred_enrichment_scheduled = True
-        QTimer.singleShot(0, window._run_loaded_records_enrichment)
+        QTimer.singleShot(0, window._scan.run_loaded_records_enrichment)
 
     def run_loaded_records_enrichment(self) -> None:
         window = self._window
@@ -580,7 +580,7 @@ class RecordsViewController:
             return
         if (
             self._deferred_enrichment_token != window._scan_token
-            or self._deferred_enrichment_scope_key != window._current_scope_key()
+            or self._deferred_enrichment_scope_key != window._projects.current_scope_key()
         ):
             self._deferred_enrichment_pending = False
             self._deferred_enrichment_scope_key = ""
@@ -590,9 +590,9 @@ class RecordsViewController:
         self._deferred_enrichment_scope_key = ""
         self._deferred_enrichment_token = 0
         records = list(window._all_records)
-        window._start_scope_enrichment_task(records)
-        window._start_annotation_hydration(records)
-        window._start_review_intelligence_analysis()
+        window._scan.start_scope_enrichment_task(records)
+        window._annotation_ctl.start_annotation_hydration(records)
+        window._scan.start_review_intelligence_analysis()
 
     @staticmethod
     def records_match_for_refresh(existing: list[ImageRecord], incoming: list[ImageRecord]) -> bool:
@@ -627,7 +627,7 @@ class RecordsViewController:
         window._scan_cached_source = source
         window._catalog_load_source = source or "idle"
         window._catalog_load_detail = f"Loaded from {window._catalog_source_label(source)}; live refresh still running."
-        window._refresh_catalog_status_indicator()
+        window._scan.refresh_catalog_status_indicator()
         window.grid.set_empty_message("Choose a folder to start triaging images.")
         chunked_view = self.should_chunk_loaded_records(records, token=token)
         self.apply_loaded_records(
@@ -664,15 +664,15 @@ class RecordsViewController:
                 window._catalog_load_detail = f"Opened from {window._catalog_source_label(window._scan_cached_source)} and confirmed by live scan."
             else:
                 window._catalog_load_detail = "Live scan confirmed the current folder contents."
-            window._refresh_catalog_status_indicator()
+            window._scan.refresh_catalog_status_indicator()
             self.schedule_loaded_records_enrichment()
             window._ai_run.schedule_hidden_ai_results_load()
             window._recycle_bin.refresh_recycle_button()
             window.statusBar().showMessage(f"Refreshed {self._session.folder}")
             if window._folder_watch_refresh_pending:
                 window._folder_watch_refresh_timer.start(250)
-            window._maybe_open_startup_quick_view()
-            window._finish_quick_view_attempt_if_ready()
+            window._startup.maybe_open_startup_quick_view()
+            window._startup.finish_quick_view_attempt_if_ready()
             window._pending_folder_focus_path = ""
             self.maybe_start_semantic_index(records)
             if logger.enabled:
@@ -688,14 +688,14 @@ class RecordsViewController:
             window._catalog_load_detail = f"Opened from {window._catalog_source_label(window._scan_cached_source)} and refreshed from disk."
         else:
             window._catalog_load_detail = "Loaded directly from a live folder scan."
-        window._refresh_catalog_status_indicator()
+        window._scan.refresh_catalog_status_indicator()
         window._ai_run.schedule_hidden_ai_results_load()
         window._recycle_bin.refresh_recycle_button()
         if self._scan_showed_cached:
             window.statusBar().showMessage(f"Refreshed {self._session.folder}")
         if window._folder_watch_refresh_pending:
             window._folder_watch_refresh_timer.start(250)
-        window._finish_quick_view_attempt_if_ready()
+        window._startup.finish_quick_view_attempt_if_ready()
         window._pending_folder_focus_path = ""
         self.maybe_start_semantic_index(records)
         if logger.enabled:
@@ -708,7 +708,7 @@ class RecordsViewController:
         if not isinstance(records, list):
             return
         window._folder_records = [record for record in records if isinstance(record, ImageRecord)]
-        window._refresh_directory_navigation_buttons()
+        window._navigation.refresh_directory_navigation_buttons()
         window._records_view_cache.mark(ViewInvalidationReason.LOAD_CHANGED)
         self.apply_records_view(current_path=window._pending_folder_focus_path or None)
 
@@ -723,7 +723,7 @@ class RecordsViewController:
         self.cancel_records_view_chunk()
         window._pending_folder_scroll_value = None
         window._scan_in_progress = False
-        window._cancel_scope_enrichment_task()
+        window._scan.cancel_scope_enrichment_task()
         window._annotation_hydration_token += 1
         window._active_annotation_hydration_task = None
         window._annotation_hydration_dirty_paths.clear()
@@ -740,7 +740,7 @@ class RecordsViewController:
         self.reset_semantic_index_state()
         window._records_repo.clear()
         window._folder_records = []
-        window._refresh_directory_navigation_buttons()
+        window._navigation.refresh_directory_navigation_buttons()
         window._records = []
         self._last_view_record_paths = ()
         window._record_index_by_path = {}
@@ -771,12 +771,12 @@ class RecordsViewController:
         window.details_view.set_records([])
         window.actions.empty_recycle_bin.setEnabled(False)
         window.actions.empty_recycle_bin.setToolTip("Unavailable because this folder could not be scanned.")
-        window._update_action_states(probe_folder_ai=False)
+        window._inspector.update_action_states(probe_folder_ai=False)
         window._catalog_load_source = "failed"
         window._catalog_load_detail = message
-        window._refresh_catalog_status_indicator()
+        window._scan.refresh_catalog_status_indicator()
         window.statusBar().showMessage(f"Could not scan {self._session.folder}: {message}")
-        window._show_main_window_after_quick_view_failure()
+        window._startup.show_main_window_after_quick_view_failure()
         if window._folder_watch_refresh_pending:
             window._folder_watch_refresh_timer.start(450)
 
@@ -824,7 +824,7 @@ class RecordsViewController:
         window.grid.set_ai_results(window._ai_bundle.results_by_path if window._ai_bundle and window._ai_bundle.results_by_path else {})
         step_start = log_step("records_view.finalize.ai_results", step_start)
         if window._phash_prefilter_settings.enabled or window._prefilter_decisions_by_path:
-            window._refresh_prefilter_decisions_for_current_folder()
+            window._scan.refresh_prefilter_decisions_for_current_folder()
         window.grid.set_prefilter_decisions(window._prefilter_decisions_by_path)
         step_start = log_step("records_view.finalize.prefilter", step_start)
         if not structural_changed:
@@ -833,9 +833,9 @@ class RecordsViewController:
         window.grid.set_review_insights(window._review_intelligence.insights_by_path if window._review_intelligence is not None else {})
         window.grid.set_review_workflow_insights(window._workflow_insights_by_path)
         step_start = log_step("records_view.finalize.review_insights", step_start)
-        window._rebuild_visible_preview_group_indexes()
+        window._preview_ctl.rebuild_visible_preview_group_indexes()
         step_start = log_step("records_view.finalize.group_indexes", step_start)
-        window._refresh_burst_group_view(request_thumbnails=False)
+        window._annotation_ctl.refresh_burst_group_view(request_thumbnails=False)
         step_start = log_step("records_view.finalize.burst_groups", step_start)
         self.apply_records_view_action_mode()
         step_start = log_step("records_view.finalize.action_mode", step_start)
@@ -849,27 +849,27 @@ class RecordsViewController:
                 restored_current = True
         if restored_current and window._pending_focus_scroll_top:
             window._pending_focus_scroll_top = False
-            QTimer.singleShot(0, lambda path=current_path: window._scroll_current_to_top(path))
+            QTimer.singleShot(0, lambda path=current_path: window._views.scroll_current_to_top(path))
         if records and not restored_current and structural_changed:
             window.grid.set_current_index(0)
         step_start = log_step("records_view.finalize.current", step_start, restored_current=restored_current)
         self._last_view_record_paths = next_record_paths
         self.enqueue_filter_metadata_paths(self.metadata_prefetch_seed_paths(), front=True)
         step_start = log_step("records_view.finalize.enqueue_metadata", step_start)
-        window._refresh_viewport_mode()
-        window._sync_details_view_from_grid()
+        window._views.refresh_viewport_mode()
+        window._views.sync_details_view_from_grid()
         step_start = log_step("records_view.finalize.viewport_sync", step_start, view=self._session.browser_view_mode)
-        window._update_action_states()
+        window._inspector.update_action_states()
         step_start = log_step("records_view.finalize.action_states", step_start)
-        window._update_status()
+        window._inspector.update_status()
         step_start = log_step("records_view.finalize.status", step_start)
         if structural_changed and self._session.browser_view_mode == "grid":
             window.grid.schedule_visible_thumbnail_requests()
         step_start = log_step("records_view.finalize.thumbnail_schedule", step_start, view=self._session.browser_view_mode)
         if window._pending_folder_scroll_value is not None:
-            QTimer.singleShot(0, window._restore_pending_folder_scroll)
+            QTimer.singleShot(0, window._views.restore_pending_folder_scroll)
         step_start = log_step("records_view.finalize.pending_scroll", step_start, has_pending_scroll=window._pending_folder_scroll_value is not None)
-        window._maybe_open_startup_quick_view()
+        window._startup.maybe_open_startup_quick_view()
         if logger.enabled:
             logger.duration(
                 "records_view.finalize",
@@ -900,16 +900,16 @@ class RecordsViewController:
         self._last_view_record_paths = ()
         window.grid.set_items([], emit_state_signals=False, request_thumbnails=False)
         window.details_view.set_records([])
-        window._set_annotation_views()
+        window._views.set_annotation_views()
         window.grid.set_ai_results(window._ai_bundle.results_by_path if window._ai_bundle and window._ai_bundle.results_by_path else {})
         if window._phash_prefilter_settings.enabled or window._prefilter_decisions_by_path:
-            window._refresh_prefilter_decisions_for_current_folder()
+            window._scan.refresh_prefilter_decisions_for_current_folder()
         window.grid.set_prefilter_decisions(window._prefilter_decisions_by_path)
         window.details_view.refresh_rows()
         window.grid.set_review_insights(window._review_intelligence.insights_by_path if window._review_intelligence is not None else {})
         window.grid.set_review_workflow_insights(window._workflow_insights_by_path)
         self.apply_records_view_action_mode()
-        window._update_status()
+        window._inspector.update_status()
         window._records_view_chunk_timer.start(0)
 
     def drain_records_view_chunk(self) -> None:
@@ -928,7 +928,7 @@ class RecordsViewController:
             window._record_index_by_path = {record.path: index for index, record in enumerate(window._records)}
             window.grid.set_items(list(window._records), emit_state_signals=False, request_thumbnails=False)
             window.details_view.set_records(list(window._records))
-            window._set_annotation_views()
+            window._views.set_annotation_views()
         else:
             offset = len(window._records)
             window._records.extend(batch)
@@ -938,7 +938,7 @@ class RecordsViewController:
             window.details_view.append_records(list(batch))
         self._records_view_chunk_next_index = end
         if end < len(records):
-            window._update_status()
+            window._inspector.update_status()
             window._records_view_chunk_timer.start(0)
             if logger.enabled:
                 logger.duration("records_view.chunk_batch", (time.perf_counter() - start_time) * 1000.0, start=start, end=end, total=len(records), done=False)
@@ -961,7 +961,7 @@ class RecordsViewController:
             self.finish_loaded_records_enrichment(list(window._all_records), defer_enrichment=True)
         elif post_load_enrichment == "start":
             self.finish_loaded_records_enrichment(list(window._all_records), defer_enrichment=False)
-        window._finish_quick_view_attempt_if_ready()
+        window._startup.finish_quick_view_attempt_if_ready()
         if logger.enabled:
             logger.duration("records_view.chunk_batch", (time.perf_counter() - start_time) * 1000.0, start=start, end=end, total=len(records), done=True)
 
@@ -969,12 +969,12 @@ class RecordsViewController:
         window = self._window
         if window._sort_mode == SortMode.AI_WOW:
             if not window._winner_scores_by_path:
-                window._refresh_winner_scores_for_current_folder()
+                window._scan.refresh_winner_scores_for_current_folder()
 
             def wow_key(record: ImageRecord) -> tuple[object, ...]:
                 if record.is_folder:
                     return (0, record.name.casefold())
-                score = window._winner_score_for_record(record)
+                score = window._inspector.winner_score_for_record(record)
                 if score is None:
                     return (2, record.name.casefold())
                 return (
@@ -1045,7 +1045,7 @@ class RecordsViewController:
             and bool(window._all_records)
         )
         if force_workflow_rebuild or dirty_paths:
-            window._refresh_workflow_insights_cache(
+            window._scan.refresh_workflow_insights_cache(
                 changed_paths=set(dirty_paths) if dirty_paths else None,
                 force_full=force_workflow_rebuild,
             )
@@ -1068,7 +1068,7 @@ class RecordsViewController:
         needs_workflow = needs_workflow or bool(window._filter_query.ai_workflow_tag.strip())
         needs_metadata = window._filter_query.requires_metadata
         if needs_prefilter:
-            window._refresh_prefilter_decisions_for_current_folder()
+            window._scan.refresh_prefilter_decisions_for_current_folder()
         if needs_aiculler_ingested:
             window._aiculler.refresh_aiculler_ingested_paths_for_current_folder()
         if not window._filter_query.has_active_filters:
@@ -1079,11 +1079,11 @@ class RecordsViewController:
             for record in sorted_records:
                 annotation = window._annotations.get(record.path, SessionAnnotation())
                 ai_result = window._ai_run.ai_result_for_record(record) if needs_ai else None
-                review_insight = window._review_insight_for_record(record) if needs_review else None
-                workflow_insight = window._workflow_insight_for_record(record) if needs_workflow else None
+                review_insight = window._inspector.review_insight_for_record(record) if needs_review else None
+                workflow_insight = window._inspector.workflow_insight_for_record(record) if needs_workflow else None
                 metadata = window._filter_metadata_by_path.get(record.path, EMPTY_METADATA) if needs_metadata else None
                 is_disputed = window._aiculler.is_record_disputed(record) if needs_dispute else False
-                prefilter_decision = window._prefilter_decision_for_record(record) if needs_prefilter else None
+                prefilter_decision = window._inspector.prefilter_decision_for_record(record) if needs_prefilter else None
                 ai_ingested = window._aiculler.record_was_aiculler_ingested(record) if needs_aiculler_ingested else False
                 if matches_record_query(
                     record,
@@ -1107,7 +1107,7 @@ class RecordsViewController:
 
         window._records = records
         window._record_index_by_path = {record.path: index for index, record in enumerate(records)}
-        window._recalculate_review_counts()
+        window._annotation_ctl.recalculate_review_counts()
         if reasons.intersection(
             {
                 ViewInvalidationReason.LOAD_CHANGED,
@@ -1136,7 +1136,7 @@ class RecordsViewController:
                 return False
             window.grid.set_items(records, emit_state_signals=False, request_thumbnails=False)
             window.details_view.set_records(records)
-            window._set_annotation_views()
+            window._views.set_annotation_views()
         else:
             changed_visible_paths = tuple(path for path in dirty_paths if path in window._record_index_by_path)
             window.grid.update_items(
@@ -1155,7 +1155,7 @@ class RecordsViewController:
                     }
                 )
             if changed_visible_paths:
-                window._set_annotation_views(changed_visible_paths)
+                window._views.set_annotation_views(changed_visible_paths)
         self.finalize_records_view_display(
             records=records,
             next_record_paths=next_record_paths,
@@ -1292,7 +1292,7 @@ class RecordsViewController:
             and window._active_review_intelligence_task is None
             and window._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}
         ):
-            window._start_review_intelligence_analysis(force=True)
+            window._scan.start_review_intelligence_analysis(force=True)
         window._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
         self.apply_records_view(current_path=current_path)
         if search_notice:
@@ -1301,7 +1301,7 @@ class RecordsViewController:
             return
         if current_path and current_path in window._record_index_by_path:
             return
-        window._scroll_active_view_to_top()
+        window._views.scroll_active_view_to_top()
 
     def sync_record_filter_controls(self) -> None:
         window = self._window
@@ -1409,7 +1409,7 @@ class RecordsViewController:
             self.update_filter_summary()
         current_record = window._record_at(window.grid.current_index())
         if current_record is not None and current_record.path == record.path:
-            window._update_inspector_context()
+            window._inspector.update_inspector_context()
         if self._filter_metadata_queue and not window._metadata_request_timer.isActive():
             window._metadata_request_timer.start()
 
@@ -1423,7 +1423,7 @@ class RecordsViewController:
             self.apply_records_view(current_path=current_path)
             return
         if window._burst_groups_enabled or window._burst_stacks_enabled:
-            window._refresh_burst_group_view()
+            window._annotation_ctl.refresh_burst_group_view()
 
     def metadata_prefetch_seed_paths(self, *, lookahead: int = 120) -> list[str]:
         window = self._window
@@ -1529,8 +1529,8 @@ class RecordsViewController:
             or window._filter_query.ai_state == AIStateFilter.DISAGREEMENTS
         )
         ai_result = window._ai_run.ai_result_for_record(record) if needs_ai else None
-        review_insight = window._review_insight_for_record(record) if needs_review else None
-        workflow_insight = window._workflow_insight_for_record(record) if needs_workflow else None
+        review_insight = window._inspector.review_insight_for_record(record) if needs_review else None
+        workflow_insight = window._inspector.workflow_insight_for_record(record) if needs_workflow else None
         is_disputed = window._aiculler.is_record_disputed(record)
         old_match = matches_record_query(
             record,
@@ -1776,10 +1776,10 @@ class RecordsViewController:
         else:
             window._saved_filter_presets.append(SavedFilterPreset(name=name, query=self.copy_filter_query(window._filter_query)))
 
-        window._save_saved_filter_presets()
+        window._settings_ctl.save_saved_filter_presets()
         self.refresh_filter_toolbar_menu()
         self.update_filter_summary()
-        window._update_action_states()
+        window._inspector.update_action_states()
         window.statusBar().showMessage(f"Saved search: {name}")
 
     def delete_current_filter_preset(self) -> None:
@@ -1800,10 +1800,10 @@ class RecordsViewController:
             return
 
         window._saved_filter_presets = [item for item in window._saved_filter_presets if item.name.casefold() != preset.name.casefold()]
-        window._save_saved_filter_presets()
+        window._settings_ctl.save_saved_filter_presets()
         self.refresh_filter_toolbar_menu()
         self.update_filter_summary()
-        window._update_action_states()
+        window._inspector.update_action_states()
         window.statusBar().showMessage(f"Deleted saved search: {preset.name}")
 
     # -- Filter summary chip --------------------------------------------------
@@ -1976,7 +1976,7 @@ class RecordsViewController:
                 "once the folder has been indexed."
             )
         try:
-            runtime = window._configured_aiculler_runtime(workers=1)
+            runtime = window._settings_ctl.configured_aiculler_runtime(workers=1)
         except Exception as exc:
             return f"Indexed search unavailable: {exc}"
 
@@ -1990,8 +1990,8 @@ class RecordsViewController:
             query_text=query_text,
             min_confidence=float(window._filter_query.min_search_confidence),
         )
-        task.signals.finished.connect(window._handle_unified_search_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(window._handle_unified_search_failed, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(window._records_view.handle_unified_search_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(window._records_view.handle_unified_search_failed, Qt.ConnectionType.QueuedConnection)
         self._active_unified_search_task = task
         window._unified_search_pool.start(task)
         return f'Searching indexed photos for "{query_text}"...'
@@ -2071,7 +2071,7 @@ class RecordsViewController:
         if paths is None:
             return
         try:
-            runtime = window._configured_aiculler_runtime(workers=1)
+            runtime = window._settings_ctl.configured_aiculler_runtime(workers=1)
         except Exception:
             return
         clip_vision_model = getattr(runtime, "clip_vision_model", None)
@@ -2117,9 +2117,9 @@ class RecordsViewController:
             device=str(getattr(runtime, "device", "auto")),
             expected_dim=SEMANTIC_EMBEDDING_DIM,
         )
-        task.signals.progress.connect(window._handle_semantic_index_progress, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(window._handle_semantic_index_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(window._handle_semantic_index_failed, Qt.ConnectionType.QueuedConnection)
+        task.signals.progress.connect(window._records_view.handle_semantic_index_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(window._records_view.handle_semantic_index_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(window._records_view.handle_semantic_index_failed, Qt.ConnectionType.QueuedConnection)
         window._active_semantic_index_task = task
         window._semantic_index_pool.start(task)
 
@@ -2220,7 +2220,7 @@ class RecordsViewController:
             write_execution_log(f"face-index: skip (db missing: {db_path})")
             return
         try:
-            runtime = window._configured_aiculler_runtime(workers=1)
+            runtime = window._settings_ctl.configured_aiculler_runtime(workers=1)
         except Exception as exc:
             write_execution_log(f"face-index: skip (runtime config failed: {exc})")
             return
@@ -2260,9 +2260,9 @@ class RecordsViewController:
             clip_fallback_text_model=getattr(runtime, "clip_fallback_text_model", None),
             device=str(getattr(runtime, "device", "auto")),
         )
-        task.signals.progress.connect(window._handle_face_index_progress, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(window._handle_face_index_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(window._handle_face_index_failed, Qt.ConnectionType.QueuedConnection)
+        task.signals.progress.connect(window._records_view.handle_face_index_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(window._records_view.handle_face_index_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(window._records_view.handle_face_index_failed, Qt.ConnectionType.QueuedConnection)
         window._active_face_index_task = task
         window._face_index_pool.start(task)
 
@@ -2326,7 +2326,7 @@ class RecordsViewController:
 
     def handle_face_index_finished(self, folder: str, token: int, faces_indexed: int, people_count: int) -> None:
         window = self._window
-        window._refresh_face_groups()
+        window._projects.refresh_face_groups()
         if not self.face_index_event_is_current(folder, token):
             return
         window._active_face_index_task = None

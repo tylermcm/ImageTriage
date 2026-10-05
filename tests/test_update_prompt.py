@@ -16,16 +16,16 @@ def _result(sha256: str) -> UpdateCheckResult:
 
 
 def test_an_update_without_a_checksum_is_refused_with_an_explanation(main_window, dialogs) -> None:
-    with patch.object(main_window, "_download_update_installer") as download:
-        main_window._prompt_for_update_download(_result(""))
+    with patch.object(main_window._help_update, "download_update_installer") as download:
+        main_window._help_update.prompt_for_update_download(_result(""))
 
     download.assert_not_called()
     assert any(title == "Update Cannot Be Verified" for _, title, _ in dialogs.messages)
 
 
 def test_a_verifiable_update_is_offered_and_downloads_when_accepted(main_window, dialogs) -> None:
-    with patch.object(main_window, "_download_update_installer") as download:
-        main_window._prompt_for_update_download(_result("a" * 64))
+    with patch.object(main_window._help_update, "download_update_installer") as download:
+        main_window._help_update.prompt_for_update_download(_result("a" * 64))
 
     download.assert_called_once()
     assert any(title == "Update Available" for _, title, _ in dialogs.messages)

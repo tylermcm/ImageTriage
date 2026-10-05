@@ -161,7 +161,7 @@ def test_saved_lists_keep_unreachable_entries_at_startup(dialogs, share, tmp_pat
 def test_opening_a_folder_does_not_erase_unreachable_recents_from_settings(dialogs, share, tmp_path) -> None:
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
-        window._remember_recent_folder(str(local_b))  # what opening any folder does
+        window._navigation.remember_recent_folder(str(local_b))  # what opening any folder does
         saved = _saved(MainWindow.RECENT_FOLDERS_KEY)
         assert NAS_FOLDER in saved and NAS_OTHER in saved and str(local_b) in saved
 
@@ -169,14 +169,14 @@ def test_opening_a_folder_does_not_erase_unreachable_recents_from_settings(dialo
 def test_adding_a_favorite_does_not_erase_unreachable_favorites(dialogs, share, tmp_path) -> None:
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
-        window._add_favorite(str(local_b))
+        window._navigation.add_favorite(str(local_b))
         assert _saved(MainWindow.FAVORITES_KEY) == [str(local), NAS_FOLDER, str(local_b)]
 
 
 def test_the_move_to_menu_lists_unreachable_destinations_and_keeps_them_saved(dialogs, share, tmp_path) -> None:
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
-        listed = window._recent_destination_paths()
+        listed = window._navigation.recent_destination_paths()
         assert NAS_DEST in listed and str(local_b) in listed
         assert NAS_DEST in _saved(MainWindow.RECENT_DESTINATIONS_KEY)
 
@@ -186,7 +186,7 @@ def test_building_the_move_to_menu_in_a_folder_does_not_erase_that_folder_from_t
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
         window._current_folder = str(local_b)
-        shown = window._recent_destination_paths(exclude_current_folder=True)
+        shown = window._navigation.recent_destination_paths(exclude_current_folder=True)
         assert str(local_b) not in shown, "the current folder is still hidden from the menu"
         assert str(local_b) in _saved(MainWindow.RECENT_DESTINATIONS_KEY), "but it must stay in the saved list"
 
@@ -194,7 +194,7 @@ def test_building_the_move_to_menu_in_a_folder_does_not_erase_that_folder_from_t
 def test_clicking_an_unreachable_recent_folder_keeps_it_and_reports_the_failure(dialogs, share, tmp_path) -> None:
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
-        window._open_recent_folder(NAS_FOLDER)
+        window._navigation.open_recent_folder(NAS_FOLDER)
         assert pump_until(lambda: window._catalog_load_source == "failed", timeout=15), "the scan worker should report it"
         assert NAS_FOLDER in window._recent_folders and NAS_FOLDER in _saved(MainWindow.RECENT_FOLDERS_KEY)
         assert "Could not scan" in window.statusBar().currentMessage()
@@ -245,14 +245,14 @@ def test_no_network_path_is_checked_on_the_gui_thread(dialogs, share, tmp_path) 
     manager, local, local_b = _open_window(share, tmp_path, last_folder=NAS_FOLDER)
     with manager as window:
         window._load_start_folder()
-        window._refresh_recent_folder_combos()
-        window._recent_destination_paths(exclude_current_folder=True)
-        window._refresh_favorites_panel()
-        window._remember_recent_destination(NAS_DEST)
-        window._add_favorite(NAS_OTHER)
-        window._open_recent_folder(NAS_FOLDER)
-        window._handle_path_suggestion_accepted(NAS_OTHER)
-        window._commit_path_combo_text(window.topbar_path_combo)
+        window._navigation.refresh_recent_folder_combos()
+        window._navigation.recent_destination_paths(exclude_current_folder=True)
+        window._navigation.refresh_favorites_panel()
+        window._navigation.remember_recent_destination(NAS_DEST)
+        window._navigation.add_favorite(NAS_OTHER)
+        window._navigation.open_recent_folder(NAS_FOLDER)
+        window._navigation.handle_path_suggestion_accepted(NAS_OTHER)
+        window._navigation.commit_path_combo_text(window.topbar_path_combo)
         pump_until(lambda: window._catalog_load_source == "failed", timeout=15)
         assert share.gui_checks == [], "the GUI thread asked the share:\n" + "\n".join(share.gui_stacks)
 
@@ -426,10 +426,10 @@ def test_a_launch_target_on_a_share_is_not_asked_of_the_share_on_the_gui_thread(
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
         opened: list[tuple[str, str | None]] = []
-        window._select_folder = lambda folder, **kwargs: opened.append((folder, kwargs.get("preferred_record_path")))
+        window._navigation.select_folder = lambda folder, **kwargs: opened.append((folder, kwargs.get("preferred_record_path")))
         image = NAS_FOLDER + "\\IMG_0001.jpg"
-        assert window._open_launch_target(image) is True  # "Open with Image Triage" on a photo on the NAS
-        assert window._open_launch_target(NAS_FOLDER) is True
+        assert window._startup.open_launch_target(image) is True  # "Open with Image Triage" on a photo on the NAS
+        assert window._startup.open_launch_target(NAS_FOLDER) is True
         # (the expectation is built with os.path.normpath: the resolving normalizer would itself ask the share)
         assert opened == [(NAS_FOLDER, os.path.normpath(image)), (os.path.normpath(NAS_FOLDER), None)]
         assert share.gui_checks == [], "\n".join(share.gui_stacks)
@@ -467,7 +467,7 @@ def test_opening_a_folder_on_a_share_does_not_ask_the_tree_model_about_it_on_the
         model_calls = _ModelIndexCalls(monkeypatch)
         window._scope_kind = "folder"
         window._current_folder = NAS_FOLDER
-        window._sync_drive_sections()
+        window._navigation.sync_drive_sections()
         assert [path for path in model_calls.gui_paths() if _is_nas(path)] == []
         assert pump_until(lambda: NAS in share.worker_checks or NAS + "\\" in share.worker_checks, timeout=10), "a worker asks the share instead"
         pump_until(lambda: False, timeout=0.3)
@@ -484,7 +484,7 @@ def test_a_reachable_share_is_still_rooted_in_the_tree_once_a_worker_has_seen_it
         window._is_slow_source_folder = lambda _folder=None: True  # a network drive that does answer
         window._scope_kind = "folder"
         window._current_folder = str(folder)
-        window._sync_drive_sections()
+        window._navigation.sync_drive_sections()
         assert model_calls.gui_paths() == [], "nothing is asked of the model before the worker has answered"
         assert pump_until(lambda: str(folder) in model_calls.gui_paths(), timeout=10), "then the tree is synced as before"
 
@@ -499,9 +499,9 @@ def test_only_the_newest_drive_check_is_applied(dialogs, share, tmp_path, monkey
         window._is_slow_source_folder = lambda _folder=None: True
         window._scope_kind = "folder"
         window._current_folder = str(first)
-        window._sync_drive_sections()
+        window._navigation.sync_drive_sections()
         window._current_folder = str(second)  # the user opened another folder before the answer came back
-        window._sync_drive_sections()
+        window._navigation.sync_drive_sections()
         assert pump_until(lambda: str(second) in model_calls.gui_paths(), timeout=10)
         assert str(first) not in model_calls.gui_paths(), "the older answer must be dropped"
         assert pump_until(lambda: not window._drive_sync_tasks, timeout=10), "finished checks are released"
@@ -513,7 +513,7 @@ def test_rebuilding_the_folder_tree_never_hands_a_share_to_the_model_on_the_gui_
         model_calls = _ModelIndexCalls(monkeypatch)
         window._scope_kind = "folder"
         window._current_folder = NAS_FOLDER
-        window._refresh_folder_tree()  # what every folder create / rename / move / delete does
+        window._navigation.refresh_folder_tree()  # what every folder create / rename / move / delete does
         pump_until(lambda: False, timeout=0.3)
         assert [path for path in model_calls.gui_paths() if _is_nas(path)] == []
         assert share.gui_checks == [], "\n".join(share.gui_stacks)
@@ -533,7 +533,7 @@ def test_the_tree_rebuild_does_not_put_back_a_selection_that_lives_on_a_share(di
         model_calls = _ModelIndexCalls(monkeypatch)
         window._scope_kind = "folder"
         window._current_folder = str(tmp_path)
-        window._refresh_folder_tree()
+        window._navigation.refresh_folder_tree()
         assert [path for path in model_calls.gui_paths() if _is_nas(path)] == [], "the share's saved selection must not reach the model"
 
 
@@ -547,7 +547,7 @@ def test_the_tree_rebuild_still_puts_back_a_local_selection(dialogs, share, tmp_
         model_calls = _ModelIndexCalls(monkeypatch)
         window._scope_kind = "folder"
         window._current_folder = str(tmp_path)
-        window._refresh_folder_tree()
+        window._navigation.refresh_folder_tree()
         assert str(tmp_path) in model_calls.gui_paths(), "a plain local selection is restored as before"
 
 
@@ -690,6 +690,7 @@ def test_the_ai_toolbar_refresh_on_a_share_does_not_resolve_the_folder_on_the_gu
 
 def _fake_prefilter_loader(monkeypatch):
     """Replace the prefilter decision loader and its path builder, recording which thread ran the loader."""
+    import image_triage.scan_controller as scan_module
     import image_triage.window as window_module
 
     calls: list[tuple[bool, str]] = []
@@ -703,7 +704,7 @@ def _fake_prefilter_loader(monkeypatch):
 
     import image_triage.tasks.ai_tasks as ai_tasks_module
 
-    for module in (ai_tasks_module, window_module):  # the worker task lives in ai_tasks; the window also calls them
+    for module in (ai_tasks_module, window_module, scan_module):  # the worker task lives in ai_tasks; the window and scan controller also call them
         monkeypatch.setattr(module, "build_phash_prefilter_paths", build_paths)
         monkeypatch.setattr(module, "load_phash_prefilter_decisions", load)
     return calls
@@ -715,7 +716,7 @@ def test_a_share_folders_prefilter_decisions_are_loaded_by_a_worker_and_pushed_t
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
         window._current_folder = NAS_FOLDER
-        window._refresh_prefilter_decisions_for_current_folder()
+        window._scan.refresh_prefilter_decisions_for_current_folder()
         assert [on_gui for on_gui, _folder in calls if on_gui] == [], "never on the GUI thread"
         assert pump_until(lambda: bool(window._prefilter_decisions_by_path), timeout=10), "the answer arrives later"
         assert calls == [(False, NAS_FOLDER)]
@@ -729,9 +730,9 @@ def test_the_prefilter_decisions_of_a_share_are_not_reloaded_on_every_view_refre
     with manager as window:
         window._current_folder = NAS_FOLDER
         for _ in range(5):  # five view refreshes in a row
-            window._refresh_prefilter_decisions_for_current_folder()
+            window._scan.refresh_prefilter_decisions_for_current_folder()
         assert pump_until(lambda: bool(window._prefilter_decisions_by_path), timeout=10)
-        window._refresh_prefilter_decisions_for_current_folder()
+        window._scan.refresh_prefilter_decisions_for_current_folder()
         assert len(calls) == 1, "one load per folder per minute, not one per refresh"
 
 
@@ -740,7 +741,7 @@ def test_the_prefilter_decisions_of_a_local_folder_are_still_loaded_immediately(
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
         window._current_folder = str(local)
-        window._refresh_prefilter_decisions_for_current_folder()
+        window._scan.refresh_prefilter_decisions_for_current_folder()
         assert calls == [(True, str(local))] and window._prefilter_decisions_by_path
 
 
@@ -749,6 +750,6 @@ def test_the_drag_over_check_never_asks_the_share(dialogs, share, tmp_path) -> N
     manager, local, local_b = _open_window(share, tmp_path)
     with manager as window:
         window._current_folder = str(local)
-        assert window._can_accept_record_drop(NAS_FOLDER) is True
-        assert window._can_accept_record_drop(str(tmp_path / "gone")) is False
+        assert window._dragdrop.can_accept_record_drop(NAS_FOLDER) is True
+        assert window._dragdrop.can_accept_record_drop(str(tmp_path / "gone")) is False
         assert share.gui_checks == [], "\n".join(share.gui_stacks)

@@ -101,7 +101,7 @@ class ZenController(QObject):
         if enabled and self._window._collection_mode:
             return
         if self._window._zen_mode_enabled == enabled:
-            self._window._update_action_states()
+            self._window._inspector.update_action_states()
             return
         if enabled:
             self._zen_restore_state = {
@@ -166,4 +166,4 @@ class ZenController(QObject):
                 self._window.workspace_docks.restore_state(workspace_state)
             self._zen_restore_state = {}
             self._window.statusBar().showMessage("Zen Mode disabled")
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()

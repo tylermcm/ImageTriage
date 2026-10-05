@@ -53,13 +53,28 @@ def _controllers_by_window_attribute() -> dict[str, type]:
     from image_triage.batch_rename_controller import BatchRenameApplyController
     from image_triage.catalog_controller import CatalogController
     from image_triage.command_palette_controller import CommandPaletteController
+    from image_triage.export_jobs_controller import ExportJobsController
     from image_triage.folder_ops_controller import FolderOpsController
+    from image_triage.help_update_controller import HelpUpdateController
     from image_triage.record_ops_controller import RecordOpsController
     from image_triage.records_view_controller import RecordsViewController
     from image_triage.recycle_bin_controller import RecycleBinController
     from image_triage.tool_mode_controller import ToolModeController
     from image_triage.toolbar_controller import ToolbarController
     from image_triage.zen_controller import ZenController
+    from image_triage.preview_controller import PreviewController
+    from image_triage.annotation_controller import AnnotationController
+    from image_triage.navigation_controller import NavigationController
+    from image_triage.settings_controller import SettingsController
+    from image_triage.scan_controller import ScanController
+    from image_triage.inspector_controller import InspectorController
+    from image_triage.context_menu_controller import ContextMenuController
+    from image_triage.dragdrop_controller import DragDropController
+    from image_triage.startup_controller import StartupController
+    from image_triage.display_controller import DisplayController
+    from image_triage.view_controller import ViewController
+    from image_triage.projects_controller import ProjectsController
+    from image_triage.handoff_controller import HandoffController
     from image_triage.ui.toolbar_menus import ToolbarMenuController
 
     return {
@@ -70,7 +85,9 @@ def _controllers_by_window_attribute() -> dict[str, type]:
         "_batch_rename": BatchRenameApplyController,
         "_catalog": CatalogController,
         "_command_palette": CommandPaletteController,
+        "_export_jobs": ExportJobsController,
         "_folder_ops": FolderOpsController,
+        "_help_update": HelpUpdateController,
         "_record_ops": RecordOpsController,
         "_records_view": RecordsViewController,
         "_recycle_bin": RecycleBinController,
@@ -78,6 +95,19 @@ def _controllers_by_window_attribute() -> dict[str, type]:
         "_toolbar": ToolbarController,
         "_zen": ZenController,
         "_toolbar_menus": ToolbarMenuController,
+        "_preview_ctl": PreviewController,
+        "_annotation_ctl": AnnotationController,
+        "_navigation": NavigationController,
+        "_settings_ctl": SettingsController,
+        "_scan": ScanController,
+        "_inspector": InspectorController,
+        "_context_menus": ContextMenuController,
+        "_dragdrop": DragDropController,
+        "_startup": StartupController,
+        "_display": DisplayController,
+        "_views": ViewController,
+        "_projects": ProjectsController,
+        "_handoff": HandoffController,
     }
 
 
@@ -85,7 +115,7 @@ _CONTROLLERS_BY_WINDOW_ATTRIBUTE = _controllers_by_window_attribute()
 
 # case id -> (sha256 of the text, its length in characters)
 _GOLDEN: dict[str, tuple[str, int]] = {
-    "fields+slots": ("ff1e667c1d2981bf6c0845ff42329e8fbe1e6610cdf03149603a09cd51cb99f2", 89265),
+    "fields+slots": ("8d7cf39ed91454b56bd8bb4855b1c068ad6bdf65931946daa858c2976f0c824d", 89863),
     "creation-order": ("45c802fdc14fbd2d56cb3ea52f592067d91dada10bcb4835a30e0408ab42e97e", 4939),
 }
 

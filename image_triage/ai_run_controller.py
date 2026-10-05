@@ -78,7 +78,7 @@ class AiRunController(QObject):
 
         image_count = sum(1 for record in self._window._all_records if not record.is_folder)
         dialog = GuidedAICullPreferencesDialog(
-            folder_name=self._window._scope_display_label(),
+            folder_name=self._window._projects.scope_display_label(),
             image_count=image_count,
             keep_top_percent=self._window._ai_keep_top_percent_setting,
             review_band_percent=self._window._ai_review_band_percent_setting,
@@ -86,7 +86,7 @@ class AiRunController(QObject):
             parent=self._window,
         )
         self._guided_ai_cull_preferences_dialog = dialog
-        dialog.workflow_button.clicked.connect(self._window._open_ai_workflow_center)
+        dialog.workflow_button.clicked.connect(self._window._handoff.open_ai_workflow_center)
         dialog.accepted.connect(lambda d=dialog: self.handle_guided_ai_cull_preferences_accepted(d))
         dialog.finished.connect(lambda _code, d=dialog: self.clear_guided_ai_cull_preferences_dialog(d))
         dialog.show()
@@ -110,18 +110,18 @@ class AiRunController(QObject):
         ):
             self._window._ai_keep_top_percent_setting = new_keep_top
             self._window._ai_review_band_percent_setting = new_review_band
-            self._window._apply_cull_thresholds_to_classifier()
+            self._window._settings_ctl.apply_cull_thresholds_to_classifier()
 
         self._window._phash_prefilter_settings = preferences.phash_prefilter_settings.normalized()
 
         self._window._settings.setValue(self._window.AI_KEEP_TOP_PERCENT_KEY, self._window._ai_keep_top_percent_setting)
         self._window._settings.setValue(self._window.AI_REVIEW_BAND_PERCENT_KEY, self._window._ai_review_band_percent_setting)
-        self._window._save_phash_prefilter_settings(self._window._phash_prefilter_settings)
+        self._window._settings_ctl.save_phash_prefilter_settings(self._window._phash_prefilter_settings)
         self.update_ai_toolbar_state()
         self._window.statusBar().showMessage("Guided AI Cull preferences saved.")
 
     def refresh_ai_workflow_center(self) -> None:
-        dialog = getattr(self._window, "_ai_workflow_center_dialog", None)
+        dialog = getattr(self._window._handoff, "_ai_workflow_center_dialog", None)
         if dialog is not None and dialog.isVisible():
             dialog.refresh()
 
@@ -129,7 +129,7 @@ class AiRunController(QObject):
         if not self._window._all_records:
             return
         self._window._ai_deferred_background_work = True
-        self._window._ai_deferred_background_scope_key = self._window._current_scope_key()
+        self._window._ai_deferred_background_scope_key = self._window._projects.current_scope_key()
         logger = perf_logger()
         if logger.enabled:
             logger.log(
@@ -147,9 +147,9 @@ class AiRunController(QObject):
         active_annotations = self._window._active_annotation_hydration_task is not None
         active_review = self._window._active_review_intelligence_task is not None
         self._window._ai_deferred_background_work = True
-        self._window._ai_deferred_background_scope_key = self._window._current_scope_key()
+        self._window._ai_deferred_background_scope_key = self._window._projects.current_scope_key()
         self._window._scope_enrichment_token += 1
-        self._window._cancel_scope_enrichment_task()
+        self._window._scan.cancel_scope_enrichment_task()
         self._window._annotation_hydration_token += 1
         if self._window._active_annotation_hydration_task is not None:
             self._window._active_annotation_hydration_task.cancel()
@@ -170,7 +170,7 @@ class AiRunController(QObject):
         self._window._review_grouping_cache_detail = "Smart groups are deferred while AI review runs."
         self._window._review_feature_cache_source = "deferred"
         self._window._review_feature_cache_detail = "Review feature analysis is deferred while AI review runs."
-        self._window._refresh_catalog_status_indicator()
+        self._window._scan.refresh_catalog_status_indicator()
         if logger.enabled:
             logger.log(
                 "ai.background_deferred",
@@ -189,7 +189,7 @@ class AiRunController(QObject):
         self._window._ai_deferred_background_work = False
         self._window._ai_deferred_background_scope_key = ""
         logger = perf_logger()
-        current_scope_key = self._window._current_scope_key()
+        current_scope_key = self._window._projects.current_scope_key()
         if self._window._active_ai_task is not None or deferred_scope_key != current_scope_key or not self._window._all_records:
             self._window._review_scoring_cache_source = "idle"
             self._window._review_scoring_cache_detail = "Ready"
@@ -197,7 +197,7 @@ class AiRunController(QObject):
             self._window._review_grouping_cache_detail = "Ready"
             self._window._review_feature_cache_source = "idle"
             self._window._review_feature_cache_detail = "Ready"
-            self._window._refresh_catalog_status_indicator()
+            self._window._scan.refresh_catalog_status_indicator()
             if logger.enabled:
                 logger.log(
                     "ai.background_resume_skipped",
@@ -216,10 +216,10 @@ class AiRunController(QObject):
                 scope=current_scope_key,
                 records=len(records),
             )
-        self._window._start_annotation_hydration(records)
-        self._window._start_review_intelligence_analysis()
+        self._window._annotation_ctl.start_annotation_hydration(records)
+        self._window._scan.start_review_intelligence_analysis()
         if self._window._active_scope_enrichment_task is None:
-            self._window._start_scope_enrichment_task(records)
+            self._window._scan.start_scope_enrichment_task(records)
 
     @staticmethod
     def category_display_label(category: object) -> str:
@@ -353,7 +353,7 @@ class AiRunController(QObject):
     def schedule_hidden_ai_results_load(self, *, delay_ms: int | None = None) -> None:
         if not self._window._current_folder or not self._window._all_records:
             return
-        scope_key = self._window._current_scope_key()
+        scope_key = self._window._projects.current_scope_key()
         if self._window._hidden_ai_results_checked_scope_key == scope_key:
             return
         if self._active_hidden_ai_results_task is not None:
@@ -368,7 +368,7 @@ class AiRunController(QObject):
         if self._window._scan_in_progress or self._window._records_view.records_view_chunk_active():
             self.schedule_hidden_ai_results_load(delay_ms=350)
             return
-        scope_key = self._window._current_scope_key()
+        scope_key = self._window._projects.current_scope_key()
         if self._window._hidden_ai_results_checked_scope_key == scope_key:
             return
         if self._active_hidden_ai_results_task is not None:
@@ -691,10 +691,10 @@ class AiRunController(QObject):
             self._window.statusBar().showMessage("AI review cache reset failed")
             return
         if "phash" in selected:
-            self._window._refresh_prefilter_decisions_for_current_folder()
+            self._window._scan.refresh_prefilter_decisions_for_current_folder()
             self._window.grid.set_prefilter_decisions(self._window._prefilter_decisions_by_path)
             self._window._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
-            self._window._apply_records_view(current_path=self._window._records_view.current_visible_record_path())
+            self._window._views.apply_records_view(current_path=self._window._records_view.current_visible_record_path())
         self.invalidate_ai_folder_probe_cache()
         self.update_ai_toolbar_state()
         self.refresh_ai_workflow_center()
@@ -790,17 +790,17 @@ class AiRunController(QObject):
         step_start = log_step("ai_state.refresh.grid_results", step_start, results=len(ai_results))
         self._window.details_view.refresh_rows()
         step_start = log_step("ai_state.refresh.details_rows", step_start)
-        self._window._start_scope_enrichment_task()
+        self._window._scan.start_scope_enrichment_task()
         step_start = log_step("ai_state.refresh.scope_enrichment", step_start)
         current_path = self._window._records_view.current_visible_record_path()
         if self._window._all_records:
-            self._window._apply_records_view(
+            self._window._views.apply_records_view(
                 current_path=current_path,
                 chunked=self._window._records_view.records_view_chunk_active(),
                 post_load_enrichment=self._window._records_view_chunk_post_load_enrichment,
             )
         step_start = log_step("ai_state.refresh.records_view", step_start, current_path=current_path or "")
-        self._window._refresh_viewport_mode()
+        self._window._views.refresh_viewport_mode()
         step_start = log_step("ai_state.refresh.viewport", step_start)
         self.refresh_ai_summary_cache()
         step_start = log_step("ai_state.refresh.summary_cache", step_start)
@@ -808,15 +808,15 @@ class AiRunController(QObject):
         step_start = log_step("ai_state.refresh.summary_ui", step_start)
         self.update_ai_toolbar_state()
         step_start = log_step("ai_state.refresh.toolbar", step_start)
-        self._window._update_status()
+        self._window._inspector.update_status()
         step_start = log_step("ai_state.refresh.status", step_start)
-        self._window._update_inspector_context()
+        self._window._inspector.update_inspector_context()
         step_start = log_step("ai_state.refresh.inspector", step_start)
-        if self._window._preview_is_visible():
+        if self._window._preview_ctl.preview_is_visible():
             index = self._window.grid.current_index()
             if index >= 0:
-                self._window._open_preview(index)
-        step_start = log_step("ai_state.refresh.preview", step_start, preview_visible=self._window._preview_is_visible())
+                self._window._preview_ctl.open_preview(index)
+        step_start = log_step("ai_state.refresh.preview", step_start, preview_visible=self._window._preview_ctl.preview_is_visible())
         if logger.enabled:
             logger.duration(
                 "ai_state.refresh.total",
@@ -1029,7 +1029,7 @@ class AiRunController(QObject):
             f"Runtime installed: {ai_runtime_ready}",
             f"Semantic model: {self._window._ai_runtime.semantic_model_name}",
             f"Semantic model installed: {semantic_model_ready}",
-            f"Embedding batch size: {self._window._ai_embed_batch_size_label()}",
+            f"Embedding batch size: {self._window._settings_ctl.ai_embed_batch_size_label()}",
             f"CLI-Culler CLIP model: {self.ai_clip_model_variant_label()}",
             f"TOPIQ model installed: {self._window._ai_setup.aiculler_topiq_model_available()}",
             f"InsightFace models installed: {self._window._ai_setup.aiculler_face_model_available()}",
@@ -1072,7 +1072,7 @@ class AiRunController(QObject):
         self.refresh_ai_progress_bar()
         self._window._toolbar.schedule_workspace_toolbar_overflow_update("ai")
         step_start = log_step("ai_toolbar_state.progress_overflow", step_start, active_ai_status=active_ai_status)
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
         step_start = log_step("ai_toolbar_state.action_states", step_start)
         if logger.enabled:
             logger.duration(
@@ -1124,7 +1124,7 @@ class AiRunController(QObject):
 
         try:
             self._window._ai_setup.refresh_ai_runtime_preferences()
-            runtime = self._window._configured_aiculler_runtime(workers=self._window._configured_ai_embed_batch_size())
+            runtime = self._window._settings_ctl.configured_aiculler_runtime(workers=self._window._settings_ctl.configured_ai_embed_batch_size())
             runtime.validate()
             if not self.confirm_cpu_clip_run(runtime):
                 if logger.enabled:
@@ -1219,7 +1219,7 @@ class AiRunController(QObject):
             )
             return
         try:
-            runtime = self._window._configured_aiculler_runtime(workers=self._window._configured_ai_embed_batch_size())
+            runtime = self._window._settings_ctl.configured_aiculler_runtime(workers=self._window._settings_ctl.configured_ai_embed_batch_size())
             runtime.validate()
             task = AICullerRunTask(
                 folder=Path(self._window._current_folder),
@@ -1287,7 +1287,7 @@ class AiRunController(QObject):
         return grouped
 
     def open_ai_cull_follow_up_review(self, source_paths: tuple[str, ...]) -> None:
-        existing_paths = tuple(path for path in source_paths if self._window._record_index_for_path(path) is not None)
+        existing_paths = tuple(path for path in source_paths if self._window._record_index_by_path.get(path) is not None)
         if not existing_paths:
             self._window.statusBar().showMessage("No Winner or Needs Review images remain for follow-up review.")
             return
@@ -1297,7 +1297,7 @@ class AiRunController(QObject):
             (path for path in existing_paths if normalized_path_key(path) == normalized_path_key(current_path)),
             existing_paths[0],
         )
-        index = self._window._record_index_for_path(target_path)
+        index = self._window._record_index_by_path.get(target_path)
         if index is not None:
             self._window.grid.set_current_index(index)
         self._window.statusBar().showMessage(f"{len(existing_paths)} Winner or Needs Review image(s) remain for manual review.")
@@ -1358,7 +1358,7 @@ class AiRunController(QObject):
             # the view/undo stack; the rest stays untouched in the source
             # folder (see move_records_by_paths, which only acts on
             # result.moved).
-            moved_winners = self._window._move_records_by_paths(ai_pick_paths, winners_dir, batch_id=batch_id)
+            moved_winners = self._window._record_ops.move_records_by_paths(ai_pick_paths, winners_dir, batch_id=batch_id)
         if reject_paths:
             # Recycling is fast/local enough (same as everywhere else in the
             # app that recycles) that a progress dialog would just be noise,
@@ -1374,7 +1374,7 @@ class AiRunController(QObject):
             f"Applied AI decisions: moved {moved_winners} AI Pick image(s) to _winners and {moved_rejects} Reject image(s) to the recycle bin."
         )
 
-        reviewable_paths = tuple(path for path in follow_up_paths if self._window._record_index_for_path(path) is not None)
+        reviewable_paths = tuple(path for path in follow_up_paths if self._window._record_index_by_path.get(path) is not None)
         if not reviewable_paths:
             return
 
@@ -1761,9 +1761,9 @@ class AiRunController(QObject):
         # same_folder branch: kick the bundle load onto a worker so a slow
         # UNC/NAS path can't freeze the UI. The continuation handler runs
         # the tab switch + completion dialog once the bundle arrives.
-        self._window._refresh_winner_scores_for_current_folder()
-        self._window._refresh_face_records_for_current_folder()
-        self._window._refresh_image_categories_for_current_folder()
+        self._window._scan.refresh_winner_scores_for_current_folder()
+        self._window._scan.refresh_face_records_for_current_folder()
+        self._window._scan.refresh_image_categories_for_current_folder()
         self._window.statusBar().showMessage(
             f"AI review complete. Loading {Path(html_report_path).name}..."
         )
@@ -2058,7 +2058,7 @@ class AiRunController(QObject):
         if record is None or self._window._ai_bundle is None:
             return None
         result = find_ai_result_for_record(self._window._ai_bundle, record, preferred_path=preferred_path)
-        refined = refine_ai_result_with_review_insight(result, self._window._review_insight_for_record(record))
+        refined = refine_ai_result_with_review_insight(result, self._window._inspector.review_insight_for_record(record))
         return self.apply_burst_dedup_to_ai_result(refined, record)
 
     def apply_burst_dedup_to_ai_result(self, result, record):
@@ -2141,7 +2141,7 @@ class AiRunController(QObject):
             seen_keys.add(key)
             result = fast_results.get(key)
             if result is not None:
-                return refine_ai_result_with_review_insight(result, self._window._review_insight_for_record(record))
+                return refine_ai_result_with_review_insight(result, self._window._inspector.review_insight_for_record(record))
         return None
 
     def details_ai_text_for_record(self, record: ImageRecord) -> str:
@@ -2157,7 +2157,7 @@ class AiRunController(QObject):
         score = ai_result.display_score_text
         if score:
             parts.append(score)
-        face_count = len(self._window._face_records_for_record(record))
+        face_count = len(self._window._inspector.face_records_for_record(record))
         if face_count:
             parts.append(f"{face_count} face{'s' if face_count != 1 else ''}")
         if ai_result.group_size > 1:
@@ -2281,8 +2281,8 @@ class AiRunController(QObject):
         focused_slot = 0
         for slot, (item_index, record, ai_result) in enumerate(group_rows):
             annotation = self._window._annotations.get(record.path, SessionAnnotation())
-            displayed_path = self._window.grid.displayed_variant_path(item_index) if record.has_variant_stack else self._window._preview_source_path(record)
-            edited_candidates = self._window._ordered_edited_candidates(record, displayed_path)
+            displayed_path = self._window.grid.displayed_variant_path(item_index) if record.has_variant_stack else self._window._preview_ctl.preview_source_path(record)
+            edited_candidates = self._window._preview_ctl.ordered_edited_candidates(record, displayed_path)
             edited_path = edited_candidates[0] if edited_candidates else ""
             label = ai_result.rank_text if ai_result.group_size > 1 else ""
             if record.path == current_record.path:
@@ -2298,10 +2298,10 @@ class AiRunController(QObject):
                     edited_candidates=tuple(edited_candidates),
                     label=f"AI {label}" if label else "AI",
                     ai_result=ai_result,
-                    review_summary=self._window._review_summary_for_record(record),
-                    workflow_summary=self._window._workflow_summary_for_record(record),
-                    workflow_details=self._window._workflow_detail_lines_for_record(record),
-                    placeholder_image=self._window._preview_placeholder_for_index(item_index),
+                    review_summary=self._window._inspector.review_summary_for_record(record),
+                    workflow_summary=self._window._inspector.workflow_summary_for_record(record),
+                    workflow_details=self._window._inspector.workflow_detail_lines_for_record(record),
+                    placeholder_image=self._window._preview_ctl.preview_placeholder_for_index(item_index),
                 )
             )
 

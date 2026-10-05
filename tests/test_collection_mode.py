@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -13,11 +14,12 @@ from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QStatusBar, QWi
 from image_triage.catalog_controller import CatalogController
 from image_triage.folder_session import FolderSession, session_field
 from image_triage.grid import ThumbnailGridView
+from image_triage.inspector_controller import InspectorController
 from image_triage.library_store import LibraryStore
 from image_triage.models import ImageRecord
 from image_triage.preview import FullScreenPreview, PreviewEntry
 from image_triage.thumbnails import ThumbnailManager
-from image_triage.window import MainWindow
+from tests.harness import controller_over
 
 
 def _record(path: str, *, folder: bool = False) -> ImageRecord:
@@ -41,11 +43,6 @@ class _PreviewStub:
 class _ModeHost(QWidget):
     _collection_mode = session_field("collection_mode")
     _browser_view_mode = session_field("browser_view_mode")
-    _begin_collection_mode = MainWindow._begin_collection_mode
-    _cancel_collection_mode = MainWindow._cancel_collection_mode
-    _save_collection_mode = MainWindow._save_collection_mode
-    _refresh_collection_mode_ui = MainWindow._refresh_collection_mode_ui
-    _create_virtual_collection_from_selection = MainWindow._create_virtual_collection_from_selection
 
     def __init__(self, store: LibraryStore) -> None:
         super().__init__()
@@ -60,8 +57,13 @@ class _ModeHost(QWidget):
         self.grid = ThumbnailGridView(ThumbnailManager(), self)
         self.grid.resize(760, 420)
         self.grid.set_items([_record("C:/album/a.jpg")], request_thumbnails=False)
-        self.grid.collection_selection_changed.connect(self._refresh_collection_mode_ui)
+        self.grid.collection_selection_changed.connect(lambda *_args: self._catalog.refresh_collection_mode_ui())
         self.preview = _PreviewStub()
+        # the stub stands in for an already-built viewer
+        self._preview_ctl = SimpleNamespace(preview_if_built=lambda: self.preview)
+        self._inspector = SimpleNamespace(update_action_states=lambda: None)
+        self._views = SimpleNamespace(set_browser_view_mode=self._set_browser_view_mode)
+        self._projects = SimpleNamespace(refresh_collections_menu=self._refresh_collections_menu)
         self.inspector_panel = QWidget(self)
         self.collection_mode_bar = QWidget(self)
         self.collection_mode_bar.hide()
@@ -74,9 +76,6 @@ class _ModeHost(QWidget):
 
     def statusBar(self) -> QStatusBar:
         return self._status
-
-    def _preview_if_built(self):
-        return self.preview  # the stub stands in for an already-built viewer
 
     def _set_browser_view_mode(self, mode: str) -> None:
         self._browser_view_mode = mode
@@ -117,7 +116,7 @@ class CollectionModeTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_create_collects_across_folder_changes_and_saves(self) -> None:
-        self.host._create_virtual_collection_from_selection()
+        self.host._catalog.create_virtual_collection_from_selection()
         self.assertEqual("create", self.host._collection_mode)
         self.assertTrue(self.host.grid.collection_checkbox_mode())
         self.assertFalse(self.host.collection_mode_save_button.isEnabled())
@@ -128,7 +127,7 @@ class CollectionModeTests(unittest.TestCase):
         self.assertEqual("2 images checked", self.host.collection_mode_count.text())
         self.assertTrue(self.host.collection_mode_save_button.isEnabled())
 
-        self.host._save_collection_mode()
+        self.host._catalog.save_collection_mode()
 
         collections = self.store.list_collections()
         self.assertEqual(1, len(collections))
@@ -140,17 +139,17 @@ class CollectionModeTests(unittest.TestCase):
         self.assertTrue(self.host.inspector_panel.isEnabled())
 
     def test_cancel_discards_unsaved_picks(self) -> None:
-        self.host._begin_collection_mode("create")
+        self.host._catalog.begin_collection_mode("create")
         self.host.grid.toggle_collection_index(0)
-        self.host._cancel_collection_mode()
+        self.host._catalog.cancel_collection_mode()
         self.assertFalse(self.store.list_collections())
         self.assertFalse(self.host.preview.browse_mode)
 
     def test_canceling_name_dialog_keeps_checked_images(self) -> None:
-        self.host._begin_collection_mode("create")
+        self.host._catalog.begin_collection_mode("create")
         self.host.grid.toggle_collection_index(0)
         self.host._exec_dialog_with_geometry = lambda dialog, _key: dialog.DialogCode.Rejected
-        self.host._save_collection_mode()
+        self.host._catalog.save_collection_mode()
         self.assertEqual("create", self.host._collection_mode)
         self.assertEqual(("C:/album/a.jpg",), self.host.grid.collection_paths())
         self.assertFalse(self.store.list_collections())
@@ -159,22 +158,22 @@ class CollectionModeTests(unittest.TestCase):
         collection = self.store.create_collection(
             name="Existing", item_paths=("C:/album/a.jpg", "C:/other/b.jpg")
         )
-        self.host._begin_collection_mode("edit", collection=collection)
+        self.host._catalog.begin_collection_mode("edit", collection=collection)
         self.assertTrue(self.host.grid.collection_path_checked("C:/album/a.jpg"))
         self.host.grid.toggle_collection_index(0)
         self.host.grid.set_items([_record("C:/third/c.jpg")], request_thumbnails=False)
         self.host.grid.toggle_collection_index(0)
-        self.host._save_collection_mode()
+        self.host._catalog.save_collection_mode()
         saved = self.store.load_collection(collection.id)
         self.assertEqual(("C:/other/b.jpg", "C:/third/c.jpg"),
                          tuple(path.replace("\\", "/") for path in saved.item_paths))
 
     def test_edit_can_clear_all_members(self) -> None:
         collection = self.store.create_collection(name="Existing", item_paths=("C:/album/a.jpg",))
-        self.host._begin_collection_mode("edit", collection=collection)
+        self.host._catalog.begin_collection_mode("edit", collection=collection)
         self.host.grid.toggle_collection_index(0)
         self.assertTrue(self.host.collection_mode_save_button.isEnabled())
-        self.host._save_collection_mode()
+        self.host._catalog.save_collection_mode()
         self.assertEqual((), self.store.load_collection(collection.id).item_paths)
 
     def test_action_gate_leaves_discovery_and_blocks_edits(self) -> None:
@@ -197,7 +196,7 @@ class CollectionModeTests(unittest.TestCase):
         actions.browse_catalog.setEnabled(False)
         host = type("ActionHost", (), {"actions": actions})()
 
-        MainWindow._limit_actions_for_collection_mode(host)
+        controller_over(InspectorController, host, "_inspector").limit_actions_for_collection_mode()
 
         self.assertTrue(actions.open_folder.isEnabled())
         self.assertTrue(actions.sort_actions["name"].isEnabled())

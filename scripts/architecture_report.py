@@ -78,6 +78,20 @@ def _self_stores(node: ast.AST) -> set[str]:
     }
 
 
+def _state_attributes(window: ast.ClassDef) -> set[str]:
+    """The window's attributes, not counting controller handles (``self._x = SomeController(self)``): a handle is wiring,
+    and every extracted domain needs one, so counting it would punish the very change the ratchet is meant to encourage."""
+    handles = {
+        target.attr
+        for n in ast.walk(window)
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Name)
+        and n.value.func.id.endswith("Controller")
+        for target in n.targets
+        if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self"
+    }
+    return _self_stores(window) - handles
+
+
 def _is_delegate(fn: ast.FunctionDef) -> bool:
     """``def _x(self, a, b): return self._owner.x(a, b)``: a body that only forwards its own parameters."""
     body = [s for s in fn.body if not (isinstance(s, ast.Expr) and isinstance(getattr(s, "value", None), ast.Constant))]
@@ -124,7 +138,7 @@ def collect_metrics() -> dict:
         "metrics": {
             "main_window_lines": window.end_lineno - window.lineno + 1,
             "main_window_methods": len(methods),
-            "main_window_attributes": len(_self_stores(window)),
+            "main_window_attributes": len(_state_attributes(window)),
             "window_py_other_classes": len(classes) - 1,
             "forwarding_delegates": sum(1 for m in methods if _is_delegate(m)),
             "private_accesses_total": sum(private_by_module.values()),
@@ -232,6 +246,62 @@ def check_window_refs() -> list[str]:
             if isinstance(node, ast.Attribute) and not node.attr.startswith("__") and ast.unparse(node.value) in _WINDOW_RECEIVERS:
                 if node.attr not in known:
                     problems.append(f"{path.relative_to(REPO).as_posix()}:{node.lineno}: {ast.unparse(node)} is not defined on MainWindow")
+    return problems
+
+
+def _qobject_names() -> set[str]:
+    try:
+        from PySide6.QtCore import QObject
+    except ImportError:  # the report runs without PySide6; inherited names then cannot be listed
+        return set()
+    return set(dir(QObject))
+
+
+def check_controller_calls() -> list[str]:
+    """``<window>.<handle>.<name>`` must name something the controller behind that handle defines.
+
+    A slice moves methods into a controller and rewrites its callers; a caller the rewrite missed (a path through another
+    object, a name that was only a forwarder) is an AttributeError when that code runs. ``<handle>`` is any ``self._x``
+    that ``MainWindow`` sets to ``SomeController(self)``.
+    """
+    window_tree = _parse(WINDOW_PY)
+    handles: dict[str, str] = {}
+    for node in ast.walk(window_tree):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id.endswith("Controller")
+            and any(isinstance(arg, ast.Name) and arg.id == "self" for arg in node.value.args)
+        ):
+            for target in node.targets:
+                if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+                    handles[target.attr] = node.value.func.id
+    classes: dict[str, ast.ClassDef] = {}
+    for path in PACKAGE.rglob("*.py"):
+        for node in _parse(path).body:
+            if isinstance(node, ast.ClassDef) and node.name in handles.values():
+                classes[node.name] = node
+    inherited = _qobject_names()
+    members = {handle: _class_members(classes[cls]) | inherited for handle, cls in handles.items() if cls in classes}
+    receivers = _WINDOW_RECEIVERS | {"self", "main_window", "w", "win"}
+    problems = []
+    for path in sorted(PACKAGE.rglob("*.py")) + sorted((REPO / "tests").glob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        in_tests = "tests" in path.parts
+        for node in ast.walk(_parse(path)):
+            if not (isinstance(node, ast.Attribute) and not node.attr.startswith("__") and isinstance(node.value, ast.Attribute)):
+                continue
+            inner = node.value
+            if inner.attr not in members or ast.unparse(inner.value) not in receivers:
+                continue
+            if ast.unparse(inner.value) == "self" and path != WINDOW_PY:
+                continue
+            if in_tests and ast.unparse(inner.value) == "self":
+                continue
+            if node.attr not in members[inner.attr]:
+                problems.append(f"{path.relative_to(REPO).as_posix()}:{node.lineno}: {ast.unparse(node)} is not defined on {handles[inner.attr]}")
     return problems
 
 
@@ -364,6 +434,7 @@ def run_all_checks(current: dict, recorded: dict) -> list[str]:
         + check_ui_free(recorded.get("ui_free_modules", []))
         + check_self_members()
         + check_window_refs()
+        + check_controller_calls()
         + check_internal_imports()
     )
 

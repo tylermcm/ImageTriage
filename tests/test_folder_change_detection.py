@@ -255,26 +255,26 @@ def _ready_for_a_check(win, folder: Path) -> None:
 )
 def test_activation_checks_nothing_unless_every_condition_holds(window, tmp_path, monkeypatch, spoil) -> None:
     _StubCheckTask.created.clear()
-    monkeypatch.setattr("image_triage.window.FolderModifiedCheckTask", _StubCheckTask)
+    monkeypatch.setattr("image_triage.scan_controller.FolderModifiedCheckTask", _StubCheckTask)
     _ready_for_a_check(window, tmp_path)
     spoil(window)
-    window._check_folder_changed_on_activation()
+    window._scan.check_folder_changed_on_activation()
     assert _StubCheckTask.created == [] and window._folder_check_task is None
 
 
 def test_activation_starts_one_check_and_debounces_focus_flaps(window, tmp_path, monkeypatch) -> None:
     _StubCheckTask.created.clear()
-    monkeypatch.setattr("image_triage.window.FolderModifiedCheckTask", _StubCheckTask)
+    monkeypatch.setattr("image_triage.scan_controller.FolderModifiedCheckTask", _StubCheckTask)
     _ready_for_a_check(window, tmp_path)
-    window._check_folder_changed_on_activation()
+    window._scan.check_folder_changed_on_activation()
     assert _StubCheckTask.created == [(str(tmp_path), window._scan_token)]
-    window._check_folder_changed_on_activation()  # in flight for this scan: nothing new
+    window._scan.check_folder_changed_on_activation()  # in flight for this scan: nothing new
     assert len(_StubCheckTask.created) == 1
     window._folder_check_task = None  # it came back...
-    window._check_folder_changed_on_activation()  # ...but five seconds have not passed
+    window._scan.check_folder_changed_on_activation()  # ...but five seconds have not passed
     assert len(_StubCheckTask.created) == 1
     window._folder_check_last_started -= 6.0
-    window._check_folder_changed_on_activation()
+    window._scan.check_folder_changed_on_activation()
     assert len(_StubCheckTask.created) == 2
 
 
@@ -282,7 +282,7 @@ def test_a_different_modified_time_queues_the_watcher_refresh(window, tmp_path) 
     _ready_for_a_check(window, tmp_path)
     window._folder_watch_refresh_pending = False
     window._folder_check_token = window._scan_token
-    window._handle_folder_modified_checked(str(tmp_path), window._scan_token, 2000)
+    window._scan.handle_folder_modified_checked(str(tmp_path), window._scan_token, 2000)
     assert window._folder_watch_refresh_pending is True
     assert window._folder_check_task is None
 
@@ -305,7 +305,7 @@ def test_no_refresh_when_nothing_changed_or_the_answer_is_stale(window, tmp_path
         window._scan_in_progress = True
     elif case == "other-folder":
         folder = str(tmp_path / "elsewhere")
-    window._handle_folder_modified_checked(folder, token, modified)
+    window._scan.handle_folder_modified_checked(folder, token, modified)
     assert window._folder_watch_refresh_pending is False
 
 
@@ -314,17 +314,17 @@ def test_an_old_answer_does_not_clear_the_marker_of_a_newer_check(window, tmp_pa
     marker = object()
     window._folder_check_task = marker
     window._folder_check_token = window._scan_token
-    window._handle_folder_modified_checked(str(tmp_path), window._scan_token - 1, 2000)
+    window._scan.handle_folder_modified_checked(str(tmp_path), window._scan_token - 1, 2000)
     assert window._folder_check_task is marker
 
 
 def test_returning_to_the_app_runs_the_check_and_other_state_changes_do_not(window, monkeypatch) -> None:
     calls: list[int] = []
-    monkeypatch.setattr(window, "_check_folder_changed_on_activation", lambda: calls.append(1))
-    window._handle_application_state_changed(Qt.ApplicationState.ApplicationInactive)
-    window._handle_application_state_changed(Qt.ApplicationState.ApplicationSuspended)
+    monkeypatch.setattr(window._scan, "check_folder_changed_on_activation", lambda: calls.append(1))
+    window._scan.handle_application_state_changed(Qt.ApplicationState.ApplicationInactive)
+    window._scan.handle_application_state_changed(Qt.ApplicationState.ApplicationSuspended)
     assert calls == []
-    window._handle_application_state_changed(Qt.ApplicationState.ApplicationActive)
+    window._scan.handle_application_state_changed(Qt.ApplicationState.ApplicationActive)
     assert calls == [1]
     # and the signal really is wired to it
     QApplication.instance().applicationStateChanged.emit(Qt.ApplicationState.ApplicationActive)
@@ -341,7 +341,7 @@ def test_end_to_end_new_files_on_a_network_style_folder_appear_when_the_user_ret
 
     # Nothing changed: coming back to the app does not refresh.
     window._folder_check_last_started = 0.0
-    window._check_folder_changed_on_activation()
+    window._scan.check_folder_changed_on_activation()
     assert pump_until(lambda: window._folder_check_task is None, timeout=10)
     assert window._folder_watch_refresh_pending is False
 
@@ -349,7 +349,7 @@ def test_end_to_end_new_files_on_a_network_style_folder_appear_when_the_user_ret
     make_jpegs(folder, ["IMG_new.jpg"])
     new_time = _bump_folder_mtime(folder)
     window._folder_check_last_started = 0.0
-    window._check_folder_changed_on_activation()
+    window._scan.check_folder_changed_on_activation()
     assert window._folder_check_task is not None, "a worker-thread check was started"
     assert pump_until(lambda: len(window._records) == 4, timeout=30), "the new photo never appeared"
     assert window._folder_dir_mtime_ns == new_time or window._folder_dir_mtime_ns == folder_modified_ns(str(folder))

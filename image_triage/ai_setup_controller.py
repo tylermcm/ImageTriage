@@ -98,7 +98,7 @@ class AiSetupController(QObject):
         self._window._ai_runtime = replace(
             self._window._ai_runtime,
             device=device,
-            batch_size=self._window._configured_ai_embed_batch_size(),
+            batch_size=self._window._settings_ctl.configured_ai_embed_batch_size(),
             semantic_model_name=semantic_model_name,
         )
 
@@ -546,7 +546,7 @@ class AiSetupController(QObject):
         self._pending_ai_aiculler_face_download_after_runtime = bool(download_aiculler_face_after)
         self._pending_ai_semantic_model_download_after_runtime = bool(download_semantic_model_after)
         self.set_ai_setup_busy("Installing AI runtime...")
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
         self._window._ai_run.update_ai_toolbar_state()
         self._window.statusBar().showMessage("Starting AI runtime install...")
         self._window._ai_model_pool.start(task)
@@ -564,7 +564,7 @@ class AiSetupController(QObject):
         self._window._active_ai_runtime_task = None
         self.invalidate_ai_runtime_status_cache()
         self.refresh_ai_runtime_preferences()
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
         self._window._ai_run.update_ai_toolbar_state()
         self._window.statusBar().showMessage("AI runtime installed.")
         download_aiculler_clip = (
@@ -614,7 +614,7 @@ class AiSetupController(QObject):
         self._pending_ai_aiculler_face_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
         self.set_ai_setup_busy(None)
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
         self._window._ai_run.update_ai_toolbar_state()
         QMessageBox.warning(self._window, "AI Runtime Install", message)
         self._window.statusBar().showMessage("AI runtime install failed.")
@@ -765,7 +765,7 @@ class AiSetupController(QObject):
         self.invalidate_ai_runtime_status_cache()
         self.refresh_ai_runtime_preferences()
         self.set_ai_setup_busy(None)
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
         self._window._ai_run.update_ai_toolbar_state()
         self._last_ai_readiness_results = dict(results)
         summary = summarize(results)
@@ -778,7 +778,7 @@ class AiSetupController(QObject):
     def handle_ai_readiness_failed(self, message: str) -> None:
         self._active_ai_readiness_task = None
         self.set_ai_setup_busy(None)
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
         QMessageBox.warning(self._window, "AI Readiness", message)
         self._window.statusBar().showMessage("The AI readiness check could not run.")
 
@@ -841,7 +841,7 @@ class AiSetupController(QObject):
             # Model repair cannot rebuild damaged packages; offer the operation
             # that can instead of leaving the user to guess.
             self.set_ai_setup_busy(None)
-            self._window._update_action_states()
+            self._window._inspector.update_action_states()
             choice = QMessageBox.question(
                 self._window,
                 "Repair AI",
@@ -864,7 +864,7 @@ class AiSetupController(QObject):
     def handle_ai_repair_failed(self, message: str) -> None:
         self._active_ai_repair_task = None
         self.set_ai_setup_busy(None)
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
         QMessageBox.warning(self._window, "Repair AI", message)
         self._window.statusBar().showMessage("AI repair failed.")
 
@@ -970,7 +970,7 @@ class AiSetupController(QObject):
         self.run_ai_uninstall(targets)
 
     def run_ai_uninstall(self, targets: tuple[tuple[str, Path, int], ...]) -> None:
-        progress = self._window._show_job_progress_dialog(
+        progress = self._window._export_jobs.show_job_progress_dialog(
             key="ai_uninstall",
             total_steps=1,
             spec=JobSpec(
@@ -995,12 +995,12 @@ class AiSetupController(QObject):
         task.signals.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
         self._window._ai_model_pool.start(task)
         loop.exec()
-        self._window._close_job_progress_dialog("ai_uninstall")
+        self._window._export_jobs.close_job_progress_dialog("ai_uninstall")
 
         # Availability is filesystem-derived, so just drop the cached runtime
         # scan and refresh the action/toolbar enabled states.
         self.invalidate_ai_runtime_status_cache()
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
         self._window._ai_run.update_ai_toolbar_state()
 
         freed = int(result.get("freed", 0) or 0)
@@ -1082,7 +1082,7 @@ class AiSetupController(QObject):
         task.signals.failed.connect(self.handle_ai_model_download_failed, Qt.ConnectionType.QueuedConnection)
         self._window._active_ai_model_task = task
         self.set_ai_setup_busy("Downloading AI culling models...")
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
         self._window._ai_run.update_ai_toolbar_state()
         self._window.statusBar().showMessage("Starting AI model download...")
         self._window._ai_model_pool.start(task)
@@ -1101,7 +1101,7 @@ class AiSetupController(QObject):
         self.invalidate_ai_runtime_status_cache()
         self.set_ai_setup_busy(None)
         self.refresh_ai_runtime_preferences()
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
         self._window._ai_run.update_ai_toolbar_state()
         self.start_ai_capability_bundles(
             title="AI Setup",
@@ -1112,7 +1112,7 @@ class AiSetupController(QObject):
         self._window._active_ai_model_task = None
         self.set_ai_setup_busy(None)
         self.refresh_ai_runtime_preferences()
-        self._window._update_action_states()
+        self._window._inspector.update_action_states()
         self._window._ai_run.update_ai_toolbar_state()
         QMessageBox.warning(self._window, "AI Model Download", f"Could not download the AI model.\n\n{message}")
         self._window.statusBar().showMessage("AI model download failed.")

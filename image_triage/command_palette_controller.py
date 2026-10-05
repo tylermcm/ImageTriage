@@ -39,7 +39,7 @@ class CommandPaletteController:
         if self._session.collection_mode:
             window.statusBar().showMessage("Finish collection mode before using commands.")
             return
-        preview = window._preview_if_built()
+        preview = window._preview_ctl.preview_if_built()
         preview_is_active = preview is not None and preview.isVisible() and preview.isActiveWindow()
         palette_context = context or ("preview" if preview_is_active else "main")
         if window._active_command_palette is not None and window._active_command_palette.isVisible():
@@ -95,17 +95,17 @@ class CommandPaletteController:
             window._command_palette_shortcut_preview.setKey(sequence)
         if window.actions is not None:
             window.actions.open_command_palette.setShortcut(sequence)
-            window._refresh_action_shortcut_hint(window.actions.open_command_palette)
+            window._settings_ctl.refresh_action_shortcut_hint(window.actions.open_command_palette)
 
     def ensure_dialog(self, context: str) -> CommandPaletteDialog:
         window = self._window
         existing = window._command_palette_dialogs.get(context)
         if existing is not None:
             return existing
-        preview = window._preview_if_built() if context == "preview" else None
+        preview = window._preview_ctl.preview_if_built() if context == "preview" else None
         parent = preview if preview is not None and preview.isVisible() else window
         dialog = CommandPaletteDialog([], recent_command_ids=(), parent=parent)
-        dialog.finished.connect(window._handle_command_palette_finished)
+        dialog.finished.connect(window._command_palette.handle_finished)
         window._command_palette_dialogs[context] = dialog
         return dialog
 
@@ -158,7 +158,7 @@ class CommandPaletteController:
         self._add_catalog_root_commands(commands, window)
         self._add_recent_destination_commands(commands, window)
 
-        if context == "preview" and window._preview_is_visible():
+        if context == "preview" and window._preview_ctl.preview_is_visible():
             self._add_preview_commands(commands, window)
 
         return commands
@@ -392,7 +392,7 @@ class CommandPaletteController:
                     subtitle=self.preset_subtitle(preset),
                     section="Search",
                     keywords=("smart filter", "saved search", preset.name.casefold()),
-                    callback=lambda target=preset: window._apply_filter_preset(target),
+                    callback=lambda target=preset: window._records_view.apply_filter_preset(target),
                 )
             )
         for preset in window._saved_filter_presets:
@@ -403,7 +403,7 @@ class CommandPaletteController:
                     subtitle=self.preset_subtitle(preset),
                     section="Search",
                     keywords=("saved search", "preset", preset.name.casefold()),
-                    callback=lambda target=preset: window._apply_filter_preset(target),
+                    callback=lambda target=preset: window._records_view.apply_filter_preset(target),
                 )
             )
 
@@ -417,7 +417,7 @@ class CommandPaletteController:
                     subtitle=recipe.description or "Built-in export recipe",
                     section="Export",
                     keywords=("workflow recipe", "export recipe", recipe.name.casefold(), recipe.key),
-                    callback=lambda target=recipe: window._run_workflow_recipe(target),
+                    callback=lambda target=recipe: window._export_jobs.run_workflow_recipe(target),
                 )
             )
         for recipe in window._saved_workflow_recipes:
@@ -428,7 +428,7 @@ class CommandPaletteController:
                     subtitle=recipe.description or "Saved export recipe",
                     section="Export",
                     keywords=("saved recipe", "workflow recipe", "export recipe", recipe.name.casefold()),
-                    callback=lambda target=recipe: window._run_workflow_recipe(target),
+                    callback=lambda target=recipe: window._export_jobs.run_workflow_recipe(target),
                 )
             )
 
@@ -442,7 +442,7 @@ class CommandPaletteController:
                     subtitle=preset.description,
                     section="Workspace",
                     keywords=("workspace preset", preset.name.casefold(), preset.key),
-                    callback=lambda target=preset: window._apply_workspace_preset(target),
+                    callback=lambda target=preset: window._settings_ctl.apply_workspace_preset(target),
                 )
             )
         for preset in window._saved_workspace_presets:
@@ -453,7 +453,7 @@ class CommandPaletteController:
                     subtitle=preset.description or "Saved workspace preset",
                     section="Workspace",
                     keywords=("saved workspace", "workspace preset", preset.name.casefold()),
-                    callback=lambda target=preset: window._apply_workspace_preset(target),
+                    callback=lambda target=preset: window._settings_ctl.apply_workspace_preset(target),
                 )
             )
 
@@ -467,7 +467,7 @@ class CommandPaletteController:
                     subtitle=collection.description or f"{collection.kind} | {collection.item_count} item(s)",
                     section="Library",
                     keywords=("collection", collection.name.casefold(), collection.kind.casefold()),
-                    callback=lambda target=collection.id: window._open_virtual_collection(target),
+                    callback=lambda target=collection.id: window._catalog.open_virtual_collection(target),
                 )
             )
 
@@ -482,13 +482,13 @@ class CommandPaletteController:
                     subtitle=f"{root.indexed_record_count} indexed bundle(s)",
                     section="Library",
                     keywords=("catalog", "library", root_label.casefold()),
-                    callback=lambda target=root.path: window._browse_catalog(root_path_override=target),
+                    callback=lambda target=root.path: window._catalog.browse_catalog(root_path_override=target),
                 )
             )
 
     def _add_recent_destination_commands(self, commands: list[PaletteCommand], window: "MainWindow") -> None:
         """Move-selection commands for the most recent destination folders."""
-        for destination in window._recent_destination_paths(exclude_current_folder=True)[:6]:
+        for destination in window._navigation.recent_destination_paths(exclude_current_folder=True)[:6]:
             label = Path(destination).name or destination
             commands.append(
                 PaletteCommand(
@@ -497,7 +497,7 @@ class CommandPaletteController:
                     subtitle=destination,
                     section="Review",
                     keywords=("recent folder", "move recent", "destination"),
-                    callback=lambda target=destination: window._move_selected_records_to_destination(target),
+                    callback=lambda target=destination: window._record_ops.move_selected_records_to_destination(target),
                 )
             )
 
@@ -633,7 +633,7 @@ class CommandPaletteController:
                 section="Preview",
                 shortcut="F2",
                 keywords=("rename", "filename"),
-                callback=lambda path=focused_path: window._handle_preview_rename_requested(path),
+                callback=lambda path=focused_path: window._preview_ctl.handle_preview_rename_requested(path),
             ),
             PaletteCommand(
                 id="preview.accept",
@@ -642,7 +642,7 @@ class CommandPaletteController:
                 section="Preview",
                 shortcut="W",
                 keywords=("accept", "winner", "approve"),
-                callback=lambda path=focused_path: window._handle_preview_winner_requested(path),
+                callback=lambda path=focused_path: window._preview_ctl.handle_preview_winner_requested(path),
             ),
             PaletteCommand(
                 id="preview.reject",
@@ -651,7 +651,7 @@ class CommandPaletteController:
                 section="Preview",
                 shortcut="X",
                 keywords=("reject", "decline"),
-                callback=lambda path=focused_path: window._handle_preview_reject_requested(path),
+                callback=lambda path=focused_path: window._preview_ctl.handle_preview_reject_requested(path),
             ),
             PaletteCommand(
                 id="preview.keep",
@@ -660,7 +660,7 @@ class CommandPaletteController:
                 section="Preview",
                 shortcut="K",
                 keywords=("keep", "_keep"),
-                callback=lambda path=focused_path: window._handle_preview_keep_requested(path),
+                callback=lambda path=focused_path: window._preview_ctl.handle_preview_keep_requested(path),
             ),
             PaletteCommand(
                 id="preview.move",
@@ -669,7 +669,7 @@ class CommandPaletteController:
                 section="Preview",
                 shortcut="M",
                 keywords=("move", "relocate"),
-                callback=lambda path=focused_path: window._handle_preview_move_requested(path),
+                callback=lambda path=focused_path: window._preview_ctl.handle_preview_move_requested(path),
             ),
             PaletteCommand(
                 id="preview.delete",
@@ -678,7 +678,7 @@ class CommandPaletteController:
                 section="Preview",
                 shortcut="Delete",
                 keywords=("delete", "trash", "remove"),
-                callback=lambda path=focused_path: window._handle_preview_delete_requested(path),
+                callback=lambda path=focused_path: window._preview_ctl.handle_preview_delete_requested(path),
             ),
             PaletteCommand(
                 id="preview.tag",
@@ -687,7 +687,7 @@ class CommandPaletteController:
                 section="Preview",
                 shortcut="T",
                 keywords=("tag", "keywords"),
-                callback=lambda path=focused_path: window._handle_preview_tag_requested(path),
+                callback=lambda path=focused_path: window._preview_ctl.handle_preview_tag_requested(path),
             ),
         ]
 
@@ -699,7 +699,7 @@ class CommandPaletteController:
             subtitle="Send the focused preview image to Photoshop",
             section="Preview",
             keywords=("photoshop", "edit"),
-            callback=lambda path=photoshop_path: window._open_preview_image_in_photoshop(path),
+            callback=lambda path=photoshop_path: window._preview_ctl.open_preview_image_in_photoshop(path),
         )
 
     def preset_subtitle(self, preset: SavedFilterPreset) -> str:
@@ -719,4 +719,4 @@ class CommandPaletteController:
     def remember_recent_command(self, command_id: str) -> None:
         window = self._window
         window._recent_command_ids = [command_id, *[item for item in window._recent_command_ids if item != command_id]][:12]
-        window._save_recent_command_ids()
+        window._settings_ctl.save_recent_command_ids()

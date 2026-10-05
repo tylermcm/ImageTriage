@@ -804,7 +804,7 @@ class AIWorkflowCenterDialog(QDialog):
             actions=[
                 ActionSpec(
                     label="Open AI Review",
-                    callback=lambda: self._invoke("_open_current_ai_review"),
+                    callback=lambda: self._invoke("_handoff.open_current_ai_review"),
                     primary=True,
                     enabled=results_ready,
                     tooltip="Run Cull & Score first." if not results_ready else "",
@@ -834,7 +834,7 @@ class AIWorkflowCenterDialog(QDialog):
                 ),
                 ActionSpec(
                     label="Sort Into Categories",
-                    callback=lambda: self._invoke("_sort_images_into_semantic_folders"),
+                    callback=lambda: self._invoke("_handoff.sort_images_into_semantic_folders"),
                     enabled=results_ready,
                 ),
             ],

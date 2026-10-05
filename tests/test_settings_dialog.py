@@ -228,7 +228,7 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
 
     def test_every_settings_result_field_has_a_consumer_in_window_py(self) -> None:
         """WI-3.3's validation criterion: every field of `WorkflowSettingsResult`
-        is read back somewhere in window.py's settings-accept handler. A
+        is read back somewhere in the settings-accept handler (settings_controller.py). A
         source scan, not an import, so this doesn't need a live MainWindow
         and catches a field that's set but never read (as `ai_clip_model_variant`
         was before WI-3.3 removed it)."""
@@ -246,10 +246,13 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertIsNotNone(fields, "WorkflowSettingsResult class not found")
         self.assertGreater(len(fields), 0)
 
-        window_src = (repo_root / "image_triage" / "window.py").read_text(encoding="utf-8")
-        missing = [name for name in fields if f"result.{name}" not in window_src]
+        # The settings-accept handler lives in the settings controller (it moved out of window.py).
+        consumer_src = "\n".join(
+            (repo_root / "image_triage" / name).read_text(encoding="utf-8") for name in ("window.py", "settings_controller.py")
+        )
+        missing = [name for name in fields if f"result.{name}" not in consumer_src]
 
-        self.assertEqual([], missing, f"no `result.<field>` consumer found in window.py for: {missing}")
+        self.assertEqual([], missing, f"no `result.<field>` consumer found in window.py or settings_controller.py for: {missing}")
 
 
 if __name__ == "__main__":

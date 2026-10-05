@@ -13,12 +13,15 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QToolButton, QWidget
 
 from image_triage.appearance_controller import AppearanceController
+from image_triage.projects_controller import ProjectsController
+from image_triage.settings_controller import SettingsController
 from image_triage.toolbar_controller import ToolbarController
 from image_triage.ui.actions import format_action_tooltip
 from image_triage.ui.theme import build_app_stylesheet, default_theme
 from image_triage.ui.display_metrics import STANDARD_DISPLAY
 from image_triage.ui.toolbar_menus import ToolbarMenuController
 from image_triage.window import MainWindow
+from tests.harness import controller_over
 
 
 class _ActionBag:
@@ -79,7 +82,7 @@ class TopbarStyleTests(unittest.TestCase):
         button.hide()
 
     def test_search_uses_truthful_placeholder_and_keyboard_focus(self) -> None:
-        field = MainWindow._build_search_field(SimpleNamespace())
+        field = controller_over(ProjectsController, SimpleNamespace(), "_projects").build_search_field()
 
         self.assertEqual("Search by content, person, or filename...", field.placeholderText())
         self.assertTrue(field.isClearButtonEnabled())
@@ -89,7 +92,7 @@ class TopbarStyleTests(unittest.TestCase):
         action.setProperty("imageTriageBaseText", "Open Preview")
         action.setShortcut("Ctrl+Return")
 
-        MainWindow._refresh_action_shortcut_hint(SimpleNamespace(), action)
+        SettingsController.refresh_action_shortcut_hint(SimpleNamespace(), action)
 
         self.assertEqual(format_action_tooltip("Open Preview", action.shortcut()), action.toolTip())
         self.assertEqual("Open Preview\nShortcut: Ctrl+Return", action.toolTip())
@@ -164,7 +167,9 @@ class TopbarStyleTests(unittest.TestCase):
             _is_cluster_item=lambda value: isinstance(value, str) and bool(value),
         )
 
-        slots = MainWindow._items_to_slots(host, ["one", "two", "three", "four"])
+        slots = controller_over(ProjectsController, host, "_projects", is_cluster_item=host._is_cluster_item).items_to_slots(
+            ["one", "two", "three", "four"]
+        )
 
         self.assertEqual(["one", "two", "three", "four"], slots)
 

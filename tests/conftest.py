@@ -131,6 +131,19 @@ def _per_test_hard_timeout(request):
             faulthandler.cancel_dump_traceback_later()
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _no_startup_update_check():
+    """A window schedules an update check 2.5 s after it is built; in a test session that is a real network request, and
+    it flips the "Check for updates" action while a test is looking at action state. No test relies on it (explicit
+    checks go through ``HelpUpdateController.check_for_updates``)."""
+    from image_triage.help_update_controller import HelpUpdateController
+
+    original = HelpUpdateController.check_for_updates_on_startup
+    HelpUpdateController.check_for_updates_on_startup = lambda self: None
+    yield
+    HelpUpdateController.check_for_updates_on_startup = original
+
+
 @pytest.fixture(autouse=True)
 def _forbid_real_mask_engine_worker(monkeypatch):
     real_popen = subprocess.Popen
