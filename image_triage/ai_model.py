@@ -508,32 +508,6 @@ def download_semantic_model(
     )
 
 
-def download_segmentation_model(
-    installation: AIModelInstallation | None = None,
-    *,
-    force: bool = False,
-    progress_callback: AIModelProgressCallback | None = None,
-) -> AIModelInstallation:
-    return download_ai_model(
-        installation or resolve_segmentation_model_installation(),
-        force=force,
-        progress_callback=progress_callback,
-    )
-
-
-def download_birefnet_model(
-    installation: AIModelInstallation | None = None,
-    *,
-    force: bool = False,
-    progress_callback: AIModelProgressCallback | None = None,
-) -> AIModelInstallation:
-    return download_ai_model(
-        installation or resolve_birefnet_model_installation(),
-        force=force,
-        progress_callback=progress_callback,
-    )
-
-
 # --- SAM 2.1 promptable segmentation (Editor "click to select") --------------
 # facebook/sam2.1-hiera-tiny is Apache-2.0 and loads offline via transformers
 # Sam2Model/Sam2Processor from a flat directory, exactly like OneFormer.
@@ -593,19 +567,6 @@ def resolve_sam_model_installation(
     )
 
 
-def download_sam_model(
-    installation: AIModelInstallation | None = None,
-    *,
-    force: bool = False,
-    progress_callback: AIModelProgressCallback | None = None,
-) -> AIModelInstallation:
-    return download_ai_model(
-        installation or resolve_sam_model_installation(),
-        force=force,
-        progress_callback=progress_callback,
-    )
-
-
 DEFAULT_DEPTH_MODEL_REPO_ID = "depth-anything/Depth-Anything-V2-Small-hf"
 # Apache-2.0 (the Small variant only; Base/Large are CC-BY-NC).
 DEFAULT_DEPTH_MODEL_REVISION = MODEL_BUNDLES["depth"].revision
@@ -657,19 +618,6 @@ def resolve_depth_model_installation(
             else None
         ),
         bundle_key="depth",
-    )
-
-
-def download_depth_model(
-    installation: AIModelInstallation | None = None,
-    *,
-    force: bool = False,
-    progress_callback: AIModelProgressCallback | None = None,
-) -> AIModelInstallation:
-    return download_ai_model(
-        installation or resolve_depth_model_installation(),
-        force=force,
-        progress_callback=progress_callback,
     )
 
 

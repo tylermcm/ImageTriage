@@ -67,36 +67,6 @@ class PackagingScriptTests(unittest.TestCase):
         self.assertIn("pip._internal", constants)
         self.assertNotIn("pip", _dict_list_literals(tree, "build_exe_options", "excludes"))
 
-    def test_birefnet_worker_is_packaged_as_an_external_ai_script(self) -> None:
-        constants = _string_constants(_read_tree("freeze_support.py"))
-
-        self.assertIn("birefnet_worker.py", constants)
-        self.assertIn("ai_workers/birefnet_worker.py", constants)
-
-    def test_oneformer_worker_is_packaged_as_an_external_ai_script(self) -> None:
-        constants = _string_constants(_read_tree("freeze_support.py"))
-
-        self.assertIn("oneformer_worker.py", constants)
-        self.assertIn("ai_workers/oneformer_worker.py", constants)
-
-    def test_mask_engine_host_is_packaged_as_an_external_ai_script(self) -> None:
-        constants = _string_constants(_read_tree("freeze_support.py"))
-
-        self.assertIn("mask_engine_worker.py", constants)
-        self.assertIn("ai_workers/mask_engine_worker.py", constants)
-
-    def test_sam_worker_is_packaged_as_an_external_ai_script(self) -> None:
-        constants = _string_constants(_read_tree("freeze_support.py"))
-
-        self.assertIn("sam_worker.py", constants)
-        self.assertIn("ai_workers/sam_worker.py", constants)
-
-    def test_depth_worker_is_packaged_as_an_external_ai_script(self) -> None:
-        constants = _string_constants(_read_tree("freeze_support.py"))
-
-        self.assertIn("depth_worker.py", constants)
-        self.assertIn("ai_workers/depth_worker.py", constants)
-
     def test_vendored_editor_engine_is_named_explicitly_for_cx_freeze(self) -> None:
         # image_triage.photo_terminal (the vendored former cli_editor package)
         # is reached via a lazy import inside editor_render.py, so it must be

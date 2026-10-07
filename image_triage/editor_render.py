@@ -1,24 +1,16 @@
-"""Off-UI-thread rendering for the popout editor preview.
+"""Renders a saved edit session's recipe onto a source image.
 
-The editor's adjustment pipeline (global recipe + masked local adjustments)
-is expensive on the CPU, and running it synchronously on every slider tick
-froze the UI. This module moves that work onto a worker thread behind a
-backend-agnostic interface:
+``EditorRenderBackend`` is the compute contract: turn a base QImage + recipe
++ masked adjustments into a rendered QImage. ``CpuEditorRenderBackend`` is the
+current PIL implementation. Used synchronously by ``edit_render_headless`` for
+exports/thumbnails/PocketDrop handoff now that the live, slider-drag popout
+editor (which used to drive this backend asynchronously through an
+``EditorRenderService``) has been removed.
 
-- ``EditorRenderBackend`` is the compute contract: turn a base QImage + recipe
-  + masked adjustments into a rendered QImage. ``CpuEditorRenderBackend`` is
-  the current PIL implementation. A future GPU backend implements the same
-  method and drops straight in.
-- ``EditorRenderService`` owns a single worker thread and single-flights
-  requests: only one render runs at a time and only the most recent request is
-  ever rendered, so a fast drag coalesces to its latest value instead of
-  queueing. Results are delivered back on the main thread via ``rendered``.
-
-The backend also caches the two things that stay constant during a drag — the
-base image's QImage→PIL conversion and each mask group's strength field — so a
-drag reuses them instead of rebuilding every tick. Callers may request a
-bounded working image for an interactive preview; exports omit that bound and
-continue to render at full resolution.
+The backend caches the two things that stay constant across repeated renders
+of the same source — the base image's QImage→PIL conversion and each mask
+group's strength field. Callers may request a bounded working image; exports
+omit that bound and render at full resolution.
 """
 from __future__ import annotations
 
@@ -27,7 +19,7 @@ import threading
 from pathlib import Path
 from typing import Any, Protocol
 
-from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, Signal
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QImage
 from PIL import Image as PILImage
 
@@ -38,7 +30,7 @@ from .editor_geometry import view_transform_for
 from .depth_effects import composite_lens_blur
 from .image_resize import _pillow_from_qimage, _qimage_from_pillow
 from .perf import perf_logger
-from .ui.mask_overlay import mask_strength_qimage
+from .mask_strength import mask_strength_qimage
 
 
 MaskedAdjustment = tuple  # (components, source_size, mask_recipe)
@@ -544,125 +536,3 @@ class CpuEditorRenderBackend:
                 self._strength_cache.clear()
             self._strength_cache[key] = strength
         return strength
-
-
-class _RenderRunnable(QRunnable):
-    def __init__(self, service: "EditorRenderService", request: dict) -> None:
-        super().__init__()
-        self._service = service
-        self._request = request
-
-    def run(self) -> None:  # worker thread
-        self._service._run_on_worker(self._request)
-
-
-class EditorRenderService(QObject):
-    """Single-flight, coalescing async front for an ``EditorRenderBackend``.
-
-    ``request`` is called on the main thread. At most one render runs at a
-    time; a request that arrives while one is in flight replaces any pending
-    request, so a burst of slider ticks renders only the newest state. The
-    finished image is delivered on the main thread via ``rendered``.
-    """
-
-    # seq, source_key, rendered image — emitted on the main thread.
-    rendered = Signal(int, object, QImage)
-    # internal worker->main hop (image may be None on failure).
-    _worker_done = Signal(int, object, object)
-
-    def __init__(self, backend: EditorRenderBackend, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._backend = backend
-        self._pool = QThreadPool(self)
-        self._pool.setMaxThreadCount(1)  # renders serialize; don't starve decode pool
-        self._seq = 0
-        # The generation of the newest request. A completion whose seq is older
-        # than this is stale (a newer request or a cancel superseded it) and is
-        # dropped, so an in-flight older frame can never overwrite a newer one.
-        self._latest_seq = 0
-        self._active_seq: int | None = None
-        self._pending: dict | None = None
-        self._cancel_floor = 0
-        self._worker_done.connect(self._on_worker_done)
-
-    @property
-    def backend(self) -> EditorRenderBackend:
-        return self._backend
-
-    def request(
-        self,
-        base_image: QImage,
-        recipe: Any,
-        masked: list[MaskedAdjustment],
-        *,
-        base_key: tuple,
-        source_key: tuple,
-        background: dict | None = None,
-        lensblur: dict | None = None,
-        view: dict | None = None,
-    ) -> None:
-        self._seq += 1
-        self._latest_seq = self._seq
-        request = {
-            "seq": self._seq,
-            "base": base_image,
-            "recipe": recipe,
-            "masked": masked,
-            "base_key": base_key,
-            "source_key": source_key,
-            "background": background,
-            "lensblur": lensblur,
-            "view": view,
-        }
-        logger = perf_logger()
-        if self._active_seq is None:
-            logger.log("editslider.render_request", seq=self._seq, coalesced=False)
-            self._start(request)
-        else:
-            dropped = self._pending["seq"] if self._pending is not None else None
-            logger.log("editslider.render_request", seq=self._seq, coalesced=True, dropped=dropped)
-            self._pending = request
-
-    def cancel(self) -> None:
-        """Invalidate both the queued and any in-flight render (e.g. on reset).
-        Bumping ``_latest_seq`` makes the active render's completion stale, so it
-        cannot overwrite whatever is shown after the cancel."""
-        self._pending = None
-        self._seq += 1
-        self._latest_seq = self._seq
-        self._cancel_floor = self._seq
-
-    def _start(self, request: dict) -> None:
-        self._active_seq = request["seq"]
-        self._pool.start(_RenderRunnable(self, request))
-
-    def _run_on_worker(self, request: dict) -> None:  # worker thread
-        try:
-            image = self._backend.render(
-                request["base"],
-                request["recipe"],
-                request["masked"],
-                base_key=request["base_key"],
-                background=request.get("background"),
-                lensblur=request.get("lensblur"),
-                view=request.get("view"),
-            )
-        except Exception as exc:  # noqa: BLE001 - surfaced as a null result
-            perf_logger().log("editslider.render_failed", seq=request["seq"], error=str(exc))
-            image = None
-        self._worker_done.emit(request["seq"], request["source_key"], image)
-
-    def _on_worker_done(self, seq: int, source_key: object, image: object) -> None:  # main thread
-        self._active_seq = None
-        # Only a cancel invalidates a finished frame. A merely-superseded frame
-        # is still shown: when renders take longer than the gap between slider
-        # ticks, dropping it would starve the preview until the drag ends.
-        if seq > self._cancel_floor and isinstance(image, QImage) and not image.isNull():
-            perf_logger().log("editslider.render_delivered", seq=seq, latest=self._latest_seq)
-            self.rendered.emit(seq, source_key, image)
-        elif seq <= self._cancel_floor:
-            perf_logger().log("editslider.render_dropped_stale", seq=seq, latest=self._latest_seq)
-        if self._pending is not None:
-            request = self._pending
-            self._pending = None
-            self._start(request)

@@ -1,0 +1,282 @@
+# PhotoCraft handoff — remove-builtin-editor
+
+## Quick handoff — 2026-10-07
+
+- Removed the built-in editor and its obsolete tool/AI workers, retaining saved
+  recipe rendering, exports and comparison views.
+- PhotoCraft opens automatically inside the fullscreen popout. One embedded
+  editor persists through filmstrip selection; edits stash automatically, restore
+  when returning to a photo and refresh main-app thumbnails after saving.
+- Fixed startup freezes, incompatible executable selection, failed-open recovery,
+  reopening after closing a document tab, save/close/shutdown and child cleanup.
+- Hid the old viewer and filmstrip during initial loading. Removed the extra
+  popout bars and filename footer. Filmstrip panels and the six-pixel resize gap
+  follow all five native themes; the resize highlight appears on hover/drag.
+- Companion PhotoCraft source adds hosted startup, background open/stash,
+  atomic document replacement, cached snapshots, hosted Save and `ui.theme`.
+  Both repositories must be pushed and the companion editor rebuilt. Local
+  `photocraft-host-v5.exe` is a build artifact, not a committed executable.
+- Brush-hover lag on this machine came from software rendering; local preferences
+  were switched to GPU/DX12. That preference change is not included in Git.
+- Validation: 49 focused Python tests, 683 native UI tests (3 ignored), native
+  all-target clippy, dependency layers and all 23 wasm checks passed. Live checks
+  covered theme pixels, fullscreen, switching, stash/restore, native Save, closed
+  tab reopening and process cleanup; 24 MP lifecycle checks also passed.
+- Existing JSON edits retain their rendered appearance; their operations are not
+  converted into editable PhotoCraft adjustment layers. Switching source folders
+  starts a new process to maintain scoped read/write roots.
+
+Build the companion with `cargo build -p photocraft`; Image Triage discovers the
+local debug/release build. The opt-in live check is
+`python scripts/check_photocraft_handoff.py --executable <exe> --output <folder>`.
+
+PhotoCraft is the popout's default editor. The current filmstrip, navigation,
+review controls and comparison views remain in Image Triage. Opening a photo
+automatically loads the native editor in the image pane; there is no editor
+button to press.
+
+## Lifecycle
+
+1. `FullScreenPreview.show_entries` requests the selected source photo. The
+   controller queues the handoff on one worker, keeps Qt responsive and skips
+   superseded requests. Only the latest request may embed/show its window.
+2. A source folder gets one PhotoCraft process with that folder as its read
+   root and its hidden `.image_triage_edits` folder as its write root. A nested
+   folder also needs a new process because it has a different write root.
+   Unsupported sources and existing JSON edits are materialized on the worker.
+3. Before switching, `app.stash` captures COW pixels without locking editing.
+   PhotoCraft writes `<source filename>.pcraft` and
+   `<source filename>.photocraft.png` on its background worker. The current
+   document stays visible while the next decodes. `app.open {replace: true}`
+   commits the replacement in one update, retaining the previous document on
+   failure. Its native window remains attached and visible throughout filmstrip
+   navigation. Only one document tab remains open.
+   Three recent saved snapshots remain warm; pending and failed saves remain
+   available in memory. Returning can restore the snapshot before disk I/O
+   finishes. The source suffix in each filename avoids RAW/JPEG collisions.
+4. A 1.5-second poll stashes changes while editing. PhotoCraft's File > Save
+   is bound to the same scoped project/render operation. Completion refreshes
+   grid thumbnails and preview caches. Headless resize/export paths read the
+   saved render, and edited-variant discovery exposes it for comparison.
+5. Close and normal app shutdown wait for saves; a failed save offers Cancel
+   to retain the document/snapshot or an explicit Discard to close. The child process
+   exits **before** Qt closes its native host. `aboutToQuit` provides final
+   cleanup, and development restart drains saves/terminates PhotoCraft before
+   launching the replacement or hard-exiting. Quit has bounded transport and
+   process waits, including waiting after a force kill. Launch/setup failures
+   close the socket, reap the process and remove its token.
+
+## Concrete regressions repaired
+
+- Saved projects/conversions previously narrowed the read root to the hidden
+  folder and could not save/follow ordinary neighboring photos.
+- Only arrow navigation followed the editor; direct opens and other entry
+  changes could leave the previous photo on screen.
+- Dead processes were reused; setup errors could leave an unowned process.
+- Same-stem files shared projects and converted TIFFs.
+- Failed revision inspection or out-of-root saves silently allowed discard.
+- Reopening the same selection could close/reopen it and lose unsaved state.
+- Resizing moved the host but not its child; 64-bit HWND handling and physical
+  pixel sizing were incomplete.
+- `.pcraft` saves did not invalidate thumbnails or feed the retained headless
+  edit/export paths.
+- Old JSON edits would disappear on the first PhotoCraft open. They now supply
+  a full-resolution rendered base. Their original recipe files remain intact;
+  this preserves appearance but does not translate their operations into
+  editable PhotoCraft adjustment layers.
+- Closing the host before quitting its native child could stall control I/O.
+  Closing the main window with the popout still open also needed explicit
+  process and popout cleanup.
+
+## Companion source and validation
+
+The companion checkout at `../photocraft` adds capability-scoped background
+open/stash services, snapshot caching, `app.bind`, and hosted Save routing.
+The ordinary UI and agent Save As paths retain their existing authority rules.
+Native builds are available as `target/debug/photocraft-host.exe` and
+`target/release/photocraft-host.exe`; source-checkout detection selects the newer
+hosted executable. An explicit executable override still takes precedence.
+Companion hosted builds precede ordinary PATH and installed copies.
+
+- Combined handoff, navigation, preview-polling, headless rendering and
+  collection-mode regression run: 45 passed.
+- Additional zoom/theme/filmstrip/extractor checks: 43 passed, 7 subtests.
+- Thumbnail/headless rendering checks: 25 passed in the focused run.
+- Collection-mode checks: 11 passed.
+- PhotoCraft UI library: 680 passed, 3 ignored; desktop binary: 51 passed.
+  Native clippy (all targets) and
+  dependency-layer checks passed. All 23 WebAssembly checks passed.
+- The full Image Triage suite cannot collect three missing sandbox packages
+  (`efficientvit_sam`, `grounded_sam`, `oneformer`). A broad native Cargo test
+  build exhausted Windows paging capacity; the UI library passed when rerun
+  with `-j 1`. These are verification limits, not passing-suite claims.
+- `scripts/check_photocraft_handoff.py` runs the real editor with synthetic
+  photos, checks save/restore, one-document ownership, main-grid notifications,
+  original checksums, native embedding, token removal and process exit.
+
+On the 24 MP debug-build smoke run, selection calls took 19.1 ms for switching
+and 12.7 ms for returning. Native editor readiness took 1.18 s and 0.80 s;
+decoding/uploading remains asynchronous. Cold process open took 3.74 s. These
+measurements were taken while builds were running and are not a zero-latency
+claim. The latest smoke artifacts and timing JSON are in the current chat's
+`photocraft-handoff-final` visualization folder.
+
+A release-build run also verified the native window parent and cleanup:
+switch/return selection calls took 22.5/16.2 ms, with editor readiness at
+1.47/0.85 s. Its older executable skipped the newly added hosted menu-Save
+control check; the latest debug executable passed that check. Release artifacts
+are in `photocraft-handoff-release`. The current source detector selects the
+newer debug hosted executable; restart Image Triage to use the integration.
+
+## Startup freeze follow-up
+
+The reported splash freeze was reproduced with a timed Python stack dump:
+MainWindow construction called AI runtime detection, which waited indefinitely
+inside Python 3.13 platform.machine() → Windows WMI. Windows runtime tags now
+use sysconfig's interpreter build platform and a literal Windows system name;
+both AI path and runtime-package detection share that implementation. This
+also correctly identifies an x64 interpreter running on ARM64 Windows.
+Regression tests reject calls to platform.machine/system on Windows and cover
+x64, ARM64 and x86. AI path/runtime checks: 50 passed, 17 subtests. Actual
+MainWindow construction completed in 2.85 seconds after the change.
+
+## Incompatible executable and close-loop follow-up
+
+The reported `unknown method app.stash` error identifies an incompatible
+PhotoCraft binary. Hosted source builds now precede installed/PATH copies.
+Before opening any document, the bridge probes app.stash/app.bind validation
+without writes; incompatibility reaps the process and removes its token.
+An initial bind failure also releases the process. Failed switching keeps the
+previous editor visible and explains which photo it still owns. A close-time
+save error offers Cancel (retain the editor) or explicit Discard (quit without
+another save attempt), rather than trapping the user behind an OK-only warning.
+
+Regression run: 46 passed. The live `photocraft-compatibility-check` smoke used
+normal executable discovery (no override), selected the current debug hosted
+build, and passed switching, stash/restore, menu Save, main-grid notification,
+original checksums, native parent, token removal and process exit.
+
+The subsequent launch flash was traced to the actual running app's inherited
+environment: IMAGE_TRIAGE_PHOTOCRAFT_EXE selected the old ordinary release exe,
+while the diagnostic shell had no override. The launcher now retries companion
+hosted builds only after protocol incompatibility, before any document opens,
+and the controller remembers the successful executable for subsequent sessions.
+Compatible overrides remain honored; image/I/O failures do not trigger retries.
+The `photocraft-stale-override` live run explicitly selected that same old release
+exe, rejected/reaped it, then passed the full hosted workflow on the companion
+build. Follow-up regression run: 49 passed.
+
+## Persistent visible editor follow-up
+
+Filmstrip requests no longer hide the host. The HWND is attached once, rather
+than reparented and temporarily sized to zero after every open. Hosted protocol
+v2 replaces the active document after decoding succeeds, without exposing an
+empty-document frame; failed imports retain the old document and edits. The
+local Qt host disables input during replacement without blocking on a native
+cross-process EnableWindow call. The editor remains visible throughout.
+
+The current executable is `target/debug/photocraft-host-v2.exe`; detection
+selects the newest `photocraft-host*.exe`. Overrides naming the same companion
+checkout's ordinary release/debug exe select its hosted build directly, avoiding
+an incompatible launch flash. Hosted startup disables persistence, centering,
+activation and taskbar presence, starts off the desktop (eframe forcibly shows
+its first rendered frame), and is hidden by the bridge until embedded.
+
+The final 24 MP `photocraft-persistent-editor-responsive` live run verified
+zero host hide events, one PID and HWND, no standalone window on the desktop,
+one active document, stash/restore, hosted Save, unchanged originals and cleanup.
+Selection switch/return took 14.4/15.1 ms; replacement readiness took 2.43/1.28 s
+on this debug build, with the previous canvas kept visible. Python checks:
+51 passed. PhotoCraft UI library: 682 passed, 3 ignored; desktop: 51 passed.
+Native all-target clippy and all 23 wasm checks passed.
+
+The final fitted-canvas rerun (`photocraft-persistent-editor-fitted`) also passed
+all visibility and lifecycle assertions: selection switch/return 14.5/10.0 ms,
+replacement ready 2.50/1.47 s. Initial attachment now fits the image once to its
+actual pane size rather than retaining the startup viewport's small fit scale.
+
+## Startup loading cover and reduced work
+
+The popout now covers its original canvas before the first window paint with
+“Opening PhotoCraft…”. Once editing is active, navigation keeps that editor
+visible. Failed initial launches show an error on the cover rather than reverting
+to the old viewer. Compare/collection/before-after still use their inspection
+canvas intentionally. Normal editor mode skips the old full-resolution decoder
+and its preloads, so both apps no longer decode the same photo for one pane.
+
+The current hosted binary is `target/debug/photocraft-host-v3.exe`. Display
+profiles arrive asynchronously without the hosted startup's former two-second
+wait. Theme setup precedes import. Fresh imports/restores start at the engine's
+DocState revision 1, avoiding redundant revision inspections before binding.
+The shell attaches while it is still empty, behind the cover, rather than waiting
+for full-resolution rendering before the native window operations.
+
+The same v3 24 MP fixture reached the editor in 2.62 s before early attachment
+and 2.30 s with it (single-run comparison, not a universal latency guarantee).
+Source/process launch stage timings are recorded by the smoke script; one first
+run of the newly built exe spent 5.08 s in process creation, while subsequent
+creation took about 0.22 s. The final early-attach live check passed native
+embedding, zero navigation hides, stash/restore, menu Save and cleanup.
+
+## Brush cursor performance on Windows
+
+PhotoCraft draws brush-type cursor outlines inside its rendered frame. A software
+window renderer can therefore make pointer movement appear slow even without a
+stroke. On this machine, persisted CPU mode selected Microsoft Basic Render Driver:
+Brush/Eraser/Clone Stamp/Dodge hovered at 6.5–7 FPS on a 24 MP photo, despite only
+about 1 ms of UI work per frame. Explicit DirectX 12 on Intel UHD Graphics 770
+reached 54–57 FPS in the same embedded-window check. The local PhotoCraft graphics
+preferences now select GPU mode and DirectX 12; the original preferences are backed
+up in the brush-hover diagnostic artifacts. No global override was added to the host.
+
+A full 24 MP handoff check with the updated settings passed stash/restore, menu
+Save, persistent filmstrip navigation, hidden startup and cleanup. Switch/return
+readiness was 743/175 ms; initial readiness was 3.63 s. Measurements are single-run
+observations on this machine, not universal performance guarantees.
+
+## Reopening after closing a document tab
+
+Filmstrip selection checks the live session rather than trusting the last source
+path. An empty editor clears its active save binding, while pending saves remain
+tracked. Clicking the current thumbnail also requests an open, but leaves an
+existing document and its unsaved edits intact. Pending/failed snapshots reopen
+using their write-root stash key; disk imports use the read-root path.
+
+47 focused Python tests passed. The 24 MP live check closed PhotoCraft's document
+through its menu and reopened both the same thumbnail and a different thumbnail
+in the same process, with zero host hides. Save/restore and cleanup also passed.
+
+## Native theme integration
+
+The filmstrip uses PhotoCraft's active panel, accent and text tokens from the
+lightweight `ui.theme` control request. The host refreshes the palette on opening
+and in its existing background poll, without inspecting document pixels. It no
+longer forces the Pro theme at launch. The filename footer has been removed from
+the layout; a full-width two-pixel accent divider with a six-pixel hit area replaces
+the grip. The gap uses PhotoCraft's active `dock` token, distinct from the panel
+background. The divider appears only on hover or while pressed for resizing.
+Resize/collapse and thumbnail selection behavior are retained. The filmstrip stays
+hidden during initial editor loading, then appears when the editor is ready;
+ordinary file switches keep it visible. The popout uses true fullscreen, including
+the taskbar area.
+
+
+The updated native build is `target/debug/photocraft-host-v4.exe`. The 24 MP live
+handoff verified panel/divider pixels against the active native tokens in all five
+themes, plus tab-close reopen, Save/stash/restore and cleanup. Pro and Studio Light
+were visually checked in desktop captures. Validation: 49 Python tests, 683 native
+UI tests (3 ignored), native all-target clippy, dependency layers and all 23 wasm
+checks passed.
+
+The hover/fullscreen follow-up passed the same 49 focused Python tests and the
+live native handoff in all five themes. The check verified that the idle resize
+gap matches the theme's dock color, hover reveals the accent line, the filmstrip is hidden
+at startup and visible after loading, and the window covers the full screen
+geometry. Save/restore, tab-close reopen and process cleanup still passed with
+zero editor hides during navigation. A desktop capture confirmed taskbar coverage.
+
+The visible-gap follow-up adds `dock` to `ui.theme` and paints the six-pixel resize
+gap in that token, with a darker fallback for older builds. Built
+`target/debug/photocraft-host-v5.exe`. All five themes passed live pixel checks;
+Pro and Studio Light desktop captures were reviewed. The 49 Python tests, 683
+native UI tests, all-target clippy, layers and all 23 wasm checks passed.

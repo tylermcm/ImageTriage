@@ -144,6 +144,17 @@ def _no_startup_update_check():
     HelpUpdateController.check_for_updates_on_startup = original
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _no_automatic_photocraft_process():
+    """UI tests use fake editor sessions, independent of installed binaries."""
+    from image_triage import preview_controller
+
+    original = preview_controller.detect_photocraft_executable
+    preview_controller.detect_photocraft_executable = lambda: None
+    yield
+    preview_controller.detect_photocraft_executable = original
+
+
 @pytest.fixture(autouse=True)
 def _forbid_real_mask_engine_worker(monkeypatch):
     real_popen = subprocess.Popen

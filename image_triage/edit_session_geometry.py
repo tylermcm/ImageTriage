@@ -9,15 +9,9 @@ sliders, overlays); it now delegates to these functions, passing its own
 ``self._session`` / ``self._session_path`` / ``self._source_path`` instead of
 keeping a second copy of the logic.
 
-``recipe_for_mask`` (the per-mask adjustment reader) already lived as a
-module-level free function on ``photo_editor_panel`` and is reused here via a
-deferred import to avoid a module import cycle: ``photo_editor_panel``
-imports this module at top level to use ``build_masked_adjustments``, so this
-module cannot import ``photo_editor_panel`` at top level in return. The
-import happens inside the function body instead (the same lazy-import
-pattern ``editor_copy.write_edited_copy`` already uses for
-``CpuEditorRenderBackend``), which is safe because by the time either
-function is actually called, both modules have finished loading.
+``recipe_for_mask`` (the per-mask adjustment reader) lives in
+``edit_recipe_session`` and is imported locally inside the one function that
+needs it, matching this file's existing deferred-import style.
 """
 
 from __future__ import annotations
@@ -154,9 +148,7 @@ def build_masked_adjustments(
     if source_size is None:
         return []
 
-    # Deferred import: see module docstring for why this can't be a top-level
-    # import.
-    from .ui.photo_editor_panel import recipe_for_mask
+    from .edit_recipe_session import recipe_for_mask
 
     out: list[tuple[list[tuple[str, dict[str, Any]]], tuple[int, int], EditRecipe]] = []
     for mask in session.get("masks", []):

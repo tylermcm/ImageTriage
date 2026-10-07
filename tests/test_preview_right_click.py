@@ -42,7 +42,6 @@ class PreviewRightClickCloseTests(unittest.TestCase):
         for surface in (
             self.preview._studio_toolbar,
             self.preview._studio_actionbar,
-            self.preview._studio_rail,
             self.preview._mockup_metadata_bar,
             self.preview._filmstrip,
             self.preview._mockup_status_bar,

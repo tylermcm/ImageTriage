@@ -29,10 +29,6 @@ build_exe_options = {
         "image_triage.ai_manifest",
         "image_triage.ai_paths",
         "image_triage.ai_probe",
-        "image_triage.birefnet_worker",
-        "image_triage.depth_worker",
-        "image_triage.oneformer_worker",
-        "image_triage.sam_worker",
         # window.py does `from .ui import layout_ratios`; ui/__init__ never
         # imports it, so cx_Freeze's scan misses it and the frozen app dies
         # on startup (hidden behind the splash) with an ImportError.

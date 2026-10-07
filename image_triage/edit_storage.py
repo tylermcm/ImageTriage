@@ -84,6 +84,10 @@ def session_has_edits(image_path: str | Path) -> bool:
     scan, so this is a broad try/except returning False rather than raising.
     """
 
+    from .photocraft_bridge import sidecar_pcraft_path
+
+    if sidecar_pcraft_path(str(image_path)).is_file():
+        return True
     session_path = resolve_session_for_read(image_path)
     if not session_path.exists():
         return False

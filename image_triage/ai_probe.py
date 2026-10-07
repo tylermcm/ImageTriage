@@ -462,149 +462,6 @@ def probe_transformers_classes(symbols: tuple[str, ...]) -> None:
             ) from exc
 
 
-# The exact loader each editor capability uses, mirroring its worker module.
-_TORCH_MODEL_LOADERS: dict[str, tuple[str, str, bool]] = {
-    # capability -> (processor class or "", model class, trust_remote_code)
-    "scene_masks": ("OneFormerProcessor", "OneFormerForUniversalSegmentation", False),
-    "subject_masks": ("", "AutoModelForImageSegmentation", True),
-    "sam_masks": ("Sam2Processor", "Sam2Model", False),
-    "depth": ("AutoImageProcessor", "AutoModelForDepthEstimation", False),
-}
-
-
-def probe_torch_model(
-    result: ProbeResult,
-    capability_key: str,
-    model_dir: Path,
-    requested_device: str,
-    *,
-    load_model: bool,
-) -> None:
-    """Prove a torch-backed capability can load and run its own model.
-
-    ``load_model=False`` stops after the configuration, which validates the
-    model directory and Transformers compatibility in well under a second and
-    is what routine UI gating uses. The full load is what Demo Ready and
-    post-repair verification run.
-    """
-    import transformers  # noqa: PLC0415
-
-    probe_torch(result, requested_device)
-    if not model_dir.is_dir():
-        raise ProbeFailure(
-            STAGE_MODEL,
-            "model_missing",
-            f"The {capability_key.replace('_', ' ')} model is not downloaded.",
-            str(model_dir),
-        )
-    result.model_dir = str(model_dir)
-    _processor_name, _model_name, trust_remote_code = _TORCH_MODEL_LOADERS[capability_key]
-
-    try:
-        config = transformers.AutoConfig.from_pretrained(
-            str(model_dir), local_files_only=True, trust_remote_code=trust_remote_code
-        )
-    except Exception as exc:
-        raise ProbeFailure(
-            STAGE_MODEL,
-            "model_unloadable",
-            f"The {capability_key.replace('_', ' ')} model configuration could not be read. "
-            "The download is incomplete or was produced for a different build.",
-            _short_traceback(exc),
-        ) from exc
-    result.model_config = str(getattr(config, "model_type", "") or "")
-
-    if not load_model:
-        return
-
-    _probe_production_torch_worker(
-        result, capability_key, model_dir, result.selected_device
-    )
-
-
-def _probe_production_torch_worker(
-    result: ProbeResult,
-    capability_key: str,
-    model_dir: Path,
-    selected_device: str,
-) -> None:
-    """Run the same callable, preprocessing, precision, and output path as the UI."""
-    try:
-        from PIL import Image  # noqa: PLC0415
-
-        with tempfile.TemporaryDirectory(prefix="image-triage-ai-probe-") as temp_dir:
-            root = Path(temp_dir)
-            input_path = root / "probe.png"
-            Image.new("RGB", (96, 64), color=(64, 96, 128)).save(input_path)
-
-            if capability_key == "scene_masks":
-                from image_triage.oneformer_worker import generate_semantic_masks
-
-                output_dir = root / "scene"
-                payload = generate_semantic_masks(
-                    model_dir=model_dir,
-                    input_path=input_path,
-                    output_dir=output_dir,
-                    categories=("sky",),
-                    minimum_coverage=0.0,
-                    requested_device=selected_device,
-                    emit_result=False,
-                )
-                expected = output_dir / "sky.png"
-            elif capability_key == "subject_masks":
-                from image_triage.birefnet_worker import generate_subject_mask
-
-                expected = root / "subject.png"
-                payload = generate_subject_mask(
-                    model_dir=model_dir,
-                    input_path=input_path,
-                    output_path=expected,
-                    components_dir=None,
-                    requested_device=selected_device,
-                    emit_result=False,
-                )
-            elif capability_key == "sam_masks":
-                from image_triage.sam_worker import _SamEngine
-
-                expected = root / "sam.png"
-                engine = _SamEngine(selected_device)
-                engine.load_model(model_dir)
-                width, height = engine.embed(input_path, image_key="probe")
-                payload = engine.segment(
-                    points=[(width / 2.0, height / 2.0)],
-                    labels=[1],
-                    output_path=expected,
-                    image_key="probe",
-                )
-            elif capability_key == "depth":
-                from image_triage.depth_worker import generate_depth
-
-                expected = root / "depth.png"
-                payload = generate_depth(
-                    model_dir=model_dir,
-                    input_path=input_path,
-                    output_path=expected,
-                    requested_device=selected_device,
-                    emit_result=False,
-                )
-            else:  # pragma: no cover - guarded by the caller
-                raise RuntimeError(f"No production probe exists for {capability_key}.")
-
-            if not isinstance(payload, dict) or not expected.is_file() or expected.stat().st_size <= 0:
-                raise RuntimeError("The worker did not produce its expected output file.")
-    except ProbeFailure:
-        raise
-    except Exception as exc:
-        raise ProbeFailure(
-            STAGE_INFERENCE,
-            "model_unloadable",
-            f"The {capability_key.replace('_', ' ')} production worker failed on "
-            f"{selected_device}.",
-            _short_traceback(exc),
-        ) from exc
-    result.inference_ran = True
-
-
 def probe_insightface(result: ProbeResult, model_dir: Path, requested_device: str) -> None:
     """Load and execute every ONNX graph in the face-analysis model pack."""
     import insightface  # noqa: F401, PLC0415
@@ -711,18 +568,7 @@ def run_probe(
             probe_transformers_classes(transformers_symbols)
 
         result.stage = STAGE_PROVIDER
-        if probe_kind == "torch":
-            if model_dir is None:
-                raise ProbeFailure(STAGE_MODEL, "manifest", "No model directory was supplied to the probe.")
-            result.stage = STAGE_MODEL
-            probe_torch_model(
-                result,
-                capability_key,
-                Path(model_dir),
-                requested_device,
-                load_model=thorough,
-            )
-        elif probe_kind == "onnx_providers":
+        if probe_kind == "onnx_providers":
             probe_onnx_providers(result, requested_device)
         elif probe_kind == "onnx_model":
             result.stage = STAGE_MODEL
@@ -778,7 +624,6 @@ __all__ = [
     "probe_onnx_model",
     "probe_onnx_providers",
     "probe_torch",
-    "probe_torch_model",
     "prepare_model_for_probe",
     "probe_transformers_classes",
     "run_probe",

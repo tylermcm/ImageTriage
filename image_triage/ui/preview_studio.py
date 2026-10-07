@@ -321,6 +321,7 @@ class FilmstripThumb(QWidget):
         self._current = current
         self._pixmap = pixmap
         self._mockup_chrome = mockup_chrome
+        self._editor_palette = None
         self.set_thumb_height(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -357,7 +358,7 @@ class FilmstripThumb(QWidget):
             scaled.scale(rect.size(), mode)
             draw = QRect(QPoint(0, 0), scaled)
             draw.moveCenter(rect.center())
-            painter.fillRect(rect, QColor(17, 18, 20))
+            painter.fillRect(rect, QColor(self._editor_palette["panel"]) if self._editor_palette else QColor(17, 18, 20))
             painter.drawPixmap(draw, self._pixmap)
         else:
             sky, ground = _PLACEHOLDER_PALETTES[self._index % len(_PLACEHOLDER_PALETTES)]
@@ -399,7 +400,7 @@ class FilmstripThumb(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(studio_pen(QColor(0, 0, 0, 150), 1.0))
             painter.drawRoundedRect(QRectF(rect).adjusted(1.5, 1.5, -1.5, -1.5), 6, 6)
-            painter.setPen(studio_pen(ACCENT_BRIGHT, 2.0))
+            painter.setPen(studio_pen(self._editor_palette["accent"] if self._editor_palette else ACCENT_BRIGHT, 2.0))
             painter.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
         painter.end()
 
@@ -445,6 +446,7 @@ class FilmstripHandle(QWidget):
             self._press_global_y = int(event.globalPosition().y())
             self._press_thumb_h = 0 if self._strip.is_collapsed() else self._strip.thumb_height()
             self._moved = False
+            self.update()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
@@ -462,10 +464,21 @@ class FilmstripHandle(QWidget):
             if self._press_global_y is not None and not self._moved:
                 self._strip.toggle_collapsed()
             self._press_global_y = None
+            self.update()
         super().mouseReleaseEvent(event)
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)
+        if self._strip._editor_palette is not None:
+            # Match PhotoCraft's two-point, edge-to-edge dock divider. Keep
+            # the full gap draggable, including when the reel is collapsed.
+            palette = self._strip._editor_palette
+            gap = QColor(palette["dock"]) if "dock" in palette else QColor(palette["panel"]).darker(160)
+            painter.fillRect(self.rect(), gap)
+            if self._hover or self._press_global_y is not None:
+                painter.fillRect(0, (self.height() - 2) // 2, self.width(), 2, QColor(self._strip._editor_palette["accent"]))
+            painter.end()
+            return
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         cx = self.width() / 2
         grip = self._grip_width
@@ -530,6 +543,7 @@ class Filmstrip(QFrame):
         self.mockup_chrome = False
         self._collapsed = False
         self._footer: QWidget | None = None
+        self._editor_palette: dict | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -559,6 +573,23 @@ class Filmstrip(QFrame):
         self._apply_strip_height()
 
     # -- resize / collapse (drag handle) ----------------------------------
+    def set_editor_palette(self, colors: dict) -> None:
+        palette = {key: colors.get(key) for key in ("panel", "accent", "text")}
+        if "dock" in colors:
+            palette["dock"] = colors["dock"]
+        if not all(isinstance(value, str) and QColor(value).isValid() for value in palette.values()):
+            return
+        if palette == self._editor_palette:
+            return
+        self._editor_palette = palette
+        self.setStyleSheet(f"QFrame#filmstrip {{ background: {palette['panel']}; border: none; border-radius: 0px; }}")
+        self._handle.setFixedHeight(6)
+        self._handle.update()
+        for thumb in self._reel.findChildren(FilmstripThumb):
+            thumb._editor_palette = palette
+            thumb.update()
+        self._apply_strip_height()
+
     def thumb_height(self) -> int:
         return self._thumb_h
 
@@ -605,7 +636,7 @@ class Filmstrip(QFrame):
         if signature == getattr(self, "_mockup_metrics_signature", None):
             return
         self._mockup_metrics_signature = signature
-        self._handle.setFixedHeight(handle_h)
+        self._handle.setFixedHeight(6 if self._editor_palette else handle_h)
         self._handle._grip_width = px(popout_ratios.FILMSTRIP_GRIP_W, width, minimum=24)
         self.MARGIN, self.GAP = margin, gap
         self.REEL_TOP_PAD, self.REEL_BOTTOM_PAD = top_pad, bottom_pad
@@ -745,6 +776,7 @@ class Filmstrip(QFrame):
                 height=self._thumb_h,
                 mockup_chrome=self.mockup_chrome,
             )
+            thumb._editor_palette = self._editor_palette
             if not fill:
                 thumb.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 thumb.setFixedWidth(target_w)

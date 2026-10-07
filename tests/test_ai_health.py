@@ -165,39 +165,6 @@ class ProbeProviderTests(unittest.TestCase):
 
 
 class ProbeModelTests(unittest.TestCase):
-    def test_full_subject_probe_runs_the_production_worker(self) -> None:
-        result = ProbeResult(capability="subject_masks", selected_device="cpu")
-
-        def fake_generate(**kwargs):
-            kwargs["output_path"].write_bytes(b"png")
-            return {"device": kwargs["requested_device"]}
-
-        with patch(
-            "image_triage.birefnet_worker.generate_subject_mask",
-            side_effect=fake_generate,
-        ) as generate:
-            ai_probe._probe_production_torch_worker(
-                result, "subject_masks", Path("C:/models/subject"), "cpu"
-            )
-
-        self.assertTrue(result.inference_ran)
-        self.assertEqual(generate.call_args.kwargs["requested_device"], "cpu")
-        self.assertFalse(generate.call_args.kwargs["emit_result"])
-
-    def test_production_probe_rejects_a_worker_that_writes_no_output(self) -> None:
-        result = ProbeResult(capability="depth", selected_device="cpu")
-        with patch(
-            "image_triage.depth_worker.generate_depth",
-            return_value={"device": "cpu"},
-        ):
-            with self.assertRaises(ProbeFailure) as caught:
-                ai_probe._probe_production_torch_worker(
-                    result, "depth", Path("C:/models/depth"), "cpu"
-                )
-
-        self.assertEqual(caught.exception.stage, ai_probe.STAGE_INFERENCE)
-        self.assertFalse(result.inference_ran)
-
     def test_face_probe_executes_every_model_in_the_pack(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             model_dir = Path(temp_dir)
@@ -284,18 +251,18 @@ class HealthServiceTests(unittest.TestCase):
 
     def test_one_failing_optional_capability_does_not_fail_the_others(self) -> None:
         def probe(capability, selection, requested_device, *, level="quick"):
-            if capability.key == "depth":
-                return {"ok": False, "category": "model_missing", "message": "no depth model"}
+            if capability.key == "text_scoring":
+                return {"ok": False, "category": "model_missing", "message": "no text_scoring model"}
             return {"ok": True, "selected_device": "cpu"}
 
         with patch("image_triage.ai_health.select_runtime", return_value=_selection(self.root)), patch(
             "image_triage.ai_health.bundle_status", side_effect=lambda key, deep=False: _ready_bundle(key)
         ), patch.object(self.service, "_run_probe_subprocess", side_effect=probe):
-            results = self.service.check_all(("culling", "depth", "faces"), use_cache=False)
+            results = self.service.check_all(("culling", "text_scoring", "faces"), use_cache=False)
 
         self.assertTrue(results["culling"].ready)
         self.assertTrue(results["faces"].ready)
-        self.assertFalse(results["depth"].ready)
+        self.assertFalse(results["text_scoring"].ready)
 
     def test_probe_results_are_cached_per_capability_and_profile(self) -> None:
         calls: list[str] = []
@@ -399,8 +366,8 @@ class ProbeIdentityTests(unittest.TestCase):
         self.assertIn("protocol", problem or "")
 
     def test_a_result_for_another_capability_is_rejected(self) -> None:
-        problem = self._problem(self._payload(capability="depth"))
-        self.assertIn("depth", problem or "")
+        problem = self._problem(self._payload(capability="text_scoring"))
+        self.assertIn("text_scoring", problem or "")
 
     def test_a_result_from_another_profile_is_rejected(self) -> None:
         problem = self._problem(self._payload(profile="gpu-other"))
@@ -420,7 +387,7 @@ class ProbeIdentityTests(unittest.TestCase):
 
     def test_an_unusable_result_becomes_a_probe_error(self) -> None:
         completed = subprocess.CompletedProcess(
-            [], 0, stdout=json.dumps(self._payload(capability="depth")), stderr=""
+            [], 0, stdout=json.dumps(self._payload(capability="text_scoring")), stderr=""
         )
         with patch("image_triage.ai_health.subprocess.run", return_value=completed):
             payload = self.service._run_probe_subprocess(
@@ -457,7 +424,7 @@ class ProbeDeviceTests(unittest.TestCase):
         self.assertNotIn("auto", seen)
 
     def test_the_probe_command_carries_the_level(self) -> None:
-        capability = ai_manifest.CAPABILITIES["scene_masks"]
+        capability = ai_manifest.CAPABILITIES["quality_topiq"]
         selection = _selection(self.root)
         command = ai_health._probe_command(capability, selection, "cuda", level="full")
 
@@ -481,7 +448,7 @@ class GateTests(unittest.TestCase):
         with patch("image_triage.ai_health.select_runtime", return_value=_selection(self.root)), patch(
             "image_triage.ai_health.bundle_status", side_effect=lambda key, deep=False: _ready_bundle(key)
         ), patch.object(self.service, "_run_probe_subprocess", side_effect=explode):
-            health = self.service.check("scene_masks", probe=False)
+            health = self.service.check("quality_topiq", probe=False)
 
         self.assertTrue(health.ready)
         self.assertEqual(health.probe_level, "none")
@@ -490,7 +457,7 @@ class GateTests(unittest.TestCase):
         with patch("image_triage.ai_health.select_runtime", return_value=_selection(self.root)), patch(
             "image_triage.ai_health.bundle_status", side_effect=lambda key, deep=False: _missing_bundle(key)
         ):
-            health = self.service.check("scene_masks", probe=False)
+            health = self.service.check("quality_topiq", probe=False)
 
         self.assertFalse(health.ready)
         self.assertEqual(health.stage, ai_health.STAGE_MODELS)
@@ -515,7 +482,7 @@ class RepairRoutingTests(unittest.TestCase):
         with patch("image_triage.ai_health.select_runtime", return_value=_selection(self.root)), patch(
             "image_triage.ai_health.bundle_status", side_effect=lambda key, deep=False: _ready_bundle(key)
         ), patch.object(self.service, "_run_probe_subprocess", return_value=broken):
-            health = self.service.repair("scene_masks")
+            health = self.service.repair("quality_topiq")
 
         self.assertFalse(health.ready)
         self.assertTrue(health.runtime_repair_required)
@@ -527,7 +494,7 @@ class RepairRoutingTests(unittest.TestCase):
         with patch("image_triage.ai_health.select_runtime", return_value=_selection(self.root)), patch(
             "image_triage.ai_health.bundle_status", side_effect=lambda key, deep=False: _ready_bundle(key)
         ), patch.object(self.service, "_run_probe_subprocess", return_value=broken):
-            _results, runtime_required = self.service.repair_all(("scene_masks",))
+            _results, runtime_required = self.service.repair_all(("quality_topiq",))
 
         self.assertTrue(runtime_required)
 
@@ -573,7 +540,7 @@ class DiagnosticsTests(unittest.TestCase):
             "image_triage.ai_health.select_runtime",
             side_effect=AIRuntimeUnavailable("not installed", category="runtime_missing"),
         ):
-            return self.service.check_all(("culling", "depth"), use_cache=False)
+            return self.service.check_all(("culling", "text_scoring"), use_cache=False)
 
     def test_diagnostics_text_is_actionable_and_carries_no_traceback(self) -> None:
         text = self.service.diagnostics_text(self._results())
@@ -604,7 +571,7 @@ class DiagnosticsTests(unittest.TestCase):
             side_effect=AIRuntimeUnavailable("not installed", category="runtime_missing"),
         ):
             with self.assertRaises(AIRuntimeUnavailable) as caught:
-                ai_health.require_capability("scene_masks")
+                ai_health.require_capability("quality_topiq")
 
         self.assertTrue(caught.exception.remediation)
 
@@ -629,7 +596,7 @@ class ReadinessSummaryTests(unittest.TestCase):
 
         results = {
             "culling": self._health("culling", True),
-            "depth": self._health("depth", False),
+            "text_scoring": self._health("text_scoring", False),
         }
         text = summarize(results)
 
@@ -645,7 +612,7 @@ class ReadinessSummaryTests(unittest.TestCase):
     def test_failure_message_leads_with_the_capability_not_a_traceback(self) -> None:
         from image_triage.ui.ai_readiness import failure_message
 
-        text = failure_message(self._health("depth", False))
+        text = failure_message(self._health("text_scoring", False))
 
         self.assertTrue(text.startswith("missing model"))
         self.assertIn("Stage:", text)

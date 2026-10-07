@@ -1,69 +1,26 @@
 from __future__ import annotations
 
+"""Subject-mask cache path resolution.
+
+The BiRefNet inference and editor-facing tasks this module used to hold
+(``ensure_subject_masks``, ``SubjectMaskTask``, ``SubjectMaskWarmTask``,
+``combine_subject_components``, ...) were only ever used by the now-removed
+built-in manual editor. This thinned-down module keeps just the
+deterministic cache-path lookup, which ``edit_render_headless`` still needs
+so a headless render can pick up an already-computed subject mask without
+ever triggering BiRefNet inference itself.
+"""
+
 import hashlib
 import json
-import os
 import threading
-import time
-from dataclasses import dataclass
+import os
 from pathlib import Path
-from typing import Callable
 
-import numpy as np
-from PIL import Image, ImageOps
-from PySide6.QtCore import QObject, QRunnable, QSize, Signal
-from PySide6.QtGui import QImage
-
-from .ai_model import (
-    AIModelInstallation,
-    DEFAULT_BIREFNET_MODEL_REPO_ID,
-    DEFAULT_BIREFNET_MODEL_REVISION,
-    download_birefnet_model,
-    resolve_birefnet_model_installation,
-)
-from .ai_env import RuntimeSelection
+from .ai_model import AIModelInstallation, resolve_birefnet_model_installation
 from .ai_paths import managed_cache_dir
-from .ai_workflow import AIWorkflowRuntime
-from .mask_engine_service import default_mask_engine_service
-from .semantic_mask_service import resolve_mask_runtime
-from .imaging import load_image_for_display
-from .perf import perf_logger
 
-
-SUBJECT_MASK_REQUESTS: tuple[str, ...] = ("subject", "background")
-SUBJECT_MASK_SEMANTIC_CATEGORIES: frozenset[str] = frozenset({"animals", "people"})
-SUBJECT_MASK_PREVIEW_EDGE = 2048
 SUBJECT_MASK_REFINEMENT_VERSION = "birefnet-soft-mask-components-2"
-
-ProgressCallback = Callable[[str], None]
-
-
-def _elapsed_ms(started: float) -> float:
-    return (time.perf_counter() - started) * 1000.0
-
-
-@dataclass(frozen=True)
-class SubjectMaskComponent:
-    component_id: str
-    mask_path: Path
-    bbox: tuple[int, int, int, int]
-    centroid: tuple[float, float]
-    area_fraction: float
-
-
-@dataclass(frozen=True)
-class SubjectMaskResult:
-    source_path: Path
-    source_size: tuple[int, int]
-    mask_paths: dict[str, Path]
-    model_id: str
-    model_version: str
-    weights_hash: str
-    runtime_device: str
-    cache_hit: bool
-    components: tuple[SubjectMaskComponent, ...] = ()
-    refinement_version: str = SUBJECT_MASK_REFINEMENT_VERSION
-
 
 _WEIGHTS_HASH_CACHE: dict[tuple[str, int, int], str] = {}
 _WEIGHTS_HASH_LOCK = threading.Lock()
@@ -78,438 +35,6 @@ def default_subject_mask_cache_root() -> Path:
     explicitly, in ``ai_model_store.migrate_ai_assets``.
     """
     return managed_cache_dir("subject_masks")
-
-
-def ensure_subject_masks(
-    source_path: str | Path,
-    *,
-    installation: AIModelInstallation | None = None,
-    cache_root: str | Path | None = None,
-    progress_callback: ProgressCallback | None = None,
-) -> SubjectMaskResult:
-    logger = perf_logger()
-    total_started = time.perf_counter()
-    source = Path(source_path).expanduser().resolve()
-    if not source.is_file():
-        raise FileNotFoundError(source)
-    logger.log(
-        "ai.mask.birefnet.request",
-        path=source,
-        preview_edge=SUBJECT_MASK_PREVIEW_EDGE,
-    )
-    phase_started = time.perf_counter()
-    model_installation = installation or resolve_birefnet_model_installation()
-    logger.duration(
-        "ai.mask.birefnet.model_resolve",
-        _elapsed_ms(phase_started),
-        installed=model_installation.is_installed,
-        model_id=model_installation.repo_id,
-        model_revision=model_installation.revision,
-    )
-    if not model_installation.is_installed:
-        phase_started = time.perf_counter()
-        _validate_subject_runtime()
-        logger.duration(
-            "ai.mask.birefnet.runtime_validate",
-            _elapsed_ms(phase_started),
-            reason="pre_download",
-        )
-        _progress(progress_callback, "Downloading BiRefNet subject model...")
-
-        def download_progress(filename: str, current: int, total: int) -> None:
-            name = Path(filename).name
-            if total > 0:
-                _progress(
-                    progress_callback,
-                    f"Downloading {name}: {current / (1024 * 1024):.1f} / "
-                    f"{total / (1024 * 1024):.1f} MB",
-                )
-            else:
-                _progress(progress_callback, f"Downloading {name}...")
-
-        phase_started = time.perf_counter()
-        download_birefnet_model(
-            model_installation,
-            progress_callback=download_progress,
-        )
-        logger.duration(
-            "ai.mask.birefnet.download",
-            _elapsed_ms(phase_started),
-            model_id=model_installation.repo_id,
-        )
-
-    model_path = model_installation.install_dir / "model.safetensors"
-    if not model_installation.is_installed or not model_path.is_file():
-        missing = ", ".join(path.name for path in model_installation.missing_files)
-        raise FileNotFoundError(f"BiRefNet installation is incomplete: {missing}")
-
-    phase_started = time.perf_counter()
-    weights_hash, weights_hash_cache_hit = _cached_sha256_file(model_path)
-    logger.duration(
-        "ai.mask.birefnet.weights_hash",
-        _elapsed_ms(phase_started),
-        bytes=model_path.stat().st_size,
-        cache_hit=weights_hash_cache_hit,
-    )
-    stat = source.stat()
-    phase_started = time.perf_counter()
-    cache_key = _source_cache_key(source, stat.st_size, stat.st_mtime_ns, weights_hash)
-    cache_dir = Path(cache_root or default_subject_mask_cache_root()) / cache_key
-    metadata_path = cache_dir / "metadata.json"
-    mask_paths = {
-        "subject": cache_dir / "subject.png",
-        "background": cache_dir / "background.png",
-    }
-    components_dir = cache_dir / "components"
-    cached_metadata = _load_json(metadata_path)
-    if (
-        cached_metadata.get("sourceSizeBytes") == stat.st_size
-        and cached_metadata.get("sourceMtimeNs") == stat.st_mtime_ns
-        and cached_metadata.get("weightsHash") == weights_hash
-        and cached_metadata.get("refinementVersion") == SUBJECT_MASK_REFINEMENT_VERSION
-        and all(path.is_file() for path in mask_paths.values())
-    ):
-        source_size = tuple(cached_metadata.get("sourceSize") or ())
-        if len(source_size) == 2 and all(int(value) > 0 for value in source_size):
-            _progress(progress_callback, "Using cached subject masks")
-            raw_cached_components = cached_metadata.get("components")
-            raw_cached_components = (
-                raw_cached_components if isinstance(raw_cached_components, list) else []
-            )
-            components = _components_from_metadata(cached_metadata, components_dir)
-            if len(components) == len(raw_cached_components):
-                logger.duration(
-                    "ai.mask.birefnet.cache_lookup",
-                    _elapsed_ms(phase_started),
-                    cache_hit=True,
-                    components=len(components),
-                )
-                logger.duration(
-                    "ai.mask.birefnet.total",
-                    _elapsed_ms(total_started),
-                    cache_hit=True,
-                    device=str(cached_metadata.get("runtimeDevice") or "unknown"),
-                    components=len(components),
-                )
-                return SubjectMaskResult(
-                    source_path=source,
-                    source_size=(int(source_size[0]), int(source_size[1])),
-                    mask_paths=mask_paths,
-                    model_id=model_installation.repo_id,
-                    model_version=model_installation.revision,
-                    weights_hash=f"sha256:{weights_hash}",
-                    runtime_device=str(cached_metadata.get("runtimeDevice") or "unknown"),
-                    cache_hit=True,
-                    components=components,
-                )
-
-    logger.duration(
-        "ai.mask.birefnet.cache_lookup",
-        _elapsed_ms(phase_started),
-        cache_hit=False,
-    )
-    phase_started = time.perf_counter()
-    _validate_subject_runtime()
-    logger.duration(
-        "ai.mask.birefnet.runtime_validate",
-        _elapsed_ms(phase_started),
-        reason="pre_inference",
-    )
-    _progress(progress_callback, "Decoding image...")
-    phase_started = time.perf_counter()
-    rgb = _decode_rgb_preview(source, SUBJECT_MASK_PREVIEW_EDGE)
-    logger.duration(
-        "ai.mask.birefnet.decode_preview",
-        _elapsed_ms(phase_started),
-        source_bytes=stat.st_size,
-        width=int(rgb.shape[1]),
-        height=int(rgb.shape[0]),
-    )
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    worker_input = cache_dir / "worker-input.png"
-    phase_started = time.perf_counter()
-    Image.fromarray(rgb, mode="RGB").save(worker_input)
-    logger.duration(
-        "ai.mask.birefnet.worker_input_write",
-        _elapsed_ms(phase_started),
-        bytes=worker_input.stat().st_size,
-    )
-    try:
-        phase_started = time.perf_counter()
-        try:
-            runtime_device, raw_components = _run_subject_worker(
-                model_dir=model_installation.install_dir,
-                input_path=worker_input,
-                output_path=mask_paths["subject"],
-                components_dir=components_dir,
-                progress_callback=progress_callback,
-            )
-        except Exception as exc:
-            logger.duration(
-                "ai.mask.birefnet.worker_total.failed",
-                _elapsed_ms(phase_started),
-                error=str(exc),
-            )
-            logger.duration(
-                "ai.mask.birefnet.total.failed",
-                _elapsed_ms(total_started),
-                cache_hit=False,
-                error=str(exc),
-            )
-            raise
-        else:
-            logger.duration(
-                "ai.mask.birefnet.worker_total",
-                _elapsed_ms(phase_started),
-                device=runtime_device,
-                components=len(raw_components),
-            )
-    finally:
-        worker_input.unlink(missing_ok=True)
-    if not mask_paths["subject"].is_file():
-        raise RuntimeError("BiRefNet completed without producing a subject mask.")
-    phase_started = time.perf_counter()
-    with Image.open(mask_paths["subject"]) as foreground:
-        subject_mask = foreground.convert("L")
-        ImageOps.invert(subject_mask).save(mask_paths["background"])
-    logger.duration(
-        "ai.mask.birefnet.background_write",
-        _elapsed_ms(phase_started),
-    )
-    phase_started = time.perf_counter()
-    components = _components_from_worker(raw_components, components_dir)
-    logger.duration(
-        "ai.mask.birefnet.component_load",
-        _elapsed_ms(phase_started),
-        components=len(components),
-    )
-
-    metadata = {
-        "sourcePath": str(source),
-        "sourceSizeBytes": stat.st_size,
-        "sourceMtimeNs": stat.st_mtime_ns,
-        "sourceSize": [int(rgb.shape[1]), int(rgb.shape[0])],
-        "modelId": model_installation.repo_id,
-        "modelVersion": model_installation.revision,
-        "weightsHash": weights_hash,
-        "runtimeDevice": runtime_device,
-        "refinementVersion": SUBJECT_MASK_REFINEMENT_VERSION,
-        "components": [_component_metadata(component, components_dir) for component in components],
-    }
-    phase_started = time.perf_counter()
-    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    logger.duration(
-        "ai.mask.birefnet.metadata_write",
-        _elapsed_ms(phase_started),
-    )
-    logger.duration(
-        "ai.mask.birefnet.total",
-        _elapsed_ms(total_started),
-        cache_hit=False,
-        device=runtime_device,
-        components=len(components),
-        width=int(rgb.shape[1]),
-        height=int(rgb.shape[0]),
-    )
-    return SubjectMaskResult(
-        source_path=source,
-        source_size=(int(rgb.shape[1]), int(rgb.shape[0])),
-        mask_paths=mask_paths,
-        model_id=model_installation.repo_id,
-        model_version=model_installation.revision,
-        weights_hash=f"sha256:{weights_hash}",
-        runtime_device=runtime_device,
-        cache_hit=False,
-        components=components,
-    )
-
-
-def subject_mask_cache_path(
-    source_path: str | Path,
-    request: str = "subject",
-    *,
-    installation: AIModelInstallation | None = None,
-    cache_root: str | Path | None = None,
-) -> Path | None:
-    """The cached mask PNG for ``source_path`` if one is already on disk, else
-    None. Never runs BiRefNet inference -- only checks the deterministic,
-    content-addressed cache path that ``ensure_subject_masks`` also uses (see
-    its cache-hit check above), so this is safe to call from a headless
-    render path (thumbnail/export) without triggering a synchronous model
-    run. Any failure (missing model install, unreadable file, ...) is treated
-    as "not cached yet" and returns None rather than raising.
-    """
-
-    try:
-        source = Path(source_path).expanduser().resolve()
-        if not source.is_file():
-            return None
-        model_installation = installation or resolve_birefnet_model_installation()
-        if not model_installation.is_installed:
-            return None
-        model_path = model_installation.install_dir / "model.safetensors"
-        if not model_path.is_file():
-            return None
-        weights_hash, _ = _cached_sha256_file(model_path)
-        stat = source.stat()
-        cache_key = _source_cache_key(source, stat.st_size, stat.st_mtime_ns, weights_hash)
-        cache_dir = Path(cache_root or default_subject_mask_cache_root()) / cache_key
-        mask_path = cache_dir / f"{request}.png"
-        metadata_path = cache_dir / "metadata.json"
-        cached_metadata = _load_json(metadata_path)
-        if (
-            cached_metadata.get("sourceSizeBytes") == stat.st_size
-            and cached_metadata.get("sourceMtimeNs") == stat.st_mtime_ns
-            and cached_metadata.get("weightsHash") == weights_hash
-            and cached_metadata.get("refinementVersion") == SUBJECT_MASK_REFINEMENT_VERSION
-            and mask_path.is_file()
-        ):
-            return mask_path
-        return None
-    except Exception:
-        return None
-
-
-def _run_subject_worker(
-    *,
-    model_dir: Path,
-    input_path: Path,
-    output_path: Path,
-    components_dir: Path,
-    progress_callback: ProgressCallback | None,
-) -> tuple[str, list[dict[str, object]]]:
-    return default_mask_engine_service().infer_subject(
-        model_dir=model_dir,
-        input_path=input_path,
-        output_path=output_path,
-        components_dir=components_dir,
-        progress_callback=progress_callback,
-    )
-
-
-def combine_subject_components(
-    result: SubjectMaskResult,
-    component_ids: tuple[str, ...],
-) -> Path:
-    selected = [
-        component
-        for component in result.components
-        if component.component_id in set(component_ids)
-    ]
-    if not selected:
-        raise ValueError("Select at least one subject.")
-    if len(selected) == 1:
-        return selected[0].mask_path
-    if len(selected) == len(result.components):
-        return result.mask_paths["subject"]
-    key = "-".join(component.component_id for component in selected)
-    output_path = result.mask_paths["subject"].parent / f"selection-{key}.png"
-    merged: np.ndarray | None = None
-    for component in selected:
-        with Image.open(component.mask_path) as loaded:
-            values = np.asarray(loaded.convert("L"), dtype=np.uint8)
-        merged = values.copy() if merged is None else np.maximum(merged, values)
-    assert merged is not None
-    Image.fromarray(merged, mode="L").save(output_path)
-    return output_path
-
-
-def _components_from_worker(
-    values: list[dict[str, object]],
-    components_dir: Path,
-) -> tuple[SubjectMaskComponent, ...]:
-    return _parse_components(values, components_dir)
-
-
-def _components_from_metadata(
-    metadata: dict[str, object],
-    components_dir: Path,
-) -> tuple[SubjectMaskComponent, ...]:
-    values = metadata.get("components")
-    return _parse_components(values if isinstance(values, list) else [], components_dir)
-
-
-def _parse_components(
-    values: list[object],
-    components_dir: Path,
-) -> tuple[SubjectMaskComponent, ...]:
-    components: list[SubjectMaskComponent] = []
-    for value in values:
-        if not isinstance(value, dict):
-            continue
-        component_id = str(value.get("id") or "").strip()
-        relative_path = str(value.get("path") or "").strip()
-        bbox = value.get("bbox")
-        centroid = value.get("centroid")
-        path = components_dir / relative_path
-        if (
-            not component_id
-            or not relative_path
-            or not path.is_file()
-            or not isinstance(bbox, list)
-            or len(bbox) != 4
-            or not isinstance(centroid, list)
-            or len(centroid) != 2
-        ):
-            continue
-        components.append(
-            SubjectMaskComponent(
-                component_id=component_id,
-                mask_path=path,
-                bbox=tuple(int(item) for item in bbox),
-                centroid=tuple(float(item) for item in centroid),
-                area_fraction=float(value.get("areaFraction") or 0.0),
-            )
-        )
-    return tuple(components)
-
-
-def _component_metadata(
-    component: SubjectMaskComponent,
-    components_dir: Path,
-) -> dict[str, object]:
-    return {
-        "id": component.component_id,
-        "path": component.mask_path.relative_to(components_dir).as_posix(),
-        "bbox": list(component.bbox),
-        "centroid": list(component.centroid),
-        "areaFraction": component.area_fraction,
-    }
-
-
-def _validate_subject_runtime() -> None:
-    _resolve_subject_runtime()
-
-
-def _resolve_subject_runtime() -> tuple[AIWorkflowRuntime, RuntimeSelection]:
-    """Pin one runtime profile for subject masking.
-
-    Readiness comes from the central capability health service rather than a
-    private list of directory-existence checks that could disagree with
-    Settings (docs/ai_runtime_failure_map.md, root cause C).
-    """
-    return resolve_mask_runtime("subject_masks")
-
-
-def _decode_rgb_preview(path: Path, long_edge: int) -> np.ndarray:
-    image, error = load_image_for_display(
-        str(path),
-        QSize(long_edge, long_edge),
-        prefer_embedded=True,
-    )
-    if image.isNull():
-        raise RuntimeError(error or "Could not decode image.")
-    converted = image.convertToFormat(QImage.Format.Format_RGB888)
-    width = converted.width()
-    height = converted.height()
-    stride = converted.bytesPerLine()
-    buffer = np.frombuffer(converted.bits(), dtype=np.uint8, count=height * stride)
-    return buffer.reshape(height, stride)[:, : width * 3].reshape(height, width, 3).copy()
-
-
-def _progress(callback: ProgressCallback | None, message: str) -> None:
-    if callback is not None:
-        callback(message)
 
 
 def _source_cache_key(source: Path, size: int, mtime_ns: int, weights_hash: str) -> str:
@@ -555,105 +80,47 @@ def _cached_sha256_file(path: Path) -> tuple[str, bool]:
         return digest, False
 
 
-class SubjectMaskWarmTask(QRunnable):
-    """Warm installed BiRefNet resources without downloading or blocking the UI."""
+def subject_mask_cache_path(
+    source_path: str | Path,
+    request: str = "subject",
+    *,
+    installation: AIModelInstallation | None = None,
+    cache_root: str | Path | None = None,
+) -> Path | None:
+    """The cached mask PNG for ``source_path`` if one is already on disk, else
+    None. Never runs BiRefNet inference -- only checks the deterministic,
+    content-addressed cache path that the (removed) editor's
+    ``ensure_subject_masks`` also used, so this is safe to call from a
+    headless render path (thumbnail/export) without triggering a synchronous
+    model run. Any failure (missing model install, unreadable file, ...) is
+    treated as "not cached yet" and returns None rather than raising.
+    """
 
-    def __init__(self, stage: str) -> None:
-        super().__init__()
-        normalized = stage.strip().casefold()
-        if normalized not in {"imports", "model"}:
-            raise ValueError(f"Unknown BiRefNet warm stage: {stage}")
-        self.stage = normalized
-        self.setAutoDelete(True)
-
-    def run(self) -> None:
-        started = time.perf_counter()
-        logger = perf_logger()
-        try:
-            # Nothing to warm without the model — don't spin up torch/CUDA just
-            # because the editor opened; masking would prompt a download.
-            installation = resolve_birefnet_model_installation()
-            if not installation.is_installed:
-                logger.duration(
-                    "ai.mask.birefnet.warm.skipped",
-                    _elapsed_ms(started),
-                    stage=self.stage,
-                    reason="model_not_installed",
-                )
-                return
-            engine_service = default_mask_engine_service()
-            if self.stage == "imports":
-                device = engine_service.warm_imports("subject")
-            else:
-                device = engine_service.warm_model("subject", installation.install_dir)
-            logger.duration(
-                "ai.mask.birefnet.warm",
-                _elapsed_ms(started),
-                stage=self.stage,
-                device=device,
-            )
-        except Exception as exc:
-            logger.duration(
-                "ai.mask.birefnet.warm.failed",
-                _elapsed_ms(started),
-                stage=self.stage,
-                error=str(exc),
-            )
-
-
-class SubjectMaskTaskSignals(QObject):
-    progress = Signal(str, str)
-    finished = Signal(str, str, object)
-    failed = Signal(str, str, str)
-
-
-class SubjectMaskTask(QRunnable):
-    def __init__(
-        self,
-        source_path: str | Path,
-        request: str,
-        *,
-        installation: AIModelInstallation | None = None,
-        cache_root: str | Path | None = None,
-    ) -> None:
-        super().__init__()
-        normalized = request.strip().casefold()
-        if normalized not in SUBJECT_MASK_REQUESTS:
-            raise ValueError(f"Unknown subject mask request: {request}")
-        self.source_path = Path(source_path).expanduser().resolve()
-        self.request = normalized
-        self.installation = installation
-        self.cache_root = cache_root
-        self.signals = SubjectMaskTaskSignals()
-        self.setAutoDelete(True)
-
-    def run(self) -> None:
-        source_text = str(self.source_path)
-        try:
-            result = ensure_subject_masks(
-                self.source_path,
-                installation=self.installation,
-                cache_root=self.cache_root,
-                progress_callback=lambda message: self.signals.progress.emit(
-                    self.request,
-                    message,
-                ),
-            )
-            self.signals.finished.emit(self.request, source_text, result)
-        except Exception as exc:
-            self.signals.failed.emit(self.request, source_text, str(exc))
-
-
-__all__ = [
-    "DEFAULT_BIREFNET_MODEL_REPO_ID",
-    "DEFAULT_BIREFNET_MODEL_REVISION",
-    "SUBJECT_MASK_REQUESTS",
-    "SUBJECT_MASK_SEMANTIC_CATEGORIES",
-    "SubjectMaskComponent",
-    "SubjectMaskResult",
-    "SubjectMaskTask",
-    "SubjectMaskWarmTask",
-    "combine_subject_components",
-    "ensure_subject_masks",
-    "subject_mask_cache_path",
-]
+    try:
+        source = Path(source_path).expanduser().resolve()
+        if not source.is_file():
+            return None
+        model_installation = installation or resolve_birefnet_model_installation()
+        if not model_installation.is_installed:
+            return None
+        model_path = model_installation.install_dir / "model.safetensors"
+        if not model_path.is_file():
+            return None
+        weights_hash, _ = _cached_sha256_file(model_path)
+        stat = source.stat()
+        cache_key = _source_cache_key(source, stat.st_size, stat.st_mtime_ns, weights_hash)
+        cache_dir = Path(cache_root or default_subject_mask_cache_root()) / cache_key
+        mask_path = cache_dir / f"{request}.png"
+        metadata_path = cache_dir / "metadata.json"
+        cached_metadata = _load_json(metadata_path)
+        if (
+            cached_metadata.get("sourceSizeBytes") == stat.st_size
+            and cached_metadata.get("sourceMtimeNs") == stat.st_mtime_ns
+            and cached_metadata.get("weightsHash") == weights_hash
+            and cached_metadata.get("refinementVersion") == SUBJECT_MASK_REFINEMENT_VERSION
+            and mask_path.is_file()
+        ):
+            return mask_path
+        return None
+    except Exception:
+        return None

@@ -147,7 +147,7 @@ class VignetteRecipeTests(unittest.TestCase):
 
 class VignetteSessionTests(unittest.TestCase):
     def test_shape_round_trips_through_session_operations(self) -> None:
-        from image_triage.ui.photo_editor_panel import operations_from_recipe, recipe_from_session
+        from image_triage.edit_recipe_session import operations_from_recipe, recipe_from_session
 
         recipe = EditRecipe.from_dict(
             {"vignette": 70, "vignette_roundness": -40, "vignette_highlights": 25}
@@ -164,61 +164,12 @@ class VignetteSessionTests(unittest.TestCase):
         self.assertEqual(50, restored.vignette_midpoint)
 
     def test_shape_is_not_persisted_without_an_amount(self) -> None:
-        from image_triage.ui.photo_editor_panel import operations_from_recipe
+        from image_triage.edit_recipe_session import operations_from_recipe
 
         recipe = EditRecipe.from_dict({"vignette_roundness": -40})
         self.assertEqual(
             [], [op for op in operations_from_recipe(recipe) if op["type"] == "adjust.vignette"]
         )
-
-
-class VignettePanelTests(unittest.TestCase):
-    def setUp(self) -> None:
-        from PySide6.QtWidgets import QApplication
-
-        self.app = QApplication.instance() or QApplication([])
-
-    def test_options_are_collapsed_until_the_label_is_clicked(self) -> None:
-        from image_triage.ui.photo_editor_panel import PhotoEditorPanel
-
-        panel = PhotoEditorPanel()
-        self.assertFalse(panel._vignette_options.isVisibleTo(panel))
-        panel._rows["vignette"].set_expanded(True)
-        self.assertTrue(panel._vignette_options.isVisibleTo(panel))
-
-    def test_a_shaped_recipe_opens_the_options(self) -> None:
-        from image_triage.ui.photo_editor_panel import PhotoEditorPanel
-
-        panel = PhotoEditorPanel()
-        panel._recipe = EditRecipe.from_dict({"vignette": 50, "vignette_roundness": 80})
-        panel._sync_rows_from_recipe()
-        self.assertTrue(panel._vignette_options.isVisibleTo(panel))
-        self.assertEqual(80, panel._rows["vignette_roundness"].slider.value())
-
-    def test_option_rows_open_on_their_neutral_values(self) -> None:
-        from image_triage.ui.photo_editor_panel import PhotoEditorPanel
-
-        panel = PhotoEditorPanel()
-        defaults = EditRecipe()
-        for key in ("vignette_midpoint", "vignette_roundness", "vignette_feather", "vignette_highlights"):
-            with self.subTest(key):
-                self.assertEqual(getattr(defaults, key), panel._rows[key].slider.value())
-                self.assertEqual(getattr(defaults, key), panel._rows[key].value_box.value())
-
-    def test_option_rows_drive_the_recipe(self) -> None:
-        from image_triage.ui.photo_editor_panel import PhotoEditorPanel
-
-        panel = PhotoEditorPanel()
-        panel._rows["vignette_feather"].slider.setValue(12)
-        self.assertEqual(12, panel._recipe.vignette_feather)
-
-    def test_shape_controls_stay_out_of_the_mask_adjustment_set(self) -> None:
-        from image_triage.ui.photo_editor_panel import (
-            MASK_ADJUSTMENT_KEYS,
-            VIGNETTE_OPTION_KEYS,
-        )
-
-        self.assertFalse(VIGNETTE_OPTION_KEYS & set(MASK_ADJUSTMENT_KEYS))
 
 
 if __name__ == "__main__":

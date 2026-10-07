@@ -93,7 +93,19 @@ def detect_photoshop_executable() -> str | None:
 def detect_photocraft_executable() -> str | None:
     override = os.environ.get("IMAGE_TRIAGE_PHOTOCRAFT_EXE")
     if override and os.path.exists(override):
+        checkout = Path(__file__).resolve().parents[2] / "photocraft"
+        ordinary = [checkout / "target" / profile / "photocraft.exe" for profile in ("release", "debug")]
+        if Path(override).resolve() in [path.resolve() for path in ordinary]:
+            hosted = companion_photocraft_executables()
+            if hosted:
+                return hosted[0]
         return override
+
+    # The integration's companion build must precede unrelated installed/PATH
+    # copies: those may implement app.open but lack hosted stash/restore.
+    hosted = companion_photocraft_executables()
+    if hosted:
+        return hosted[0]
 
     direct = shutil.which("photocraft") or shutil.which("photocraft.exe")
     if direct:
@@ -103,7 +115,21 @@ def detect_photocraft_executable() -> str | None:
         matches = sorted(glob(str(Path(root) / "PhotoCraft*" / "photocraft.exe")), reverse=True)
         if matches:
             return matches[0]
+    checkout = Path(__file__).resolve().parents[2] / "photocraft"
+    if (checkout / "Cargo.toml").is_file():
+        for profile in ("release", "debug"):
+            executable = checkout / "target" / profile / "photocraft.exe"
+            if executable.is_file():
+                return str(executable)
     return None
+
+
+def companion_photocraft_executables() -> list[str]:
+    checkout = Path(__file__).resolve().parents[2] / "photocraft"
+    if not (checkout / "Cargo.toml").is_file():
+        return []
+    hosted = [path for profile in ("release", "debug") for path in (checkout / "target" / profile).glob("photocraft-host*.exe") if path.is_file()]
+    return [str(path) for path in sorted(hosted, key=lambda path: path.stat().st_mtime_ns, reverse=True)]
 
 
 def _photoshop_from_registry() -> str | None:

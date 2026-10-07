@@ -53,17 +53,6 @@ from .review_tools import (
     focus_assist_strength_by_id,
 )
 from .scanner import discover_edited_paths
-from .mask_engine_service import shutdown_mask_engine
-from .semantic_mask_service import SemanticMaskWarmTask
-from .subject_masks import SubjectMaskWarmTask
-
-from .editor_copy import EditorCopyService
-from .editor_render import CpuEditorRenderBackend, EditorRenderService
-from .ui.canvas_overlay import OverlayStack
-from .ui.crop_overlay import CropOverlay
-from .ui.mask_overlay import MaskOverlay
-from .ui.retouch_overlay import RetouchOverlay
-from .ui.photo_editor_panel import EditRecipe, PhotoEditorPanel
 from .ui.icons import build_symbol_icon
 from .ui.display_metrics import DisplayProfile, STANDARD_DISPLAY
 from .ui import preview_studio as studio
@@ -88,6 +77,7 @@ class PreviewRequest:
     cache_only: bool = False
     fits_display_settings: FitsDisplaySettings | None = None
     queued_at_perf: float = 0.0
+    apply_saved_edits: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -146,8 +136,12 @@ class PreviewTask(QRunnable):
         )
         suffix = suffix_for_path(self.request.path)
         if self.request.load_image:
+            from .photocraft_bridge import rendered_preview_path
+
+            render = rendered_preview_path(self.request.path)
+            display_path = str(render) if self.request.apply_saved_edits and render.is_file() else self.request.path
             image, error = load_image_for_display(
-                self.request.path,
+                display_path,
                 self.request.target_size,
                 prefer_embedded=self.request.prefer_embedded,
                 fits_display_settings=self.request.fits_display_settings,
@@ -631,17 +625,11 @@ class FullScreenPreview(QDialog):
     DEFAULT_PRELOAD_BATCH_SIZE = 10
     MIN_PRELOAD_BATCH_SIZE = 0
     MAX_PRELOAD_BATCH_SIZE = 128
-    EDITOR_PREVIEW_MAX_EDGE = 1600
-    # While the straighten is being dragged: every tick rotates and then
-    # re-runs the adjustment stack. A 512px working edge keeps the CPU preview
-    # responsive; the release immediately replaces it with the 1600px render.
-    EDITOR_PREVIEW_DRAFT_MAX_EDGE = 512
     FOCUS_ASSIST_COLOR_KEY = "preview/focus_assist_color"
     FOCUS_ASSIST_STRENGTH_KEY = "preview/focus_assist_strength"
     FOCUS_ASSIST_DIM_BACKGROUND_KEY = "preview/focus_assist_dim_background"
     FOCUS_ASSIST_ENABLED_KEY = "preview/focus_assist_enabled"
     FITS_STF_PRESET_KEY = "preview/fits_stf_preset"
-    INSPECTOR_VISIBLE_KEY = "preview/inspector_visible"
     FILMSTRIP_THUMB_HEIGHT_KEY = "preview/filmstrip_thumb_height"
     FILMSTRIP_THUMB_RATIO_KEY = "preview/filmstrip_thumb_ratio"
     FILMSTRIP_COLLAPSED_KEY = "preview/filmstrip_collapsed"
@@ -652,7 +640,7 @@ class FullScreenPreview(QDialog):
     command_palette_requested = Signal()
     photoshop_requested = Signal(str)
     photocraft_edit_requested = Signal(str)
-    photocraft_edit_exit_requested = Signal()
+    photocraft_host_resized = Signal(int, int)
     winner_requested = Signal(str)
     reject_requested = Signal(str)
     keep_requested = Signal(str)
@@ -686,6 +674,7 @@ class FullScreenPreview(QDialog):
         self._photoshop_available = False
         self._photocraft_available = False
         self._photocraft_edit_active = False
+        self.photocraft_close_guard = None
         self._winner_shortcut = QKeySequence("W")
         self._reject_shortcut = QKeySequence("X")
         # Mirrors grid.py's review-key registry (WI-3.2); brackets and the
@@ -730,17 +719,10 @@ class FullScreenPreview(QDialog):
         self._auto_advance_enabled = True
         self._winner_ladder_mode = False
         self._collection_browse_mode = False
-        self._collection_saved_inspector_checked = False
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(4)
         self._edited_discovery_pool = QThreadPool(self)
         self._edited_discovery_pool.setMaxThreadCount(1)
-        self._subject_warm_pool = QThreadPool(self)
-        self._subject_warm_pool.setMaxThreadCount(1)
-        self._subject_import_warm_scheduled = False
-        self._semantic_warm_pool = QThreadPool(self)
-        self._semantic_warm_pool.setMaxThreadCount(1)
-        self._semantic_import_warm_scheduled = False
         self._result_queue: SimpleQueue = SimpleQueue()
         self._preview_cache: OrderedDict[tuple[object, ...], tuple[QImage, int]] = OrderedDict()
         self._preview_cache_bytes = 0
@@ -779,30 +761,11 @@ class FullScreenPreview(QDialog):
         self._panes: list[PreviewPane] = []
         self._watched_widgets: dict[object, int] = {}
         self._inspection_stats_cache: dict[tuple[object, ...], InspectionStats] = {}
-        self._histogram_stats_cache: tuple[int, InspectionStats] | None = None
         self._focus_assist_cache: dict[tuple[object, ...], QImage] = {}
-        self._editor_recipe = EditRecipe()
-        self._editor_recipe_version = 0
-        self._editor_preview_cache: dict[tuple[object, ...], QImage] = {}
-        # Cache identity changes on every slider tick. Keep the last coherent
-        # frame separately so an incidental pane repaint while the next draft
-        # is rendering cannot flash the raw, uncropped source for one frame.
-        self._editor_last_presented: tuple[tuple, bool, QImage] | None = None
-        # Editor renders run off the UI thread through this service so slider
-        # drags never block; the backend is swappable (CPU today, GPU later).
-        self._editor_render_backend = CpuEditorRenderBackend()
-        self._editor_render_service = EditorRenderService(self._editor_render_backend, self)
-        self._editor_render_service.rendered.connect(self._on_editor_render_ready)
-        self._editor_copy_service = EditorCopyService(self)
-        self._editor_copy_service.saved.connect(self._handle_editor_copy_saved)
-        self._editor_copy_service.failed.connect(self._handle_editor_copy_failed)
         self._theme = default_theme()
 
-        app = QApplication.instance()
-        if app is not None:
-            app.aboutToQuit.connect(shutdown_mask_engine)
-
         self.setWindowTitle("Preview")
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setModal(False)
         self.setStyleSheet("background-color: #111; color: white;")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -963,7 +926,7 @@ class FullScreenPreview(QDialog):
         edit_group_layout.addWidget(self.edit_group_label)
         edit_group_layout.addWidget(self.next_edit_button)
         edit_group_layout.addWidget(self.photoshop_button)
-        edit_group_layout.addWidget(self.photocraft_button)
+        self.photocraft_button.hide()
 
         self.layout_group = QWidget()
         self.layout_group.setObjectName("workspaceControls")
@@ -1014,6 +977,12 @@ class FullScreenPreview(QDialog):
         self._photocraft_host.setStyleSheet("background-color: #000;")
         self._photocraft_host.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self._photocraft_host.hide()
+        self._photocraft_loading_label = QLabel("Opening PhotoCraft…", self.panes_widget)
+        self._photocraft_loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._photocraft_loading_label.setWordWrap(True)
+        self._photocraft_loading_label.setStyleSheet("background-color: #17191b; color: #c4c8cc; padding: 24px;")
+        self._photocraft_loading_label.hide()
+        self.panes_widget.installEventFilter(self)
 
         self.analysis_panel = QFrame()
         self.analysis_panel.setObjectName("previewAnalysisPanel")
@@ -1273,12 +1242,6 @@ class FullScreenPreview(QDialog):
             card.setStyleSheet(self._studio_card_style(card.objectName() or "card"))
         for segment in getattr(self, "_studio_segments", []):
             segment.setStyleSheet(self._studio_segmented_style())
-        rail = getattr(self, "_studio_rail", None)
-        if rail is not None:
-            rail.setStyleSheet(
-                "QFrame#rail { background: #17191c; border: none;"
-                " border-left: 1px solid #2a2d32; border-radius: 0px; }"
-            )
         self.compare_count_combo.setStyleSheet(self._studio_combo_style())
         self.focus_assist_color_combo.setStyleSheet(self._studio_combo_style(narrow=True))
         self.focus_assist_strength_combo.setStyleSheet(self._studio_combo_style())
@@ -1323,33 +1286,12 @@ class FullScreenPreview(QDialog):
         layout.addWidget(nxt)
         return frame
 
-    def _toggle_studio_inspector(self, shown: bool) -> None:
-        if self._collection_browse_mode:
-            with QSignalBlocker(self.inspector_toggle):
-                self.inspector_toggle.setChecked(self._collection_saved_inspector_checked)
-            self._studio_rail.hide()
-            return
-        rail = getattr(self, "_studio_rail", None)
-        if rail is not None:
-            rail.setVisible(shown)
-        toggle = getattr(self, "_mockup_editor_toggle", None)
-        if toggle is not None:
-            toggle.setChecked(shown)
-        self._settings.setValue(self.INSPECTOR_VISIBLE_KEY, shown)
-        self._sync_mask_overlay()
-
     def set_collection_browse_mode(self, enabled: bool) -> None:
         """Keep the popout useful for inspection without review or editing."""
-        if enabled and not self._collection_browse_mode:
-            self._collection_saved_inspector_checked = self.inspector_toggle.isChecked()
         self._collection_browse_mode = bool(enabled)
-        if not hasattr(self, "_studio_rail"):
-            return
-        self._studio_rail.setVisible(not enabled and self.inspector_toggle.isChecked())
-        self.photo_editor_panel.setEnabled(not enabled)
-        for button in (self.inspector_toggle, self._mockup_editor_toggle,
-                       self.command_palette_button):
-            button.setEnabled(not enabled)
+        if enabled:
+            self.hide_photocraft_host()
+        self.command_palette_button.setEnabled(not enabled)
         self.photoshop_button.setEnabled(not enabled and self._photoshop_available)
         if enabled and self.photocraft_button.isChecked():
             self.photocraft_button.setChecked(False)
@@ -1359,44 +1301,6 @@ class FullScreenPreview(QDialog):
         for pane in self._panes:
             pane.heart_button.setVisible(not enabled)
             pane.reject_button.setVisible(not enabled)
-        self._sync_mask_overlay()
-
-    def _sync_editor_overlays(self) -> None:
-        """Push the editor panel's state onto the focused pane's overlays.
-
-        Every overlay goes inert whenever the editor rail is hidden, and at
-        most one of them takes the mouse — decided by the panel's active tool
-        rather than by page indices duplicated over here.
-        """
-        stack = getattr(self, "_overlay_stack", None)
-        panel = getattr(self, "photo_editor_panel", None)
-        if stack is None or panel is None:
-            return
-        states = panel.overlay_states()
-        rail = getattr(self, "_studio_rail", None)
-        hidden = rail is None or rail.isHidden()
-        if hidden:
-            mask_state = states["mask"]
-            mask_state["interactive"] = False
-            mask_state["show_overlay"] = False
-            mask_state["create_mode"] = None
-            mask_state["scene_pick"] = False
-            mask_state["point_pick"] = False
-            mask_state["busy_message"] = None
-            states["crop"]["interactive"] = False
-            states["retouch"]["interactive"] = False
-        if 0 <= self._focused_slot < len(self._panes):
-            stack.attach(self._panes[self._focused_slot].image_label)
-        stack.set_view_transform(panel.view_transform())
-        for name, overlay in stack:
-            overlay.set_state(**states[name])
-        # set_state is allowed to set its own pass-through (MaskOverlay does),
-        # so the stack's arbitration runs last and always wins.
-        stack.set_active(None if hidden else panel.active_canvas_tool())
-
-    # The mask overlay was the only overlay for a long time; keep the old name
-    # so every existing caller and test keeps working.
-    _sync_mask_overlay = _sync_editor_overlays
 
     def _build_studio_toolbar(self) -> QFrame:
         toolbar = QFrame()
@@ -1417,9 +1321,6 @@ class FullScreenPreview(QDialog):
         settings_menu = QMenu(toolbar)
         settings_menu.addAction("Open commands", self.command_palette_requested.emit)
         settings_menu.addAction("Toggle filmstrip", lambda: self._filmstrip.toggle_collapsed())
-        settings_menu.addAction(
-            "Toggle editor", lambda: self.inspector_toggle.setChecked(not self.inspector_toggle.isChecked())
-        )
         settings_menu.addAction("Fit image", self._set_fit_mode)
         settings_menu.addAction("100% zoom", lambda: self._set_manual_zoom(1.0))
         settings_menu.addAction("Toggle focus peaking", self.toggle_focus_assist_command)
@@ -1461,7 +1362,6 @@ class FullScreenPreview(QDialog):
             (self.auto_bracket_button, "▣", "Bracket"),
             (self.before_after_button, "◧", "Before"),
             (self.photoshop_button, "▢", "Photoshop"),
-            (self.photocraft_button, "◆", "PhotoCraft"),
             (self.command_palette_button, "⌨", "Command"),
         ):
             button.setText(label)
@@ -1514,20 +1414,6 @@ class FullScreenPreview(QDialog):
         layout.addWidget(more_button)
         more_button.hide()
 
-        self.inspector_toggle = QPushButton("Editor")
-        self.inspector_toggle.setObjectName("toolBtn")
-        self.inspector_toggle.setCheckable(True)
-        # Restore the persisted state before connecting so no toggle fires;
-        # _apply_studio_layout applies it to the rail once the rail exists.
-        self.inspector_toggle.setChecked(self._settings.value(self.INSPECTOR_VISIBLE_KEY, True, bool))
-        self.inspector_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.inspector_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.inspector_toggle.toggled.connect(self._toggle_studio_inspector)
-        self.inspector_toggle.setObjectName("mockupEditButton")
-        self.inspector_toggle.setText("")
-        self.inspector_toggle.setIcon(build_symbol_icon("✎", QColor(studio.TEXT), pixel_size=18, font_size=16))
-        self.inspector_toggle.setToolTip("Show or hide editor")
-        layout.addWidget(self.inspector_toggle)
         self._mockup_filmstrip_toggle = QPushButton(toolbar)
         self._mockup_filmstrip_toggle.setObjectName("mockupLayoutButton")
         self._mockup_filmstrip_toggle.setIcon(build_symbol_icon("◧", QColor(studio.TEXT), pixel_size=18, font_size=15))
@@ -1538,19 +1424,7 @@ class FullScreenPreview(QDialog):
         self._mockup_filmstrip_toggle.clicked.connect(self._filmstrip.toggle_collapsed)
         layout.addWidget(self._mockup_filmstrip_toggle)
         self._mockup_filmstrip_toggle.hide()
-        self._mockup_editor_toggle = QPushButton(toolbar)
-        self._mockup_editor_toggle.setObjectName("mockupLayoutButton")
-        self._mockup_editor_toggle.setIcon(build_symbol_icon("▣", QColor(studio.TEXT), pixel_size=18, font_size=15))
-        self._mockup_editor_toggle.setToolTip("Show or hide editor")
-        self._mockup_editor_toggle.setCheckable(True)
-        self._mockup_editor_toggle.setChecked(self.inspector_toggle.isChecked())
-        self._mockup_editor_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._mockup_editor_toggle.clicked.connect(
-            lambda: self.inspector_toggle.setChecked(self._mockup_editor_toggle.isChecked())
-        )
-        layout.addWidget(self._mockup_editor_toggle)
-        self._mockup_editor_toggle.hide()
-        self._mockup_misc_action_buttons = (fit_button, actual_button, more_button, self.inspector_toggle)
+        self._mockup_misc_action_buttons = (fit_button, actual_button, more_button)
         return toolbar
 
     def _apply_mockup_zoom_slider(self) -> None:
@@ -1560,136 +1434,10 @@ class FullScreenPreview(QDialog):
         else:
             self._set_manual_zoom(0.25 * (32 ** (value / 100)))
 
-    def _build_studio_rail(self) -> QFrame:
-        """Build the popout editor rail.
-
-        The legacy analysis panel remains hidden and keeps carrying the old
-        inspection/focus/FITS state. Studio mode now presents the editor as the
-        visible rail instead of mirroring those inspector controls.
-        """
-        rail = QFrame()
-        rail.setObjectName("rail")
-        profile = self._display_profile
-        rail.setFixedWidth(popout_ratios.ratio_px(popout_ratios.EDITOR_W, self.width(), minimum=270))
-        layout = QVBoxLayout(rail)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        self.photo_editor_panel = PhotoEditorPanel(rail)
-        self.photo_editor_panel.apply_display_profile(profile)
-        self.photo_editor_panel.use_popout_mockup_layout()
-        editor_column = self.photo_editor_panel._editor_column
-        editor_layout = editor_column.layout()
-        editor_header = QFrame(editor_column)
-        editor_header.setObjectName("mockupEditorHeader")
-        self._mockup_editor_header = editor_header
-        editor_header_layout = QHBoxLayout(editor_header)
-        editor_header_layout.setContentsMargins(12, 5, 12, 5)
-        self._mockup_editor_title = QLabel("Adjust", editor_header)
-        self._mockup_editor_title.setObjectName("mockupEditorTitle")
-        editor_header_layout.addWidget(self._mockup_editor_title)
-        editor_header_layout.addStretch(1)
-        editor_menu = QPushButton("•••", editor_header)
-        editor_menu.setObjectName("mockupEditorMenu")
-        editor_menu.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        editor_menu.clicked.connect(self.command_palette_requested.emit)
-        editor_header_layout.addWidget(editor_menu)
-        editor_layout.insertWidget(0, editor_header)
-        self.photo_editor_panel.editor_stack.currentChanged.connect(
-            lambda index: self._mockup_editor_title.setText(
-                self.photo_editor_panel.RAIL_TOOLS[index][1]
-                if 0 <= index < len(self.photo_editor_panel.RAIL_TOOLS) else "Edit"
-            )
-        )
-        histogram_frame = QFrame(editor_column)
-        histogram_frame.setObjectName("mockupHistogram")
-        self._mockup_histogram_frame = histogram_frame
-        histogram_layout = QVBoxLayout(histogram_frame)
-        histogram_layout.setContentsMargins(12, 8, 12, 7)
-        histogram_layout.setSpacing(3)
-        histogram_layout.addWidget(self.histogram_widget)
-        histogram_caption = QHBoxLayout()
-        self._mockup_shadow_label = QLabel("Shadows —", histogram_frame)
-        self._mockup_highlight_label = QLabel("Highlights —", histogram_frame)
-        histogram_caption.addWidget(self._mockup_shadow_label)
-        histogram_caption.addStretch(1)
-        histogram_caption.addWidget(self._mockup_highlight_label)
-        histogram_layout.addLayout(histogram_caption)
-        editor_layout.insertWidget(1, histogram_frame)
-        self.photo_editor_panel.recipe_changed.connect(self._handle_editor_recipe_changed)
-        self.photo_editor_panel.mask_overlay_changed.connect(self._sync_histogram_visibility)
-        self._sync_histogram_visibility()
-        self.photo_editor_panel.status_changed.connect(self._handle_editor_status_changed)
-        self.photo_editor_panel.saved.connect(self._handle_editor_sidecar_saved)
-        self.photo_editor_panel.save_copy_requested.connect(self._handle_editor_save_copy_requested)
-        self.photo_editor_panel.subject_warm_requested.connect(self._request_subject_warm)
-        self.photo_editor_panel.semantic_warm_requested.connect(self._request_semantic_warm)
-        layout.addWidget(self.photo_editor_panel, 1)
-
-        # On-canvas mask editing: the overlay lives on the focused pane's image
-        # label and round-trips mask geometry with the editor panel.
-        self._mask_overlay = MaskOverlay()
-        self._mask_overlay.mask_created.connect(self.photo_editor_panel.handle_overlay_mask_created)
-        self._mask_overlay.mask_edited.connect(self.photo_editor_panel.handle_overlay_mask_edited)
-        self._mask_overlay.bitmap_edited.connect(self.photo_editor_panel.handle_overlay_bitmap_edited)
-        self._mask_overlay.source_clicked.connect(self.photo_editor_panel.handle_overlay_source_clicked)
-        self._mask_overlay.scene_region_picked.connect(self.photo_editor_panel.handle_overlay_scene_picked)
-        self._mask_overlay.point_picked.connect(self.photo_editor_panel.handle_overlay_point_picked)
-        self._mask_overlay.point_hovered.connect(
-            self.photo_editor_panel.handle_overlay_point_hovered
-        )
-        self._mask_overlay.point_hover_cleared.connect(
-            self.photo_editor_panel.handle_overlay_point_hover_cleared
-        )
-        self._mask_overlay.subject_candidate_toggled.connect(
-            self.photo_editor_panel.handle_overlay_subject_candidate_toggled
-        )
-        self._mask_overlay.edit_committed.connect(self.photo_editor_panel.handle_overlay_commit)
-        # The Masks overview's layer thumbnails show the photo through each
-        # mask; the overlay already holds the displayed frame, so lend it.
-        self.photo_editor_panel.set_mask_thumbnail_source(
-            self._mask_overlay._display_base_cache_key,
-            self._mask_overlay._display_base_image,
-        )
-
-        # Crop and retouch share the same image label. Z-order and mouse
-        # ownership belong to the stack, not to whichever overlay attached or
-        # set its state last.
-        self._crop_overlay = CropOverlay()
-        self._crop_overlay.crop_changed.connect(self.photo_editor_panel.handle_crop_changed)
-        self._crop_overlay.crop_committed.connect(self.photo_editor_panel.handle_crop_committed)
-        # Dragging outside the box rotates the photo under it.
-        self._crop_overlay.angle_changed.connect(
-            self.photo_editor_panel.handle_crop_angle_dragged
-        )
-        self._retouch_overlay = RetouchOverlay()
-        self._retouch_overlay.spot_added.connect(self.photo_editor_panel.handle_spot_added)
-        self._retouch_overlay.spot_moved.connect(self.photo_editor_panel.handle_spot_moved)
-        self._retouch_overlay.spot_removed.connect(self.photo_editor_panel.handle_spot_removed)
-        self._retouch_overlay.spot_committed.connect(self.photo_editor_panel.handle_spot_committed)
-        self._overlay_stack = OverlayStack(
-            {
-                "mask": self._mask_overlay,
-                "crop": self._crop_overlay,
-                "retouch": self._retouch_overlay,
-            }
-        )
-        self.photo_editor_panel.mask_overlay_changed.connect(self._sync_editor_overlays)
-
-        self._studio_cards = []
-        self._studio_segments = []
-        return rail
-
     def apply_display_profile(self, profile: DisplayProfile) -> None:
-        """Apply the main window's logical density profile to the editor rail."""
+        """Apply the main window's logical density profile."""
 
         self._display_profile = profile
-        rail = getattr(self, "_studio_rail", None)
-        if rail is not None:
-            rail.setFixedWidth(popout_ratios.ratio_px(popout_ratios.EDITOR_W, self.width(), minimum=270))
-        panel = getattr(self, "photo_editor_panel", None)
-        if panel is not None:
-            panel.apply_display_profile(profile)
         self._apply_mockup_metrics()
         if self.isVisible():
             self._render_all()
@@ -1701,8 +1449,6 @@ class FullScreenPreview(QDialog):
         toolbar = self._build_studio_toolbar()
         self._studio_toolbar = toolbar
 
-        rail = self._build_studio_rail()
-        self._studio_rail = rail
         # The mockup is a contiguous workstation: breadcrumb across the top,
         # image and controls on the left, editing controls to the right.
         self._content_layout.setContentsMargins(0, 0, 0, 0)
@@ -1720,6 +1466,7 @@ class FullScreenPreview(QDialog):
         layout.setSpacing(0)
         layout.replaceWidget(self.header_widget, toolbar)
         self.header_widget.hide()
+        toolbar.hide()
         self.info_label.hide()
 
         self._filmstrip_current = 0
@@ -1756,13 +1503,12 @@ class FullScreenPreview(QDialog):
         left_layout.addWidget(self.content_widget, 1)
         self._mockup_metadata_bar = self._build_mockup_metadata_bar()
         left_layout.addWidget(self._mockup_metadata_bar)
+        self._mockup_metadata_bar.hide()
         left_layout.addWidget(self._filmstrip)
         body_layout.addWidget(left_column, 1)
-        body_layout.addWidget(rail)
         self._mockup_status_bar = self._build_mockup_status_bar()
-        self._filmstrip.set_footer(self._mockup_status_bar)
-        # Apply the persisted editor rail visibility now that the rail exists.
-        rail.setVisible(self.inspector_toggle.isChecked())
+        self._mockup_status_bar.hide()
+        self._filmstrip.set_editor_palette({"panel": "#323232", "dock": "#1e1e1e", "accent": "#378ef0", "text": "#dedede"})
         # Debounce for async thumbnail arrivals so a burst of thumbnail_ready
         # signals repopulates the strip once, not once per thumb.
         self._filmstrip_refresh_timer = QTimer(self)
@@ -1857,11 +1603,6 @@ class FullScreenPreview(QDialog):
         self._studio_actionbar.setFixedHeight(action_row_height)
         self._mockup_metadata_bar.setFixedHeight(action_row_height)
         self._mockup_status_bar.setFixedHeight(px(popout_ratios.STATUS_BAR_H, height, minimum=12))
-        self._mockup_editor_header.setFixedHeight(px(popout_ratios.EDITOR_HEADER_H, height, minimum=40))
-        self._mockup_histogram_frame.setFixedHeight(px(popout_ratios.HISTOGRAM_FRAME_H, height, minimum=120))
-        self._studio_rail.setFixedWidth(px(popout_ratios.EDITOR_W, width, minimum=270))
-        self.photo_editor_panel.apply_popout_mockup_metrics(width, height)
-        self.histogram_widget.setFixedHeight(px(popout_ratios.HISTOGRAM_PLOT_H, height, minimum=70))
         self._content_layout.setContentsMargins(
             px(popout_ratios.STAGE_SIDE_W, width),
             px(popout_ratios.STAGE_TOP_H, height),
@@ -1876,13 +1617,6 @@ class FullScreenPreview(QDialog):
         self._mockup_metadata_bar.layout().setContentsMargins(0, 0, px(popout_ratios.METADATA_GUTTER_W, width, minimum=8), 0)
         self._mockup_metadata_bar.layout().setSpacing(px(0.002, width, minimum=3))
         self._mockup_status_bar.layout().setContentsMargins(px(0.0059, width, minimum=7), 1, px(0.0059, width, minimum=7), 1)
-        self._mockup_editor_header.layout().setContentsMargins(px(0.0059, width, minimum=7), 2, px(0.0059, width, minimum=7), 2)
-        self._mockup_histogram_frame.layout().setContentsMargins(
-            px(popout_ratios.HISTOGRAM_GUTTER_W, width, minimum=7),
-            px(0.0067, height, minimum=5),
-            px(popout_ratios.HISTOGRAM_GUTTER_W, width, minimum=7),
-            px(0.0059, height, minimum=4),
-        )
         self._mockup_zoom_slider.setFixedWidth(px(popout_ratios.ZOOM_SLIDER_W, width, minimum=52))
         action_icon = px(popout_ratios.ACTION_ICON_H, height, minimum=11)
         for button in (self.compare_toggle_button, self.auto_bracket_button, self.before_after_button,
@@ -1894,10 +1628,9 @@ class FullScreenPreview(QDialog):
             button.setFixedSize(px(popout_ratios.ACTION_BUTTON_W, width, minimum=26),
                                 px(popout_ratios.ACTION_BUTTON_H, height, minimum=26))
             button.setIconSize(QSize(action_icon, action_icon))
-        for button in (self._mockup_filmstrip_toggle, self._mockup_editor_toggle):
-            button.setFixedSize(px(popout_ratios.ACTION_BUTTON_W, width, minimum=26),
-                                px(popout_ratios.ACTION_BUTTON_H, height, minimum=26))
-            button.setIconSize(QSize(action_icon, action_icon))
+        self._mockup_filmstrip_toggle.setFixedSize(px(popout_ratios.ACTION_BUTTON_W, width, minimum=26),
+                            px(popout_ratios.ACTION_BUTTON_H, height, minimum=26))
+        self._mockup_filmstrip_toggle.setIconSize(QSize(action_icon, action_icon))
         star_h = px(popout_ratios.RATING_STAR_H, height, minimum=17)
         for star in self._mockup_star_buttons:
             star.setFixedSize(px(0.0083, width, minimum=14), star_h)
@@ -2015,6 +1748,13 @@ class FullScreenPreview(QDialog):
             )
         if delta:
             self.navigation_requested.emit(delta)
+        elif self._uses_photocraft_editor() and self._source_entries:
+            # The selected thumbnail also reopens a tab closed inside PhotoCraft.
+            # The controller checks whether the document is still present first.
+            self.photocraft_edit_requested.emit(self._source_entries[0].record.path)
+
+    def set_photocraft_palette(self, colors: dict) -> None:
+        self._filmstrip.set_editor_palette(colors)
 
     def _build_header_tool_button(self, text: str) -> QToolButton:
         button = QToolButton()
@@ -2212,11 +1952,6 @@ class FullScreenPreview(QDialog):
             photoshop_action = edit_menu.addAction("Photoshop")
             photoshop_action.setEnabled(self.photoshop_button.isEnabled())
             photoshop_action.triggered.connect(self._handle_photoshop_button_clicked)
-            photocraft_action = edit_menu.addAction("PhotoCraft")
-            photocraft_action.setCheckable(True)
-            photocraft_action.setChecked(self.photocraft_button.isChecked())
-            photocraft_action.setEnabled(self.photocraft_button.isEnabled())
-            photocraft_action.triggered.connect(self.photocraft_button.setChecked)
 
         if "layout" in self._preview_header_overflow_hidden_groups:
             layout_menu = self.preview_header_overflow_menu.addMenu("Layout")
@@ -2406,6 +2141,8 @@ class FullScreenPreview(QDialog):
         return self._compare_mode
 
     def set_compare_mode(self, enabled: bool) -> None:
+        if enabled:
+            self.hide_photocraft_host()
         if self._compare_mode == enabled:
             return
         self._compare_mode = enabled
@@ -2480,21 +2217,56 @@ class FullScreenPreview(QDialog):
     def photocraft_edit_active(self) -> bool:
         return self._photocraft_edit_active
 
+    def set_photocraft_loading(self, loading: bool) -> None:
+        self._photocraft_host.setEnabled(not loading)
+        if loading and not self._photocraft_edit_active:
+            self._filmstrip.hide()
+            self._photocraft_loading_label.setText("Opening PhotoCraft…")
+            self._photocraft_loading_label.setGeometry(self.panes_widget.rect())
+            self._photocraft_loading_label.show()
+            self._photocraft_loading_label.raise_()
+        elif not loading:
+            self._photocraft_loading_label.hide()
+            self._filmstrip.show()
+
+    def show_photocraft_error(self, message: str) -> None:
+        self._photocraft_loading_label.setText(f"PhotoCraft could not open this photo.\n\n{message}")
+        self._photocraft_loading_label.setGeometry(self.panes_widget.rect())
+        self._photocraft_loading_label.show()
+        self._photocraft_loading_label.raise_()
+
+    def _uses_photocraft_editor(self) -> bool:
+        return self._photocraft_available and not self._compare_mode and not self._collection_browse_mode and not self._before_after_enabled
+
     def photocraft_host_hwnd(self) -> int:
         return int(self._photocraft_host.winId())
 
     def photocraft_host_size(self) -> tuple[int, int]:
         rect = self._photocraft_host.rect()
-        return rect.width(), rect.height()
+        scale = self._photocraft_host.devicePixelRatioF()
+        return round(rect.width() * scale), round(rect.height() * scale)
 
     def show_photocraft_host(self) -> None:
+        self._photocraft_edit_active = True
+        self._filmstrip.show()
         self._update_photocraft_host_geometry()
         self._photocraft_host.show()
         self._photocraft_host.raise_()
 
     def _update_photocraft_host_geometry(self) -> None:
+        if not self._photocraft_loading_label.isHidden():
+            self._photocraft_loading_label.setGeometry(self.panes_widget.rect())
         if self._photocraft_edit_active:
             self._photocraft_host.setGeometry(self.panes_widget.rect())
+            self.photocraft_host_resized.emit(*self.photocraft_host_size())
+
+    def hide_photocraft_host(self) -> None:
+        self._photocraft_edit_active = False
+        self._photocraft_host.hide()
+        self._photocraft_loading_label.hide()
+        self._filmstrip.show()
+        with QSignalBlocker(self.photocraft_button):
+            self.photocraft_button.setChecked(False)
 
     def _handle_photocraft_button_toggled(self, checked: bool) -> None:
         if self._collection_browse_mode or self._compare_mode:
@@ -2512,16 +2284,15 @@ class FullScreenPreview(QDialog):
         else:
             self._photocraft_edit_active = False
             self._photocraft_host.hide()
-            self.photocraft_edit_exit_requested.emit()
 
     def show_entries(self, entries: list[PreviewEntry]) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         was_visible = self.isVisible()
-        if not was_visible:
-            self._subject_import_warm_scheduled = False
-            self._semantic_import_warm_scheduled = False
         self._source_entries = list(entries)
+        if self._uses_photocraft_editor():
+            # Cover the original viewer before the first window paint.
+            self.set_photocraft_loading(True)
         if len(entries) < 2:
             self._winner_ladder_mode = False
         self._stable_poll_cycles = 0
@@ -2538,10 +2309,7 @@ class FullScreenPreview(QDialog):
         self._dragging = False
         self._pending_right_close = False
         self._edited_variant_index = 0
-        if not was_visible:
-            self.photo_editor_panel.show_adjustments_page()
         self._rebuild_entries()
-        self._sync_editor_to_focused_entry()
         self._sync_preview_controls()
         if self._collection_browse_mode:
             self.set_collection_browse_mode(True)
@@ -2549,20 +2317,22 @@ class FullScreenPreview(QDialog):
         fullscreen_reapplied = False
         window_activated = False
         if not was_visible:
-            # Open as a normal maximized window: fills the available desktop
-            # but respects the taskbar, so nothing clips off-screen. (True
-            # fullscreen fought the Windows taskbar and clipped the edges;
-            # revisit as an explicit toggle later.)
-            self.showMaximized()
+            self.showFullScreen()
             self.raise_()
             self.activateWindow()
             window_activated = True
-        elif self.isMinimized():
-            self.showMaximized()
+        elif self.isMinimized() or not self.isFullScreen():
+            self.showFullScreen()
             fullscreen_reapplied = True
         self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         self._refresh_timer.start()
         QTimer.singleShot(0, self._request_preview_loads)
+        if self._photocraft_available and not self._collection_browse_mode and not self._compare_mode and not self._before_after_enabled:
+            path = self._source_entries[0].record.path if self._source_entries else ""
+            if path:
+                self.photocraft_edit_requested.emit(path)
+        else:
+            self.hide_photocraft_host()
         if logger.enabled:
             logger.duration(
                 "preview.show_entries",
@@ -2577,6 +2347,8 @@ class FullScreenPreview(QDialog):
             )
 
     def eventFilter(self, watched, event) -> bool:
+        if watched is getattr(self, "panes_widget", None) and event.type() == QEvent.Type.Resize:
+            self._update_photocraft_host_geometry()
         pane_index = self._watched_widgets.get(watched)
         if pane_index is None:
             return super().eventFilter(watched, event)
@@ -2628,7 +2400,7 @@ class FullScreenPreview(QDialog):
         if widget is None:
             return True
         for name in (
-            "_studio_toolbar", "_studio_actionbar", "_studio_rail",
+            "_studio_toolbar", "_studio_actionbar",
             "_mockup_metadata_bar", "_filmstrip", "_mockup_status_bar",
         ):
             surface = getattr(self, name, None)
@@ -2666,6 +2438,10 @@ class FullScreenPreview(QDialog):
         super().mouseReleaseEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.photocraft_close_guard is not None and not self.photocraft_close_guard():
+            event.ignore()
+            return
+        self.hide_photocraft_host()
         self._refresh_timer.stop()
         self._stable_poll_cycles = 0
         self._poll_round_robin_slot = 0
@@ -2696,18 +2472,6 @@ class FullScreenPreview(QDialog):
                 | Qt.KeyboardModifier.MetaModifier
             )
         )
-        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            # Enter commits the crop while that tool is armed; it used to reach
-            # a default button and throw the crop away.
-            panel = getattr(self, "photo_editor_panel", None)
-            if panel is not None and panel.active_canvas_tool() == "crop":
-                panel.apply_crop()
-                event.accept()
-                return
-        if key == Qt.Key.Key_Escape and self._photocraft_edit_active:
-            self.photocraft_button.setChecked(False)
-            event.accept()
-            return
         if key in (Qt.Key.Key_Escape, Qt.Key.Key_Space):
             self.close()
             event.accept()
@@ -2879,12 +2643,16 @@ class FullScreenPreview(QDialog):
             self.photoshop_requested.emit(path)
 
     def _handle_before_after_button_toggled(self, checked: bool) -> None:
+        if checked:
+            self.hide_photocraft_host()
         self._before_after_enabled = checked
         if checked:
             self._edited_variant_index = 0
         self._rebuild_entries()
         self._sync_preview_controls()
         self._request_preview_loads()
+        if not checked and self._photocraft_available and self._source_entries and not self._compare_mode and not self._collection_browse_mode:
+            self.photocraft_edit_requested.emit(self._source_entries[0].record.path)
 
     def _handle_focus_assist_button_toggled(self, checked: bool) -> None:
         self._focus_assist_enabled = checked
@@ -3166,6 +2934,11 @@ class FullScreenPreview(QDialog):
         if not self._entries:
             return
 
+        if self._uses_photocraft_editor():
+            # PhotoCraft owns decoding/rendering for this canvas. Starting the
+            # old full-resolution renderer too adds work and a second preview.
+            return
+
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         target_slots = slots if slots is not None else list(range(len(self._entries)))
@@ -3258,6 +3031,7 @@ class FullScreenPreview(QDialog):
                     path=entry.source_path,
                     token=token,
                     slot=slot,
+                    apply_saved_edits=entry.label != "Before",
                     target_size=target_size,
                     source_signature=source_signature,
                     prefer_embedded=prefer_embedded,
@@ -3454,6 +3228,8 @@ class FullScreenPreview(QDialog):
             )
 
     def preload_paths(self, paths: list[str], *, load_metadata: bool = True) -> None:
+        if self._uses_photocraft_editor():
+            return
         if not paths:
             return
         logger = perf_logger()
@@ -3579,7 +3355,7 @@ class FullScreenPreview(QDialog):
         for slot in slots_to_check:
             entry = self._entries[slot]
             current_signature = self._source_versions[slot] if slot < len(self._source_versions) else None
-            latest_signature = _file_signature(entry.source_path)
+            latest_signature = self._entry_source_signature(entry, fresh=True)
             if latest_signature is None or latest_signature == current_signature:
                 continue
             self._metadata_cache.pop(entry.source_path, None)
@@ -3757,16 +3533,6 @@ class FullScreenPreview(QDialog):
                 self._rendered_display_keys[slot] = display_key
             pane.scroll_area.horizontalScrollBar().setValue(0)
             pane.scroll_area.verticalScrollBar().setValue(0)
-        if slot == self._focused_slot and not self._subject_import_warm_scheduled:
-            self._subject_import_warm_scheduled = True
-            QTimer.singleShot(350, lambda: self._request_subject_warm("imports"))
-        # Warm the OneFormer worker's torch/CUDA imports in the background so the
-        # ~8 s one-time spin-up is paid while the user is on Adjust, not inline on
-        # the first scene-mask request. Staggered after BiRefNet's warm so the two
-        # subprocesses don't initialize CUDA at the same instant.
-        if slot == self._focused_slot and not self._semantic_import_warm_scheduled:
-            self._semantic_import_warm_scheduled = True
-            QTimer.singleShot(600, lambda: self._request_semantic_warm("imports"))
         if logger.enabled:
             logger.duration(
                 "preview.render_pane",
@@ -3781,264 +3547,10 @@ class FullScreenPreview(QDialog):
                 focus_assist=self._focus_assist_enabled,
             )
 
-    def _request_subject_warm(self, stage: str) -> None:
-        try:
-            task = SubjectMaskWarmTask(stage)
-        except ValueError:
-            return
-        self._subject_warm_pool.start(task)
-
-    def _request_semantic_warm(self, stage: str) -> None:
-        try:
-            task = SemanticMaskWarmTask(stage)
-        except ValueError:
-            return
-        self._semantic_warm_pool.start(task)
-
-    def _sync_editor_to_focused_entry(self) -> None:
-        panel = getattr(self, "photo_editor_panel", None)
-        if panel is None:
-            return
-        if not self._entries or not 0 <= self._focused_slot < len(self._entries):
-            panel.set_image(None)
-            return
-        panel.set_image(self._entries[self._focused_slot].source_path)
-
-    def _handle_editor_recipe_changed(self, recipe: EditRecipe) -> None:
-        # Fast, non-blocking: update state and hand the render to the worker.
-        # The pane keeps showing the previous frame until the result arrives.
-        self._editor_recipe = recipe
-        self._editor_recipe_version += 1
-        self._update_info_label()
-        self._editor_preview_cache.clear()
-        self._focus_assist_cache.clear()
-        if (
-            0 <= self._focused_slot < len(self._rendered_display_keys)
-            and self._focused_slot < len(self._panes)
-        ):
-            self._request_editor_render(self._focused_slot)
-        if self.photo_editor_panel.histogram_wanted() and not self._editor_edits_active():
-            # Edits were cleared: fall back to the plain image's histogram.
-            self._schedule_analysis_panel_update()
-
-    def _request_editor_render(self, slot: int) -> None:
-        """Queue an off-thread editor render for ``slot`` (coalesced). When
-        there are no edits, present the base image immediately instead."""
-        if not (0 <= slot < len(self._current_images)):
-            return
-        image = self._current_images[slot]
-        if image.isNull():
-            return
-        masked = self._editor_masked_adjustments()
-        if self._editor_recipe_is_default() and not masked:
-            # Reset to un-edited — nothing to compute; show the base now.
-            # cancel() (not cancel_pending) also invalidates any in-flight
-            # render, so a late edited frame can't overwrite the base.
-            self._editor_render_service.cancel()
-            if slot < len(self._rendered_display_keys):
-                self._rendered_display_keys[slot] = None
-            self._render_pane(slot)
-            return
-        base_key = self._image_cache_key(slot, image)
-        source_key = (*base_key, *self._editor_state_key())
-        self._editor_render_service.request(
-            image, self._editor_recipe, masked, base_key=base_key, source_key=source_key,
-            background=self._editor_background_spec(),
-            lensblur=self._editor_lensblur_spec(),
-            view=self._editor_view_spec(),
-        )
-
-    def _editor_state_key(self) -> tuple:
-        """Identity of the current editor render, for every cache key.
-
-        This used to be the literal expression ``("editor", version)`` written
-        out at five separate sites. Crop bypass is tool state rather than
-        recipe state, so it has to join the key — and updating four of five
-        sites would have produced either a frozen pane or a bypassed frame
-        overwriting a cropped one.
-        """
-        panel = getattr(self, "photo_editor_panel", None)
-        spec = panel.view_render_spec() if panel is not None else {}
-        bypass = bool(spec.get("bypass_crop"))
-        # The draft joins the key, or a half-size frame would satisfy (and be
-        # cached as) the full-size render that follows the drag.
-        draft = bool(spec.get("draft"))
-        return ("editor", self._editor_recipe_version, bypass, draft)
-
-    def _editor_view_spec(self) -> dict | None:
-        panel = getattr(self, "photo_editor_panel", None)
-        if panel is None:
-            return None
-        spec = dict(panel.view_render_spec())
-        spec["max_edge"] = (
-            self.EDITOR_PREVIEW_DRAFT_MAX_EDGE
-            if spec.get("draft")
-            else self.EDITOR_PREVIEW_MAX_EDGE
-        )
-        return spec
-
-    def _editor_background_spec(self) -> dict | None:
-        panel = getattr(self, "photo_editor_panel", None)
-        return panel.background_render_spec() if panel is not None else None
-
-    def _editor_lensblur_spec(self) -> dict | None:
-        panel = getattr(self, "photo_editor_panel", None)
-        return panel.lensblur_render_spec() if panel is not None else None
-
-    def _on_editor_render_ready(self, seq: int, source_key: object, image: QImage) -> None:
-        slot = self._focused_slot
-        if not (0 <= slot < len(self._current_images)) or slot >= len(self._entries) or image.isNull():
-            return
-        current = self._current_images[slot]
-        if current.isNull():
-            return
-        # Second guard (defense in depth with the service's stale-seq drop):
-        # only present a result that exactly matches the current edit state.
-        # If edits were reset, or the base/recipe-version changed after the
-        # request was queued, the source_key won't match and we ignore it —
-        # so a late frame can never overwrite the base or a newer edit.
-        if not self._editor_edits_active():
-            return
-        expected_key = (
-            *self._image_cache_key(slot, current),
-            *self._editor_state_key(),
-        )
-        # A frame from an older recipe version is still a valid intermediate
-        # during a drag; only reject other mismatches, or versions from the future.
-        got = tuple(source_key)
-        if (
-            len(got) != len(expected_key)
-            or got[:-3] != tuple(expected_key)[:-3]
-            or got[-2:] != tuple(expected_key)[-2:]
-            or got[-3] > expected_key[-3]
-        ):
-            return
-        self._editor_preview_cache[source_key] = image
-        panel = getattr(self, "photo_editor_panel", None)
-        view_spec = panel.view_render_spec() if panel is not None else {}
-        self._editor_last_presented = (
-            self._image_cache_key(slot, current),
-            bool(view_spec.get("bypass_crop")),
-            image,
-        )
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        with logger.span("editslider.present", slot=slot):
-            display = self._display_image_from_edited(slot, image)
-            # Force a present: the display key is derived from the current
-            # recipe version, so consecutive coalesced frames would otherwise
-            # collide on the key and skip the newest image.
-            if slot < len(self._rendered_display_keys):
-                self._rendered_display_keys[slot] = None
-            self._present_display_image(slot, self._panes[slot], self._entries[slot], display, logger, start)
-        if panel is not None and panel.histogram_wanted():
-            self._schedule_analysis_panel_update(60)
-
-    def _handle_editor_status_changed(self, message: str) -> None:
-        if message and getattr(self, "_studio_layout_active", False):
-            self.info_label.setText(message)
-
-    def _handle_editor_sidecar_saved(self, path: str) -> None:
-        if getattr(self, "_studio_layout_active", False):
-            self.info_label.setText("Saved edits")
-
-    def _handle_editor_save_copy_requested(
-        self,
-        target_path: str,
-        source_path: str,
-        recipe: object,
-        masked_adjustments: object,
-    ) -> None:
-        requested = self._editor_copy_service.request(
-            source_path,
-            target_path,
-            recipe,
-            list(masked_adjustments or []),
-            # Background and Lens Blur were silently missing from saved copies:
-            # write_edited_copy never received their specs.
-            background=self._editor_background_spec(),
-            lensblur=self._editor_lensblur_spec(),
-        )
-        if not requested:
-            self.photo_editor_panel.finish_save_copy(target_path, "Another copy is still being saved.")
-
-    def _handle_editor_copy_saved(self, source_path: str, target_path: str) -> None:
-        self.photo_editor_panel.finish_save_copy(target_path)
-        candidates: tuple[str, ...] = ()
-        record_path = source_path
-        for entry in (*self._source_entries, *self._entries):
-            entry_paths = {
-                os.path.normcase(os.path.abspath(entry.record.path)),
-                os.path.normcase(os.path.abspath(entry.source_path)),
-            }
-            if os.path.normcase(os.path.abspath(source_path)) in entry_paths:
-                record_path = entry.record.path
-                candidates = self._edited_candidates_for_entry(entry)
-                break
-        target_key = os.path.normcase(os.path.abspath(target_path))
-        if all(os.path.normcase(os.path.abspath(path)) != target_key for path in candidates):
-            candidates = (*candidates, target_path)
-        self.set_edited_candidates(record_path, candidates)
-        self._edited_discovery_requested = True
-        self._next_edited_discovery_at = 0.0
-
-    def _handle_editor_copy_failed(self, target_path: str, error: str) -> None:
-        self.photo_editor_panel.finish_save_copy(target_path, error)
-
-    def _editor_recipe_is_default(self) -> bool:
-        return asdict(self._editor_recipe) == asdict(EditRecipe())
-
-    def _editor_masked_adjustments(self) -> list:
-        panel = getattr(self, "photo_editor_panel", None)
-        if panel is None:
-            return []
-        return panel.masked_adjustments()
-
-    def _editor_edits_active(self) -> bool:
-        return not self._editor_recipe_is_default() or bool(self._editor_masked_adjustments())
-
-    def _editor_image_for_slot(self, slot: int, image: QImage) -> QImage:
-        # Never run the adjustment pipeline on the UI thread. Decode, zoom and
-        # resize paths can arrive before the async frame is cached; queue the
-        # current edit and, when possible, hold the last coherent edited frame.
-        masked = self._editor_masked_adjustments()
-        if (
-            not 0 <= slot < len(self._entries)
-            or image.isNull()
-            or (self._editor_recipe_is_default() and not masked)
-        ):
-            return image
-        base_key = self._image_cache_key(slot, image)
-        cache_key = (*base_key, *self._editor_state_key())
-        cached = self._editor_preview_cache.get(cache_key)
-        if cached is not None:
-            perf_logger().log("editslider.render_image_cache_hit", slot=slot, w=image.width(), h=image.height())
-            return cached
-        self._request_editor_render(slot)
-        previous = self._editor_last_presented
-        panel = getattr(self, "photo_editor_panel", None)
-        view_spec = panel.view_render_spec() if panel is not None else {}
-        if (
-            previous is not None
-            and previous[0] == base_key
-            and previous[1] == bool(view_spec.get("bypass_crop"))
-            and not previous[2].isNull()
-        ):
-            perf_logger().log(
-                "editslider.render_hold_previous",
-                slot=slot,
-                w=previous[2].width(),
-                h=previous[2].height(),
-            )
-            return previous[2]
-        return image
-
     def _display_image_for_slot(self, slot: int) -> QImage:
         if not 0 <= slot < len(self._current_images):
             return QImage()
         image = self._current_images[slot]
-        if slot == self._focused_slot:
-            image = self._editor_image_for_slot(slot, image)
         return self._display_image_from_edited(slot, image)
 
     def _display_image_from_edited(self, slot: int, image: QImage) -> QImage:
@@ -4100,8 +3612,6 @@ class FullScreenPreview(QDialog):
 
     def _display_render_key(self, slot: int, image: QImage) -> tuple[object, ...]:
         base_key = self._image_cache_key(slot, image)
-        if slot == self._focused_slot and self._editor_edits_active():
-            base_key = (*base_key, *self._editor_state_key())
         if not self._focus_assist_enabled:
             return (*base_key, "display")
         return (*self._focus_assist_cache_key(slot, image), "focus-assist")
@@ -4110,8 +3620,6 @@ class FullScreenPreview(QDialog):
         self, slot: int, image: QImage
     ) -> tuple[object, ...]:
         base_key = self._image_cache_key(slot, image)
-        if slot == self._focused_slot and self._editor_edits_active():
-            base_key = (*base_key, *self._editor_state_key())
         return (
             *base_key,
             self._focus_assist_color.id,
@@ -4144,35 +3652,6 @@ class FullScreenPreview(QDialog):
         self._studio_confidence_bar.set_pct(int(round(value)) if value is not None else 0)
         self._studio_confidence_pct.setText(result.display_score_text or "--")
 
-    def _sync_histogram_visibility(self) -> None:
-        frame = getattr(self, "_mockup_histogram_frame", None)
-        panel = getattr(self, "photo_editor_panel", None)
-        if frame is None or panel is None:
-            return
-        wanted = panel.histogram_wanted()
-        if frame.isVisibleTo(frame.parentWidget()) != wanted:
-            frame.setVisible(wanted)
-            if wanted:
-                self._schedule_analysis_panel_update(0)
-
-    def _histogram_stats_for_slot(self, slot: int, base_stats: InspectionStats) -> InspectionStats:
-        """Histogram of what is on screen: the edited frame while edits are
-        active, otherwise the plain image stats."""
-        if slot != self._focused_slot or not self._editor_edits_active():
-            return base_stats
-        presented = self._editor_last_presented
-        if presented is None or not 0 <= slot < len(self._current_images):
-            return base_stats
-        base_key, _bypass, edited = presented
-        if base_key != self._image_cache_key(slot, self._current_images[slot]) or edited.isNull():
-            return base_stats
-        cached = self._histogram_stats_cache
-        if cached is not None and cached[0] == edited.cacheKey():
-            return cached[1]
-        stats = build_histogram_stats(edited)
-        self._histogram_stats_cache = (edited.cacheKey(), stats)
-        return stats
-
     def _update_analysis_panel(self) -> None:
         if not self._entries or not 0 <= self._focused_slot < len(self._entries):
             self.analysis_subtitle_label.setText("Focused image analysis")
@@ -4188,19 +3667,11 @@ class FullScreenPreview(QDialog):
 
         entry = self._entries[self._focused_slot]
         stats = self._inspection_stats_for_slot(self._focused_slot)
-        live_stats = self._histogram_stats_for_slot(self._focused_slot, stats)
-        if hasattr(self, "_mockup_shadow_label"):
-            self._mockup_shadow_label.setText(
-                f"Shadows {live_stats.shadow_clip_pct:.0f}%" if live_stats.width > 0 else "Shadows —"
-            )
-            self._mockup_highlight_label.setText(
-                f"Highlights {live_stats.highlight_clip_pct:.0f}%" if live_stats.width > 0 else "Highlights —"
-            )
         title = Path(entry.source_path).name
         if entry.label:
             title = f"{entry.label} | {title}"
         self.analysis_subtitle_label.setText(title)
-        self.histogram_widget.set_stats(live_stats)
+        self.histogram_widget.set_stats(stats)
 
         if stats.width <= 0 or stats.height <= 0:
             self.inspection_dimensions_label.setText("Loading...")
@@ -4366,11 +3837,19 @@ class FullScreenPreview(QDialog):
             self._fits_display_cache_key_for_path(path, fits_display_settings),
         )
 
-    def _entry_source_signature(self, entry: PreviewEntry) -> tuple[int, int] | None:
-        signature = _record_path_signature(entry.record, entry.source_path)
-        if signature is not None:
-            return signature
-        return _file_signature(entry.source_path)
+    def _entry_source_signature(self, entry: PreviewEntry, *, fresh: bool = False) -> tuple[int, int] | None:
+        signature = _file_signature(entry.source_path) if fresh else _record_path_signature(entry.record, entry.source_path)
+        if signature is None:
+            signature = _file_signature(entry.source_path)
+        if entry.label != "Before":
+            from .photocraft_bridge import rendered_preview_path
+
+            rendered = rendered_preview_path(entry.source_path)
+            saved = _file_signature(str(rendered)) if rendered.is_file() else None
+            if saved is not None:
+                original = signature or (0, 0)
+                return (original[0] ^ saved[0], original[1] + saved[1])
+        return signature
 
     def _cached_preview_image(
         self,
@@ -4710,8 +4189,6 @@ class FullScreenPreview(QDialog):
         if self._focused_slot == slot:
             return
         self._focused_slot = slot
-        self._sync_editor_to_focused_entry()
-        self._sync_mask_overlay()
         self._update_focus_styles()
         if getattr(self, "_studio_layout_active", False):
             # The Studio ring is painted on the photo pixmap, so moving focus
@@ -5003,7 +4480,7 @@ class FullScreenPreview(QDialog):
             metadata.focal_length, metadata.camera,
         ) if part)
         self._mockup_capture.setText(capture)
-        self._mockup_edited.setText("●  Edited" if self._editor_edits_active() else "")
+        self._mockup_edited.setText("")
         rating = max(0, min(5, entry.rating))
         self._set_mockup_rating(rating)
         self._mockup_keep.setChecked(entry.winner)
@@ -5015,14 +4492,7 @@ class FullScreenPreview(QDialog):
         self._mockup_zoom.setText(
             f"Zoom {int(round(self._zoom_scale * 100))}%" if self._manual_zoom else "Fit"
         )
-        defaults = asdict(EditRecipe())
-        adjusted = sum(
-            1 for key, value in asdict(self._editor_recipe).items()
-            if value != defaults[key]
-        )
-        self._mockup_edits_count.setText(
-            f"{adjusted} adjustment{'s' if adjusted != 1 else ''}" if adjusted else ""
-        )
+        self._mockup_edits_count.setText("")
         self._mockup_render_state.setText("●  Preview rendered" if not image.isNull() else "Loading preview…")
 
     def set_winner_ladder_mode(self, enabled: bool) -> None:
