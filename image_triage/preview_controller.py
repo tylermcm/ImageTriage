@@ -1,6 +1,8 @@
 """The full-screen preview and the winner ladder: building and opening the preview, navigation and filmstrip, requests coming back from it, preloading, compare and winner-ladder state. Extracted from MainWindow (docs/mainwindow_decomposition_plan.md, DC-4.4)."""
 from __future__ import annotations
 
+import logging
+import tempfile
 import time
 from bisect import bisect_left
 
@@ -9,15 +11,18 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication
 from pathlib import Path
 
+from . import photocraft_bridge
 from .brackets import BracketDetector
 from .models import ImageRecord, SessionAnnotation
 from .perf import perf_logger
 from .preview import FullScreenPreview, PreviewEntry
 from .record_ops_controller import UndoAction
 from .scanner import normalized_path_key
-from .shell_actions import open_in_photoshop
+from .shell_actions import detect_photocraft_executable, open_in_photoshop
 from .ui import load_shortcut_overrides
 from .ui import preview_studio
+
+_log = logging.getLogger(__name__)
 
 from typing import TYPE_CHECKING
 
@@ -33,6 +38,8 @@ class PreviewController(QObject):
         self._window = window
         self._bracket_detector = BracketDetector()
         self._preview_preload_index: int | None = None
+        self._photocraft_executable = detect_photocraft_executable()
+        self._photocraft: photocraft_bridge.PhotoCraftProcess | None = None
 
     def preview_if_built(self) -> FullScreenPreview | None:
         """The popout viewer if it exists yet; never builds it."""
@@ -75,6 +82,7 @@ class PreviewController(QObject):
         preview.compare_count_changed.connect(self.handle_preview_compare_count_changed)
         preview.command_palette_requested.connect(lambda: self._window._command_palette.open(context="preview"))
         preview.photoshop_requested.connect(self.open_preview_image_in_photoshop)
+        preview.photocraft_edit_requested.connect(self.handle_photocraft_edit_requested)
         preview.winner_requested.connect(self.handle_preview_winner_requested)
         preview.reject_requested.connect(self.handle_preview_reject_requested)
         preview.keep_requested.connect(self.handle_preview_keep_requested)
@@ -87,6 +95,7 @@ class PreviewController(QObject):
         preview.closed.connect(self.handle_preview_closed)
 
         preview.set_photoshop_available(bool(self._window._photoshop_executable))
+        preview.set_photocraft_available(bool(self._photocraft_executable))
         preview.set_auto_advance_enabled(self._window._auto_advance_enabled)
         preview.set_preload_batch_size(self._window._preview_preload_batch_size)
         preview.set_auto_bracket_mode(self._window._auto_bracket_enabled)
@@ -277,6 +286,7 @@ class PreviewController(QObject):
     def handle_preview_closed(self) -> None:
         # Editor closed — resume background GPU indexing where it left off.
         self._window._records_view.resume_background_indexing()
+        self.shutdown_photocraft()
         if self._window._winner_ladder_state is not None:
             self.finish_winner_ladder(reopen_preview=False, show_message=False)
         if self._window._quick_view_mode:
@@ -539,6 +549,78 @@ class PreviewController(QObject):
             return
         open_in_photoshop(path)
 
+    def handle_photocraft_edit_requested(self, path: str) -> None:
+        """"Edit in PhotoCraft" toggled on: launch (or reuse) PhotoCraft and
+        embed its window into the popout's single-image pane."""
+        preview = self._window._preview
+        if preview is None or not path:
+            return
+        try:
+            self._open_in_photocraft(preview, path)
+        except photocraft_bridge.PhotoCraftError as error:
+            _log.warning("Edit in PhotoCraft failed for %s: %s", path, error)
+            with QSignalBlocker(preview.photocraft_button):
+                preview.photocraft_button.setChecked(False)
+
+    def _photocraft_source_path(self, path: str) -> str:
+        """The path to hand PhotoCraft: ``path`` itself if it can open the format
+        directly, otherwise a decoded TIFF in a scratch dir (never the original
+        RAW/unsupported file, so PhotoCraft's write root never covers it)."""
+        if not photocraft_bridge.path_needs_conversion(path):
+            return path
+        cache_dir = Path(tempfile.gettempdir()) / "image_triage_photocraft"
+        return photocraft_bridge.materialize_for_photocraft(path, cache_dir)
+
+    def _open_in_photocraft(self, preview: FullScreenPreview, path: str) -> None:
+        open_path = self._photocraft_source_path(path)
+        proc = self._photocraft
+        if proc is not None and proc.is_running():
+            relative = proc.path_within_root(open_path)
+            if relative is None:
+                # A new folder, or a converted RAW outside the live process's
+                # scratch root: start a fresh process rooted at this file instead
+                # of trying to widen an already-running one's automation root.
+                proc.shutdown()
+                proc = None
+        if proc is None:
+            directory = str(Path(open_path).parent)
+            proc = photocraft_bridge.launch_photocraft(open_path, read_root=directory, write_root=directory)
+            proc.control.ui_set(theme="pro")
+            self._photocraft = proc
+        else:
+            proc.control.app_open(proc.path_within_root(open_path))
+        width, height = preview.photocraft_host_size()
+        photocraft_bridge.embed_in_widget(proc.hwnd, preview.photocraft_host_hwnd())
+        photocraft_bridge.resize_embedded(proc.hwnd, width, height)
+        preview.show_photocraft_host()
+
+    def sync_photocraft_edit_target(self) -> None:
+        """Keep an active PhotoCraft edit session pointed at whatever photo the
+        popout just navigated to, instead of reopening a static preview."""
+        preview = self._window._preview
+        if preview is None or not preview.photocraft_edit_active():
+            return
+        proc = self._photocraft
+        if proc is None or not proc.is_running():
+            return
+        path = preview.focused_photoshop_path()
+        if not path:
+            return
+        try:
+            open_path = self._photocraft_source_path(path)
+            relative = proc.path_within_root(open_path)
+            if relative is None:
+                self._open_in_photocraft(preview, path)
+                return
+            proc.control.app_open(relative)
+        except photocraft_bridge.PhotoCraftError as error:
+            _log.warning("PhotoCraft couldn't follow navigation to %s: %s", path, error)
+
+    def shutdown_photocraft(self) -> None:
+        if self._photocraft is not None:
+            self._photocraft.shutdown()
+            self._photocraft = None
+
     def open_preview(self, index: int, *, lightweight_grid_sync: bool = False) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
@@ -633,6 +715,7 @@ class PreviewController(QObject):
             self._window.grid.set_logical_selection([next_index], current_index=next_index)
             self._window._preview_navigation_dirty = True
         self.open_preview(next_index, lightweight_grid_sync=True)
+        self.sync_photocraft_edit_target()
         if logger.enabled:
             record = self._window._record_at(next_index)
             logger.duration(

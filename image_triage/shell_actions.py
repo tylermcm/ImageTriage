@@ -89,6 +89,23 @@ def detect_photoshop_executable() -> str | None:
     return None
 
 
+@lru_cache(maxsize=1)
+def detect_photocraft_executable() -> str | None:
+    override = os.environ.get("IMAGE_TRIAGE_PHOTOCRAFT_EXE")
+    if override and os.path.exists(override):
+        return override
+
+    direct = shutil.which("photocraft") or shutil.which("photocraft.exe")
+    if direct:
+        return direct
+
+    for root in filter(None, [os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"), os.environ.get("LOCALAPPDATA")]):
+        matches = sorted(glob(str(Path(root) / "PhotoCraft*" / "photocraft.exe")), reverse=True)
+        if matches:
+            return matches[0]
+    return None
+
+
 def _photoshop_from_registry() -> str | None:
     if winreg is None:
         return None

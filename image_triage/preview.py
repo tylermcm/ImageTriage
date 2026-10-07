@@ -651,6 +651,8 @@ class FullScreenPreview(QDialog):
     compare_count_changed = Signal(int)
     command_palette_requested = Signal()
     photoshop_requested = Signal(str)
+    photocraft_edit_requested = Signal(str)
+    photocraft_edit_exit_requested = Signal()
     winner_requested = Signal(str)
     reject_requested = Signal(str)
     keep_requested = Signal(str)
@@ -682,6 +684,8 @@ class FullScreenPreview(QDialog):
         self._edited_variant_index = 0
         self._focused_slot = 0
         self._photoshop_available = False
+        self._photocraft_available = False
+        self._photocraft_edit_active = False
         self._winner_shortcut = QKeySequence("W")
         self._reject_shortcut = QKeySequence("X")
         # Mirrors grid.py's review-key registry (WI-3.2); brackets and the
@@ -852,6 +856,10 @@ class FullScreenPreview(QDialog):
         self.photoshop_button = self._build_header_tool_button("Photoshop")
         self.photoshop_button.clicked.connect(self._handle_photoshop_button_clicked)
 
+        self.photocraft_button = self._build_header_tool_button("PhotoCraft")
+        self.photocraft_button.setCheckable(True)
+        self.photocraft_button.toggled.connect(self._handle_photocraft_button_toggled)
+
         self.before_after_button = self._build_header_tool_button("Before/After")
         self.before_after_button.setCheckable(True)
         self.before_after_button.toggled.connect(self._handle_before_after_button_toggled)
@@ -955,6 +963,7 @@ class FullScreenPreview(QDialog):
         edit_group_layout.addWidget(self.edit_group_label)
         edit_group_layout.addWidget(self.next_edit_button)
         edit_group_layout.addWidget(self.photoshop_button)
+        edit_group_layout.addWidget(self.photocraft_button)
 
         self.layout_group = QWidget()
         self.layout_group.setObjectName("workspaceControls")
@@ -997,6 +1006,14 @@ class FullScreenPreview(QDialog):
         self.panes_layout.setHorizontalSpacing(12)
         self.panes_layout.setVerticalSpacing(12)
         self._content_layout.addWidget(self.panes_widget, 1)
+
+        # Hosts PhotoCraft's embedded native window (see _handle_photocraft_button_toggled);
+        # covers panes_widget and is raised above it only while editing, single-image mode only.
+        self._photocraft_host = QWidget(self.panes_widget)
+        self._photocraft_host.setObjectName("photocraftHost")
+        self._photocraft_host.setStyleSheet("background-color: #000;")
+        self._photocraft_host.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        self._photocraft_host.hide()
 
         self.analysis_panel = QFrame()
         self.analysis_panel.setObjectName("previewAnalysisPanel")
@@ -1334,6 +1351,9 @@ class FullScreenPreview(QDialog):
                        self.command_palette_button):
             button.setEnabled(not enabled)
         self.photoshop_button.setEnabled(not enabled and self._photoshop_available)
+        if enabled and self.photocraft_button.isChecked():
+            self.photocraft_button.setChecked(False)
+        self._sync_photocraft_button_enabled()
         for widget in (self._mockup_rating, self._mockup_keep, self._mockup_reject):
             widget.setVisible(not enabled)
         for pane in self._panes:
@@ -1431,6 +1451,7 @@ class FullScreenPreview(QDialog):
             self.auto_bracket_button,
             self.before_after_button,
             self.photoshop_button,
+            self.photocraft_button,
             self.next_edit_button,
         ):
             button.setObjectName("studioToolButton")
@@ -1440,6 +1461,7 @@ class FullScreenPreview(QDialog):
             (self.auto_bracket_button, "▣", "Bracket"),
             (self.before_after_button, "◧", "Before"),
             (self.photoshop_button, "▢", "Photoshop"),
+            (self.photocraft_button, "◆", "PhotoCraft"),
             (self.command_palette_button, "⌨", "Command"),
         ):
             button.setText(label)
@@ -1864,7 +1886,7 @@ class FullScreenPreview(QDialog):
         self._mockup_zoom_slider.setFixedWidth(px(popout_ratios.ZOOM_SLIDER_W, width, minimum=52))
         action_icon = px(popout_ratios.ACTION_ICON_H, height, minimum=11)
         for button in (self.compare_toggle_button, self.auto_bracket_button, self.before_after_button,
-                       self.photoshop_button, self.command_palette_button, self.next_edit_button):
+                       self.photoshop_button, self.photocraft_button, self.command_palette_button, self.next_edit_button):
             button.setIconSize(QSize(action_icon, action_icon))
             button.setFixedSize(px(popout_ratios.ACTION_BUTTON_W, width, minimum=26),
                                 px(popout_ratios.ACTION_BUTTON_H, height, minimum=26))
@@ -2190,6 +2212,11 @@ class FullScreenPreview(QDialog):
             photoshop_action = edit_menu.addAction("Photoshop")
             photoshop_action.setEnabled(self.photoshop_button.isEnabled())
             photoshop_action.triggered.connect(self._handle_photoshop_button_clicked)
+            photocraft_action = edit_menu.addAction("PhotoCraft")
+            photocraft_action.setCheckable(True)
+            photocraft_action.setChecked(self.photocraft_button.isChecked())
+            photocraft_action.setEnabled(self.photocraft_button.isEnabled())
+            photocraft_action.triggered.connect(self.photocraft_button.setChecked)
 
         if "layout" in self._preview_header_overflow_hidden_groups:
             layout_menu = self.preview_header_overflow_menu.addMenu("Layout")
@@ -2382,6 +2409,9 @@ class FullScreenPreview(QDialog):
         if self._compare_mode == enabled:
             return
         self._compare_mode = enabled
+        if enabled and self.photocraft_button.isChecked():
+            self.photocraft_button.setChecked(False)
+        self._sync_photocraft_button_enabled()
         if not enabled:
             self._winner_ladder_mode = False
         if enabled and self._before_after_enabled:
@@ -2436,6 +2466,53 @@ class FullScreenPreview(QDialog):
             self.photoshop_button.setText("Photoshop")
         else:
             self.photoshop_button.setText("Photoshop Not Found")
+
+    def set_photocraft_available(self, available: bool) -> None:
+        self._photocraft_available = available
+        self._sync_photocraft_button_enabled()
+        self.photocraft_button.setToolTip("Edit in PhotoCraft" if available else "PhotoCraft not found")
+
+    def _sync_photocraft_button_enabled(self) -> None:
+        self.photocraft_button.setEnabled(
+            self._photocraft_available and not self._collection_browse_mode and not self._compare_mode
+        )
+
+    def photocraft_edit_active(self) -> bool:
+        return self._photocraft_edit_active
+
+    def photocraft_host_hwnd(self) -> int:
+        return int(self._photocraft_host.winId())
+
+    def photocraft_host_size(self) -> tuple[int, int]:
+        rect = self._photocraft_host.rect()
+        return rect.width(), rect.height()
+
+    def show_photocraft_host(self) -> None:
+        self._update_photocraft_host_geometry()
+        self._photocraft_host.show()
+        self._photocraft_host.raise_()
+
+    def _update_photocraft_host_geometry(self) -> None:
+        if self._photocraft_edit_active:
+            self._photocraft_host.setGeometry(self.panes_widget.rect())
+
+    def _handle_photocraft_button_toggled(self, checked: bool) -> None:
+        if self._collection_browse_mode or self._compare_mode:
+            with QSignalBlocker(self.photocraft_button):
+                self.photocraft_button.setChecked(False)
+            return
+        if checked:
+            path = self._focused_photoshop_path()
+            if not path or not self._photocraft_available:
+                with QSignalBlocker(self.photocraft_button):
+                    self.photocraft_button.setChecked(False)
+                return
+            self._photocraft_edit_active = True
+            self.photocraft_edit_requested.emit(path)
+        else:
+            self._photocraft_edit_active = False
+            self._photocraft_host.hide()
+            self.photocraft_edit_exit_requested.emit()
 
     def show_entries(self, entries: list[PreviewEntry]) -> None:
         logger = perf_logger()
@@ -2627,6 +2704,10 @@ class FullScreenPreview(QDialog):
                 panel.apply_crop()
                 event.accept()
                 return
+        if key == Qt.Key.Key_Escape and self._photocraft_edit_active:
+            self.photocraft_button.setChecked(False)
+            event.accept()
+            return
         if key in (Qt.Key.Key_Escape, Qt.Key.Key_Space):
             self.close()
             event.accept()
@@ -2775,6 +2856,7 @@ class FullScreenPreview(QDialog):
             self._apply_mockup_metrics()
         self._apply_header_overflow()
         self._render_all()
+        self._update_photocraft_host_geometry()
 
     def _handle_compare_count_changed(self) -> None:
         selected = self.compare_count_combo.currentData()
