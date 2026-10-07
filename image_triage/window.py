@@ -2582,6 +2582,7 @@ class MainWindow(QMainWindow):
         self._aiculler.flush_aiculler_internal_label_cache()
         self._aiculler.flush_aiculler_global_label_queue()
         self._aiculler.shutdown_aiculler_telemetry_logger()
+        self._preview_ctl.shutdown_photocraft()
         self._settings_ctl.save_window_state()
         perf_logger().log("app.close")
         perf_logger().flush()
