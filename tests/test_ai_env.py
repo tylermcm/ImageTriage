@@ -42,7 +42,7 @@ def _status(
         profiles=profiles,
         installed_variants=installed,
         preferred_variant=preferred,
-        dino_installed_variants=torch_variants,
+        torch_installed_variants=torch_variants,
     )
 
 

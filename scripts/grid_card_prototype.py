@@ -272,7 +272,7 @@ class CardCanvas(QWidget):
             tags = (
                 ("Best Frame", "best_frame"),
                 ("R2", "round"),
-                ("DINO Rescued", "best_frame"),
+                ("Duplicate Rescued", "best_frame"),
                 ("Edited", "edited"),
             )
 

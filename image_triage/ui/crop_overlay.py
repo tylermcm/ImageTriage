@@ -22,7 +22,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-from ..editor_geometry import fit_rect_in_quad, inset_quad, limit_rect_to_quad
+from ..editor_geometry import fit_rect_in_quad, inset_quad, limit_rect_to_quad, slide_rect_in_quad
 from .canvas_overlay import CanvasOverlay
 
 # Corner handles, then edge handles. Order matters: corners are hit-tested
@@ -38,8 +38,7 @@ _MAX_STRAIGHTEN = 45.0  # past this, the quarter-turn buttons are the tool
 
 
 class CropOverlay(CanvasOverlay):
-    """Drag-to-crop with corner/edge handles, a rule-of-thirds grid, and
-    drag-outside-the-box to rotate freely."""
+    """Drag-to-crop with corner/edge handles and a rule-of-thirds grid."""
 
     # Live during a drag: {"crop": (l, t, r, b)} in stored (source) pixels.
     crop_changed = Signal(dict)
@@ -232,8 +231,9 @@ class CropOverlay(CanvasOverlay):
                 return name
         if rect.contains(pos):
             return "move"
-        # Outside the box: free rotation, the way Photoshop turns a crop.
-        return "rotate"
+        # Outside the box does nothing: rotation lives on the Straighten
+        # slider, and a stray click must never spin the photo.
+        return None
 
     _CURSORS = {
         "tl": Qt.CursorShape.SizeFDiagCursor,
@@ -345,7 +345,10 @@ class CropOverlay(CanvasOverlay):
         # One containment rule for every mode: the box stays on the photo, not
         # merely inside the frame. The frame's corners are blank once the photo
         # is straightened, and dragging out into them cropped in black.
-        self._rect = limit_rect_to_quad(quad, self._drag_start_rect, desired)
+        if self._drag_mode == "move":
+            self._rect = slide_rect_in_quad(quad, self._drag_start_rect, dx, dy)
+        else:
+            self._rect = limit_rect_to_quad(quad, self._drag_start_rect, desired)
         self.update()
         stored = self._stored_crop()
         if stored is not None:

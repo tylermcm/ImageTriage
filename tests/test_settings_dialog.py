@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtGui import QKeySequence
+from PySide6.QtWidgets import QApplication, QFrame, QLabel
 
 from image_triage.models import DeleteMode, WinnerMode
-from image_triage.dino_prefilter import DINOPrefilterSettings
 from image_triage.phash_prefilter import PHashPrefilterSettings
 from image_triage.settings_dialog import WorkflowSettingsDialog, _settings_tooltip
 from image_triage.ui.display_metrics import COMPACT_DISPLAY
@@ -35,40 +35,6 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         result = dialog.result_settings()
 
         self.assertEqual(0, result.ai_embed_batch_size)
-        dialog.deleteLater()
-
-    def test_dino_workers_default_to_recommended_and_respect_hardware_limit(self) -> None:
-        dialog = WorkflowSettingsDialog(
-            sessions=["Default"],
-            current_session="Default",
-            winner_mode=WinnerMode.COPY,
-            delete_mode=DeleteMode.SAFE_TRASH,
-            ai_dino_worker_count=8,
-            ai_dino_worker_capacity=4,
-        )
-
-        result = dialog.result_settings()
-
-        self.assertEqual(4, dialog.ai_dino_worker_spin.maximum())
-        self.assertEqual(4, result.ai_dino_worker_count)
-        self.assertIn("Recommended: 4 workers", dialog.ai_dino_worker_summary_label.text())
-        dialog.deleteLater()
-
-    def test_dino_workers_warn_when_changed_from_recommendation(self) -> None:
-        dialog = WorkflowSettingsDialog(
-            sessions=["Default"],
-            current_session="Default",
-            winner_mode=WinnerMode.COPY,
-            delete_mode=DeleteMode.SAFE_TRASH,
-            ai_dino_worker_count=4,
-            ai_dino_worker_capacity=8,
-        )
-        dialog.ai_dino_worker_spin.setValue(8)
-
-        result = dialog.result_settings()
-
-        self.assertEqual(8, result.ai_dino_worker_count)
-        self.assertIn("Warning: 4 workers is recommended", dialog.ai_dino_worker_summary_label.text())
         dialog.deleteLater()
 
     def test_result_settings_defaults_startup_update_checks_on(self) -> None:
@@ -155,37 +121,32 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertEqual(64, result.ai_embed_batch_size)
         dialog.deleteLater()
 
-    def test_clip_model_precision_is_automatic(self) -> None:
+    def test_dispute_and_base_score_weight_are_visible_and_round_trip(self) -> None:
         dialog = WorkflowSettingsDialog(
             sessions=["Default"],
             current_session="Default",
             winner_mode=WinnerMode.COPY,
             delete_mode=DeleteMode.SAFE_TRASH,
-            ai_clip_model_variant="fp16",
+            ai_dispute_weight=3,
+            ai_base_score_weight_percent=65,
         )
 
+        labels = {label.text() for label in dialog.findChildren(QLabel)}
+        self.assertIn("Dispute weight", labels)
+        self.assertIn("Base score weight", labels)
+
+        dialog.ai_dispute_weight_spin.setValue(5)
+        dialog.ai_base_score_weight_spin.setValue(20)
         result = dialog.result_settings()
 
-        self.assertEqual("fp32", result.ai_clip_model_variant)
-        self.assertFalse(hasattr(dialog, "ai_clip_model_combo"))
+        self.assertEqual(5, result.ai_dispute_weight)
+        self.assertEqual(20, result.ai_base_score_weight_percent)
         dialog.deleteLater()
 
-    def test_result_settings_returns_label_duplicate_threshold(self) -> None:
-        dialog = WorkflowSettingsDialog(
-            sessions=["Default"],
-            current_session="Default",
-            winner_mode=WinnerMode.COPY,
-            delete_mode=DeleteMode.SAFE_TRASH,
-            ai_label_near_duplicate_threshold=0.965,
-        )
-        dialog.ai_label_near_duplicate_slider.setValue(940)
-
-        result = dialog.result_settings()
-
-        self.assertEqual(0.940, result.ai_label_near_duplicate_threshold)
-        dialog.deleteLater()
-
-    def test_dino_prefilter_is_not_exposed_in_current_settings(self) -> None:
+    def test_shortcuts_page_flags_conflicts_across_every_registry_row(self) -> None:
+        """WI-3.2's uniqueness test: the Shortcuts page's own conflict
+        checker (`_collect_shortcut_state`) now covers every unified
+        binding, not just a hand-picked subset."""
         dialog = WorkflowSettingsDialog(
             sessions=["Default"],
             current_session="Default",
@@ -193,13 +154,21 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
             delete_mode=DeleteMode.SAFE_TRASH,
         )
 
-        pages = [dialog.section_list.item(index).text() for index in range(dialog.section_list.count())]
-        result = dialog.result_settings()
+        # No two defaults collide out of the box.
+        _effective, conflicts = dialog._collect_shortcut_state()
+        self.assertEqual({}, conflicts)
 
-        self.assertNotIn("DINO Prefilter", pages)
-        self.assertIn("AI Culling", pages)
-        self.assertIn("Duplicates", pages)
-        self.assertFalse(result.dino_prefilter_settings.enabled)
+        # Rebinding one action onto another's shortcut is caught.
+        editors = dialog._shortcut_editors
+        target_attr, other_attr = list(editors)[0], list(editors)[1]
+        shared = QKeySequence("Ctrl+Alt+F9")
+        editors[target_attr].setKeySequence(shared)
+        editors[other_attr].setKeySequence(shared)
+
+        _effective, conflicts = dialog._collect_shortcut_state()
+
+        self.assertIn("Ctrl+Alt+F9", conflicts)
+        self.assertEqual({target_attr, other_attr}, set(conflicts["Ctrl+Alt+F9"]))
         dialog.deleteLater()
 
     def test_interface_size_choice_round_trips_and_sizes_dialog_chrome(self) -> None:
@@ -213,8 +182,9 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         )
 
         self.assertEqual("spacious", dialog.result_settings().interface_size)
-        self.assertEqual(COMPACT_DISPLAY.settings_nav_width, dialog.section_list.width())
-        self.assertEqual(COMPACT_DISPLAY.settings_min_width, dialog.minimumWidth())
+        self.assertEqual(COMPACT_DISPLAY.settings_nav_width, dialog.findChild(QFrame, "settingsSidebar").width())
+        screen_cap = int(dialog.screen().availableGeometry().width() * 0.94)
+        self.assertEqual(min(COMPACT_DISPLAY.settings_min_width, screen_cap), dialog.minimumWidth())
         dialog.deleteLater()
 
     def test_settings_refresh_uses_descriptions_and_labeled_help(self) -> None:
@@ -227,36 +197,10 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
 
         labels = {label.text() for label in dialog.findChildren(QLabel)}
 
-        self.assertGreaterEqual(dialog.minimumWidth(), 760)
+        self.assertGreaterEqual(dialog.minimumWidth(), 700)
         self.assertIn("Review behavior", labels)
         self.assertIn("Navigation and preview", labels)
-        self.assertEqual("Settings Guide", dialog.help_button.text())
-        dialog.deleteLater()
-
-    def test_dino_prefilter_result_settings_round_trip_controls(self) -> None:
-        dialog = WorkflowSettingsDialog(
-            sessions=["Default"],
-            current_session="Default",
-            winner_mode=WinnerMode.COPY,
-            delete_mode=DeleteMode.SAFE_TRASH,
-            dino_prefilter_settings=DINOPrefilterSettings(
-                enabled=True,
-                aggressiveness_percent=92,
-                technical_trash_enabled=False,
-                duplicate_trash_enabled=True,
-                low_information_enabled=True,
-                diagnostics_enabled=True,
-            ),
-        )
-
-        result = dialog.result_settings().dino_prefilter_settings
-
-        self.assertFalse(result.enabled)
-        self.assertEqual(92, result.aggressiveness_percent)
-        self.assertFalse(result.technical_trash_enabled)
-        self.assertTrue(result.low_information_enabled)
-        labels = {label.text() for label in dialog.findChildren(QLabel)}
-        self.assertNotIn("Rescue rules", labels)
+        self.assertEqual("Open settings guide", dialog.help_button.text())
         dialog.deleteLater()
 
     def test_phash_prefilter_result_settings_round_trip_controls(self) -> None:
@@ -281,6 +225,34 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertFalse(result.cache_enabled)
         self.assertTrue(result.diagnostics_enabled)
         dialog.deleteLater()
+
+    def test_every_settings_result_field_has_a_consumer_in_window_py(self) -> None:
+        """WI-3.3's validation criterion: every field of `WorkflowSettingsResult`
+        is read back somewhere in the settings-accept handler (settings_controller.py). A
+        source scan, not an import, so this doesn't need a live MainWindow
+        and catches a field that's set but never read (as `ai_clip_model_variant`
+        was before WI-3.3 removed it)."""
+        import ast
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[1]
+        settings_src = (repo_root / "image_triage" / "settings_dialog.py").read_text(encoding="utf-8")
+        tree = ast.parse(settings_src)
+        fields = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "WorkflowSettingsResult":
+                fields = [n.target.id for n in node.body if isinstance(n, ast.AnnAssign)]
+                break
+        self.assertIsNotNone(fields, "WorkflowSettingsResult class not found")
+        self.assertGreater(len(fields), 0)
+
+        # The settings-accept handler lives in the settings controller (it moved out of window.py).
+        consumer_src = "\n".join(
+            (repo_root / "image_triage" / name).read_text(encoding="utf-8") for name in ("window.py", "settings_controller.py")
+        )
+        missing = [name for name in fields if f"result.{name}" not in consumer_src]
+
+        self.assertEqual([], missing, f"no `result.<field>` consumer found in window.py or settings_controller.py for: {missing}")
 
 
 if __name__ == "__main__":

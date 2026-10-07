@@ -25,7 +25,6 @@ Options:
   -h, --help          Show this help text.
 
 Environment overrides:
-  IMAGE_TRIAGE_AI_SOURCE           Override the AICullingPipeline source path.
   IMAGE_TRIAGE_AI_SITE_PACKAGES    Override the AI site-packages source path.
   IMAGE_TRIAGE_AI_STDLIB           Override the AI stdlib source path.
   IMAGE_TRIAGE_AI_DLLS             Override the AI binary modules source path.
@@ -86,7 +85,6 @@ ensure_build_venv() {
 }
 
 build_appimage() {
-  export IMAGE_TRIAGE_AI_SOURCE="${IMAGE_TRIAGE_AI_SOURCE:-$ROOT_DIR/AICullingPipeline}"
   "$VENV_DIR/bin/python" "$ROOT_DIR/setup_linux.py" bdist_appimage
 }
 
@@ -140,9 +138,9 @@ EOF
   if (( NO_DESKTOP == 0 )); then
     printf '  Desktop entry: %s\n' "$desktop_path"
   fi
-  printf '\nOn first launch, the app will offer to download the AI model into:\n'
-  printf '  %s\n' "${XDG_CACHE_HOME:-$HOME/.cache}/image_triage_ai_cache/models/DinoV3"
-  printf 'You can skip that step and later use AI > Download AI Model... inside the app.\n'
+  printf '\nOn first launch, the app will offer to download its AI models into:\n'
+  printf '  %s\n' "${XDG_CACHE_HOME:-$HOME/.cache}/image_triage_ai_cache/models"
+  printf 'You can skip that step and later use AI > Set Up AI... inside the app.\n'
 }
 
 if [[ -z "$APPIMAGE_PATH" ]]; then

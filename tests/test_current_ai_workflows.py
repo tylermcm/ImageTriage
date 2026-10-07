@@ -44,7 +44,6 @@ class CurrentAIWorkflowTests(unittest.TestCase):
         self.assertEqual(preferences.keep_top_percent, 20)
         self.assertEqual(preferences.review_band_percent, 15)
         self.assertFalse(hasattr(preferences, "base_score_weight_percent"))
-        self.assertFalse(hasattr(preferences, "dino_prefilter_settings"))
         dialog.close()
 
     def test_workflow_center_returns_current_four_step_pipeline(self) -> None:

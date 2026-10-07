@@ -17,17 +17,9 @@ from __future__ import annotations
 import ctypes
 import os
 import shutil
-import sys
 from pathlib import Path
 
-# The session helpers live in the standalone CLI editor package. Ensure it is
-# importable regardless of import order (mirrors photo_editor_panel.py).
-_CLI_EDITOR_ROOT = Path(__file__).resolve().parents[1] / "cli_editor"
-if _CLI_EDITOR_ROOT.exists() and str(_CLI_EDITOR_ROOT) not in sys.path:
-    sys.path.insert(0, str(_CLI_EDITOR_ROOT))
-
-from photo_terminal.session import asset_dir_for_session, default_session_path  # noqa: E402
-
+from .photo_terminal.session import asset_dir_for_session, default_session_path, load_session
 from .scanner import EDIT_STORAGE_ROOT_NAME
 
 FILE_ATTRIBUTE_HIDDEN = 0x2
@@ -81,6 +73,25 @@ def editor_session_path(image_path: str | Path) -> Path:
     image_path = Path(image_path)
     name = default_session_path(image_path).name
     return edit_root_for(image_path.parent) / name
+
+
+def session_has_edits(image_path: str | Path) -> bool:
+    """Whether ``image_path`` has a built-in editor session with real edits.
+
+    A session that was merely opened (created by ``new_session``) but never
+    touched has empty ``operations`` and ``masks`` lists and does not count.
+    Any parse failure -- a corrupt or mid-write sidecar -- must never crash a
+    scan, so this is a broad try/except returning False rather than raising.
+    """
+
+    session_path = resolve_session_for_read(image_path)
+    if not session_path.exists():
+        return False
+    try:
+        session = load_session(session_path)
+    except Exception:
+        return False
+    return bool(session.get("operations")) or bool(session.get("masks"))
 
 
 def resolve_session_for_read(image_path: str | Path) -> Path:

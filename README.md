@@ -102,14 +102,14 @@ Useful options:
 
 GitHub Actions also builds an AppImage artifact on pull requests, pushes to `main`, and manual runs through [build-linux-appimage.yml](/C:/Users/tylle/OneDrive/Documents/Playground/.github/workflows/build-linux-appimage.yml). Pushing a matching `v*` tag builds the same AppImage and uploads it to that GitHub Release.
 
-The Linux build and the Windows MSI now share the same AI runtime staging logic through [freeze_support.py](/Users/tylle/OneDrive/Documents/Playground/freeze_support.py), so both package types bundle the same integrated `AICullingPipeline` tree, helper launchers, and Python-side AI dependencies.
+The Linux build and the Windows MSI now share the same AI runtime staging logic through [freeze_support.py](/Users/tylle/OneDrive/Documents/Playground/freeze_support.py), so both package types bundle the same helper launchers and Python-side AI dependencies. The legacy `AICullingPipeline` engine is no longer part of either package.
 
 The active CLI-Culler source lives in the in-repo [aiculler package](/Users/tylle/OneDrive/Documents/Playground/aiculler) and is the default AI culler implementation used by the app. CLIP/TOPIQ weights remain outside git; set `IMAGE_TRIAGE_AICULLER_MODEL_ROOT` to point at a local `models` directory when the defaults do not apply.
 
-On first launch, the app offers to download the AI model into:
+On first launch, the app offers to download its AI models into:
 
 ```text
-~/.cache/image_triage_ai_cache/models/DinoV3
+~/.cache/image_triage_ai_cache/models
 ```
 
 If the user skips that step, the older bundled AI pipeline stays unavailable until the model is installed.
@@ -118,3 +118,7 @@ If the user skips that step, the older bundled AI pipeline stays unavailable unt
 
 - Version 1 focuses on scan speed, responsive scrolling, and large visual previews.
 - Workflow refinement, metadata polish, and side-by-side compare improvements are natural next steps.
+
+## License
+
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE) — noncommercial use only. This is a temporary license while the project is under active development; it will change once the project reaches a more finished state.

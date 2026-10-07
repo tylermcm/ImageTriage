@@ -9,9 +9,10 @@ from PySide6.QtWidgets import QApplication
 from image_triage.annotation_queue import (
     AnnotationPersistenceQueue,
     AnnotationQueueEntry,
+    WinnerSyncRequest,
     _AnnotationPersistTask,
 )
-from image_triage.models import ImageRecord, SessionAnnotation
+from image_triage.models import ImageRecord, SessionAnnotation, WinnerMode
 
 
 def _ensure_app() -> QApplication:
@@ -105,6 +106,77 @@ class AnnotationPersistTaskTests(unittest.TestCase):
         self.assertEqual(failed_paths, ["C:/shots/b.jpg"])
         self.assertIn(("ok", "C:/shots/a.jpg"), events)
         self.assertIn(("done", 2), events)
+
+    def test_winner_sync_runs_after_persistence_and_still_emits_ok(self) -> None:
+        class FakeStore:
+            def save_annotations(self, session_id, pairs):
+                return None
+
+        winner_sync = WinnerSyncRequest(
+            winner_enabled=True,
+            folder="C:/shots",
+            winner_mode=WinnerMode.COPY,
+            source_paths=("C:/shots/a.jpg",),
+        )
+        entries = (
+            AnnotationQueueEntry(
+                "C:/shots/a.jpg",
+                _record("C:/shots/a.jpg"),
+                "session-1",
+                SessionAnnotation(winner=True),
+                winner_sync=winner_sync,
+            ),
+        )
+        queue = SimpleQueue()
+        task = _AnnotationPersistTask(entries, queue)
+
+        with patch("image_triage.annotation_queue.DecisionStore", FakeStore), patch(
+            "image_triage.annotation_queue.sync_sidecar_annotation", return_value=None
+        ), patch(
+            "image_triage.annotation_queue.sync_winner_copy_for_paths", return_value=()
+        ) as fake_sync:
+            task.run()
+
+        fake_sync.assert_called_once_with(
+            ("C:/shots/a.jpg",), True, "C:/shots", WinnerMode.COPY
+        )
+        events = _drain_queue(queue)
+        self.assertIn(("ok", "C:/shots/a.jpg"), events)
+
+    def test_winner_sync_failure_skips_ok_so_rollback_data_survives(self) -> None:
+        class FakeStore:
+            def save_annotations(self, session_id, pairs):
+                return None
+
+        winner_sync = WinnerSyncRequest(
+            winner_enabled=False,
+            folder="C:/shots",
+            winner_mode=WinnerMode.COPY,
+            source_paths=("C:/shots/a.jpg",),
+        )
+        entries = (
+            AnnotationQueueEntry(
+                "C:/shots/a.jpg",
+                _record("C:/shots/a.jpg"),
+                "session-1",
+                SessionAnnotation(winner=False),
+                winner_sync=winner_sync,
+            ),
+        )
+        queue = SimpleQueue()
+        task = _AnnotationPersistTask(entries, queue)
+
+        with patch("image_triage.annotation_queue.DecisionStore", FakeStore), patch(
+            "image_triage.annotation_queue.sync_sidecar_annotation", return_value=None
+        ), patch(
+            "image_triage.annotation_queue.sync_winner_copy_for_paths",
+            side_effect=OSError("disk full"),
+        ):
+            task.run()
+
+        events = _drain_queue(queue)
+        self.assertIn(("winner_sync_failed", "C:/shots/a.jpg", "disk full"), events)
+        self.assertNotIn(("ok", "C:/shots/a.jpg"), events)
 
 
 class AnnotationPersistenceQueueTests(unittest.TestCase):

@@ -129,12 +129,12 @@ def select_runtime(
 
     if require_torch:
         candidates = tuple(
-            variant for variant in installed if variant in status.dino_installed_variants
+            variant for variant in installed if variant in status.torch_installed_variants
         )
         if not candidates:
             raise AIRuntimeUnavailable(
                 "The installed AI runtime does not include the PyTorch components "
-                "that editor masking and DINO features need.",
+                "that editor masking needs.",
                 category="runtime_incomplete",
                 remediation=(
                     "Open Settings, run Set Up AI again and keep the PyTorch option "

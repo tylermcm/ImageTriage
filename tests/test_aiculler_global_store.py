@@ -4,7 +4,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from image_triage import aiculler_global_store, scan_cache
 from image_triage.aiculler_global_store import GlobalAdapterLabelStore
+
+
+class GlobalAdapterLabelStoreDataRootTests(unittest.TestCase):
+    def test_default_user_data_root_delegates_to_the_one_shared_scan_cache_root(self) -> None:
+        # WI-3.6: this used to hand-roll its own USERPROFILE/APPDATA-based
+        # "ImageTriage" folder, independently of scan_cache.app_data_root's
+        # own (slightly different) hand-rolled version of the same idea.
+        # Now there is exactly one implementation.
+        self.assertEqual(scan_cache.app_data_root(), aiculler_global_store._default_user_data_root())
 
 
 class GlobalAdapterLabelStoreTests(unittest.TestCase):

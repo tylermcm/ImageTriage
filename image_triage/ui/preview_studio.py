@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from ..fonts import ui_font
+from . import popout_layout_ratios as popout_ratios
 
 # --- Palette (the app's approved dark tokens) -------------------------------
 GROUND = "#070707"
@@ -258,7 +259,7 @@ class ArrowButton(QPushButton):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setOpacity(1.0 if self._hover else 0.6)
         cx, cy = self.rect().center().x(), self.rect().center().y()
-        reach = 7.5
+        reach = 7.5 * self.width() / self.SIZE
         chevron = QPainterPath()
         if self._dir == "left":
             chevron.moveTo(cx + reach * 0.6, cy - reach)
@@ -312,12 +313,14 @@ class FilmstripThumb(QWidget):
         pixmap: QPixmap | None = None,
         parent: QWidget | None = None,
         height: int = BASE_HEIGHT,
+        mockup_chrome: bool = False,
     ) -> None:
         super().__init__(parent)
         self._index = index
         self._tag = tag
         self._current = current
         self._pixmap = pixmap
+        self._mockup_chrome = mockup_chrome
         self.set_thumb_height(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -369,18 +372,28 @@ class FilmstripThumb(QWidget):
             painter.fillPath(mountain, QColor(ground))
         painter.setClipping(False)
 
-        if self._tag:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(self._tag))
-            painter.drawEllipse(QPoint(rect.left() + 9, rect.top() + 9), 4, 4)
-
-        painter.setFont(ui_font(8))
-        painter.setPen(QColor("#dfe6ee"))
-        painter.drawText(
-            rect.adjusted(0, 0, -6, -3),
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
-            str(self._index + 1),
-        )
+        if self._mockup_chrome:
+            if self._tag:
+                symbol = "×" if self._tag == REJECT else "♥" if self._tag != INFO else "●"
+                painter.setFont(QFont("Segoe UI Symbol", 13))
+                painter.setPen(QColor(self._tag))
+                painter.drawText(
+                    rect.adjusted(0, 0, -6, -4),
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
+                    symbol,
+                )
+        else:
+            if self._tag:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(self._tag))
+                painter.drawEllipse(QPoint(rect.left() + 9, rect.top() + 9), 4, 4)
+            painter.setFont(ui_font(8))
+            painter.setPen(QColor("#dfe6ee"))
+            painter.drawText(
+                rect.adjusted(0, 0, -6, -3),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
+                str(self._index + 1),
+            )
 
         if self._current:
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -412,6 +425,7 @@ class FilmstripHandle(QWidget):
         self._press_global_y: int | None = None
         self._press_thumb_h = 0
         self._moved = False
+        self._grip_width = self.GRIP_W
         self.setFixedHeight(self.HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.SizeVerCursor)
@@ -454,17 +468,19 @@ class FilmstripHandle(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         cx = self.width() / 2
+        grip = self._grip_width
+        height = self.height()
         if self._hover:
-            pill = QRectF(cx - self.GRIP_W / 2 - 8, 1.5, self.GRIP_W + 16, self.HEIGHT - 3)
+            pill = QRectF(cx - grip / 2 - 8, 1.5, grip + 16, height - 3)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(SURFACE_HOVER))
             painter.drawRoundedRect(pill, 5, 5)
         pen = QPen(QColor(TEXT if self._hover else TEXT_MUTE), 1.2)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
-        x0 = cx - self.GRIP_W / 2
-        x1 = cx + self.GRIP_W / 2
-        for y in (4.0, 7.0, 10.0):
+        x0 = cx - grip / 2
+        x1 = cx + grip / 2
+        for y in (height * 0.29, height * 0.5, height * 0.71):
             painter.drawLine(QPoint(round(x0), round(y)), QPoint(round(x1), round(y)))
         painter.end()
 
@@ -511,7 +527,9 @@ class Filmstrip(QFrame):
         self._tag_provider: Callable[[int], str | None] | None = _PLACEHOLDER_TAGS.get
 
         self._thumb_h = self.DEFAULT_THUMB_H
+        self.mockup_chrome = False
         self._collapsed = False
+        self._footer: QWidget | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -547,17 +565,56 @@ class Filmstrip(QFrame):
     def is_collapsed(self) -> bool:
         return self._collapsed
 
+    def set_footer(self, footer: QWidget) -> None:
+        """Place the popout's photo details inside the filmstrip footprint."""
+        if self._footer is not None:
+            self.layout().removeWidget(self._footer)
+        self._footer = footer
+        self.layout().addWidget(footer)
+        self._apply_strip_height()
+
     def _apply_strip_height(self) -> None:
         if self._collapsed:
             self._reel.hide()
             self._left.hide()
             self._right.hide()
-            self.setFixedHeight(FilmstripHandle.HEIGHT)
+            if self._footer is not None:
+                self._footer.hide()
+            self.setFixedHeight(self._handle.height())
         else:
             self._reel.show()
+            if self._footer is not None:
+                self._footer.show()
             self.setFixedHeight(
-                FilmstripHandle.HEIGHT + self.REEL_TOP_PAD + self._thumb_h + self.REEL_BOTTOM_PAD
+                self._handle.height() + self.REEL_TOP_PAD + self._thumb_h + self.REEL_BOTTOM_PAD
+                + (self._footer.height() if self._footer is not None else 0)
             )
+
+    def set_mockup_metrics(self, width: int, height: int) -> None:
+        """Scale the reel chrome while preserving the user's thumb-height ratio."""
+        if not self.mockup_chrome:
+            return
+        px = popout_ratios.ratio_px
+        handle_h = px(popout_ratios.FILMSTRIP_HANDLE_H, height, minimum=8)
+        margin = px(popout_ratios.FILMSTRIP_MARGIN_W, width, minimum=6)
+        gap = px(popout_ratios.FILMSTRIP_GAP_W, width, minimum=4)
+        top_pad = px(popout_ratios.FILMSTRIP_TOP_PAD_H, height, minimum=1)
+        bottom_pad = px(popout_ratios.FILMSTRIP_BOTTOM_PAD_H, height, minimum=2)
+        arrow_size = px(popout_ratios.FILMSTRIP_ARROW_H, height, minimum=24)
+        signature = (handle_h, margin, gap, top_pad, bottom_pad, arrow_size)
+        if signature == getattr(self, "_mockup_metrics_signature", None):
+            return
+        self._mockup_metrics_signature = signature
+        self._handle.setFixedHeight(handle_h)
+        self._handle._grip_width = px(popout_ratios.FILMSTRIP_GRIP_W, width, minimum=24)
+        self.MARGIN, self.GAP = margin, gap
+        self.REEL_TOP_PAD, self.REEL_BOTTOM_PAD = top_pad, bottom_pad
+        self._layout.setContentsMargins(margin, top_pad, margin, bottom_pad)
+        self._layout.setSpacing(gap)
+        self._left.setFixedSize(arrow_size, arrow_size)
+        self._right.setFixedSize(arrow_size, arrow_size)
+        self._apply_strip_height()
+        self._reflow(force=True)
 
     def drag_resize(self, target_thumb_h: int) -> None:
         """Live resize from the handle drag; dragging well below the minimum
@@ -686,6 +743,7 @@ class Filmstrip(QFrame):
                 index == self._current,
                 self._thumb_for(index),
                 height=self._thumb_h,
+                mockup_chrome=self.mockup_chrome,
             )
             if not fill:
                 thumb.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -755,11 +813,11 @@ class Filmstrip(QFrame):
 
     def _position_arrows(self) -> None:
         # Centered over the reel area (below the drag handle).
-        reel_h = max(0, self.height() - FilmstripHandle.HEIGHT)
-        y = FilmstripHandle.HEIGHT + (reel_h - ArrowButton.SIZE) // 2
+        reel_h = max(0, self.height() - self._handle.height())
+        y = self._handle.height() + (reel_h - self._left.height()) // 2
         inset = round(self.width() * self.ARROW_INSET_FRAC)
         self._left.move(inset, y)
-        self._right.move(self.width() - inset - ArrowButton.SIZE, y)
+        self._right.move(self.width() - inset - self._right.width(), y)
         self._left.raise_()
         self._right.raise_()
 

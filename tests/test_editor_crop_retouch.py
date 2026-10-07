@@ -17,12 +17,11 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cli_editor"))
 
 import numpy as np
 from PIL import Image
 from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QImage, QMouseEvent, QPainter
 from PySide6.QtWidgets import QApplication, QLabel
 
 from image_triage.editor_geometry import ViewTransform, view_transform_for
@@ -40,8 +39,8 @@ from image_triage.ui.photo_editor_panel import (
     recipe_from_session,
 )
 from image_triage.ui.retouch_overlay import RetouchOverlay
-from photo_terminal.adjustments import apply_retouch, heal_spot_patch, remove_red_eye
-from photo_terminal.session import RENDERER_ORDER, load_session, validate_operation_params
+from image_triage.photo_terminal.adjustments import apply_retouch, heal_spot_patch, remove_red_eye
+from image_triage.photo_terminal.session import RENDERER_ORDER, load_session, validate_operation_params
 
 
 def _app() -> QApplication:
@@ -225,6 +224,127 @@ class MaskStrengthUnderCropTests(unittest.TestCase):
         self.assertTrue(len(xs) > 0, "mask vanished in the bounded preview")
         self.assertAlmostEqual(50.0, float(xs.mean()), delta=5.0)
         self.assertAlmostEqual(37.0, float(ys.mean()), delta=5.0)
+
+
+class OverlayVsRendererGuideUnderCropTests(unittest.TestCase):
+    """WI-5.2 (A9/E3): the overlay and renderer share one rasteriser
+    (mask_strength_qimage), but under a non-identity view (crop/rotate/
+    straighten/flip) the overlay passes guide_image=None (its display-space
+    base image cannot be reprojected into the source-space raster step
+    without misaligning it - see MaskOverlay._strength_image), while the
+    renderer always passes its source-space base image as the guide
+    (EditorRenderService._strength_for). A bitmap mask with edge-aware
+    refinement (edgeDetectionRadius) therefore renders with guided edge
+    refinement in the final output but without it in the live overlay,
+    whenever a crop/rotate/flip is active. This is an accepted interactive-
+    performance tradeoff (no data suggests reprojecting the guide is cheap
+    enough for a live brush drag), not a bug to fix - these tests pin the
+    current, intentional divergence rather than asserting parity.
+    """
+
+    def setUp(self) -> None:
+        self.app = _app()
+        # A hard-edged mask bitmap: left half full strength, right half none.
+        bitmap = QImage(64, 64, QImage.Format.Format_Grayscale8)
+        for y in range(64):
+            row = bitmap.scanLine(y)
+            for x in range(64):
+                row[x] = 255 if x < 32 else 0
+        self.bitmap = bitmap
+        # A guide with real edge content along a DIFFERENT boundary than the
+        # mask's own edge, so a guided filter measurably reshapes the mask.
+        guide = QImage(64, 64, QImage.Format.Format_RGB32)
+        guide.fill(Qt.GlobalColor.black)
+        painter_guide = QPainter(guide)
+        painter_guide.fillRect(0, 0, 64, 20, Qt.GlobalColor.white)
+        painter_guide.end()
+        self.guide = guide
+        self.components = [
+            (
+                "bitmap",
+                {"_liveBitmap": self.bitmap, "edgeDetectionRadius": 12.0},
+                "add",
+            )
+        ]
+
+    def _field_array(self, field) -> np.ndarray:
+        arr = np.frombuffer(field.constBits(), dtype=np.uint8).reshape(
+            field.height(), field.bytesPerLine()
+        )[:, : field.width()]
+        return arr.astype(float)
+
+    def test_guideless_and_guided_refinement_agree_with_no_transform(self) -> None:
+        # The plain (no crop/rotate) path already always has a real guide
+        # available (the on-screen preview), so there is nothing to pin here
+        # beyond confirming a guide actually changes the result at all.
+        guideless = mask_strength_qimage(self.components, 64, 64, (64, 64), guide_image=None)
+        guided = mask_strength_qimage(self.components, 64, 64, (64, 64), guide_image=self.guide)
+        self.assertIsNotNone(guideless)
+        self.assertIsNotNone(guided)
+        self.assertGreater(
+            np.abs(self._field_array(guideless) - self._field_array(guided)).mean(),
+            1.0,
+            "the guide image should visibly reshape a guided-filter refinement",
+        )
+
+    def test_overlay_and_renderer_diverge_under_a_crop(self) -> None:
+        view = ViewTransform(source_size=(64, 64), crop=(0, 0, 64, 64))
+        # Overlay's non-identity-view branch: guide_image=None (mask_overlay.py:918-926).
+        overlay_field = mask_strength_qimage(
+            self.components, 64, 64, (64, 64),
+            guide_image=None, transform=view.qtransform(), transform_source_size=(64, 64),
+        )
+        # Renderer's branch: guide_image=base_image, always (editor_render.py:525-533).
+        renderer_field = mask_strength_qimage(
+            self.components, 64, 64, (64, 64),
+            guide_image=self.guide, transform=view.qtransform(), transform_source_size=(64, 64),
+        )
+        self.assertIsNotNone(overlay_field)
+        self.assertIsNotNone(renderer_field)
+        self.assertGreater(
+            np.abs(self._field_array(overlay_field) - self._field_array(renderer_field)).mean(),
+            1.0,
+            "overlay (no guide) and renderer (guided) should currently diverge under a crop",
+        )
+
+    def test_overlay_and_renderer_diverge_under_a_rotation(self) -> None:
+        view = ViewTransform(source_size=(64, 64), rotate=90.0)
+        overlay_field = mask_strength_qimage(
+            self.components, 64, 64, (64, 64),
+            guide_image=None, transform=view.qtransform(), transform_source_size=(64, 64),
+        )
+        renderer_field = mask_strength_qimage(
+            self.components, 64, 64, (64, 64),
+            guide_image=self.guide, transform=view.qtransform(), transform_source_size=(64, 64),
+        )
+        self.assertIsNotNone(overlay_field)
+        self.assertIsNotNone(renderer_field)
+        self.assertGreater(
+            np.abs(self._field_array(overlay_field) - self._field_array(renderer_field)).mean(),
+            1.0,
+            "overlay (no guide) and renderer (guided) should currently diverge under a rotation",
+        )
+
+    def test_geometry_itself_still_matches_only_the_guided_refinement_differs(self) -> None:
+        """The finding is specifically about the edge-refinement guide, not
+        about geometry drifting - so with refinement DISABLED, overlay and
+        renderer paths (no transform vs identity transform) must still agree,
+        exactly like the pre-existing test_no_transform_is_the_original_path."""
+        plain_components = [("bitmap", {"_liveBitmap": self.bitmap}, "add")]
+        no_transform = mask_strength_qimage(plain_components, 64, 64, (64, 64), guide_image=None)
+        identity_transform = mask_strength_qimage(
+            plain_components, 64, 64, (64, 64),
+            guide_image=self.guide,
+            transform=ViewTransform(source_size=(64, 64)).qtransform(),
+            transform_source_size=(64, 64),
+        )
+        self.assertIsNotNone(no_transform)
+        self.assertIsNotNone(identity_transform)
+        self.assertLess(
+            np.abs(self._field_array(no_transform) - self._field_array(identity_transform)).mean(),
+            2.0,
+            "without refinement params, the guide argument should not matter",
+        )
 
 
 class RetouchKernelTests(unittest.TestCase):
@@ -815,8 +935,8 @@ class CropFreeRotationTests(unittest.TestCase):
             interactive=True, crop=(100, 75, 300, 225), source_size=(400, 300), aspect=None
         )
 
-    def test_pressing_outside_the_box_starts_a_rotation(self) -> None:
-        self.assertEqual("rotate", self.overlay._hit_test(QPointF(5, 5)))
+    def test_pressing_outside_the_box_is_inert(self) -> None:
+        self.assertIsNone(self.overlay._hit_test(QPointF(5, 5)))
         self.assertEqual("move", self.overlay._hit_test(QPointF(200, 150)))
 
     def test_dragging_outside_the_box_reports_an_angle(self) -> None:

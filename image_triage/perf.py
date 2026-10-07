@@ -54,13 +54,73 @@ class PerformanceLogger:
             self._enabled = True
             self.log("perf.enabled", reason=reason, path=str(self._path or ""), log_dir=str((_default_log_dir())))
             self.flush()
+            self._start_stall_watchdog()
             return
         if not self._enabled and self._handle is None:
             return
         self.log("perf.disabled", reason=reason)
         self.flush()
         self._enabled = False
+        self._stop_stall_watchdog()
         self._close()
+
+    def _stop_stall_watchdog(self) -> None:
+        if not getattr(self, "_watchdog_started", False):
+            return
+        try:
+            import faulthandler
+            faulthandler.cancel_dump_traceback_later()
+        except Exception:
+            pass
+        timer = getattr(self, "_watchdog_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+                timer.deleteLater()
+            except RuntimeError:
+                pass
+        trace_file = getattr(self, "_watchdog_file", None)
+        if trace_file is not None:
+            try:
+                trace_file.close()
+            except OSError:
+                pass
+        self._watchdog_timer = None
+        self._watchdog_file = None
+        self._watchdog_started = False
+
+    def _start_stall_watchdog(self) -> None:
+        """Dump every thread's stack to ui_stall_traces.txt when the GUI thread
+        stops pumping events for >2 s. faulthandler's timer runs in C, so it
+        still fires when the stall holds the GIL."""
+        if getattr(self, "_watchdog_started", False):
+            return
+        try:
+            import faulthandler
+            from PySide6.QtCore import QCoreApplication, QThread, QTimer
+        except Exception:
+            return
+        app = QCoreApplication.instance()
+        if app is None or QThread.currentThread() is not app.thread():
+            return
+        try:
+            trace_file = open(_default_log_dir() / "ui_stall_traces.txt", "a", encoding="utf-8")
+        except OSError:
+            return
+        trace_file.write(f"=== session {datetime.now().isoformat()} ===" + chr(10))
+        trace_file.flush()
+        self._watchdog_started = True
+        self._watchdog_file = trace_file
+
+        def beat() -> None:
+            faulthandler.dump_traceback_later(2.0, repeat=False, file=trace_file)
+
+        timer = QTimer(app)
+        timer.setInterval(100)
+        timer.timeout.connect(beat)
+        timer.start()
+        self._watchdog_timer = timer
+        beat()
 
     def log(self, event: str, **fields: object) -> None:
         if not self._enabled:

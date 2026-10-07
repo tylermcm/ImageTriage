@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 import re
 import time
 from typing import Callable
 
 from PySide6.QtCore import QAbstractTableModel, QByteArray, QItemSelectionModel, QModelIndex, QPointF, QSize, Qt, Signal
-from PySide6.QtGui import QKeyEvent, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QKeyEvent, QKeySequence, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from .formats import suffix_for_path
+from .keyboard_mapping import matches_shortcut
 from .models import ImageRecord, SessionAnnotation
 from .perf import perf_logger
 
@@ -262,6 +264,28 @@ class DetailsTableView(QTableView):
     winner_requested = Signal(int)
     reject_requested = Signal(int)
     filename_prefix_requested = Signal(str)
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._winner_shortcut = QKeySequence("W")
+        self._reject_shortcut = QKeySequence("X")
+        # Mirrors grid.py's review-key registry (WI-3.2); brackets and the
+        # 1-5 adapter labels are grid-only, so they're not needed here.
+        self._review_key_shortcuts: dict[str, QKeySequence] = {
+            "keep_at_cursor": QKeySequence("K"),
+            "move_at_cursor": QKeySequence("M"),
+            "tag_at_cursor": QKeySequence("T"),
+        }
+
+    def set_review_action_shortcuts(self, winner: QKeySequence | str, reject: QKeySequence | str) -> None:
+        self._winner_shortcut = QKeySequence(winner)
+        self._reject_shortcut = QKeySequence(reject)
+
+    def set_review_key_shortcuts(self, shortcuts: Mapping[str, QKeySequence | str]) -> None:
+        for binding_id, value in shortcuts.items():
+            if binding_id in self._review_key_shortcuts:
+                self._review_key_shortcuts[binding_id] = QKeySequence(value)
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         row = self.currentIndex().row()
         if row < 0:
@@ -288,34 +312,41 @@ class DetailsTableView(QTableView):
         if key == Qt.Key.Key_Delete and review_allowed:
             self.delete_requested.emit(row)
             return
-        if key == Qt.Key.Key_K and review_allowed:
+        if matches_shortcut(event, self._review_key_shortcuts["keep_at_cursor"]):
             self.keep_requested.emit(row)
             return
-        if key == Qt.Key.Key_M and review_allowed:
+        if matches_shortcut(event, self._review_key_shortcuts["move_at_cursor"]):
             self.move_requested.emit(row)
             return
-        if key == Qt.Key.Key_T and review_allowed:
+        if matches_shortcut(event, self._review_key_shortcuts["tag_at_cursor"]):
             self.tag_requested.emit(row)
             return
-        if key == Qt.Key.Key_W and review_allowed:
+        if matches_shortcut(event, self._winner_shortcut):
             self.winner_requested.emit(row)
             return
-        if key == Qt.Key.Key_X and review_allowed:
+        if matches_shortcut(event, self._reject_shortcut):
             self.reject_requested.emit(row)
             return
         text = event.text()
-        reserved = {
-            Qt.Key.Key_C,
-            Qt.Key.Key_K,
-            Qt.Key.Key_M,
-            Qt.Key.Key_T,
-            Qt.Key.Key_W,
-            Qt.Key.Key_X,
-        }
+        reserved = {self._base_key(shortcut) for shortcut in (
+            self._review_key_shortcuts["keep_at_cursor"],
+            self._review_key_shortcuts["move_at_cursor"],
+            self._review_key_shortcuts["tag_at_cursor"],
+            self._winner_shortcut,
+            self._reject_shortcut,
+        )}
+        reserved.discard(None)
+        reserved.add(Qt.Key.Key_C)
         if review_allowed and key not in reserved and text and text.strip() and text.isprintable():
             self.filename_prefix_requested.emit(text.casefold())
             return
         super().keyPressEvent(event)
+
+    @staticmethod
+    def _base_key(sequence: QKeySequence) -> Qt.Key | None:
+        if sequence.isEmpty():
+            return None
+        return sequence[0].key()
 
     def wheelEvent(self, event) -> None:
         logger = perf_logger()

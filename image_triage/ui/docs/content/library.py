@@ -27,7 +27,7 @@ ARTICLES = [
         - [Favorites](doc:favorites) — shortcuts to folders you use often.
         - Folder browsing — move through your drives and directories.
         - **Collections** — saved image sets that can span folders without moving or copying the originals.
-        - [The global catalog](doc:catalog) — a searchable index of chosen folders.
+        - [The Library index](doc:catalog) — a searchable index of chosen folders.
 
         The Library does not replace normal folder browsing. It simply makes it easier to reopen important folders and assemble image sets across different locations.
         """,
@@ -88,21 +88,21 @@ ARTICLES = [
     ),
     DocArticle(
         id="catalog",
-        title="The global catalog",
+        title="The Library index",
         category="library",
         summary="An optional searchable index of folders you choose.",
-        keywords=("catalog", "index", "search", "global", "find"),
+        keywords=("catalog", "index", "search", "library", "find"),
         markdown="""
-        # The global catalog
+        # The Library index
 
-        The global catalog is an optional, searchable index of folders you choose. It lets you search filenames, paths, and cached image information without opening each folder by hand.
+        The Library index is an optional, searchable index of folders you choose. It lets you search filenames, paths, and cached image information without opening each folder by hand.
 
         ## How to use it
 
         1. Add one or more root folders from the **Library** menu.
-        2. Refresh the catalog index.
+        2. Refresh the library index.
         3. Search or browse by filename or path.
-        4. Open results as a virtual catalog view.
+        4. Open results as a virtual library view.
 
         ## When it helps
 
@@ -110,7 +110,7 @@ ARTICLES = [
         - Rebuilding a collection from past shoots
         - Reopening a known collection without browsing to each source folder manually
 
-        > **Note:** AI caches are still stored per folder. The catalog helps with search and navigation — it does not change how folder-local AI processing works. See [Where AI files live](doc:where-files-live).
+        > **Note:** AI caches are still stored per folder. The Library index helps with search and navigation — it does not change how folder-local AI processing works. See [Where AI files live](doc:where-files-live).
         """,
     ),
 ]

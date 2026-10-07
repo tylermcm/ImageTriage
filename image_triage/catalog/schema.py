@@ -238,6 +238,16 @@ CATALOG_MIGRATIONS: tuple[tuple[int, str], ...] = (
         ADD COLUMN semantic_cache_key TEXT NOT NULL DEFAULT '';
         """,
     ),
+    (
+        8,
+        """
+        -- Modified time of the folder itself, read just before its listing was taken. Network and
+        -- removable drives get no file-system watcher, so this lets a saved listing be checked
+        -- against the folder with a single stat. NULL means unknown (saved before this column).
+        ALTER TABLE catalog_folders
+        ADD COLUMN dir_mtime_ns INTEGER;
+        """,
+    ),
 )
 
 LATEST_CATALOG_SCHEMA_VERSION = CATALOG_MIGRATIONS[-1][0]

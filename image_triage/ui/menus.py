@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QMenu
+from PySide6.QtWidgets import QMenu, QMenuBar
 
 from ..filtering import AIStateFilter
 from ..models import FilterMode
@@ -23,7 +23,6 @@ def add_ai_results_actions(menu: QMenu, actions: MainWindowActions) -> None:
     for mode in (
         FilterMode.AI_INGESTED,
         FilterMode.AI_PREFILTER_DUMPED,
-        FilterMode.DINO_REMOVED,
     ):
         prefilter_menu.addAction(actions.filter_actions[mode])
     menu.addSeparator()
@@ -69,19 +68,7 @@ def _add_panel_layout_menu(menu: QMenu, window, panel_key: str, title: str) -> N
     panel_menu.addAction("Pop Out", lambda _checked=False, key=panel_key: docks.pop_out_panel(key))
 
 
-def build_main_menu_bar(
-    window,
-    actions: MainWindowActions,
-    dock_actions: Mapping[str, QAction] | None = None,
-    *,
-    workflow_recipe_menu: QMenu | None = None,
-    workspace_preset_menu: QMenu | None = None,
-    collections_menu: QMenu | None = None,
-    catalog_menu: QMenu | None = None,
-) -> None:
-    menu_bar = window.menuBar()
-    menu_bar.clear()
-
+def _build_file_menu(menu_bar: QMenuBar, actions: MainWindowActions) -> None:
     file_menu = menu_bar.addMenu("&File")
     file_menu.addAction(actions.open_folder)
     file_menu.addAction(actions.refresh_folder)
@@ -90,12 +77,15 @@ def build_main_menu_bar(
     file_menu.addSeparator()
     file_menu.addAction(actions.exit_app)
 
+
+def _build_edit_menu(menu_bar: QMenuBar, actions: MainWindowActions) -> None:
     edit_menu = menu_bar.addMenu("&Edit")
     edit_menu.addAction(actions.undo)
     edit_menu.addSeparator()
     _add_selection_actions(edit_menu, actions)
 
-    view_menu = menu_bar.addMenu("&View")
+
+def _add_view_appearance_menu(view_menu: QMenu, actions: MainWindowActions) -> None:
     appearance_menu = view_menu.addMenu("Appearance")
     for mode in appearance_profile_modes():
         appearance_menu.addAction(actions.appearance_actions[mode])
@@ -103,6 +93,8 @@ def build_main_menu_bar(
     for placement in ("floating", "docked"):
         appearance_menu.addAction(actions.toolbar_placement_actions[placement])
 
+
+def _add_view_layout_menu(view_menu: QMenu, actions: MainWindowActions) -> None:
     layout_menu = view_menu.addMenu("Layout")
     columns_menu = layout_menu.addMenu("Columns")
     for count in range(1, 9):
@@ -123,10 +115,14 @@ def build_main_menu_bar(
     layout_menu.addSeparator()
     layout_menu.addAction(actions.show_workspace_toolbar)
 
+
+def _add_view_sort_menu(view_menu: QMenu, actions: MainWindowActions) -> None:
     sort_menu = view_menu.addMenu("Sort")
     for action in actions.sort_actions.values():
         sort_menu.addAction(action)
 
+
+def _add_view_filters_menu(view_menu: QMenu, actions: MainWindowActions) -> None:
     filter_menu = view_menu.addMenu("Filters")
     for action in actions.filter_actions.values():
         filter_menu.addAction(action)
@@ -136,15 +132,29 @@ def build_main_menu_bar(
     filter_menu.addAction(actions.delete_filter_preset)
     filter_menu.addAction(actions.clear_filters)
 
+
+def _add_view_review_menu(view_menu: QMenu, actions: MainWindowActions) -> None:
     review_view_menu = view_menu.addMenu("Review View")
     review_view_menu.addAction(actions.burst_groups)
     review_view_menu.addAction(actions.burst_stacks)
     review_view_menu.addAction(actions.compare_mode)
     review_view_menu.addAction(actions.auto_advance)
 
-    view_menu.addSeparator()
-    view_menu.addAction(actions.open_ui_prototype)
 
+def _build_view_menu(menu_bar: QMenuBar, actions: MainWindowActions) -> QMenu:
+    """The View menu's submenus. The window/dock/toolbar controls are appended
+    later (``_add_view_window_controls``), after the menus to its right have been
+    created, so the menu is returned for that second pass."""
+    view_menu = menu_bar.addMenu("&View")
+    _add_view_appearance_menu(view_menu, actions)
+    _add_view_layout_menu(view_menu, actions)
+    _add_view_sort_menu(view_menu, actions)
+    _add_view_filters_menu(view_menu, actions)
+    _add_view_review_menu(view_menu, actions)
+    return view_menu
+
+
+def _build_review_menu(menu_bar: QMenuBar, actions: MainWindowActions) -> None:
     review_menu = menu_bar.addMenu("&Review")
     review_menu.addAction(actions.open_preview)
     review_menu.addAction(actions.winner_ladder_mode)
@@ -154,6 +164,13 @@ def build_main_menu_bar(
     review_menu.addAction(actions.reveal_in_explorer)
     review_menu.addAction(actions.open_in_photoshop)
 
+
+def _build_library_menu(
+    menu_bar: QMenuBar,
+    actions: MainWindowActions,
+    collections_menu: QMenu | None,
+    catalog_menu: QMenu | None,
+) -> None:
     library_menu = menu_bar.addMenu("&Library")
     collections_section = library_menu.addMenu("Collections")
     collections_section.addAction(actions.create_virtual_collection)
@@ -176,9 +193,14 @@ def build_main_menu_bar(
         catalog_section.addSeparator()
         catalog_section.addMenu(catalog_menu)
 
+
+def _build_workflow_menu(
+    menu_bar: QMenuBar,
+    actions: MainWindowActions,
+    workflow_recipe_menu: QMenu | None,
+) -> None:
     workflow_menu = menu_bar.addMenu("&Workflow")
     workflow_menu.addAction(actions.share_to_phone)
-    workflow_menu.addAction(actions.share_queue)
     workflow_menu.addSeparator()
     workflow_menu.addAction(actions.handoff_builder)
     workflow_menu.addAction(actions.send_to_editor_pipeline)
@@ -186,6 +208,8 @@ def build_main_menu_bar(
     if workflow_recipe_menu is not None:
         workflow_menu.addMenu(workflow_recipe_menu)
 
+
+def _build_ai_menu(menu_bar: QMenuBar, actions: MainWindowActions) -> None:
     ai_menu = menu_bar.addMenu("&AI")
     ai_menu.addAction(actions.guided_ai_cull_preferences)
     ai_menu.addAction(actions.open_ai_workflow_center)
@@ -215,6 +239,8 @@ def build_main_menu_bar(
     setup_menu.addSeparator()
     setup_menu.addAction(actions.reset_ai_review_cache)
 
+
+def _build_tools_menu(menu_bar: QMenuBar, actions: MainWindowActions) -> None:
     tools_menu = menu_bar.addMenu("&Tools")
     tools_menu.addAction(actions.open_command_palette)
     tools_menu.addSeparator()
@@ -228,13 +254,22 @@ def build_main_menu_bar(
     diagnostics_menu.addAction(actions.performance_logging)
     diagnostics_menu.addAction(actions.open_performance_log_folder)
 
-    # View menu absorbs the old "Window" menu so layout/dock/toolbar controls
-    # all live in one place.
+
+def _add_view_window_controls(
+    view_menu: QMenu,
+    window,
+    actions: MainWindowActions,
+    dock_actions: Mapping[str, QAction] | None,
+    workspace_preset_menu: QMenu | None,
+) -> None:
+    """The second half of the View menu: toolbar visibility and position, panel
+    visibility and layout (only when the window has dock controls), and the
+    layout reset."""
     view_menu.addSeparator()
     view_menu.addAction(actions.show_workspace_toolbar)
     toolbar_position_menu = view_menu.addMenu("Toolbar Position")
-    toolbar_position_menu.addAction("Top", lambda _checked=False: window._set_workspace_bar_position("top"))
-    toolbar_position_menu.addAction("Bottom", lambda _checked=False: window._set_workspace_bar_position("bottom"))
+    toolbar_position_menu.addAction("Top", lambda _checked=False: window._toolbar.set_workspace_bar_position("top"))
+    toolbar_position_menu.addAction("Bottom", lambda _checked=False: window._toolbar.set_workspace_bar_position("bottom"))
     if dock_actions:
         panels_menu = view_menu.addMenu("Panels")
         for key in ("library", "inspector"):
@@ -253,6 +288,8 @@ def build_main_menu_bar(
         _add_workspace_presets_menu(layout_submenu, actions, workspace_preset_menu)
     view_menu.addAction(actions.reset_layout)
 
+
+def _build_settings_menu(menu_bar: QMenuBar, actions: MainWindowActions) -> None:
     # Settings now has real entries instead of a single-item submenu so the
     # click flow is: Settings menu → Open Settings (or jump straight to a
     # related dialog). Ctrl+, still opens the main dialog directly.
@@ -262,6 +299,8 @@ def build_main_menu_bar(
     settings_menu.addSeparator()
     settings_menu.addAction(actions.reset_layout)
 
+
+def _build_help_menu(menu_bar: QMenuBar, actions: MainWindowActions) -> None:
     help_menu = menu_bar.addMenu("&Help")
     help_menu.addAction(actions.documentation)
     help_menu.addSeparator()
@@ -273,3 +312,35 @@ def build_main_menu_bar(
     help_menu.addAction(actions.check_for_updates)
     help_menu.addSeparator()
     help_menu.addAction(actions.about)
+
+
+def build_main_menu_bar(
+    window,
+    actions: MainWindowActions,
+    dock_actions: Mapping[str, QAction] | None = None,
+    *,
+    workflow_recipe_menu: QMenu | None = None,
+    workspace_preset_menu: QMenu | None = None,
+    collections_menu: QMenu | None = None,
+    catalog_menu: QMenu | None = None,
+) -> None:
+    menu_bar = window.menuBar()
+    menu_bar.clear()
+
+    # Top-level menus, left to right. The View menu is created here but only
+    # finished after the Tools menu (see below).
+    _build_file_menu(menu_bar, actions)
+    _build_edit_menu(menu_bar, actions)
+    view_menu = _build_view_menu(menu_bar, actions)
+    _build_review_menu(menu_bar, actions)
+    _build_library_menu(menu_bar, actions, collections_menu, catalog_menu)
+    _build_workflow_menu(menu_bar, actions, workflow_recipe_menu)
+    _build_ai_menu(menu_bar, actions)
+    _build_tools_menu(menu_bar, actions)
+
+    # View menu absorbs the old "Window" menu so layout/dock/toolbar controls
+    # all live in one place.
+    _add_view_window_controls(view_menu, window, actions, dock_actions, workspace_preset_menu)
+
+    _build_settings_menu(menu_bar, actions)
+    _build_help_menu(menu_bar, actions)

@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from cli_editor.photo_terminal.adjustments import EditRecipe  # noqa: E402
+from image_triage.photo_terminal.adjustments import EditRecipe  # noqa: E402
 
 
 TARGET_WIDTH = 2048

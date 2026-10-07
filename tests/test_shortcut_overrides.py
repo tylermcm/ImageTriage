@@ -67,7 +67,14 @@ class ShortcutOverrideHelpersTests(unittest.TestCase):
         self.assertIn("undo", attr_names)
 
     def test_registry_defaults_are_non_empty(self) -> None:
+        # A few actions are deliberately toolbar/menu-only with no default
+        # keyboard shortcut (unified into the registry in WI-3.2, so they're
+        # still rebindable, just not bound out of the box).
+        no_default_by_design = {"open_preview", "keep_selection", "move_selection", "delete_selection"}
         for attr_name, _category, default, _display in SHORTCUT_REGISTRY:
+            if attr_name in no_default_by_design:
+                self.assertEqual("", default, f"expected no default for {attr_name}")
+                continue
             self.assertTrue(default, f"empty default for {attr_name}")
 
     def test_load_returns_only_non_default_entries(self) -> None:

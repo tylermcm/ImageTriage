@@ -87,18 +87,6 @@ class Capability:
 # mirrors the previous cache so migration is a directory move, not a rewrite.
 
 MODEL_BUNDLES: dict[str, ModelBundle] = {
-    "dino": ModelBundle(
-        key="dino",
-        name="DINOv3 image features",
-        repo_id="Skulleton12/DinoV3",
-        revision="2372da520e9da0b79430d18c8f038de0e8e3ba68",
-        filenames=("config.json", "model.safetensors"),
-        install_parts=("DinoV3",),
-        approx_mb=1210,
-        dir_env="AICULLING_MODEL_DIR",
-        repo_env="AICULLING_MODEL_REPO_ID",
-        revision_env="AICULLING_MODEL_REVISION",
-    ),
     "clip": ModelBundle(
         key="clip",
         name="CLIP semantic sidecar",
@@ -240,14 +228,6 @@ MODEL_BUNDLES: dict[str, ModelBundle] = {
 # directly, smaller files are downloaded once and hashed.
 
 MODEL_FILE_DIGESTS: dict[str, dict[str, FileDigest]] = {
-    "dino": {
-        "config.json": FileDigest(
-            745, "135ecd23e34a70b6fbed8b083fdecb319b7e3a54e3d849258bbe4ddcf1783bb5"
-        ),
-        "model.safetensors": FileDigest(
-            1212559808, "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179"
-        ),
-    },
     "clip": {
         "config.json": FileDigest(
             4186, "b575ef3c36f2a057fa19e221650105052d61cc9c1a972ec15019c6261ec98770"
@@ -466,16 +446,6 @@ CAPABILITIES: dict[str, Capability] = {
         expected_outputs=("text_embeds", "image_embeds"),
         expected_embedding_dim=512,
     ),
-    "dino": Capability(
-        key="dino",
-        name="DINO image features",
-        summary="Deep image embeddings for grouping near-duplicates.",
-        modules=("torch", "torchvision", "timm", "transformers", "safetensors"),
-        model_bundles=("dino",),
-        requires_torch=True,
-        probe_kind="torch",
-        transformers_symbols=("AutoImageProcessor", "AutoModel"),
-    ),
     "scene_masks": Capability(
         key="scene_masks",
         name="Scene selection (OneFormer)",
@@ -533,16 +503,13 @@ BASE_CAPABILITIES: tuple[str, ...] = (
     "faces",
     "semantic_search",
 )
-# Capabilities the PyTorch runtime adds. DINO is deliberately excluded: the
-# active culling pipeline is ONNX-based and the DINO weights are 1.2 GB, so it
-# stays opt-in and is not part of what Set Up AI installs or verifies.
+# Capabilities the PyTorch runtime adds.
 TORCH_CAPABILITIES: tuple[str, ...] = (
     "scene_masks",
     "subject_masks",
     "sam_masks",
     "depth",
 )
-OPT_IN_CAPABILITIES: tuple[str, ...] = ("dino",)
 
 
 def setup_capabilities(*, include_torch: bool) -> tuple[str, ...]:
@@ -557,7 +524,6 @@ DEFAULT_CAPABILITY_ORDER: tuple[str, ...] = (
     "quality_topiq",
     "faces",
     "semantic_search",
-    "dino",
     "scene_masks",
     "subject_masks",
     "sam_masks",
@@ -577,7 +543,6 @@ __all__ = [
     "BASE_CAPABILITIES",
     "CAPABILITIES",
     "DEFAULT_CAPABILITY_ORDER",
-    "OPT_IN_CAPABILITIES",
     "TORCH_CAPABILITIES",
     "MODEL_BUNDLES",
     "MODEL_FILE_DIGESTS",

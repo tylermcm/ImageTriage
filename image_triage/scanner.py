@@ -202,6 +202,21 @@ def scan_child_folders(folder: str, *, include_hidden: bool = False) -> list[Ima
     return sort_records(records, SortMode.NAME)
 
 
+def _has_editor_session(image_path: str) -> bool:
+    """Whether ``image_path`` has a built-in-editor session with real edits.
+
+    Deferred import: ``edit_storage`` imports ``EDIT_STORAGE_ROOT_NAME`` from
+    this module at top level, so importing ``edit_storage`` back at module
+    level here would create a cycle. The same lazy-import pattern is used
+    elsewhere in this codebase to break the same kind of cycle (see
+    ``editor_copy.write_edited_copy``'s import of ``editor_render``).
+    """
+
+    from .edit_storage import session_has_edits
+
+    return session_has_edits(image_path)
+
+
 def _is_hidden_directory_entry(entry: os.DirEntry[str], stat_result: os.stat_result | None = None) -> bool:
     if entry.name.startswith("."):
         return True
@@ -368,6 +383,7 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
                     companion_paths=companions,
                     edited_paths=tuple(item.path for item in edit_files),
                     variants=stack_variants,
+                    has_editor_session=_has_editor_session(raw.path),
                 )
             )
 
@@ -399,6 +415,7 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
                 modified_ns=max([primary.modified_ns, *[item.modified_ns for item in edit_files]]),
                 edited_paths=tuple(item.path for item in edit_files),
                 variants=stack_variants,
+                has_editor_session=_has_editor_session(primary.path),
             )
         )
     return records
@@ -477,8 +494,10 @@ def discover_edited_paths(record: ImageRecord) -> tuple[str, ...]:
     excluded = {_path_key_fast(path) for path in record.stack_paths}
     candidates: list[ScannedFile] = []
 
-    def add_candidate(entry: os.DirEntry[str]) -> None:
-        scanned = to_scanned_file(entry, EDIT_SUFFIXES)
+    def add_candidate(entry: os.DirEntry[str], parent: str) -> None:
+        # parent is already normalized, so skip the per-file resolve() (one
+        # network round trip per file on UNC paths).
+        scanned = to_scanned_file(entry, EDIT_SUFFIXES, parent_folder=parent)
         if scanned is None or not edit_stem_matches(stem_key, scanned.stem_key):
             return
         if scanned.path_key in excluded:
@@ -489,12 +508,12 @@ def discover_edited_paths(record: ImageRecord) -> tuple[str, ...]:
         with os.scandir(folder) as entries:
             for entry in entries:
                 if entry.is_file(follow_symlinks=False):
-                    add_candidate(entry)
+                    add_candidate(entry, str(folder))
                 elif entry.is_dir(follow_symlinks=False) and entry.name.lower() in EDIT_DIRECTORIES:
                     with os.scandir(entry.path) as child_entries:
                         for child in child_entries:
                             if child.is_file(follow_symlinks=False):
-                                add_candidate(child)
+                                add_candidate(child, entry.path)
     except OSError:
         return ()
 
@@ -599,6 +618,16 @@ def to_scanned_file(
     )
 
 
+def folder_modified_ns(folder: str) -> int | None:
+    """The folder's own modified time, which changes when entries are added, removed or renamed in
+    it. ``None`` when it cannot be read (share offline, access denied)."""
+    try:
+        result = os.stat(folder)
+    except OSError:
+        return None
+    return getattr(result, "st_mtime_ns", int(result.st_mtime * 1_000_000_000))
+
+
 class FolderScanSignals(QObject):
     children = Signal(str, int, object)
     cached = Signal(str, int, object, str)
@@ -606,17 +635,66 @@ class FolderScanSignals(QObject):
     failed = Signal(str, int, str)
 
 
+class FolderModifiedSignals(QObject):
+    checked = Signal(str, int, object)
+
+
+class FolderModifiedCheckTask(QRunnable):
+    """Reads one folder's modified time off the UI thread. A stat on an unreachable share can block
+    for a long time, so this never runs on the GUI thread. The owner keeps the task alive until
+    ``signals.checked`` arrives."""
+
+    def __init__(self, folder: str, token: int) -> None:
+        super().__init__()
+        self.folder = folder
+        self.token = token
+        self.signals = FolderModifiedSignals()
+        self.setAutoDelete(False)
+
+    def run(self) -> None:
+        self.signals.checked.emit(self.folder, self.token, folder_modified_ns(self.folder))
+
+
+class PathReachableSignals(QObject):
+    checked = Signal(int, str, bool)
+
+
+class PathReachableTask(QRunnable):
+    """Asks, off the GUI thread, whether a folder answers at all.
+
+    ``os.path.isdir`` (and anything else that touches the path) can block for ~20 s on a share that is
+    asleep, so the GUI thread never asks; it waits for ``signals.checked(token, path, reachable)``.
+    The owner keeps the task alive until that signal arrives."""
+
+    def __init__(self, path: str, token: int) -> None:
+        super().__init__()
+        self.path = path
+        self.token = token
+        self.signals = PathReachableSignals()
+        self.setAutoDelete(False)
+
+    def run(self) -> None:
+        try:
+            reachable = bool(os.path.isdir(self.path))
+        except OSError:
+            reachable = False
+        self.signals.checked.emit(self.token, self.path, reachable)
+
+
 class FolderRecordsPersistTask(QRunnable):
-    def __init__(self, folder: str, records: list[ImageRecord]) -> None:
+    def __init__(self, folder: str, records: list[ImageRecord], dir_mtime_ns: int | None = None) -> None:
         super().__init__()
         self.folder = folder
         self.records = list(records)
+        self.dir_mtime_ns = dir_mtime_ns
 
     def run(self) -> None:
         logger = perf_logger()
         persist_start = time.perf_counter() if logger.enabled else 0.0
         try:
-            CatalogRepository().save_folder_records(self.folder, self.records, source="scan")
+            CatalogRepository().save_folder_records(
+                self.folder, self.records, source="scan", dir_mtime_ns=self.dir_mtime_ns
+            )
         except Exception as exc:  # pragma: no cover - cache writes should not block folder display
             if logger.enabled:
                 logger.duration(
@@ -644,13 +722,20 @@ class FolderScanTask(QRunnable):
         include_hidden_folders: bool = False,
     ) -> None:
         super().__init__()
-        self.folder = normalize_filesystem_path(folder)
+        # Only tidied here: normalize_filesystem_path resolves the path through the filesystem, a network
+        # round trip for a folder on a share (~20 s if it is asleep), and this runs on the GUI thread.
+        # run() resolves it, exactly as before, on the worker.
+        self.folder = str(folder).strip()
         self.token = token
         self.sort_mode = sort_mode
         self.prefer_cached_only = prefer_cached_only
         self.use_catalog_cache = use_catalog_cache
         self.read_cached_records = read_cached_records
         self.include_hidden_folders = include_hidden_folders
+        # The folder's modified time as read at the start of run(), before anything is listed: the
+        # baseline of whatever this scan ends up showing. A change that lands during the listing
+        # leaves it older than the folder, so the next check sees a difference and rescans.
+        self.dir_mtime_ns: int | None = None
         self.signals = FolderScanSignals()
         # Keep the runnable alive until the window releases it after the final signal.
         self.setAutoDelete(False)
@@ -658,6 +743,11 @@ class FolderScanTask(QRunnable):
     def run(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
+        try:
+            self.folder = normalize_filesystem_path(self.folder)
+        except Exception:  # an unresolvable path is scanned as given and fails visibly below
+            pass
+        self.dir_mtime_ns = folder_modified_ns(self.folder)
         try:
             child_start = time.perf_counter() if logger.enabled else 0.0
             child_records = scan_child_folders(
@@ -691,7 +781,7 @@ class FolderScanTask(QRunnable):
                         folder=self.folder,
                         record_count=len(sorted_cached),
                     )
-                if self.prefer_cached_only:
+                if self.prefer_cached_only and self._saved_listing_is_current():
                     self.signals.finished.emit(self.folder, self.token, sorted_cached, cache_source)
                     if logger.enabled:
                         logger.duration("folder_scan.total", (time.perf_counter() - start) * 1000.0, folder=self.folder, source=cache_source, record_count=len(sorted_cached))
@@ -716,7 +806,19 @@ class FolderScanTask(QRunnable):
         if logger.enabled:
             logger.duration("folder_scan.total", (time.perf_counter() - start) * 1000.0, folder=self.folder, source="live", record_count=len(records))
         self.signals.finished.emit(self.folder, self.token, records, "live")
-        QThreadPool.globalInstance().start(FolderRecordsPersistTask(self.folder, records), -100)
+        QThreadPool.globalInstance().start(FolderRecordsPersistTask(self.folder, records, self.dir_mtime_ns), -100)
+
+    def _saved_listing_is_current(self) -> bool:
+        """May the saved listing be shown without listing the folder (network / removable drives)?
+
+        Yes when the folder's modified time still equals the one recorded with that listing. A
+        listing with no recorded time (saved before it was tracked) cannot be vouched for, so it is
+        rescanned once, which records the time. When the folder cannot be reached at all the saved
+        listing is all there is, so it is served as before."""
+        if self.dir_mtime_ns is None:
+            return True
+        saved = CatalogRepository().load_folder_dir_mtime(self.folder)
+        return saved is not None and saved == self.dir_mtime_ns
 
     def _load_cached_records(self) -> tuple[list[ImageRecord] | None, str]:
         if not self.read_cached_records:
@@ -733,8 +835,11 @@ __all__ = [
     "EDITOR_ASSET_DIR_SUFFIX",
     "EDIT_STORAGE_ROOT_NAME",
     "IGNORED_SYSTEM_DIRECTORY_NAMES",
+    "FolderModifiedCheckTask",
     "FolderScanTask",
+    "PathReachableTask",
     "discover_edited_paths",
+    "folder_modified_ns",
     "format_scan_error",
     "ImageRecord",
     "is_editor_asset_path",

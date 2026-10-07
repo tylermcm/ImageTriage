@@ -1,20 +1,14 @@
 from __future__ import annotations
 
 import os
-import sys
 import unittest
-from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 from PIL import Image
 
-_CLI_EDITOR = Path(__file__).resolve().parents[1] / "cli_editor"
-if str(_CLI_EDITOR) not in sys.path:
-    sys.path.insert(0, str(_CLI_EDITOR))
-
-from photo_terminal.adjustments import (
+from image_triage.photo_terminal.adjustments import (
     EditRecipe,
     apply_point_curves,
     curve_lut,

@@ -17,6 +17,7 @@ from image_triage.ai_model import (
     SAM_MODEL_REQUIRED_FILENAMES,
     SEGMENTATION_MODEL_REQUIRED_FILENAMES,
     SEMANTIC_MODEL_REQUIRED_FILENAMES,
+    AIModelInstallation,
     download_ai_model,
     download_aiculler_clip_model,
     download_aiculler_face_model,
@@ -25,7 +26,6 @@ from image_triage.ai_model import (
     resolve_aiculler_clip_model_installation,
     resolve_aiculler_face_model_installation,
     resolve_aiculler_topiq_model_installation,
-    resolve_ai_model_installation,
     resolve_birefnet_model_installation,
     resolve_sam_model_installation,
     resolve_segmentation_model_installation,
@@ -54,25 +54,12 @@ class _FakeResponse:
         return self._payload[start:end]
 
 
+def _installation(*, install_dir, repo_id="owner/repo", revision="main") -> AIModelInstallation:
+    return AIModelInstallation(repo_id=repo_id, revision=revision, install_dir=Path(install_dir))
+
+
 class AIModelTests(unittest.TestCase):
-    def test_resolve_ai_model_installation_uses_explicit_env_dir(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            env = {"AICULLING_MODEL_DIR": str(Path(temp_dir) / "custom-model")}
-            with patch.dict(os.environ, env, clear=False):
-                installation = resolve_ai_model_installation()
-
-        self.assertEqual(installation.install_dir.name, "custom-model")
-
-    def test_default_ai_model_installation_uses_model_name_only(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            env = {"LOCALAPPDATA": temp_dir}
-            with patch.dict(os.environ, env, clear=False):
-                installation = resolve_ai_model_installation(repo_id="owner/DinoV2")
-
-        self.assertEqual(installation.install_dir.name, "DinoV2")
-        self.assertEqual(installation.install_dir.parent.name, "models")
-
-    def test_default_ai_model_installation_uses_managed_root_not_local_appdata(self) -> None:
+    def test_default_model_installation_uses_managed_root_not_local_appdata(self) -> None:
         # Model directories must resolve under the short managed root rather
         # than LOCALAPPDATA, which Store Python redirects into a very long
         # package-cache path (docs/ai_runtime_failure_map.md, root cause A).
@@ -86,7 +73,7 @@ class AIModelTests(unittest.TestCase):
             env = {"LOCALAPPDATA": str(store_cache), "USERPROFILE": str(profile)}
             with patch.dict(os.environ, env, clear=False):
                 with patch("image_triage.ai_paths.Path.home", side_effect=RuntimeError("no home")):
-                    installation = resolve_ai_model_installation(repo_id="owner/DinoV2")
+                    installation = resolve_semantic_model_installation(repo_id="owner/Model")
 
         self.assertNotIn("LocalCache", str(installation.install_dir))
         self.assertTrue(
@@ -217,7 +204,7 @@ class AIModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             install_dir = Path(temp_dir) / "model"
             install_dir.mkdir(parents=True)
-            installation = resolve_ai_model_installation(install_dir=install_dir)
+            installation = _installation(install_dir=install_dir)
 
             self.assertFalse(installation.is_installed)
             self.assertEqual({path.name for path in installation.missing_files}, {"config.json", "model.safetensors"})
@@ -232,13 +219,13 @@ class AIModelTests(unittest.TestCase):
 
     def test_download_ai_model_fetches_required_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            installation = resolve_ai_model_installation(
+            installation = _installation(
                 install_dir=Path(temp_dir) / "downloaded-model",
                 repo_id="owner/repo",
                 revision="main",
             )
             payloads = {
-                "config.json": b'{"model_type":"dinov2"}',
+                "config.json": b'{"model_type":"vit"}',
                 "model.safetensors": b"weights",
             }
             seen_progress: list[tuple[str, int, int]] = []
@@ -260,7 +247,7 @@ class AIModelTests(unittest.TestCase):
             self.assertTrue((installation.install_dir / "model.safetensors").exists())
             self.assertEqual(
                 (installation.install_dir / "config.json").read_text(encoding="utf-8"),
-                '{"model_type":"dinov2"}',
+                '{"model_type":"vit"}',
             )
             self.assertEqual((installation.install_dir / "model.safetensors").read_bytes(), b"weights")
             self.assertTrue(any(filename == "model.safetensors" for filename, _, _ in seen_progress))
@@ -296,7 +283,7 @@ class AIModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             payload = b"weights"
             installation = replace(
-                resolve_ai_model_installation(
+                _installation(
                     install_dir=Path(temp_dir) / "downloaded-model",
                     repo_id="owner/repo",
                     revision="main",
@@ -313,7 +300,7 @@ class AIModelTests(unittest.TestCase):
     def test_download_ai_model_rejects_sha256_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             installation = replace(
-                resolve_ai_model_installation(
+                _installation(
                     install_dir=Path(temp_dir) / "downloaded-model",
                     repo_id="owner/repo",
                     revision="main",
@@ -331,7 +318,7 @@ class AIModelTests(unittest.TestCase):
     def test_download_ai_model_rejects_non_https_url(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             installation = replace(
-                resolve_ai_model_installation(
+                _installation(
                     install_dir=Path(temp_dir) / "downloaded-model",
                     repo_id="owner/repo",
                     revision="main",
@@ -346,7 +333,7 @@ class AIModelTests(unittest.TestCase):
     def test_download_ai_model_reports_http_error_filename(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             installation = replace(
-                resolve_ai_model_installation(
+                _installation(
                     install_dir=Path(temp_dir) / "downloaded-model",
                     repo_id="owner/repo",
                     revision="main",
@@ -368,7 +355,7 @@ class AIModelTests(unittest.TestCase):
     def test_download_ai_model_tries_alternate_source_filenames(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             installation = replace(
-                resolve_ai_model_installation(
+                _installation(
                     install_dir=Path(temp_dir) / "downloaded-model",
                     repo_id="owner/repo",
                     revision="main",

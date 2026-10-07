@@ -12,7 +12,7 @@ try:
 except ImportError:  # pragma: no cover - Windows only
     winreg = None
 
-from .formats import FITS_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, STANDARD_IMAGE_SUFFIXES
+from .formats import PSD_SUFFIXES, RAW_SUFFIXES, STANDARD_IMAGE_SUFFIXES
 from .shell_actions import open_with_dialog
 
 

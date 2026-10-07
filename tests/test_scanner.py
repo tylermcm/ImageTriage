@@ -75,6 +75,54 @@ class ScannerTests(unittest.TestCase):
             self.assertEqual(raw_path.name, record.display_variants[0].name)
             self.assertFalse(record.has_variant_stack)
 
+    def test_scan_folder_populates_has_editor_session_from_sidecar(self) -> None:
+        import json
+
+        from image_triage.edit_storage import editor_session_path
+        from image_triage.photo_terminal.session import SCHEMA_NAME, SCHEMA_VERSION
+
+        with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
+            root = Path(temp_dir)
+            edited_path = root / "IMG_0050.JPG"
+            untouched_path = root / "IMG_0051.JPG"
+            for path in (edited_path, untouched_path):
+                _write_image(path)
+            session_path = editor_session_path(edited_path)
+            session_path.parent.mkdir(parents=True, exist_ok=True)
+            session_path.write_text(
+                json.dumps(
+                    {
+                        "version": SCHEMA_VERSION,
+                        "schema": SCHEMA_NAME,
+                        "operations": [
+                            {"id": "op-1", "type": "adjust.exposure", "params": {"exposure": 0.5}}
+                        ],
+                        "masks": [],
+                    }
+                )
+            )
+            # An opened-but-untouched session should not count.
+            untouched_session_path = editor_session_path(untouched_path)
+            untouched_session_path.parent.mkdir(parents=True, exist_ok=True)
+            untouched_session_path.write_text(
+                json.dumps(
+                    {
+                        "version": SCHEMA_VERSION,
+                        "schema": SCHEMA_NAME,
+                        "operations": [],
+                        "masks": [],
+                    }
+                )
+            )
+
+            records = scan_folder(str(root))
+            by_name = {record.name: record for record in records}
+
+            self.assertTrue(by_name["IMG_0050.JPG"].has_editor_session)
+            self.assertTrue(by_name["IMG_0050.JPG"].has_edits)
+            self.assertFalse(by_name["IMG_0051.JPG"].has_editor_session)
+            self.assertFalse(by_name["IMG_0051.JPG"].has_edits)
+
     def test_legacy_jpeg_first_stack_is_exposed_as_raw_first(self) -> None:
         raw = r"C:\shoot\IMG_0011.CR3"
         jpeg = r"C:\shoot\IMG_0011.JPG"
@@ -94,6 +142,41 @@ class ScannerTests(unittest.TestCase):
 
         self.assertEqual([raw, edit], [variant.path for variant in record.display_variants])
         self.assertEqual("IMG_0011.CR3", record.display_variants[0].name)
+
+    def test_has_edits_unifies_edited_paths_and_editor_session(self) -> None:
+        # WI-5.3 (D3): has_edits fires on either an external edited-file
+        # variant or a built-in-editor session -- neither alone, neither
+        # required, either sufficient.
+        base = ImageRecord(path="/shoot/IMG_0012.CR3", name="IMG_0012.CR3", size=1, modified_ns=1)
+        self.assertFalse(base.has_edits)
+
+        external_only = ImageRecord(
+            path="/shoot/IMG_0012.CR3",
+            name="IMG_0012.CR3",
+            size=1,
+            modified_ns=1,
+            edited_paths=("/shoot/IMG_0012_1.jpg",),
+        )
+        self.assertTrue(external_only.has_edits)
+
+        session_only = ImageRecord(
+            path="/shoot/IMG_0012.CR3",
+            name="IMG_0012.CR3",
+            size=1,
+            modified_ns=1,
+            has_editor_session=True,
+        )
+        self.assertTrue(session_only.has_edits)
+
+        both = ImageRecord(
+            path="/shoot/IMG_0012.CR3",
+            name="IMG_0012.CR3",
+            size=1,
+            modified_ns=1,
+            edited_paths=("/shoot/IMG_0012_1.jpg",),
+            has_editor_session=True,
+        )
+        self.assertTrue(both.has_edits)
 
     def test_jpeg_folder_pairs_matching_raw_from_sibling_raw_files_folder(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:

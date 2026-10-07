@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .formats import EDIT_PRIORITY, EDIT_SUFFIXES, IMAGE_SUFFIXES, JPEG_SUFFIXES, RAW_SUFFIXES, suffix_for_path
+from .formats import EDIT_PRIORITY, JPEG_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 
 
 @dataclass(slots=True, frozen=True)
@@ -26,6 +26,7 @@ class ImageRecord:
     edited_paths: tuple[str, ...] = ()
     variants: tuple[ImageVariant, ...] = ()
     is_folder: bool = False
+    has_editor_session: bool = False
 
     @property
     def all_paths(self) -> tuple[str, ...]:
@@ -107,7 +108,7 @@ class ImageRecord:
 
     @property
     def has_edits(self) -> bool:
-        return bool(self.edited_paths)
+        return bool(self.edited_paths) or self.has_editor_session
 
     @property
     def preferred_edit_path(self) -> str:
@@ -161,8 +162,6 @@ class FilterMode(str, Enum):
     AI_DISAGREEMENTS = "AI Disagreements"
     AI_INGESTED = "AI Ingested"
     AI_PREFILTER_DUMPED = "AI Prefilter Dumped"
-    DINO_REMOVED = "DINO Removed"
-    DINO_RESCUED = "DINO Rescued"
 
 
 class WinnerMode(str, Enum):

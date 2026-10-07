@@ -1,5 +1,15 @@
 # Product Roadmap
 
+> **Historical — superseded, 2026-09-29.** Every item this roadmap lists under
+> "Still missing" and "Priority Order" (docking, advanced search/metadata
+> filters, the command palette, XMP compatibility, review tooling) has since
+> shipped. This document describes the plan that got the app from its earlier
+> shell to its current state; it does not describe what's still ahead. See
+> `docs/audit_and_remediation_plan.md` for the live work-item list and product
+> decisions still open. Left in place as a historical record rather than
+> rewritten, since planning the *next* roadmap is a product decision for you,
+> not a mechanical doc fix.
+
 ## Purpose
 
 This roadmap translates the UI overhaul direction into an implementation sequence that improves `Image Triage` in the order most likely to increase perceived quality, daily usefulness, and sellability.

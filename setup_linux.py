@@ -28,6 +28,8 @@ build_exe_options = {
         "image_triage.depth_worker",
         "image_triage.oneformer_worker",
         "image_triage.sam_worker",
+        # Missed by cx_Freeze's scan (see setup_msi.py).
+        "image_triage.ui.layout_ratios",
         "onnxruntime",
         "PIL",
         "pip",

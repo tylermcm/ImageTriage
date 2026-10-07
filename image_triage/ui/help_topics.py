@@ -89,11 +89,11 @@ def ai_workflow_center_help_pages() -> tuple[HelpPage, ...]:
 def workflow_builder_help_pages() -> tuple[HelpPage, ...]:
     return (
         HelpPage(
-            "Workflow Recipes",
+            "Export Recipes",
             """
-            # Workflow recipes
+            # Export recipes
 
-            A workflow recipe is a saved export or handoff setup. Recipes let you repeat the same output process without rebuilding the settings each time.
+            An export recipe is a saved export or handoff setup. Recipes let you repeat the same output process without rebuilding the settings each time.
 
             They are useful whenever you copy, move, resize, convert, export, or archive images the same way — for example:
 
@@ -222,11 +222,11 @@ def library_help_pages() -> tuple[HelpPage, ...]:
             """,
         ),
         HelpPage(
-            "Global Catalog",
+            "Library Index",
             """
-            # Global catalog
+            # Library index
 
-            The global catalog is an optional, searchable index of folders you choose. It lets you search filenames, paths, and cached image bundle information without opening each folder by hand.
+            The library index is an optional, searchable index of folders you choose. It lets you search filenames, paths, and cached image bundle information without opening each folder by hand.
 
             It is useful for:
 
@@ -235,7 +235,7 @@ def library_help_pages() -> tuple[HelpPage, ...]:
             - Opening images from multiple folders
             - Quickly checking cached folder contents
 
-            AI caches are still stored per folder. The catalog helps with search and navigation — it does not change how folder-local AI processing works.
+            AI caches are still stored per folder. The library index helps with search and navigation — it does not change how folder-local AI processing works.
             """,
         ),
     )
@@ -246,32 +246,32 @@ def catalog_help_pages() -> tuple[HelpPage, ...]:
         HelpPage(
             "What It Is",
             """
-            # The catalog
+            # The library index
 
-            The catalog is an optional index of folders you choose. It stores enough information to help you search and reopen image bundles quickly, without rescanning every folder each time.
+            The library index is an optional index of folders you choose. It stores enough information to help you search and reopen image bundles quickly, without rescanning every folder each time.
 
-            The catalog does not move your files or force a new workflow. It is simply a faster way to find and reopen existing work.
+            The library index does not move your files or force a new workflow. It is simply a faster way to find and reopen existing work.
             """,
         ),
         HelpPage(
             "How To Use It",
             """
-            # How to use the catalog
+            # How to use the library index
 
             1. Add one or more root folders from the **Library** menu.
-            2. Refresh the catalog index.
-            3. Search or browse the catalog by filename or path.
-            4. Open results as a virtual catalog view.
+            2. Refresh the library index.
+            3. Search or browse it by filename or path.
+            4. Open results as a virtual library view.
 
-            Catalog views are for discovery and navigation. They let you inspect found images without changing where the originals are stored.
+            Library views are for discovery and navigation. They let you inspect found images without changing where the originals are stored.
             """,
         ),
         HelpPage(
             "When To Use It",
             """
-            # When the catalog helps
+            # When the library index helps
 
-            The catalog is most useful when you want to:
+            The library index is most useful when you want to:
 
             - Find images across multiple folders
             - Search old shoots
@@ -295,6 +295,16 @@ def collection_help_pages() -> tuple[HelpPage, ...]:
             A collection is a named group of image bundle references. Collections do not copy, move, or delete files — they remember where selected images live so you can reopen that working set later.
 
             Think of a collection as a playlist for images: it points to files, but it does not contain them.
+            """,
+        ),
+        HelpPage(
+            "Create and Edit",
+            """
+            # Build a collection
+
+            Choose **Create Collection** to enter collection mode. Check images as you search, sort, filter, and browse folders. Checked images stay in the set even when they are no longer visible. Double-click an image away from its checkbox to inspect it in the popout viewer.
+
+            Choose **Save Collection** to name the set, or **Cancel** to discard the picks. To change an existing set, choose **Edit Collection Items**; its current images start checked, and saving applies your changes.
             """,
         ),
         HelpPage(

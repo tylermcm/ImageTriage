@@ -836,7 +836,7 @@ class MaskOverviewTests(unittest.TestCase):
         panel.close()
 
     def test_hiding_a_layer_drops_it_from_the_composite_but_keeps_its_edits(self) -> None:
-        from photo_terminal.adjustments import EditRecipe
+        from image_triage.photo_terminal.adjustments import EditRecipe
 
         from image_triage.ui.photo_editor_panel import recipe_for_mask, replace_mask_operations
 
