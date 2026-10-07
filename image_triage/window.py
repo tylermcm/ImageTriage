@@ -2566,6 +2566,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if not self._preview_ctl.prepare_photocraft_close():
+            event.ignore()
+            return
+        self._preview_ctl.shutdown_photocraft()
+        preview = self._preview_ctl.preview_if_built()
+        if preview is not None and preview.isVisible():
+            with QSignalBlocker(preview):
+                preview.close()
         if self._zen_mode_enabled:
             self._zen.set_zen_mode(False)
         self._settings_ctl.remember_current_folder_view_state()
@@ -2582,7 +2590,6 @@ class MainWindow(QMainWindow):
         self._aiculler.flush_aiculler_internal_label_cache()
         self._aiculler.flush_aiculler_global_label_queue()
         self._aiculler.shutdown_aiculler_telemetry_logger()
-        self._preview_ctl.shutdown_photocraft()
         self._settings_ctl.save_window_state()
         perf_logger().log("app.close")
         perf_logger().flush()

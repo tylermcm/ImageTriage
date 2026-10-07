@@ -518,7 +518,11 @@ def discover_edited_paths(record: ImageRecord) -> tuple[str, ...]:
         return ()
 
     candidates.sort(key=lambda item: edited_candidate_sort_key(stem_key, item))
-    return tuple(item.path for item in candidates)
+    from .photocraft_bridge import rendered_preview_path
+
+    saved_render = rendered_preview_path(record.path)
+    rendered = (str(saved_render),) if saved_render.is_file() else ()
+    return (*rendered, *(item.path for item in candidates))
 
 
 def variant_family_key(stem: str, exact_stems: set[str]) -> str:

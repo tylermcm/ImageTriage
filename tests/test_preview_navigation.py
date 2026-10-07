@@ -64,6 +64,7 @@ def test_popout_navigation_uses_logical_grid_selection() -> None:
         _records=records,
         _preview_navigation_dirty=False,
         _record_at=lambda index: records[index],
+        _preview=None,
     )
 
     _preview_over(window, open_preview=open_preview).navigate_preview(1)

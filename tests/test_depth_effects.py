@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication
 from image_triage.depth_effects import composite_lens_blur, lens_blur_radius
 from image_triage.editor_render import CpuEditorRenderBackend
 from image_triage.image_resize import _pillow_from_qimage, _qimage_from_pillow
-from image_triage.ui.photo_editor_panel import EditRecipe
+from image_triage.photo_terminal.adjustments import EditRecipe
 
 
 def _striped(h: int = 120, w: int = 120) -> np.ndarray:

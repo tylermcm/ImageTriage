@@ -383,8 +383,6 @@ def unpinned_bundles() -> tuple[str, ...]:
 # Capabilities
 # --------------------------------------------------------------------------
 
-_TORCH_MASK_MODULES = ("torch", "transformers", "safetensors", "PIL", "numpy")
-
 CAPABILITIES: dict[str, Capability] = {
     "culling": Capability(
         key="culling",
@@ -446,52 +444,6 @@ CAPABILITIES: dict[str, Capability] = {
         expected_outputs=("text_embeds", "image_embeds"),
         expected_embedding_dim=512,
     ),
-    "scene_masks": Capability(
-        key="scene_masks",
-        name="Scene selection (OneFormer)",
-        summary="Editor masks for sky, skin, foliage and other scene regions.",
-        modules=_TORCH_MASK_MODULES,
-        model_bundles=("oneformer",),
-        requires_torch=True,
-        worker_module="image_triage.oneformer_worker",
-        probe_kind="torch",
-        transformers_symbols=("OneFormerForUniversalSegmentation", "OneFormerProcessor"),
-    ),
-    "subject_masks": Capability(
-        key="subject_masks",
-        name="Subject selection (BiRefNet)",
-        summary="Editor masks that isolate the main subject.",
-        # BiRefNet loads its own modeling code, which imports einops and
-        # kornia directly; without them the model fails at load time.
-        modules=(*_TORCH_MASK_MODULES, "timm", "cv2", "einops", "kornia"),
-        model_bundles=("birefnet",),
-        requires_torch=True,
-        worker_module="image_triage.birefnet_worker",
-        probe_kind="torch",
-        transformers_symbols=("AutoModelForImageSegmentation",),
-    ),
-    "sam_masks": Capability(
-        key="sam_masks",
-        name="Click selection (SAM 2.1)",
-        summary="Editor masks from a click or box on the photo.",
-        modules=_TORCH_MASK_MODULES,
-        model_bundles=("sam",),
-        requires_torch=True,
-        worker_module="image_triage.sam_worker",
-        probe_kind="torch",
-        transformers_symbols=("Sam2Model", "Sam2Processor"),
-    ),
-    "depth": Capability(
-        key="depth",
-        name="Depth estimation",
-        summary="Depth maps behind depth-aware editor tools.",
-        modules=_TORCH_MASK_MODULES,
-        model_bundles=("depth",),
-        requires_torch=True,
-        worker_module="image_triage.depth_worker",
-        probe_kind="torch",
-        transformers_symbols=("AutoImageProcessor", "AutoModelForDepthEstimation"),
-    ),
 }
 
 
@@ -503,13 +455,9 @@ BASE_CAPABILITIES: tuple[str, ...] = (
     "faces",
     "semantic_search",
 )
-# Capabilities the PyTorch runtime adds.
-TORCH_CAPABILITIES: tuple[str, ...] = (
-    "scene_masks",
-    "subject_masks",
-    "sam_masks",
-    "depth",
-)
+# The PyTorch runtime no longer adds any capability: the only features that
+# used it (the built-in manual editor's mask/depth tools) were removed.
+TORCH_CAPABILITIES: tuple[str, ...] = ()
 
 
 def setup_capabilities(*, include_torch: bool) -> tuple[str, ...]:
@@ -524,10 +472,6 @@ DEFAULT_CAPABILITY_ORDER: tuple[str, ...] = (
     "quality_topiq",
     "faces",
     "semantic_search",
-    "scene_masks",
-    "subject_masks",
-    "sam_masks",
-    "depth",
 )
 
 

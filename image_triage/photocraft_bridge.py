@@ -11,16 +11,18 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wintypes
 import json
+import logging
 import os
 import secrets
 import socket
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from .shell_actions import detect_photocraft_executable
+from .edit_storage import edit_root_for
+from .shell_actions import companion_photocraft_executables, detect_photocraft_executable
 
 # Formats PhotoCraft can open directly (docs/README "Formats" section). Anything
 # else (RAW, FITS, ...) must be decoded to one of these first.
@@ -46,8 +48,27 @@ class PhotoCraftError(RuntimeError):
     """A PhotoCraft launch, control-channel, or embedding failure."""
 
 
+class PhotoCraftCompatibilityError(PhotoCraftError):
+    """The selected binary cannot implement the hosted handoff protocol."""
+
+
 def path_needs_conversion(path: str) -> bool:
     return Path(path).suffix.lower() not in NATIVE_SUFFIXES
+
+
+def sidecar_pcraft_path(image_path: str) -> Path:
+    """Where a photo's non-destructive PhotoCraft project lives: a ``.pcraft``
+    file in the same hidden per-folder edit root ``edit_storage`` uses for the
+    built-in editor's sidecars, so both conventions stay out of the user's
+    photo folders and travel together with the rest of a folder's edit state.
+    """
+    path = Path(image_path)
+    return edit_root_for(path.parent) / (path.name + ".pcraft")
+
+
+def rendered_preview_path(image_path: str) -> Path:
+    path = Path(image_path)
+    return edit_root_for(path.parent) / (path.name + ".photocraft.png")
 
 
 def materialize_for_photocraft(path: str, cache_dir: Path) -> str:
@@ -66,7 +87,7 @@ def materialize_for_photocraft(path: str, cache_dir: Path) -> str:
     if image.isNull():
         raise PhotoCraftError(f"Could not decode {path!r} for PhotoCraft: {error}")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    out_path = cache_dir / (Path(path).stem + "__photocraft_source.tiff")
+    out_path = cache_dir / (Path(path).name + "__photocraft_source.tiff")
     if not image.save(str(out_path), "TIFF"):
         raise PhotoCraftError(f"Could not write converted TIFF for {path!r}")
     return str(out_path)
@@ -75,12 +96,16 @@ def materialize_for_photocraft(path: str, cache_dir: Path) -> str:
 class PhotoCraftControl:
     """Blocking JSON-lines client for PhotoCraft's control channel."""
 
-    def __init__(self, port: int, token: str, *, host: str = "127.0.0.1", timeout: float = 5.0) -> None:
-        self._sock = socket.create_connection((host, port), timeout=timeout)
+    def __init__(self, port: int, token: str, *, host: str = "127.0.0.1", timeout: float = 120.0) -> None:
+        self._sock = socket.create_connection((host, port), timeout=min(timeout, 2.0))
         self._sock.settimeout(timeout)
         self._file = self._sock.makefile("rwb")
         self._next_id = 1
-        self._authenticate(token)
+        try:
+            self._authenticate(token)
+        except BaseException:
+            self.close()
+            raise
 
     def _authenticate(self, token: str) -> None:
         reply = self._request("auth", {"token": token})
@@ -104,13 +129,47 @@ class PhotoCraftControl:
         return reply
 
     def call(self, method: str, params: dict | None = None) -> dict:
-        reply = self._request(method, params)
+        try:
+            reply = self._request(method, params)
+        except (OSError, ValueError) as error:
+            raise PhotoCraftError(f"PhotoCraft control {method!r} failed: {error}") from error
         if not reply.get("ok"):
             raise PhotoCraftError(f"PhotoCraft control {method!r} failed: {reply.get('error')}")
         return reply.get("result") or {}
 
-    def app_open(self, path: str) -> dict:
-        return self.call("app.open", {"path": _automation_path(path)})
+    def app_open(self, path: str, *, replace: bool = False) -> dict:
+        params = {"path": _automation_path(path)}
+        if replace:
+            params["replace"] = True
+        return self.call("app.open", params)
+
+    def require_hosted_handoff(self) -> None:
+        """Probe validation without opening a document or writing any files."""
+        try:
+            capabilities = self.call("app.handoff")
+        except PhotoCraftError as error:
+            if "unknown method" not in str(error):
+                raise
+            raise PhotoCraftCompatibilityError("This PhotoCraft build lacks persistent hosted document replacement") from error
+        if capabilities.get("version", 0) < 2:
+            raise PhotoCraftCompatibilityError("This PhotoCraft build lacks persistent hosted document replacement")
+        for method, validation in (
+            ("app.stash", "stash requires path and preview"),
+            ("app.bind", "bind requires an open document, .pcraft path and .png preview"),
+        ):
+            try:
+                self.call(method, {})
+            except PhotoCraftError as error:
+                if validation in str(error):
+                    continue
+                if "unknown method" not in str(error):
+                    raise
+                raise PhotoCraftCompatibilityError(
+                    "This PhotoCraft build does not support the hosted editor handoff. "
+                    "Use the companion photocraft-host.exe build or update IMAGE_TRIAGE_PHOTOCRAFT_EXE. "
+                    f"Compatibility check: {error}"
+                ) from error
+            raise PhotoCraftCompatibilityError(f"PhotoCraft returned an unexpected response to the {method} compatibility check")
 
     def app_save(self, path: str | None = None) -> dict:
         return self.call("app.save", {"path": _automation_path(path)} if path else {})
@@ -132,8 +191,31 @@ class PhotoCraftControl:
             params["show"] = show
         return self.execute("edit.menus", params)
 
+    def document_revision(self) -> int | None:
+        """The open document's undo/history revision counter: unchanged since
+        open means nothing worth saving happened. None means no document is open."""
+        # Session inspection also works after the user closes the document tab.
+        # It avoids treating an empty editor as a failed save/transport request.
+        session = self.execute("session.inspect")
+        if "active" not in session:
+            raise PhotoCraftError("PhotoCraft session inspection did not report an active document")
+        active = session["active"]
+        if active is None:
+            return None
+        for document in session.get("documents", []):
+            if document.get("index") == active:
+                return int(document["revision"])
+        raise PhotoCraftError("PhotoCraft session inspection omitted the active document")
+
+    def close_document(self) -> None:
+        """Close the active document. Over the control channel this never
+        opens an "unsaved changes?" dialog — unsaved edits are just discarded
+        — so callers that want to keep them must app_save first."""
+        self.execute("file.close")
+
     def quit(self) -> None:
         try:
+            self._sock.settimeout(2.0)
             self.call("app.quit")
         except (PhotoCraftError, OSError):
             pass
@@ -154,6 +236,22 @@ class PhotoCraftProcess:
     hwnd: int
     token_file: Path
     read_root: Path
+    write_root: Path | None = None
+    executable: str = ""
+    attached_parent: int | None = None
+    launch_timings: dict[str, float] = field(default_factory=dict)
+    current_source: str | None = None
+    source_path: str = ""
+    pending_stashes: dict[str, tuple[int, str]] = field(default_factory=dict)
+    stash_errors: dict[str, str] = field(default_factory=dict)
+    source_by_sidecar: dict[str, str] = field(default_factory=dict)
+    observed_stashes: set[int] = field(default_factory=set)
+    # The sidecar the *currently open* document would be saved to, and its
+    # document.inspect() revision right after that open — together these say
+    # whether switching away should save first (preview_controller.py owns
+    # the actual save-before-close-before-open sequence).
+    current_sidecar: Path | None = None
+    opened_revision: int = 0
 
     def is_running(self) -> bool:
         return self.process.poll() is None
@@ -166,27 +264,36 @@ class PhotoCraftProcess:
         except ValueError:
             return None
 
+    def path_within_write_root(self, path: str) -> str | None:
+        try:
+            return Path(path).resolve().relative_to((self.write_root or self.read_root).resolve()).as_posix()
+        except ValueError:
+            return None
+
     def shutdown(self, *, timeout: float = 3.0) -> None:
         """Ask PhotoCraft to quit over the control channel, then fall back to
         terminate()/kill() if it doesn't exit in time."""
-        if self.is_running():
-            self.control.quit()
-            try:
-                self.process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                self.process.terminate()
+        try:
+            if self.is_running():
+                self.control.quit()
                 try:
                     self.process.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
-                    self.process.kill()
-        try:
-            self.control.close()
-        except OSError:
-            pass
-        try:
-            self.token_file.unlink(missing_ok=True)
-        except OSError:
-            pass
+                    self.process.terminate()
+                    try:
+                        self.process.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        self.process.kill()
+                        self.process.wait(timeout=timeout)
+        finally:
+            try:
+                self.control.close()
+            except OSError:
+                pass
+            try:
+                self.token_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _automation_path(path: str) -> str:
@@ -216,13 +323,15 @@ def _connect_with_retry(port: int, token: str, process: subprocess.Popen, *, tim
 
 def _find_window_for_pid(pid: int, *, timeout: float = 10.0) -> int | None:
     user32 = ctypes.windll.user32
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
     enum_proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     found: list[int] = []
 
     def _callback(hwnd, _lparam):
         owner_pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
-        if owner_pid.value == pid and user32.IsWindowVisible(hwnd):
+        if owner_pid.value == pid and (user32.IsWindowVisible(hwnd) or user32.GetWindowTextLengthW(hwnd) > 0):
             found.append(int(hwnd))
             return False
         return True
@@ -243,10 +352,35 @@ def launch_photocraft(
     read_root: str,
     write_root: str,
     executable: str | None = None,
+    on_window=None,
 ) -> PhotoCraftProcess:
     exe = executable or detect_photocraft_executable()
     if not exe:
         raise PhotoCraftError("PhotoCraft executable not found")
+
+    # A launcher/dev restart may inherit an override for an older release.
+    # Honor compatible overrides, but recover from protocol incompatibility
+    # before any document has opened. Each failed attempt cleans up below.
+    candidates = list(dict.fromkeys([exe, *companion_photocraft_executables()]))
+    last_error = None
+    for candidate in candidates:
+        try:
+            proc = _launch_photocraft_binary(initial_path, read_root=read_root, write_root=write_root, executable=candidate, on_window=on_window)
+            proc.executable = candidate
+            logging.getLogger(__name__).info("Hosted PhotoCraft executable: %s", candidate)
+            return proc
+        except PhotoCraftCompatibilityError as error:
+            last_error = error
+            logging.getLogger(__name__).warning("Rejected incompatible PhotoCraft executable %s: %s", candidate, error)
+    raise PhotoCraftCompatibilityError(f"No compatible PhotoCraft build found. {last_error}")
+
+
+def _launch_photocraft_binary(
+    initial_path: str, *, read_root: str, write_root: str, executable: str, on_window=None,
+) -> PhotoCraftProcess:
+    exe = executable
+    started = time.perf_counter()
+    timings = {}
 
     port = _free_tcp_port()
     token = secrets.token_hex(32)
@@ -257,32 +391,60 @@ def launch_photocraft(
 
     args = [
         exe,
+        "--hosted",
         "--control", str(port),
         "--control-token-file", str(token_file),
         "--automation-read-root", read_root,
         "--automation-write-root", write_root,
-        initial_path,
     ]
-    process = subprocess.Popen(
-        args,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
-    )
-
+    process = None
+    control = None
     try:
+        process = subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+        )
+        timings["spawn_ms"] = (time.perf_counter() - started) * 1000
         control = _connect_with_retry(port, token, process)
+        timings["control_ready_ms"] = (time.perf_counter() - started) * 1000
+        control.require_hosted_handoff()
+        timings["capabilities_ready_ms"] = (time.perf_counter() - started) * 1000
         hwnd = _find_window_for_pid(process.pid)
         if hwnd is None:
-            control.close()
             raise PhotoCraftError("Could not find PhotoCraft's window")
+        user32 = ctypes.windll.user32
+        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.ShowWindow(hwnd, 0)  # SW_HIDE until attached to the Qt host.
+        # Respect PhotoCraft's persisted theme; the filmstrip follows its colors.
+        timings["shell_configured_ms"] = (time.perf_counter() - started) * 1000
+        proc = PhotoCraftProcess(process=process, control=control, hwnd=hwnd, token_file=token_file,
+                                read_root=Path(read_root), write_root=Path(write_root), launch_timings=timings)
+        if on_window is not None:
+            on_window(proc)
+        try:
+            relative = Path(initial_path).resolve().relative_to(Path(read_root).resolve()).as_posix()
+        except ValueError as error:
+            raise PhotoCraftError("Initial photo is outside the automation read root") from error
+        # Open through the control channel so readiness includes decoding;
+        # command-line opens may still be running when the HWND first appears.
+        control.app_open(relative)
+        timings["document_ready_ms"] = (time.perf_counter() - started) * 1000
     except BaseException:
-        if process.poll() is None:
+        if control is not None:
+            control.close()
+        if process is not None and process.poll() is None:
             process.terminate()
+            try:
+                process.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3.0)
         token_file.unlink(missing_ok=True)
         raise
 
-    return PhotoCraftProcess(process=process, control=control, hwnd=hwnd, token_file=token_file, read_root=Path(read_root))
+    return proc
 
 
 def embed_in_widget(photocraft_hwnd: int, parent_hwnd: int) -> None:
@@ -290,6 +452,14 @@ def embed_in_widget(photocraft_hwnd: int, parent_hwnd: int) -> None:
     user32 = ctypes.windll.user32
     get_style = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
     set_style = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
+    get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+    get_style.restype = ctypes.c_ssize_t
+    set_style.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+    set_style.restype = ctypes.c_ssize_t
+    user32.SetParent.argtypes = [wintypes.HWND, wintypes.HWND]
+    user32.SetParent.restype = wintypes.HWND
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, wintypes.UINT]
 
     style = get_style(photocraft_hwnd, _GWL_STYLE)
     style &= ~(_WS_POPUP | _WS_CAPTION | _WS_THICKFRAME | _WS_SYSMENU | _WS_MINIMIZEBOX | _WS_MAXIMIZEBOX)
@@ -298,8 +468,12 @@ def embed_in_widget(photocraft_hwnd: int, parent_hwnd: int) -> None:
 
     user32.SetParent(photocraft_hwnd, parent_hwnd)
     user32.SetWindowPos(photocraft_hwnd, 0, 0, 0, 0, 0, _SWP_NOZORDER | _SWP_NOACTIVATE | _SWP_FRAMECHANGED)
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.ShowWindow(photocraft_hwnd, 4)  # SW_SHOWNOACTIVATE, already a child.
 
 
 def resize_embedded(photocraft_hwnd: int, width: int, height: int) -> None:
     user32 = ctypes.windll.user32
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, wintypes.UINT]
     user32.SetWindowPos(photocraft_hwnd, 0, 0, 0, max(1, width), max(1, height), _SWP_NOZORDER | _SWP_NOACTIVATE)

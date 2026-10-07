@@ -181,6 +181,13 @@ def render_edited_image(
 
     try:
         source = Path(source_path)
+        from .photocraft_bridge import rendered_preview_path
+        from .imaging import load_image_for_display
+
+        saved_render = rendered_preview_path(str(source))
+        if saved_render.is_file():
+            image, _error = load_image_for_display(str(saved_render), target_size or QSize(16384, 16384), prefer_embedded=False)
+            return image if not image.isNull() else None
         session_path = edit_storage.resolve_session_for_read(source)
         if not session_path.exists():
             return None
@@ -188,13 +195,7 @@ def render_edited_image(
         if not _session_has_real_edits(session):
             return None
 
-        # Deferred import: photo_editor_panel is a heavy UI module and (via
-        # edit_session_geometry) ends up importing this module's sibling
-        # helpers, so importing it back at top level here risks a cycle. The
-        # same lazy-import pattern is used elsewhere in this codebase for the
-        # same reason (see editor_copy.write_edited_copy's import of
-        # CpuEditorRenderBackend).
-        from .ui.photo_editor_panel import recipe_from_session
+        from .edit_recipe_session import recipe_from_session
 
         recipe = recipe_from_session(session)
         masked_adjustments = build_masked_adjustments(session, session_path, source)

@@ -38,7 +38,6 @@ from .layout_state import (
 )
 from .menus import build_main_menu_bar
 from .people_dialog import PeopleSearchDialog
-from .photo_editor_panel import PhotoEditorPanel
 from .resize_dialog import ResizeDialog
 from .theme import (
     AppearanceMode,
@@ -92,7 +91,6 @@ __all__ = [
     "PaletteCommand",
     "PagedHelpDialog",
     "PeopleSearchDialog",
-    "PhotoEditorPanel",
     "ResizeDialog",
     "ThemePalette",
     "WORKSPACE_METRICS",

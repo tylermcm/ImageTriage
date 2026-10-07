@@ -93,7 +93,7 @@ def test_baseline_topbar_rebuild(main_window) -> None:
 
 def test_baseline_editor_render(main_window) -> None:
     from image_triage.editor_render import CpuEditorRenderBackend
-    from image_triage.ui.photo_editor_panel import EditRecipe
+    from image_triage.photo_terminal.adjustments import EditRecipe
 
     backend = CpuEditorRenderBackend()
     for label, (width, height) in (("2mp", (1600, 1200)), ("12mp", (4000, 3000))):

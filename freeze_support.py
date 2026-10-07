@@ -105,11 +105,6 @@ class FreezeAssetLayout:
             ),
             *_pocketdrop_include_files(),
             (str(CLI_CULLER_PACKAGE_ROOT), "aiculler"),
-            (str(ROOT / "image_triage" / "birefnet_worker.py"), "ai_workers/birefnet_worker.py"),
-            (str(ROOT / "image_triage" / "oneformer_worker.py"), "ai_workers/oneformer_worker.py"),
-            (str(ROOT / "image_triage" / "sam_worker.py"), "ai_workers/sam_worker.py"),
-            (str(ROOT / "image_triage" / "depth_worker.py"), "ai_workers/depth_worker.py"),
-            (str(ROOT / "image_triage" / "mask_engine_worker.py"), "ai_workers/mask_engine_worker.py"),
             (str(self.ai_stdlib_stage_root), "ai_stdlib"),
             (str(self.ai_binary_modules_stage_root), "lib"),
         ]

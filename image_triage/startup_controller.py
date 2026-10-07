@@ -34,6 +34,9 @@ class StartupController(QObject):
         self._window = window
 
     def restart_app_for_development(self) -> None:
+        if not self._window._preview_ctl.prepare_photocraft_close():
+            return
+        self._window._preview_ctl.shutdown_photocraft()
         self._window.statusBar().showMessage("Restarting Image Triage...")
         self._window._settings_ctl.remember_current_folder_view_state()
         self._window._settings_ctl.save_window_state()
@@ -49,18 +52,6 @@ class StartupController(QObject):
             self._window._records_view.suspend_background_indexing()
         except Exception:
             _logger.exception("Failed to suspend background indexing before dev restart")
-        try:
-            # Kill the mask_engine_worker child directly rather than via
-            # service.shutdown(): shutdown() takes the service lock, which would
-            # deadlock if a mask op is currently wedged holding it. We are exiting
-            # anyway, so a lock-free kill is correct and can't hang.
-            from .mask_engine_service import default_mask_engine_service
-
-            worker = getattr(default_mask_engine_service(), "_process", None)
-            if worker is not None and worker.poll() is None:
-                worker.kill()
-        except Exception:
-            _logger.exception("Failed to kill mask_engine_worker before dev restart")
 
         args = [sys.executable, "-m", "image_triage", *sys.argv[1:]]
         cwd = Path(__file__).resolve().parent.parent

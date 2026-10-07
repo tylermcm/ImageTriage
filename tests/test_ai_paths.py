@@ -198,12 +198,20 @@ class RuntimeTagTests(unittest.TestCase):
         self.assertRegex(tag, r"^py\d{2,3}-[a-z_]+-[a-z0-9_]+$")
 
     def test_architecture_normalizes_x86_64(self) -> None:
-        with patch("image_triage.ai_paths.platform.machine", return_value="x86_64"):
+        with patch("image_triage.ai_paths.sys.platform", "linux"), patch("image_triage.ai_paths.platform.machine", return_value="x86_64"):
             self.assertEqual(ai_paths.process_architecture(), "amd64")
 
     def test_architecture_normalizes_aarch64(self) -> None:
-        with patch("image_triage.ai_paths.platform.machine", return_value="aarch64"):
+        with patch("image_triage.ai_paths.sys.platform", "linux"), patch("image_triage.ai_paths.platform.machine", return_value="aarch64"):
             self.assertEqual(ai_paths.process_architecture(), "arm64")
+
+    def test_windows_runtime_tags_never_query_wmi(self) -> None:
+        from image_triage.ai_runtime_packages import _python_runtime_tag
+
+        for build_platform, architecture in (("win-amd64", "amd64"), ("win-arm64", "arm64"), ("win32", "x86")):
+            with self.subTest(build_platform=build_platform), patch("image_triage.ai_paths.sys.platform", "win32"), patch("image_triage.ai_paths.sysconfig.get_platform", return_value=build_platform), patch("image_triage.ai_paths.platform.machine", side_effect=AssertionError("WMI queried")), patch("image_triage.ai_paths.platform.system", side_effect=AssertionError("WMI queried")):
+                self.assertEqual(ai_paths.process_architecture(), architecture)
+                self.assertTrue(_python_runtime_tag().endswith(f"-windows-{architecture}"))
 
 
 if __name__ == "__main__":

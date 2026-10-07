@@ -276,15 +276,12 @@ class CollectionBrowsePreviewTests(unittest.TestCase):
         winners: list[str] = []
         preview.winner_requested.connect(winners.append)
         preview.set_collection_browse_mode(True)
-        self.assertFalse(preview._studio_rail.isVisible())
-        self.assertFalse(preview.photo_editor_panel.isEnabled())
         self.assertFalse(preview._mockup_keep.isVisible())
         preview._handle_heart_clicked(0)
         preview.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_W,
                                         Qt.KeyboardModifier.NoModifier))
         self.assertEqual([], winners)
         preview.set_collection_browse_mode(False)
-        self.assertTrue(preview.photo_editor_panel.isEnabled())
         self.assertFalse(preview.photoshop_button.isEnabled())
         preview.close()
 

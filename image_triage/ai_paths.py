@@ -20,6 +20,7 @@ import os
 import platform
 import shutil
 import sys
+import sysconfig
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -331,25 +332,27 @@ def preflight_storage(path: Path, *, required_bytes: int = 0) -> StoragePrefligh
 
 def process_architecture() -> str:
     """Normalized machine architecture for the *running* interpreter."""
-    machine = (platform.machine() or "").replace(" ", "_").lower()
-    if not machine and os.name == "nt":
-        machine = (
-            os.environ.get("PROCESSOR_ARCHITEW6432")
-            or os.environ.get("PROCESSOR_ARCHITECTURE")
-            or ""
-        ).replace(" ", "_").lower()
+    # Python 3.13's platform.machine()/system() query WMI on Windows.
+    # A stalled WMI service can block startup indefinitely. The interpreter's
+    # build platform identifies its architecture without any service or I/O.
+    if sys.platform == "win32":
+        build_platform = sysconfig.get_platform().lower()
+        machine = build_platform.removeprefix("win-") if build_platform != "win32" else "x86"
+    else:
+        machine = platform.machine() or ""
+    machine = machine.replace(" ", "_").lower()
     if machine in {"amd64", "x86_64"}:
         return "amd64"
     if machine in {"arm64", "aarch64"}:
         return "arm64"
     if not machine:
-        return "amd64" if platform.architecture()[0] == "64bit" else "unknown"
+        return "amd64" if sys.maxsize > 2**32 else "unknown"
     return machine
 
 
 def runtime_tag() -> str:
     """Identity of the interpreter a managed runtime profile is built for."""
-    system = (platform.system() or "unknown").replace(" ", "_").lower()
+    system = "windows" if sys.platform == "win32" else (platform.system() or "unknown").replace(" ", "_").lower()
     return f"py{sys.version_info.major}{sys.version_info.minor}-{system}-{process_architecture()}"
 
 

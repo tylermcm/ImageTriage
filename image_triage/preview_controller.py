@@ -2,16 +2,16 @@
 from __future__ import annotations
 
 import logging
-import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from bisect import bisect_left
 
-from PySide6.QtCore import QObject, QSignalBlocker
+from PySide6.QtCore import QObject, QSignalBlocker, QTimer, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 from pathlib import Path
 
-from . import photocraft_bridge
+from . import edit_storage, photocraft_bridge
 from .brackets import BracketDetector
 from .models import ImageRecord, SessionAnnotation
 from .perf import perf_logger
@@ -33,6 +33,12 @@ if TYPE_CHECKING:
 class PreviewController(QObject):
     """The full-screen preview and the winner ladder: building and opening the preview, navigation and filmstrip, requests coming back from it, preloading, compare and winner-ladder state. Extracted from MainWindow (docs/mainwindow_decomposition_plan.md, DC-4.4)."""
 
+    _photocraft_ready = Signal(int, str, object)
+    _photocraft_window_ready = Signal(int, object)
+    _photocraft_saved = Signal(str)
+    _photocraft_save_failed = Signal(str)
+    _photocraft_theme_changed = Signal(object)
+
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
         self._window = window
@@ -40,6 +46,20 @@ class PreviewController(QObject):
         self._preview_preload_index: int | None = None
         self._photocraft_executable = detect_photocraft_executable()
         self._photocraft: photocraft_bridge.PhotoCraftProcess | None = None
+        self._photocraft_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="photocraft")
+        self._photocraft_generation = 0
+        self._photocraft_future = None
+        self._photocraft_ready.connect(self._finish_photocraft_open)
+        self._photocraft_window_ready.connect(self._prepare_photocraft_window)
+        self._photocraft_saved.connect(self._refresh_photocraft_save)
+        self._photocraft_save_failed.connect(lambda error: self._window.statusBar().showMessage(error, 15000))
+        self._photocraft_theme_changed.connect(self._apply_photocraft_theme)
+        self._photocraft_save_timer = QTimer(self)
+        self._photocraft_save_timer.setInterval(1500)
+        self._photocraft_save_timer.timeout.connect(self._queue_photocraft_save)
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.shutdown_photocraft)
 
     def preview_if_built(self) -> FullScreenPreview | None:
         """The popout viewer if it exists yet; never builds it."""
@@ -83,6 +103,8 @@ class PreviewController(QObject):
         preview.command_palette_requested.connect(lambda: self._window._command_palette.open(context="preview"))
         preview.photoshop_requested.connect(self.open_preview_image_in_photoshop)
         preview.photocraft_edit_requested.connect(self.handle_photocraft_edit_requested)
+        preview.photocraft_host_resized.connect(self.resize_photocraft)
+        preview.photocraft_close_guard = self.prepare_photocraft_preview_close
         preview.winner_requested.connect(self.handle_preview_winner_requested)
         preview.reject_requested.connect(self.handle_preview_reject_requested)
         preview.keep_requested.connect(self.handle_preview_keep_requested)
@@ -286,7 +308,9 @@ class PreviewController(QObject):
     def handle_preview_closed(self) -> None:
         # Editor closed — resume background GPU indexing where it left off.
         self._window._records_view.resume_background_indexing()
-        self.shutdown_photocraft()
+        self._photocraft_generation += 1
+        self._photocraft_save_timer.stop()
+        self._photocraft_future = self._photocraft_executor.submit(self._shutdown_photocraft)
         if self._window._winner_ladder_state is not None:
             self.finish_winner_ladder(reopen_preview=False, show_message=False)
         if self._window._quick_view_mode:
@@ -550,75 +574,400 @@ class PreviewController(QObject):
         open_in_photoshop(path)
 
     def handle_photocraft_edit_requested(self, path: str) -> None:
-        """"Edit in PhotoCraft" toggled on: launch (or reuse) PhotoCraft and
-        embed its window into the popout's single-image pane."""
-        preview = self._window._preview
+        """Load the photo into the popout's embedded PhotoCraft editor."""
+        preview = self.preview_if_built()
         if preview is None or not path:
             return
+        self._photocraft_generation += 1
+        generation = self._photocraft_generation
+        # Disable the local native parent, which blocks input to its child
+        # without a synchronous cross-process WM_ENABLE call on the UI thread.
+        preview.set_photocraft_loading(True)
+        self._photocraft_save_timer.start()
+        self._photocraft_future = self._photocraft_executor.submit(self._load_photocraft, generation, path)
+
+    def _load_photocraft(self, generation: int, path: str) -> None:
+        # Superseded requests never decode or open a document. The running
+        # handoff finishes safely; only the latest selection may become visible.
+        if generation != self._photocraft_generation:
+            return
+        error = None
         try:
-            self._open_in_photocraft(preview, path)
-        except photocraft_bridge.PhotoCraftError as error:
-            _log.warning("Edit in PhotoCraft failed for %s: %s", path, error)
-            with QSignalBlocker(preview.photocraft_button):
-                preview.photocraft_button.setChecked(False)
+            self._open_in_photocraft(None, path)
+        except Exception as caught:
+            error = caught
+            _log.exception("PhotoCraft handoff failed for %s", path)
+        self._photocraft_ready.emit(generation, path, error)
 
-    def _photocraft_source_path(self, path: str) -> str:
-        """The path to hand PhotoCraft: ``path`` itself if it can open the format
-        directly, otherwise a decoded TIFF in a scratch dir (never the original
-        RAW/unsupported file, so PhotoCraft's write root never covers it)."""
-        if not photocraft_bridge.path_needs_conversion(path):
-            return path
-        cache_dir = Path(tempfile.gettempdir()) / "image_triage_photocraft"
-        return photocraft_bridge.materialize_for_photocraft(path, cache_dir)
+    def _prepare_photocraft_window(self, generation: int, proc) -> None:
+        preview = self.preview_if_built()
+        if generation != self._photocraft_generation or preview is None or not preview.isVisible():
+            return
+        if not preview._uses_photocraft_editor() or not proc.is_running():
+            return
+        # Attach while the native shell is empty, before the costly first photo
+        # render. Keep the Qt host hidden and the loading cover in front.
+        preview._photocraft_host.setGeometry(preview.panes_widget.rect())
+        parent = preview.photocraft_host_hwnd()
+        photocraft_bridge.embed_in_widget(proc.hwnd, parent)
+        proc.attached_parent = parent
+        photocraft_bridge.resize_embedded(proc.hwnd, *preview.photocraft_host_size())
 
-    def _open_in_photocraft(self, preview: FullScreenPreview, path: str) -> None:
-        open_path = self._photocraft_source_path(path)
+    def _finish_photocraft_open(self, generation: int, path: str, error) -> None:
+        preview = self.preview_if_built()
+        if generation != self._photocraft_generation or preview is None or not preview.isVisible():
+            return
+        if preview._compare_mode or preview._collection_browse_mode or preview._before_after_enabled:
+            return
+        if error is not None:
+            proc = self._photocraft
+            if proc is not None and proc.is_running() and proc.current_source:
+                # A failed stash leaves the previous document open. Keep it
+                # accessible so the user can save/recover it instead of hiding it.
+                self._attach_photocraft(preview, proc)
+                preview.show_photocraft_host()
+                message = f"Could not switch to {Path(path).name}; PhotoCraft is still showing {Path(proc.source_path).name}: {error}"
+            else:
+                preview.hide_photocraft_host()
+                preview.set_photocraft_loading(False)
+                preview.show_photocraft_error(str(error))
+                self._photocraft_save_timer.stop()
+                message = f"PhotoCraft: {error}"
+            self._window.statusBar().showMessage(message, 15000)
+            return
         proc = self._photocraft
         if proc is not None and proc.is_running():
-            relative = proc.path_within_root(open_path)
-            if relative is None:
-                # A new folder, or a converted RAW outside the live process's
-                # scratch root: start a fresh process rooted at this file instead
-                # of trying to widen an already-running one's automation root.
-                proc.shutdown()
-                proc = None
-        if proc is None:
-            directory = str(Path(open_path).parent)
-            proc = photocraft_bridge.launch_photocraft(open_path, read_root=directory, write_root=directory)
-            proc.control.ui_set(theme="pro")
+            first_attach = not preview.photocraft_edit_active()
+            self._attach_photocraft(preview, proc)
+            preview.show_photocraft_host()
+            if first_attach:
+                # Initial decoding happens in a small offscreen viewport.
+                # Fit once after the host has given it its actual pane size.
+                self._photocraft_future = self._photocraft_executor.submit(self._fit_photocraft, proc, generation)
+
+    def _fit_photocraft(self, proc, generation: int) -> None:
+        if generation == self._photocraft_generation and proc.is_running():
+            try:
+                proc.control.call("ui.menu.invoke", {"id": "view.fitOnScreen"})
+            except photocraft_bridge.PhotoCraftError:
+                _log.exception("Could not fit the hosted PhotoCraft canvas")
+
+    def _attach_photocraft(self, preview, proc) -> None:
+        parent = preview.photocraft_host_hwnd()
+        if proc.attached_parent != parent:
+            photocraft_bridge.embed_in_widget(proc.hwnd, parent)
+            proc.attached_parent = parent
+        preview.set_photocraft_loading(False)
+
+    def _queue_photocraft_save(self) -> None:
+        if self._photocraft_future is not None and not self._photocraft_future.done():
+            return
+        self._photocraft_future = self._photocraft_executor.submit(self._autosave_photocraft)
+
+    def _autosave_photocraft(self) -> None:
+        proc = self._photocraft
+        if proc is not None and proc.is_running():
+            try:
+                self._sync_photocraft_theme(proc)
+                self._poll_photocraft_stashes(proc)
+                self._save_photocraft_sidecar_if_dirty(proc)
+            except Exception:
+                _log.exception("PhotoCraft autosave failed; retaining the open document")
+
+    def _apply_photocraft_theme(self, colors) -> None:
+        preview = self.preview_if_built()
+        if preview is not None:
+            preview.set_photocraft_palette(colors)
+
+    def _sync_photocraft_theme(self, proc) -> None:
+        try:
+            colors = proc.control.call("ui.theme")
+        except photocraft_bridge.PhotoCraftError as error:
+            # Older hosted builds still open; new builds expose actual colors.
+            if "unknown method" in str(error):
+                return
+            raise
+        self._photocraft_theme_changed.emit(colors)
+
+    def _refresh_photocraft_save(self, path: str) -> None:
+        from .grid import GridDeltaUpdate
+
+        self._window.grid.update_items(GridDeltaUpdate(changed_paths=(path,), preserve_pixmap_cache=False))
+        preview = self.preview_if_built()
+        if preview is not None:
+            preview._preview_cache.clear()
+            preview._request_preview_loads()
+
+    def _resolve_photocraft_target(self, path: str) -> tuple[str, str]:
+        """(path_to_open, sidecar_path) for the real source ``path``.
+
+        If a previous edit session for this photo exists (a ``.pcraft``
+        sidecar in the hidden per-folder edit root, same convention as
+        ``edit_storage``), that is what gets opened, so edits carry over
+        across navigations and app restarts. Otherwise the original is
+        opened directly (or, for a format PhotoCraft can't read natively, a
+        decoded copy in the same hidden root — never the original RAW file).
+        The sidecar is always addressable under the photo's own parent
+        folder, so one automation root covers both.
+        """
+        sidecar = photocraft_bridge.sidecar_pcraft_path(path)
+        proc = self._photocraft
+        in_memory = proc is not None and (str(sidecar) in proc.pending_stashes or str(sidecar) in proc.stash_errors)
+        if sidecar.is_file() or in_memory:
+            return str(sidecar), str(sidecar)
+        legacy_project = sidecar.parent / (Path(path).stem + ".pcraft")
+        if legacy_project.is_file():
+            return str(legacy_project), str(sidecar)
+        # Keep the appearance of existing built-in sessions on first handoff.
+        # PhotoCraft starts from their full-resolution render; the JSON bundle
+        # remains available and the original is never changed.
+        if edit_storage.session_has_edits(path):
+            from .edit_render_headless import render_edited_image
+
+            rendered = render_edited_image(path)
+            if rendered is None or rendered.isNull():
+                raise photocraft_bridge.PhotoCraftError(f"Could not restore existing edits for {path}")
+            root = edit_storage.ensure_edit_root(Path(path).parent)
+            imported = root / (Path(path).name + "__photocraft_legacy.tiff")
+            if not rendered.save(str(imported), "TIFF"):
+                raise photocraft_bridge.PhotoCraftError(f"Could not transfer existing edits for {path}")
+            return str(imported), str(sidecar)
+        if not photocraft_bridge.path_needs_conversion(path):
+            return path, str(sidecar)
+        cache_dir = edit_storage.ensure_edit_root(Path(path).parent)
+        return photocraft_bridge.materialize_for_photocraft(path, cache_dir), str(sidecar)
+
+    def _open_in_photocraft(self, preview: FullScreenPreview | None, path: str) -> None:
+        generation = self._photocraft_generation
+        proc = self._photocraft
+        if proc is not None and not proc.is_running():
+            proc.shutdown()
+            self._photocraft = proc = None
+        if proc is not None and proc.current_source == normalized_path_key(path):
+            if proc.control.document_revision() is not None:
+                return
+            proc.current_source = None
+            proc.current_sidecar = None
+            proc.opened_revision = 0
+        open_path, sidecar_path = self._resolve_photocraft_target(path)
+        if proc is not None and proc.is_running() and (
+            proc.path_within_root(open_path) is None or proc.path_within_write_root(sidecar_path) is None
+        ):
+            # A new folder: start a fresh process rooted at this file instead
+            # of trying to widen an already-running one's automation root.
+            self._save_photocraft_sidecar_if_dirty(proc)
+            self._wait_photocraft_stashes(proc)
+            proc.shutdown()
+            self._photocraft = None
+            proc = None
+        launched = proc is None
+        if launched:
+            directory = str(Path(path).parent)
+            write_root = edit_storage.ensure_edit_root(directory)
+            proc = photocraft_bridge.launch_photocraft(
+                open_path, read_root=directory, write_root=str(write_root), executable=self._photocraft_executable,
+                on_window=lambda launched: self._photocraft_window_ready.emit(generation, launched),
+            )
             self._photocraft = proc
+            if proc.executable:
+                self._photocraft_executable = proc.executable
+            proc.current_sidecar = Path(sidecar_path)
+            # Hosted imports/restores use Session.add_document -> DocState.new,
+            # whose initial revision and saved_revision are both one.
+            proc.opened_revision = 1
         else:
-            proc.control.app_open(proc.path_within_root(open_path))
-        width, height = preview.photocraft_host_size()
-        photocraft_bridge.embed_in_widget(proc.hwnd, preview.photocraft_host_hwnd())
-        photocraft_bridge.resize_embedded(proc.hwnd, width, height)
-        preview.show_photocraft_host()
+            self._switch_photocraft_document(proc, open_path, sidecar_path)
+        relative_sidecar = proc.path_within_write_root(sidecar_path)
+        relative_render = proc.path_within_write_root(str(photocraft_bridge.rendered_preview_path(path)))
+        try:
+            proc.control.call("app.bind", {"path": relative_sidecar, "preview": relative_render})
+        except Exception:
+            if launched:
+                proc.shutdown()
+                self._photocraft = None
+            raise
+        proc.current_source = normalized_path_key(path)
+        proc.source_path = path
+        proc.source_by_sidecar[relative_sidecar] = path
+        self._sync_photocraft_theme(proc)
+
+    def resize_photocraft(self, width: int, height: int) -> None:
+        proc = self._photocraft
+        if proc is not None and proc.is_running():
+            photocraft_bridge.resize_embedded(proc.hwnd, width, height)
+
+    def _switch_photocraft_document(
+        self, proc: photocraft_bridge.PhotoCraftProcess, open_path: str, sidecar_path: str
+    ) -> None:
+        """Save the currently open document to its sidecar if it changed,
+        and replace it with the next. Keeps exactly one
+        PhotoCraft document open at a time instead of accumulating a tab per
+        visited photo, and never touches the original photo file."""
+        relative = proc.path_within_root(open_path)
+        if relative is None:
+            raise photocraft_bridge.PhotoCraftError(f"{open_path!r} is outside this PhotoCraft process's automation root")
+        if proc.path_within_write_root(sidecar_path) is None:
+            raise photocraft_bridge.PhotoCraftError("The next photo's sidecar is outside the automation write root")
+        self._save_photocraft_sidecar_if_dirty(proc)
+        if open_path == sidecar_path and (sidecar_path in proc.pending_stashes or sidecar_path in proc.stash_errors):
+            # PhotoCraft keys its in-memory snapshots by the stash path, which
+            # is relative to the write root. The disk import path is relative
+            # to the read root instead (usually .image_triage_edits/... ).
+            # A pending/failed save must restore the snapshot, not read a file
+            # which may not yet exist or may contain the previous revision.
+            relative = proc.path_within_write_root(sidecar_path)
+        # Decode with the old document still visible. PhotoCraft commits the
+        # replacement atomically on success, retaining the old one on failure.
+        proc.control.app_open(relative, replace=True)
+        proc.current_sidecar = Path(sidecar_path)
+        proc.opened_revision = 1
+        if sidecar_path in proc.stash_errors:
+            proc.opened_revision = -1
+
+    def _save_photocraft_sidecar_if_dirty(self, proc: photocraft_bridge.PhotoCraftProcess) -> None:
+        if proc.current_sidecar is None:
+            return
+        revision = proc.control.document_revision()
+        if revision is None:
+            # Closing a tab in PhotoCraft leaves its process/window alive.
+            # Drop only the active binding; pending saves still need polling.
+            proc.current_source = None
+            proc.current_sidecar = None
+            proc.opened_revision = 0
+            return
+        if revision == proc.opened_revision:
+            return
+        relative = proc.path_within_write_root(str(proc.current_sidecar))
+        if relative is None:
+            raise photocraft_bridge.PhotoCraftError("PhotoCraft sidecar is outside the automation write root")
+        proc.current_sidecar.parent.mkdir(parents=True, exist_ok=True)
+        render_path = photocraft_bridge.rendered_preview_path(proc.source_path)
+        render_relative = proc.path_within_write_root(str(render_path))
+        if render_relative is None:
+            raise photocraft_bridge.PhotoCraftError("PhotoCraft render is outside the automation write root")
+        key = str(proc.current_sidecar)
+        if key in proc.pending_stashes:
+            self._wait_photocraft_stashes(proc, only=key)
+        result = proc.control.call("app.stash", {"path": relative, "preview": render_relative, "wait": False})
+        proc.stash_errors.pop(key, None)
+        if result.get("pending"):
+            proc.pending_stashes[key] = (int(result["job"]), proc.source_path)
+        else:
+            self._photocraft_saved.emit(proc.source_path)
+        proc.opened_revision = revision
+
+    def _poll_photocraft_stashes(self, proc) -> None:
+        jobs = {int(job["id"]): job for job in proc.control.call("jobs.list").get("jobs", [])}
+        for job_id, job in jobs.items():
+            if job.get("command") == "app.stash" and job.get("state") == "done" and job_id not in proc.observed_stashes:
+                proc.observed_stashes.add(job_id)
+                source = proc.source_by_sidecar.get(job.get("result", {}).get("path"))
+                if source:
+                    if source == proc.source_path and str(proc.current_sidecar) not in proc.pending_stashes:
+                        proc.opened_revision = int(job.get("result", {}).get("revision", proc.opened_revision))
+                    self._photocraft_saved.emit(source)
+        for key, (job_id, source) in list(proc.pending_stashes.items()):
+            job = jobs.get(job_id)
+            if job is None or job.get("state") == "running":
+                continue
+            del proc.pending_stashes[key]
+            if job.get("state") == "done":
+                if job_id not in proc.observed_stashes:
+                    proc.observed_stashes.add(job_id)
+                    self._photocraft_saved.emit(source)
+            else:
+                error = f"Could not save edits for {source}: {job.get('error', job.get('state'))}. Return to this photo to retry."
+                proc.stash_errors[key] = error
+                if proc.current_sidecar is not None and str(proc.current_sidecar) == key:
+                    proc.opened_revision = -1
+                self._photocraft_save_failed.emit(error)
+
+    def _wait_photocraft_stashes(self, proc, *, only: str | None = None) -> None:
+        deadline = time.monotonic() + 120.0
+        while proc.pending_stashes and (only is None or only in proc.pending_stashes):
+            self._poll_photocraft_stashes(proc)
+            if time.monotonic() >= deadline:
+                raise photocraft_bridge.PhotoCraftError("Timed out waiting for PhotoCraft edits to save")
+            if proc.pending_stashes:
+                time.sleep(0.05)
+        errors = proc.stash_errors if only is None else {key: error for key, error in proc.stash_errors.items() if key == only}
+        if errors:
+            raise photocraft_bridge.PhotoCraftError(next(iter(errors.values())))
+
+    def prepare_photocraft_close(self) -> bool:
+        if self._photocraft is None and (self._photocraft_future is None or self._photocraft_future.done()):
+            return True
+        try:
+            self._photocraft_executor.submit(self._save_active_photocraft).result()
+        except Exception as error:
+            choice = QMessageBox.warning(
+                self.preview_if_built(), "PhotoCraft edits could not be saved",
+                f"{error}\n\nCancel keeps the editor open so you can recover your work. "
+                "Discard closes it and loses any edits that have not been saved.",
+                QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Discard,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if choice == QMessageBox.StandardButton.Discard:
+                self._photocraft_generation += 1
+                self._photocraft_save_timer.stop()
+                self._photocraft_executor.submit(self._discard_photocraft).result()
+                return True
+            return False
+        return True
+
+    def _discard_photocraft(self) -> None:
+        proc = self._photocraft
+        if proc is not None:
+            proc.shutdown()
+            self._photocraft = None
+
+    def prepare_photocraft_preview_close(self) -> bool:
+        if not self.prepare_photocraft_close():
+            return False
+        # Quit while the native host is still alive. Hiding/destroying its
+        # Qt parent first can stop PhotoCraft servicing control requests.
+        self.shutdown_photocraft()
+        return True
+
+    def _save_active_photocraft(self) -> None:
+        proc = self._photocraft
+        if proc is not None and proc.is_running():
+            self._save_photocraft_sidecar_if_dirty(proc)
+            self._wait_photocraft_stashes(proc)
 
     def sync_photocraft_edit_target(self) -> None:
         """Keep an active PhotoCraft edit session pointed at whatever photo the
         popout just navigated to, instead of reopening a static preview."""
-        preview = self._window._preview
+        preview = self.preview_if_built()
         if preview is None or not preview.photocraft_edit_active():
             return
         proc = self._photocraft
         if proc is None or not proc.is_running():
             return
-        path = preview.focused_photoshop_path()
+        path = preview._source_entries[0].record.path if preview._source_entries else ""
         if not path:
             return
-        try:
-            open_path = self._photocraft_source_path(path)
-            relative = proc.path_within_root(open_path)
-            if relative is None:
-                self._open_in_photocraft(preview, path)
-                return
-            proc.control.app_open(relative)
-        except photocraft_bridge.PhotoCraftError as error:
-            _log.warning("PhotoCraft couldn't follow navigation to %s: %s", path, error)
+        self.handle_photocraft_edit_requested(path)
 
     def shutdown_photocraft(self) -> None:
-        if self._photocraft is not None:
-            self._photocraft.shutdown()
+        self._photocraft_generation += 1
+        self._photocraft_save_timer.stop()
+        if self._photocraft is None and (self._photocraft_future is None or self._photocraft_future.done()):
+            return
+        self._photocraft_executor.submit(self._shutdown_photocraft).result()
+
+    def _shutdown_photocraft(self) -> None:
+        proc = self._photocraft
+        if proc is None:
+            return
+        try:
+            self._save_photocraft_sidecar_if_dirty(proc)
+            if proc.is_running():
+                self._wait_photocraft_stashes(proc)
+        except (photocraft_bridge.PhotoCraftError, OSError) as error:
+            _log.error("PhotoCraft shutdown could not save edits: %s", error)
+        finally:
+            proc.shutdown()
             self._photocraft = None
 
     def open_preview(self, index: int, *, lightweight_grid_sync: bool = False) -> None:
@@ -665,8 +1014,7 @@ class PreviewController(QObject):
                 (time.perf_counter() - controls_start) * 1000.0,
                 compare=self._window._compare_enabled,
             )
-        # The full-screen editor needs the GPU for masking (SAM / OneFormer /
-        # BiRefNet); pause background indexing so it isn't fighting for CUDA.
+        # Reserve GPU capacity for the embedded PhotoCraft editor.
         self._window._records_view.suspend_background_indexing()
         self._window.preview.show_entries(entries)
         self.sync_preview_browse_context(anchor_index if anchor_index >= 0 else index)
@@ -715,7 +1063,6 @@ class PreviewController(QObject):
             self._window.grid.set_logical_selection([next_index], current_index=next_index)
             self._window._preview_navigation_dirty = True
         self.open_preview(next_index, lightweight_grid_sync=True)
-        self.sync_photocraft_edit_target()
         if logger.enabled:
             record = self._window._record_at(next_index)
             logger.duration(
@@ -904,6 +1251,9 @@ class PreviewController(QObject):
         return entries, max(1, len(entries)), start
 
     def ordered_edited_candidates(self, record: ImageRecord, displayed_path: str) -> tuple[str, ...]:
+        saved_render = photocraft_bridge.rendered_preview_path(record.path)
+        if saved_render.is_file():
+            return (str(saved_render), *[path for path in record.edited_paths if path != str(saved_render)])
         if record.edited_paths:
             edited_candidates = tuple(record.edited_paths)
             self._window._edited_candidates_cache[record.path] = edited_candidates

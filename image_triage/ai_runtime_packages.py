@@ -4,7 +4,6 @@ import csv
 import importlib
 import json
 import os
-import platform
 import re
 import shutil
 import subprocess
@@ -16,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
-from .ai_paths import managed_runtimes_root
+from .ai_paths import managed_runtimes_root, runtime_tag
 
 
 AI_RUNTIME_INSTALL_ROOT_ENV = "IMAGE_TRIAGE_AI_RUNTIME_ROOT"
@@ -1162,21 +1161,7 @@ def _migrate_legacy_runtime(new_root: Path) -> None:
 
 
 def _python_runtime_tag() -> str:
-    machine = (platform.machine() or "").replace(" ", "_").lower()
-    if not machine and os.name == "nt":
-        machine = (
-            os.environ.get("PROCESSOR_ARCHITEW6432")
-            or os.environ.get("PROCESSOR_ARCHITECTURE")
-            or ""
-        ).replace(" ", "_").lower()
-    if machine in {"amd64", "x86_64"}:
-        machine = "amd64"
-    elif not machine and platform.architecture()[0] == "64bit":
-        machine = "amd64"
-    elif not machine:
-        machine = "unknown"
-    system = (platform.system() or "unknown").replace(" ", "_").lower()
-    return f"py{sys.version_info.major}{sys.version_info.minor}-{system}-{machine}"
+    return runtime_tag()
 
 
 def _torch_index_url_for_variant(variant: str) -> str:

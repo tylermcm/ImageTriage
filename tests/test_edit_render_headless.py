@@ -161,7 +161,7 @@ class RenderEditedImageTests(unittest.TestCase):
         blurred_recipe = EditRecipe.from_dict({"exposure": 1.5, "background_mode": "blur", "background_amount": 80.0})
 
         with patch(
-            "image_triage.ui.photo_editor_panel.recipe_from_session",
+            "image_triage.edit_recipe_session.recipe_from_session",
             return_value=blurred_recipe,
         ):
             rendered = render_edited_image(self.image_path)

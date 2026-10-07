@@ -85,7 +85,7 @@ class ApplyPointCurvesTests(unittest.TestCase):
 
 class CurvePersistenceTests(unittest.TestCase):
     def test_round_trips_through_session_operations(self) -> None:
-        from image_triage.ui.photo_editor_panel import operations_from_recipe, recipe_from_session
+        from image_triage.edit_recipe_session import operations_from_recipe, recipe_from_session
 
         recipe = EditRecipe.from_dict(
             {"curve_rgb": [[0, 0], [128, 190], [255, 255]], "curve_blue": [[0, 0], [64, 40], [255, 255]]}
@@ -101,50 +101,12 @@ class CurvePersistenceTests(unittest.TestCase):
         self.assertIsNone(restored.curve_red)
 
     def test_identity_curves_are_not_persisted(self) -> None:
-        from image_triage.ui.photo_editor_panel import operations_from_recipe
+        from image_triage.edit_recipe_session import operations_from_recipe
 
         recipe = EditRecipe.from_dict({"curve_rgb": [[0, 0], [255, 255]]})
         self.assertEqual(
             [], [op for op in operations_from_recipe(recipe) if op["type"] == "adjust.point_curve"]
         )
-
-
-class CurveEditorWidgetTests(unittest.TestCase):
-    def setUp(self) -> None:
-        from PySide6.QtWidgets import QApplication
-
-        self.app = QApplication.instance() or QApplication([])
-
-    def test_endpoints_survive_delete_but_interior_points_do_not(self) -> None:
-        from image_triage.ui.photo_editor_panel import CurveEditor
-
-        editor = CurveEditor()
-        editor.set_points("rgb", [[0, 0], [128, 190], [255, 255]])
-        editor._selected = 0
-        editor._remove(0)  # black point must not be deletable
-        self.assertEqual(3, len(editor.points_for_test("rgb")))
-        editor._selected = 1
-        editor._remove(1)  # interior point is deletable
-        self.assertEqual(2, len(editor.points_for_test("rgb")))
-        self.assertIsNone(editor.curve_value("rgb"))
-
-    def test_x_stays_strictly_increasing(self) -> None:
-        from image_triage.ui.photo_editor_panel import CurveEditor
-
-        editor = CurveEditor()
-        editor.set_points("rgb", [[0, 0], [100, 120], [200, 200], [255, 255]])
-        editor._selected = 1
-        editor._apply_point(1, 250, 130)  # shoved past its right neighbour
-        points = editor.points_for_test("rgb")
-        self.assertLess(points[1][0], points[2][0])
-
-    def test_channels_are_independent(self) -> None:
-        from image_triage.ui.photo_editor_panel import CurveEditor
-
-        editor = CurveEditor()
-        editor.set_points("red", [[0, 0], [128, 60], [255, 255]])
-        self.assertIsNotNone(editor.curve_value("red"))
-        self.assertIsNone(editor.curve_value("rgb"))
 
 
 if __name__ == "__main__":
