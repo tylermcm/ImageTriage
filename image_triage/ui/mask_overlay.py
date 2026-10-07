@@ -14,7 +14,7 @@ from pathlib import Path
 import time
 from typing import Any
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -503,8 +503,9 @@ class MaskOverlay(CanvasOverlay):
     source_clicked = Signal(float, float)
     # A detected scene region was clicked (category name).
     scene_region_picked = Signal(str)
-    # A point was clicked in promptable click-to-select mode (source coords).
-    point_picked = Signal(float, float)
+    # A point was clicked in promptable click-to-select mode (source coords,
+    # label: 1 = include/add, 0 = exclude/subtract).
+    point_picked = Signal(float, float, int)
     # The pointer moved over/left promptable click-to-select mode.
     point_hovered = Signal(float, float)
     point_hover_cleared = Signal()
@@ -543,6 +544,7 @@ class MaskOverlay(CanvasOverlay):
         self._scene_hover: str | None = None
         self._point_pick = False
         self._point_preview_path: str | None = None
+        self._prompt_points: list[tuple[float, float, int]] = []
         self._subject_candidates: list[dict[str, Any]] = []
         self._subject_hover: str | None = None
         self._watched: QWidget | None = None
@@ -582,6 +584,7 @@ class MaskOverlay(CanvasOverlay):
         scene_pick: bool = False,
         point_pick: bool = False,
         point_preview_path: str | None = None,
+        prompt_points: list[tuple[float, float, int]] | None = None,
         subject_candidates: list[dict[str, Any]] | None = None,
         overlay_mode: str = "color",
         overlay_color: QColor | str | None = None,
@@ -662,6 +665,9 @@ class MaskOverlay(CanvasOverlay):
         preview_path = str(point_preview_path or "") or None
         if preview_path != self._point_preview_path:
             self._point_preview_path = preview_path
+        self._prompt_points = [
+            (float(px), float(py), int(label)) for px, py, label in (prompt_points or [])
+        ]
         self._subject_candidates = [
             dict(candidate) for candidate in (subject_candidates or [])
         ]
@@ -770,11 +776,7 @@ class MaskOverlay(CanvasOverlay):
                 {"assetPath": self._point_preview_path}
             )
             if preview is not None:
-                scaled = preview.scaled(
-                    self.size(),
-                    Qt.AspectRatioMode.IgnoreAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled = self._source_layer_for_display(preview, gray=True)
                 base = self._display_base_image(self.width(), self.height())
                 painter.drawImage(
                     self.rect(),
@@ -785,6 +787,8 @@ class MaskOverlay(CanvasOverlay):
                         base,
                     ),
                 )
+        if self._point_pick and self._prompt_points:
+            self._paint_prompt_points(painter)
         if self._point_pick and self._hover_pos is not None and self._drag is None:
             self._paint_point_pick_hint(painter)
         if self._params is None and not self._components:
@@ -806,6 +810,38 @@ class MaskOverlay(CanvasOverlay):
         if self._busy_message:
             self._paint_busy(painter)
         painter.end()
+
+    def _source_layer_for_display(self, layer: QImage, *, gray: bool = False) -> QImage:
+        """Lay a layer that covers the whole source photo over the displayed
+        frame. With a crop, rotation or straighten in play the frame shows only
+        part of the photo, so a plain stretch to the overlay size misplaces it."""
+        view = self._effective_view()
+        scales = self._scales()
+        if (
+            view is None
+            or view.is_identity()
+            or scales is None
+            or self._source_size is None
+            or layer.isNull()
+        ):
+            return layer.scaled(
+                self.size(),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        out = QImage(self.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        out.fill(QColor(0, 0, 0, 255) if gray else Qt.GlobalColor.transparent)
+        painter = QPainter(out)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.scale(scales[0], scales[1])
+        painter.setTransform(view.qtransform(), True)
+        painter.scale(
+            self._source_size[0] / max(1, layer.width()),
+            self._source_size[1] / max(1, layer.height()),
+        )
+        painter.drawImage(0, 0, layer)
+        painter.end()
+        return out.convertToFormat(QImage.Format.Format_Grayscale8) if gray else out
 
     def _display_base_image(self, width: int, height: int) -> QImage | None:
         pixmap_getter = getattr(self._watched, "pixmap", None)
@@ -854,6 +890,7 @@ class MaskOverlay(CanvasOverlay):
             self._overlay_mode,
             int(self._overlay_color.rgba()),
             self._display_base_cache_key(),
+            self._effective_view().freeze() if self._effective_view() is not None else None,
         )
         if key == self._strength_cache_key and self._strength_cache is not None:
             return self._strength_cache
@@ -880,14 +917,30 @@ class MaskOverlay(CanvasOverlay):
         cw = max(1, int(round(self.width() * scale_down)))
         ch = max(1, int(round(self.height() * scale_down)))
         base_image = self._display_base_image(cw, ch)
-        gray = build_group_strength(
-            components,
-            cw,
-            ch,
-            self._source_size,
-            level_scale=1.0,
-            guide_image=base_image,
-        )
+        view = self._effective_view()
+        frame = self._frame_size()
+        if view is not None and not view.is_identity() and frame is not None:
+            # Cropped / straightened / flipped: rasterize in source space, then
+            # put the field through the same affine the pixels took. The edge
+            # guide is display-space, so it is skipped rather than misaligned.
+            gray = mask_strength_qimage(
+                components,
+                cw,
+                ch,
+                self._source_size,
+                guide_image=None,
+                transform=view.qtransform() * QTransform.fromScale(cw / frame[0], ch / frame[1]),
+                transform_source_size=view.source_size,
+            )
+        else:
+            gray = build_group_strength(
+                components,
+                cw,
+                ch,
+                self._source_size,
+                level_scale=1.0,
+                guide_image=base_image,
+            )
         if gray is None:
             return None
         image = compose_mask_overlay(
@@ -936,6 +989,12 @@ class MaskOverlay(CanvasOverlay):
         canvas_width, canvas_height = (float(value) for value in coordinate_size)
         center_x = (x + box_width / 2.0) / canvas_width * self.width()
         subject_top = y / canvas_height * self.height()
+        if self._source_size is not None and self._effective_view() is not None:
+            anchor = self._to_display(
+                (x + box_width / 2.0) / canvas_width * self._source_size[0],
+                y / canvas_height * self._source_size[1],
+            )
+            center_x, subject_top = anchor.x(), anchor.y()
         left = _clamp(
             center_x - SUBJECT_MARKER_PX / 2.0,
             2.0,
@@ -1018,8 +1077,13 @@ class MaskOverlay(CanvasOverlay):
             bitmap = self._subject_candidate_bitmap(candidate)
             if not candidate_id or bitmap is None or bitmap.isNull():
                 continue
-            x = int(_clamp(pos.x() / max(1, self.width()), 0.0, 0.999999) * bitmap.width())
-            y = int(_clamp(pos.y() / max(1, self.height()), 0.0, 0.999999) * bitmap.height())
+            fraction_x, fraction_y = pos.x() / max(1, self.width()), pos.y() / max(1, self.height())
+            if self._source_size is not None and self._effective_view() is not None:
+                source_x, source_y = self._to_source(pos)
+                fraction_x = source_x / max(1, self._source_size[0])
+                fraction_y = source_y / max(1, self._source_size[1])
+            x = int(_clamp(fraction_x, 0.0, 0.999999) * bitmap.width())
+            y = int(_clamp(fraction_y, 0.0, 0.999999) * bitmap.height())
             if int(bitmap.constScanLine(y)[x]) >= 24:
                 return candidate_id
         return None
@@ -1038,11 +1102,7 @@ class MaskOverlay(CanvasOverlay):
             bitmap = self._subject_candidate_bitmap(candidate)
             if bitmap is None or bitmap.isNull():
                 continue
-            scaled = bitmap.scaled(
-                self.size(),
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+            scaled = self._source_layer_for_display(bitmap, gray=True)
             layer = QImage(
                 scaled.width(),
                 scaled.height(),
@@ -1110,9 +1170,21 @@ class MaskOverlay(CanvasOverlay):
     def _paint_scene_hover(self, painter: QPainter) -> None:
         if self._scene_index is None or not self._scene_hover:
             return
-        highlight = self._scene_index.highlight(
-            self._scene_hover, self.width(), self.height()
-        )
+        view = self._effective_view()
+        if view is not None and not view.is_identity() and self._source_size is not None:
+            # Build the tint over the whole photo, then lay it on the frame.
+            longest = max(self._source_size)
+            factor = min(1.0, 1024.0 / max(1, longest))
+            full = self._scene_index.highlight(
+                self._scene_hover,
+                max(1, round(self._source_size[0] * factor)),
+                max(1, round(self._source_size[1] * factor)),
+            )
+            highlight = self._source_layer_for_display(full) if full is not None else None
+        else:
+            highlight = self._scene_index.highlight(
+                self._scene_hover, self.width(), self.height()
+            )
         if highlight is not None:
             painter.drawImage(self.rect(), highlight)
         if self._hover_pos is None:
@@ -1131,6 +1203,17 @@ class MaskOverlay(CanvasOverlay):
         painter.setPen(QPen(QColor(240, 240, 240)))
         painter.drawText(chip, Qt.AlignmentFlag.AlignCenter, text)
 
+    def _paint_prompt_points(self, painter: QPainter) -> None:
+        """Small include/exclude markers for the click-to-select point session
+        currently being built (green = include, red = exclude)."""
+        radius = 5.0
+        for src_x, src_y, label in self._prompt_points:
+            center = self._to_display(src_x, src_y)
+            fill = QColor(90, 220, 130) if label else QColor(235, 80, 80)
+            painter.setPen(QPen(QColor(255, 255, 255, 230), 1.6))
+            painter.setBrush(fill)
+            painter.drawEllipse(center, radius, radius)
+
     def _paint_point_pick_hint(self, painter: QPainter) -> None:
         pos = self._hover_pos
         if pos is None:
@@ -1141,7 +1224,11 @@ class MaskOverlay(CanvasOverlay):
             painter.setPen(pen)
             painter.drawLine(QPointF(pos.x() - reach, pos.y()), QPointF(pos.x() + reach, pos.y()))
             painter.drawLine(QPointF(pos.x(), pos.y() - reach), QPointF(pos.x(), pos.y() + reach))
-        text = "click a person or object to select it"
+        text = (
+            "right-click to exclude part of it"
+            if self._prompt_points
+            else "click a person or object to select it"
+        )
         metrics = QFontMetricsF(painter.font())
         width = metrics.horizontalAdvance(text) + CHIP_PAD * 2
         height = metrics.height() + CHIP_PAD
@@ -1353,7 +1440,21 @@ class MaskOverlay(CanvasOverlay):
 
     # -- mouse interaction ----------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
-        if event.button() != Qt.MouseButton.LeftButton or self._scales() is None:
+        if self._scales() is None:
+            event.ignore()
+            return
+        if event.button() == Qt.MouseButton.RightButton:
+            # Right-click only ever means one thing: a subtract point while
+            # click-to-select is armed. Everything else (handles, create
+            # tools, scene picking) is left-click-only, same as before.
+            if self._point_pick and self._create_mode is None and self._brush_mode is None:
+                src_x, src_y = self._to_source(QPointF(event.position()))
+                self.point_picked.emit(src_x, src_y, 0)
+                event.accept()
+                return
+            event.ignore()
+            return
+        if event.button() != Qt.MouseButton.LeftButton:
             event.ignore()
             return
         pos = QPointF(event.position())
@@ -1430,7 +1531,7 @@ class MaskOverlay(CanvasOverlay):
             return
         if self._point_pick and self._create_mode is None and self._brush_mode is None:
             src_x, src_y = self._to_source(pos)
-            self.point_picked.emit(src_x, src_y)
+            self.point_picked.emit(src_x, src_y, 1)
             event.accept()
             return
         category = self._scene_category_at(pos)

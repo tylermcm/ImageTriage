@@ -4,6 +4,7 @@ import math
 import os
 import time
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -13,8 +14,10 @@ from PySide6.QtGui import QAction, QBrush, QColor, QContextMenuEvent, QCursor, Q
 from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QComboBox, QMenu, QToolButton, QWidget
 
 from .ai_results import AIConfidenceBucket, AIImageResult, refine_ai_result_with_review_insight
+from .ai_why import AIWhy, ai_why_tooltip_html, build_ai_why
 from .cache import ThumbnailKey
 from .metadata import CaptureMetadata, MetadataKey, MetadataManager
+from .keyboard_mapping import matches_shortcut
 from .models import ImageRecord, ImageVariant, SessionAnnotation
 from .perf import perf_logger
 from .scanner import normalized_path_key
@@ -146,6 +149,8 @@ class ThumbnailGridView(QAbstractScrollArea):
     dispute_chord_cancelled = Signal()  # chord timed out or unrelated key pressed
     context_menu_requested = Signal(int, object)
     selection_changed = Signal()
+    collection_selection_changed = Signal()
+    collection_cancel_requested = Signal()
 
     def __init__(self, thumbnail_manager: ThumbnailManager, parent=None) -> None:
         super().__init__(parent)
@@ -175,7 +180,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._ai_result_cache: dict[str, AIImageResult | None] = {}
         self._review_insights_by_path: dict[str, object] = {}
         self._workflow_insights_by_path: dict[str, object] = {}
-        self._dino_prefilter_decisions_by_path: dict[str, object] = {}
+        self._prefilter_decisions_by_path: dict[str, object] = {}
         self._normalized_path_cache: dict[str, str] = {}
         self._failed_paths: set[str] = set()
         self._failed_messages: dict[str, str] = {}
@@ -192,6 +197,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._selection_anchor = -1
         self._tool_checkbox_mode = False
         self._tool_tile_toggle_mode = False
+        self._collection_checkbox_mode = False
+        self._collection_paths: dict[str, str] = {}
         self._free_smooth_scroll_enabled = False
         self._action_mode = "normal"
         self._show_ai_annotations = False
@@ -315,6 +322,20 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._hovered_index = -1
         self._winner_shortcut = QKeySequence("W")
         self._reject_shortcut = QKeySequence("X")
+        # Review-action keys unified into the single shortcut registry
+        # (WI-3.2); these defaults match what was previously hardcoded here.
+        self._review_key_shortcuts: dict[str, QKeySequence] = {
+            "cycle_burst_previous": QKeySequence("["),
+            "cycle_burst_next": QKeySequence("]"),
+            "keep_at_cursor": QKeySequence("K"),
+            "move_at_cursor": QKeySequence("M"),
+            "tag_at_cursor": QKeySequence("T"),
+            "adapter_label_hero": QKeySequence("1"),
+            "adapter_label_strong": QKeySequence("2"),
+            "adapter_label_maybe": QKeySequence("3"),
+            "adapter_label_weak": QKeySequence("4"),
+            "adapter_label_reject": QKeySequence("5"),
+        }
         self._press_pos: QPoint | None = None
         self._press_index = -1
         self._press_on_interactive_control = False
@@ -443,17 +464,34 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._winner_shortcut = QKeySequence(winner)
         self._reject_shortcut = QKeySequence(reject)
 
-    @staticmethod
-    def _matches_shortcut(event: QKeyEvent, shortcut: QKeySequence) -> bool:
-        if shortcut.isEmpty():
-            return False
-        event_sequence = QKeySequence(event.keyCombination())
-        return event_sequence.matches(shortcut) == QKeySequence.SequenceMatch.ExactMatch
+    def set_review_key_shortcuts(self, shortcuts: Mapping[str, QKeySequence | str]) -> None:
+        for binding_id, value in shortcuts.items():
+            if binding_id in self._review_key_shortcuts:
+                self._review_key_shortcuts[binding_id] = QKeySequence(value)
+
+    _matches_shortcut = staticmethod(matches_shortcut)
 
     @staticmethod
     def _action_tooltip(label: str, shortcut: QKeySequence) -> str:
         shortcut_text = shortcut.toString(QKeySequence.SequenceFormat.NativeText)
         return f"{label}\nShortcut: {shortcut_text}" if shortcut_text else label
+
+    def _card_tooltip(self, index: int, rect: QRect) -> str:
+        """What hovering a card says: the AI's "why" when AI tags are switched on and the photo has a
+        result (with the filename underneath if it is cut off on the card), otherwise just the filename."""
+        filename = self._filename_tooltip(index, rect)
+        why = self._ai_why_for(index)
+        if why is None:
+            return filename
+        return ai_why_tooltip_html(why, filename=filename)
+
+    def _ai_why_for(self, index: int) -> AIWhy | None:
+        if not self._show_ai_annotations:
+            return None  # manual review stays clean; the opt-in is "Show AI tags on cards in the grid"
+        record = self._items[index]
+        if record.is_folder:
+            return None
+        return build_ai_why(self._ai_result_for(record), self._review_insight_for(record))
 
     def _filename_tooltip(self, index: int, rect: QRect) -> str:
         data = self._grid_card_data(index)
@@ -530,7 +568,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._display_aspect_ratio_by_path.clear()
         self._clear_pixmap_cache()
         self._current_index = 0 if items else -1
-        self._selected_indexes = {0} if items else set()
+        self._selected_indexes = {0} if items and not self._collection_checkbox_mode else set()
         self._selection_anchor = self._current_index
         self._reset_pointer_interaction(clear_marquee=True)
         self._hovered_index = -1
@@ -836,8 +874,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._disputed_paths = {_fast_path_key(p) for p in (paths or set()) if p}
         self.viewport().update()
 
-    def set_dino_prefilter_decisions(self, decisions_by_path: dict[str, object]) -> None:
-        self._dino_prefilter_decisions_by_path = {
+    def set_prefilter_decisions(self, decisions_by_path: dict[str, object]) -> None:
+        self._prefilter_decisions_by_path = {
             _fast_path_key(path): decision
             for path, decision in decisions_by_path.items()
             if path
@@ -869,24 +907,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self.viewport().update()
         self._schedule_visible_thumbnail_requests(immediate=True)
 
-    def set_zoom_tile_width(self, width: int) -> None:
-        """Continuous zoom: render tiles at a fixed width, reflowing columns.
-
-        This is what makes the zoom slider feel smooth — the tile size tracks
-        the slider 1:1 instead of snapping to whole-column steps.
-        """
-        self._zoom_mode = "tile"
-        self._zoom_tile_width = max(self.MIN_TILE_WIDTH, min(self.MAX_TILE_WIDTH, int(width)))
-        self._recalculate_metrics()
-        self._update_scrollbar()
-        self.viewport().update()
-        self._schedule_visible_thumbnail_requests(immediate=True)
-
     def current_columns(self) -> int:
         return self._columns
-
-    def current_tile_width(self) -> int:
-        return int(self._tile_width_value)
 
     def zoom_mode(self) -> str:
         return self._zoom_mode
@@ -1040,6 +1062,38 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def tool_checkbox_mode(self) -> bool:
         return self._tool_checkbox_mode
+
+    def set_collection_checkbox_mode(self, enabled: bool, *, paths: tuple[str, ...] = ()) -> None:
+        """Keep collection picks by file path, independent of the visible folder."""
+        self._collection_checkbox_mode = bool(enabled)
+        self._collection_paths = {_fast_path_key(path): path for path in paths} if enabled else {}
+        self._hovered_checkbox_index = -1
+        self.viewport().unsetCursor()
+        self.viewport().update()
+        self.collection_selection_changed.emit()
+
+    def collection_checkbox_mode(self) -> bool:
+        return self._collection_checkbox_mode
+
+    def collection_paths(self) -> tuple[str, ...]:
+        return tuple(self._collection_paths.values())
+
+    def collection_path_checked(self, path: str) -> bool:
+        return _fast_path_key(path) in self._collection_paths
+
+    def toggle_collection_index(self, index: int) -> None:
+        if not self._collection_checkbox_mode or not 0 <= index < len(self._items):
+            return
+        record = self._items[index]
+        if record.is_folder:
+            return
+        key = _fast_path_key(record.path)
+        if key in self._collection_paths:
+            del self._collection_paths[key]
+        else:
+            self._collection_paths[key] = record.path
+        self._update_selection_tiles({index})
+        self.collection_selection_changed.emit()
 
     def clear_selection(self, *, keep_current: bool = True) -> None:
         previous_selection = set(self._selected_indexes)
@@ -1295,6 +1349,17 @@ class ThumbnailGridView(QAbstractScrollArea):
         index = self._index_at(point.x(), point.y())
         self._press_pos = point
         self._press_index = index
+        if self._collection_checkbox_mode:
+            if index >= 0:
+                rect = self._item_rect(index)
+                if not self._items[index].is_folder and self._checkbox_rect(rect).contains(point):
+                    self.toggle_collection_index(index)
+                    self._press_on_interactive_control = True
+                else:
+                    self._set_current_index(index)
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            event.accept()
+            return
         if index < 0:
             action_index = self._gallery_action_index_at(point.x(), point.y())
             if action_index >= 0:
@@ -1407,6 +1472,9 @@ class ThumbnailGridView(QAbstractScrollArea):
             if index >= 0:
                 rect = self._item_rect(index)
                 record = self._items[index]
+                if self._collection_checkbox_mode and not record.is_folder and self._checkbox_rect(rect).contains(point):
+                    event.accept()
+                    return
                 if (
                     self._left_arrow_rect(rect, record).contains(point)
                     or self._right_arrow_rect(rect, record).contains(point)
@@ -1421,6 +1489,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         super().mouseDoubleClickEvent(event)
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        if self._collection_checkbox_mode:
+            event.accept()
+            return
         point = event.pos()
         index = self._index_at(point.x(), point.y())
         if index < 0:
@@ -1473,6 +1544,23 @@ class ThumbnailGridView(QAbstractScrollArea):
             self._autoscroll_pointer_y = point.y()
             if (point - self._autoscroll_origin).manhattanLength() >= QApplication.startDragDistance():
                 self._autoscroll_press_moved = True
+            event.accept()
+            return
+        if self._collection_checkbox_mode:
+            point = event.position().toPoint()
+            index = self._index_at(point.x(), point.y())
+            hovered_checkbox = (
+                index
+                if index >= 0 and not self._items[index].is_folder
+                and self._checkbox_rect(self._item_rect(index)).contains(point)
+                else -1
+            )
+            previous = self._hovered_checkbox_index
+            self._hovered_checkbox_index = hovered_checkbox
+            self.viewport().setCursor(QCursor(
+                Qt.CursorShape.PointingHandCursor if hovered_checkbox >= 0 else Qt.CursorShape.ArrowCursor
+            ))
+            self._update_selection_tiles({previous, hovered_checkbox})
             event.accept()
             return
         if event.buttons() & Qt.MouseButton.LeftButton:
@@ -1529,7 +1617,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             elif hovered_reject >= 0:
                 tooltip = self._action_tooltip("Reject Selection", self._reject_shortcut)
             else:
-                tooltip = self._filename_tooltip(index, rect)
+                tooltip = self._card_tooltip(index, rect)
         elif action_index >= 0:
             if hovered_winner >= 0:
                 tooltip = self._action_tooltip("Mark Winner", self._winner_shortcut)
@@ -1631,6 +1719,35 @@ class ThumbnailGridView(QAbstractScrollArea):
         super().leaveEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._collection_checkbox_mode:
+            key = event.key()
+            if key == Qt.Key.Key_Escape:
+                self.collection_cancel_requested.emit()
+            elif key == Qt.Key.Key_Space:
+                self.toggle_collection_index(self._current_index)
+            elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if self._current_index >= 0:
+                    self.preview_requested.emit(self._current_index)
+            elif key in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down,
+                         Qt.Key.Key_Home, Qt.Key.Key_End, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
+                if self._visible_item_indexes:
+                    slot = self._current_visible_slot()
+                    step = self._columns
+                    last = len(self._visible_item_indexes) - 1
+                    page = max(1, self.viewport().height() // max(1, self._row_height())) * step
+                    next_slot = {
+                        Qt.Key.Key_Left: max(0, slot - 1),
+                        Qt.Key.Key_Right: min(last, slot + 1),
+                        Qt.Key.Key_Up: max(0, slot - step),
+                        Qt.Key.Key_Down: min(last, slot + step),
+                        Qt.Key.Key_Home: 0,
+                        Qt.Key.Key_End: last,
+                        Qt.Key.Key_PageUp: max(0, slot - page),
+                        Qt.Key.Key_PageDown: min(last, slot + page),
+                    }[key]
+                    self._set_current_index(self._visible_item_indexes[next_slot])
+            event.accept()
+            return
         if self._autoscroll_active and event.key() == Qt.Key.Key_Escape:
             self._stop_autoscroll()
             event.accept()
@@ -1659,10 +1776,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         if key == Qt.Key.Key_A and modifiers & Qt.KeyboardModifier.ControlModifier:
             self._select_all()
             return
-        if not self._tool_checkbox_mode and review_shortcut_allowed and key == Qt.Key.Key_BracketLeft and self._can_cycle_burst(index):
+        if not self._tool_checkbox_mode and self._matches_shortcut(event, self._review_key_shortcuts["cycle_burst_previous"]) and self._can_cycle_burst(index):
             self._cycle_burst(index, -1)
             return
-        if not self._tool_checkbox_mode and review_shortcut_allowed and key == Qt.Key.Key_BracketRight and self._can_cycle_burst(index):
+        if not self._tool_checkbox_mode and self._matches_shortcut(event, self._review_key_shortcuts["cycle_burst_next"]) and self._can_cycle_burst(index):
             self._cycle_burst(index, 1)
             return
         current_slot = self._current_visible_slot()
@@ -1733,32 +1850,34 @@ class ThumbnailGridView(QAbstractScrollArea):
                 return
             self.delete_requested.emit(index)
             return
-        if key == Qt.Key.Key_K and review_shortcut_allowed:
+        if self._matches_shortcut(event, self._review_key_shortcuts["keep_at_cursor"]):
             if self._items[index].is_folder:
                 return
             self.keep_requested.emit(index)
             return
-        if key == Qt.Key.Key_M and review_shortcut_allowed:
+        if self._matches_shortcut(event, self._review_key_shortcuts["move_at_cursor"]):
             if self._items[index].is_folder:
                 return
             self.move_requested.emit(index)
             return
-        if Qt.Key.Key_1 <= key <= Qt.Key.Key_5 and review_shortcut_allowed:
+        label_map = {
+            "adapter_label_hero": "hero",
+            "adapter_label_strong": "strong",
+            "adapter_label_maybe": "maybe",
+            "adapter_label_weak": "weak",
+            "adapter_label_reject": "reject",
+        }
+        for binding_id, label in label_map.items():
+            if not self._matches_shortcut(event, self._review_key_shortcuts[binding_id]):
+                continue
             if self._items[index].is_folder:
                 return
-            label_map = {
-                Qt.Key.Key_1: "hero",
-                Qt.Key.Key_2: "strong",
-                Qt.Key.Key_3: "maybe",
-                Qt.Key.Key_4: "weak",
-                Qt.Key.Key_5: "reject",
-            }
-            if self._adapter_review_mode and Qt.Key.Key_1 <= key <= Qt.Key.Key_5:
+            if self._adapter_review_mode:
                 if not self._adapter_review_label_controls_enabled:
                     return
-                self._set_adapter_label_for_index(index, label_map[key], emit=True)
-                return
-        if key == Qt.Key.Key_T and review_shortcut_allowed:
+                self._set_adapter_label_for_index(index, label, emit=True)
+            return
+        if self._matches_shortcut(event, self._review_key_shortcuts["tag_at_cursor"]):
             if self._items[index].is_folder:
                 return
             self.tag_requested.emit(index)
@@ -2009,6 +2128,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             hover_favorite=index == self._hovered_winner_index,
             hover_reject=index == self._hovered_reject_index,
             immersive=self._loupe_card_style == "immersive",
+            show_actions=not self._collection_checkbox_mode,
             **common,
         )
 
@@ -2238,7 +2358,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             painter.drawText(badge_rect.adjusted(8, 0, -8, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, badge)
 
         workflow_insight = self._workflow_insight_for(record)
-        dino_decision = self._dino_prefilter_decision_for(record)
+        prefilter_decision = self._prefilter_decision_for(record)
 
         if use_loupe_card:
             self._paint_review_top_badges(
@@ -2246,12 +2366,12 @@ class ThumbnailGridView(QAbstractScrollArea):
                 image_rect,
                 burst_info=burst_info,
                 ai_result=ai_result,
-                dino_decision=dino_decision,
+                prefilter_decision=prefilter_decision,
             )
         elif not use_new_grid_card:
             # Legacy card only: the shared renderer draws these as its own
             # tag rail (GridCardData.tags), uniform with the card design.
-            left_badge_x = image_rect.left() + 10 + (32 if self._tool_checkbox_mode else 0)
+            left_badge_x = image_rect.left() + 10 + (32 if self._tool_checkbox_mode or self._collection_checkbox_mode else 0)
             left_badge_y = image_rect.top() + 10
             if is_rejected:
                 self._paint_state_badge(
@@ -2283,11 +2403,11 @@ class ThumbnailGridView(QAbstractScrollArea):
                 )
                 left_badge_y += 30
 
-        if self._tool_checkbox_mode:
+        if (self._tool_checkbox_mode or self._collection_checkbox_mode) and not record.is_folder:
             self._paint_tool_checkbox(
                 painter,
                 self._checkbox_rect(rect),
-                checked=is_selected,
+                checked=self.collection_path_checked(record.path) if self._collection_checkbox_mode else is_selected,
                 hovered=index == self._hovered_checkbox_index,
             )
 
@@ -2375,7 +2495,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             title = painter.fontMetrics().elidedText(title, Qt.TextElideMode.ElideRight, title_text_rect.width())
             painter.drawText(title_text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
 
-            if not record.is_folder and not self._adapter_review_mode:
+            if not record.is_folder and not self._adapter_review_mode and not self._collection_checkbox_mode:
                 self._paint_winner_button(
                     painter,
                     self._winner_button_rect(rect),
@@ -2509,9 +2629,9 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _workflow_insight_for(self, record: ImageRecord):
         return self._workflow_insights_by_path.get(record.path) or self._workflow_insights_by_path.get(_fast_path_key(record.path))
 
-    def _dino_prefilter_decision_for(self, record: ImageRecord):
+    def _prefilter_decision_for(self, record: ImageRecord):
         for candidate in record.stack_paths:
-            decision = self._dino_prefilter_decisions_by_path.get(_fast_path_key(candidate))
+            decision = self._prefilter_decisions_by_path.get(_fast_path_key(candidate))
             if decision is not None:
                 return decision
         return None
@@ -2525,7 +2645,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         if self._show_ai_annotations:
             return summary
         parts = [part.strip() for part in summary.split("|")]
-        visible_parts = [part for part in parts if part and part not in {"AI Disagreement", "Best Frame"}]
+        visible_parts = [part for part in parts if part and part not in {"AI Disagreement", "Suggested Frame"}]
         return " | ".join(visible_parts)
 
     def _group_badge_palette(self, kind: str) -> tuple[QColor, QColor]:
@@ -2570,12 +2690,12 @@ class ThumbnailGridView(QAbstractScrollArea):
         *,
         burst_info: BurstVisualInfo | None,
         ai_result: AIImageResult | None,
-        dino_decision,
+        prefilter_decision,
     ) -> None:
         scale = self._review_scale(image_rect)
         margin = self._review_overlay_margin(image_rect)
         badge_y = image_rect.top() + margin
-        left_text = self._review_group_badge_text(burst_info, dino_decision)
+        left_text = self._review_group_badge_text(burst_info, prefilter_decision)
         if left_text:
             left_rect = self._review_badge_rect(
                 painter, left_text, image_rect.left() + margin, badge_y, scale, icon="duplicate"
@@ -2760,7 +2880,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
         painter.restore()
 
-        if not record.is_folder and not self._adapter_review_mode:
+        if not record.is_folder and not self._adapter_review_mode and not self._collection_checkbox_mode:
             self._paint_review_action_button(
                 painter,
                 winner_rect,
@@ -2883,7 +3003,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             width += icon_width + icon_gap
         return QRect(x, y, width, max(26, int(round(26 * scale))))
 
-    def _review_group_badge_text(self, burst_info: BurstVisualInfo | None, dino_decision) -> str:
+    def _review_group_badge_text(self, burst_info: BurstVisualInfo | None, prefilter_decision) -> str:
         # Group/near-duplicate/burst/similar badges are AI annotations: only
         # surfaced in AI Review. Manual review stays clean — the photographer
         # spots duplicates by eye. (A future setting may let the user opt
@@ -2899,9 +3019,9 @@ class ThumbnailGridView(QAbstractScrollArea):
             elif burst_info.kind == "similar":
                 label = "Similar"
             return f"{label} \u00b7 {burst_info.index_in_group}/{burst_info.group_size}"
-        if dino_decision is not None:
-            action = str(getattr(dino_decision, "action", "") or "")
-            reason = str(getattr(dino_decision, "reason", "") or "")
+        if prefilter_decision is not None:
+            action = str(getattr(prefilter_decision, "action", "") or "")
+            reason = str(getattr(prefilter_decision, "reason", "") or "")
             if action in {"quarantine", "remove_from_pool"} and reason == "phash_duplicate_trash":
                 return "Near Duplicate"
         return ""
@@ -2923,7 +3043,8 @@ class ThumbnailGridView(QAbstractScrollArea):
             label = ai_result.confidence_bucket_short_label
             return "Review" if label in {"Needs Review", "Review"} else label
         if workflow_insight is not None and getattr(workflow_insight, "best_in_group", False):
-            return "Winner"
+            # Only a burst suggestion (no AI result): not a Winner, which is the word for what the user marks.
+            return "Suggested"
         return ""
 
     def _review_workflow_tags(self, record: ImageRecord) -> tuple[tuple[str, str], ...]:
@@ -2937,7 +3058,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         """
         # The rail is AI-Review-only, and it now carries a single tag: AI Miss —
         # the one place where the user overruled a call the AI was confident
-        # about. Everything else (Best Frame, dup/prefilter states, Edited) is
+        # about. Everything else (Suggested Frame, dup/prefilter states, Edited) is
         # data-only now: computed and filterable, never drawn on the card.
         if not self._show_ai_annotations:
             return ()
@@ -3974,6 +4095,20 @@ class ThumbnailGridView(QAbstractScrollArea):
                 found=False,
             )
 
+    def scroll_index_to_top(self, index: int) -> None:
+        """Scroll so the item's row sits at the top of the viewport."""
+        if not 0 <= index < len(self._items):
+            return
+        try:
+            rect = self._item_rect(index)
+        except Exception:
+            return
+        if rect.isNull():
+            return
+        self._stop_smooth_scroll()
+        bar = self.verticalScrollBar()
+        bar.setValue(max(bar.minimum(), min(bar.maximum(), bar.value() + rect.top() - 12)))
+
     def _ensure_index_visible(self, index: int) -> None:
         if not 0 <= index < len(self._items):
             return
@@ -4013,13 +4148,6 @@ class ThumbnailGridView(QAbstractScrollArea):
             return False
         _, record, variant = single_item
         return path == variant.path or path == record.path
-
-    def _single_visible_item_aspect_ratio(self) -> float | None:
-        single_item = self._single_visible_item()
-        if single_item is None:
-            return None
-        _, record, variant = single_item
-        return self._record_aspect_ratio(record, variant)
 
     def _record_aspect_ratio(self, record: ImageRecord, variant: ImageVariant) -> float | None:
         for candidate in (variant.path, record.path):

@@ -21,7 +21,7 @@ from image_triage.ui.mask_overlay import (
     paint_brush_stroke,
 )
 from image_triage.ui.photo_editor_panel import PhotoEditorPanel
-from photo_terminal.masks import refine_color_range, refine_luminance_range
+from image_triage.photo_terminal.masks import refine_color_range, refine_luminance_range
 
 
 class _RecordingPerfLogger:

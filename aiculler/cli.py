@@ -8,10 +8,14 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from aiculler.run_logging import RunLogger, normalize_value
 from aiculler.perf_metrics import emit_metric
 from aiculler.session_review import collect_review_feedback, load_csv_rows, write_comparison_report
+
+if TYPE_CHECKING:
+    from aiculler.storage import SQLiteFeatureStore
 
 
 def _event_printer(event) -> None:

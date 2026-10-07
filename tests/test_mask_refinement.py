@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image
 from PySide6.QtGui import QColor, QImage
 
-from cli_editor.photo_terminal.session import ValidationError, new_session, validate_session
+from image_triage.photo_terminal.session import ValidationError, new_session, validate_session
 from image_triage.mask_refinement import refine_bitmap_qimage, refine_mask_array
 from image_triage.ui import mask_overlay
 from image_triage.ui.mask_overlay import mask_strength_qimage

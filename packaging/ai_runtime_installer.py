@@ -41,9 +41,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Reinstall the selected runtime profile even if it already exists.",
     )
     install_parser.add_argument(
-        "--no-dino",
+        "--no-torch",
         action="store_true",
-        help="Skip optional DINO/PyTorch/transformers dependencies.",
+        help="Skip optional PyTorch/transformers dependencies.",
     )
     install_parser.add_argument(
         "--install-root",
@@ -59,7 +59,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     validate_parser.add_argument("--site-packages", type=Path, required=True)
     validate_parser.add_argument("--variant", choices=("cpu", "gpu"), required=True)
-    validate_parser.add_argument("--no-dino", action="store_true")
+    validate_parser.add_argument("--no-torch", action="store_true")
 
     # Runs one capability probe inside a managed profile and prints a single
     # JSON line. Launched by image_triage.ai_health so that the probe uses the
@@ -157,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
             validate_ai_runtime_imports(
                 args.site_packages,
                 variant=args.variant,
-                include_dino=not bool(args.no_dino),
+                include_torch=not bool(args.no_torch),
             )
         except Exception as exc:
             print(str(exc), file=sys.stderr)
@@ -172,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
                 "root": str(status.directories.root),
                 "installed_variants": list(status.installed_variants),
                 "preferred_variant": status.preferred_variant,
-                "torch_variants": list(status.dino_installed_variants),
+                "torch_variants": list(status.torch_installed_variants),
                 # The clean-machine harness probes this exact directory, so the
                 # installed build reports it rather than letting the harness guess.
                 "site_packages": str(preferred.site_packages_dir) if preferred else "",
@@ -189,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         status = install_ai_runtime(
             args.variant,
             force=bool(args.force),
-            include_dino=not bool(args.no_dino),
+            include_torch=not bool(args.no_torch),
             install_root=args.install_root,
             output_callback=print,
         )

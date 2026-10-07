@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, fields
 from enum import Enum
 from pathlib import Path
@@ -598,7 +599,33 @@ def build_app_palette(theme: ThemePalette) -> QPalette:
 
 
 def build_app_stylesheet(theme: ThemePalette) -> str:
-    metrics = WORKSPACE_METRICS
+    """The application-wide Qt stylesheet for ``theme``.
+
+    The text is assembled from small section functions, each returning the
+    rules for one widget family. ``_APP_STYLESHEET_SECTIONS`` (bottom of this
+    module) fixes their order, which matters: Qt resolves equal-specificity
+    rules by position, and the app compares stylesheet text for equality.
+
+    The sections in ``_APP_STYLESHEET_SECTIONS`` each start with a newline and
+    stop right after their last ``}``, so they join with no separator; the
+    original single string ended with a newline and a four-space indent, which
+    is restored here. The sections in ``_APP_STYLESHEET_PADDED_SECTIONS`` predate
+    the split and carry that leading newline and trailing indent themselves.
+    ``tests/test_stylesheet_golden.py`` pins the exact output.
+    """
+    body = "".join(section(theme) for section in _APP_STYLESHEET_SECTIONS)
+    padded = "".join(section(theme) for section in _APP_STYLESHEET_PADDED_SECTIONS)
+    return body + "\n    " + padded
+
+
+# --- Stylesheet sections -----------------------------------------------------
+# One function per widget family. Each returns its rules starting with a newline
+# and ending right after the last closing brace (no trailing newline), so the
+# pieces concatenate into exactly the text the original f-string produced.
+
+
+def _window_and_menu_rules(theme: ThemePalette) -> str:
+    """Base font, the main window surface, the menu bar and popup menus."""
     return f"""
         QWidget {{
             font-family: {UI_FONT_STACK};
@@ -644,7 +671,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             height: 1px;
             background: {theme.border_muted.css};
             margin: 6px 4px;
-        }}
+        }}"""
+
+
+def _toolbar_and_tool_button_rules(theme: ThemePalette) -> str:
+    """The primary toolbar strip and the generic QToolButton states."""
+    return f"""
         QToolBar#primaryToolbar {{
             background-color: {theme.toolbar_bg.css};
             border: 1px solid {theme.border.css};
@@ -695,7 +727,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QToolButton::menu-indicator {{
             image: none;
-        }}
+        }}"""
+
+
+def _push_button_and_line_edit_rules(theme: ThemePalette) -> str:
+    """Generic QPushButton and QLineEdit."""
+    return f"""
         QPushButton {{
             background-color: {theme.raised_bg.css};
             border: 1px solid {theme.border.css};
@@ -732,74 +769,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QLineEdit:focus {{
             background-color: {theme.input_hover_bg.css};
             border-color: {theme.accent.css};
-        }}
-        QDialog#sharePhoneDialog {{
-            background-color: {theme.panel_bg.css};
-            color: {theme.text_primary.css};
-        }}
-        QLabel#sharePhoneSubtitle {{
-            color: {theme.text_secondary.css};
-        }}
-        QLabel#sharePhoneHint,
-        QLabel#sharePhoneFooterNote {{
-            color: {theme.text_muted.css};
-            font-size: 11px;
-        }}
-        QTabWidget#sharePhoneTabs::pane {{
-            background-color: transparent;
-            border: none;
-            border-top: 1px solid {theme.border_muted.css};
-        }}
-        QTabWidget#sharePhoneTabs[resultMode="true"]::pane {{
-            border-top: none;
-        }}
-        QTabWidget#sharePhoneTabs::tab-bar {{
-            alignment: left;
-        }}
-        QTabWidget#sharePhoneTabs QTabBar::tab {{
-            background-color: transparent;
-            border: none;
-            border-bottom: 2px solid transparent;
-            color: {theme.text_muted.css};
-            font-weight: 600;
-            margin-right: 20px;
-            padding: 3px 1px 7px 1px;
-        }}
-        QTabWidget#sharePhoneTabs QTabBar::tab:hover:!selected {{
-            color: {theme.text_secondary.css};
-        }}
-        QTabWidget#sharePhoneTabs QTabBar::tab:selected {{
-            border-bottom-color: {theme.accent.css};
-            color: {theme.text_primary.css};
-        }}
-        QFrame#sharePhoneSelectionCard {{
-            background-color: {theme.raised_bg.css};
-            border: 1px solid {theme.border_muted.css};
-            border-radius: 9px;
-        }}
-        QLabel#sharePhoneSelectionIcon {{
-            background-color: {theme.accent_soft.css};
-            border-radius: 8px;
-            color: {theme.accent.css};
-        }}
-        QLabel#sharePhoneSelectionCount {{
-            color: {theme.text_primary.css};
-            font-size: 13px;
-            font-weight: 650;
-        }}
-        QLabel#sharePhoneSelectionSource {{
-            color: {theme.text_muted.css};
-            font-size: 11px;
-        }}
-        QProgressBar#sharePhoneProgress {{
-            background-color: {theme.raised_bg.css};
-            border: none;
-            border-radius: 3px;
-        }}
-        QProgressBar#sharePhoneProgress::chunk {{
-            background-color: {theme.accent.css};
-            border-radius: 3px;
-        }}
+        }}"""
+
+
+def _phone_share_rules(theme: ThemePalette) -> str:
+    """The phone-share dialog: status pill, QR frame, URL field, network panel."""
+    return f"""
         QFrame#phoneShareConnectionCard {{
             background-color: transparent;
             border: none;
@@ -881,106 +856,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#phoneShareLinkButton:hover {{
             background-color: transparent;
             color: {theme.accent_hover.css};
-        }}
-        QToolButton#sharePhoneIconButton {{
-            color: {theme.text_secondary.css};
-            padding: 0px;
-        }}
-        QTableWidget#sharePhoneQueueTable {{
-            alternate-background-color: {theme.input_bg.css};
-            background-color: {theme.input_bg.css};
-            border: 1px solid {theme.border_muted.css};
-            border-radius: 9px;
-            color: {theme.text_primary.css};
-            outline: none;
-            selection-background-color: transparent;
-            selection-color: {theme.text_primary.css};
-        }}
-        QTableWidget#sharePhoneQueueTable::item {{
-            border-bottom: 1px solid {theme.border_muted.css};
-            padding-left: 10px;
-            padding-right: 8px;
-        }}
-        QTableWidget#sharePhoneQueueTable::item:selected {{
-            background-color: {theme.selection_fill.css};
-            color: {theme.text_primary.css};
-        }}
-        QTableWidget#sharePhoneQueueTable QHeaderView::section {{
-            background-color: {theme.input_bg.css};
-            border: none;
-            border-bottom: 1px solid {theme.border_muted.css};
-            color: {theme.text_muted.css};
-            font-size: 11px;
-            font-weight: 650;
-            padding: 7px 10px;
-        }}
-        QWidget#sharePhoneStatusCell {{
-            background-color: transparent;
-        }}
-        QLabel#sharePhoneStatusChip {{
-            background-color: {theme.raised_bg.css};
-            border-radius: 9px;
-            color: {theme.text_secondary.css};
-            font-size: 11px;
-            font-weight: 600;
-            padding: 2px 8px;
-        }}
-        QLabel#sharePhoneStatusChip[shareStatus="transferred"] {{
-            background-color: {theme.accent_soft.css};
-            color: {theme.accent.css};
-        }}
-        QLabel#sharePhoneStatusChip[shareStatus="posted"] {{
-            background-color: {theme.success_soft.css};
-            color: {theme.success.css};
-        }}
-        QLabel#sharePhoneStatusChip[shareStatus="failed"] {{
-            background-color: {theme.danger_soft.css};
-            color: {theme.danger.css};
-        }}
-        QLabel#sharePhoneStatusChip[shareStatus="archived"] {{
-            color: {theme.text_muted.css};
-        }}
-        QFrame#sharePhoneEmptyState {{
-            background-color: {theme.input_bg.css};
-            border: 1px dashed {theme.border.css};
-            border-radius: 9px;
-        }}
-        QLabel#sharePhoneEmptyIcon {{
-            color: {theme.text_muted.css};
-        }}
-        QLabel#sharePhoneEmptyTitle {{
-            color: {theme.text_primary.css};
-            font-size: 13px;
-            font-weight: 650;
-        }}
-        QPushButton#sharePhoneSecondaryButton,
-        QPushButton#sharePhoneGhostButton,
-        QPushButton#sharePhoneDangerButton {{
-            font-weight: 600;
-            min-height: 30px;
-            padding: 1px 14px;
-        }}
-        QPushButton#sharePhoneGhostButton,
-        QPushButton#sharePhoneDangerButton {{
-            background-color: transparent;
-            border-color: transparent;
-            color: {theme.text_secondary.css};
-        }}
-        QPushButton#sharePhoneDangerButton {{
-            color: {theme.danger.css};
-        }}
-        QPushButton#sharePhoneGhostButton:hover {{
-            background-color: {theme.input_hover_bg.css};
-            color: {theme.text_primary.css};
-        }}
-        QPushButton#sharePhoneDangerButton:hover {{
-            background-color: {theme.danger_soft.css};
-        }}
-        QPushButton#sharePhoneGhostButton:disabled,
-        QPushButton#sharePhoneDangerButton:disabled {{
-            background-color: transparent;
-            color: {theme.text_disabled.css};
-        }}
+        }}"""
+
+
+def _combo_box_and_check_box_rules(theme: ThemePalette) -> str:
+    """Generic QComboBox and QCheckBox, plus the settings session combo overrides."""
+    return f"""
         QComboBox {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border.css};
@@ -1038,7 +919,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             margin: 0px;
             color: {theme.text_primary.css};
             selection-background-color: {theme.selection_fill.css};
-        }}
+        }}"""
+
+
+def _panel_surface_and_tab_rules(theme: ThemePalette) -> str:
+    """Generic tree/list views, the floating palette panel, and the floating and
+    docked panel tab strips."""
+    return f"""
         QTreeView, QListWidget {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
@@ -1115,7 +1002,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QTabWidget#dockedPanelTabs QWidget#libraryWorkspacePanel,
         QTabWidget#dockedPanelTabs QWidget#inspectorWorkspacePanel {{
             border-top-left-radius: 0px;
-        }}
+        }}"""
+
+
+def _top_bar_button_rules(theme: ThemePalette) -> str:
+    """The app top bar surface and its glyph and pane buttons."""
+    metrics = WORKSPACE_METRICS
+    return f"""
         QWidget#appTopBar {{
             /* Chrome, like the rail and status bar it lines up with. The
                floating toolbar is a QFrame with the same name and takes
@@ -1175,7 +1068,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QToolButton#appTopBarPaneButton:focus {{
             border-color: {theme.selection_outline.css};
-        }}
+        }}"""
+
+
+def _top_bar_search_and_zoom_rules(theme: ThemePalette) -> str:
+    """The workspace search field, path suggestion popup and the top bar zoom slider."""
+    metrics = WORKSPACE_METRICS
+    return f"""
         QLineEdit#workspaceSearchField {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border_muted.css};
@@ -1235,7 +1134,14 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             color: {theme.text_muted.css};
             font-family: "Segoe UI Symbol";
             font-size: 24px;
-        }}
+        }}"""
+
+
+def _top_bar_action_button_rules(theme: ThemePalette) -> str:
+    """The top bar action, icon and caption buttons (one rule per state, shared
+    across the three button kinds)."""
+    metrics = WORKSPACE_METRICS
+    return f"""
         QWidget#appTopBar QToolButton#appTopBarActionButton,
         QWidget#appTopBar QToolButton#workspacePresetsButton {{
             background-color: transparent;
@@ -1304,7 +1210,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#appTopBar QToolButton#appTopBarIconButton::menu-indicator {{
             image: none;
             width: 0px;
-        }}
+        }}"""
+
+
+def _workspace_panel_rules(theme: ThemePalette) -> str:
+    """The library and inspector workspace panels and their header/viewport/content hosts."""
+    return f"""
         QWidget#libraryWorkspacePanel {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
@@ -1343,7 +1254,14 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#libraryPanelContent QToolButton {{
             font-family: {UI_FONT_STACK};
             letter-spacing: 0px;
-        }}
+        }}"""
+
+
+def _left_nav_rail_rules(theme: ThemePalette) -> str:
+    """The left navigation rail and its buttons, the generated rail buttons and the
+    library stack."""
+    metrics = WORKSPACE_METRICS
+    return f"""
         QWidget#leftNavRail {{
             background-color: {theme.chrome_bg.css};
             border-right: 1px solid {theme.border_muted.css};
@@ -1403,7 +1321,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: transparent;
             border: none;
             padding: 10px;
-        }}
+        }}"""
+
+
+def _review_workflow_rules(theme: ThemePalette) -> str:
+    """The review workflow panel: decision labels and markers, command buttons."""
+    return f"""
         QFrame#leftQuickActionsPanel, QFrame#reviewWorkflowPanel {{
             background-color: transparent;
             border: none;
@@ -1473,7 +1396,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.raised_bg.css};
             border-color: {theme.text_muted.css};
             color: {theme.text_muted.css};
-        }}
+        }}"""
+
+
+def _left_quick_actions_and_settings_bar_rules(theme: ThemePalette) -> str:
+    """Left quick-action icons and the left settings bar."""
+    return f"""
         QToolButton#leftQuickActionIcon {{
             background-color: {theme.raised_bg.css};
             border: 1px solid {theme.border_muted.css};
@@ -1511,7 +1439,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QToolButton#leftSettingsBarButton:focus {{
             border-color: {theme.selection_outline.css};
-        }}
+        }}"""
+
+
+def _inspector_scroll_rules(theme: ThemePalette) -> str:
+    """The inspector scroll areas and their section/overlay scroll bars."""
+    return f"""
         QWidget#inspectorBody,
         QScrollArea#inspectorScrollArea > QWidget > QWidget,
         QScrollArea#inspectorSectionScrollArea,
@@ -1573,7 +1506,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QScrollBar#inspectorOverlayScrollBar::add-page:vertical,
         QScrollBar#inspectorOverlayScrollBar::sub-page:vertical {{
             background: transparent;
-        }}
+        }}"""
+
+
+def _inspector_panel_rules(theme: ThemePalette) -> str:
+    """The inspector's preview card, header bar, collapsible sections and key labels."""
+    return f"""
         QWidget#inspectorPreviewCard {{
             background-color: {theme.panel_alt_bg.css};
             border: 1px solid {theme.border_muted.css};
@@ -1658,7 +1596,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QLabel#inspectorKey {{
             color: {theme.text_muted.css};
-        }}
+        }}"""
+
+
+def _inspector_value_and_action_rules(theme: ThemePalette) -> str:
+    """Inspector value labels (severity/emphasis variants), empty state and action button."""
+    return f"""
         QLabel#inspectorValue {{
             color: {theme.text_primary.css};
             font-size: 12px;
@@ -1705,7 +1648,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#inspectorActionButton:disabled {{
             color: {theme.text_disabled.css};
             border-color: {theme.border_muted.css};
-        }}
+        }}"""
+
+
+def _folder_tree_and_details_table_rules(theme: ThemePalette) -> str:
+    """The folder tree and favourites list, the details table and generic header sections."""
+    return f"""
         QTreeView#folderTree, QListWidget#favoritesList {{
             background-color: transparent;
             border: none;
@@ -1783,7 +1731,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border: none;
             border-bottom: 1px solid {theme.border.css};
             padding: 6px 8px;
-        }}
+        }}"""
+
+
+def _workspace_bar_rules(theme: ThemePalette) -> str:
+    """The summary strip and the workspace bar with its divider and drag handle."""
+    return f"""
         QWidget#summaryStrip {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
@@ -1814,7 +1767,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QLabel#workspaceBarDragHandle:hover {{
             color: {theme.text_secondary.css};
-        }}
+        }}"""
+
+
+def _toolbar_edit_hud_rules(theme: ThemePalette) -> str:
+    """The toolbar edit-mode overlay and heads-up display."""
+    return f"""
         QFrame#toolbarEditOverlay {{
             background-color: rgba(0, 0, 0, 132);
             border: 1px solid {theme.accent_soft.css};
@@ -1873,7 +1831,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QFrame#toolbarEditHud QPushButton:focus {{
             border-color: {theme.selection_outline.css};
-        }}
+        }}"""
+
+
+def _toolbar_customizer_preview_rules(theme: ThemePalette) -> str:
+    """The toolbar customizer dialog and its live preview bar."""
+    return f"""
         QDialog#toolbarCustomizerDialog {{
             background-color: {theme.window_bg.css};
             color: {theme.text_primary.css};
@@ -1906,7 +1869,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#toolbarCustomizerPreviewButton:checked {{
             background-color: {theme.accent_soft.css};
             border-color: {theme.accent.css};
-        }}
+        }}"""
+
+
+def _toolbar_edit_sidebar_rules(theme: ThemePalette) -> str:
+    """The toolbar edit sidebar: chips, titles, add/move/remove and palette buttons."""
+    return f"""
         QFrame#toolbarEditSidebar {{
             background-color: {theme.panel_bg.with_alpha(232).css};
             border: 1px solid {theme.border.css};
@@ -1969,7 +1937,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#toolbarEditDoneButton {{
             background-color: {theme.accent_soft.css};
             border-color: {theme.accent.css};
-        }}
+        }}"""
+
+
+def _panel_header_and_pin_button_rules(theme: ThemePalette) -> str:
+    """Workspace controls, pane titles, the panel header buttons and the zen menu pin."""
+    metrics = WORKSPACE_METRICS
+    return f"""
         QWidget#workspaceControls {{
             background-color: transparent;
             border: none;
@@ -2029,7 +2003,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: transparent;
             border-color: transparent;
             color: {theme.text_primary.css};
-        }}
+        }}"""
+
+
+def _update_button_and_zen_overlay_rules(theme: ThemePalette) -> str:
+    """The menu corner widget, the update button, the zen hint overlay and the
+    panel close button's hover/pressed states."""
+    return f"""
         QWidget#menuCornerWidget {{
             background-color: transparent;
         }}
@@ -2073,7 +2053,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QToolButton#workspacePanelCloseButton:pressed {{
             background-color: {theme.danger_soft.css};
             color: {theme.danger.css};
-        }}
+        }}"""
+
+
+def _navigation_section_rules(theme: ThemePalette) -> str:
+    """Navigation section headers, the projects and face-group lists, and section labels."""
+    return f"""
         QWidget#navSectionHeader {{
             background-color: transparent;
             border: none;
@@ -2147,7 +2132,315 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-size: 13px;
             font-weight: 500;
             padding: 0 2px;
+        }}"""
+
+
+def _settings_sidebar_rules(theme: ThemePalette) -> str:
+    """The settings dialog sidebar: search box, navigation buttons and help card."""
+    return f"""
+        QFrame#settingsSidebar {{
+            background-color: {theme.panel_alt_bg.css};
+            border: none;
+            border-right: 1px solid {theme.border_muted.css};
         }}
+        QFrame#settingsSearchBox {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 10px;
+            min-height: 36px;
+            max-height: 36px;
+        }}
+        QFrame#settingsSearchBox:focus-within {{
+            border-color: {theme.accent.css};
+        }}
+        QLabel#settingsSearchGlyph {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+            font-size: 13px;
+        }}
+        QLineEdit#settingsSearchField {{
+            background: transparent;
+            border: none;
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            min-height: 0px;
+            padding: 0px;
+        }}
+        QLabel#settingsNavLabel {{
+            color: {theme.text_muted.css};
+            font-size: 10px;
+            font-weight: 700;
+            padding: 0px 10px 6px 10px;
+        }}
+        QPushButton#settingsNavButton {{
+            qproperty-iconColor: {theme.text_muted.css};
+            qproperty-iconActiveColor: {theme.accent_hover.css};
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 10px;
+            color: {theme.text_secondary.css};
+            font-size: 13px;
+            min-height: 40px;
+            padding: 0px 12px 0px 42px;
+            text-align: left;
+        }}
+        QPushButton#settingsNavButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QPushButton#settingsNavButton:checked {{
+            background-color: {theme.accent_soft.css};
+            border-color: {theme.accent.with_alpha(70).css};
+            color: {theme.text_primary.css};
+        }}
+        QFrame#settingsHelpCard {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 11px;
+        }}
+        QLabel#settingsHelpTitle {{
+            background: transparent;
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 700;
+        }}
+        QLabel#settingsHelpText {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-size: 10px;
+        }}
+        QPushButton#settingsHelpButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 8px;
+            color: {theme.text_secondary.css};
+            font-size: 11px;
+            min-height: 30px;
+            padding: 0 12px;
+        }}
+        QPushButton#settingsHelpButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}"""
+
+
+def _settings_page_rules(theme: ThemePalette) -> str:
+    """The settings dialog main area: header, section titles, cards and rows."""
+    return f"""
+        QWidget#settingsMain, QStackedWidget#settingsPages, QWidget#settingsPageContent {{
+            background-color: {theme.window_bg.css};
+        }}
+        QWidget#settingsMain QScrollArea {{
+            background: transparent;
+            border: none;
+        }}
+        QFrame#settingsHeader {{
+            background-color: {theme.window_bg.css};
+            border: none;
+            border-bottom: 1px solid {theme.border_muted.css};
+        }}
+        QLabel#settingsEyebrow {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-size: 10px;
+            font-weight: 700;
+        }}
+        QLabel#settingsTitle {{
+            background: transparent;
+            color: {theme.text_primary.css};
+            font-size: 24px;
+            font-weight: 700;
+        }}
+        QLabel#settingsSubtitle {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-size: 12px;
+        }}
+        QLabel#settingsSectionTitle {{
+            background: transparent;
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 700;
+        }}
+        QLabel#settingsSectionHint {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-size: 10px;
+        }}
+        QFrame#settingsCard {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 13px;
+        }}
+        QWidget#settingsCardRow {{
+            background: transparent;
+            border: none;
+        }}
+        QFrame#settingsRowDivider {{
+            background-color: {theme.border_muted.css};
+            border: none;
+        }}
+        QLabel#settingsRowTitle {{
+            background: transparent;
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 700;
+        }}
+        QLabel#settingsRowDesc {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-size: 10px;
+        }}"""
+
+
+def _settings_card_control_rules(theme: ThemePalette) -> str:
+    """Controls inside settings cards: checkboxes, combos, spin boxes, buttons, sliders."""
+    return f"""
+        QWidget#settingsPageContent QCheckBox {{
+            qproperty-trackOffColor: {theme.border.css};
+            qproperty-trackOnColor: {theme.accent.css};
+            qproperty-knobColor: {theme.text_secondary.css};
+            qproperty-knobOnColor: {theme.text_primary.css};
+            qproperty-labelColor: {theme.text_secondary.css};
+        }}
+        QWidget#settingsCardRow QComboBox,
+        QWidget#settingsCardRow QSpinBox,
+        QWidget#settingsCardRow QDoubleSpinBox,
+        QWidget#settingsCardRow QLineEdit {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 9px;
+            color: {theme.text_primary.css};
+            font-size: 11px;
+            min-height: 30px;
+            padding: 0px 12px;
+        }}
+        QWidget#settingsCardRow QComboBox:hover,
+        QWidget#settingsCardRow QSpinBox:hover,
+        QWidget#settingsCardRow QDoubleSpinBox:hover {{
+            background-color: {theme.input_hover_bg.css};
+        }}
+        QWidget#settingsCardRow QComboBox:focus,
+        QWidget#settingsCardRow QSpinBox:focus,
+        QWidget#settingsCardRow QLineEdit:focus {{
+            border-color: {theme.accent.css};
+        }}
+        QWidget#settingsCardRow QSpinBox::up-button,
+        QWidget#settingsCardRow QSpinBox::down-button,
+        QWidget#settingsCardRow QDoubleSpinBox::up-button,
+        QWidget#settingsCardRow QDoubleSpinBox::down-button {{
+            border: none;
+            width: 0px;
+        }}
+        QLabel#settingsComboChevron {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+            font-size: 10px;
+        }}
+        QWidget#settingsCardRow QPushButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 9px;
+            color: {theme.text_secondary.css};
+            font-size: 11px;
+            min-height: 30px;
+            padding: 0px 14px;
+        }}
+        QWidget#settingsCardRow QPushButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QWidget#settingsCardRow QSlider::groove:horizontal {{
+            background: {theme.border.css};
+            border-radius: 2px;
+            height: 4px;
+        }}
+        QWidget#settingsCardRow QSlider::sub-page:horizontal {{
+            background: {theme.accent.css};
+            border-radius: 2px;
+        }}
+        QWidget#settingsCardRow QSlider::handle:horizontal {{
+            background: {theme.text_primary.css};
+            border: 3px solid {theme.accent.css};
+            border-radius: 8px;
+            height: 10px;
+            margin: -7px 0;
+            width: 10px;
+        }}"""
+
+
+def _settings_footer_rules(theme: ThemePalette) -> str:
+    """Settings category headings, row hover, and the footer with its buttons."""
+    return f"""
+        QLabel#settingsCategoryHeading {{
+            background: transparent;
+            color: {theme.text_primary.css};
+            font-size: 11px;
+            font-weight: 700;
+            padding: 8px 4px 2px 4px;
+        }}
+        QFrame#settingsPageSeparator {{
+            background-color: {theme.border_muted.css};
+            border: none;
+        }}
+        QLabel#settingsRowLabel {{
+            background: transparent;
+            color: {theme.text_secondary.css};
+            font-size: 12px;
+            font-weight: 500;
+        }}
+        QWidget#settingsRow {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 11px;
+        }}
+        QWidget#settingsRow:hover {{
+            border-color: {theme.border.css};
+        }}
+        QFrame#settingsFooter {{
+            background-color: {theme.panel_alt_bg.css};
+            border: none;
+            border-top: 1px solid {theme.border_muted.css};
+        }}
+        QLabel#settingsFooterNote {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-size: 10px;
+        }}
+        QPushButton#settingsFooterButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 9px;
+            color: {theme.text_secondary.css};
+            font-size: 11px;
+            min-height: 34px;
+            padding: 0px 16px;
+        }}
+        QPushButton#settingsFooterButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QPushButton#settingsPrimaryButton {{
+            background-color: {theme.accent.css};
+            border: 1px solid {theme.accent.css};
+            border-radius: 9px;
+            color: white;
+            font-size: 11px;
+            font-weight: 700;
+            min-height: 34px;
+            padding: 0px 18px;
+        }}
+        QPushButton#settingsPrimaryButton:hover {{
+            background-color: {theme.accent_hover.css};
+            border-color: {theme.accent_hover.css};
+        }}"""
+
+
+def _settings_section_list_rules(theme: ThemePalette) -> str:
+    """The settings section list and the page/row/footer rules that follow it."""
+    return f"""
         QListWidget#settingsSectionList {{
             background-color: {theme.panel_alt_bg.css};
             border: none;
@@ -2217,7 +2510,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#settingsHelpButton {{
             min-height: 30px;
             padding: 0 14px;
-        }}
+        }}"""
+
+
+def _inspector_hint_and_divider_rules(theme: ThemePalette) -> str:
+    """Inspector value/hint text and the generic section divider."""
+    return f"""
         QLabel#inspectorValue {{
             color: {theme.text_primary.css};
             font-size: 12px;
@@ -2234,7 +2532,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             max-height: 1px;
             min-height: 1px;
             border: none;
-        }}
+        }}"""
+
+
+def _path_control_rules(theme: ThemePalette) -> str:
+    """The path combo box and navigation buttons, and the toolbar selection count."""
+    return f"""
         QComboBox#pathComboBox {{
             background-color: {theme.raised_bg.css};
             color: {theme.text_secondary.css};
@@ -2281,13 +2584,17 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QLabel#toolbarSelectionCount[toolbarPreviewSelected="true"] {{
             color: {theme.text_primary.css};
-        }}
+        }}"""
+
+
+def _collection_dialog_rules(theme: ThemePalette) -> str:
+    """The collection edit dialog: title, fields, description box and buttons."""
+    return f"""
         QDialog#collectionEditDialog {{
             background-color: {theme.panel_bg.css};
             color: {theme.text_primary.css};
         }}
-        QLabel#collectionDialogTitle,
-        QLabel#sharePhoneTitle {{
+        QLabel#collectionDialogTitle {{
             color: {theme.text_primary.css};
             font-size: 18px;
             font-weight: 700;
@@ -2301,35 +2608,28 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-weight: 600;
             padding: 4px 9px;
         }}
-        QLabel#collectionFieldLabel,
-        QLabel#sharePhoneFieldLabel {{
+        QLabel#collectionFieldLabel {{
             color: {theme.text_secondary.css};
             font-size: 11px;
             font-weight: 650;
         }}
         QLineEdit#collectionNameField,
-        QComboBox#collectionPurposeCombo,
-        QLineEdit#sharePhoneField,
-        QComboBox#sharePhoneSizeCombo {{
+        QComboBox#collectionPurposeCombo {{
             min-height: 30px;
         }}
-        QComboBox#collectionPurposeCombo,
-        QComboBox#sharePhoneSizeCombo {{
+        QComboBox#collectionPurposeCombo {{
             padding-right: 30px;
         }}
-        QComboBox#collectionPurposeCombo::drop-down,
-        QComboBox#sharePhoneSizeCombo::drop-down {{
+        QComboBox#collectionPurposeCombo::drop-down {{
             border: none;
             width: 28px;
         }}
-        QComboBox#collectionPurposeCombo::down-arrow,
-        QComboBox#sharePhoneSizeCombo::down-arrow {{
+        QComboBox#collectionPurposeCombo::down-arrow {{
             image: none;
             width: 0px;
             height: 0px;
         }}
-        QTextEdit#collectionDescriptionField,
-        QTextEdit#sharePhoneCaptionField {{
+        QTextEdit#collectionDescriptionField {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border.css};
             border-radius: 7px;
@@ -2337,68 +2637,53 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             padding: 7px 9px;
             selection-background-color: {theme.selection_fill.css};
         }}
-        QTextEdit#collectionDescriptionField:hover,
-        QTextEdit#sharePhoneCaptionField:hover {{
+        QTextEdit#collectionDescriptionField:hover {{
             background-color: {theme.input_hover_bg.css};
         }}
-        QTextEdit#collectionDescriptionField:focus,
-        QTextEdit#sharePhoneCaptionField:focus {{
+        QTextEdit#collectionDescriptionField:focus {{
             background-color: {theme.input_hover_bg.css};
             border-color: {theme.accent.css};
         }}
         QPushButton#collectionCancelButton,
-        QPushButton#collectionPrimaryButton,
-        QPushButton#sharePhoneCancelButton,
-        QPushButton#sharePhonePrimaryButton {{
+        QPushButton#collectionPrimaryButton {{
             min-height: 30px;
             padding: 1px 14px;
             font-weight: 650;
         }}
-        QPushButton#collectionCancelButton,
-        QPushButton#sharePhoneCancelButton,
-        QPushButton#sharePhonePrimaryButton[quiet="true"] {{
+        QPushButton#collectionCancelButton {{
             background-color: transparent;
             border-color: {theme.border.css};
             color: {theme.text_secondary.css};
         }}
-        QPushButton#collectionCancelButton:hover,
-        QPushButton#sharePhoneCancelButton:hover,
-        QPushButton#sharePhonePrimaryButton[quiet="true"]:hover {{
+        QPushButton#collectionCancelButton:hover {{
             background-color: {theme.input_hover_bg.css};
             border-color: {theme.border.css};
             color: {theme.text_primary.css};
         }}
-        QPushButton#collectionPrimaryButton,
-        QPushButton#sharePhonePrimaryButton,
-        QPushButton#sharePhoneCancelButton[emphasis="true"] {{
+        QPushButton#collectionPrimaryButton {{
             background-color: rgb(20, 115, 230);
             border-color: rgb(20, 115, 230);
             color: rgb(255, 255, 255);
         }}
-        QPushButton#collectionPrimaryButton:hover,
-        QPushButton#sharePhonePrimaryButton:hover,
-        QPushButton#sharePhoneCancelButton[emphasis="true"]:hover {{
+        QPushButton#collectionPrimaryButton:hover {{
             background-color: rgb(43, 131, 235);
             border-color: rgb(43, 131, 235);
             color: rgb(255, 255, 255);
         }}
-        QPushButton#collectionPrimaryButton:pressed,
-        QPushButton#sharePhonePrimaryButton:pressed,
-        QPushButton#sharePhoneCancelButton[emphasis="true"]:pressed {{
+        QPushButton#collectionPrimaryButton:pressed {{
             background-color: rgb(13, 98, 202);
             border-color: rgb(13, 98, 202);
         }}
-        QPushButton#collectionPrimaryButton:disabled,
-        QPushButton#sharePhonePrimaryButton:disabled {{
+        QPushButton#collectionPrimaryButton:disabled {{
             background-color: {theme.raised_bg.css};
             border-color: {theme.border_muted.css};
             color: {theme.text_disabled.css};
-        }}
-        QPushButton#sharePhonePrimaryButton[quiet="true"]:hover {{
-            background-color: {theme.input_hover_bg.css};
-            border-color: {theme.border.css};
-            color: {theme.text_primary.css};
-        }}
+        }}"""
+
+
+def _utility_text_and_help_rules(theme: ThemePalette) -> str:
+    """Secondary/muted text styles, the help browser and page list, the AI training log."""
+    return f"""
         QLabel#secondaryText {{
             color: {theme.text_secondary.css};
         }}
@@ -2470,7 +2755,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
             border-radius: 14px;
-        }}
+        }}"""
+
+
+def _command_palette_rules(theme: ThemePalette) -> str:
+    """The command palette overlay: card, list rows, title, subtitle and shortcut."""
+    return f"""
         QWidget#commandPaletteOverlay {{
             background-color: rgba(0, 0, 0, 0.22);
         }}
@@ -2545,7 +2835,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-size: 10px;
             font-weight: 700;
             letter-spacing: 1px;
-        }}
+        }}"""
+
+
+def _workspace_icon_button_and_edit_cell_rules(theme: ThemePalette) -> str:
+    """Workspace filter/icon buttons, the top bar divider and toolbar edit-mode cells."""
+    metrics = WORKSPACE_METRICS
+    return f"""
         QToolButton#workspaceFiltersButton, QToolButton#workspacePresetsButton {{
             min-height: 28px;
             border-radius: 7px;
@@ -2600,7 +2896,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QToolButton#statusFilterClearButton {{
             padding: 2px 8px;
-        }}
+        }}"""
+
+
+def _mode_tab_progress_and_status_bar_rules(theme: ThemePalette) -> str:
+    """Mode tabs, progress bars and the status bar."""
+    return f"""
         QTabBar#modeTabs::tab {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border.css};
@@ -2637,7 +2938,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QStatusBar::item {{
             border: none;
-        }}
+        }}"""
+
+
+def _scroll_bar_rules(theme: ThemePalette) -> str:
+    """Generic vertical and horizontal scroll bars."""
+    return f"""
         QScrollBar:vertical {{
             background-color: {theme.chrome_bg.css};
             border: none;
@@ -2674,7 +2980,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             width: 0px;
             border: none;
             background: transparent;
-        }}
+        }}"""
+
+
+def _header_and_splitter_rules(theme: ThemePalette) -> str:
+    """The folder tree header and the generic splitter handles."""
+    return f"""
         QTreeView#folderTree QHeaderView::section {{
             background-color: transparent;
             border: none;
@@ -2694,8 +3005,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QSplitter::handle:hover {{
             background-color: {theme.accent_soft.css};
-        }}
-    """ + _app_bar_rules(theme) + _flat_shell_rules(theme) + _inspector_rules(theme) + _toolbar_placement_rules(theme) + _backdrop_rules(theme)
+        }}"""
 
 
 def _inspector_rules(theme: ThemePalette) -> str:
@@ -2994,3 +3304,73 @@ def _backdrop_rules(theme: ThemePalette) -> str:
             background-color: {panel_wash};
         }}
     """
+
+
+# --- Section order -----------------------------------------------------------
+# Defined after every section function so the names exist. Each entry is a
+# ``(ThemePalette) -> str`` function; see ``build_app_stylesheet`` for how the
+# two groups are joined.
+
+# The sections from the inspector value rules through the navigation sections
+# are emitted twice: once before the settings-dialog sections and once after
+# them. The original single f-string pasted the same 489 lines in at both
+# places, verbatim, and the output must stay byte-identical, so the group is
+# listed twice below instead of being duplicated in source. No selector in the
+# settings-dialog sections also appears in this group, but equal-specificity
+# rules with different selectors can still interact, so dropping the second
+# copy needs a look at the rendered UI first.
+_REPEATED_WORKSPACE_SECTIONS: tuple[Callable[[ThemePalette], str], ...] = (
+    _inspector_value_and_action_rules,
+    _folder_tree_and_details_table_rules,
+    _workspace_bar_rules,
+    _toolbar_edit_hud_rules,
+    _toolbar_customizer_preview_rules,
+    _toolbar_edit_sidebar_rules,
+    _panel_header_and_pin_button_rules,
+    _update_button_and_zen_overlay_rules,
+    _navigation_section_rules,
+)
+
+_APP_STYLESHEET_SECTIONS: tuple[Callable[[ThemePalette], str], ...] = (
+    _window_and_menu_rules,
+    _toolbar_and_tool_button_rules,
+    _push_button_and_line_edit_rules,
+    _phone_share_rules,
+    _combo_box_and_check_box_rules,
+    _panel_surface_and_tab_rules,
+    _top_bar_button_rules,
+    _top_bar_search_and_zoom_rules,
+    _top_bar_action_button_rules,
+    _workspace_panel_rules,
+    _left_nav_rail_rules,
+    _review_workflow_rules,
+    _left_quick_actions_and_settings_bar_rules,
+    _inspector_scroll_rules,
+    _inspector_panel_rules,
+    *_REPEATED_WORKSPACE_SECTIONS,
+    _settings_sidebar_rules,
+    _settings_page_rules,
+    _settings_card_control_rules,
+    _settings_footer_rules,
+    *_REPEATED_WORKSPACE_SECTIONS,
+    _settings_section_list_rules,
+    _inspector_hint_and_divider_rules,
+    _path_control_rules,
+    _collection_dialog_rules,
+    _utility_text_and_help_rules,
+    _command_palette_rules,
+    _workspace_icon_button_and_edit_cell_rules,
+    _mode_tab_progress_and_status_bar_rules,
+    _scroll_bar_rules,
+    _header_and_splitter_rules,
+)
+
+# Older section functions that return their own leading newline and trailing
+# four-space indent. They follow the sections above, in this order.
+_APP_STYLESHEET_PADDED_SECTIONS: tuple[Callable[[ThemePalette], str], ...] = (
+    _app_bar_rules,
+    _flat_shell_rules,
+    _inspector_rules,
+    _toolbar_placement_rules,
+    _backdrop_rules,
+)

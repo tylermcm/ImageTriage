@@ -42,7 +42,7 @@ SHORTCUT_REGISTRY: tuple[tuple[str, str, str, str], ...] = (
     # AI
     ("open_ai_workflow_center", "AI", "Ctrl+Shift+W", "AI Workflow Center..."),
     ("quick_rerank_ai_culling", "AI", "Ctrl+Shift+Y", "Quick Rerank"),
-    ("next_ai_pick", "AI", "Ctrl+Alt+P", "Next AI Top Pick"),
+    ("next_ai_pick", "AI", "Ctrl+Alt+N", "Next AI Top Pick"),
     ("compare_ai_group", "AI", "Ctrl+Alt+G", "Compare Current AI Group"),
     # Workflow / export
     ("handoff_builder", "Workflow", "Ctrl+Alt+H", "Deliver / Handoff Builder..."),
@@ -50,12 +50,32 @@ SHORTCUT_REGISTRY: tuple[tuple[str, str, str, str], ...] = (
     ("best_of_set_auto_assembly", "Workflow", "Ctrl+Alt+B", "Best-of-Set Auto Assembly..."),
     # Workspace
     ("save_workspace_preset", "Workspace", "Ctrl+Alt+S", "Save Current Workspace Preset..."),
+    # Review (unified from the window's own Keyboard Shortcuts dialog and
+    # grid/preview/details view's hardcoded review keys, WI-3.2)
+    ("open_preview", "Review", "", "Open Preview"),
+    ("accept_selection", "Review", "W", "Mark Winner"),
+    ("reject_selection", "Review", "X", "Reject Selection"),
+    ("keep_selection", "Review", "", "Move Selection To _keep"),
+    ("move_selection", "Review", "", "Move Selection..."),
+    ("delete_selection", "Review", "", "Delete Selection"),
+    ("cycle_burst_previous", "Review", "[", "Cycle Burst: Previous"),
+    ("cycle_burst_next", "Review", "]", "Cycle Burst: Next"),
+    ("keep_at_cursor", "Review", "K", "Keep Photo At Cursor"),
+    ("move_at_cursor", "Review", "M", "Move Photo At Cursor"),
+    ("tag_at_cursor", "Review", "T", "Tag Photo At Cursor"),
+    ("adapter_label_hero", "Review", "1", "Adapter Label: Hero"),
+    ("adapter_label_strong", "Review", "2", "Adapter Label: Strong"),
+    ("adapter_label_maybe", "Review", "3", "Adapter Label: Maybe"),
+    ("adapter_label_weak", "Review", "4", "Adapter Label: Weak"),
+    ("adapter_label_reject", "Review", "5", "Adapter Label: Reject"),
+    # Workflow
+    ("share_to_phone", "Workflow", "Ctrl+Alt+P", "Send to PocketDrop"),
+    # Workspace
+    ("open_command_palette", "Workspace", "Ctrl+K", "Command Palette..."),
 )
 
 
 _SHORTCUT_SETTINGS_PREFIX = "shortcuts"
-_ORG_NAME = "ImageTriage"
-_APP_NAME = "ImageTriage"
 
 
 def _shortcut_settings_key(attr_name: str) -> str:
@@ -63,7 +83,12 @@ def _shortcut_settings_key(attr_name: str) -> str:
 
 
 def _resolve_settings(settings: QSettings | None) -> QSettings:
-    return settings if settings is not None else QSettings(_ORG_NAME, _APP_NAME)
+    if settings is not None:
+        return settings
+    # Deferred so this module stays loadable standalone (see module docstring).
+    from ..app_identity import user_settings
+
+    return user_settings()
 
 
 def load_shortcut_overrides(settings: QSettings | None = None) -> dict[str, str]:
@@ -107,6 +132,22 @@ def apply_shortcut_overrides(
         action.setShortcut(QKeySequence(target))
 
 
+def effective_shortcuts(
+    names: Iterable[str],
+    overrides: Mapping[str, str] | None = None,
+    *,
+    settings: QSettings | None = None,
+) -> dict[str, str]:
+    """Effective (override-or-default) shortcut text for registry entries
+    that have no `MainWindowActions` attribute — the grid/preview/details
+    view review keys `apply_shortcut_overrides` silently skips."""
+
+    if overrides is None:
+        overrides = load_shortcut_overrides(settings)
+    defaults = {attr_name: default for attr_name, _category, default, _display in SHORTCUT_REGISTRY}
+    return {name: overrides.get(name, defaults.get(name, "")) for name in names}
+
+
 def save_shortcut_overrides(
     overrides: Mapping[str, str],
     *,
@@ -132,6 +173,7 @@ def save_shortcut_overrides(
 __all__ = (
     "SHORTCUT_REGISTRY",
     "apply_shortcut_overrides",
+    "effective_shortcuts",
     "load_shortcut_overrides",
     "save_shortcut_overrides",
 )

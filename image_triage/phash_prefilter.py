@@ -7,11 +7,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
-from .dino_prefilter import (
-    DINOPrefilterDecision,
-    _bool_value,
-    _clamped_score,
-    _preserve_duplicate_group_representatives,
+from .prefilter_common import (
+    PrefilterDecision,
+    bool_value,
+    clamped_score,
+    preserve_duplicate_group_representatives,
 )
 
 
@@ -84,9 +84,9 @@ def run_phash_prefilter_from_signal_rows(
     settings: PHashPrefilterSettings,
     paths: PHashPrefilterPaths,
     protected_paths: Iterable[str] = (),
-) -> dict[str, DINOPrefilterDecision]:
+) -> dict[str, PrefilterDecision]:
     normalized = settings.normalized()
-    decisions: list[DINOPrefilterDecision] = []
+    decisions: list[PrefilterDecision] = []
     scanned_count = 0
     removed_count = 0
     protected_count = 0
@@ -110,15 +110,15 @@ def run_phash_prefilter_from_signal_rows(
             except (TypeError, ValueError):
                 rank = 1
             duplicate_groups.setdefault(group_id, {})[path] = rank
-        score = _clamped_score(row.get("phash_duplicate_score"))
-        best_representative = _bool_value(row.get("best_representative"), score <= 0.0)
+        score = clamped_score(row.get("phash_duplicate_score"))
+        best_representative = bool_value(row.get("best_representative"), score <= 0.0)
         if not normalized.enabled or score < 1.0 or best_representative:
-            decisions.append(DINOPrefilterDecision(path=path, action="pass", reason="phash_duplicate_trash", score=score))
+            decisions.append(PrefilterDecision(path=path, action="pass", reason="phash_duplicate_trash", score=score))
             continue
         if _path_key(path) in protected_keys:
             protected_count += 1
             decisions.append(
-                DINOPrefilterDecision(
+                PrefilterDecision(
                     path=path,
                     action="rescued",
                     reason="phash_duplicate_trash",
@@ -128,9 +128,9 @@ def run_phash_prefilter_from_signal_rows(
             )
             continue
         removed_count += 1
-        decisions.append(DINOPrefilterDecision(path=path, action="remove_from_pool", reason="phash_duplicate_trash", score=score))
+        decisions.append(PrefilterDecision(path=path, action="remove_from_pool", reason="phash_duplicate_trash", score=score))
 
-    decisions = _preserve_duplicate_group_representatives(
+    decisions = preserve_duplicate_group_representatives(
         decisions,
         duplicate_groups,
         duplicate_reasons=("phash_duplicate_trash",),
@@ -196,10 +196,10 @@ def write_phash_prefilter_audit(
     return payload
 
 
-def load_phash_prefilter_decisions(paths: PHashPrefilterPaths) -> dict[str, DINOPrefilterDecision]:
+def load_phash_prefilter_decisions(paths: PHashPrefilterPaths) -> dict[str, PrefilterDecision]:
     if not paths.rows_path.exists():
         return {}
-    decisions: dict[str, DINOPrefilterDecision] = {}
+    decisions: dict[str, PrefilterDecision] = {}
     for line in paths.rows_path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -213,11 +213,11 @@ def load_phash_prefilter_decisions(paths: PHashPrefilterPaths) -> dict[str, DINO
         rescue_reasons = row.get("rescue_reasons")
         if not isinstance(rescue_reasons, list):
             rescue_reasons = []
-        decisions[path] = DINOPrefilterDecision(
+        decisions[path] = PrefilterDecision(
             path=path,
             action=str(row.get("action") or "pass"),
             reason=str(row.get("reason") or "phash_duplicate_trash"),
-            score=_clamped_score(row.get("score")),
+            score=clamped_score(row.get("score")),
             rescue_reasons=tuple(str(reason) for reason in rescue_reasons if str(reason).strip()),
         )
     return decisions

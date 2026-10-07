@@ -1,10 +1,8 @@
-"""Shared presentation primitives extracted from the UI prototype.
+"""Shared presentation primitives originally extracted from a UI prototype.
 
-These are the reusable, behaviour-free pieces of the generated prototype that
-the real application window adopts during the prototype-to-app migration: the
-exact colour tokens the design was tuned around, and the custom-drawn folder
-icon. Keeping them in one module avoids duplicating the design between the
-standalone prototype (`generated_prototype.py`) and the live `MainWindow`.
+These are the reusable, behaviour-free pieces the real application window
+adopted during the prototype-to-app migration: the exact colour tokens the
+design was tuned around, and the custom-drawn folder icon.
 """
 
 from __future__ import annotations
@@ -12,6 +10,8 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import time
+
+from .. import path_policy
 
 from PySide6.QtCore import (
     QFileInfo,
@@ -23,10 +23,10 @@ from PySide6.QtCore import (
     QStorageInfo,
     Qt,
 )
+from PySide6.QtCore import QEvent, QPersistentModelIndex
 from PySide6.QtGui import QBitmap, QColor, QFont, QFontMetrics, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF, QRegion
 from PySide6.QtWidgets import (
     QFileIconProvider,
-    QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTreeView,
@@ -392,6 +392,32 @@ def sidebar_projects_icon_pixmap(
     return pixmap
 
 
+def pocketdrop_icon_pixmap(size: int = 20, color: str = SIDEBAR_ACCENT_COLOR) -> QPixmap:
+    """Outlined phone carrying PocketDrop's download arrow, for the rail."""
+    scale = 2
+    s = size * scale
+    pixmap = QPixmap(s, s)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    unit = s / 20.0
+    pen = QPen(QColor(color), 1.6 * unit)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    # The stroke is centred on the path, so the body is inset by half of it.
+    painter.drawRoundedRect(QRectF(4.8 * unit, 1.8 * unit, 10.4 * unit, 16.4 * unit), 2.4 * unit, 2.4 * unit)
+    painter.drawLine(QPointF(10.0 * unit, 6.0 * unit), QPointF(10.0 * unit, 12.2 * unit))
+    painter.drawPolyline(
+        QPolygonF([QPointF(7.4 * unit, 9.8 * unit), QPointF(10.0 * unit, 12.4 * unit), QPointF(12.6 * unit, 9.8 * unit)])
+    )
+    painter.drawLine(QPointF(8.6 * unit, 15.2 * unit), QPointF(11.4 * unit, 15.2 * unit))
+    painter.end()
+    pixmap.setDevicePixelRatio(scale)
+    return pixmap
+
+
 class FolderTreeView(QTreeView):
     """Folder tree with compact custom rows and direct expand/collapse clicks."""
 
@@ -408,6 +434,8 @@ class FolderTreeView(QTreeView):
         self._hovered_row_fill.setAlpha(28)
         self._single_drive_expansion_enabled = True
         self._enforcing_single_expansion = False
+        self._hover_index = QPersistentModelIndex()
+        self.setMouseTracking(True)
         self._drives_only = False
         self._usage_track = QColor(58, 66, 77, 210)
         self._usage_fill = (QColor("#5b9cff"), QColor("#5b9cff"))
@@ -418,6 +446,23 @@ class FolderTreeView(QTreeView):
         self._meter_height = 4
         self._meter_gap = 5
         self.expanded.connect(self._handle_index_expanded)
+
+    def viewportEvent(self, event) -> bool:  # type: ignore[override]
+        # Track the hovered row ourselves: the style's State_MouseOver is not
+        # reliably set on rows painted through drawRow.
+        kind = event.type()
+        if kind in (QEvent.Type.MouseMove, QEvent.Type.HoverMove, QEvent.Type.HoverEnter):
+            position = event.position().toPoint() if hasattr(event, "position") else self.viewport().mapFromGlobal(self.cursor().pos())
+            self._set_hover_index(self.indexAt(position))
+        elif kind in (QEvent.Type.Leave, QEvent.Type.HoverLeave):
+            self._set_hover_index(QModelIndex())
+        return super().viewportEvent(event)
+
+    def _set_hover_index(self, index: QModelIndex) -> None:
+        new = QPersistentModelIndex(index)
+        if new != self._hover_index:
+            self._hover_index = new
+            self.viewport().update()
 
     def set_drives_only(self, enabled: bool) -> None:
         """Show just the top-level drives as a flat, fixed-height list."""
@@ -615,7 +660,7 @@ class FolderTreeView(QTreeView):
         selected = index == self.currentIndex() or bool(
             selection_model is not None and selection_model.isSelected(index)
         )
-        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        hovered = self._hover_index.isValid() and QModelIndex(self._hover_index) == index
         if selected or hovered:
             rect = QRect(option.rect)
             rect.setLeft(self.viewport().rect().left() + 1)
@@ -859,6 +904,13 @@ class _FolderTreeDelegate(QStyledItemDelegate):
             path = str(model.filePath(index))
         except (AttributeError, RuntimeError):
             return None
+        usage = getattr(model, "usage_ratio", None)
+        if usage is not None:
+            # The Drives model measures a plain local drive itself and learns every other drive's from a background
+            # check; asking QStorageInfo here would block the window for ~20 s on a network drive that is offline.
+            return usage(path)
+        if not path_policy.is_plain_local(path):
+            return None
         now = time.monotonic()
         cached = self._usage_cache.get(path)
         if cached is not None and now - cached[0] < self._USAGE_CACHE_SECONDS:
@@ -875,6 +927,9 @@ def _index_is_drive(index: QModelIndex) -> bool:
     if not index.isValid() or index.parent().isValid():
         return False
     model = index.model()
+    is_drive = getattr(model, "is_drive", None)
+    if is_drive is not None:  # the Drives list's own model answers without touching any drive
+        return bool(is_drive(index))
     try:
         return bool(model.fileInfo(index).isRoot())
     except (AttributeError, RuntimeError):

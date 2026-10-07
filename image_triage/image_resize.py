@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QSize, Signal, Qt
 from PySide6.QtGui import QColor, QImage, QImageWriter, QPainter
 
+from .edit_storage import session_has_edits
 from .formats import FITS_SUFFIXES, JPEG_SUFFIXES, MODEL_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .imaging import load_image_for_resize
 
@@ -327,6 +328,29 @@ def _unique_copy_target_path(source_path: str, requested_name: str, reserved_tar
         counter += 1
 
 
+def apply_edits_if_present(source_path: str, loaded: _LoadedResizeImage) -> _LoadedResizeImage:
+    """If ``source_path`` has a real (non-empty) built-in editor session,
+    replace ``loaded.image`` with the full-resolution edited render.
+
+    Shared by the resize, convert, and workflow-export batch paths (WI-5.3)
+    so exports show the same edits the popout editor and thumbnails now show.
+    ``session_has_edits`` is a cheap existence-check-before-parse, so an
+    unedited source (the common case) costs one cheap check here and no more.
+    A missing render (no sidecar, corrupt sidecar, or render failure) always
+    falls back to the already-loaded original image -- an export must never
+    fail outright just because a sidecar happened to be unreadable.
+    """
+
+    if not session_has_edits(source_path):
+        return loaded
+    from .edit_render_headless import render_edited_image
+
+    rendered = render_edited_image(source_path)
+    if rendered is None or rendered.isNull():
+        return loaded
+    return _LoadedResizeImage(image=rendered, exif_bytes=loaded.exif_bytes, icc_profile=loaded.icc_profile)
+
+
 def _resize_item(item: ResizePlanItem, plan: ResizePlan, options: ResizeOptions) -> None:
     target_size = QSize(plan.target_width, plan.target_height)
     loaded = _load_resize_image(
@@ -335,6 +359,7 @@ def _resize_item(item: ResizePlanItem, plan: ResizePlan, options: ResizeOptions)
         ignore_orientation=options.ignore_orientation,
         strip_metadata=options.strip_metadata,
     )
+    loaded = apply_edits_if_present(item.source.source_path, loaded)
     resized = _scaled_image(
         loaded.image,
         target_size=target_size,

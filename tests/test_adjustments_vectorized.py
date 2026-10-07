@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
-_CLI_EDITOR = Path(__file__).resolve().parents[1] / "cli_editor"
-if str(_CLI_EDITOR) not in sys.path:
-    sys.path.insert(0, str(_CLI_EDITOR))
-
-from photo_terminal.adjustments import EditRecipe, apply_hsl_adjustments, apply_vignette
+from image_triage.photo_terminal.adjustments import EditRecipe, apply_hsl_adjustments, apply_vignette
 
 
 class VignetteTests(unittest.TestCase):

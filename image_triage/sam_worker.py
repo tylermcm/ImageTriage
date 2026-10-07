@@ -53,16 +53,32 @@ def _device_name(torch, requested: str) -> str:
     return "cpu"
 
 
-def _choose_mask_index(areas: list[int], frame: int) -> int:
-    """Largest-mask rule: pick the biggest of SAM's candidate masks (part/whole
-    -> whole) but never the near-whole-frame mask, which is usually background."""
+IOU_TOLERANCE = 0.08
+
+
+def _choose_mask_index(areas: list[int], frame: int, ious: list[float] | None = None) -> int:
+    """Prefer the whole object, but only among candidates SAM is confident in.
+
+    Taking the biggest candidate outright turns one click on a busy scene into
+    a huge, ragged region. Restricting to candidates within IOU_TOLERANCE of
+    SAM's best predicted IoU keeps part -> whole growth when the whole is a
+    solid, confident mask and stops it when it is not. The near-whole-frame
+    mask is still skipped, as it is usually background."""
     if not areas:
         raise ValueError("No candidate masks.")
-    order = sorted(range(len(areas)), key=lambda i: areas[i], reverse=True)
-    for index in order:
-        if areas[index] < 0.9 * frame:
-            return index
-    return order[0]
+    eligible = [i for i in range(len(areas)) if areas[i] < 0.9 * frame] or list(range(len(areas)))
+    if ious is not None and len(ious) == len(areas):
+        best = max(ious[i] for i in eligible)
+        eligible = [i for i in eligible if ious[i] >= best - IOU_TOLERANCE] or eligible
+    return max(eligible, key=lambda i: areas[i])
+
+
+def _clean_binary_mask(np, Image, binary):
+    """Drop speckle and fill pin-holes with a small median filter."""
+    from PIL import ImageFilter
+
+    image = Image.fromarray(binary.astype(np.uint8) * 255, mode="L")
+    return np.asarray(image.filter(ImageFilter.MedianFilter(size=5))) > 127
 
 
 class _SamEngine:
@@ -217,8 +233,14 @@ class _SamEngine:
             height, width = binary.shape[-2:]
             areas = binary.reshape(binary.shape[0], -1).sum(axis=1).astype(np.int64)
             frame = int(height * width)
-            chosen = _choose_mask_index([int(a) for a in areas.tolist()], frame)
-            chosen_binary = binary[chosen]
+            candidate_ious = (
+                [float(v) for v in object_ious[object_index].tolist()]
+                if object_ious is not None
+                else None
+            )
+            chosen = _choose_mask_index([int(a) for a in areas.tolist()], frame, candidate_ious)
+            chosen_binary = _clean_binary_mask(np, self.Image, binary[chosen])
+            areas[chosen] = int(chosen_binary.sum())
             mask = chosen_binary.astype(np.uint8) * 255
             iou = float(object_ious[object_index][chosen]) if object_ious is not None else 0.0
             rows = np.any(chosen_binary, axis=1)

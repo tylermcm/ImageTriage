@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 from PIL import Image
 
-from cli_editor.photo_terminal.adjustments import EditRecipe
+from image_triage.photo_terminal.adjustments import EditRecipe
 
 
 def neutral_ramp() -> Image.Image:

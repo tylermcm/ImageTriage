@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, QRunnable, QSize, Signal
 
 from .formats import FITS_SUFFIXES, MODEL_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .image_ops import load_image_for_transform, normalized_output_path_key, save_transformed_image
-from .image_resize import OUTPUT_FORMAT_NAMES, WRITABLE_IMAGE_SUFFIXES
+from .image_resize import OUTPUT_FORMAT_NAMES, apply_edits_if_present
 
 
 @dataclass(slots=True, frozen=True)
@@ -282,6 +282,7 @@ def _convert_item(item: ConvertPlanItem, plan: ConvertPlan, options: ConvertOpti
         ignore_orientation=False,
         strip_metadata=options.strip_metadata,
     )
+    loaded = apply_edits_if_present(item.source.source_path, loaded)
     save_transformed_image(
         loaded.image,
         target_path=item.target_path,

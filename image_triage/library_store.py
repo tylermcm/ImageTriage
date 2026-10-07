@@ -21,6 +21,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from .formats import is_appledouble_path, is_image_file_candidate
+from . import path_policy
 from .models import ImageRecord, ImageVariant
 from .scan_cache import app_data_root
 from .scanner import (
@@ -76,6 +77,7 @@ class CatalogRefreshSummary:
     record_count: int
     refreshed_roots: tuple[str, ...] = ()
     missing_roots: tuple[str, ...] = ()
+    unreachable_roots: tuple[str, ...] = ()
 
 
 class LibraryStore:
@@ -437,6 +439,7 @@ class LibraryStore:
         total_records = 0
         refreshed_roots: list[str] = []
         missing_roots: list[str] = []
+        unreachable_roots: list[str] = []
         total_roots = len(requested_roots)
 
         with self._connect() as connection:
@@ -446,7 +449,18 @@ class LibraryStore:
                 if progress_callback is not None:
                     progress_callback(index - 1, total_roots, f"Scanning catalog root: {normalized_root}")
                 self._ensure_catalog_root(connection, normalized_root)
-                if not normalized_root or not os.path.isdir(normalized_root):
+                root_is_folder = bool(normalized_root) and os.path.isdir(normalized_root)
+                if not root_is_folder and normalized_root and not _drive_is_answering(normalized_root):
+                    # The drive or share holding this root is not answering (asleep NAS, VPN off). That is
+                    # not the same as the folder having been deleted, so the index is kept, not wiped:
+                    # rebuilding a large NAS library from scratch is exactly what this must not cost.
+                    connection.execute(
+                        "UPDATE catalog_roots SET last_error = ? WHERE root_path = ?",
+                        (UNREACHABLE_ROOT_MESSAGE, normalized_root),
+                    )
+                    unreachable_roots.append(normalized_root)
+                    continue
+                if not root_is_folder:
                     connection.execute("DELETE FROM catalog_records WHERE root_path = ?", (normalized_root,))
                     connection.execute("DELETE FROM catalog_folder_state WHERE root_path = ?", (normalized_root,))
                     if fts_ready:
@@ -601,6 +615,7 @@ class LibraryStore:
             record_count=total_records,
             refreshed_roots=tuple(refreshed_roots),
             missing_roots=tuple(missing_roots),
+            unreachable_roots=tuple(unreachable_roots),
         )
 
     def search_catalog(
@@ -1047,6 +1062,20 @@ def _deserialize_record_json(raw: str) -> ImageRecord | None:
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+UNREACHABLE_ROOT_MESSAGE = "Not reachable right now; the existing index was kept."
+
+
+def _drive_is_answering(path: str) -> bool:
+    """False when the drive or share that holds ``path`` does not answer (asleep NAS, VPN off).
+
+    A folder that is missing on a drive that *does* answer is a different thing (it was deleted). When the
+    drive cannot be told apart, this says True, which is the old behaviour."""
+    root = path_policy.drive_root(path)
+    if not root:
+        return True
+    return os.path.isdir(root)
 
 
 def _unique_paths(paths: tuple[str, ...] | list[str]) -> list[str]:

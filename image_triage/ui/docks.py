@@ -9,6 +9,7 @@ from PySide6.QtCore import (
     QByteArray,
     QEasingCurve,
     QEvent,
+    QObject,
     QPoint,
     QPropertyAnimation,
     QRect,
@@ -1082,6 +1083,20 @@ class WorkspacePanel(QWidget):
         return alignment
 
 
+class _SplitterResizeWatch(QObject):
+    """Re-applies the live pane ratios whenever the main splitter changes size,
+    before it lays its panes out, so no frame is drawn at stale widths."""
+
+    def __init__(self, docks: "WorkspaceDocks") -> None:
+        super().__init__(docks.splitter)
+        self._docks = docks
+
+    def eventFilter(self, watched, event) -> bool:  # type: ignore[override]
+        if event.type() == QEvent.Type.Resize:
+            self._docks.reapply_width_ratios()
+        return False
+
+
 class WorkspaceDocks:
     def __init__(self, shell: QWidget, splitter: QSplitter, library: WorkspacePanel, inspector: WorkspacePanel) -> None:
         self.shell = shell
@@ -1138,6 +1153,12 @@ class WorkspaceDocks:
             self.toggle_actions[key] = action
 
         self.splitter.splitterMoved.connect(self._remember_panel_widths)
+        # Returns the live pane shares of the window (layout_ratios); set by
+        # the window. While set, every resize and display-profile pass sizes
+        # the panes from it.
+        self.width_ratios_provider = None
+        self._resize_watch = _SplitterResizeWatch(self)
+        self.splitter.installEventFilter(self._resize_watch)
         self._wiring_complete = True
         self.reset_layout()
 
@@ -1173,6 +1194,8 @@ class WorkspaceDocks:
         self.inspector.apply_display_profile(profile)
         self._default_sizes = [self.library.expanded_width, 1240, self.inspector.expanded_width]
         self._rebalance_sizes()
+        # The profile's pixel widths are only a fallback; the live ratios win.
+        self.reapply_width_ratios()
 
     def save_state(self) -> dict[str, Any]:
         panels_state: dict[str, Any] = {}
@@ -1469,6 +1492,15 @@ class WorkspaceDocks:
             return
         self.hide_panel(key)
 
+    def reapply_width_ratios(self) -> None:
+        provider = getattr(self, "width_ratios_provider", None)
+        if not callable(provider) or self._applying_width_ratios:
+            return
+        window = self.shell.window()
+        total = window.width() if window is not None else self.splitter.width()
+        if total > 0:
+            self.apply_width_ratios(provider(), total)
+
     def apply_width_ratios(self, ratios: dict[str, float], total_width: int) -> None:
         """Size docked panels as shares of ``total_width``. Bounds follow the
         target so a proportional width is never clamped by a pixel limit."""
@@ -1509,7 +1541,12 @@ class WorkspaceDocks:
             docked = [panel for panel in self._panels_for_side(side) if panel.mode in {"expanded", "collapsed"}]
             self._apply_column_width_constraints(column, docked)
             column.setVisible(bool(docked))
-        total = max(sum(self.splitter.sizes()), self.splitter.width(), 1200)
+        # The splitter's real width once it is on screen. Its old sizes can
+        # add up to more than that mid-resize, and Qt would then shrink every
+        # pane proportionally instead of giving the change to the grid.
+        handles = self.splitter.handleWidth() * max(0, self.splitter.count() - 1)
+        laid_out = self.splitter.width() - handles if self.splitter.isVisible() else 0
+        total = laid_out if laid_out > 0 else max(sum(self.splitter.sizes()), self.splitter.width(), 1200)
         left = self._side_width("left")
         right = self._side_width("right")
         center = max(720, total - left - right)
@@ -1976,9 +2013,6 @@ class InspectorPanel(QWidget):
     analyze_requested = Signal()
     reject_requested = Signal()
     compare_requested = Signal()
-    best_of_set_requested = Signal()
-    open_editor_requested = Signal()
-    reveal_requested = Signal()
     popout_requested = Signal()
     swap_side_requested = Signal()
     close_requested = Signal()
@@ -2345,33 +2379,6 @@ class InspectorPanel(QWidget):
         self.details_body.setMinimumHeight(stack_height)
         layout.invalidate()
         layout.activate()
-
-    def _make_quick_actions(self, layout: QVBoxLayout) -> dict[str, QPushButton]:
-        body = QWidget(self)
-        row = QGridLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setHorizontalSpacing(6)
-        row.setVerticalSpacing(6)
-        buttons = {
-            "keep": self._quick_button("Keep", self.keep_requested),
-            "reject": self._quick_button("Reject", self.reject_requested),
-            "editor": self._quick_button("Open in Editor", self.open_editor_requested),
-            "reveal": self._quick_button("Reveal File", self.reveal_requested),
-        }
-        for index, button in enumerate(buttons.values()):
-            row.addWidget(button, index // 2, index % 2)
-        body.setLayout(row)
-        section = InspectorSection("quick_actions", "Quick Actions", body, parent=self)
-        layout.addWidget(section)
-        return buttons
-
-    def _quick_button(self, text: str, signal: Signal | None) -> QPushButton:
-        button = QPushButton(text, self)
-        button.setObjectName("inspectorActionButton")
-        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        if signal is not None:
-            button.clicked.connect(lambda _checked=False, target=signal: target.emit())
-        return button
 
     def _make_header_button(self, text: str, tooltip: str, object_name: str) -> QToolButton:
         button = QToolButton(self)
@@ -3016,11 +3023,6 @@ class InspectorPanel(QWidget):
             button.setEnabled(enabled)
 
     @staticmethod
-    def _safe_text(value: object, fallback: str = "-") -> str:
-        text = str(value or "").strip()
-        return text if text and text.lower() not in {"none", "null"} else fallback
-
-    @staticmethod
     def _first_text(*values: object) -> str:
         for value in values:
             text = str(value or "").strip()
@@ -3073,18 +3075,6 @@ class InspectorPanel(QWidget):
             return "Unavailable"
 
     @staticmethod
-    def _quality_level(score: float | None, stats: InspectionStats | None = None) -> str:
-        if stats is not None and stats.width > 0 and stats.detail_valid_tile_count < 4:
-            return "Low-detail frame"
-        if score is None or score <= 0:
-            return "Not analyzed"
-        if score >= 70:
-            return "High"
-        if score >= 40:
-            return "Moderate"
-        return "Low"
-
-    @staticmethod
     def _focus_level(score: float | None, stats: InspectionStats | None = None) -> str:
         if stats is not None and stats.width > 0 and stats.detail_valid_tile_count < 4:
             return "Inconclusive"
@@ -3095,18 +3085,6 @@ class InspectorPanel(QWidget):
         if score >= 40:
             return "Acceptable"
         return "Blur detected"
-
-    @staticmethod
-    def _motion_blur_level(score: float, *, analyzed: bool, stats: InspectionStats | None = None) -> str:
-        if not analyzed:
-            return "Not analyzed"
-        if stats is not None and stats.detail_valid_tile_count < 4:
-            return "Not detected"
-        if score >= 70:
-            return "Possible"
-        if score >= 40:
-            return "Possible"
-        return "Not detected"
 
     @staticmethod
     def _noise_level(score: float, *, analyzed: bool) -> str:
@@ -3127,43 +3105,6 @@ class InspectorPanel(QWidget):
         if stats.shadow_clip_pct >= 4.0 or stats.median_luminance <= 55:
             return "Underexposed"
         return "Properly exposed"
-
-    @staticmethod
-    def _quality_confidence_label(stats: InspectionStats) -> str:
-        if stats.width <= 0 or stats.height <= 0:
-            return "Not analyzed"
-        if stats.detail_valid_tile_count < 4:
-            return "Low"
-        if stats.detail_confidence >= 70:
-            return "Medium"
-        return "Low"
-
-    @staticmethod
-    def _best_candidate_text(ai_result: "AIImageResult | None", workflow_insight: object | None) -> str:
-        if bool(getattr(workflow_insight, "best_in_group", False)):
-            return "Yes"
-        if ai_result is not None and bool(getattr(ai_result, "is_top_pick", False)):
-            return "Yes"
-        if ai_result is not None and getattr(ai_result, "group_size", 0) > 1:
-            return "No"
-        return "-"
-
-    @staticmethod
-    def _worth_editing_text(
-        annotation: "SessionAnnotation | None",
-        ai_result: "AIImageResult | None",
-        workflow_insight: object | None,
-    ) -> str:
-        if annotation is not None:
-            if annotation.winner:
-                return "Yes"
-            if annotation.reject:
-                return "No"
-        if bool(getattr(workflow_insight, "best_in_group", False)):
-            return "Yes"
-        if ai_result is not None and bool(getattr(ai_result, "is_top_pick", False)):
-            return "Yes"
-        return "Not analyzed"
 
 
 def build_workspace_docks(

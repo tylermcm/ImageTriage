@@ -3,17 +3,16 @@ from .actions import (
     SHORTCUT_REGISTRY,
     apply_shortcut_overrides,
     build_main_window_actions,
+    effective_shortcuts,
     format_action_tooltip,
     load_shortcut_overrides,
     save_shortcut_overrides,
 )
 from .ai_review_progress_dialog import AIReviewProgressDialog
 from .ai_cull_preferences_dialog import GuidedAICullPreferencesDialog, GuidedCullPreferences
-from .ai_training_progress_dialog import AITrainingProgressDialog
-from .ai_training_stats_dialog import AITrainingStatsDialog
+from .apply_ai_decisions_dialog import ApplyAIDecisionsDialog
 from .batch_rename_dialog import BatchRenameDialog
 from .best_of_dialog import BestOfSetDialog
-from .calibration_dialog import TasteCalibrationDialog
 from .catalog_dialog import CatalogSearchDialog
 from .collection_dialog import CollectionEditDialog
 from .command_palette import CommandPaletteDialog, PaletteCommand
@@ -31,7 +30,6 @@ from .file_associations_dialog import FileAssociationsDialog
 from .handoff_dialog import HandoffBuilderDialog
 from .help_dialog import HelpMarkdownDialog, HelpPage, PagedHelpDialog, build_help_button, show_paged_help
 from .icons import build_pin_icon, build_symbol_icon, build_undo_icon
-from .keyboard_dialog import KeyboardShortcutDialog
 from .layout_state import (
     clear_window_layout,
     fit_window_to_available_geometry,
@@ -41,10 +39,7 @@ from .layout_state import (
 from .menus import build_main_menu_bar
 from .people_dialog import PeopleSearchDialog
 from .photo_editor_panel import PhotoEditorPanel
-from .ranker_manager_dialog import EvaluationSourceDialog, PrepareTrainingSourcesDialog, TrainingSourcesDialog
 from .resize_dialog import ResizeDialog
-from .share_to_phone_dialog import ShareToPhoneDialog
-from .train_ranker_dialog import TrainRankerDialog
 from .theme import (
     AppearanceMode,
     ColorToken,
@@ -62,23 +57,20 @@ from .theme import (
     parse_appearance_mode,
     resolve_theme,
 )
-from .toolbars import build_primary_toolbar
-
+from .toolbar_menus import ToolbarMenuController
+from .transfer_dialogs import confirm_transfer, show_transfer_complete
 __all__ = [
-    "AITrainingProgressDialog",
     "AIReviewProgressDialog",
-    "AITrainingStatsDialog",
     "AppearanceMode",
     "AdvancedFilterDialog",
+    "ApplyAIDecisionsDialog",
     "BatchRenameDialog",
     "BestOfSetDialog",
     "CatalogSearchDialog",
     "CollectionEditDialog",
-    "TasteCalibrationDialog",
     "ColorToken",
     "CommandPaletteDialog",
     "ConvertDialog",
-    "EvaluationSourceDialog",
     "FileAssociationsDialog",
     "GuidedAICullPreferencesDialog",
     "GuidedCullPreferences",
@@ -89,26 +81,22 @@ __all__ = [
     "InspectorPropertyRow",
     "InspectorSection",
     "InspectorSeverity",
-    "KeyboardShortcutDialog",
     "MainWindowActions",
     "SHORTCUT_REGISTRY",
     "apply_shortcut_overrides",
     "appearance_mode_label",
     "appearance_profile_modes",
+    "effective_shortcuts",
     "load_shortcut_overrides",
     "save_shortcut_overrides",
     "PaletteCommand",
     "PagedHelpDialog",
     "PeopleSearchDialog",
     "PhotoEditorPanel",
-    "PrepareTrainingSourcesDialog",
     "ResizeDialog",
-    "ShareToPhoneDialog",
     "ThemePalette",
     "WORKSPACE_METRICS",
     "WorkspaceMetrics",
-    "TrainRankerDialog",
-    "TrainingSourcesDialog",
     "WorkspaceDocks",
     "build_app_palette",
     "build_app_stylesheet",
@@ -117,7 +105,6 @@ __all__ = [
     "build_main_window_actions",
     "format_action_tooltip",
     "fit_window_to_available_geometry",
-    "build_primary_toolbar",
     "build_help_button",
     "build_pin_icon",
     "build_workspace_docks",
@@ -132,4 +119,7 @@ __all__ = [
     "resolve_theme",
     "save_window_layout",
     "show_paged_help",
+    "ToolbarMenuController",
+    "confirm_transfer",
+    "show_transfer_complete",
 ]

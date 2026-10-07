@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .scan_cache import app_data_root
+
 
 ALLOWED_ADAPTER_LABELS = frozenset(
     {
@@ -249,17 +251,15 @@ def default_global_adapter_db_path() -> Path:
 
 
 def _default_user_data_root() -> Path:
-    if os.name == "nt":
-        userprofile = os.environ.get("USERPROFILE", "").strip()
-        if userprofile:
-            return Path(userprofile) / "AppData" / "Roaming" / "ImageTriage"
-        appdata = os.environ.get("APPDATA", "").strip()
-        if appdata:
-            return Path(appdata) / "ImageTriage"
-    try:
-        return Path.home() / ".image-triage"
-    except RuntimeError:
-        return Path.cwd() / ".image-triage"
+    """The shared data root for this store and its training workspace.
+
+    Delegates to :func:`image_triage.scan_cache.app_data_root` so there is
+    one data-root identity, not two: before WI-3.6 this hand-rolled its own
+    ``USERPROFILE``/``APPDATA``-based ``ImageTriage`` folder, independently
+    of (and sometimes inconsistently with - see that function's docstring)
+    ``scan_cache.app_data_root``'s own hand-rolled version of the same idea.
+    """
+    return app_data_root()
 
 
 def _path_key(path: str | Path) -> str:

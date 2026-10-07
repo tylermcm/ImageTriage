@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 
 
@@ -165,6 +166,39 @@ FOCUS_ASSIST_STRENGTHS = (
     ),
 )
 DEFAULT_FOCUS_ASSIST_STRENGTH_ID = "low"
+
+
+def build_histogram_stats(image: QImage, max_edge: int = 512) -> InspectionStats:
+    """Histogram, clipping and mean only: cheap enough to rerun on every edit
+    (build_inspection_stats also scores detail, noise and blur)."""
+    if image.isNull():
+        return EMPTY_INSPECTION_STATS
+    if max(image.width(), image.height()) > max_edge:
+        image = image.scaled(
+            max_edge,
+            max_edge,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.FastTransformation,
+        )
+    rgba = _qimage_to_rgba_array(image)
+    if rgba.size == 0:
+        return EMPTY_INSPECTION_STATS
+    rgb = rgba[:, :, :3]
+    luminance = _luminance_channel(rgb)
+    luma_8bit = np.clip(np.rint(luminance), 0, 255).astype(np.uint8)
+    return replace(
+        EMPTY_INSPECTION_STATS,
+        width=int(rgb.shape[1]),
+        height=int(rgb.shape[0]),
+        mean_luminance=float(np.mean(luminance)),
+        median_luminance=float(np.median(luminance)),
+        shadow_clip_pct=float(np.mean(luminance <= 6.0) * 100.0),
+        highlight_clip_pct=float(np.mean(luminance >= 249.0) * 100.0),
+        histogram_luma=tuple(np.bincount(luma_8bit.ravel(), minlength=256).tolist()),
+        histogram_red=tuple(np.bincount(rgb[:, :, 0].ravel(), minlength=256).tolist()),
+        histogram_green=tuple(np.bincount(rgb[:, :, 1].ravel(), minlength=256).tolist()),
+        histogram_blue=tuple(np.bincount(rgb[:, :, 2].ravel(), minlength=256).tolist()),
+    )
 
 
 def build_inspection_stats(image: QImage) -> InspectionStats:

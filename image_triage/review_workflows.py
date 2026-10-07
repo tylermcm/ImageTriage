@@ -29,6 +29,16 @@ _AI_BUCKET_RANK = {
 
 _BUILTIN_REVIEW_SCORING_PROVIDERS_REGISTERED = False
 
+# Bump when the wording or logic of a stored recommendation changes, so cached ones are recomputed.
+_REVIEW_SCORING_CACHE_VERSION = 2
+
+# A reason line may only call a frame sharper / cleaner than the others when the gap is real. Inside a
+# burst the sharpness score is nearly flat (on 822 bursts from two real folders the median gap between
+# the sharpest and the next frame was 0 % and 90 % of bursts were under 5 %), so an unconditional
+# "sharper" claim is noise.
+_CLAIM_MIN_DETAIL_GAIN = 0.15  # leader's sharpness must beat the best other frame by this fraction
+_CLAIM_MIN_EXPOSURE_GAIN = 10.0  # points on the 0-100 exposure-balance scale
+
 
 @dataclass(slots=True, frozen=True)
 class TasteProfile:
@@ -76,18 +86,6 @@ class RecordWorkflowInsight:
         # disagreement_level is only ever "strong" or "" (see
         # disagreement_level_for), so AI Miss is the sole disagreement badge.
         return "AI Miss" if self.disagreement_level == "strong" else ""
-
-
-@dataclass(slots=True, frozen=True)
-class CalibrationPair:
-    left_path: str
-    right_path: str
-    prompt: str
-    source_mode: str = "taste_calibration"
-    group_id: str = ""
-    group_label: str = ""
-    left_label: str = ""
-    right_label: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -204,6 +202,7 @@ def build_review_scoring_cache_key(
     correction_rows = [_canonicalize_correction_event(event) for event in correction_event_rows]
     payload = {
         "provider_id": provider_id,
+        "scoring_version": _REVIEW_SCORING_CACHE_VERSION,
         "records": canonical_records,
         "ai_results": ai_rows,
         "review_groups": review_groups,
@@ -364,13 +363,20 @@ def _build_burst_recommendations_builtin(
         leader_index = ranked_indexes[0]
         recommended_path = member_paths[leader_index]
         leader_score = scores[leader_index]
+        other_indexes = [index for index in range(len(member_paths)) if index != leader_index]
+        leader_detail = detail_values[leader_index]
+        detail_gain = (
+            (leader_detail - max(detail_values[index] for index in other_indexes)) / leader_detail
+            if leader_detail > 0.0
+            else 0.0
+        )
+        exposure_gain = exposure_values[leader_index] - max(exposure_values[index] for index in other_indexes)
         leader_reasons = _build_burst_reason_lines(
             group_label=group.label,
-            detail_score=detail_values[leader_index],
-            exposure_score=exposure_values[leader_index],
+            detail_gain=detail_gain,
+            exposure_gain=exposure_gain,
             ai_result=ai_results[leader_index],
             taste_profile=taste_profile,
-            detail_norm=detail_norm[leader_index],
             ai_norm=ai_norm[leader_index],
             center_norm=center_norm[leader_index],
         )
@@ -419,14 +425,14 @@ def build_record_workflow_insight(
 
     if burst_recommendation is not None and burst_recommendation.group_size > 1:
         if burst_recommendation.is_recommended:
-            summary_parts.append("Best Frame")
+            summary_parts.append("Suggested Frame")
             detail_lines.append(
-                f"Burst specialist pick: best frame in {burst_recommendation.group_label.lower()} ({burst_recommendation.rank_in_group}/{burst_recommendation.group_size})."
+                f"Suggested frame: top-scoring of {burst_recommendation.group_size} in this {burst_recommendation.group_label.lower()}."
             )
             supporting_lines.extend(burst_recommendation.reasons[:2])
         elif burst_recommendation.group_label:
             detail_lines.append(
-                f"Burst specialist currently prefers another frame in this {burst_recommendation.group_label.lower()}."
+                f"Another frame in this {burst_recommendation.group_label.lower()} is the suggested one."
             )
             supporting_lines.extend(burst_recommendation.reasons[:1])
 
@@ -520,125 +526,6 @@ def disagreement_summary_for(
     return f"Your review state diverges from the AI's {ai_result.confidence_bucket_label.lower()} call."
 
 
-def build_calibration_pairs(
-    records: list[ImageRecord],
-    *,
-    ai_bundle: AIBundle | None,
-    review_bundle: "ReviewIntelligenceBundle | None",
-    burst_recommendations: dict[str, BurstRecommendation],
-    limit: int = 8,
-) -> tuple[CalibrationPair, ...]:
-    if not records:
-        return ()
-
-    pairs: list[CalibrationPair] = []
-    seen: set[tuple[str, str]] = set()
-    records_by_path = {record.path: record for record in records}
-
-    def add_pair(
-        left_path: str,
-        right_path: str,
-        *,
-        prompt: str,
-        source_mode: str,
-        group_id: str = "",
-        group_label: str = "",
-        left_label: str = "",
-        right_label: str = "",
-    ) -> None:
-        if left_path == right_path or len(pairs) >= limit:
-            return
-        key = tuple(sorted((normalized_path_key(left_path), normalized_path_key(right_path))))
-        if key in seen:
-            return
-        seen.add(key)
-        if len(pairs) % 2 == 1:
-            left_path, right_path = right_path, left_path
-            left_label, right_label = right_label, left_label
-        pairs.append(
-            CalibrationPair(
-                left_path=left_path,
-                right_path=right_path,
-                prompt=prompt,
-                source_mode=source_mode,
-                group_id=group_id,
-                group_label=group_label,
-                left_label=left_label,
-                right_label=right_label,
-            )
-        )
-
-    if review_bundle is not None:
-        for group in review_bundle.groups:
-            if group.kind not in {"burst", "similar"} or len(group.member_paths) < 2:
-                continue
-            ranked = sorted(
-                [burst_recommendations.get(path) for path in group.member_paths],
-                key=lambda item: (-(item.score if item is not None else 0.0), item.path.casefold() if item is not None else ""),
-            )
-            ranked = [item for item in ranked if item is not None]
-            if len(ranked) < 2:
-                continue
-            add_pair(
-                ranked[0].path,
-                ranked[1].path,
-                prompt=f"Which frame feels strongest for this {group.label.lower()}?",
-                source_mode="taste_calibration",
-                group_id=group.id,
-                group_label=group.label,
-                left_label="Best guess",
-                right_label="Closest challenger",
-            )
-            if len(pairs) >= limit:
-                return tuple(pairs)
-
-    if ai_bundle is not None:
-        grouped_records: dict[str, list[tuple[ImageRecord, AIImageResult]]] = {}
-        for record in records:
-            result = find_ai_result_for_record(ai_bundle, record)
-            if result is None or result.group_size < 2:
-                continue
-            grouped_records.setdefault(result.group_id, []).append((record, result))
-        for group_id, members in grouped_records.items():
-            members.sort(key=lambda item: (item[1].rank_in_group, -item[1].score, item[0].name.casefold()))
-            if len(members) < 2:
-                continue
-            top_gap = members[0][1].score_gap_to_next if members[0][1].score_gap_to_next is not None else 0.0
-            if top_gap >= 0.12 and members[0][1].confidence_bucket == AIConfidenceBucket.OBVIOUS_WINNER:
-                continue
-            add_pair(
-                members[0][0].path,
-                members[1][0].path,
-                prompt="Which of these close AI finalists matches your taste better?",
-                source_mode="taste_calibration",
-                group_id=group_id,
-                group_label="AI Group",
-                left_label="AI lead",
-                right_label="Runner-up",
-            )
-            if len(pairs) >= limit:
-                return tuple(pairs)
-
-    for index in range(len(records) - 1):
-        left = records[index]
-        right = records[index + 1]
-        left_result = find_ai_result_for_record(ai_bundle, left) if ai_bundle is not None else None
-        right_result = find_ai_result_for_record(ai_bundle, right) if ai_bundle is not None else None
-        if left_result is None and right_result is None:
-            continue
-        add_pair(
-            left.path,
-            right.path,
-            prompt="Pick the frame that feels more like your keep.",
-            source_mode="taste_calibration",
-            left_label="Option A",
-            right_label="Option B",
-        )
-        if len(pairs) >= limit:
-            break
-    return tuple(pairs)
-
-
 def stable_image_id_for_path(folder: str | Path, path: str | Path) -> str:
     folder_path = Path(folder).expanduser().resolve()
     target_path = Path(path).expanduser().resolve()
@@ -693,24 +580,29 @@ def ai_strength(result: AIImageResult | None) -> float:
 def _build_burst_reason_lines(
     *,
     group_label: str,
-    detail_score: float,
-    exposure_score: float,
+    detail_gain: float,
+    exposure_gain: float,
     ai_result: AIImageResult | None,
     taste_profile: TasteProfile,
-    detail_norm: float,
     ai_norm: float,
     center_norm: float,
 ) -> tuple[str, ...]:
-    reasons: list[str] = [f"Best overall signal inside this {group_label.lower()}."]
-    if detail_score >= 60.0 or detail_norm >= 0.72:
-        reasons.append("Detail retention is stronger than the nearby frames.")
-    if exposure_score >= 60.0:
-        reasons.append("Exposure balance stayed cleaner across highlights and shadows.")
+    """Why a frame was suggested. ``detail_gain`` is how far its sharpness is above the best other frame (a
+    fraction), ``exposure_gain`` how far its exposure balance is above the best other frame (points)."""
+    reasons: list[str] = [f"Highest combined score in this {group_label.lower()} (a suggestion, not a verdict)."]
+    sharper = detail_gain >= _CLAIM_MIN_DETAIL_GAIN
+    cleaner = exposure_gain >= _CLAIM_MIN_EXPOSURE_GAIN
+    if sharper:
+        reasons.append("Measurably sharper than the other frames.")
+    if cleaner:
+        reasons.append("Cleaner exposure than the other frames (less clipping, nearer mid-tones).")
+    if not sharper and not cleaner:
+        reasons.append("Sharpness and exposure are about the same across these frames.")
     if ai_result is not None and ai_result.rank_in_group == 1 and ai_norm >= 0.68:
         reasons.append("AI also ranked it at the top of the group.")
     elif center_norm >= 0.75:
-        reasons.append("It sits near the steadier middle of the sequence.")
-    if taste_profile.detail_bias >= 0.08 and detail_norm >= 0.72:
+        reasons.append("It sits near the middle of the sequence.")
+    if taste_profile.detail_bias >= 0.08 and sharper:
         reasons.append("That matches your recent preference for sharper frames.")
     elif taste_profile.ai_alignment_bias >= 0.08 and ai_norm >= 0.68:
         reasons.append("That lines up with the AI leads you have tended to keep.")
@@ -725,11 +617,11 @@ def _build_trailing_reason_lines(
     leader_ai: float,
     current_ai: float,
 ) -> tuple[str, ...]:
-    reasons = [f"The current {group_label.lower()} leader looks stronger overall."]
-    if leader_detail - current_detail >= 8.0:
-        reasons.append("This frame looks softer than the current group leader.")
+    reasons = [f"Another frame in this {group_label.lower()} scores higher."]
+    if leader_detail > 0.0 and (leader_detail - current_detail) / leader_detail >= _CLAIM_MIN_DETAIL_GAIN:
+        reasons.append("Softer than the suggested frame.")
     elif leader_ai - current_ai >= 0.10:
-        reasons.append("Its AI score trails the current group leader.")
+        reasons.append("Its AI score trails the suggested frame.")
     return tuple(reasons[:2])
 
 

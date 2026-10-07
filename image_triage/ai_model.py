@@ -14,9 +14,6 @@ from .ai_manifest import MODEL_BUNDLES, bundle_expected_sha256
 from .ai_paths import managed_model_dir
 
 
-DEFAULT_AI_MODEL_REPO_ID = "Skulleton12/DinoV3"
-DEFAULT_AI_MODEL_REVISION = "2372da520e9da0b79430d18c8f038de0e8e3ba68"
-DEFAULT_AI_MODEL_SIZE_MB = 1210
 DEFAULT_SEMANTIC_MODEL_REPO_ID = "openai/clip-vit-base-patch32"
 DEFAULT_SEMANTIC_MODEL_REVISION = "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268"
 DEFAULT_SEMANTIC_MODEL_SIZE_MB = 610
@@ -32,15 +29,11 @@ DEFAULT_AICULLER_CLIP_SIZE_MB = 98
 DEFAULT_AICULLER_TOPIQ_REPO_ID = "Skulleton12/TOPIQ"
 DEFAULT_AICULLER_TOPIQ_REVISION = "56526fd721537c9abd4ec41b10b2ffcad5166c46"
 DEFAULT_AICULLER_TOPIQ_SIZE_MB = 185
-DEFAULT_AI_MODEL_SHA256 = bundle_expected_sha256("dino")
 DEFAULT_SEMANTIC_MODEL_SHA256 = bundle_expected_sha256("clip")
 DEFAULT_SEGMENTATION_MODEL_SHA256 = bundle_expected_sha256("oneformer")
 DEFAULT_BIREFNET_MODEL_SHA256 = bundle_expected_sha256("birefnet")
 DEFAULT_AICULLER_CLIP_MODEL_SHA256 = bundle_expected_sha256("tinyclip")
 DEFAULT_AICULLER_TOPIQ_MODEL_SHA256 = bundle_expected_sha256("topiq")
-AI_MODEL_DIR_ENV = "AICULLING_MODEL_DIR"
-AI_MODEL_REPO_ENV = "AICULLING_MODEL_REPO_ID"
-AI_MODEL_REVISION_ENV = "AICULLING_MODEL_REVISION"
 SEMANTIC_MODEL_DIR_ENV = "AICULLING_SEMANTIC_MODEL_DIR"
 SEMANTIC_MODEL_REPO_ENV = "AICULLING_SEMANTIC_MODEL_REPO_ID"
 SEMANTIC_MODEL_REVISION_ENV = "AICULLING_SEMANTIC_MODEL_REVISION"
@@ -204,36 +197,6 @@ def bundle_install_dir_matches(installation: "AIModelInstallation") -> bool:
     except (KeyError, OSError):
         return False
 
-
-def resolve_ai_model_installation(
-    *,
-    install_dir: str | Path | None = None,
-    repo_id: str | None = None,
-    revision: str | None = None,
-) -> AIModelInstallation:
-    resolved_repo_id = (
-        repo_id
-        or (os.environ.get(AI_MODEL_REPO_ENV, "") or "").strip()
-        or DEFAULT_AI_MODEL_REPO_ID
-    )
-    resolved_revision = (
-        revision
-        or (os.environ.get(AI_MODEL_REVISION_ENV, "") or "").strip()
-        or DEFAULT_AI_MODEL_REVISION
-    )
-    resolved_dir_value = (
-        install_dir
-        or (os.environ.get(AI_MODEL_DIR_ENV, "") or "").strip()
-        or default_ai_model_install_dir(repo_id=resolved_repo_id)
-    )
-    resolved_dir = Path(resolved_dir_value).expanduser().resolve()
-    return AIModelInstallation(
-        repo_id=resolved_repo_id,
-        revision=resolved_revision,
-        install_dir=resolved_dir,
-        expected_sha256=DEFAULT_AI_MODEL_SHA256 if resolved_repo_id == DEFAULT_AI_MODEL_REPO_ID and resolved_revision == DEFAULT_AI_MODEL_REVISION else None,
-        bundle_key="dino",
-    )
 
 
 def resolve_semantic_model_installation(
@@ -429,9 +392,6 @@ def _managed_bundle_dir(
     return managed_model_dir(*prefix, name)
 
 
-def default_ai_model_install_dir(*, repo_id: str = DEFAULT_AI_MODEL_REPO_ID) -> Path:
-    return _managed_bundle_dir("dino", repo_id)
-
 
 def default_semantic_model_install_dir(*, repo_id: str = DEFAULT_SEMANTIC_MODEL_REPO_ID) -> Path:
     return _managed_bundle_dir("clip", repo_id)
@@ -488,12 +448,12 @@ def aiculler_face_model_root(*, install_dir: str | Path | None = None) -> Path:
 
 
 def download_ai_model(
-    installation: AIModelInstallation | None = None,
+    installation: AIModelInstallation,
     *,
     force: bool = False,
     progress_callback: AIModelProgressCallback | None = None,
 ) -> AIModelInstallation:
-    resolved = installation or resolve_ai_model_installation()
+    resolved = installation
 
     if bundle_install_dir_matches(resolved):
         # Manifest bundles install transactionally: staged, fully verified and
@@ -787,17 +747,6 @@ def download_aiculler_face_model(
         progress_callback=progress_callback,
     )
 
-
-def uninstall_ai_model(installation: AIModelInstallation) -> bool:
-    """Delete a managed model's install directory and everything under it.
-
-    For the CLIP cache this removes both automatic precision exports. Returns
-    True if the directory existed and was removed."""
-    target = installation.install_dir
-    if not target.exists():
-        return False
-    shutil.rmtree(target, ignore_errors=True)
-    return not target.exists()
 
 
 def _download_file(

@@ -9,7 +9,8 @@ from typing import Callable
 from PySide6.QtCore import QObject, QPoint, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygon
 
-from .cache import DiskThumbnailCache, MemoryThumbnailCache, ThumbnailKey
+from .cache import DiskThumbnailCache, MemoryThumbnailCache, ThumbnailKey, edit_state_for
+from .edit_storage import session_has_edits
 from .formats import suffix_for_path
 from .imaging import load_image_for_display, sanitize_display_error, thumbnail_skip_reason
 from .models import ImageRecord
@@ -104,11 +105,22 @@ class ThumbnailTask(QRunnable):
                 )
             return
 
-        image, error = load_image_for_display(
-            self.request.path,
-            self.request.target_size,
-            prefer_embedded=True,
-        )
+        image = None
+        error = None
+        if session_has_edits(self.request.path):
+            from .edit_render_headless import render_edited_image
+
+            rendered = render_edited_image(self.request.path, target_size=self.request.target_size)
+            if rendered is not None and not rendered.isNull():
+                image = rendered
+                source = "edited_render"
+
+        if image is None:
+            image, error = load_image_for_display(
+                self.request.path,
+                self.request.target_size,
+                prefer_embedded=True,
+            )
         if image.isNull():
             message = sanitize_display_error(error, path=self.request.path)
             image = _placeholder_thumbnail(self.request.path, self.request.target_size, message)
@@ -209,6 +221,7 @@ class ThumbnailManager(QObject):
             file_size=record.size,
             width=target_size.width(),
             height=target_size.height(),
+            edit_state=edit_state_for(record.path),
         )
 
     def get_cached(self, record: ImageRecord, target_size: QSize) -> QImage | None:

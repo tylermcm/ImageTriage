@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from image_triage.scan_controller import ScanController
 from image_triage.window import MainWindow
+from tests.harness import controller_over
 
 
 class _StatusBarStub:
@@ -36,19 +39,31 @@ class _WindowStub:
         self._folder_watch_refresh_timer = _TimerStub()
         self._status = _StatusBarStub()
         self.current_path = rf"{folder}\IMG_0042.CR3"
+        self._records_view = SimpleNamespace(current_visible_record_path=lambda: self.current_path)
         self.load_calls: list[tuple[str, bool, str | None]] = []
         self.queued_delays: list[int] = []
         self.refresh_watch_calls = 0
+        controller_over(
+            ScanController,
+            self,
+            "_scan",
+            queue_watched_folder_refresh=self._queue_watched_folder_refresh,
+            load_folder=self._load_folder,
+            refresh_current_folder_watch=self._refresh_current_folder_watch,
+        )
 
     def statusBar(self) -> _StatusBarStub:
         return self._status
 
+    # The watched-folder refresh asks whether the folder is provably gone before it reloads (path_policy).
+    def _is_slow_source_folder(self, _folder: str | None = None) -> bool:
+        return False
+
+    _dir_confirmed_missing = MainWindow._dir_confirmed_missing
+
     def _queue_watched_folder_refresh(self, delay_ms: int = 900) -> None:
         self._folder_watch_refresh_pending = True
         self.queued_delays.append(delay_ms)
-
-    def _current_visible_record_path(self) -> str | None:
-        return self.current_path
 
     def _load_folder(
         self,
@@ -69,7 +84,7 @@ class FolderWatchTests(unittest.TestCase):
         folder = r"X:\Shots\Set Manual"
         window = _WindowStub(folder)
 
-        MainWindow._refresh_folder(window)
+        window._scan.refresh_folder()
 
         self.assertEqual([(folder, True, window.current_path)], window.load_calls)
 
@@ -77,7 +92,7 @@ class FolderWatchTests(unittest.TestCase):
         folder = r"X:\Shots\Set A"
         window = _WindowStub(folder)
 
-        MainWindow._handle_watched_folder_changed(window, folder)
+        window._scan.handle_watched_folder_changed(folder)
 
         self.assertTrue(window._folder_watch_refresh_pending)
         self.assertEqual([900], window.queued_delays)
@@ -89,7 +104,7 @@ class FolderWatchTests(unittest.TestCase):
         window._folder_watch_refresh_pending = True
 
         with patch("image_triage.window.os.path.isdir", return_value=True):
-            MainWindow._run_watched_folder_refresh(window)
+            window._scan.run_watched_folder_refresh()
 
         self.assertFalse(window._folder_watch_refresh_pending)
         self.assertEqual([(folder, True, window.current_path)], window.load_calls)
@@ -101,7 +116,7 @@ class FolderWatchTests(unittest.TestCase):
         window._folder_watch_refresh_pending = True
         window._scan_in_progress = True
 
-        MainWindow._run_watched_folder_refresh(window)
+        window._scan.run_watched_folder_refresh()
 
         self.assertTrue(window._folder_watch_refresh_pending)
         self.assertEqual([450], window._folder_watch_refresh_timer.start_calls)

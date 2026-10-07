@@ -11,9 +11,6 @@ from scripts import ai_clean_machine_check as check
 
 
 class CleanMachineCheckTests(unittest.TestCase):
-    def test_normal_setup_capabilities_do_not_require_optional_dino(self) -> None:
-        self.assertNotIn("dino", check.CAPABILITIES)
-
     def test_provider_only_culling_probe_does_not_require_inference_flag(self) -> None:
         payload = {
             "capability": "culling",

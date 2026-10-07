@@ -413,3 +413,31 @@ def limit_rect_to_quad(quad: Quad, start: Rect, desired: Rect, *, steps: int = 2
         else:
             high = mid
     return _lerp_rect(start, desired, low)
+
+
+def slide_rect_in_quad(quad: Quad, start: Rect, dx: float, dy: float, *, steps: int = 24) -> Rect:
+    """Translate ``start`` by (dx, dy), sliding along the quad's edges.
+
+    Each axis is resolved on its own, x then y. Limiting the whole move along
+    the straight line to the target instead pulled the box away from the very
+    edge it was being pushed against, so corners could not be reached.
+    """
+    if not rect_in_quad(quad, start):
+        return fit_rect_in_quad(
+            quad, (start[0] + dx, start[1] + dy, start[2] + dx, start[3] + dy)
+        )
+
+    def furthest(origin: Rect, move_x: float, move_y: float) -> Rect:
+        target = (origin[0] + move_x, origin[1] + move_y, origin[2] + move_x, origin[3] + move_y)
+        if rect_in_quad(quad, target):
+            return target
+        low, high = 0.0, 1.0
+        for _ in range(steps):
+            mid = (low + high) / 2.0
+            if rect_in_quad(quad, _lerp_rect(origin, target, mid)):
+                low = mid
+            else:
+                high = mid
+        return _lerp_rect(origin, target, low)
+
+    return furthest(furthest(start, dx, 0.0), 0.0, dy)

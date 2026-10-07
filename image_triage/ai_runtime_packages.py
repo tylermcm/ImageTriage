@@ -61,7 +61,7 @@ AI_RUNTIME_BASE_PIP_REQUIREMENTS = (
     # Recognition/face-sort is a separate, opt-in path and not pulled here.
     "insightface==1.0.1",
 )
-AI_RUNTIME_DINO_PIP_REQUIREMENTS = (
+AI_RUNTIME_TORCH_PIP_REQUIREMENTS = (
     "torch",
     "torchvision",
     "timm==1.0.28",
@@ -74,7 +74,7 @@ AI_RUNTIME_DINO_PIP_REQUIREMENTS = (
     "einops==0.8.2",
     "kornia==0.8.3",
 )
-AI_RUNTIME_PIP_REQUIREMENTS = AI_RUNTIME_BASE_PIP_REQUIREMENTS + AI_RUNTIME_DINO_PIP_REQUIREMENTS
+AI_RUNTIME_PIP_REQUIREMENTS = AI_RUNTIME_BASE_PIP_REQUIREMENTS + AI_RUNTIME_TORCH_PIP_REQUIREMENTS
 AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES = (
     "numpy",
     "onnx",
@@ -86,7 +86,7 @@ AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES = (
     "tqdm",
     "insightface",
 )
-AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES = (
+AI_RUNTIME_TORCH_REQUIRED_MODULE_NAMES = (
     "torch",
     "torchvision",
     "timm",
@@ -100,7 +100,7 @@ AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES = (
 AI_RUNTIME_BASE_REQUIRED_FILES = (
     (Path("insightface/model_zoo/model_store.py"), "insightface package files"),
 )
-AI_RUNTIME_DINO_REQUIRED_FILES = (
+AI_RUNTIME_TORCH_REQUIRED_FILES = (
     (
         Path("transformers/models/audio_spectrogram_transformer/configuration_audio_spectrogram_transformer.py"),
         "transformers package files",
@@ -112,7 +112,7 @@ AI_RUNTIME_DINO_REQUIRED_FILES = (
         "transformers package files",
     ),
 )
-AI_RUNTIME_REQUIRED_MODULE_NAMES = AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES + AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES
+AI_RUNTIME_REQUIRED_MODULE_NAMES = AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES + AI_RUNTIME_TORCH_REQUIRED_MODULE_NAMES
 AI_RUNTIME_REQUIRED_VERSION_FLOORS = {
     "transformers": (4, 56),
 }
@@ -126,7 +126,7 @@ AI_RUNTIME_ESTIMATED_INSTALLED_MB = {
     AI_RUNTIME_GPU_VARIANT: 9300,
 }
 # The active CLI-Culler workflow is ONNX-based and does not need the legacy
-# PyTorch/DINO stack. These estimates cover the compact base runtime only.
+# PyTorch stack. These estimates cover the compact base runtime only.
 AI_RUNTIME_BASE_ESTIMATED_DOWNLOAD_MB = {
     AI_RUNTIME_CPU_VARIANT: 350,
     AI_RUNTIME_GPU_VARIANT: 650,
@@ -174,7 +174,7 @@ class AIRuntimeInstallationStatus:
     profiles: dict[str, AIRuntimeProfileStatus]
     installed_variants: tuple[str, ...]
     preferred_variant: str
-    dino_installed_variants: tuple[str, ...] = ()
+    torch_installed_variants: tuple[str, ...] = ()
     onnx_gpu_installed_variants: tuple[str, ...] = ()
 
     @property
@@ -203,12 +203,12 @@ def ai_runtime_variant_label(variant: str) -> str:
 def estimate_ai_runtime_download_size_mb(
     variant_choice: str,
     *,
-    include_dino: bool = True,
+    include_torch: bool = True,
 ) -> int:
     normalized_choice = normalize_ai_runtime_variant(variant_choice, allow_both=True)
     estimates = (
         AI_RUNTIME_ESTIMATED_DOWNLOAD_MB
-        if include_dino
+        if include_torch
         else AI_RUNTIME_BASE_ESTIMATED_DOWNLOAD_MB
     )
     if normalized_choice == AI_RUNTIME_BOTH_VARIANT:
@@ -219,12 +219,12 @@ def estimate_ai_runtime_download_size_mb(
 def estimate_ai_runtime_installed_size_mb(
     variant_choice: str,
     *,
-    include_dino: bool = True,
+    include_torch: bool = True,
 ) -> int:
     normalized_choice = normalize_ai_runtime_variant(variant_choice, allow_both=True)
     estimates = (
         AI_RUNTIME_ESTIMATED_INSTALLED_MB
-        if include_dino
+        if include_torch
         else AI_RUNTIME_BASE_ESTIMATED_INSTALLED_MB
     )
     if normalized_choice == AI_RUNTIME_BOTH_VARIANT:
@@ -279,15 +279,15 @@ def load_ai_runtime_installation_status(
 ) -> AIRuntimeInstallationStatus:
     directories = resolve_ai_runtime_directories(install_root=install_root)
     metadata = _load_ai_runtime_metadata(directories.metadata_path)
-    dino_enabled_value = metadata.get("dino_enabled_variants")
-    if isinstance(dino_enabled_value, list):
-        dino_enabled_variants = {
+    torch_enabled_value = metadata.get("torch_enabled_variants")
+    if isinstance(torch_enabled_value, list):
+        torch_enabled_variants = {
             normalize_ai_runtime_variant(str(variant))
-            for variant in dino_enabled_value
+            for variant in torch_enabled_value
         }
     else:
         installed_metadata = metadata.get("installed_variants")
-        dino_enabled_variants = {
+        torch_enabled_variants = {
             normalize_ai_runtime_variant(str(variant))
             for variant in installed_metadata
         } if isinstance(installed_metadata, list) else set(AI_RUNTIME_VARIANTS)
@@ -302,7 +302,7 @@ def load_ai_runtime_installation_status(
         profiles[variant] = _profile_status(
             directories,
             variant,
-            include_dino=variant in dino_enabled_variants,
+            include_torch=variant in torch_enabled_variants,
             site_packages_dir=target_dir,
         )
     installed_variants = tuple(
@@ -315,11 +315,11 @@ def load_ai_runtime_installation_status(
         or metadata.get("preferred_variant")
         or (installed_variants[0] if installed_variants else AI_RUNTIME_GPU_VARIANT)
     )
-    dino_installed_variants = tuple(
+    torch_installed_variants = tuple(
         variant
         for variant in AI_RUNTIME_VARIANTS
-        if variant in dino_enabled_variants
-        and _profile_status(directories, variant, include_dino=True).is_installed
+        if variant in torch_enabled_variants
+        and _profile_status(directories, variant, include_torch=True).is_installed
     )
     onnx_gpu_installed_variants = tuple(
         variant
@@ -332,7 +332,7 @@ def load_ai_runtime_installation_status(
         profiles=profiles,
         installed_variants=installed_variants,
         preferred_variant=preferred_variant,
-        dino_installed_variants=dino_installed_variants,
+        torch_installed_variants=torch_installed_variants,
         onnx_gpu_installed_variants=onnx_gpu_installed_variants,
     )
 
@@ -359,7 +359,7 @@ def install_ai_runtime(
     variant_choice: str,
     *,
     force: bool = False,
-    include_dino: bool = True,
+    include_torch: bool = True,
     install_root: str | Path | None = None,
     output_callback: Callable[[str], None] | None = None,
     pip_runner: PipRunner | None = None,
@@ -394,7 +394,7 @@ def install_ai_runtime(
                     variant=variant,
                     target_dir=target_dir,
                     force=force,
-                    include_dino=include_dino,
+                    include_torch=include_torch,
                 )
                 exit_code = runner(args, directories.root)
                 if exit_code != 0:
@@ -405,7 +405,7 @@ def install_ai_runtime(
                 profile_status = _profile_status(
                     directories,
                     variant,
-                    include_dino=include_dino,
+                    include_torch=include_torch,
                     site_packages_dir=target_dir,
                 )
                 if not profile_status.is_installed:
@@ -416,9 +416,9 @@ def install_ai_runtime(
                     )
                 if pip_runner is None:
                     _validate_distribution_records(target_dir)
-                    validator(target_dir, variant, include_dino)
+                    validator(target_dir, variant, include_torch)
                 elif profile_validator is not None:
-                    validator(target_dir, variant, include_dino)
+                    validator(target_dir, variant, include_torch)
                 installed_variants.add(variant)
 
             preferred_variant = (
@@ -434,14 +434,14 @@ def install_ai_runtime(
             generations.update(
                 {variant: generation for variant, (generation, _path) in staged_profiles.items()}
             )
-            dino_enabled = set(current_status.dino_installed_variants) - set(target_variants)
-            if include_dino:
-                dino_enabled.update(target_variants)
+            torch_enabled = set(current_status.torch_installed_variants) - set(target_variants)
+            if include_torch:
+                torch_enabled.update(target_variants)
             metadata = {
                 "metadata_version": AI_RUNTIME_METADATA_VERSION,
                 "installed_variants": sorted(installed_variants),
                 "preferred_variant": preferred_variant,
-                "dino_enabled_variants": sorted(dino_enabled),
+                "torch_enabled_variants": sorted(torch_enabled),
                 "profile_generations": generations,
                 "runtime_tag": _python_runtime_tag(),
             }
@@ -473,21 +473,21 @@ def uninstall_ai_runtime(*, install_root: str | Path | None = None) -> bool:
     return not directories.root.exists()
 
 
-def lock_path_for(variant: str, *, include_dino: bool = True) -> str:
+def lock_path_for(variant: str, *, include_torch: bool = True) -> str:
     """Repository-relative path of the lock for one variant."""
     normalized = normalize_ai_runtime_variant(variant)
-    suffix = "" if include_dino else "-base"
+    suffix = "" if include_torch else "-base"
     return f"{LOCK_DIRECTORY}/{_python_runtime_tag()}-{normalized}{suffix}.txt"
 
 
-def resolve_lock_file(variant: str, *, include_dino: bool = True) -> Path | None:
+def resolve_lock_file(variant: str, *, include_torch: bool = True) -> Path | None:
     """The lock for this interpreter/variant, if this build ships one.
 
     Locks are platform- and interpreter-specific. A build running somewhere no
     lock was generated for falls back to the declared requirement ranges; that
     is reported by ``lock_status`` rather than passing silently.
     """
-    relative = lock_path_for(variant, include_dino=include_dino)
+    relative = lock_path_for(variant, include_torch=include_torch)
     roots = [Path(__file__).resolve().parents[1]]
     if getattr(sys, "frozen", False):
         roots.insert(0, Path(sys.executable).resolve().parent)
@@ -498,11 +498,11 @@ def resolve_lock_file(variant: str, *, include_dino: bool = True) -> Path | None
     return None
 
 
-def lock_status(variant: str, *, include_dino: bool = True) -> dict[str, object]:
+def lock_status(variant: str, *, include_torch: bool = True) -> dict[str, object]:
     """Whether this install will be reproducible, for diagnostics."""
-    lock = resolve_lock_file(variant, include_dino=include_dino)
+    lock = resolve_lock_file(variant, include_torch=include_torch)
     return {
-        "expected": lock_path_for(variant, include_dino=include_dino),
+        "expected": lock_path_for(variant, include_torch=include_torch),
         "path": str(lock) if lock else "",
         "locked": lock is not None,
     }
@@ -513,7 +513,7 @@ def build_ai_runtime_pip_install_args(
     variant: str,
     target_dir: str | Path,
     force: bool = False,
-    include_dino: bool = True,
+    include_torch: bool = True,
 ) -> list[str]:
     normalized = normalize_ai_runtime_variant(variant)
     args = [
@@ -538,7 +538,7 @@ def build_ai_runtime_pip_install_args(
     del force
     args.extend(["--ignore-installed", "--no-compile"])
 
-    lock = resolve_lock_file(normalized, include_dino=include_dino)
+    lock = resolve_lock_file(normalized, include_torch=include_torch)
     if lock is not None:
         # The lock pins every transitive distribution to an exact version and
         # wheel hash, so two machines installing the same build get the same
@@ -557,13 +557,13 @@ def build_ai_runtime_pip_install_args(
             f"{_python_runtime_tag()} / {normalized}. Generate one with "
             "scripts/refresh_ai_runtime_lock.py before building a release."
         )
-    args.extend(_ai_runtime_pip_requirements_for_variant(normalized, include_dino=include_dino))
+    args.extend(_ai_runtime_pip_requirements_for_variant(normalized, include_torch=include_torch))
     return args
 
 
-def _ai_runtime_pip_requirements_for_variant(variant: str, *, include_dino: bool = True) -> tuple[str, ...]:
+def _ai_runtime_pip_requirements_for_variant(variant: str, *, include_torch: bool = True) -> tuple[str, ...]:
     normalized = normalize_ai_runtime_variant(variant)
-    requirements = AI_RUNTIME_PIP_REQUIREMENTS if include_dino else AI_RUNTIME_BASE_PIP_REQUIREMENTS
+    requirements = AI_RUNTIME_PIP_REQUIREMENTS if include_torch else AI_RUNTIME_BASE_PIP_REQUIREMENTS
     if normalized == AI_RUNTIME_GPU_VARIANT:
         requirements = tuple(
             AI_RUNTIME_ONNX_GPU_REQUIREMENT
@@ -571,7 +571,7 @@ def _ai_runtime_pip_requirements_for_variant(variant: str, *, include_dino: bool
             else requirement
             for requirement in requirements
         )
-    if not include_dino:
+    if not include_torch:
         return requirements
     pinned_requirements = tuple(
         requirement
@@ -655,13 +655,13 @@ def _profile_status(
     directories: AIRuntimeDirectories,
     variant: str,
     *,
-    include_dino: bool = True,
+    include_torch: bool = True,
     site_packages_dir: Path | None = None,
 ) -> AIRuntimeProfileStatus:
     target_dir = site_packages_dir or directories.site_packages_dir(variant)
     missing_items: list[str] = []
     module_names = AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES + (
-        AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES if include_dino else ()
+        AI_RUNTIME_TORCH_REQUIRED_MODULE_NAMES if include_torch else ()
     )
     for module_name in module_names:
         if not _module_present(target_dir, module_name):
@@ -671,12 +671,12 @@ def _profile_status(
         if minimum_version and not _module_version_at_least(target_dir, module_name, minimum_version):
             missing_items.append(f"{module_name}>={'.'.join(str(part) for part in minimum_version)}")
     required_files = AI_RUNTIME_BASE_REQUIRED_FILES + (
-        AI_RUNTIME_DINO_REQUIRED_FILES if include_dino else ()
+        AI_RUNTIME_TORCH_REQUIRED_FILES if include_torch else ()
     )
     for relative_path, missing_label in required_files:
         if not (target_dir / relative_path).is_file() and missing_label not in missing_items:
             missing_items.append(missing_label)
-    if include_dino and normalize_ai_runtime_variant(variant) == AI_RUNTIME_GPU_VARIANT:
+    if include_torch and normalize_ai_runtime_variant(variant) == AI_RUNTIME_GPU_VARIANT:
         if not _torch_cuda_binaries_present(target_dir):
             missing_items.append("torch CUDA binaries")
         if not _torch_runtime_version_at_least(target_dir, AI_RUNTIME_GPU_TORCH_MINIMUM_VERSION):
@@ -954,7 +954,7 @@ def validate_ai_runtime_imports(
     site_packages_dir: str | Path,
     *,
     variant: str,
-    include_dino: bool,
+    include_torch: bool,
 ) -> None:
     """Import the installed AI surface from an isolated validator process."""
 
@@ -971,7 +971,7 @@ def validate_ai_runtime_imports(
                 dll_handles.append(os.add_dll_directory(str(dll_dir)))
 
     modules = AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES + (
-        AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES if include_dino else ()
+        AI_RUNTIME_TORCH_REQUIRED_MODULE_NAMES if include_torch else ()
     )
     for module_name in modules:
         module = importlib.import_module(module_name)
@@ -983,7 +983,7 @@ def validate_ai_runtime_imports(
                 f"{module_name} was loaded outside the managed AI runtime: {module_path}"
             ) from exc
 
-    if include_dino:
+    if include_torch:
         transformers = importlib.import_module("transformers")
         required_symbols = (
             "AutoImageProcessor",
@@ -1005,7 +1005,7 @@ def validate_ai_runtime_imports(
 def _validate_profile_in_subprocess(
     site_packages_dir: Path,
     variant: str,
-    include_dino: bool,
+    include_torch: bool,
 ) -> None:
     if getattr(sys, "frozen", False):
         command = [sys.executable, "validate-profile"]
@@ -1013,8 +1013,8 @@ def _validate_profile_in_subprocess(
         installer = Path(__file__).resolve().parents[1] / "packaging" / "ai_runtime_installer.py"
         command = [sys.executable, str(installer), "validate-profile"]
     command.extend(["--site-packages", str(site_packages_dir), "--variant", variant])
-    if not include_dino:
-        command.append("--no-dino")
+    if not include_torch:
+        command.append("--no-torch")
     env = os.environ.copy()
     env["PYTHONNOUSERSITE"] = "1"
     env["TRANSFORMERS_OFFLINE"] = "1"

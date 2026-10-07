@@ -35,7 +35,7 @@ from image_triage.ui.photo_editor_panel import (
     PhotoEditorPanel,
     replace_mask_operations,
 )
-from photo_terminal.session import save_session
+from image_triage.photo_terminal.session import save_session
 
 
 class SemanticMaskCacheTests(unittest.TestCase):

@@ -1,8 +1,9 @@
 [project]
 name = "image-triage"
-version = "1.1.5"
+version = "2.2.1"
 description = "Image Triage"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
     "astropy>=7.1",
@@ -19,8 +20,12 @@ dependencies = [
     "tokenizers>=0.15",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8", "pyflakes>=3"]
+
 [project.scripts]
 image-triage = "image_triage.main:main"
+photoedit = "image_triage.photo_terminal.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

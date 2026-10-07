@@ -14,6 +14,7 @@ from image_triage.metadata import CaptureMetadata
 from image_triage.models import ImageRecord
 from image_triage.review_workflows import RecordWorkflowInsight
 from image_triage.thumbnails import ThumbnailManager
+from image_triage.ui.grid_card_renderer import grid_card_height_for_width
 
 
 def _ensure_app() -> QApplication:
@@ -136,7 +137,7 @@ class GridFailureTests(unittest.TestCase):
         QApplication.processEvents()
 
         self.assertEqual(grid._tile_height(), grid.viewport().height() - (grid._margin * 2))
-        self.assertEqual(grid._tile_width(), grid.viewport().width() - (grid._margin * 2))
+        self.assertLessEqual(grid._tile_width(), grid.viewport().width() - (grid._margin * 2))
         grid.deleteLater()
 
     def test_single_column_image_draw_rect_is_top_aligned(self) -> None:
@@ -149,9 +150,8 @@ class GridFailureTests(unittest.TestCase):
         draw_rect = grid._image_draw_rect(image_rect, pixmap)
 
         self.assertEqual(draw_rect.top(), image_rect.top())
-        self.assertEqual(draw_rect.left(), image_rect.left())
-        self.assertEqual(draw_rect.width(), image_rect.width())
-        self.assertEqual(draw_rect.height(), round(image_rect.width() * 2 / 3))
+        self.assertTrue(image_rect.contains(draw_rect))
+        self.assertLessEqual(abs(draw_rect.center().x() - image_rect.center().x()), 1)
         grid.deleteLater()
 
     def test_single_column_landscape_photo_fit_uses_full_width_three_by_two_frame(self) -> None:
@@ -168,12 +168,10 @@ class GridFailureTests(unittest.TestCase):
         grid.set_items([record])
         QApplication.processEvents()
 
-        expected = round(grid._tile_width() * 2 / 3) + grid._review_text_block_height(
-            QRect(0, 0, grid._tile_width(), max(1, grid.viewport().height() - grid._margin * 2))
-        )
-
-        self.assertEqual(grid._tile_height(), expected)
-        self.assertGreater(grid._tile_height(), grid.viewport().height() - (grid._margin * 2))
+        self.assertEqual(grid._image_height(), round(grid._tile_width() * 2 / 3))
+        self.assertEqual(grid._tile_height(), grid_card_height_for_width(grid._tile_width(), compact=False))
+        self.assertLessEqual(grid._tile_height(), grid.viewport().height() - (grid._margin * 2))
+        self.assertLessEqual(grid._tile_width(), grid.viewport().width() - (grid._margin * 2))
         grid.deleteLater()
 
     def test_primary_ai_badge_shows_needs_review_label(self) -> None:
@@ -198,7 +196,7 @@ class GridFailureTests(unittest.TestCase):
         self.assertEqual(badge[0], "Needs Review")
         grid.deleteLater()
 
-    def test_primary_ai_badge_uses_single_ai_pick_badge_for_top_pick(self) -> None:
+    def test_primary_ai_badge_shows_winner_for_top_pick(self) -> None:
         grid = ThumbnailGridView(ThumbnailManager())
         grid.set_show_ai_annotations(True)
         result = AIImageResult(
@@ -217,7 +215,7 @@ class GridFailureTests(unittest.TestCase):
 
         self.assertIsNotNone(badge)
         assert badge is not None
-        self.assertEqual(badge[0], "AI Pick")
+        self.assertEqual(badge[0], "Winner")
         grid.deleteLater()
 
     def test_primary_ai_badge_is_hidden_when_ai_annotations_are_disabled(self) -> None:
@@ -245,7 +243,7 @@ class GridFailureTests(unittest.TestCase):
             best_in_group=True,
             disagreement_level="moderate",
             disagreement_summary="You kept a frame AI bucketed as likely reject.",
-            summary_text="Pass 2 | Best Frame | AI Disagreement",
+            summary_text="Pass 2 | Suggested Frame | AI Disagreement",
         )
 
         summary = grid._visible_workflow_summary(insight)

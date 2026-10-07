@@ -161,6 +161,61 @@ class GridInteractionTests(unittest.TestCase):
         self.assertEqual(winners, [0])
         self.assertEqual(rejects, [0])
 
+    def test_review_key_shortcuts_are_rebindable(self) -> None:
+        kept: list[int] = []
+        moved: list[int] = []
+        tagged: list[int] = []
+        self.grid.keep_requested.connect(kept.append)
+        self.grid.move_requested.connect(moved.append)
+        self.grid.tag_requested.connect(tagged.append)
+        self.grid.set_review_key_shortcuts(
+            {
+                "keep_at_cursor": QKeySequence("Ctrl+Shift+K"),
+                "move_at_cursor": QKeySequence("F9"),
+                "tag_at_cursor": QKeySequence("Y"),
+            }
+        )
+
+        self.grid.keyPressEvent(_key(Qt.Key.Key_K, Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier))
+        self.grid.keyPressEvent(_key(Qt.Key.Key_F9))
+        self.grid.keyPressEvent(_key(Qt.Key.Key_Y))
+        # The old, no-longer-bound literal keys do nothing now.
+        self.grid.keyPressEvent(_key(Qt.Key.Key_K))
+        self.grid.keyPressEvent(_key(Qt.Key.Key_M))
+        self.grid.keyPressEvent(_key(Qt.Key.Key_T))
+
+        self.assertEqual(kept, [0])
+        self.assertEqual(moved, [0])
+        self.assertEqual(tagged, [0])
+
+    def test_burst_cycle_shortcuts_are_rebindable(self) -> None:
+        self.grid._can_cycle_burst = lambda index: True
+        calls: list[tuple[int, int]] = []
+        self.grid._cycle_burst = lambda index, direction: calls.append((index, direction))
+        self.grid.set_review_key_shortcuts(
+            {"cycle_burst_previous": QKeySequence("Ctrl+["), "cycle_burst_next": QKeySequence("Ctrl+]")}
+        )
+
+        self.grid.keyPressEvent(_key(Qt.Key.Key_BracketLeft, Qt.KeyboardModifier.ControlModifier))
+        self.grid.keyPressEvent(_key(Qt.Key.Key_BracketRight, Qt.KeyboardModifier.ControlModifier))
+        # The old bare bracket keys are no longer bound.
+        self.grid.keyPressEvent(_key(Qt.Key.Key_BracketLeft))
+
+        self.assertEqual(calls, [(0, -1), (0, 1)])
+
+    def test_adapter_label_shortcuts_are_rebindable(self) -> None:
+        self.grid._adapter_review_mode = True
+        self.grid._adapter_review_label_controls_enabled = True
+        labels: list[tuple[int, str]] = []
+        self.grid._set_adapter_label_for_index = lambda index, label, emit=True: labels.append((index, label))
+        self.grid.set_review_key_shortcuts({"adapter_label_hero": QKeySequence("F1")})
+
+        self.grid.keyPressEvent(_key(Qt.Key.Key_F1))
+        # The old literal "1" is no longer bound to the hero label.
+        self.grid.keyPressEvent(_key(Qt.Key.Key_1))
+
+        self.assertEqual(labels, [(0, "hero")])
+
     def test_action_tooltips_include_current_shortcuts_on_second_line(self) -> None:
         self.grid.set_review_action_shortcuts("Ctrl+J", "Shift+R")
 

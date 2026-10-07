@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from image_triage.window import MainWindow
+from image_triage.records_view_controller import RecordsViewController
 
 
 class _FakeTask:
@@ -28,7 +28,7 @@ class _FakeTask:
 
 def _stub(*, with_tasks: bool = True):
     calls: list[tuple[str, object]] = []
-    stub = SimpleNamespace(
+    window = SimpleNamespace(
         _background_indexing_suspended=False,
         _active_semantic_index_task=_FakeTask() if with_tasks else None,
         _active_face_index_task=_FakeTask() if with_tasks else None,
@@ -36,49 +36,50 @@ def _stub(*, with_tasks: bool = True):
         _face_index_active=True,
         _background_index_records=[object(), object()],
     )
-    stub._maybe_start_semantic_index = lambda recs: calls.append(("semantic", recs))
-    return stub, calls
+    controller = RecordsViewController(window)
+    controller.maybe_start_semantic_index = lambda recs: calls.append(("semantic", recs))
+    return window, controller, calls
 
 
 class BackgroundIndexArbitrationTests(unittest.TestCase):
     def test_suspend_cancels_both_passes(self) -> None:
-        stub, _ = _stub()
-        sem, face = stub._active_semantic_index_task, stub._active_face_index_task
-        MainWindow._suspend_background_indexing(stub)
-        self.assertTrue(stub._background_indexing_suspended)
+        window, controller, _ = _stub()
+        sem, face = window._active_semantic_index_task, window._active_face_index_task
+        controller.suspend_background_indexing()
+        self.assertTrue(window._background_indexing_suspended)
         self.assertTrue(sem.cancelled)
         self.assertTrue(face.cancelled)
-        self.assertIsNone(stub._active_semantic_index_task)
-        self.assertIsNone(stub._active_face_index_task)
-        self.assertFalse(stub._semantic_index_active)
-        self.assertFalse(stub._face_index_active)
+        self.assertIsNone(window._active_semantic_index_task)
+        self.assertIsNone(window._active_face_index_task)
+        self.assertFalse(window._semantic_index_active)
+        self.assertFalse(window._face_index_active)
 
     def test_suspend_is_idempotent(self) -> None:
-        stub, _ = _stub()
-        MainWindow._suspend_background_indexing(stub)
+        window, controller, _ = _stub()
+        controller.suspend_background_indexing()
         # Second call must not raise even though the tasks are already cleared.
-        MainWindow._suspend_background_indexing(stub)
-        self.assertTrue(stub._background_indexing_suspended)
+        controller.suspend_background_indexing()
+        self.assertTrue(window._background_indexing_suspended)
 
     def test_resume_restarts_semantic_with_stored_records(self) -> None:
-        stub, calls = _stub(with_tasks=False)
-        stub._background_indexing_suspended = True
-        records = stub._background_index_records
-        MainWindow._resume_background_indexing(stub)
-        self.assertFalse(stub._background_indexing_suspended)
+        window, controller, calls = _stub(with_tasks=False)
+        window._background_indexing_suspended = True
+        records = window._background_index_records
+        controller.resume_background_indexing()
+        self.assertFalse(window._background_indexing_suspended)
         self.assertEqual([("semantic", records)], calls)
 
     def test_resume_is_noop_when_not_suspended(self) -> None:
-        stub, calls = _stub(with_tasks=False)
-        MainWindow._resume_background_indexing(stub)
+        window, controller, calls = _stub(with_tasks=False)
+        controller.resume_background_indexing()
         self.assertEqual([], calls)
 
     def test_resume_without_records_only_clears_flag(self) -> None:
-        stub, calls = _stub(with_tasks=False)
-        stub._background_indexing_suspended = True
-        stub._background_index_records = []
-        MainWindow._resume_background_indexing(stub)
-        self.assertFalse(stub._background_indexing_suspended)
+        window, controller, calls = _stub(with_tasks=False)
+        window._background_indexing_suspended = True
+        window._background_index_records = []
+        controller.resume_background_indexing()
+        self.assertFalse(window._background_indexing_suspended)
         self.assertEqual([], calls)
 
 

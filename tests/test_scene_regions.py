@@ -442,6 +442,82 @@ class ScenePanelWiringTests(unittest.TestCase):
         self.assertEqual([], started)
         panel.close()
 
+    def test_right_click_with_nothing_selected_yet_does_not_start_a_subtract_task(self) -> None:
+        panel = self._masks_tab_panel()
+        panel._point_select_active = True
+        panel._prompt_session_active = True
+        panel._mask_source_size = lambda: (200, 100)  # type: ignore[assignment]
+        started: list[tuple] = []
+        panel._start_prompt_subtract_task = lambda *a, **kw: started.append((a, kw))  # type: ignore[assignment]
+        panel.handle_overlay_point_picked(10.0, 10.0, 0)
+        self.assertEqual([], started)
+        panel.close()
+
+    def test_right_click_refines_the_active_selection_with_an_exclude_point(self) -> None:
+        panel = self._masks_tab_panel()
+        panel._point_select_active = True
+        panel._prompt_session_active = True
+        panel._mask_source_size = lambda: (200, 100)  # type: ignore[assignment]
+        panel._prompt_active_component_id = "mask-1"
+        panel._prompt_meta["mask-1"] = {
+            "points": [(0.5, 0.5)],
+            "labels": [1],
+            "refined": False,
+        }
+        started: list[tuple] = []
+        panel._start_prompt_subtract_task = (  # type: ignore[assignment]
+            lambda mask_id, points, labels, **kw: started.append((mask_id, points, labels, kw))
+        )
+        panel.handle_overlay_point_picked(20.0, 10.0, 0)  # (0.1, 0.1) normalized
+        self.assertEqual(1, len(started))
+        mask_id, points, labels, kwargs = started[0]
+        self.assertEqual("mask-1", mask_id)
+        self.assertEqual([(0.5, 0.5), (0.1, 0.1)], points)
+        self.assertEqual([1, 0], labels)
+        self.assertFalse(kwargs["refine"])
+        panel.close()
+
+    def test_subtract_finished_updates_the_component_in_place(self) -> None:
+        from image_triage.prompt_masks import PromptMaskResult
+
+        panel = self._masks_tab_panel()
+        panel._prompt_session_active = True
+        mask = {"id": "mask-1", "cacheAssetId": "asset-1", "coordinateSpaceId": "space-1"}
+        panel._mask_by_id = lambda mask_id: mask if mask_id == "mask-1" else None  # type: ignore[assignment]
+        updated: list[tuple] = []
+        panel._update_bitmap_mask_asset = lambda m, path: updated.append((m, path))  # type: ignore[assignment]
+        subtitle_calls: list[bool] = []
+        panel._update_prompt_session_subtitle = lambda: subtitle_calls.append(True)  # type: ignore[assignment]
+
+        with TemporaryDirectory() as tmp:
+            mask_path = Path(tmp) / "mask.png"
+            mask_path.write_bytes(b"fake-png")
+            panel._source_path = Path(tmp) / "photo.jpg"
+            (Path(tmp) / "photo.jpg").write_bytes(b"fake-jpg")
+            result = PromptMaskResult(
+                source_path=panel._source_path,
+                source_size=(200, 100),
+                mask_path=mask_path,
+                bounds=(0, 0, 200, 100),
+                coverage=0.5,
+                model_id="sam2.1",
+                model_version="1",
+                weights_hash="hash",
+            )
+            panel._handle_prompt_subtract_finished(
+                "mask-1", str(panel._source_path.resolve()), result,
+                [(0.5, 0.5), (0.1, 0.1)], [1, 0],
+            )
+
+        self.assertEqual(1, len(updated))
+        self.assertIs(mask, updated[0][0])
+        self.assertEqual(
+            {"points": [(0.5, 0.5), (0.1, 0.1)], "labels": [1, 0], "refined": False},
+            panel._prompt_meta["mask-1"],
+        )
+        self.assertEqual([True], subtitle_calls)
+        panel.close()
+
     def test_click_to_select_hover_is_debounced_without_scene_overlay(self) -> None:
         panel = self._masks_tab_panel()
         panel._show_mask_pane(panel.MASK_PANE_CREATE)
