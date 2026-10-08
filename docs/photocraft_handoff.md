@@ -14,7 +14,8 @@
   follow all five native themes; the resize highlight appears on hover/drag.
 - Companion PhotoCraft source adds hosted startup, background open/stash,
   atomic document replacement, cached snapshots, hosted Save and `ui.theme`.
-  Both repositories must be pushed and the companion editor rebuilt. Local
+  Image Triage and the companion integration branch belong in the user's own
+  repositories; do not push host changes to storytold. Rebuild the companion. Local
   `photocraft-host-v5.exe` is a build artifact, not a committed executable.
 - Brush-hover lag on this machine came from software rendering; local preferences
   were switched to GPU/DX12. That preference change is not included in Git.
@@ -29,6 +30,53 @@
 Build the companion with `cargo build -p photocraft`; Image Triage discovers the
 local debug/release build. The opt-in live check is
 `python scripts/check_photocraft_handoff.py --executable <exe> --output <folder>`.
+
+## Upstream updates and conflict tracking
+
+At the start of every development session, follow `../AGENTS.md`: fetch upstream
+and the user's fork, review divergence, merge into the companion's
+`codex/image-triage-integration` branch, and validate before promoting an editor
+build. Keep upstream updates as merge commits so our original host commit remains
+identifiable; avoid rewriting or force-pushing the fork's history.
+
+### 2026-10-08 update
+
+- Last validated upstream: `47f9306` (parent of host commit `54526e4`).
+- Incoming upstream: `bce7e54a639eb043abf344293e5d20e36238a3a2`, 157 new commits.
+- Fetched fork tip: `8948511`; it is an ancestor of incoming upstream, 59 commits
+  behind it, with no fork-only work to reconcile.
+- Resolved companion merge: `0c05109eb27de500afc9c62660eae9932d588ad9` on
+  `codex/image-triage-integration`; the original host commit remains in its ancestry.
+- Conflicts: startup `main.rs` retains both `--hosted` and upstream's
+  `--in-window-menus`; `lib.rs` retains `control_files` and upstream's `credits`;
+  the manifest retains upstream's normal codecs dependency and drops its redundant
+  dev entry; protocol docs retain `ui.theme` alongside upstream's `colorPanel` API.
+- Automatic merges reviewed: scoped I/O callbacks, control dispatch, hosted Save,
+  stash bookkeeping and window setup. Upstream's new engine authorization remains
+  installed for automation; host I/O still uses granted read/write capabilities.
+- Semantic conflict: upstream's new custom titlebar enables standalone caption
+  buttons and edge-resize zones. Hosted mode disables those controls because the
+  Image Triage parent owns the window and filmstrip sizing. The hosted Save test
+  now also installs the upstream engine authorization gate and verifies that
+  scoped Save succeeds, Save As remains denied and the gate does not leak.
+- Validation complete: 49 focused Python tests, 846 native UI tests (3 ignored),
+  57 desktop tests, native all-target clippy, formatting, layers and all 23 wasm
+  checks passed. The 24 MP live handoff passed persistent navigation, stash/restore,
+  native Save, grid updates, closed-tab reopen, all five themes, hidden startup,
+  fullscreen geometry and child cleanup, with zero editor hides during navigation.
+- A v5 `.pcraft` fixture opened in the updated editor and produced matching sampled
+  render pixels at the original dimensions. The old project/render files remained
+  unchanged. This checks basic saved-project compatibility, not every possible
+  document feature.
+- Native Pro and Studio Light screenshots were reviewed: the editor renders and
+  hosted window buttons are absent. Filmstrip/gap/hover pixels passed in all five
+  themes. Desktop captures were black in this session, so the harness now reports
+  `native_screenshots_verified` and `desktop_captures_verified` separately rather
+  than silently treating an unusable desktop image as visual proof.
+- Validated executable: `target/debug/photocraft-host-0c05109.exe` (PhotoCraft 0.4.1,
+  source commit `0c05109`). The previous `photocraft-host-v5.exe` is retained.
+- Artifacts: the thread's `upstream-bce7e54`, `upstream-bce7e54-visual` and
+  `upstream-bce7e54-legacy` folders. No remote changes were pushed.
 
 PhotoCraft is the popout's default editor. The current filmstrip, navigation,
 review controls and comparison views remain in Image Triage. Opening a photo

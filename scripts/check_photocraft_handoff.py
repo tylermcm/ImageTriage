@@ -165,6 +165,7 @@ def main() -> None:
             assert controller._photocraft.process.pid == pid, "reopening restarted PhotoCraft"
         assert host_events.hides == 0
         navigation_hides = host_events.hides
+        desktop_captures_verified = True
         for theme in ("pro", "proMedium", "studio", "studioLight", "classic"):
             controller._photocraft_executor.submit(proc.control.ui_set, theme=theme).result(timeout=10)
             colors = controller._photocraft_executor.submit(proc.control.call, "ui.theme").result(timeout=10)
@@ -184,6 +185,10 @@ def main() -> None:
             assert handle_image.pixelColor(2, (handle_image.height() - 2) // 2).name() == colors["accent"]
             handle.leaveEvent(QEvent(QEvent.Type.Leave))
             controller._photocraft_executor.submit(proc.control.call, "ui.screenshot", {"path": f"theme-{theme}.png", "focus": False}).result(timeout=120)
+            native_image = QImage(str(output / ".image_triage_edits" / f"theme-{theme}.png"))
+            assert not native_image.isNull(), "PhotoCraft did not capture its rendered editor"
+            center = native_image.pixelColor(native_image.width() // 2, native_image.height() // 2)
+            assert center.blue() > 128 and center.red() < 128 and center.green() < 128, "native screenshot did not show the active blue photo"
             # Let Qt paint after delivering the theme signal. Capturing the
             # desktop rectangle includes the foreign native editor child;
             # capturing only Qt's window can return its old backing surface.
@@ -191,8 +196,16 @@ def main() -> None:
             while time.monotonic() < painted:
                 app.processEvents()
                 time.sleep(0.01)
-            preview.screen().grabWindow(0, preview.x(), preview.y(), preview.width(), preview.height()).save(str(output / f"popout-{theme}.png"))
+            desktop_image = preview.screen().grabWindow(0, preview.x(), preview.y(), preview.width(), preview.height()).toImage()
+            if desktop_image.isNull():
+                desktop_captures_verified = False
+            else:
+                center = desktop_image.pixelColor(desktop_image.width() // 2, desktop_image.height() // 2)
+                desktop_captures_verified &= center.blue() > 128 and center.red() < 128 and center.green() < 128
+                desktop_image.save(str(output / f"popout-{theme}.png"))
         timings["filmstrip_themes_checked"] = 5
+        timings["native_screenshots_verified"] = True
+        timings["desktop_captures_verified"] = bool(desktop_captures_verified)
         controller._photocraft_executor.submit(proc.control.call, "ui.screenshot", {"path": "hosted-editor.png", "focus": False}).result(timeout=120)
         preview.grab().save(str(output / "popout.png"))
         for path, digest in originals.items():
