@@ -22,10 +22,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .edit_storage import edit_root_for
+from .formats import RAW_SUFFIXES
 from .shell_actions import companion_photocraft_executables, detect_photocraft_executable
 
 # Formats PhotoCraft can open directly (docs/README "Formats" section). Anything
-# else (RAW, FITS, ...) must be decoded to one of these first.
+# else must be decoded first, except RAW which requires the sensor-backed handoff.
 NATIVE_SUFFIXES = {
     ".psd", ".psb", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".gif",
     ".bmp", ".tga", ".ico", ".qoi", ".pnm", ".exr", ".hdr", ".avif", ".heic", ".pcraft",
@@ -53,7 +54,7 @@ class PhotoCraftCompatibilityError(PhotoCraftError):
 
 
 def path_needs_conversion(path: str) -> bool:
-    return Path(path).suffix.lower() not in NATIVE_SUFFIXES
+    return Path(path).suffix.lower() not in NATIVE_SUFFIXES | RAW_SUFFIXES
 
 
 def sidecar_pcraft_path(image_path: str) -> Path:
@@ -72,7 +73,7 @@ def rendered_preview_path(image_path: str) -> Path:
 
 
 def materialize_for_photocraft(path: str, cache_dir: Path) -> str:
-    """Decode a RAW/unsupported file to a TIFF PhotoCraft can open directly.
+    """Decode an unsupported non-RAW file to a TIFF PhotoCraft can open directly.
 
     Never points PhotoCraft at the original source file for formats it can't
     read natively; the converted copy lives in ``cache_dir``.
@@ -139,9 +140,40 @@ class PhotoCraftControl:
 
     def app_open(self, path: str, *, replace: bool = False) -> dict:
         params = {"path": _automation_path(path)}
+        sensor = None
         if replace:
             params["replace"] = True
-        return self.call("app.open", params)
+        source_suffix = Path(path).suffix.lower()
+        raw_project = source_suffix == ".pcraft" and Path(Path(path).stem).suffix.lower() in RAW_SUFFIXES
+        if source_suffix in RAW_SUFFIXES or raw_project:
+            if not getattr(self, "raw_smart_supported", False):
+                raise PhotoCraftCompatibilityError("This PhotoCraft build cannot retain editable RAW data. Update the hosted editor build.")
+            if not raw_project:
+                params["rawSmartObject"] = True
+                if source_suffix == ".nef":
+                    if not getattr(self, "raw_sensor_supported", False):
+                        raise PhotoCraftCompatibilityError("This PhotoCraft build lacks the Nikon sensor adapter. Update the hosted editor build.")
+                    read_root = getattr(self, "read_root", None)
+                    if read_root is None:
+                        raise PhotoCraftError("Nikon RAW import requires the editor's automation read root")
+                    source = (Path(read_root) / path).resolve()
+                    try:
+                        source.relative_to(Path(read_root).resolve())
+                        from .photocraft_raw_source import materialize_sensor_dng
+                        sensor = materialize_sensor_dng(str(source), edit_root_for(source.parent) / "raw-sensors")
+                        params["rawSensorPath"] = sensor.relative_to(Path(read_root).resolve()).as_posix()
+                    except (OSError, ValueError, RuntimeError) as error:
+                        raise PhotoCraftError(f"Could not unpack Nikon sensor data: {error}") from error
+        try:
+            return self.call("app.open", params)
+        finally:
+            # PhotoCraft embeds the sensor bytes before replying. Keep no second
+            # 90 MB per-photo file once the scoped transfer has finished.
+            if sensor is not None:
+                try:
+                    sensor.unlink(missing_ok=True)
+                except OSError:
+                    logging.getLogger(__name__).warning("Could not remove temporary RAW sensor transfer %s", sensor)
 
     def require_hosted_handoff(self) -> None:
         """Probe validation without opening a document or writing any files."""
@@ -153,6 +185,8 @@ class PhotoCraftControl:
             raise PhotoCraftCompatibilityError("This PhotoCraft build lacks persistent hosted document replacement") from error
         if capabilities.get("version", 0) < 2:
             raise PhotoCraftCompatibilityError("This PhotoCraft build lacks persistent hosted document replacement")
+        self.raw_smart_supported = capabilities.get("rawSmartObject", 0) >= 1
+        self.raw_sensor_supported = capabilities.get("rawSensorAdapter", 0) >= 1
         for method, validation in (
             ("app.stash", "stash requires path and preview"),
             ("app.bind", "bind requires an open document, .pcraft path and .png preview"),
@@ -429,6 +463,7 @@ def _launch_photocraft_binary(
             raise PhotoCraftError("Initial photo is outside the automation read root") from error
         # Open through the control channel so readiness includes decoding;
         # command-line opens may still be running when the HWND first appears.
+        control.read_root = Path(read_root)
         control.app_open(relative)
         timings["document_ready_ms"] = (time.perf_counter() - started) * 1000
     except BaseException:
