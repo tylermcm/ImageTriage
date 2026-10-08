@@ -328,3 +328,111 @@ gap in that token, with a darker fallback for older builds. Built
 `target/debug/photocraft-host-v5.exe`. All five themes passed live pixel checks;
 Pro and Studio Light desktop captures were reviewed. The 49 Python tests, 683
 native UI tests, all-target clippy, layers and all 23 wasm checks passed.
+# RAW editing research (2026-10-08)
+
+See [the RAW integration plan](photocraft_raw_plan.md) for the source trace,
+proposed RAW-backed smart-object workflow, compatibility limits, migration policy,
+and acceptance checks. The initial research session added the plan without
+changing RAW feature code or the editor build.
+
+Session fetch found upstream `e5e3e39`, a release-only version bump from the
+previous `bce7e54`. Merged locally as `dca3aa7` before the planning-only clarification;
+only Cargo.toml/Cargo.lock changed, without conflicts. Fork-only work: none.
+The known-good `photocraft-host-0c05109.exe` is retained; the new version-only
+merge has not been rebuilt or promoted. Nothing pushed.
+
+## RAW-backed editing implementation (validated)
+
+The build session fetched upstream and fork again; no newer upstream commits or
+fork-only work were found. Source base remains integration `dca3aa7`, upstream
+`e5e3e39`. No merge conflicts occurred. The previous validated host remains available.
+
+Fresh RAW files bypass developed TIFF conversion. PhotoCraft advertises explicit
+RAW-smart and sensor-adapter capabilities. Nikon Z7/Z7 II compressed NEFs use a
+small Image Triage adapter over the existing rawpy dependency: untouched Bayer
+samples and CFA/black/white/WB/calibration/crop/orientation metadata are written
+to a temporary sensor DNG. Scoped `app.open` reads both the original NEF and
+adapter, embeds both, and removes the transfer after replying. Original NEF bytes
+stay the Export Contents source; `.pcraft` keeps sensor settings and derived pixels.
+Unsupported sensor input fails clearly and keeps the previous photo open.
+
+Edit Contents on RAW-backed objects opens sensor exposure, WB and demosaic
+controls. Preview requests coalesce on a background worker. OK commits one undo
+step; Cancel preserves the document. Filmstrip switching and shell close settle
+the draft before stashing. Periodic autosave leaves an active draft open.
+Finished jobs must be read from the completed-job table, not just the running-job
+lookup; UI regression checks caught and corrected a stuck “applying” state.
+Commit failures retain recoverable settings. Existing pixel Camera Raw filters
+remain downstream; older TIFF-backed projects preserve their edits.
+
+Automated RAW dialog opening uses `ui.rawDevelopment {open:true}`, restricted to
+embedded source bytes. Generic Edit Contents keeps upstream's ambient-filesystem
+authorization gate. Regression tests cover combined open/settings/commit and
+reject linked sources; pure queries remain available during a background commit.
+
+Most source changes are isolated in new doc/io/engine/UI and Python modules.
+Shared hooks are smart-object rendering and Edit Contents, two optional native
+format fields, control capabilities, and open/stash settlement. Follow the RAW
+plan's upstream watchlist and review these hooks at each merge.
+
+Current validation: 58 focused Python tests; full doc/engine/format/IO non-corpus
+Rust suites passed. Four public CC0 Z7/Z7 II NEFs match rawpy sensor values exactly
+and retain original/sensor data, calibration and full 8256×5504 default crop through
+native-format round-trip. Release 24 MP RAW-smart import was 544 ms versus 563 ms
+ordinary import; real 45 MP imports were about 1–1.2 s. Native projects are roughly
+419–458 MB and the standalone save/load/export check peaked at 2.2–2.4 GiB RSS.
+Provenance and measurements live under
+`C:/Users/ADMIN2/.codex/visualizations/2026/10/08/photocraft-raw/`.
+
+Live checks passed with a small sensor DNG, a 24 MP DNG, and full-resolution Z7
+and Z7 II NEFs. They verify coalesced source previews, periodic autosave retaining
+the draft, navigation committing/stashing it, Save/grid propagation, RAW/PNG
+switching, same-tab reopening, same process/HWND, disk restore in a fresh process,
+unchanged originals, no developed TIFF, temporary-transfer removal and process/token
+cleanup. The RAW dialog screenshot was visually inspected.
+
+Debug-build observations: 24 MP cold open 6.2 s, edited switch 9.0 s, cached return
+2.1 s, peak editor RSS 3.0 GiB. Z7/Z7 II 45 MP cold open 8.7–10.4 s, edited switch
+17.4–22.4 s, cached return 3.8 s, peak editor RSS 4.8–5.0 GiB. Cold open includes
+launch and hosting. Edited switching includes full development and project/preview
+stash; these costs remain a performance limitation. Measurements ran alongside
+compiler work and are single-run observations, not an interactive-latency guarantee.
+
+The ordinary 24 MP handoff also passed all five theme pixel checks, hidden startup,
+fullscreen geometry, native Save, closed-tab reopening and cleanup, with zero editor
+hides during navigation. Native screenshots were checked; desktop capture returned
+black as in the prior session and is reported separately by the harness.
+
+Full UI suite: 852 passed, 3 ignored; final RAW UI tests: 7 passed. Final RAW engine
+tests and all-target clippy passed. Layers, parity (627/627), panic hunt and release
+quick performance checks passed. All 23 wasm checks and the release IO corpus
+gate passed, including Photoshop import/render oracles, adversarial mutations,
+smart-object PSD preservation and layered TIFF round-trips. Format has no separate
+corpus target; its unit/integration tests and the IO round-trips cover persistence.
+
+An additional live Z7 II check closed the host with an uncommitted RAW draft and
+restored the new settings in a fresh process. Under the concurrent corpus workload,
+it measured 14.3 s cold open, 37.2 s edited switch, 5.1 s cached return and 5.0 GiB
+peak RSS. This confirms lifecycle correctness under load, not a faster latency target.
+
+Promoted the tested executable as `target/debug/photocraft-host-raw-v1.exe`;
+Image Triage's companion discovery selects it. Retained
+`photocraft-host-0c05109.exe` and prior host builds as rollback options. Restart
+Image Triage to start a new editor process with the RAW-capable host. Nothing
+committed or pushed during this implementation step.
+
+## Commit/push checkpoint (2026-10-08)
+
+At the user's request, committed the validated PhotoCraft RAW implementation as
+`91c7dba` on `codex/image-triage-integration`. Its push destination is the user's
+`fork` remote (`tylermcm/photocraft`), on the same integration branch. Image Triage
+is committed/pushed on `remove-builtin-editor`. No upstream push or PR is involved.
+
+A fresh fetch at this publishing checkpoint found 36 upstream commits since the
+validated `e5e3e39` base, ending at `dd55521`. Fork/main still has no unique work,
+and Image Triage's remote branch has no new commits. The publishing checkpoint
+keeps the tested snapshot; these newly arrived upstream changes are pending the
+next development session's merge and validation. They touch smart objects,
+control/menus, shortcuts, doc fields and IO as well as unrelated bug fixes, so
+review shared hooks carefully. The promoted executable still represents the
+validated RAW implementation on the earlier upstream base.

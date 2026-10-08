@@ -670,7 +670,7 @@ class PreviewController(QObject):
             try:
                 self._sync_photocraft_theme(proc)
                 self._poll_photocraft_stashes(proc)
-                self._save_photocraft_sidecar_if_dirty(proc)
+                self._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False)
             except Exception:
                 _log.exception("PhotoCraft autosave failed; retaining the open document")
 
@@ -706,7 +706,8 @@ class PreviewController(QObject):
         ``edit_storage``), that is what gets opened, so edits carry over
         across navigations and app restarts. Otherwise the original is
         opened directly (or, for a format PhotoCraft can't read natively, a
-        decoded copy in the same hidden root — never the original RAW file).
+        decoded copy for a non-RAW format). Fresh RAWs retain sensor data and
+        their original camera bytes; Nikon uses an undeveloped sensor adapter.
         The sidecar is always addressable under the photo's own parent
         folder, so one automation root covers both.
         """
@@ -824,9 +825,16 @@ class PreviewController(QObject):
         if sidecar_path in proc.stash_errors:
             proc.opened_revision = -1
 
-    def _save_photocraft_sidecar_if_dirty(self, proc: photocraft_bridge.PhotoCraftProcess) -> None:
+    def _save_photocraft_sidecar_if_dirty(self, proc: photocraft_bridge.PhotoCraftProcess, *, commit_raw_draft: bool = True) -> None:
         if proc.current_sidecar is None:
             return
+        if getattr(proc.control, "raw_smart_supported", False) is True:
+            # Commit the RAW draft on an engine worker before stash/switch/close.
+            # Polling revision alone must never close a dialog the user is editing.
+            if commit_raw_draft:
+                proc.control.call("ui.rawDevelopment", {"commit": True})
+            elif proc.control.call("ui.rawDevelopment").get("open"):
+                return
         revision = proc.control.document_revision()
         if revision is None:
             # Closing a tab in PhotoCraft leaves its process/window alive.
