@@ -436,3 +436,99 @@ next development session's merge and validation. They touch smart objects,
 control/menus, shortcuts, doc fields and IO as well as unrelated bug fixes, so
 review shared hooks carefully. The promoted executable still represents the
 validated RAW implementation on the earlier upstream base.
+
+## Upstream integration update (2026-10-08, checkpointed; validation incomplete)
+
+Fetched both remotes at the start of this session. Upstream now ends at `652b972`,
+120 commits after our validated `e5e3e39` base; fork/integration matches `91c7dba`
+with no unique work. Merged as `65fab5e` on `codex/image-triage-integration`.
+
+Resolved four conflicted files individually:
+
+- Desktop startup: retained hosted flag, offscreen hidden startup, no persistence,
+  no taskbar entry and host-owned chrome. Adopted upstream's Unicode-safe argument
+  handling, persisted title-bar preference, GPU startup changes and tablet setup.
+  Hosted mode overrides standalone title-bar preferences and decorations.
+- Smart objects: retained RAW sensor selection and embedded-only guard, alongside
+  upstream's scale-aware vector smart-object rendering and existing child-tab reuse.
+- UI manifest: retained one shared RAW/testgen dependency, with the new SVG import
+  dependency/features from upstream.
+- UI state: retained RAW source-development state plus upstream's initial RAW-open
+  state, background histogram, blend preview and clone preview state.
+
+Reviewed automatic merges in scoped I/O, authorization, job waiters/completion,
+native Save binding, themes, menu routing, shortcuts and project format. Added
+assertions that hosted RAW import does not queue upstream's standalone RAW dialog.
+
+Important upstream changes: compressed NEF decoder (#1310), initial Camera Raw
+Open/Cancel workflow (#1309), Edit Contents tab reuse (#1037), finite-float save
+validation (#1172), SVG smart objects (#1305), async histogram and banded PSD
+shuffles/export (#1185/#1230), plus many bounds/lock/shortcut fixes.
+
+The native NEF decoder still documents unsupported lossy-after-split variants.
+Our existing sensor adapter and saved projects remain supported while real Z7/Z7 II
+coverage is reviewed. Upstream's initial RAW dialog produces a developed document;
+it does not replace our persisted RAW smart-object settings. Native decoder adoption
+can be assessed in the performance phase without silently dropping source state.
+
+The live pre-update project check exposed a Save race in our hosted snapshot
+restore: rebuilding the document state reset its revision to zero while the
+background stash still owned the original revision. Save rejected that same
+snapshot as conflicting edits. Fix `73cc2ff` preserves the snapshot revision;
+a gated-writer regression verifies immediate Save reuses the pending job and
+completion marks the restored revision clean.
+
+The live scripts now verify the requested executable actually launched, preventing
+a fallback host from passing candidate validation. The RAW script also accepts
+existing project exposure settings instead of assuming every input starts at zero.
+Python integration checks passed (85 tests and 7 subtests).
+
+The broad native run also reproduced a GPU test false positive: a one-level
+8-bit difference exceeded its tolerance by f32 rounding during alpha
+premultiplication. Test-only fix `c9e94d9` keeps the one-level budget with four
+f32 epsilons of arithmetic allowance. Its regression still rejects two levels
+and NaNs; no compositor/shader code changed.
+
+The new upstream eyedropper test expected the system crosshair in Precise mode
+on every platform, conflicting with the existing Windows canvas-drawn crosshair
+fix (#737). Test-only fix `0a3bbea` expects a hidden system cursor on Windows
+while retaining Crosshair elsewhere; the existing canvas crosshair regression
+still tests the platform drawing behavior. No cursor implementation changed.
+
+Native workspace unit/integration checks passed across package batches after
+the two test fixes: engine 831 passed/11 ignored; UI 931 passed/3 ignored;
+GPU parity 28 passed. The full UI integration tests, web/vector crates and xtask
+also passed. A concurrent color-managed GPU test process exited without an
+assertion report; both cases passed serially, as did the remaining GPU-backed
+UI tests. All-target workspace clippy, adversarial command panic hunt, formatting
+and dependency layering passed.
+
+Menu parity (627/627) and scorecard freshness also passed. At the user's request
+to pack up, stopped the validation pipeline during the wasm checks. No final
+corrected native candidate was built or promoted. The selected
+`photocraft-host-raw-v1.exe` remains in place; the earlier transient candidate
+`photocraft-merge-candidate-65fab5e.exe` lacks the snapshot fix and must not be
+promoted.
+
+Resume from PhotoCraft `0a3bbea`. Remaining gates: all wasm checks, native build,
+release quick performance and full corpus, then the final live handoff. Repeat
+ordinary 24 MP theme/hidden-start/fullscreen/navigation/Save/reopen/cleanup,
+real Z7 II `4213.NEF`, and the pre-update project
+`photocraft-raw/live-z7ii/.image_triage_edits/first.NEF.pcraft` using the corrected
+candidate. Only then promote a byte-identical host build and verify discovery.
+The initial merge candidate passed ordinary 24 MP and fresh Z7 II lifecycle
+checks; old-project compatibility exposed the Save race and has not passed on
+the corrected build yet.
+
+Artifacts and validation logs are under
+`C:/Users/ADMIN2/.codex/visualizations/2026/10/08/upstream-652b972`.
+The remaining-workspace runner there uses the compiled Cargo artifact list and
+serial execution for GPU-backed tests. About 53 GiB of disposable debug
+incremental cache accumulated; reclaim it before further large builds if space
+is tight, after confirming no compiler is running. Preserve host binaries,
+test executables, corpus files and original camera samples.
+
+At the user's explicit request, checkpoint push destinations are
+`tylermcm/photocraft:codex/image-triage-integration` and
+`tylermcm/ImageTriage:remove-builtin-editor`, including this handoff.
+No upstream push or PR is involved. Step 1 is not yet closed out.

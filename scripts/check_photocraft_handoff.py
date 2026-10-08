@@ -122,6 +122,9 @@ def main() -> None:
         assert initial_visibility[-1] is False, "PhotoCraft flashed a standalone window"
         preview._photocraft_host.installEventFilter(host_events)
         proc = controller._photocraft
+        if args.executable:
+            assert Path(proc.executable).resolve() == Path(args.executable).resolve(), "candidate failed; validation must not use a fallback editor"
+        timings["executable"] = proc.executable
         timings["launch_stages"] = proc.launch_timings
         pid = proc.process.pid
         get_parent = ctypes.windll.user32.GetParent
