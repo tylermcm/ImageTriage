@@ -103,16 +103,19 @@ def main():
     try:
         timings["coldRawOpenMs"] = select(0)
         proc = controller._photocraft
+        assert Path(proc.executable).resolve() == Path(args.executable).resolve(), "candidate failed; validation must not use a fallback editor"
         pid, hwnd = proc.process.pid, proc.hwnd
         assert inspect()["sensorBacked"] is True
         call("ui.rawDevelopment", {"open":True})
         settings = inspect()["settings"]
+        initial_exposure = settings["exposure"]
+        edited_exposure = -1.0 if initial_exposure != -1.0 else -1.5
         # Rapid slider requests coalesce to the latest settings.
         settings["exposure"] = -0.2
         call("ui.rawDevelopment", {"settings":settings})
         settings["exposure"] = -0.5
         call("ui.rawDevelopment", {"settings":settings})
-        settings["exposure"] = -1.0
+        settings["exposure"] = edited_exposure
         call("ui.rawDevelopment", {"settings":settings})
         wait_for(lambda: call("ui.rawDevelopment").get("previewReady"))
         call("ui.screenshot", {"path":"raw-development.png", "focus":False})
@@ -120,20 +123,20 @@ def main():
         controller._photocraft_executor.submit(controller._autosave_photocraft).result(timeout=180)
         assert call("ui.rawDevelopment")["open"]
         timings["rawToRawMs"] = select(1)
-        assert inspect()["settings"]["exposure"] == 0
+        assert inspect()["settings"]["exposure"] == initial_exposure
         assert (controller._photocraft.process.pid, controller._photocraft.hwnd) == (pid, hwnd)
         timings["cachedReturnMs"] = select(0)
-        assert inspect()["settings"]["exposure"] == -1
+        assert inspect()["settings"]["exposure"] == edited_exposure
         call("ui.menu.invoke", {"id":"file.save"})
         controller._photocraft_executor.submit(controller._save_active_photocraft).result(timeout=180)
         app.processEvents()
         assert updates and bridge.rendered_preview_path(str(raw)).is_file()
         timings["rawToPngMs"] = select(2)
         timings["pngToRawMs"] = select(0)
-        assert inspect()["settings"]["exposure"] == -1
+        assert inspect()["settings"]["exposure"] == edited_exposure
         call("ui.menu.invoke", {"id":"file.close"})
         select(0)
-        assert inspect()["settings"]["exposure"] == -1
+        assert inspect()["settings"]["exposure"] == edited_exposure
         assert (controller._photocraft.process.pid, controller._photocraft.hwnd) == (pid, hwnd)
         # Closing the host must settle an open draft just like filmstrip navigation.
         call("ui.rawDevelopment", {"open": True})
@@ -144,6 +147,7 @@ def main():
         assert proc.process.poll() is not None and not proc.token_file.exists()
         # New process restores the on-disk RAW-backed project, not just warm memory.
         select(0)
+        assert Path(controller._photocraft.executable).resolve() == Path(args.executable).resolve(), "restart used a fallback editor"
         assert inspect()["settings"]["exposure"] == -0.75
         preview.close()
         controller.shutdown_photocraft()
@@ -151,7 +155,7 @@ def main():
         assert not list(output.rglob("*__photocraft_source.tiff"))
         assert not list(output.rglob("*.sensor.dng")), "temporary sensor transfer was not removed"
         assert all(hashlib.sha256(p.read_bytes()).hexdigest() == digest for p, digest in hashes.items())
-        timings.update(peakEditorRssMiB=round(peak[0]/1048576, 1), sensorBacked=True, draftStashedOnSwitch=True, draftStashedOnClose=True, nativeSave=True, tabReopen=True, restartRestored=True,
+        timings.update(executable=proc.executable, peakEditorRssMiB=round(peak[0]/1048576, 1), sensorBacked=True, draftStashedOnSwitch=True, draftStashedOnClose=True, nativeSave=True, tabReopen=True, restartRestored=True,
                        sameProcessAndWindow=True, originalsUnchanged=True, noTiffConversion=True, gridUpdated=True, cleanup=True)
         (output / "raw-handoff.json").write_text(json.dumps(timings, indent=2), encoding="utf-8")
         print(json.dumps(timings, indent=2), flush=True)

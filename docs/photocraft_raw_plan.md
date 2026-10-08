@@ -272,3 +272,19 @@ cached-sensor redevelopment 515 ms. The four 45 MP Nikon samples imported in
 1050–1160 ms and redeveloped in 1953–2231 ms; peak process RSS was 2207–2371 MiB
 while saving/loading/exporting. Native projects were 419–458 MB. These are
 single-run observations on this machine. Final live checks are recorded in the handoff.
+
+## Upstream follow-up: 652b972
+
+The next integration session fetched 120 new upstream commits. Compressed NEF
+decoding (#1310), RAW-first Open/Cancel (#1309), and Edit Contents tab reuse (#1037)
+have landed. These supersede the earlier watchlist's absence of those features.
+The initial RAW dialog redevelops exposure/temperature/tint from source at import,
+then commits a developed document; it does not persist a RAW-backed smart object.
+Our source/adapter/settings fields and Edit Contents route are still required.
+
+Keep existing Nikon adapter projects compatible. Before bypassing the adapter for
+new NEFs, validate the native decoder on all four real Z7/Z7 II samples, including
+lossy compression: it explicitly rejects lossy-after-split variants. Prefer native
+decode where verified, but never substitute a baked JPEG on unsupported input.
+Assess this adoption during the performance phase, after the merged integration
+passes its lifecycle checks. See the handoff for merge resolutions and validation.
