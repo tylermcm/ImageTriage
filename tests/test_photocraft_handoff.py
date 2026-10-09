@@ -24,7 +24,9 @@ def controller():
     ctl = PreviewController(parent)
     yield ctl
     ctl._photocraft_save_timer.stop()
+    ctl._photocraft_dwell_timer.stop()
     ctl._photocraft_executor.shutdown(wait=True)
+    ctl._photocraft_preview_executor.shutdown(wait=True)
     # Keep the parent and app alive until all worker signals have drained.
     app.processEvents()
 
@@ -453,6 +455,18 @@ def test_companion_host_precedes_unrelated_path_install(tmp_path, monkeypatch):
         detector.cache_clear()
 
 
+def test_companion_unversioned_photocraft_exe_is_found(tmp_path, monkeypatch):
+    from image_triage import shell_actions
+    checkout = tmp_path / "photocraft"
+    built = checkout / "target" / "debug" / "photocraft.exe"
+    built.parent.mkdir(parents=True)
+    built.touch()
+    (checkout / "Cargo.toml").touch()
+    monkeypatch.setattr(shell_actions, "__file__", str(tmp_path / "ImageTriage" / "image_triage" / "shell_actions.py"))
+    monkeypatch.setattr(shell_actions.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    assert shell_actions.companion_photocraft_executables() == [str(built)]
+
+
 def test_save_error_can_cancel_or_explicitly_discard(controller, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
     proc = process(tmp_path)
@@ -546,8 +560,11 @@ def test_same_checkout_override_selects_host_without_launching_old_release(tmp_p
     ordinary.parent.mkdir(parents=True)
     hosted.touch()
     ordinary.touch()
+    import os
+    os.utime(ordinary, (1_000_000, 1_000_000))  # the older build must lose to the newer one
     (checkout / "Cargo.toml").touch()
     monkeypatch.setattr(shell_actions, "__file__", str(tmp_path / "ImageTriage" / "image_triage" / "shell_actions.py"))
+    monkeypatch.setattr(shell_actions.Path, "home", classmethod(lambda cls: tmp_path / "home"))
     monkeypatch.setenv("IMAGE_TRIAGE_PHOTOCRAFT_EXE", str(ordinary))
     detector = bridge.detect_photocraft_executable
     detector.cache_clear()

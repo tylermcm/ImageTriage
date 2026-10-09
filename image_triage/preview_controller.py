@@ -11,8 +11,9 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication, QMessageBox
 from pathlib import Path
 
-from . import edit_storage, photocraft_bridge
+from . import edit_storage, photocraft_bridge, photocraft_preview
 from .brackets import BracketDetector
+from .formats import RAW_SUFFIXES
 from .models import ImageRecord, SessionAnnotation
 from .perf import perf_logger
 from .preview import FullScreenPreview, PreviewEntry
@@ -33,7 +34,11 @@ if TYPE_CHECKING:
 class PreviewController(QObject):
     """The full-screen preview and the winner ladder: building and opening the preview, navigation and filmstrip, requests coming back from it, preloading, compare and winner-ladder state. Extracted from MainWindow (docs/mainwindow_decomposition_plan.md, DC-4.4)."""
 
+    # How long a selection rests before its RAW loads behind the preview.
+    PHOTOCRAFT_RAW_DWELL_MS = 500
+
     _photocraft_ready = Signal(int, str, object)
+    _photocraft_preview_shown = Signal(int, str, object)
     _photocraft_window_ready = Signal(int, object)
     _photocraft_saved = Signal(str)
     _photocraft_save_failed = Signal(str)
@@ -49,7 +54,20 @@ class PreviewController(QObject):
         self._photocraft_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="photocraft")
         self._photocraft_generation = 0
         self._photocraft_future = None
+        # Previews use their own worker and PhotoCraft connection so they never queue
+        # behind a RAW load.
+        self._photocraft_preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="photocraft-preview")
+        self._photocraft_dwell_request: tuple[int, str] | None = None
+        self._photocraft_raw_inflight = False
+        self._photocraft_needs_preview_refresh = False
+        self._photocraft_current_path = ""
+        self._photocraft_open_generation: int | None = None
+        self._photocraft_dwell_timer = QTimer(self)
+        self._photocraft_dwell_timer.setSingleShot(True)
+        self._photocraft_dwell_timer.setInterval(self.PHOTOCRAFT_RAW_DWELL_MS)
+        self._photocraft_dwell_timer.timeout.connect(self._photocraft_dwell_elapsed)
         self._photocraft_ready.connect(self._finish_photocraft_open)
+        self._photocraft_preview_shown.connect(self._finish_photocraft_preview)
         self._photocraft_window_ready.connect(self._prepare_photocraft_window)
         self._photocraft_saved.connect(self._refresh_photocraft_save)
         self._photocraft_save_failed.connect(lambda error: self._window.statusBar().showMessage(error, 15000))
@@ -574,17 +592,107 @@ class PreviewController(QObject):
         open_in_photoshop(path)
 
     def handle_photocraft_edit_requested(self, path: str) -> None:
-        """Load the photo into the popout's embedded PhotoCraft editor."""
+        """Show the photo in the popout's embedded PhotoCraft.
+
+        PhotoCraft first opens a cached screen-sized preview (tens of milliseconds, a few MB
+        of I/O). The photo's RAW follows once the selection has rested for a moment, and
+        replaces the preview in place. Moving on first cancels the RAW load.
+        """
         preview = self.preview_if_built()
         if preview is None or not path:
             return
         self._photocraft_generation += 1
         generation = self._photocraft_generation
+        self._photocraft_current_path = path
+        self._photocraft_dwell_timer.stop()
         # Disable the local native parent, which blocks input to its child
         # without a synchronous cross-process WM_ENABLE call on the UI thread.
         preview.set_photocraft_loading(True)
         self._photocraft_save_timer.start()
+        if self._photocraft_fast_lane_ready(path):
+            self._photocraft_dwell_request = (generation, path)
+            self._photocraft_preview_executor.submit(self._show_photocraft_preview, generation, path)
+            self._photocraft_dwell_timer.start()
+        else:
+            self._start_photocraft_raw_stage(generation, path)
+
+    def _photocraft_fast_lane_ready(self, path: str) -> bool:
+        """Whether a preview can go in front of the RAW: PhotoCraft is already running for
+        this folder and the photo has no saved edits to restore."""
+        proc = self._photocraft
+        if proc is None or not proc.is_running() or proc.fast_unavailable:
+            return False
+        if Path(path).suffix.lower() not in RAW_SUFFIXES:
+            return False  # JPEGs and other flat files already open in tens of milliseconds
+        sidecar = photocraft_bridge.sidecar_pcraft_path(path)
+        if sidecar.is_file() or str(sidecar) in proc.pending_stashes or str(sidecar) in proc.stash_errors:
+            return False
+        folder = str(Path(path).parent)
+        return proc.path_within_root(path) is not None and proc.path_within_write_root(str(edit_storage.edit_root_for(folder) / "x")) is not None
+
+    def _start_photocraft_raw_stage(self, generation: int, path: str) -> None:
+        if generation != self._photocraft_generation:
+            return
         self._photocraft_future = self._photocraft_executor.submit(self._load_photocraft, generation, path)
+
+    def _photocraft_dwell_elapsed(self) -> None:
+        request = self._photocraft_dwell_request
+        self._photocraft_dwell_request = None
+        if request is not None:
+            self._start_photocraft_raw_stage(*request)
+
+    def _show_photocraft_preview(self, generation: int, path: str) -> None:
+        """First stage, on its own worker and connection so it never waits behind a RAW load."""
+        error = None
+        proc = None
+        try:
+            if generation != self._photocraft_generation:
+                return
+            proc = self._photocraft
+            if proc is None or not proc.is_running():
+                return
+            fast = proc.fast_lane()
+            # An obsolete RAW open must not finish into this photo's window.
+            if self._photocraft_raw_inflight:
+                proc.cancel_open_jobs()
+            edit_root = edit_storage.ensure_edit_root(Path(path).parent)
+            image = photocraft_preview.ensure_preview(path, edit_root)
+            if generation != self._photocraft_generation:
+                return
+            relative = proc.path_within_root(str(image))
+            if relative is None:
+                raise photocraft_bridge.PhotoCraftError("The preview is outside this PhotoCraft process's read root")
+            # Edits on the photo being left are saved first: opening replaces its document.
+            self._save_photocraft_sidecar_if_dirty(proc, control=fast)
+            if generation != self._photocraft_generation:
+                return
+            fast.app_open(relative.replace("\\", "/"), replace=True)
+            proc.current_source = None
+            proc.current_sidecar = None
+            proc.opened_revision = 0
+            proc.preview_source = normalized_path_key(path)
+        except Exception as caught:
+            error = caught
+            _log.warning("PhotoCraft preview failed for %s: %s", path, caught)
+            if proc is not None and proc.fast is None:
+                proc.fast_unavailable = True
+        self._photocraft_preview_shown.emit(generation, path, error)
+
+    def _finish_photocraft_preview(self, generation: int, path: str, error) -> None:
+        preview = self.preview_if_built()
+        if generation != self._photocraft_generation or preview is None or not preview.isVisible():
+            return
+        if preview._compare_mode or preview._collection_browse_mode or preview._before_after_enabled:
+            return
+        proc = self._photocraft
+        if error is not None or proc is None or not proc.is_running():
+            # No preview this time: go straight to the RAW; the editor is still the viewer.
+            self._photocraft_dwell_timer.stop()
+            self._photocraft_dwell_request = None
+            self._start_photocraft_raw_stage(generation, path)
+            return
+        self._attach_photocraft(preview, proc)
+        preview.show_photocraft_host()
 
     def _load_photocraft(self, generation: int, path: str) -> None:
         # Superseded requests never decode or open a document. The running
@@ -592,11 +700,22 @@ class PreviewController(QObject):
         if generation != self._photocraft_generation:
             return
         error = None
+        self._photocraft_raw_inflight = True
+        self._photocraft_open_generation = generation
         try:
             self._open_in_photocraft(None, path)
         except Exception as caught:
             error = caught
-            _log.exception("PhotoCraft handoff failed for %s", path)
+            if generation == self._photocraft_generation:
+                _log.exception("PhotoCraft handoff failed for %s", path)
+        finally:
+            self._photocraft_raw_inflight = False
+            self._photocraft_open_generation = None
+        if self._photocraft_needs_preview_refresh:
+            self._photocraft_needs_preview_refresh = False
+            current = self._photocraft_current_path
+            if current and generation != self._photocraft_generation and self._photocraft_fast_lane_ready(current):
+                self._photocraft_preview_executor.submit(self._show_photocraft_preview, self._photocraft_generation, current)
         self._photocraft_ready.emit(generation, path, error)
 
     def _prepare_photocraft_window(self, generation: int, proc) -> None:
@@ -739,7 +858,8 @@ class PreviewController(QObject):
         return photocraft_bridge.materialize_for_photocraft(path, cache_dir), str(sidecar)
 
     def _open_in_photocraft(self, preview: FullScreenPreview | None, path: str) -> None:
-        generation = self._photocraft_generation
+        # The request generation this open belongs to (set by _load_photocraft on the worker).
+        generation = self._photocraft_open_generation if self._photocraft_open_generation is not None else self._photocraft_generation
         proc = self._photocraft
         if proc is not None and not proc.is_running():
             proc.shutdown()
@@ -776,8 +896,10 @@ class PreviewController(QObject):
             # Hosted imports/restores use Session.add_document -> DocState.new,
             # whose initial revision and saved_revision are both one.
             proc.opened_revision = 1
-        else:
-            self._switch_photocraft_document(proc, open_path, sidecar_path)
+        elif not self._switch_photocraft_document(proc, open_path, sidecar_path, self._photocraft_open_generation):
+            # The selection moved on while this RAW was opening: its result belongs to a photo
+            # that is no longer shown, so it must not be bound or recorded.
+            return
         relative_sidecar = proc.path_within_write_root(sidecar_path)
         relative_render = proc.path_within_write_root(str(photocraft_bridge.rendered_preview_path(path)))
         try:
@@ -798,8 +920,8 @@ class PreviewController(QObject):
             photocraft_bridge.resize_embedded(proc.hwnd, width, height)
 
     def _switch_photocraft_document(
-        self, proc: photocraft_bridge.PhotoCraftProcess, open_path: str, sidecar_path: str
-    ) -> None:
+        self, proc: photocraft_bridge.PhotoCraftProcess, open_path: str, sidecar_path: str, generation: int | None = None
+    ) -> bool:
         """Save the currently open document to its sidecar if it changed,
         and replace it with the next. Keeps exactly one
         PhotoCraft document open at a time instead of accumulating a tab per
@@ -819,23 +941,38 @@ class PreviewController(QObject):
             relative = proc.path_within_write_root(sidecar_path)
         # Decode with the old document still visible. PhotoCraft commits the
         # replacement atomically on success, retaining the old one on failure.
-        proc.control.app_open(relative, replace=True)
+        if generation is None:
+            proc.control.app_open(relative, replace=True)
+        else:
+            proc.control.app_open(relative, replace=True, should_continue=lambda: generation == self._photocraft_generation)
+        if generation is not None and generation != self._photocraft_generation:
+            # This RAW finished after the selection moved on and is now the open document.
+            # Put the current photo's preview back in front of it.
+            self._photocraft_needs_preview_refresh = True
+            return False
+        proc.preview_source = None
         proc.current_sidecar = Path(sidecar_path)
         proc.opened_revision = 1
         if sidecar_path in proc.stash_errors:
             proc.opened_revision = -1
+        return True
 
-    def _save_photocraft_sidecar_if_dirty(self, proc: photocraft_bridge.PhotoCraftProcess, *, commit_raw_draft: bool = True) -> None:
+    def _save_photocraft_sidecar_if_dirty(
+        self, proc: photocraft_bridge.PhotoCraftProcess, *, commit_raw_draft: bool = True, control=None
+    ) -> None:
+        """``control`` selects the connection to use; the fast lane while a RAW open is
+        still outstanding on the main one."""
         if proc.current_sidecar is None:
             return
+        control = control if control is not None else proc.control
         if getattr(proc.control, "raw_smart_supported", False) is True:
             # Commit the RAW draft on an engine worker before stash/switch/close.
             # Polling revision alone must never close a dialog the user is editing.
             if commit_raw_draft:
-                proc.control.call("ui.rawDevelopment", {"commit": True})
-            elif proc.control.call("ui.rawDevelopment").get("open"):
+                control.call("ui.rawDevelopment", {"commit": True})
+            elif control.call("ui.rawDevelopment").get("open"):
                 return
-        revision = proc.control.document_revision()
+        revision = control.document_revision()
         if revision is None:
             # Closing a tab in PhotoCraft leaves its process/window alive.
             # Drop only the active binding; pending saves still need polling.
@@ -856,7 +993,7 @@ class PreviewController(QObject):
         key = str(proc.current_sidecar)
         if key in proc.pending_stashes:
             self._wait_photocraft_stashes(proc, only=key)
-        result = proc.control.call("app.stash", {"path": relative, "preview": render_relative, "wait": False})
+        result = control.call("app.stash", {"path": relative, "preview": render_relative, "wait": False})
         proc.stash_errors.pop(key, None)
         if result.get("pending"):
             proc.pending_stashes[key] = (int(result["job"]), proc.source_path)

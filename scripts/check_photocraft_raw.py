@@ -153,7 +153,8 @@ def main():
         controller.shutdown_photocraft()
         assert controller._photocraft is None
         assert not list(output.rglob("*__photocraft_source.tiff"))
-        assert not list(output.rglob("*.sensor.dng")), "temporary sensor transfer was not removed"
+        from image_triage.photocraft_raw_source import MAX_CACHED_SENSORS
+        assert len(list(output.rglob("*.sensor.dng"))) <= MAX_CACHED_SENSORS, "sensor cache exceeded its bound"
         assert all(hashlib.sha256(p.read_bytes()).hexdigest() == digest for p, digest in hashes.items())
         timings.update(executable=proc.executable, peakEditorRssMiB=round(peak[0]/1048576, 1), sensorBacked=True, draftStashedOnSwitch=True, draftStashedOnClose=True, nativeSave=True, tabReopen=True, restartRestored=True,
                        sameProcessAndWindow=True, originalsUnchanged=True, noTiffConversion=True, gridUpdated=True, cleanup=True)

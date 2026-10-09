@@ -7,10 +7,13 @@ separately and embedded alongside this self-contained decode source.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 import struct
 import tempfile
+import threading
+import time
 
 ADAPTER_VERSION = 3
 MAX_PIXELS = 100_000_000
@@ -114,6 +117,31 @@ def _write_dng(file, raw):
     file.write(np.ascontiguousarray(pixels, dtype="<u2").tobytes())
 
 
+MAX_CACHED_SENSORS = 4
+MAX_CACHED_BYTES = 512 * 1024 * 1024
+
+_state_lock = threading.Lock()
+_inflight: dict[str, threading.Lock] = {}
+_stats = {"hits": 0, "misses": 0, "joined": 0, "unpack_ms": 0.0}
+
+
+def cache_stats() -> dict:
+    with _state_lock:
+        return dict(_stats)
+
+
+def _count(name: str, amount: float = 1) -> None:
+    with _state_lock:
+        _stats[name] += amount
+
+
+def _touch(path: Path) -> None:
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
 def materialize_sensor_dng(path: str, cache_dir: Path) -> Path:
     import rawpy
 
@@ -123,17 +151,60 @@ def materialize_sensor_dng(path: str, cache_dir: Path) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
     target = cache_dir / (key + ".sensor.dng")
     if target.is_file():
+        _touch(target)
+        _count("hits")
         return target
-    temporary = None
+    with _state_lock:
+        guard = _inflight.setdefault(key, threading.Lock())
+    # A prefetch and the selected photo may ask for the same file; the second waits for
+    # the first instead of unpacking it twice.
+    with guard:
+        if target.is_file():
+            _touch(target)
+            _count("joined")
+            return target
+        started = time.perf_counter()
+        temporary = None
+        try:
+            with rawpy.imread(str(source)) as raw, tempfile.NamedTemporaryFile(dir=cache_dir, suffix=".tmp", delete=False) as file:
+                temporary = Path(file.name)
+                _write_dng(file, raw)
+            after = source.stat()
+            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                raise ValueError("RAW changed while its sensor data was being unpacked")
+            os.replace(temporary, target)
+            _count("misses")
+            _count("unpack_ms", (time.perf_counter() - started) * 1000)
+            return target
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            with _state_lock:
+                _inflight.pop(key, None)
+
+
+def trim_sensor_cache(cache_dir: Path, *, keep: Path | None = None, max_files: int = MAX_CACHED_SENSORS, max_bytes: int = MAX_CACHED_BYTES) -> None:
+    """Keep the most recently used unpacked sensors within a small file and byte budget.
+
+    Only called after a foreground open, never from a prefetch, so a file that was just
+    handed to PhotoCraft cannot be evicted underneath it.
+    """
     try:
-        with rawpy.imread(str(source)) as raw, tempfile.NamedTemporaryFile(dir=cache_dir, suffix=".tmp", delete=False) as file:
-            temporary = Path(file.name)
-            _write_dng(file, raw)
-        after = source.stat()
-        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-            raise ValueError("RAW changed while its sensor data was being unpacked")
-        os.replace(temporary, target)
-        return target
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        found = [(p.stat(), p) for p in cache_dir.glob("*.sensor.dng") if p.is_file()]
+    except OSError:
+        return
+    found.sort(key=lambda item: item[0].st_mtime_ns, reverse=True)
+    # The file just handed to PhotoCraft is always kept and counts against the budget first.
+    kept = sum(1 for _, path in found if path == keep)
+    total = sum(stat.st_size for stat, path in found if path == keep)
+    for stat, path in found:
+        if path == keep:
+            continue
+        if kept < max_files and total + stat.st_size <= max_bytes:
+            kept += 1
+            total += stat.st_size
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logging.getLogger(__name__).warning("Could not evict cached RAW sensor %s", path)
