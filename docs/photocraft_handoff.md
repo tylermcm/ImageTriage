@@ -1,5 +1,66 @@
 # PhotoCraft handoff — remove-builtin-editor
 
+## Quick handoff — 2026-10-09 (RAW swap speed)
+
+Pushed: ImageTriage `remove-builtin-editor` at `1c4b886`; photocraft fork
+`codex/image-triage-integration` at `ae56dc16` (merge of upstream `47ad748` is
+`fb3c2e2e`). Nothing was pushed to storytold.
+
+**Problem.** Swapping 45 MP Nikon NEFs through the embedded PhotoCraft took 3 s or
+more, and the photos live on a NAS (`\\192.168.1.200\...`, measured 107 MB/s), where
+each swap moves the NEF twice plus an 87 MB unpacked sensor DNG over the network.
+
+**Measured (release build, DX12, local disk, PhotoCraft window shown).** RAW smart
+object open: worker ~1.3 s -> ~0.55 s; canvas composite ~1000 ms -> ~130 ms; swap with
+the unpack cached ~1.0 s. Cached 5 MP JPEG preview opens in ~30-90 ms. Harness numbers
+taken with the PhotoCraft window hidden are ~200 ms worse than the real app. The NAS
+case has not been measured end to end.
+
+**Image Triage (`preview_controller.py`, `photocraft_bridge.py`, `photocraft_preview.py`).**
+- Each swap first opens a cached screen-sized JPEG (from the NEF's embedded JPEG, kept
+  in `.image_triage_edits/previews/`) in PhotoCraft; the RAW smart object loads after the
+  selection rests 500 ms (`PHOTOCRAFT_RAW_DWELL_MS`) and replaces it in place.
+- Previews use a second control connection (`PhotoCraftProcess.fast_lane()`), so they
+  never queue behind a RAW open. Moving on cancels a running open job
+  (`cancel_open_jobs`, only `app.open`, never a save) or abandons the open before it is
+  sent (`should_continue` / `PhotoCraftSuperseded`); a stale RAW that still finishes is
+  covered again by the current preview. First photo of a folder, photos with saved
+  edits, and flat files skip the preview stage.
+- Unpacked sensor DNGs are kept in a bounded LRU cache (4 files / 512 MB) in
+  `.image_triage_edits/raw-sensors` instead of being deleted after each open.
+- PhotoCraft is found as unversioned `photocraft.exe` (also in `~/Documents/photocraft`)
+  and launched with `WGPU_BACKEND=dx12`: Vulkan overlay layers (Epic, Galaxy, ReShade)
+  left the embedded canvas blank on this machine.
+
+**PhotoCraft (`gpu/src/lib.rs`, `io/src/flat.rs`, `codecs/src/image.rs`,
+`ui-egui/src/control_files.rs`).** 16-bit RGBA GPU page upload uses a 64K lookup table and
+all cores (bit-identical to the generic path, covered by a test); tile build converts row
+bands on several threads; `app.stash` encodes the project and its preview concurrently
+(~0.8 s on a quiet machine, no change in control latency or peak memory).
+
+**Open.**
+- The RAW looks flatter than the camera JPEG/Photoshop (measured on a test shot: luma
+  5th-95th percentile 6-57 against 3-101, saturation 0.37 against 0.80). PhotoCraft's
+  develop has no tone curve or camera profile. Proposed, not built: fit a tone curve and
+  colour matrix from the embedded JPEG so the RAW opens in the camera look.
+- Saving writes ~730 MB per edited photo (493 MB `.pcraft` + 240 MB preview PNG) and
+  took 4-23 s (disk-write spikes). Compression ratios measured: NEF 98%, sensor DNG 92%,
+  developed tiles 91%. Decisions pending: compression policy, not saving the developed
+  pixels for RAW smart objects, a smaller preview PNG.
+- Edits made on the preview in its first half second are lost when the RAW replaces it.
+- Local staging of RAW files was considered and rejected by the owner.
+- Not run: the full Image Triage and workspace suites, clippy/layers/wasm checks and
+  `scripts/check_photocraft_handoff.py` on the final build. Focused tests that pass:
+  71 PhotoCraft-related Python tests; gpu, codecs, io raw/roundtrip, engine
+  raw_development and ui-egui control_files in the fork. Five tests in the wider
+  preview suite fail identically on the committed code before these changes.
+- Uncommitted and unrelated here: the `qt_logging` work in `main.py`.
+
+**Build and run on this machine.** Rust stable 1.99 via rustup; clone at
+`C:\Users\tylle\Documents\photocraft`; `cargo build --release -p photocraft`; set
+`IMAGE_TRIAGE_PHOTOCRAFT_EXE` to `...\target\release\photocraft.exe` and fully restart
+Image Triage (a running session keeps its old PhotoCraft process).
+
 ## Quick handoff — 2026-10-07
 
 - Removed the built-in editor and its obsolete tool/AI workers, retaining saved
@@ -77,6 +138,20 @@ identifiable; avoid rewriting or force-pushing the fork's history.
   source commit `0c05109`). The previous `photocraft-host-v5.exe` is retained.
 - Artifacts: the thread's `upstream-bce7e54`, `upstream-bce7e54-visual` and
   `upstream-bce7e54-legacy` folders. No remote changes were pushed.
+
+### 2026-10-09 update
+
+- Previous upstream in the branch: `652b972`. Incoming: `47ad7486` (103 commits, 233
+  files). Merge commit `fb3c2e2e` on `codex/image-triage-integration`; the fork's earlier
+  history is unchanged.
+- Three textual conflicts, all trivial: `engine/src/lib.rs` keeps both `raw_develop_cmds`
+  and upstream's `redeye_cmds`; `docs/control-protocol.md` keeps `ui.theme` and upstream's
+  `ui.set` entry; the Windows crosshair cursor test takes upstream's wording. 17 files
+  merged automatically, including `control.rs`, `services.rs` and `main.rs`; type-check is
+  clean, but those automatic merges have not had the review described above.
+- Validation: `cargo check` of photocraft, io, engine and ui-egui, and the focused tests
+  listed in the quick handoff. Full native UI suite, clippy, layers, wasm and the live
+  handoff were not run for this merge.
 
 PhotoCraft is the popout's default editor. The current filmstrip, navigation,
 review controls and comparison views remain in Image Triage. Opening a photo
