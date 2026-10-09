@@ -53,6 +53,10 @@ class PhotoCraftCompatibilityError(PhotoCraftError):
     """The selected binary cannot implement the hosted handoff protocol."""
 
 
+class PhotoCraftSuperseded(PhotoCraftError):
+    """An open was abandoned because the selection moved on before it started."""
+
+
 def path_needs_conversion(path: str) -> bool:
     return Path(path).suffix.lower() not in NATIVE_SUFFIXES | RAW_SUFFIXES
 
@@ -138,7 +142,7 @@ class PhotoCraftControl:
             raise PhotoCraftError(f"PhotoCraft control {method!r} failed: {reply.get('error')}")
         return reply.get("result") or {}
 
-    def app_open(self, path: str, *, replace: bool = False) -> dict:
+    def app_open(self, path: str, *, replace: bool = False, should_continue=None) -> dict:
         params = {"path": _automation_path(path)}
         sensor = None
         if replace:
@@ -165,15 +169,17 @@ class PhotoCraftControl:
                     except (OSError, ValueError, RuntimeError) as error:
                         raise PhotoCraftError(f"Could not unpack Nikon sensor data: {error}") from error
         try:
+            # The unpack above can take a while; if the caller has moved on meanwhile, do not
+            # start an open that would later replace the photo now on screen.
+            if should_continue is not None and not should_continue():
+                raise PhotoCraftSuperseded(f"{path} is no longer the selected photo")
             return self.call("app.open", params)
         finally:
-            # PhotoCraft embeds the sensor bytes before replying. Keep no second
-            # 90 MB per-photo file once the scoped transfer has finished.
+            # PhotoCraft embeds the sensor bytes before replying. Recently used unpacked
+            # sensors stay in a small bounded cache so revisiting a photo skips the unpack.
             if sensor is not None:
-                try:
-                    sensor.unlink(missing_ok=True)
-                except OSError:
-                    logging.getLogger(__name__).warning("Could not remove temporary RAW sensor transfer %s", sensor)
+                from .photocraft_raw_source import trim_sensor_cache
+                trim_sensor_cache(sensor.parent, keep=sensor)
 
     def require_hosted_handoff(self) -> None:
         """Probe validation without opening a document or writing any files."""
@@ -200,7 +206,7 @@ class PhotoCraftControl:
                     raise
                 raise PhotoCraftCompatibilityError(
                     "This PhotoCraft build does not support the hosted editor handoff. "
-                    "Use the companion photocraft-host.exe build or update IMAGE_TRIAGE_PHOTOCRAFT_EXE. "
+                    "Use the companion photocraft.exe build or update IMAGE_TRIAGE_PHOTOCRAFT_EXE. "
                     f"Compatibility check: {error}"
                 ) from error
             raise PhotoCraftCompatibilityError(f"PhotoCraft returned an unexpected response to the {method} compatibility check")
@@ -286,9 +292,37 @@ class PhotoCraftProcess:
     # the actual save-before-close-before-open sequence).
     current_sidecar: Path | None = None
     opened_revision: int = 0
+    port: int = 0
+    token: str = ""
+    # A second control connection for work that must not wait behind a long RAW open on
+    # ``control`` (previews, cancelling an obsolete open). PhotoCraft serves each
+    # connection on its own thread.
+    fast: PhotoCraftControl | None = None
+    fast_unavailable: bool = False
+    preview_source: str | None = None
 
     def is_running(self) -> bool:
         return self.process.poll() is None
+
+    def fast_lane(self) -> PhotoCraftControl:
+        if self.fast is None:
+            fast = PhotoCraftControl(self.port, self.token)
+            fast.read_root = self.read_root
+            self.fast = fast
+        return self.fast
+
+    def cancel_open_jobs(self) -> int:
+        """Cancel a RAW (or any) document open that is still running, never a save."""
+        fast = self.fast_lane()
+        cancelled = 0
+        for job in fast.call("jobs.list").get("jobs", []):
+            if job.get("command") == "app.open" and job.get("state") == "running":
+                try:
+                    fast.call("jobs.cancel", {"job": int(job["id"])})
+                    cancelled += 1
+                except PhotoCraftError:
+                    pass  # it finished between the list and the cancel
+        return cancelled
 
     def path_within_root(self, path: str) -> str | None:
         """``path`` relative to this process's automation read root, or ``None``
@@ -307,6 +341,12 @@ class PhotoCraftProcess:
     def shutdown(self, *, timeout: float = 3.0) -> None:
         """Ask PhotoCraft to quit over the control channel, then fall back to
         terminate()/kill() if it doesn't exit in time."""
+        if self.fast is not None:
+            try:
+                self.fast.close()
+            except OSError:
+                pass
+            self.fast = None
         try:
             if self.is_running():
                 self.control.quit()
@@ -433,11 +473,17 @@ def _launch_photocraft_binary(
     ]
     process = None
     control = None
+    env = dict(os.environ)
+    if os.name == "nt":
+        # PhotoCraft's automatic backend can pick Vulkan, where game-overlay layers
+        # (Epic, Galaxy, ReShade) leave the embedded canvas blank; DX12 renders correctly.
+        env.setdefault("WGPU_BACKEND", "dx12")
     try:
         process = subprocess.Popen(
             args,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=env,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
         )
         timings["spawn_ms"] = (time.perf_counter() - started) * 1000
@@ -454,7 +500,8 @@ def _launch_photocraft_binary(
         # Respect PhotoCraft's persisted theme; the filmstrip follows its colors.
         timings["shell_configured_ms"] = (time.perf_counter() - started) * 1000
         proc = PhotoCraftProcess(process=process, control=control, hwnd=hwnd, token_file=token_file,
-                                read_root=Path(read_root), write_root=Path(write_root), launch_timings=timings)
+                                read_root=Path(read_root), write_root=Path(write_root), launch_timings=timings,
+                                port=port, token=token)
         if on_window is not None:
             on_window(proc)
         try:

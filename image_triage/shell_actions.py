@@ -125,10 +125,16 @@ def detect_photocraft_executable() -> str | None:
 
 
 def companion_photocraft_executables() -> list[str]:
-    checkout = Path(__file__).resolve().parents[2] / "photocraft"
-    if not (checkout / "Cargo.toml").is_file():
-        return []
-    hosted = [path for profile in ("release", "debug") for path in (checkout / "target" / profile).glob("photocraft-host*.exe") if path.is_file()]
+    checkouts = [Path(__file__).resolve().parents[2] / "photocraft", Path.home() / "Documents" / "photocraft"]
+    hosted = [
+        path
+        for checkout in checkouts
+        if (checkout / "Cargo.toml").is_file()
+        for profile in ("release", "debug")
+        for pattern in ("photocraft.exe", "photocraft-host*.exe")
+        for path in (checkout / "target" / profile).glob(pattern)
+        if path.is_file()
+    ]
     return [str(path) for path in sorted(hosted, key=lambda path: path.stat().st_mtime_ns, reverse=True)]
 
 
