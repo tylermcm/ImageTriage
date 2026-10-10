@@ -33,10 +33,12 @@ def edit_state_for(path: str | Path) -> tuple[int, int]:
 
     try:
         from . import edit_storage
-        from .photocraft_bridge import rendered_preview_path
+        from .photocraft_bridge import saved_render_path
 
-        rendered = rendered_preview_path(str(path))
-        session_path = rendered if rendered.is_file() else edit_storage.resolve_session_for_read(path)
+        # The newest render of the photo's PhotoCraft edits: the small display render when there is one
+        # (a Camera Raw recipe produces only that), else the full-size one.
+        rendered = saved_render_path(str(path))
+        session_path = rendered if rendered is not None else edit_storage.resolve_session_for_read(path)
         stat = session_path.stat()
     except OSError:
         return (0, 0)

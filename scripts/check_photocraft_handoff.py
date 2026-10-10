@@ -105,7 +105,8 @@ def main() -> None:
         start = time.perf_counter()
         preview.show_entries([PreviewEntry(records[index], records[index].path)])
         assert preview.isFullScreen()
-        if not preview.photocraft_edit_active():
+        if not preview.photocraft_edit_active() and not preview.native_first_active():
+            # With the browsing picture in front (the default) the filmstrip is visible from the start.
             assert preview._filmstrip.isHidden(), "filmstrip flashed during editor startup"
         preview.set_browse_context(2, index, lambda item: thumbnails[item])
         queued_ms = (time.perf_counter() - start) * 1000
@@ -159,8 +160,14 @@ def main() -> None:
             assert not session["documents"], "PhotoCraft's document did not close"
             if index == 0:
                 preview._handle_studio_filmstrip_selected(0)
-                reopened = controller._photocraft_future
-                wait_for(lambda: reopened.done() and controller._photocraft.current_source == normalized_path_key(records[0].path))
+                # The request waits out the browsing dwell before it reopens the document, and the
+                # stale binding to the closed tab survives until then: wait for the document itself.
+                def reopened_document():
+                    if controller._photocraft_dwell_timer.isActive():
+                        return False
+                    inspected = controller._photocraft_executor.submit(proc.control.execute, "session.inspect").result(timeout=10)
+                    return len(inspected["documents"]) == 1 and controller._photocraft.current_source == normalized_path_key(records[0].path)
+                wait_for(reopened_document)
             else:
                 timings["reopen_other_after_close"] = select(index)
             session = controller._photocraft_executor.submit(proc.control.execute, "session.inspect").result(timeout=10)

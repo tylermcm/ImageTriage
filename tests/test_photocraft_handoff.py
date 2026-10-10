@@ -320,7 +320,7 @@ def test_navigation_does_not_wait_for_worker_and_skips_superseded_requests(contr
         opens.append(path)
         entered.set()
         release.wait(3)
-    preview = SimpleNamespace(hide_photocraft_host=Mock(), set_photocraft_loading=Mock(), isVisible=lambda: False)
+    preview = SimpleNamespace(hide_photocraft_host=Mock(), set_photocraft_loading=Mock(), native_first_active=Mock(return_value=False), isVisible=lambda: False)
     controller._window = SimpleNamespace(_preview=preview)
     controller._open_in_photocraft = load
     controller.handle_photocraft_edit_requested("first.jpg")
@@ -575,8 +575,11 @@ def test_same_checkout_override_selects_host_without_launching_old_release(tmp_p
 
 
 def test_editor_loading_covers_original_viewer_before_first_paint(controller, tmp_path, monkeypatch):
+    # The editor-draws-everything mode (Editor browsing = off); the default mode paints the photo itself
+    # and is covered in test_native_first_browsing.py.
     preview = FullScreenPreview()
     preview.set_photocraft_available(True)
+    preview.set_overlay_region("off")
     record = ImageRecord(path=str(tmp_path / "frame.jpg"), name="frame.jpg", size=1, modified_ns=1)
     fullscreen = preview.showFullScreen
     def show():

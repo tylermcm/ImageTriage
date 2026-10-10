@@ -93,7 +93,7 @@ def test_fast_lane_needs_a_running_process_for_this_folder_without_saved_edits(c
 
 def test_request_shows_the_preview_now_and_loads_the_raw_only_after_the_dwell(controller, tmp_path, monkeypatch):
     controller._photocraft = fast_proc(tmp_path)
-    controller._window = SimpleNamespace(_preview=SimpleNamespace(set_photocraft_loading=Mock()))
+    controller._window = SimpleNamespace(_preview=SimpleNamespace(set_photocraft_loading=Mock(), native_first_active=Mock(return_value=False)))
     previews, raws = [], []
     monkeypatch.setattr(controller, "_show_photocraft_preview", lambda generation, path: previews.append((generation, path)))
     monkeypatch.setattr(controller, "_load_photocraft", lambda generation, path: raws.append((generation, path)))
@@ -108,7 +108,7 @@ def test_request_shows_the_preview_now_and_loads_the_raw_only_after_the_dwell(co
 
 def test_moving_on_before_the_dwell_never_loads_the_earlier_raw(controller, tmp_path, monkeypatch):
     controller._photocraft = fast_proc(tmp_path)
-    controller._window = SimpleNamespace(_preview=SimpleNamespace(set_photocraft_loading=Mock()))
+    controller._window = SimpleNamespace(_preview=SimpleNamespace(set_photocraft_loading=Mock(), native_first_active=Mock(return_value=False)))
     raws = []
     monkeypatch.setattr(controller, "_show_photocraft_preview", lambda *a: None)
     monkeypatch.setattr(controller, "_load_photocraft", lambda generation, path: raws.append(path))
@@ -120,7 +120,7 @@ def test_moving_on_before_the_dwell_never_loads_the_earlier_raw(controller, tmp_
 
 
 def test_first_photo_of_a_folder_goes_straight_to_the_raw(controller, tmp_path, monkeypatch):
-    controller._window = SimpleNamespace(_preview=SimpleNamespace(set_photocraft_loading=Mock()))
+    controller._window = SimpleNamespace(_preview=SimpleNamespace(set_photocraft_loading=Mock(), native_first_active=Mock(return_value=False)))
     raws = []
     monkeypatch.setattr(controller, "_load_photocraft", lambda generation, path: raws.append(path))
     controller.handle_photocraft_edit_requested(str(tmp_path / "a.NEF"))

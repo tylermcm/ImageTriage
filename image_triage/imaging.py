@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import io
 import os
 import struct
 import time
@@ -979,6 +980,44 @@ def _apply_raw_orientation(image: QImage, flip: int) -> QImage:
     return rotated if not rotated.isNull() else image
 
 
+# Pillow's draft mode decodes at 1/2, 1/4 or 1/8 scale, keeping at least the requested size. Only worth the
+# conversion for large sources shown much smaller.
+_DRAFT_MIN_SOURCE_PIXELS = 12_000_000
+_DRAFT_MIN_REDUCTION = 2.0
+
+
+def _worth_draft_decoding(source_size: QSize, target_size: QSize) -> bool:
+    if source_size.width() * source_size.height() < _DRAFT_MIN_SOURCE_PIXELS:
+        return False
+    return (
+        source_size.width() >= _DRAFT_MIN_REDUCTION * target_size.width()
+        and source_size.height() >= _DRAFT_MIN_REDUCTION * target_size.height()
+    )
+
+
+def _load_jpeg_with_draft(payload: bytes, target_size: QSize) -> QImage:
+    """``payload`` decoded by Pillow at a reduced scale, no smaller than ``target_size``.
+
+    Returns a null image whenever the picture is not a plain profile-less 8-bit JPEG (Pillow drops colour
+    profiles; Qt applies them), or on any failure, so the caller's own decode takes over.
+    """
+    try:
+        from PIL import Image
+    except ImportError:  # pragma: no cover - Pillow is a declared dependency
+        return QImage()
+    try:
+        with Image.open(io.BytesIO(payload)) as picture:
+            if picture.format != "JPEG" or picture.info.get("icc_profile"):
+                return QImage()
+            picture.draft("RGB", (target_size.width(), target_size.height()))
+            picture.load()
+            rgb = picture.convert("RGB") if picture.mode != "RGB" else picture
+            data = rgb.tobytes()
+            return QImage(data, rgb.width, rgb.height, rgb.width * 3, QImage.Format.Format_RGB888).copy()
+    except Exception:  # noqa: BLE001 - any decoder failure falls back to Qt
+        return QImage()
+
+
 def _load_standard_image_from_bytes(
     payload: bytes,
     target_size: QSize,
@@ -994,6 +1033,13 @@ def _load_standard_image_from_bytes(
     reader.setAutoTransform(apply_exif_transform)
     source_size = reader.size()
     if source_size.isValid() and _has_target(target_size):
+        if not apply_exif_transform and _worth_draft_decoding(source_size, target_size):
+            # A camera's full-size embedded JPEG shown at screen size: let the JPEG decoder shrink while it
+            # decodes (about 115 ms for 45 MP instead of about 180 ms).
+            drafted = _load_jpeg_with_draft(payload, target_size)
+            if not drafted.isNull():
+                buffer.close()
+                return _scale_if_needed(drafted, target_size)
         scaled = source_size.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio)
         if scaled.isValid():
             reader.setScaledSize(scaled)

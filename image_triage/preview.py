@@ -56,11 +56,19 @@ from .scanner import discover_edited_paths
 from .ui.icons import build_symbol_icon
 from .ui.display_metrics import DisplayProfile, STANDARD_DISPLAY
 from .ui import preview_studio as studio
+from .ui.native_image_layer import DEFAULT_REGION, REGION_OFF, SETTINGS_KEY as OVERLAY_REGION_KEY, NativeImageLayer, layer_rect, normalize_region
 from .ui import popout_layout_ratios as popout_ratios
 from .ui.preview_studio_stylesheet import build_studio_dialog_stylesheet
 from .ui.theme import ThemePalette, default_theme
 
 COMPARE_COUNTS = (2, 3, 5, 7, 9)
+
+
+def _set_style_sheet(widget, css: str) -> None:
+    """``setStyleSheet`` only when it would change something: Qt re-polishes the widget (and its
+    children) even for an identical sheet, which cost ~20 ms of every navigation."""
+    if widget.styleSheet() != css:
+        widget.setStyleSheet(css)
 
 
 @dataclass(slots=True, frozen=True)
@@ -120,15 +128,21 @@ class _EditedDiscoveryTask(QRunnable):
 
 
 class PreviewTask(QRunnable):
-    def __init__(self, request: PreviewRequest, result_queue: SimpleQueue) -> None:
+    def __init__(self, request: PreviewRequest, result_queue: SimpleQueue, is_current=None) -> None:
         super().__init__()
         self.request = request
         self.result_queue = result_queue
+        # Asked once the task reaches the front of the pool: a decode for a photo the user has already
+        # navigated past is dropped instead of occupying a worker while the photo they are on waits.
+        self.is_current = is_current
         self.setAutoDelete(True)
 
     def run(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
+        if self.is_current is not None and self.request.load_image and not self.is_current():
+            self.result_queue.put(("failed", self.request, "superseded", time.perf_counter()))
+            return
         queue_wait_ms = (
             (start - self.request.queued_at_perf) * 1000.0
             if logger.enabled and self.request.queued_at_perf > 0.0
@@ -136,10 +150,10 @@ class PreviewTask(QRunnable):
         )
         suffix = suffix_for_path(self.request.path)
         if self.request.load_image:
-            from .photocraft_bridge import rendered_preview_path
+            from .photocraft_bridge import saved_render_path
 
-            render = rendered_preview_path(self.request.path)
-            display_path = str(render) if self.request.apply_saved_edits and render.is_file() else self.request.path
+            render = saved_render_path(self.request.path) if self.request.apply_saved_edits else None
+            display_path = str(render) if render is not None else self.request.path
             image, error = load_image_for_display(
                 display_path,
                 self.request.target_size,
@@ -444,14 +458,14 @@ class PreviewPane(QWidget):
         if self._studio:
             # The pane and scroll area are invisible carriers so the photo
             # floats on the ground.
-            self.setStyleSheet("QWidget#previewPane { background-color: transparent; border: none; }")
-            self.scroll_area.setStyleSheet(
+            _set_style_sheet(self, "QWidget#previewPane { background-color: transparent; border: none; }")
+            _set_style_sheet(self.scroll_area, 
                 "QScrollArea { background-color: #090a0b; border: none; }"
             )
-            self.image_label.setStyleSheet("background-color: #090a0b; color: #6f7680;")
+            _set_style_sheet(self.image_label, "background-color: #090a0b; color: #6f7680;")
             return
         if not self._frame_visible:
-            self.setStyleSheet(
+            _set_style_sheet(self, 
                 """
                 QWidget#previewPane {
                     background-color: transparent;
@@ -462,7 +476,7 @@ class PreviewPane(QWidget):
             )
             return
         if self._active:
-            self.setStyleSheet(
+            _set_style_sheet(self, 
                 f"""
                 QWidget#previewPane {{
                     background-color: {self._theme.raised_bg.css};
@@ -472,7 +486,7 @@ class PreviewPane(QWidget):
                 """
             )
             return
-        self.setStyleSheet(
+        _set_style_sheet(self, 
             f"""
             QWidget#previewPane {{
                 background-color: {self._theme.panel_bg.css};
@@ -629,6 +643,10 @@ class FullScreenPreview(QDialog):
     FOCUS_ASSIST_STRENGTH_KEY = "preview/focus_assist_strength"
     FOCUS_ASSIST_DIM_BACKGROUND_KEY = "preview/focus_assist_dim_background"
     FOCUS_ASSIST_ENABLED_KEY = "preview/focus_assist_enabled"
+    PHOTOCRAFT_OVERLAY_REGION_KEY = OVERLAY_REGION_KEY
+    # PhotoCraft needs a frame or two to present a document it has just opened; the browsing
+    # picture stays up this long so the swap never shows a blank or half-drawn canvas.
+    NATIVE_LAYER_RELEASE_MS = 150
     FITS_STF_PRESET_KEY = "preview/fits_stf_preset"
     FILMSTRIP_THUMB_HEIGHT_KEY = "preview/filmstrip_thumb_height"
     FILMSTRIP_THUMB_RATIO_KEY = "preview/filmstrip_thumb_ratio"
@@ -641,6 +659,8 @@ class FullScreenPreview(QDialog):
     photoshop_requested = Signal(str)
     photocraft_edit_requested = Signal(str)
     photocraft_host_resized = Signal(int, int)
+    photocraft_prioritize_requested = Signal()
+    native_layer_painted = Signal(str, bool)
     winner_requested = Signal(str)
     reject_requested = Signal(str)
     keep_requested = Signal(str)
@@ -675,6 +695,10 @@ class FullScreenPreview(QDialog):
         self._photocraft_available = False
         self._photocraft_edit_active = False
         self.photocraft_close_guard = None
+        self._overlay_region = DEFAULT_REGION
+        self._photocraft_viewport: dict | None = None
+        self._native_layer_wanted = False
+        self._native_layer_release_token = 0
         self._winner_shortcut = QKeySequence("W")
         self._reject_shortcut = QKeySequence("X")
         # Mirrors grid.py's review-key registry (WI-3.2); brackets and the
@@ -982,6 +1006,11 @@ class FullScreenPreview(QDialog):
         self._photocraft_loading_label.setWordWrap(True)
         self._photocraft_loading_label.setStyleSheet("background-color: #17191b; color: #c4c8cc; padding: 24px;")
         self._photocraft_loading_label.hide()
+        # Browsing picture stacked above the embedded PhotoCraft window (see ui/native_image_layer.py).
+        self._native_layer = NativeImageLayer(self.panes_widget)
+        self._native_layer.clicked.connect(self.photocraft_prioritize_requested)
+        self._native_layer.painted.connect(self.native_layer_painted)
+        self._overlay_region = normalize_region(self._settings.value(self.PHOTOCRAFT_OVERLAY_REGION_KEY, DEFAULT_REGION, str))
         self.panes_widget.installEventFilter(self)
 
         self.analysis_panel = QFrame()
@@ -1668,9 +1697,10 @@ class FullScreenPreview(QDialog):
             selected = value <= rating
             star.setText("★" if selected else "☆")
             color = "#f2c858" if selected else "#858c95"
-            star.setStyleSheet(
+            _set_style_sheet(
+                star,
                 f"QPushButton {{ background: transparent; border: none; color: {color};"
-                f" font-size: {star_size}px; padding: 0px; }}"
+                f" font-size: {star_size}px; padding: 0px; }}",
             )
 
     def set_browse_context(
@@ -2217,8 +2247,93 @@ class FullScreenPreview(QDialog):
     def photocraft_edit_active(self) -> bool:
         return self._photocraft_edit_active
 
+    def overlay_region(self) -> str:
+        return self._overlay_region
+
+    def set_overlay_region(self, value: str) -> None:
+        region = normalize_region(value)
+        if region == self._overlay_region:
+            return
+        self._overlay_region = region
+        if region == REGION_OFF:
+            self._hide_native_layer()
+        else:
+            self._sync_native_layer_geometry()
+
+    def native_first_active(self) -> bool:
+        """Whether this popout paints photos itself in front of PhotoCraft while browsing."""
+        return self._uses_photocraft_editor() and self._overlay_region != REGION_OFF
+
+    def set_photocraft_viewport(self, viewport: dict | None) -> None:
+        """PhotoCraft's ``ui.viewport`` reply: where its image area is, for the ``canvas`` region."""
+        self._photocraft_viewport = viewport if isinstance(viewport, dict) else None
+        self._sync_native_layer_geometry()
+
+    def _native_layer_target_rect(self) -> QRect:
+        host = self.panes_widget.rect()
+        if not self._photocraft_edit_active:
+            return host  # PhotoCraft is not on screen yet: the picture is the whole viewer
+        return layer_rect(self._overlay_region, host, self._photocraft_viewport, self._photocraft_host.devicePixelRatioF())
+
+    def _sync_native_layer_geometry(self) -> None:
+        if self._native_layer.isVisible():
+            self._native_layer.place(self._native_layer_target_rect())
+
+    def _begin_native_layer(self) -> None:
+        """A photo was requested: its picture takes the screen now; PhotoCraft catches up behind it."""
+        self._native_layer_release_token += 1
+        self._native_layer_wanted = True
+        self._photocraft_host.setEnabled(False)
+        self._native_layer.set_image(QImage(), "", placeholder=True)
+        self._native_layer.present(self._native_layer_target_rect())
+
+    def show_browsing_picture(self) -> None:
+        """Put the focused photo's own picture back in front of the editor (it closed its document)."""
+        if self.native_first_active() and self._entries:
+            self._begin_native_layer()
+            self._render_pane(0)
+
+    def _sync_native_layer(self) -> None:
+        """Hand the focused pane's current picture to the layer (called as each image lands)."""
+        if not self._native_layer_wanted or not self.native_first_active() or not self._entries:
+            return
+        image = self._display_image_for_slot(0)
+        placeholder = bool(self._current_placeholder_flags and self._current_placeholder_flags[0])
+        if image.isNull():
+            # A single-photo view does not seed its pane from the grid thumbnail, but the browsing
+            # picture should never be blank while the real decode is on its way.
+            stand_in = self._entries[0].placeholder_image
+            if stand_in is not None and not stand_in.isNull():
+                image, placeholder = stand_in, True
+        self._native_layer.set_image(image, self._entries[0].source_path, placeholder=placeholder)
+        self._native_layer.present(self._native_layer_target_rect())
+
+    def photocraft_document_ready(self, path: str) -> None:
+        """PhotoCraft is now showing ``path``: let the browsing picture go once it has had time to draw."""
+        if not self._native_layer_wanted:
+            return
+        current = self._source_entries[0].record.path if self._source_entries else ""
+        if path and current and os.path.normcase(path) != os.path.normcase(current):
+            return
+        self._native_layer_wanted = False
+        self._native_layer_release_token += 1
+        token = self._native_layer_release_token
+        QTimer.singleShot(self.NATIVE_LAYER_RELEASE_MS, lambda: self._release_native_layer(token))
+
+    def _release_native_layer(self, token: int) -> None:
+        if token == self._native_layer_release_token and not self._native_layer_wanted:
+            self._hide_native_layer()
+
+    def _hide_native_layer(self) -> None:
+        self._native_layer_wanted = False
+        self._native_layer_release_token += 1
+        self._native_layer.hide()
+        self._native_layer.set_image(QImage(), "", placeholder=True)
+
     def set_photocraft_loading(self, loading: bool) -> None:
         self._photocraft_host.setEnabled(not loading)
+        if self._native_layer.isVisible() and loading:
+            return  # the browsing picture is the loading state
         if loading and not self._photocraft_edit_active:
             self._filmstrip.hide()
             self._photocraft_loading_label.setText("Opening PhotoCraft…")
@@ -2259,9 +2374,11 @@ class FullScreenPreview(QDialog):
         if self._photocraft_edit_active:
             self._photocraft_host.setGeometry(self.panes_widget.rect())
             self.photocraft_host_resized.emit(*self.photocraft_host_size())
+        self._sync_native_layer_geometry()
 
     def hide_photocraft_host(self) -> None:
         self._photocraft_edit_active = False
+        self._hide_native_layer()
         self._photocraft_host.hide()
         self._photocraft_loading_label.hide()
         self._filmstrip.show()
@@ -2290,7 +2407,9 @@ class FullScreenPreview(QDialog):
         start = time.perf_counter() if logger.enabled else 0.0
         was_visible = self.isVisible()
         self._source_entries = list(entries)
-        if self._uses_photocraft_editor():
+        if self.native_first_active():
+            self._begin_native_layer()
+        elif self._uses_photocraft_editor():
             # Cover the original viewer before the first window paint.
             self.set_photocraft_loading(True)
         if len(entries) < 2:
@@ -2934,7 +3053,7 @@ class FullScreenPreview(QDialog):
         if not self._entries:
             return
 
-        if self._uses_photocraft_editor():
+        if self._uses_photocraft_editor() and not self.native_first_active():
             # PhotoCraft owns decoding/rendering for this canvas. Starting the
             # old full-resolution renderer too adds work and a second preview.
             return
@@ -3042,6 +3161,7 @@ class FullScreenPreview(QDialog):
                     queued_at_perf=time.perf_counter() if logger.enabled else 0.0,
                 ),
                 self._result_queue,
+                is_current=lambda token=token: token == self._load_token,
             )
             if load_image:
                 self._inflight_preview_decodes[entry.source_path] = (
@@ -3228,7 +3348,7 @@ class FullScreenPreview(QDialog):
             )
 
     def preload_paths(self, paths: list[str], *, load_metadata: bool = True) -> None:
-        if self._uses_photocraft_editor():
+        if self._uses_photocraft_editor() and not self.native_first_active():
             return
         if not paths:
             return
@@ -3380,6 +3500,11 @@ class FullScreenPreview(QDialog):
             self._refresh_timer.setInterval(next_interval)
 
     def _render_pane(self, slot: int) -> None:
+        self._render_pane_into_view(slot)
+        if slot == 0 and self._native_layer_wanted:
+            self._sync_native_layer()
+
+    def _render_pane_into_view(self, slot: int) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         if not 0 <= slot < len(self._entries):
@@ -3842,10 +3967,10 @@ class FullScreenPreview(QDialog):
         if signature is None:
             signature = _file_signature(entry.source_path)
         if entry.label != "Before":
-            from .photocraft_bridge import rendered_preview_path
+            from .photocraft_bridge import saved_render_path
 
-            rendered = rendered_preview_path(entry.source_path)
-            saved = _file_signature(str(rendered)) if rendered.is_file() else None
+            rendered = saved_render_path(entry.source_path)
+            saved = _file_signature(str(rendered)) if rendered is not None else None
             if saved is not None:
                 original = signature or (0, 0)
                 return (original[0] ^ saved[0], original[1] + saved[1])
