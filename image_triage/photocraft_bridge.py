@@ -76,6 +76,90 @@ def rendered_preview_path(image_path: str) -> Path:
     return edit_root_for(path.parent) / (path.name + ".photocraft.png")
 
 
+RECIPE_VERSION = 1
+
+
+def file_signature(path: str) -> str | None:
+    """``"<bytes>:<mtime_ns>"`` for the file at ``path``, the identity the editor checks a prepared raw against."""
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return None
+    return f"{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def recipe_path(image_path: str) -> Path:
+    """Where a photo's Camera Raw recipe lives: beside its other edit data, keyed by the photo's name."""
+    path = Path(image_path)
+    return edit_root_for(path.parent) / (path.name + ".cameraraw.json")
+
+
+def load_recipe(image_path: str) -> dict | None:
+    """The photo's stored recipe, or ``None`` when it has none or the file is unusable.
+
+    A damaged file is set aside (``.bad``) rather than deleted, so a bad write can never make a photo
+    unopenable and never silently throws a user's adjustments away.
+    """
+    target = recipe_path(image_path)
+    try:
+        text = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        logging.getLogger(__name__).warning("Could not read the Camera Raw recipe %s: %s", target, error)
+        return None
+    try:
+        recipe = json.loads(text)
+        if isinstance(recipe, dict) and recipe.get("version") == RECIPE_VERSION and isinstance(recipe.get("cameraRaw"), dict):
+            return recipe
+    except ValueError:
+        pass
+    quarantine_recipe(image_path)
+    return None
+
+
+def quarantine_recipe(image_path: str) -> None:
+    target = recipe_path(image_path)
+    try:
+        os.replace(target, target.with_name(target.name + ".bad"))
+        logging.getLogger(__name__).warning("Set aside an unusable Camera Raw recipe: %s", target)
+    except OSError:
+        pass
+
+
+def display_render_path(image_path: str) -> Path:
+    """The screen-sized JPEG of the photo's edits that autostash writes beside the full-size render."""
+    path = Path(image_path)
+    return edit_root_for(path.parent) / (path.name + ".photocraft.display.jpg")
+
+
+# Stash writes the display JPEG first and the PNG when the whole save lands, which takes seconds and
+# up to ~25 s under disk contention. A display JPEG much older than the PNG predates it.
+DISPLAY_STALE_AFTER_S = 120.0
+
+
+def saved_render_path(image_path: str) -> Path | None:
+    """The cheapest picture of the photo's saved PhotoCraft edits, or ``None`` when it has none.
+
+    The screen-sized display JPEG decodes in milliseconds; the full-size PNG (hundreds of MB for a
+    45 MP photo) does not, so it is only the fallback for edits saved before display JPEGs existed.
+    """
+    png = rendered_preview_path(image_path)
+    display = display_render_path(image_path)
+    try:
+        shown = display.stat()
+    except OSError:
+        shown = None
+    try:
+        full = png.stat()
+    except OSError:
+        full = None
+    if shown is not None and shown.st_size > 0:
+        if full is None or shown.st_mtime >= full.st_mtime - DISPLAY_STALE_AFTER_S:
+            return display
+    return png if full is not None else None
+
+
 def materialize_for_photocraft(path: str, cache_dir: Path) -> str:
     """Decode an unsupported non-RAW file to a TIFF PhotoCraft can open directly.
 
@@ -128,7 +212,10 @@ class PhotoCraftControl:
         reply_line = self._file.readline()
         if not reply_line:
             raise PhotoCraftError("PhotoCraft control channel closed unexpectedly")
-        reply = json.loads(reply_line)
+        try:
+            reply = json.loads(reply_line)
+        except ValueError as error:
+            raise PhotoCraftError(f"PhotoCraft control sent an unreadable reply to {method!r}: {reply_line[:200]!r}") from error
         if reply.get("id") != req_id:
             raise PhotoCraftError(f"PhotoCraft control reply id mismatch: expected {req_id}, got {reply.get('id')}")
         return reply
@@ -142,12 +229,22 @@ class PhotoCraftControl:
             raise PhotoCraftError(f"PhotoCraft control {method!r} failed: {reply.get('error')}")
         return reply.get("result") or {}
 
-    def app_open(self, path: str, *, replace: bool = False, should_continue=None) -> dict:
+    def app_open(self, path: str, *, replace: bool = False, should_continue=None, camera_raw: dict | None = None) -> dict:
         params = {"path": _automation_path(path)}
         sensor = None
         if replace:
             params["replace"] = True
         source_suffix = Path(path).suffix.lower()
+        if camera_raw is not None and source_suffix in RAW_SUFFIXES and getattr(self, "camera_raw_supported", False):
+            # Camera Raw workspace: the editor develops the raw itself and opens it in Camera Raw.
+            if should_continue is not None and not should_continue():
+                raise PhotoCraftSuperseded(f"{path} is no longer the selected photo")
+            result = self.call("app.open", {**params, "cameraRaw": camera_raw})
+            if (result.get("cameraRaw") or {}).get("dialog"):
+                return result
+            # It could not be developed from sensor data (the editor opened the camera's embedded preview
+            # instead): take the route that retains the raw and its sensor adapter for this file.
+            return self.app_open(path, replace=True, should_continue=should_continue)
         raw_project = source_suffix == ".pcraft" and Path(Path(path).stem).suffix.lower() in RAW_SUFFIXES
         if source_suffix in RAW_SUFFIXES or raw_project:
             if not getattr(self, "raw_smart_supported", False):
@@ -181,6 +278,11 @@ class PhotoCraftControl:
                 from .photocraft_raw_source import trim_sensor_cache
                 trim_sensor_cache(sensor.parent, keep=sensor)
 
+    def app_prefetch(self, path: str, signature: str) -> dict:
+        """Ask the editor to develop ``path`` for Camera Raw in the background (``signature`` is the file's
+        size and modified time as ``file_signature`` gives them): opening it with that signature is then nearly instant."""
+        return self.call("app.prefetch", {"path": _automation_path(path), "signature": signature})
+
     def require_hosted_handoff(self) -> None:
         """Probe validation without opening a document or writing any files."""
         try:
@@ -193,6 +295,8 @@ class PhotoCraftControl:
             raise PhotoCraftCompatibilityError("This PhotoCraft build lacks persistent hosted document replacement")
         self.raw_smart_supported = capabilities.get("rawSmartObject", 0) >= 1
         self.raw_sensor_supported = capabilities.get("rawSensorAdapter", 0) >= 1
+        self.camera_raw_supported = capabilities.get("cameraRaw", 0) >= 1
+        self.camera_raw_prefetch_supported = capabilities.get("cameraRawPrefetch", 0) >= 1
         for method, validation in (
             ("app.stash", "stash requires path and preview"),
             ("app.bind", "bind requires an open document, .pcraft path and .png preview"),
@@ -300,6 +404,12 @@ class PhotoCraftProcess:
     fast: PhotoCraftControl | None = None
     fast_unavailable: bool = False
     preview_source: str | None = None
+    # Launched with ``--raw-workspace``: Camera Raw opens by itself on each document, inside the window.
+    camera_raw_first: bool = False
+    # A raw is open in its Camera Raw dialog and has not been left yet: once the dialog is over (the user
+    # pressed Open or Cancel, or we left the photo) the document's revision is taken as the baseline, so
+    # developing the photo is not mistaken for editing it.
+    camera_raw_rebaseline: bool = False
 
     def is_running(self) -> bool:
         return self.process.poll() is None
@@ -427,6 +537,8 @@ def launch_photocraft(
     write_root: str,
     executable: str | None = None,
     on_window=None,
+    extra_args: tuple[str, ...] = (),
+    camera_raw: dict | None = None,
 ) -> PhotoCraftProcess:
     exe = executable or detect_photocraft_executable()
     if not exe:
@@ -439,7 +551,10 @@ def launch_photocraft(
     last_error = None
     for candidate in candidates:
         try:
-            proc = _launch_photocraft_binary(initial_path, read_root=read_root, write_root=write_root, executable=candidate, on_window=on_window)
+            proc = _launch_photocraft_binary(
+                initial_path, read_root=read_root, write_root=write_root, executable=candidate, on_window=on_window,
+                extra_args=extra_args, camera_raw=camera_raw,
+            )
             proc.executable = candidate
             logging.getLogger(__name__).info("Hosted PhotoCraft executable: %s", candidate)
             return proc
@@ -451,6 +566,8 @@ def launch_photocraft(
 
 def _launch_photocraft_binary(
     initial_path: str, *, read_root: str, write_root: str, executable: str, on_window=None,
+    extra_args: tuple[str, ...] = (),
+    camera_raw: dict | None = None,
 ) -> PhotoCraftProcess:
     exe = executable
     started = time.perf_counter()
@@ -470,6 +587,7 @@ def _launch_photocraft_binary(
         "--control-token-file", str(token_file),
         "--automation-read-root", read_root,
         "--automation-write-root", write_root,
+        *extra_args,
     ]
     process = None
     control = None
@@ -501,7 +619,7 @@ def _launch_photocraft_binary(
         timings["shell_configured_ms"] = (time.perf_counter() - started) * 1000
         proc = PhotoCraftProcess(process=process, control=control, hwnd=hwnd, token_file=token_file,
                                 read_root=Path(read_root), write_root=Path(write_root), launch_timings=timings,
-                                port=port, token=token)
+                                port=port, token=token, camera_raw_first="--raw-workspace" in extra_args)
         if on_window is not None:
             on_window(proc)
         try:
@@ -511,7 +629,8 @@ def _launch_photocraft_binary(
         # Open through the control channel so readiness includes decoding;
         # command-line opens may still be running when the HWND first appears.
         control.read_root = Path(read_root)
-        control.app_open(relative)
+        opened = control.app_open(relative, camera_raw=camera_raw)
+        proc.camera_raw_rebaseline = bool((opened.get("cameraRaw") or {}).get("dialog"))
         timings["document_ready_ms"] = (time.perf_counter() - started) * 1000
     except BaseException:
         if control is not None:

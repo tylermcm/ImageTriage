@@ -63,6 +63,8 @@ class WorkflowSettingsResult:
     interface_size: str = "automatic"
     free_smooth_scroll_enabled: bool = False
     preview_preload_batch_size: int = 10
+    photocraft_overlay_region: str = "canvas"
+    photocraft_camera_raw_first: bool = False
     show_hidden_folders: bool = False
     single_drive_expansion_enabled: bool = True
     auto_advance_enabled: bool = True
@@ -303,6 +305,8 @@ class WorkflowSettingsDialog(QDialog):
         interface_size: str = "automatic",
         free_smooth_scroll_enabled: bool = False,
         preview_preload_batch_size: int = 10,
+        photocraft_overlay_region: str = "canvas",
+        photocraft_camera_raw_first: bool = False,
         show_hidden_folders: bool = False,
         single_drive_expansion_enabled: bool = True,
         auto_advance_enabled: bool = True,
@@ -651,6 +655,27 @@ class WorkflowSettingsDialog(QDialog):
             "Nearby images to preload while using the popout preview. Higher values can improve rapid navigation but use more CPU and RAM."
         ))
 
+        from .ui.native_image_layer import REGION_CHOICES, normalize_region
+
+        self.photocraft_overlay_combo = QComboBox()
+        self.photocraft_overlay_combo.setMinimumWidth(180)
+        for _label, _value in REGION_CHOICES:
+            self.photocraft_overlay_combo.addItem(_label, _value)
+        self.photocraft_overlay_combo.setCurrentIndex(
+            max(0, self.photocraft_overlay_combo.findData(normalize_region(photocraft_overlay_region)))
+        )
+        self.photocraft_overlay_combo.setToolTip(_settings_tooltip(
+            "While you move through photos, Image Triage paints each one itself in front of the embedded editor, "
+            "so browsing never waits on the editor. This chooses how much of the editor that picture covers."
+        ))
+
+        self.photocraft_camera_raw_first_checkbox = QCheckBox("Open photos in Camera Raw first (experimental)")
+        self.photocraft_camera_raw_first_checkbox.setChecked(photocraft_camera_raw_first)
+        self.photocraft_camera_raw_first_checkbox.setToolTip(_settings_tooltip(
+            "The embedded editor opens each photo in Camera Raw, inside its window; OK leaves the full editor on the same photo, "
+            "and closing that document returns to Camera Raw. Takes effect the next time the editor starts."
+        ))
+
         self.show_hidden_folders_checkbox = QCheckBox("Show hidden folders")
         self.show_hidden_folders_checkbox.setChecked(show_hidden_folders)
         self.show_hidden_folders_checkbox.setToolTip(_settings_tooltip(
@@ -695,6 +720,8 @@ class WorkflowSettingsDialog(QDialog):
         self._add_category_heading(interface_layout, "Navigation and preview")
         self._add_checkbox_row(interface_layout, "Scrolling", self.free_smooth_scroll_checkbox)
         self._add_form_row(interface_layout, "Preview preload", self.preview_preload_batch_spin)
+        self._add_form_row(interface_layout, "Editor browsing", self.photocraft_overlay_combo)
+        self._add_checkbox_row(interface_layout, "Camera Raw", self.photocraft_camera_raw_first_checkbox)
         self._add_checkbox_row(interface_layout, "Folders", self.show_hidden_folders_checkbox)
         self._add_category_heading(interface_layout, "Review flow")
         self._add_checkbox_row(interface_layout, "Review", self.auto_advance_checkbox)
@@ -1435,6 +1462,8 @@ class WorkflowSettingsDialog(QDialog):
             ),
             free_smooth_scroll_enabled=self.free_smooth_scroll_checkbox.isChecked(),
             preview_preload_batch_size=max(0, int(self.preview_preload_batch_spin.value())),
+            photocraft_overlay_region=str(self.photocraft_overlay_combo.currentData() or "canvas"),
+            photocraft_camera_raw_first=self.photocraft_camera_raw_first_checkbox.isChecked(),
             show_hidden_folders=self.show_hidden_folders_checkbox.isChecked(),
             single_drive_expansion_enabled=self.single_drive_expansion_checkbox.isChecked(),
             auto_advance_enabled=self.auto_advance_checkbox.isChecked(),

@@ -1,5 +1,23 @@
 # PhotoCraft handoff — remove-builtin-editor
 
+## Quick handoff - 2026-10-09 (browsing in front of the editor)
+
+Branch `camera-raw-first-nav` (Image Triage, from `a4caa3a`) and the fork's `codex/image-triage-integration`
+(from `ae56dc1`), both uncommitted. Design, measurements and verification:
+[camera_raw_first_browsing.md](camera_raw_first_browsing.md).
+
+* Fork: `app.stash` takes an optional `display` `.jpg` (screen-sized sRGB render, written first, failures
+  only warn); new read-only `ui.viewport`; `photocraft_io::export_display_jpeg`. Documented in
+  `docs/control-protocol.md`. Rollback binary kept as `target/release/photocraft-known-good-ae56dc1.exe`.
+* Image Triage: the popout paints each browsed photo itself above the embedded editor (setting
+  "Editor browsing": image area / whole editor / off); the editable document loads after a 300 ms dwell or
+  on a click; edited photos show from the display render; per-navigation timing
+  (`IMAGE_TRIAGE_NAV_TIMING`); faster navigation overall (see the measurements).
+* Upstream: the clone has only the user's fork as `origin`; no upstream remote was configured, so no upstream
+  merge was checked this session.
+* Camera Raw workspace: `photocraft --raw-workspace` + `ui.cameraRaw` (fork) and the setting "Open photos in Camera
+  Raw first (experimental)" (Image Triage, off by default). See camera_raw_first_browsing.md. Untested on RAW files.
+
 ## Quick handoff — 2026-10-09 (RAW swap speed)
 
 Pushed: ImageTriage `remove-builtin-editor` at `1c4b886`; photocraft fork

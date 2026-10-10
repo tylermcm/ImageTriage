@@ -181,11 +181,19 @@ def render_edited_image(
 
     try:
         source = Path(source_path)
-        from .photocraft_bridge import rendered_preview_path
+        from .photocraft_bridge import display_render_path, rendered_preview_path, saved_render_path
         from .imaging import load_image_for_display
 
-        saved_render = rendered_preview_path(str(source))
-        if saved_render.is_file():
+        wanted = max(target_size.width(), target_size.height()) if target_size is not None else 0
+        if 0 < wanted <= 2560:
+            # A thumbnail or screen-sized request: the small render is exactly as good and far cheaper to decode.
+            saved_render = saved_render_path(str(source))
+        else:
+            # Full size: the full-size render, or the display render when that is all the photo has.
+            saved_render = rendered_preview_path(str(source))
+            if not saved_render.is_file():
+                saved_render = display_render_path(str(source))
+        if saved_render is not None and saved_render.is_file():
             image, _error = load_image_for_display(str(saved_render), target_size or QSize(16384, 16384), prefer_embedded=False)
             return image if not image.isNull() else None
         session_path = edit_storage.resolve_session_for_read(source)

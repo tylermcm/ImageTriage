@@ -116,6 +116,16 @@ class SettingsController(QObject):
             )
         )
 
+    def _photocraft_camera_raw_first(self) -> bool:
+        from .ui.native_image_layer import CAMERA_RAW_FIRST_KEY
+
+        return bool(self._window._settings.value(CAMERA_RAW_FIRST_KEY, False, bool))
+
+    def _photocraft_overlay_region(self) -> str:
+        from .ui.native_image_layer import DEFAULT_REGION, SETTINGS_KEY, normalize_region
+
+        return normalize_region(self._window._settings.value(SETTINGS_KEY, DEFAULT_REGION, str))
+
     def push_review_shortcuts(self, surfaces, overrides) -> None:
         review_keys = effective_shortcuts(self._window._REVIEW_KEY_BINDING_IDS, overrides)
         winner_shortcut = self._window.actions.accept_selection.shortcut()
@@ -757,6 +767,8 @@ class SettingsController(QObject):
             interface_size=self._window._interface_size,
             free_smooth_scroll_enabled=self._window._free_smooth_scroll_enabled,
             preview_preload_batch_size=self._window._preview_preload_batch_size,
+            photocraft_overlay_region=self._photocraft_overlay_region(),
+            photocraft_camera_raw_first=self._photocraft_camera_raw_first(),
             show_hidden_folders=self._window._show_hidden_folders,
             single_drive_expansion_enabled=self._window._single_drive_expansion_enabled,
             auto_advance_enabled=self._window._auto_advance_enabled,
@@ -883,6 +895,13 @@ class SettingsController(QObject):
         self._window._settings.setValue(self._window.INTERFACE_SIZE_KEY, self._window._interface_size)
         self._window._settings.setValue(self._window.FREE_SMOOTH_SCROLL_KEY, self._window._free_smooth_scroll_enabled)
         self._window._settings.setValue(self._window.PREVIEW_PRELOAD_BATCH_SIZE_KEY, self._window._preview_preload_batch_size)
+        from .ui.native_image_layer import SETTINGS_KEY as overlay_key, normalize_region
+
+        new_overlay_region = normalize_region(result.photocraft_overlay_region)
+        self._window._settings.setValue(overlay_key, new_overlay_region)
+        from .ui.native_image_layer import CAMERA_RAW_FIRST_KEY
+
+        self._window._settings.setValue(CAMERA_RAW_FIRST_KEY, bool(result.photocraft_camera_raw_first))
         self._window._settings.setValue(self._window.SHOW_HIDDEN_FOLDERS_KEY, self._window._show_hidden_folders)
         self._window._settings.setValue(
             self._window.SINGLE_DRIVE_EXPANSION_KEY,
@@ -908,6 +927,7 @@ class SettingsController(QObject):
         if preview is not None:
             preview.set_auto_advance_enabled(self._window._auto_advance_enabled)
             preview.set_preload_batch_size(self._window._preview_preload_batch_size)
+            preview.set_overlay_region(new_overlay_region)
         # Apply through the resolution policy so the effective (coerced) style
         # and column thresholds land on the grid.
         self._window._display.apply_display_style_policy(show_warning=False)
