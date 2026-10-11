@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from bisect import bisect_left
@@ -25,7 +26,7 @@ from .scanner import normalized_path_key
 from .shell_actions import detect_photocraft_executable, open_in_photoshop
 from .ui import load_shortcut_overrides
 from .ui import preview_studio
-from .ui.native_image_layer import CAMERA_RAW_FIRST_KEY
+from .ui.native_image_layer import CAMERA_RAW_FIRST_KEY, EDITOR_PRESTART_KEY
 
 _log = logging.getLogger(__name__)
 
@@ -1115,6 +1116,11 @@ class PreviewController(QObject):
             self._photocraft = None
             proc = None
         launched = proc is None
+        if proc is not None and proc.idle_priority:
+            photocraft_bridge.raise_priority(proc)  # it was started in the background; now it is what the user is using
+        if proc is not None and proc.attached_parent is None:
+            # Started without a window to go in: put it in the popout now, before the first photo renders.
+            self._photocraft_window_ready.emit(generation, proc)
         camera_raw = self._camera_raw_spec(path, proc) if self._camera_raw_mode(path) else None
         if launched:
             directory = str(Path(path).parent)
@@ -1387,6 +1393,40 @@ class PreviewController(QObject):
         if proc is not None and proc.is_running():
             self._save_photocraft_sidecar_if_dirty(proc)
             self._wait_photocraft_stashes(proc)
+
+    def run_deferred_editor_start(self) -> None:
+        """After boot, once the window is up and idle: start the editor quietly, rooted at the folder being browsed and with no
+        photo open, so the first press of the editor key finds it running instead of starting it (~6 s). It runs at below-normal
+        priority (never slowing browsing) and idles at about 0% CPU and a couple of hundred MB. Not done when the setting is off,
+        no editor is installed, or there is no folder yet; a different folder later means a fresh start then, as before."""
+        if os.environ.get("IMAGE_TRIAGE_NO_EDITOR_PRESTART") or not user_settings().value(EDITOR_PRESTART_KEY, True, bool):
+            return
+        if not self._photocraft_executable or self._photocraft is not None:
+            return
+        directory = str(getattr(self._window, "_current_folder", "") or "")
+        if not directory:
+            return
+        self._photocraft_executor.submit(self._prestart_photocraft, directory)
+
+    def _prestart_photocraft(self, directory: str) -> None:
+        # On the editor's own worker, which also serialises it with a photo being opened: whichever comes first starts the process,
+        # and the other uses it. The file-system calls (a folder on an unplugged card can take many seconds) stay off the UI thread.
+        if self._photocraft is not None:
+            return
+        try:
+            if not os.path.isdir(directory):
+                return
+            write_root = edit_storage.ensure_edit_root(directory)
+            proc = photocraft_bridge.launch_photocraft(
+                None, read_root=directory, write_root=str(write_root), executable=self._photocraft_executable,
+                extra_args=self._photocraft_launch_args(), idle=True,
+            )
+        except Exception:
+            _log.warning("Could not start the editor in the background", exc_info=True)
+            return
+        self._photocraft = proc
+        if proc.executable:
+            self._photocraft_executable = proc.executable
 
     def leave_photocraft_editor(self) -> None:
         """The editor key was pressed again: the popout is browsing on its own again. What was adjusted on the photo the editor

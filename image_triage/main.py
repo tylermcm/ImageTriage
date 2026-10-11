@@ -106,6 +106,7 @@ def main() -> int:
         # Space press doesn't pay for it. A quick-view launch needs it at once
         # and builds it synchronously when it opens the image.
         window.schedule_deferred_preview_build()
+        window.schedule_deferred_editor_start()
     return app.exec()
 
 

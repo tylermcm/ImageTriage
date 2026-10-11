@@ -121,6 +121,12 @@ class SettingsController(QObject):
 
         return bool(self._window._settings.value(CAMERA_RAW_FIRST_KEY, False, bool))
 
+    def _photocraft_editor_prestart(self) -> bool:
+        from .app_identity import user_settings
+        from .ui.native_image_layer import EDITOR_PRESTART_KEY
+
+        return bool(user_settings().value(EDITOR_PRESTART_KEY, True, bool))
+
     def _photocraft_editor_on_demand(self) -> bool:
         from .app_identity import user_settings
         from .ui.native_image_layer import EDITOR_ON_DEMAND_KEY
@@ -776,6 +782,7 @@ class SettingsController(QObject):
             photocraft_overlay_region=self._photocraft_overlay_region(),
             photocraft_camera_raw_first=self._photocraft_camera_raw_first(),
             photocraft_editor_on_demand=self._photocraft_editor_on_demand(),
+            photocraft_editor_prestart=self._photocraft_editor_prestart(),
             show_hidden_folders=self._window._show_hidden_folders,
             single_drive_expansion_enabled=self._window._single_drive_expansion_enabled,
             auto_advance_enabled=self._window._auto_advance_enabled,
@@ -913,6 +920,9 @@ class SettingsController(QObject):
         from .ui.native_image_layer import EDITOR_ON_DEMAND_KEY
 
         user_settings().setValue(EDITOR_ON_DEMAND_KEY, bool(result.photocraft_editor_on_demand))
+        from .ui.native_image_layer import EDITOR_PRESTART_KEY
+
+        user_settings().setValue(EDITOR_PRESTART_KEY, bool(result.photocraft_editor_prestart))
         self._window._settings.setValue(self._window.SHOW_HIDDEN_FOLDERS_KEY, self._window._show_hidden_folders)
         self._window._settings.setValue(
             self._window.SINGLE_DRIVE_EXPANSION_KEY,

@@ -11,6 +11,15 @@
 > E again to go back ~60 ms, the next E shows the photo at once and the dialog a few seconds later (≈1.7 s for a photo the editor
 > has not prepared; this harness grabbed the screen, which slows it). Turn the setting off for the old automatic behaviour.
 > The key is handled by the popout, so after clicking inside the editor click the filmstrip (or the popout) before pressing E.
+>
+> **Background start (setting `preview/editor_prestart`, default on).** A few seconds after Image Triage boots (once the window is
+> up and idle, `window.schedule_deferred_editor_start`), the editor is started with no photo open, rooted at the folder being
+> browsed, at below-normal priority (`launch_photocraft(None, idle=True)`): about 350 MB and 0% CPU while idle. The first press of E
+> then finds it running: it goes to normal priority (`raise_priority`), takes its window and opens the photo: the dialog came up
+> 3.6 s after the key instead of 6.3 s (no photo was prepared; the editor's own develop of the photo is most of what is left).
+> A photo in another folder than the one the editor was started for still means a fresh start (the editor's file access is
+> fixed at launch). The start creates the hidden `.image_triage_edits` folder in the browsed folder, which the editor requires
+> to exist; set `IMAGE_TRIAGE_NO_EDITOR_PRESTART=1` or turn the setting off to start the editor only on the first E.
 
 Status: phase 1 (the fast browsing layer) is implemented on branch `camera-raw-first-nav`, unit-tested,
 timed in isolation and run through the live editor check; it has **not** been exercised against real RAW
