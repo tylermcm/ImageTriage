@@ -407,6 +407,9 @@ class PhotoCraftProcess:
     preview_source: str | None = None
     # Launched with ``--raw-workspace``: Camera Raw opens by itself on each document, inside the window.
     camera_raw_first: bool = False
+    # Started in the background with no photo open, at below-normal priority so that starting it never slows what the user is
+    # doing; `raise_priority` puts it back to normal when it is first used.
+    idle_priority: bool = False
     # A raw is open in its Camera Raw dialog and has not been left yet: once the dialog is over (the user
     # pressed Open or Cancel, or we left the photo) the document's revision is taken as the baseline, so
     # developing the photo is not mistaken for editing it.
@@ -536,7 +539,7 @@ def _find_window_for_pid(pid: int, *, timeout: float = 10.0) -> int | None:
 
 
 def launch_photocraft(
-    initial_path: str,
+    initial_path: str | None,
     *,
     read_root: str,
     write_root: str,
@@ -544,7 +547,10 @@ def launch_photocraft(
     on_window=None,
     extra_args: tuple[str, ...] = (),
     camera_raw: dict | None = None,
+    idle: bool = False,
 ) -> PhotoCraftProcess:
+    """Starts PhotoCraft rooted at ``read_root`` / ``write_root`` and opens ``initial_path`` in it. Without a path (``idle``
+    start-ups) nothing is opened: the editor waits, hidden, at below-normal priority, for the first photo."""
     exe = executable or detect_photocraft_executable()
     if not exe:
         raise PhotoCraftError("PhotoCraft executable not found")
@@ -558,7 +564,7 @@ def launch_photocraft(
         try:
             proc = _launch_photocraft_binary(
                 initial_path, read_root=read_root, write_root=write_root, executable=candidate, on_window=on_window,
-                extra_args=extra_args, camera_raw=camera_raw,
+                extra_args=extra_args, camera_raw=camera_raw, idle=idle,
             )
             proc.executable = candidate
             logging.getLogger(__name__).info("Hosted PhotoCraft executable: %s", candidate)
@@ -570,9 +576,10 @@ def launch_photocraft(
 
 
 def _launch_photocraft_binary(
-    initial_path: str, *, read_root: str, write_root: str, executable: str, on_window=None,
+    initial_path: str | None, *, read_root: str, write_root: str, executable: str, on_window=None,
     extra_args: tuple[str, ...] = (),
     camera_raw: dict | None = None,
+    idle: bool = False,
 ) -> PhotoCraftProcess:
     exe = executable
     started = time.perf_counter()
@@ -607,7 +614,7 @@ def _launch_photocraft_binary(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | (_BELOW_NORMAL_PRIORITY_CLASS if idle else 0)) if os.name == "nt" else 0,
         )
         timings["spawn_ms"] = (time.perf_counter() - started) * 1000
         control = _connect_with_retry(port, token, process)
@@ -624,7 +631,10 @@ def _launch_photocraft_binary(
         timings["shell_configured_ms"] = (time.perf_counter() - started) * 1000
         proc = PhotoCraftProcess(process=process, control=control, hwnd=hwnd, token_file=token_file,
                                 read_root=Path(read_root), write_root=Path(write_root), launch_timings=timings,
-                                port=port, token=token, camera_raw_first="--raw-workspace" in extra_args)
+                                port=port, token=token, camera_raw_first="--raw-workspace" in extra_args, idle_priority=idle)
+        control.read_root = Path(read_root)
+        if initial_path is None:
+            return proc
         if on_window is not None:
             on_window(proc)
         try:
@@ -633,7 +643,6 @@ def _launch_photocraft_binary(
             raise PhotoCraftError("Initial photo is outside the automation read root") from error
         # Open through the control channel so readiness includes decoding;
         # command-line opens may still be running when the HWND first appears.
-        control.read_root = Path(read_root)
         opened = control.app_open(relative, camera_raw=camera_raw)
         proc.camera_raw_rebaseline = bool((opened.get("cameraRaw") or {}).get("dialog"))
         timings["document_ready_ms"] = (time.perf_counter() - started) * 1000
@@ -651,6 +660,32 @@ def _launch_photocraft_binary(
         raise
 
     return proc
+
+
+_BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+_NORMAL_PRIORITY_CLASS = 0x00000020
+_PROCESS_SET_INFORMATION = 0x0200
+
+
+def raise_priority(proc: PhotoCraftProcess) -> None:
+    """Back to normal priority for an editor that was started in the background: from here on it is what the user is using."""
+    if not proc.idle_priority:
+        return
+    proc.idle_priority = False
+    if os.name != "nt":
+        return
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(_PROCESS_SET_INFORMATION, False, proc.process.pid)
+    if not handle:
+        return
+    try:
+        kernel32.SetPriorityClass(handle, _NORMAL_PRIORITY_CLASS)
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def embed_in_widget(photocraft_hwnd: int, parent_hwnd: int) -> None:

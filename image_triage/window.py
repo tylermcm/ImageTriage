@@ -857,6 +857,7 @@ class MainWindow(QMainWindow):
         # property) instead of here. Must exist before anything can reach it.
         self._preview: FullScreenPreview | None = None
         self._deferred_preview_timer: QTimer | None = None
+        self._deferred_editor_timer: QTimer | None = None
         # The open folder / scope / session state and the extracted controllers. Created before the rest of
         # construction because the shim attributes below (``_current_folder`` ...) read and write the session.
         self._folder_session = FolderSession(self)
@@ -2090,6 +2091,16 @@ class MainWindow(QMainWindow):
         timer.setInterval(max(0, int(delay_ms)))
         timer.timeout.connect(self._preview_ctl.run_deferred_preview_build)
         self._deferred_preview_timer = timer
+        timer.start()
+
+    def schedule_deferred_editor_start(self, delay_ms: int = 4000) -> None:
+        """Start the editor in the background once the window has been up and idle for a few seconds (see
+        `PreviewController.run_deferred_editor_start`). Opt-in like the popout build: only the app entry point calls it."""
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(max(0, int(delay_ms)))
+        timer.timeout.connect(self._preview_ctl.run_deferred_editor_start)
+        self._deferred_editor_timer = timer
         timer.start()
 
     APP_SEARCH_MAX_WIDTH = 430

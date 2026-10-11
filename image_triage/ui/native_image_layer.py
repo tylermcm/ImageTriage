@@ -31,6 +31,8 @@ SETTINGS_KEY = "preview/photocraft_overlay_region"
 CAMERA_RAW_FIRST_KEY = "preview/photocraft_camera_raw_first"
 # The editor opens only when its key is pressed (default), instead of following every photo that is browsed.
 EDITOR_ON_DEMAND_KEY = "preview/editor_on_demand"
+# The editor is started quietly in the background after Image Triage boots (default), so the first editor key finds it running.
+EDITOR_PRESTART_KEY = "preview/editor_prestart"
 
 # (label, value) for the Settings dialog, in the order they are offered.
 REGION_CHOICES = (
