@@ -282,6 +282,11 @@ What the host sees:
   while the dialog is open is the dialog's own continuation (#2988), and that is how the live checks adjust it:
   `ui.menu.invoke {id: "filter.cameraRaw", params: {ui: {set: {...}}}}`. The fork used to have its own
   `ui.cameraRaw {set}` for this; it was removed to stay with upstream's route.
+- **Open's first canvas draw used to freeze the editor for ~14 s** (it built the GPU compositor, whose shaders the driver
+  compiles, on the UI thread; every control request timed out meanwhile). The editor now builds it on a worker thread in the
+  workspace and draws on the CPU until it is ready: an Open pressed right after the first photo's dialog came up answered its
+  first request in ~0.2 s. Not built ahead of time on purpose: measured while browsing, an overlapping build slowed prepared
+  swaps 165 -> 189 ms and unprepared ones 1.72 -> 1.99 s. Still blocking: the ~2.4 s CPU redraw of the full 45 MP photo.
 - A control connection carries one request at a time. The controller keeps one worker per connection; a script polling
   on the second connection from its own thread must use a connection of its own (the live check now does). An unreadable
   reply now raises an error that quotes what the editor sent.
