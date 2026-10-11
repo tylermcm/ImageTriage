@@ -20,7 +20,11 @@ this day is on the fork's `scratch/upstream-merge-2026-10-11` until the user fas
   shader compile took ~14 s on the UI thread on this laptop) and the canvas draws on the CPU meanwhile. An Open pressed as
   soon as the first photo's dialog is up now gets its first control answer after ~0.2 s instead of 14 s. The compositor is
   deliberately not built ahead of time while browsing: that slowed every swap it overlapped (prepared 165 -> 189 ms,
-  unprepared 1.72 -> 1.99 s). The full 45 MP CPU redraw after Open (~2.4 s) still blocks the editor that long.
+  unprepared 1.72 -> 1.99 s). The full 45 MP CPU redraw after Open (~2.4 s) used to block the editor that long; it now runs
+  on a worker thread and the photo fills in from the top (slowest control answer after Open: 2.35 s -> 0.22-0.50 s).
+* Still open: the hosted autosave (`app.stash`) of an edited 45 MP photo leaves the editor unresponsive for ~9-12 s, starting
+  ~4 s after the edit, with or without the GPU compositor. It encodes the project, a full-size PNG preview and the display JPEG
+  at once across every core; one rayon thread cuts the stall to ~1.9 s but slows the edit and the save a lot.
 * Checks that need the host's Qt event loop pumped while they wait (an embedded editor shares its parent's input
   queue): `scripts/check_camera_raw_recipe.py` now polls with short timeouts for that reason.
 
