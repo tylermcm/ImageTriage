@@ -14,6 +14,14 @@ The editor also starts quietly in the background a few seconds after boot (`prev
 below-normal priority, rooted at the browsed folder, which needs its hidden `.image_triage_edits` folder to exist), so the first E
 takes ~3.6 s instead of ~6.3 s. `IMAGE_TRIAGE_NO_EDITOR_PRESTART=1` turns it off.
 
+**The editor's control server drops a connection that has been quiet for 30 s** (`IO_TIMEOUT` in PhotoCraft's `automation` crate; its own
+client reconnects after 25 s). The background editor sits idle for minutes, so the first E after a wait failed with "PhotoCraft could not
+open this photo ... `app.open` failed: [WinError 10053] An established connection was aborted" (seen on the owner's machine 5 minutes
+after boot; reproduced with a 75 s wait). `PhotoCraftControl` now replaces a connection that has been quiet for `IDLE_RECONNECT_S`
+(20 s) with a fresh one (same token) before the next request, for the main connection and the cancel connection alike; `quit()` does
+the same with its short timeouts. The editor's stderr is still discarded (`subprocess.DEVNULL`), so a real crash of the editor leaves
+no trace beyond the exit code.
+
 ## Quick handoff - 2026-10-11 (Camera Raw browsing without repaints; upstream merged)
 
 Branch `camera-raw-first-nav` (Image Triage) and the fork's `codex/image-triage-integration`; the upstream merge of
