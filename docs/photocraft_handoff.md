@@ -10,6 +10,10 @@ timer for UI-thread pauses): 20 presses 150 ms apart show 18-20 photos with 0.7-
 card) cost a lot (stubbing them cut the stalls from 2.3 s to 0.7 s); they are still done on the UI thread. See
 camera_raw_first_browsing.md.
 
+The editor also starts quietly in the background a few seconds after boot (`preview/editor_prestart`, default on; no photo open,
+below-normal priority, rooted at the browsed folder, which needs its hidden `.image_triage_edits` folder to exist), so the first E
+takes ~3.6 s instead of ~6.3 s. `IMAGE_TRIAGE_NO_EDITOR_PRESTART=1` turns it off.
+
 ## Quick handoff - 2026-10-11 (Camera Raw browsing without repaints; upstream merged)
 
 Branch `camera-raw-first-nav` (Image Triage) and the fork's `codex/image-triage-integration`; the upstream merge of
