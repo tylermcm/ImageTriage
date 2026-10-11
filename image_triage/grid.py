@@ -1204,13 +1204,16 @@ class ThumbnailGridView(QAbstractScrollArea):
             return self._items[self._current_index]
         return None
 
-    def thumbnail_for(self, index: int) -> QImage | None:
+    def thumbnail_for(self, index: int, edit_state: tuple[int, int] | None = None) -> QImage | None:
+        """``edit_state`` is ``edit_state_for`` of the photo at ``index``, if the caller has it (finding it takes file lookups)."""
         if not 0 <= index < len(self._items):
             return None
-        if self._items[index].is_folder:
+        item = self._items[index]
+        if item.is_folder:
             return None
         target = self._thumbnail_target_size()
-        return self.thumbnail_manager.get_cached(self._current_variant(self._items[index]), target)
+        variant = self._current_variant(item)
+        return self.thumbnail_manager.get_cached(variant, target, edit_state if variant.path == item.path else None)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
