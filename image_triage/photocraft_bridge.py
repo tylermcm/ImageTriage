@@ -182,19 +182,43 @@ def materialize_for_photocraft(path: str, cache_dir: Path) -> str:
     return str(out_path)
 
 
+# PhotoCraft's control server closes a connection that has sent nothing for 30 s (``IO_TIMEOUT`` in its automation crate), and its own
+# client reconnects after 25 s of quiet. A request sent down a connection the editor has closed fails with "[WinError 10053] An
+# established connection was aborted", which is what the first E showed when the editor had been waiting in the background.
+IDLE_RECONNECT_S = 20.0
+
+
 class PhotoCraftControl:
-    """Blocking JSON-lines client for PhotoCraft's control channel."""
+    """Blocking JSON-lines client for PhotoCraft's control channel. A connection that has been quiet for ``IDLE_RECONNECT_S`` is
+    replaced by a fresh one (same token, same editor) before the next request, so a wait of any length is harmless."""
 
     def __init__(self, port: int, token: str, *, host: str = "127.0.0.1", timeout: float = 120.0) -> None:
-        self._sock = socket.create_connection((host, port), timeout=min(timeout, 2.0))
+        self._address = (host, port)
+        self._token = token
+        self._timeout = timeout
+        self._next_id = 1
+        self._open(timeout)
+
+    def _open(self, timeout: float) -> None:
+        self._sock = socket.create_connection(self._address, timeout=min(timeout, 2.0))
         self._sock.settimeout(timeout)
         self._file = self._sock.makefile("rwb")
-        self._next_id = 1
         try:
-            self._authenticate(token)
+            self._authenticate(self._token)
         except BaseException:
             self.close()
             raise
+        self._last_used = time.monotonic()
+
+    def _reconnect_if_quiet(self, timeout: float | None = None) -> None:
+        last_used = getattr(self, "_last_used", None)
+        if last_used is None or time.monotonic() - last_used <= IDLE_RECONNECT_S:
+            return
+        try:
+            self.close()
+        except OSError:
+            pass  # the editor closed its end already
+        self._open(self._timeout if timeout is None else timeout)
 
     def _authenticate(self, token: str) -> None:
         reply = self._request("auth", {"token": token})
@@ -202,6 +226,8 @@ class PhotoCraftControl:
             raise PhotoCraftError(f"PhotoCraft control auth failed: {reply.get('error')}")
 
     def _request(self, method: str, params: dict | None = None) -> dict:
+        if method != "auth":
+            self._reconnect_if_quiet()
         req_id = self._next_id
         self._next_id += 1
         payload: dict = {"id": req_id, "method": method}
@@ -218,6 +244,7 @@ class PhotoCraftControl:
             raise PhotoCraftError(f"PhotoCraft control sent an unreadable reply to {method!r}: {reply_line[:200]!r}") from error
         if reply.get("id") != req_id:
             raise PhotoCraftError(f"PhotoCraft control reply id mismatch: expected {req_id}, got {reply.get('id')}")
+        self._last_used = time.monotonic()
         return reply
 
     def call(self, method: str, params: dict | None = None) -> dict:
@@ -360,6 +387,9 @@ class PhotoCraftControl:
 
     def quit(self) -> None:
         try:
+            # Short timeouts: an editor that has stopped answering must not hold up closing. A connection it has dropped is replaced
+            # by one with the same short limit.
+            self._reconnect_if_quiet(timeout=2.0)
             self._sock.settimeout(2.0)
             self.call("app.quit")
         except (PhotoCraftError, OSError):
