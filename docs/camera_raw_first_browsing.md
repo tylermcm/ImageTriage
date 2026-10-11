@@ -278,8 +278,10 @@ What the host sees:
 
 - **Menu commands are refused while Camera Raw is open** (upstream #1671: "menu command is unavailable while a modal
   dialog is open"), which in the Camera Raw workspace is nearly always. The host's fit-on-screen call therefore uses
-  `engine.execute {command: "view.fitOnScreen"}` instead of `ui.menu.invoke`, and the live checks adjust the open dialog
-  with `ui.cameraRaw {set: {...}}` (new in the fork) instead of `ui.menu.invoke filter.cameraRaw {ui: {set}}`.
+  `engine.execute {command: "view.fitOnScreen"}` instead of `ui.menu.invoke`. The one menu request upstream allows
+  while the dialog is open is the dialog's own continuation (#2988), and that is how the live checks adjust it:
+  `ui.menu.invoke {id: "filter.cameraRaw", params: {ui: {set: {...}}}}`. The fork used to have its own
+  `ui.cameraRaw {set}` for this; it was removed to stay with upstream's route.
 - A control connection carries one request at a time. The controller keeps one worker per connection; a script polling
   on the second connection from its own thread must use a connection of its own (the live check now does). An unreadable
   reply now raises an error that quotes what the editor sent.

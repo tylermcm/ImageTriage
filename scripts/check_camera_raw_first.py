@@ -123,7 +123,7 @@ def main() -> None:
         fast().call("ui.screenshot", {"path": "1-camera-raw.png", "focus": False})
 
         # Adjust, then move on: the adjustment must be kept.
-        fast().call("ui.cameraRaw", {"set": {"exposure": 2.0}})
+        fast().call("ui.menu.invoke", {"id": "filter.cameraRaw", "params": {"ui": {"set": {"exposure": 2.0}}}})
         assert camera_raw()["changed"] is True
         results["second_photo_in_camera_raw_ms"] = select(1)
         assert len(documents()) == 1, "the first photo's document was not replaced"

@@ -163,6 +163,35 @@ def test_the_browsing_picture_waits_for_camera_raw_to_lay_out(controller, tmp_pa
     assert up == ["frame.jpg"]
 
 
+def test_the_loading_frame_does_not_count_as_camera_raw_being_up(controller, tmp_path, monkeypatch):
+    """While a photo develops the editor shows Camera Raw's frame and reports its view with ``loading``; the picture must stay."""
+    proc = process(tmp_path)
+    view = {"x": 1, "y": 2, "width": 3, "height": 4}
+    views = iter([
+        {"cameraRaw": {"open": False, "loading": True, "view": view, "preview": view}},
+        {"cameraRaw": {"open": False, "loading": True, "view": view, "preview": view}},
+        {"cameraRaw": {"open": True, "view": view, "preview": view}},
+    ])
+    calls = []
+    proc.control.call.side_effect = lambda *a, **k: calls.append(1) or next(views)
+    monkeypatch.setattr(controller, "CAMERA_RAW_POLL_S", 0.0)
+    controller._photocraft_generation = 4
+    seen = []
+    controller._photocraft_viewport_ready.connect(lambda g, v: seen.append(v))
+    controller._refresh_photocraft_viewport(proc, 4, "frame.jpg")
+    assert len(calls) == 3, "kept asking until the dialog itself had a view"
+    assert seen and seen[0]["cameraRaw"]["open"] is True
+
+
+def test_only_a_real_dialog_view_is_ready():
+    ready = PreviewController._dialog_view_ready
+    view = {"x": 1, "y": 2, "width": 3, "height": 4}
+    assert not ready({}) and not ready({"cameraRaw": None})
+    assert not ready({"cameraRaw": {"open": False, "loading": True, "view": view}})
+    assert not ready({"cameraRaw": {"open": True, "view": None}})
+    assert ready({"cameraRaw": {"open": True, "view": view}})
+
+
 def test_the_wait_for_camera_raw_is_bounded(controller, tmp_path, monkeypatch):
     proc = process(tmp_path)
     proc.control.call.return_value = {"cameraRaw": None}

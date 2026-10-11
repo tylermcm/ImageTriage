@@ -142,6 +142,15 @@ def test_layer_reports_what_it_painted_and_whether_it_was_a_stand_in(qapp):
     assert painted == [("a.jpg", True), ("a.jpg", False)]
 
 
+def test_the_pictures_bars_take_the_editors_canvas_colour(preview):
+    palette = {"theme": "pro", "panel": "#202020", "dock": "#181818", "accent": "#3a86ff", "text": "#eeeeee"}
+    preview.set_photocraft_palette({**palette, "canvas": "#123456"})
+    assert preview._native_layer._background == QColor("#123456")
+    preview.set_photocraft_palette({**palette, "canvas": "not a colour"})
+    preview.set_photocraft_palette(palette)  # an older editor does not report one
+    assert preview._native_layer._background == QColor("#123456"), "an unusable or missing colour leaves it as it was"
+
+
 def test_clicking_the_layer_is_reported(qapp):
     layer = NativeImageLayer()
     layer.resize(50, 50)
@@ -351,6 +360,46 @@ def test_a_browsed_photo_opens_no_preview_document_and_waits_for_the_dwell(contr
     assert raws == [photo]
 
 
+def test_a_photo_the_editor_has_ready_loads_at_once_without_the_dwell(controller, tmp_path, monkeypatch):
+    _, raws = native_controller(controller, tmp_path, monkeypatch)
+    proc = controller._photocraft
+    proc.camera_raw_first = True
+    photo = str(tmp_path / "a.NEF")
+    proc.prefetch_ready = normalized_path_key(photo)
+    controller.handle_photocraft_edit_requested(photo)
+    drain(controller)
+    assert raws == [photo], "swapping to a photo that is ready costs the editor next to nothing: nothing to hold back for"
+    assert not controller._photocraft_dwell_timer.isActive()
+    assert proc.prefetch_ready is None, "used up: the editor's slot is empty now"
+
+
+def test_a_photo_that_is_not_the_one_ready_still_waits_for_the_dwell(controller, tmp_path, monkeypatch):
+    _, raws = native_controller(controller, tmp_path, monkeypatch)
+    proc = controller._photocraft
+    proc.camera_raw_first = True
+    proc.prefetch_ready = normalized_path_key(str(tmp_path / "other.NEF"))
+    controller.handle_photocraft_edit_requested(str(tmp_path / "a.NEF"))
+    drain(controller)
+    assert raws == [] and controller._photocraft_dwell_timer.isActive()
+    assert proc.prefetch_ready == normalized_path_key(str(tmp_path / "other.NEF")), "the ready photo is still ready"
+
+
+def test_only_the_photo_the_editor_reports_ready_counts_as_ready(tmp_path):
+    proc = fast_proc(tmp_path)
+    proc.prefetch_sent = ("b.NEF", "KEY-B")
+    PreviewController._note_prefetch(proc, {"prefetched": "b.NEF"})
+    assert proc.prefetch_ready == "KEY-B"
+    PreviewController._note_prefetch(proc, {"prefetched": None})
+    assert proc.prefetch_ready is None, "the editor's slot was emptied"
+    PreviewController._note_prefetch(proc, {"prefetched": "elsewhere.NEF"})
+    assert proc.prefetch_ready is None
+    PreviewController._note_prefetch(proc, {})  # an older editor does not say
+    assert proc.prefetch_ready is None
+    proc.prefetch_sent = None
+    PreviewController._note_prefetch(proc, {"prefetched": "b.NEF"})
+    assert proc.prefetch_ready is None
+
+
 def test_moving_on_loads_only_the_photo_that_rested(controller, tmp_path, monkeypatch):
     _, raws = native_controller(controller, tmp_path, monkeypatch)
     for name in ("a", "b", "c"):
@@ -481,3 +530,118 @@ def test_autostash_also_asks_for_the_display_render(controller, tmp_path):
     (params,) = [call.args[1] for call in control.call.call_args_list if call.args[0] == "app.stash"]
     assert params["display"] == "frame.jpg.photocraft.display.jpg"
     assert params["wait"] is False
+
+
+# --- the editor is resized while a picture is laid over it ---------------------------------------------
+
+def test_a_viewport_measured_at_another_window_size_is_not_used(preview, photo, qapp):
+    """Hiding the filmstrip resizes the editor and its dialog lays itself out again: a picture placed by the old
+    rectangle leaves the dialog's own, differently sized photo showing around it."""
+    preview.show_entries([entry(photo)])
+    preview.showNormal()
+    preview.resize(1600, 1000)
+    qapp.processEvents()
+    preview._photocraft_edit_active = True
+    preview._update_photocraft_host_geometry()
+    ratio = preview._photocraft_host.devicePixelRatioF()
+
+    def viewport_for_host():
+        host = preview.panes_widget.rect()
+        width, height = preview.photocraft_host_size()
+        view = {"x": host.width() // 8 * ratio, "y": host.height() // 10 * ratio,
+                "width": host.width() // 2 * ratio, "height": host.height() // 2 * ratio}
+        return host, {"window": {"width": width, "height": height}, "cameraRaw": {"open": True, "view": view}}
+
+    host, viewport = viewport_for_host()
+    preview.set_photocraft_viewport(viewport)
+    preview._native_layer.present(preview._native_layer_target_rect())
+    assert preview._native_layer.geometry() == layer_rect("canvas", host, viewport, ratio) != host
+
+    preview.resize(1600, 1250)  # the filmstrip went away: the editor window is taller
+    qapp.processEvents()
+    preview._update_photocraft_host_geometry()
+    grown = preview.panes_widget.rect()
+    assert grown.height() > host.height()
+    assert preview._native_layer.geometry() == grown, "until the editor reports at its new size the picture covers the window"
+
+    grown, fresh = viewport_for_host()
+    preview.set_photocraft_viewport(fresh)
+    assert preview._native_layer.geometry() == layer_rect("canvas", grown, fresh, ratio) != grown
+
+
+def test_a_viewport_without_a_window_size_is_still_used(preview, photo, qapp):
+    preview.show_entries([entry(photo)])
+    preview.showNormal()
+    preview.resize(1600, 1000)
+    qapp.processEvents()
+    preview._photocraft_edit_active = True
+    preview._update_photocraft_host_geometry()
+    host = preview.panes_widget.rect()
+    ratio = preview._photocraft_host.devicePixelRatioF()
+    canvas = {"x": host.width() // 4 * ratio, "y": host.height() // 8 * ratio,
+              "width": host.width() // 2 * ratio, "height": host.height() // 2 * ratio}
+    preview.set_photocraft_viewport({"canvas": canvas})
+    assert preview._native_layer.geometry() == layer_rect("canvas", host, {"canvas": canvas}, ratio) != host
+
+
+def drawn(width, height, view_height):
+    return {"window": {"width": width, "height": height}, "canvas": {"x": 0, "y": 0, "width": width, "height": height},
+            "cameraRaw": {"open": True, "view": {"x": 10, "y": 40, "width": width - 300, "height": view_height}}}
+
+
+def test_resizing_the_editor_asks_where_its_image_area_is_now(controller, tmp_path, monkeypatch, qapp):
+    proc = fast_proc(tmp_path)
+    controller._photocraft = proc
+    preview = SimpleNamespace(set_photocraft_viewport=Mock())
+    controller._window = SimpleNamespace(_preview=preview)
+    resized = Mock()
+    monkeypatch.setattr(bridge, "resize_embedded", resized)
+    proc.fast.call.return_value = drawn(800, 600, 500)
+
+    controller.resize_photocraft(800, 600)
+    resized.assert_called_once_with(123, 800, 600)
+    assert controller._photocraft_resize_timer.isActive(), "asked once the resizing has stopped, not on every step of a drag"
+    controller._photocraft_resize_timer.stop()
+    controller._photocraft_resize_elapsed()
+    drain(controller)
+    qapp.processEvents()
+    proc.fast.call.assert_called_with("ui.viewport")
+    preview.set_photocraft_viewport.assert_called_once_with(drawn(800, 600, 500))
+
+
+def test_the_editor_is_asked_again_until_it_has_drawn_at_the_new_size(controller, tmp_path, qapp):
+    proc = fast_proc(tmp_path)
+    controller._photocraft = proc
+    preview = SimpleNamespace(set_photocraft_viewport=Mock())
+    controller._window = SimpleNamespace(_preview=preview)
+    new = drawn(800, 600, 500)
+    # Still the old size, then the new size laid out (its view settling over two replies), then settled.
+    proc.fast.call.side_effect = [drawn(800, 400, 300), drawn(800, 600, 380), new, new]
+    controller._refresh_viewport_after_resize(proc, controller._photocraft_generation, (800, 600))
+    qapp.processEvents()
+    preview.set_photocraft_viewport.assert_called_once_with(new)
+
+
+def test_an_editor_that_never_draws_at_the_new_size_reports_nothing(controller, tmp_path, qapp):
+    proc = fast_proc(tmp_path)
+    controller._photocraft = proc
+    controller.RESIZE_SETTLE_S = 0.1
+    preview = SimpleNamespace(set_photocraft_viewport=Mock())
+    controller._window = SimpleNamespace(_preview=preview)
+    proc.fast.call.return_value = drawn(800, 400, 300)
+    controller._refresh_viewport_after_resize(proc, controller._photocraft_generation, (800, 600))
+    qapp.processEvents()
+    preview.set_photocraft_viewport.assert_not_called()
+
+
+def test_a_resize_report_for_a_photo_that_was_left_is_dropped(controller, tmp_path, qapp):
+    proc = fast_proc(tmp_path)
+    controller._photocraft = proc
+    preview = SimpleNamespace(set_photocraft_viewport=Mock())
+    controller._window = SimpleNamespace(_preview=preview)
+    proc.fast.call.return_value = drawn(800, 600, 500)
+    stale_generation = controller._photocraft_generation
+    controller._photocraft_generation += 1
+    controller._refresh_viewport_after_resize(proc, stale_generation, (800, 600))
+    qapp.processEvents()
+    preview.set_photocraft_viewport.assert_not_called()
