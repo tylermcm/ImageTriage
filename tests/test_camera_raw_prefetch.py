@@ -176,7 +176,7 @@ def test_landing_in_camera_raw_starts_the_prefetch(controller, tmp_path):
     controller._photocraft_generation = 3
     controller._handle_camera_raw_up(3, records[0].path)
     drain(controller)
-    preview.photocraft_document_ready.assert_called_once_with(records[0].path)
+    preview.photocraft_document_ready.assert_called_once_with(records[0].path, settle_ms=controller.CAMERA_RAW_SETTLE_MS)
     controller._photocraft.fast.app_prefetch.assert_called_once()
     controller._photocraft.fast.app_prefetch.reset_mock()
     controller._handle_camera_raw_up(2, records[0].path)  # a stale landing

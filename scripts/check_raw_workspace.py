@@ -82,7 +82,7 @@ def main() -> int:
         assert view["x"] + view["width"] <= window["width"] + 1 and view["y"] + view["height"] <= window["height"] + 1
         control.call("ui.screenshot", {"path": "1-camera-raw-open.png", "focus": False})
 
-        control.call("ui.cameraRaw", {"set": {"exposure": 1.0}})
+        control.call("ui.menu.invoke", {"id": "filter.cameraRaw", "params": {"ui": {"set": {"exposure": 1.0}}}})
         control.call("ui.screenshot", {"path": "2-adjusted.png", "focus": False})
         control.call("ui.cameraRaw", {"commit": True})
         wait_for(lambda: control.call("ui.viewport").get("cameraRaw") is None, "Camera Raw to close")

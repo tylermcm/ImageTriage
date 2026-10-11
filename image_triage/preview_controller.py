@@ -40,6 +40,10 @@ class PreviewController(QObject):
 
     # How long a selection rests before its RAW loads behind the preview.
     PHOTOCRAFT_RAW_DWELL_MS = 500
+    # After a resize: how long it must be quiet before the editor is asked where its image area is, and how long to wait
+    # for it to have drawn at the new size.
+    RESIZE_QUIET_MS = 60
+    RESIZE_SETTLE_S = 1.0
     # With the browsing picture in front, PhotoCraft can take longer to catch up without the user
     # seeing it, but loading a RAW for every photo flicked past is wasted work: start the load once the
     # selection has rested this long (or at once when something in the editor is touched).
@@ -84,6 +88,13 @@ class PreviewController(QObject):
         self._photocraft_dwell_timer.setSingleShot(True)
         self._photocraft_dwell_timer.setInterval(self.PHOTOCRAFT_RAW_DWELL_MS)
         self._photocraft_dwell_timer.timeout.connect(self._photocraft_dwell_elapsed)
+        # The editor was resized (the filmstrip shown or hidden, the popout resized): once it has stopped, ask it again
+        # where its image area is, so a picture laid over it matches the new layout.
+        self._photocraft_resize_size: tuple[int, int] | None = None
+        self._photocraft_resize_timer = QTimer(self)
+        self._photocraft_resize_timer.setSingleShot(True)
+        self._photocraft_resize_timer.setInterval(self.RESIZE_QUIET_MS)
+        self._photocraft_resize_timer.timeout.connect(self._photocraft_resize_elapsed)
         self._photocraft_ready.connect(self._finish_photocraft_open)
         self._photocraft_preview_shown.connect(self._finish_photocraft_preview)
         self._photocraft_window_ready.connect(self._prepare_photocraft_window)
@@ -657,6 +668,12 @@ class PreviewController(QObject):
             # An obsolete open must not finish into this photo's window.
             self._photocraft_preview_executor.submit(self._cancel_photocraft_opens)
         self._photocraft_dwell_request = (generation, path)
+        if proc.camera_raw_first and proc.prefetch_ready is not None and proc.prefetch_ready == normalized_path_key(path):
+            # Developed ahead of time: swapping to it costs the editor next to nothing, so there is no load to hold back
+            # for a selection that may move on.
+            proc.prefetch_ready = None
+            self._photocraft_dwell_elapsed()
+            return
         self._photocraft_dwell_timer.setInterval(self.PHOTOCRAFT_NATIVE_DWELL_MS)
         self._photocraft_dwell_timer.start()
 
@@ -835,6 +852,8 @@ class PreviewController(QObject):
     # How long to wait for Camera Raw to appear after its document opened, and how often to look.
     CAMERA_RAW_WAIT_S = 1.5
     CAMERA_RAW_POLL_S = 0.03
+    # Camera Raw's own dialog was seen up with its view laid out: the picture over it need only outlast the frame that draws it.
+    CAMERA_RAW_SETTLE_MS = 40
 
     def _refresh_photocraft_viewport(self, proc, generation: int, path: str = "") -> None:
         """Tell the popout where PhotoCraft draws its image, so the browsing picture can cover just that.
@@ -848,7 +867,7 @@ class PreviewController(QObject):
             viewport = proc.control.call("ui.viewport")
             if proc.camera_raw_first:
                 deadline = time.monotonic() + self.CAMERA_RAW_WAIT_S
-                while not (viewport.get("cameraRaw") or {}).get("view") and time.monotonic() < deadline:
+                while not self._dialog_view_ready(viewport) and time.monotonic() < deadline:
                     if generation != self._photocraft_generation:
                         return
                     time.sleep(self.CAMERA_RAW_POLL_S)
@@ -860,12 +879,27 @@ class PreviewController(QObject):
         if proc.camera_raw_first and path:
             self._photocraft_camera_raw_up.emit(generation, path)
 
+    @staticmethod
+    def _dialog_view_ready(viewport: dict) -> bool:
+        """Camera Raw's own dialog has laid out its view. The editor's loading frame, which stands in for the dialog
+        while the photo develops, reports the same rectangle with ``loading`` set, and so does the previous photo's
+        dialog while it hands over to the next (``busy``): the picture must stay until the next photo's own dialog is
+        up, or the swap would show the old photo's render or an empty frame."""
+        camera_raw = viewport.get("cameraRaw") or {}
+        return bool(camera_raw.get("view")) and not camera_raw.get("loading") and not camera_raw.get("busy")
+
     def _handle_camera_raw_up(self, generation: int, path: str) -> None:
         preview = self.preview_if_built()
         if preview is not None and generation == self._photocraft_generation:
-            preview.photocraft_document_ready(path)
+            preview.photocraft_document_ready(path, settle_ms=self.CAMERA_RAW_SETTLE_MS)
             # The photo is up and being looked at: this is the time to get the next one ready.
             self._prefetch_next_raw(path)
+
+    @staticmethod
+    def _note_prefetch(proc, state: dict) -> None:
+        """Remember which photo the editor says it has developed ahead of time (compared by the key sent with the request)."""
+        sent = proc.prefetch_sent
+        proc.prefetch_ready = sent[1] if sent is not None and state.get("prefetched") == sent[0] else None
 
     def _prefetch_candidate(self, path: str) -> str | None:
         """The raw most likely to be opened after ``path``: the photo next to it in the direction of travel,
@@ -898,11 +932,12 @@ class PreviewController(QObject):
         if relative is None or signature is None:
             return
         # On its own connection and worker: a request must never wait behind, or delay, anything the user is doing.
-        self._photocraft_preview_executor.submit(self._send_prefetch, proc, relative, signature)
+        self._photocraft_preview_executor.submit(self._send_prefetch, proc, relative, signature, normalized_path_key(candidate))
 
-    def _send_prefetch(self, proc, relative: str, signature: str) -> None:
+    def _send_prefetch(self, proc, relative: str, signature: str, key: str = "") -> None:
         try:
             proc.fast_lane().app_prefetch(relative, signature)
+            proc.prefetch_sent = (relative, key)
         except photocraft_bridge.PhotoCraftError as error:
             _log.debug("Camera Raw prefetch for %s was not accepted: %s", relative, error)
 
@@ -1117,6 +1152,36 @@ class PreviewController(QObject):
         proc = self._photocraft
         if proc is not None and proc.is_running():
             photocraft_bridge.resize_embedded(proc.hwnd, width, height)
+            self._photocraft_resize_size = (width, height)
+            self._photocraft_resize_timer.start()
+
+    def _photocraft_resize_elapsed(self) -> None:
+        proc, size = self._photocraft, self._photocraft_resize_size
+        if proc is None or size is None or not proc.is_running():
+            return
+        # Its own connection and worker: nothing the user is waiting on queues behind this, and this never waits behind a load.
+        self._photocraft_preview_executor.submit(self._refresh_viewport_after_resize, proc, self._photocraft_generation, size)
+
+    def _refresh_viewport_after_resize(self, proc, generation: int, size: tuple[int, int]) -> None:
+        """Report where the editor draws its image once it has laid itself out at ``size`` (physical pixels)."""
+        deadline = time.monotonic() + self.RESIZE_SETTLE_S
+        previous = None
+        while generation == self._photocraft_generation and proc.is_running():
+            try:
+                viewport = proc.fast_lane().call("ui.viewport")
+            except photocraft_bridge.PhotoCraftError:
+                return
+            window = viewport.get("window") or {}
+            drawn = abs(int(window.get("width", -1)) - size[0]) <= 2 and abs(int(window.get("height", -1)) - size[1]) <= 2
+            layout = (viewport.get("canvas"), (viewport.get("cameraRaw") or {}).get("view"))
+            # At the new size, and the same layout twice running: it has finished laying out.
+            if drawn and layout == previous:
+                self._photocraft_viewport_ready.emit(generation, viewport)
+                return
+            previous = layout if drawn else None
+            if time.monotonic() >= deadline:
+                return  # never drew at that size (or the size changed again): the next resize asks again
+            time.sleep(self.CAMERA_RAW_POLL_S)
 
     def _switch_photocraft_document(
         self, proc: photocraft_bridge.PhotoCraftProcess, open_path: str, sidecar_path: str, generation: int | None = None,
@@ -1131,7 +1196,11 @@ class PreviewController(QObject):
             raise photocraft_bridge.PhotoCraftError(f"{open_path!r} is outside this PhotoCraft process's automation root")
         if proc.path_within_write_root(sidecar_path) is None:
             raise photocraft_bridge.PhotoCraftError("The next photo's sidecar is outside the automation write root")
-        self._save_photocraft_sidecar_if_dirty(proc)
+        # A raw going into Camera Raw while Camera Raw shows another: the editor keeps the dialog up and the next photo
+        # takes it over (it keeps what was adjusted as the recipe by itself), so the dialog is never closed here, which
+        # would show it going away and coming back and cost a round trip.
+        in_place = camera_raw is not None and proc.camera_raw_first and getattr(proc.control, "camera_raw_switch_supported", False) is True
+        self._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=not in_place)
         if open_path == sidecar_path and (sidecar_path in proc.pending_stashes or sidecar_path in proc.stash_errors):
             # PhotoCraft keys its in-memory snapshots by the stash path, which
             # is relative to the write root. The disk import path is relative
@@ -1180,6 +1249,7 @@ class PreviewController(QObject):
             # and the save, include it. Autosave never closes a dialog the user is working in.
             try:
                 state = control.call("ui.cameraRaw", {"done": True}) if commit_raw_draft else control.call("ui.cameraRaw")
+                self._note_prefetch(proc, state)
             except photocraft_bridge.PhotoCraftError as error:
                 if "unknown method" not in str(error):
                     raise

@@ -1785,6 +1785,11 @@ class FullScreenPreview(QDialog):
 
     def set_photocraft_palette(self, colors: dict) -> None:
         self._filmstrip.set_editor_palette(colors)
+        # The picture's bars take the editor's canvas colour, so the hand-over to Camera Raw (or to the editor's canvas)
+        # does not flash a different one.
+        canvas = QColor(str(colors.get("canvas") or ""))
+        if canvas.isValid():
+            self._native_layer.set_background(canvas)
 
     def _build_header_tool_button(self, text: str) -> QToolButton:
         button = QToolButton()
@@ -2273,7 +2278,26 @@ class FullScreenPreview(QDialog):
         host = self.panes_widget.rect()
         if not self._photocraft_edit_active:
             return host  # PhotoCraft is not on screen yet: the picture is the whole viewer
-        return layer_rect(self._overlay_region, host, self._photocraft_viewport, self._photocraft_host.devicePixelRatioF())
+        return layer_rect(self._overlay_region, host, self._current_photocraft_viewport(), self._photocraft_host.devicePixelRatioF())
+
+    def _current_photocraft_viewport(self) -> dict | None:
+        """The editor's last ``ui.viewport`` reply, unless it was measured at another window size.
+
+        Hiding or shrinking the filmstrip (or resizing the popout) resizes the embedded editor, and the dialog in it lays
+        itself out again; the rectangle reported before that is wrong from then on, and a picture placed by it leaves part
+        of the dialog's own, differently sized photo showing around it. Until the editor reports at the new size the
+        picture covers the whole window, which is where it started.
+        """
+        viewport = self._photocraft_viewport
+        window = viewport.get("window") if isinstance(viewport, dict) else None
+        if not isinstance(window, dict):
+            return viewport  # no size to compare (an older PhotoCraft build)
+        try:
+            measured = (int(window["width"]), int(window["height"]))
+        except (KeyError, TypeError, ValueError):
+            return viewport
+        width, height = self.photocraft_host_size()
+        return viewport if abs(measured[0] - width) <= 2 and abs(measured[1] - height) <= 2 else None
 
     def _sync_native_layer_geometry(self) -> None:
         if self._native_layer.isVisible():
@@ -2308,8 +2332,9 @@ class FullScreenPreview(QDialog):
         self._native_layer.set_image(image, self._entries[0].source_path, placeholder=placeholder)
         self._native_layer.present(self._native_layer_target_rect())
 
-    def photocraft_document_ready(self, path: str) -> None:
-        """PhotoCraft is now showing ``path``: let the browsing picture go once it has had time to draw."""
+    def photocraft_document_ready(self, path: str, *, settle_ms: int | None = None) -> None:
+        """PhotoCraft is now showing ``path``: let the browsing picture go once it has had time to draw (``settle_ms``
+        overrides how long, for an editor that has confirmed its own drawing)."""
         if not self._native_layer_wanted:
             return
         current = self._source_entries[0].record.path if self._source_entries else ""
@@ -2318,7 +2343,7 @@ class FullScreenPreview(QDialog):
         self._native_layer_wanted = False
         self._native_layer_release_token += 1
         token = self._native_layer_release_token
-        QTimer.singleShot(self.NATIVE_LAYER_RELEASE_MS, lambda: self._release_native_layer(token))
+        QTimer.singleShot(self.NATIVE_LAYER_RELEASE_MS if settle_ms is None else settle_ms, lambda: self._release_native_layer(token))
 
     def _release_native_layer(self, token: int) -> None:
         if token == self._native_layer_release_token and not self._native_layer_wanted:

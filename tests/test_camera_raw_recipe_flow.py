@@ -194,6 +194,40 @@ def test_the_handoff_probe_reads_the_capability():
 
     assert probe({"version": 2, "rawSmartObject": 1, "rawSensorAdapter": 1, "cameraRaw": 1}).camera_raw_supported is True
     assert probe({"version": 2, "rawSmartObject": 1, "rawSensorAdapter": 1}).camera_raw_supported is False
+    assert probe({"version": 2, "cameraRaw": 1, "cameraRawSwitch": 1}).camera_raw_switch_supported is True
+    assert probe({"version": 2, "cameraRaw": 1, "cameraRawPrefetch": 1}).camera_raw_switch_supported is False
+
+
+def switching(controller, tmp_path, *, can_hand_over):
+    proc = raw_process(tmp_path)
+    proc.control.camera_raw_switch_supported = can_hand_over
+    proc.control.call.side_effect = lambda method, params=None: {"open": True} if method == "ui.cameraRaw" else {}
+    proc.control.app_open = Mock(return_value={"cameraRaw": {"dialog": True}})
+    controller._photocraft = proc
+    controller._switch_photocraft_document(
+        proc, str(tmp_path / "next.NEF"), str(tmp_path / ".image_triage_edits" / "next.pcraft"), camera_raw={"recipePath": "next.json"}
+    )
+    return proc, [(call.args[0], call.args[1] if len(call.args) > 1 else None) for call in proc.control.call.call_args_list]
+
+
+def test_an_editor_that_can_hand_the_dialog_over_is_never_told_to_close_it(controller, tmp_path):
+    proc, sent = switching(controller, tmp_path, can_hand_over=True)
+    assert ("ui.cameraRaw", {"done": True}) not in sent, "closing the dialog would show it going away and coming back"
+    proc.control.app_open.assert_called_once()
+    assert proc.control.app_open.call_args.kwargs["camera_raw"] == {"recipePath": "next.json"}
+
+
+def test_an_older_editor_is_still_told_to_leave_the_photo_first(controller, tmp_path):
+    proc, sent = switching(controller, tmp_path, can_hand_over=False)
+    assert ("ui.cameraRaw", {"done": True}) in sent
+    proc.control.app_open.assert_called_once()
+
+
+def test_a_busy_dialog_does_not_count_as_the_next_photo_being_up():
+    ready = PreviewController._dialog_view_ready
+    view = {"x": 1, "y": 2, "width": 3, "height": 4}
+    assert not ready({"cameraRaw": {"open": True, "busy": True, "view": view}}), "still the previous photo's dialog"
+    assert ready({"cameraRaw": {"open": True, "busy": False, "view": view}})
 
 
 # --- leaving, and developing --------------------------------------------------------------------------

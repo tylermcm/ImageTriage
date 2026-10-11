@@ -1,5 +1,24 @@
 # PhotoCraft handoff — remove-builtin-editor
 
+## Quick handoff - 2026-10-11 (Camera Raw browsing without repaints; upstream merged)
+
+Branch `camera-raw-first-nav` (Image Triage) and the fork's `codex/image-triage-integration`; the upstream merge of
+this day is on the fork's `scratch/upstream-merge-2026-10-11` until the user fast-forwards the integration branch.
+
+* Fork: Camera Raw stays up between photos (in-place swap, `cameraRawSwitch`, `busy`/`loading` in `ui.viewport`),
+  a raw is browsed from a reduced-resolution development (Open re-develops it in full), the camera colour fit is
+  made at the as-shot white balance. The fork's own `ui.cameraRaw {set}` was removed: a host adjusts the open dialog
+  with upstream's `ui.menu.invoke {id: "filter.cameraRaw", params: {ui: {set}}}` (upstream #2988). Details:
+  `docs/control-protocol.md` in the fork and [camera_raw_first_browsing.md](camera_raw_first_browsing.md).
+* Image Triage: the popout keeps the editor's Camera Raw dialog up when moving to the next raw
+  (`_switch_photocraft_document` with no `done`), waits for `busy: false`, prefetches the next photo, and no longer
+  trusts a `ui.viewport` measured at another window size (hiding or shrinking the filmstrip left a stale picture
+  over the dialog; the picture now covers the window until the editor reports again, and a resize re-asks).
+* Measured on real 45 MP NEFs (Intel UHD 620): picture on screen 34-65 ms after the key; dialog swap to a prepared
+  photo ~140-170 ms, to an unprepared one ~1.7-2.2 s (was ~4 s).
+* Checks that need the host's Qt event loop pumped while they wait (an embedded editor shares its parent's input
+  queue): `scripts/check_camera_raw_recipe.py` now polls with short timeouts for that reason.
+
 ## Quick handoff - 2026-10-09 (browsing in front of the editor)
 
 Branch `camera-raw-first-nav` (Image Triage, from `a4caa3a`) and the fork's `codex/image-triage-integration`
@@ -170,6 +189,33 @@ identifiable; avoid rewriting or force-pushing the fork's history.
 - Validation: `cargo check` of photocraft, io, engine and ui-egui, and the focused tests
   listed in the quick handoff. Full native UI suite, clippy, layers, wasm and the live
   handoff were not run for this merge.
+
+### 2026-10-11 update
+
+- Previous upstream in the branch: `7dc8bbd8` (merged 2026-10-10, 519 commits; not recorded here at the time).
+  Incoming: `d45b3718` (storytold/photocraft main, 2026-10-11 11:15 UTC-3), 180 commits, 418 files. Merge commit
+  `0824377f` on the fork's `scratch/upstream-merge-2026-10-11`, made from `1a64b31e` (the fork's commits since
+  `bf7a0a16`: reduced-resolution development, in-place swap). Nothing pushed. Upstream was fetched by URL into a local
+  ref (`upstream-peek/main`); the clone's only remote is the fork.
+- Twelve conflicted files. Smart objects: upstream moved rendering onto a stage cache (`render_in`, `place`,
+  `smart_cmds/stack_cache.rs`); upstream's signatures stay as they are, RAW-developed objects go through a sibling
+  `place_developed`, and their stage key includes the development settings and the document's colour profile.
+  `io::flat`: our display-JPEG export and upstream's Targa options both kept. `raw` / `io::raw`: upstream merged #2135
+  (Nikon colour fit) identical to the commit already on the branch, so ours stays (it also fits at the as-shot white
+  balance). `ui-egui`: `Services` keeps our scoped background read/write callbacks and gains `automation_open_pcraft`;
+  `app.open` keeps the RAW smart-object guard and gains the directory `.pcraft` open; `app.save` is upstream's (save
+  worker) beside our `app.bind` / `app.stash`; job events keep our `app.open` / `app.stash` handling beside Beep When
+  Done; the `ui.menu.invoke` modal gate is upstream's #2988 with our hosted-save exemption in the authorisation check.
+- Automatic merges worth a second look: `control.rs` (dispatch, authorisation), `jobs_ui.rs`, `lib.rs` (commands,
+  `Services`), `gpu_canvas.rs`. The live check on the merged release editor passed (real NEFs: prepared swap 167 ms,
+  return to an unprepared photo 1.66 s, recipe and render written, Open continues the saved document, unsupported-raw
+  fallback). It does not exercise Save routing, themes or window handling.
+- Validation: rustfmt; clippy `-D warnings` over the whole workspace; tests for raw, io and engine (1,956 passed) and
+  the ui-egui library (2,094 passed; one render-timing test failed once under load and passed on rerun). The ui-egui wgpu
+  integration tests (11 binaries, 19 tests) fail on this laptop's adapter ("expected the GPU canvas", 2048 px texture
+  limit); they were not run against unmerged upstream. Not run: the desktop app's tests, the layers check, the wasm
+  checks, the full live handoff.
+- Semantic change: the fork no longer has `ui.cameraRaw {set}`; scripts use upstream's `ui.menu.invoke` route.
 
 PhotoCraft is the popout's default editor. The current filmstrip, navigation,
 review controls and comparison views remain in Image Triage. Opening a photo

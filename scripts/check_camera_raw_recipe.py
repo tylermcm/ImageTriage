@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
@@ -66,7 +67,7 @@ def main() -> None:
                 return original_call(self, method, params)
             finally:
                 took = (time.perf_counter() - began) * 1000
-                if took > 60:
+                if took > float(os.environ.get("TRACE_MS", "60")):
                     print(f"CALL t={(began - origin):7.2f}s {method:<22} {took:8.0f} ms", flush=True)
 
         bridge.PhotoCraftControl.call = traced
@@ -141,7 +142,11 @@ def main() -> None:
         wait_for(lambda: proc() is not None and proc().current_source == normalized_path_key(records[index].path), f"photo {index} to open")
         opened_at = time.perf_counter()
         if dialog:
-            wait_for(lambda: camera_raw().get("open") and camera_raw().get("target") == "openRaw", f"Camera Raw on photo {index}")
+            def swapped():
+                shown = fast().call("ui.viewport").get("cameraRaw") or {}
+                return shown.get("open") and not shown.get("busy") and not shown.get("loading") and camera_raw().get("target") == "openRaw"
+
+            wait_for(swapped, f"Camera Raw on photo {index}")
         total = round((time.perf_counter() - started) * 1000)
         jobs = [j for j in fast().call("jobs.list").get("jobs", []) if j.get("command") == "app.open"]
         print(f"BREAKDOWN photo {index}: total {total} ms; document open {round((opened_at - started) * 1000)} ms "
@@ -164,6 +169,24 @@ def main() -> None:
             print("MEM failed", error)
 
     controller._window._records = records
+    if args.trace:
+        origin_steps = origin
+
+        def step(owner, name):
+            original = getattr(owner, name)
+
+            def wrapped(*a, **k):
+                print(f"STEP t={time.perf_counter() - origin_steps:7.3f}s {name} >", flush=True)
+                try:
+                    return original(*a, **k)
+                finally:
+                    print(f"STEP t={time.perf_counter() - origin_steps:7.3f}s {name} <", flush=True)
+
+            setattr(owner, name, wrapped)
+
+        for name in ("_begin_navigation_timing", "handle_photocraft_edit_requested", "_load_photocraft", "_switch_photocraft_document",
+                     "_refresh_photocraft_viewport", "_handle_camera_raw_up", "prioritize_photocraft_open", "_apply_photocraft_viewport"):
+            step(controller, name)
     first = Path(records[0].path)
 
     def look():
@@ -186,7 +209,7 @@ def main() -> None:
         fast().call("ui.screenshot", {"path": "1-camera-raw.png", "focus": False})
 
         # 2. Adjust and move on: the recipe is kept, a render of it is written, nothing is developed or saved.
-        fast().call("ui.cameraRaw", {"set": {"exposure": 1.0, "contrast": 25}})
+        fast().call("ui.menu.invoke", {"id": "filter.cameraRaw", "params": {"ui": {"set": {"exposure": 1.0, "contrast": 25}}}})
         assert camera_raw()["changed"] is True
         results["second_raw_in_camera_raw_ms"] = select(1)
         mem("after second raw")
@@ -216,7 +239,18 @@ def main() -> None:
         # 4. Open develops the raw (the full editor); that is not editing it.
         opened = fast().call("ui.cameraRaw", {"commit": True})
         assert opened["open"] is False
-        wait_for(lambda: not any(j.get("state") == "running" for j in fast().call("jobs.list").get("jobs", [])), "the develop to finish", timeout=180)
+
+        def develop_running():
+            # The editor draws the full-size canvas for the first time now, and compiles its GPU shaders on the way (~15 s on
+            # this laptop): it answers late. Keep this window's own event loop running meanwhile (an embedded editor shares
+            # its parent's input queue, so a parent that does not pump messages stalls it) and ask again soon.
+            try:
+                quick = bridge.PhotoCraftControl(proc().port, proc().token, timeout=2)
+                return any(j.get("state") == "running" for j in quick.call("jobs.list").get("jobs", []))
+            except bridge.PhotoCraftError:
+                return True
+
+        wait_for(lambda: not develop_running(), "the develop to finish", timeout=180)
         time.sleep(controller._photocraft_save_timer.interval() / 1000 * 2 + 0.5)
         app.processEvents()
         assert not bridge.sidecar_pcraft_path(str(first)).exists(), "Open alone saved a document"

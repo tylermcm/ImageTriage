@@ -297,6 +297,7 @@ class PhotoCraftControl:
         self.raw_sensor_supported = capabilities.get("rawSensorAdapter", 0) >= 1
         self.camera_raw_supported = capabilities.get("cameraRaw", 0) >= 1
         self.camera_raw_prefetch_supported = capabilities.get("cameraRawPrefetch", 0) >= 1
+        self.camera_raw_switch_supported = capabilities.get("cameraRawSwitch", 0) >= 1
         for method, validation in (
             ("app.stash", "stash requires path and preview"),
             ("app.bind", "bind requires an open document, .pcraft path and .png preview"),
@@ -410,6 +411,10 @@ class PhotoCraftProcess:
     # pressed Open or Cancel, or we left the photo) the document's revision is taken as the baseline, so
     # developing the photo is not mistaken for editing it.
     camera_raw_rebaseline: bool = False
+    # The raw the editor was last asked to develop ahead of time (path as sent, the host's normalised key for it), and the
+    # key of the one it reported ready: opening that photo costs the editor next to nothing, so nothing is waited for.
+    prefetch_sent: tuple[str, str] | None = None
+    prefetch_ready: str | None = None
 
     def is_running(self) -> bool:
         return self.process.poll() is None
