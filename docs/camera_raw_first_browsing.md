@@ -1,5 +1,17 @@
 # Camera Raw first browsing
 
+> **Update 2026-10-11: the editor is now on demand.** Following every photo with the editor (below) made flipping through photos
+> choppy: with the editor loading behind the popout, a held arrow key showed 11 of 20 photos and stalled the UI thread for up to
+> 0.7 s; the popout alone showed all 20 with 0.3 s of pauses in total (20 key presses 150 ms apart, 45 MP NEFs, an Intel UHD 620
+> laptop). So by default (setting "Open the editor only when I press E", `preview/editor_on_demand`, on) browsing is the popout
+> alone and nothing is loaded into the editor. **E** brings the editor up over the photo being looked at (its own picture stays
+> up over the editor's area meanwhile; Camera Raw for a raw when "Open photos in Camera Raw first" is on), and **E** again puts it
+> away: the photo's recipe or document is kept by the editor off the UI thread and the editor stays up, idle, for the next press.
+> While the editor is up it follows the photos you move to, as described below. Timings: first E ~6 s (the editor's one-time start),
+> E again to go back ~60 ms, the next E shows the photo at once and the dialog a few seconds later (≈1.7 s for a photo the editor
+> has not prepared; this harness grabbed the screen, which slows it). Turn the setting off for the old automatic behaviour.
+> The key is handled by the popout, so after clicking inside the editor click the filmstrip (or the popout) before pressing E.
+
 Status: phase 1 (the fast browsing layer) is implemented on branch `camera-raw-first-nav`, unit-tested,
 timed in isolation and run through the live editor check; it has **not** been exercised against real RAW
 files, looked at on a real display, or timed on the owner's machine.

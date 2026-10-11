@@ -29,6 +29,8 @@ SETTINGS_KEY = "preview/photocraft_overlay_region"
 # Launch the editor in its Camera Raw workspace (``photocraft --raw-workspace``): off until it has been
 # used on real RAW files.
 CAMERA_RAW_FIRST_KEY = "preview/photocraft_camera_raw_first"
+# The editor opens only when its key is pressed (default), instead of following every photo that is browsed.
+EDITOR_ON_DEMAND_KEY = "preview/editor_on_demand"
 
 # (label, value) for the Settings dialog, in the order they are offered.
 REGION_CHOICES = (

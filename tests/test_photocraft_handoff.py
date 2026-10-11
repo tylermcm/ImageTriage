@@ -222,6 +222,7 @@ def test_revision_query_handles_empty_editor(session, expected):
 def test_selected_filmstrip_thumbnail_requests_editor_again():
     preview = FullScreenPreview()
     preview.set_photocraft_available(True)
+    preview._editor_on_demand = False  # this test is about the editor that follows every photo
     record = ImageRecord("same.jpg", "same.jpg", 1, 1)
     preview._source_entries = [PreviewEntry(record, record.path)]
     preview._filmstrip_current = 0
@@ -350,6 +351,7 @@ def test_saved_render_feeds_thumbnails_and_headless_exports(tmp_path):
 def test_preview_automatically_requests_editor_and_keeps_filmstrip(controller):
     preview = FullScreenPreview()
     preview.set_photocraft_available(True)
+    preview._editor_on_demand = False  # this test is about the editor that follows every photo
     requested = []
     preview.photocraft_edit_requested.connect(requested.append)
     record = ImageRecord(path="frame.jpg", name="frame.jpg", size=1, modified_ns=1)
@@ -579,6 +581,7 @@ def test_editor_loading_covers_original_viewer_before_first_paint(controller, tm
     # and is covered in test_native_first_browsing.py.
     preview = FullScreenPreview()
     preview.set_photocraft_available(True)
+    preview._editor_on_demand = False  # this test is about the editor that follows every photo
     preview.set_overlay_region("off")
     record = ImageRecord(path=str(tmp_path / "frame.jpg"), name="frame.jpg", size=1, modified_ns=1)
     fullscreen = preview.showFullScreen
@@ -624,6 +627,7 @@ def test_early_attachment_keeps_original_viewer_covered(controller, tmp_path, mo
     proc = process(tmp_path)
     preview = FullScreenPreview()
     preview.set_photocraft_available(True)
+    preview._editor_on_demand = False  # this test is about the editor that follows every photo
     preview.show()
     preview.set_photocraft_loading(True)
     controller._window = SimpleNamespace(_preview=preview)

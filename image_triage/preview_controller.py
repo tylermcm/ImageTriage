@@ -154,6 +154,7 @@ class PreviewController(QObject):
         preview.photoshop_requested.connect(self.open_preview_image_in_photoshop)
         preview.photocraft_edit_requested.connect(self.handle_photocraft_edit_requested)
         preview.photocraft_host_resized.connect(self.resize_photocraft)
+        preview.photocraft_close_requested.connect(self.leave_photocraft_editor)
         preview.photocraft_prioritize_requested.connect(self.prioritize_photocraft_open)
         preview.native_layer_painted.connect(self._handle_native_layer_painted)
         preview.photocraft_close_guard = self.prepare_photocraft_preview_close
@@ -1386,6 +1387,25 @@ class PreviewController(QObject):
         if proc is not None and proc.is_running():
             self._save_photocraft_sidecar_if_dirty(proc)
             self._wait_photocraft_stashes(proc)
+
+    def leave_photocraft_editor(self) -> None:
+        """The editor key was pressed again: the popout is browsing on its own again. What was adjusted on the photo the editor
+        had open is kept (the recipe, or a saved document), off the UI thread; the editor itself stays up, idle, for the next
+        press, and nothing about browsing waits on it."""
+        self._photocraft_generation += 1  # a load still on its way for that photo must not bring the editor back
+        self._photocraft_dwell_timer.stop()
+        self._photocraft_dwell_request = None
+        self._photocraft_save_timer.stop()
+        proc = self._photocraft
+        if proc is None or not proc.is_running():
+            return
+        self._photocraft_executor.submit(self._settle_photocraft_after_leaving, proc)
+
+    def _settle_photocraft_after_leaving(self, proc: photocraft_bridge.PhotoCraftProcess) -> None:
+        try:
+            self._save_photocraft_sidecar_if_dirty(proc)
+        except photocraft_bridge.PhotoCraftError:
+            _log.exception("Could not settle the photo the editor had open")
 
     def sync_photocraft_edit_target(self) -> None:
         """Keep an active PhotoCraft edit session pointed at whatever photo the

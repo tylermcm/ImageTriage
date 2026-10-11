@@ -121,6 +121,12 @@ class SettingsController(QObject):
 
         return bool(self._window._settings.value(CAMERA_RAW_FIRST_KEY, False, bool))
 
+    def _photocraft_editor_on_demand(self) -> bool:
+        from .app_identity import user_settings
+        from .ui.native_image_layer import EDITOR_ON_DEMAND_KEY
+
+        return bool(user_settings().value(EDITOR_ON_DEMAND_KEY, True, bool))
+
     def _photocraft_overlay_region(self) -> str:
         from .ui.native_image_layer import DEFAULT_REGION, SETTINGS_KEY, normalize_region
 
@@ -769,6 +775,7 @@ class SettingsController(QObject):
             preview_preload_batch_size=self._window._preview_preload_batch_size,
             photocraft_overlay_region=self._photocraft_overlay_region(),
             photocraft_camera_raw_first=self._photocraft_camera_raw_first(),
+            photocraft_editor_on_demand=self._photocraft_editor_on_demand(),
             show_hidden_folders=self._window._show_hidden_folders,
             single_drive_expansion_enabled=self._window._single_drive_expansion_enabled,
             auto_advance_enabled=self._window._auto_advance_enabled,
@@ -902,6 +909,10 @@ class SettingsController(QObject):
         from .ui.native_image_layer import CAMERA_RAW_FIRST_KEY
 
         self._window._settings.setValue(CAMERA_RAW_FIRST_KEY, bool(result.photocraft_camera_raw_first))
+        from .app_identity import user_settings
+        from .ui.native_image_layer import EDITOR_ON_DEMAND_KEY
+
+        user_settings().setValue(EDITOR_ON_DEMAND_KEY, bool(result.photocraft_editor_on_demand))
         self._window._settings.setValue(self._window.SHOW_HIDDEN_FOLDERS_KEY, self._window._show_hidden_folders)
         self._window._settings.setValue(
             self._window.SINGLE_DRIVE_EXPANSION_KEY,
@@ -928,6 +939,7 @@ class SettingsController(QObject):
             preview.set_auto_advance_enabled(self._window._auto_advance_enabled)
             preview.set_preload_batch_size(self._window._preview_preload_batch_size)
             preview.set_overlay_region(new_overlay_region)
+            preview.set_editor_on_demand(bool(result.photocraft_editor_on_demand))
         # Apply through the resolution policy so the effective (coerced) style
         # and column thresholds land on the grid.
         self._window._display.apply_display_style_policy(show_warning=False)

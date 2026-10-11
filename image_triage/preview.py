@@ -56,7 +56,15 @@ from .scanner import discover_edited_paths
 from .ui.icons import build_symbol_icon
 from .ui.display_metrics import DisplayProfile, STANDARD_DISPLAY
 from .ui import preview_studio as studio
-from .ui.native_image_layer import DEFAULT_REGION, REGION_OFF, SETTINGS_KEY as OVERLAY_REGION_KEY, NativeImageLayer, layer_rect, normalize_region
+from .ui.native_image_layer import (
+    DEFAULT_REGION,
+    EDITOR_ON_DEMAND_KEY,
+    REGION_OFF,
+    SETTINGS_KEY as OVERLAY_REGION_KEY,
+    NativeImageLayer,
+    layer_rect,
+    normalize_region,
+)
 from .ui import popout_layout_ratios as popout_ratios
 from .ui.preview_studio_stylesheet import build_studio_dialog_stylesheet
 from .ui.theme import ThemePalette, default_theme
@@ -659,6 +667,8 @@ class FullScreenPreview(QDialog):
     photoshop_requested = Signal(str)
     photocraft_edit_requested = Signal(str)
     photocraft_host_resized = Signal(int, int)
+    # The editor key was pressed again: the popout is back to plain browsing and the editor should settle the open photo.
+    photocraft_close_requested = Signal()
     photocraft_prioritize_requested = Signal()
     native_layer_painted = Signal(str, bool)
     winner_requested = Signal(str)
@@ -694,6 +704,9 @@ class FullScreenPreview(QDialog):
         self._photoshop_available = False
         self._photocraft_available = False
         self._photocraft_edit_active = False
+        # On-demand editor (the default): the popout browses on its own and the editor opens only after the editor key.
+        self._editor_on_demand = True
+        self._editor_engaged = False
         self.photocraft_close_guard = None
         self._overlay_region = DEFAULT_REGION
         self._photocraft_viewport: dict | None = None
@@ -1011,6 +1024,7 @@ class FullScreenPreview(QDialog):
         self._native_layer.clicked.connect(self.photocraft_prioritize_requested)
         self._native_layer.painted.connect(self.native_layer_painted)
         self._overlay_region = normalize_region(self._settings.value(self.PHOTOCRAFT_OVERLAY_REGION_KEY, DEFAULT_REGION, str))
+        self._editor_on_demand = bool(self._settings.value(EDITOR_ON_DEMAND_KEY, True, bool))
         self.panes_widget.installEventFilter(self)
 
         self.analysis_panel = QFrame()
@@ -2375,8 +2389,61 @@ class FullScreenPreview(QDialog):
         self._photocraft_loading_label.show()
         self._photocraft_loading_label.raise_()
 
+    def _editor_follows_photos(self) -> bool:
+        """Whether the editor opens for every photo that is shown. On demand (the default) it does not: the popout alone
+        browses, which is what keeps flipping through photos instant, and the editor comes up only after the editor key."""
+        return self._photocraft_available and (not self._editor_on_demand or self._editor_engaged)
+
     def _uses_photocraft_editor(self) -> bool:
-        return self._photocraft_available and not self._compare_mode and not self._collection_browse_mode and not self._before_after_enabled
+        return self._editor_follows_photos() and not self._compare_mode and not self._collection_browse_mode and not self._before_after_enabled
+
+    def editor_on_demand(self) -> bool:
+        return self._editor_on_demand
+
+    def set_editor_on_demand(self, value: bool) -> None:
+        """Applies the setting to this popout at once: switching to on demand puts the editor away."""
+        value = bool(value)
+        if value == self._editor_on_demand:
+            return
+        self._editor_on_demand = value
+        if value and self._editor_engaged:
+            self.close_editor()
+        elif value:
+            self.hide_photocraft_host()
+
+    def editor_engaged(self) -> bool:
+        return self._editor_engaged
+
+    def toggle_editor(self) -> None:
+        """The editor key: bring the editor up over the photo being looked at, or put it away and go back to browsing."""
+        if self._editor_engaged:
+            self.close_editor()
+        else:
+            self.open_editor()
+
+    def open_editor(self) -> None:
+        """Brings the editor up on the photo shown. Its picture stays up over the editor's area meanwhile, so the photo never
+        disappears while the editor starts (a few seconds the first time) and develops it."""
+        if not self._editor_on_demand or self._editor_engaged or not self._photocraft_available:
+            return
+        if self._collection_browse_mode or self._compare_mode or self._before_after_enabled or not self._source_entries:
+            return
+        path = self._source_entries[0].record.path
+        if not path:
+            return
+        self._editor_engaged = True
+        self.show_browsing_picture()
+        self.photocraft_edit_requested.emit(path)
+
+    def close_editor(self) -> None:
+        """Puts the editor away: the popout is plain again, and the controller settles the photo the editor had open."""
+        if not self._editor_engaged:
+            return
+        self._editor_engaged = False
+        self.hide_photocraft_host()
+        self._render_pane(0)
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.photocraft_close_requested.emit()
 
     def photocraft_host_hwnd(self) -> int:
         return int(self._photocraft_host.winId())
@@ -2471,7 +2538,7 @@ class FullScreenPreview(QDialog):
         self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         self._refresh_timer.start()
         QTimer.singleShot(0, self._request_preview_loads)
-        if self._photocraft_available and not self._collection_browse_mode and not self._compare_mode and not self._before_after_enabled:
+        if self._editor_follows_photos() and not self._collection_browse_mode and not self._compare_mode and not self._before_after_enabled:
             path = self._source_entries[0].record.path if self._source_entries else ""
             if path:
                 self.photocraft_edit_requested.emit(path)
@@ -2586,6 +2653,7 @@ class FullScreenPreview(QDialog):
             event.ignore()
             return
         self.hide_photocraft_host()
+        self._editor_engaged = False
         self._refresh_timer.stop()
         self._stable_poll_cycles = 0
         self._poll_round_robin_slot = 0
@@ -2618,6 +2686,10 @@ class FullScreenPreview(QDialog):
         )
         if key in (Qt.Key.Key_Escape, Qt.Key.Key_Space):
             self.close()
+            event.accept()
+            return
+        if key == Qt.Key.Key_E and review_shortcut_allowed and self._editor_on_demand and self._photocraft_available and not event.isAutoRepeat():
+            self.toggle_editor()
             event.accept()
             return
         if key == Qt.Key.Key_Tab and self._compare_mode and len(self._entries) > 1:
@@ -2795,7 +2867,7 @@ class FullScreenPreview(QDialog):
         self._rebuild_entries()
         self._sync_preview_controls()
         self._request_preview_loads()
-        if not checked and self._photocraft_available and self._source_entries and not self._compare_mode and not self._collection_browse_mode:
+        if not checked and self._editor_follows_photos() and self._source_entries and not self._compare_mode and not self._collection_browse_mode:
             self.photocraft_edit_requested.emit(self._source_entries[0].record.path)
 
     def _handle_focus_assist_button_toggled(self, checked: bool) -> None:
