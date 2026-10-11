@@ -286,7 +286,9 @@ What the host sees:
   compiles, on the UI thread; every control request timed out meanwhile). The editor now builds it on a worker thread in the
   workspace and draws on the CPU until it is ready: an Open pressed right after the first photo's dialog came up answered its
   first request in ~0.2 s. Not built ahead of time on purpose: measured while browsing, an overlapping build slowed prepared
-  swaps 165 -> 189 ms and unprepared ones 1.72 -> 1.99 s. Still blocking: the ~2.4 s CPU redraw of the full 45 MP photo.
+  swaps 165 -> 189 ms and unprepared ones 1.72 -> 1.99 s. The ~2.4 s CPU redraw of the full 45 MP photo that follows is
+  done on a worker thread as well (the photo fills in from the top); the slowest answer after Open fell from 2.35 s to 0.2-0.5 s.
+  Still blocking: the autosave of an edited 45 MP photo (~9-12 s, see photocraft_handoff.md).
 - A control connection carries one request at a time. The controller keeps one worker per connection; a script polling
   on the second connection from its own thread must use a connection of its own (the live check now does). An unreadable
   reply now raises an error that quotes what the editor sent.
