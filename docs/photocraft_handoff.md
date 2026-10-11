@@ -1,5 +1,15 @@
 # PhotoCraft handoff — remove-builtin-editor
 
+## Quick handoff - 2026-10-11 (the editor is on demand)
+
+The popout browses on its own; the editor opens only after **E** (setting `preview/editor_on_demand`, default on; the settings
+dialog's "Open the editor only when I press E"). Measured with the real app and a fixed harness (precise key timing, a heartbeat
+timer for UI-thread pauses): 20 presses 150 ms apart show 18-20 photos with 0.7-1.2 s of pauses (editor following every photo:
+11 photos, 2.3 s), against 20 photos and 0.3 s with no editor at all. Also found: while the editor runs, the per-photo
+"has a saved edit render?" lookups (`saved_render_path`, `resolve_session_for_read`: ~53 file-system probes per key press, on the
+card) cost a lot (stubbing them cut the stalls from 2.3 s to 0.7 s); they are still done on the UI thread. See
+camera_raw_first_browsing.md.
+
 ## Quick handoff - 2026-10-11 (Camera Raw browsing without repaints; upstream merged)
 
 Branch `camera-raw-first-nav` (Image Triage) and the fork's `codex/image-triage-integration`; the upstream merge of

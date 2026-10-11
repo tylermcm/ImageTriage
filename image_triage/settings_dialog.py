@@ -65,6 +65,7 @@ class WorkflowSettingsResult:
     preview_preload_batch_size: int = 10
     photocraft_overlay_region: str = "canvas"
     photocraft_camera_raw_first: bool = False
+    photocraft_editor_on_demand: bool = True
     show_hidden_folders: bool = False
     single_drive_expansion_enabled: bool = True
     auto_advance_enabled: bool = True
@@ -307,6 +308,7 @@ class WorkflowSettingsDialog(QDialog):
         preview_preload_batch_size: int = 10,
         photocraft_overlay_region: str = "canvas",
         photocraft_camera_raw_first: bool = False,
+        photocraft_editor_on_demand: bool = True,
         show_hidden_folders: bool = False,
         single_drive_expansion_enabled: bool = True,
         auto_advance_enabled: bool = True,
@@ -676,6 +678,14 @@ class WorkflowSettingsDialog(QDialog):
             "and closing that document returns to Camera Raw. Takes effect the next time the editor starts."
         ))
 
+        self.photocraft_editor_on_demand_checkbox = QCheckBox("Open the editor only when I press E")
+        self.photocraft_editor_on_demand_checkbox.setChecked(photocraft_editor_on_demand)
+        self.photocraft_editor_on_demand_checkbox.setToolTip(_settings_tooltip(
+            "Moving through photos in the full-screen viewer stays as fast as the viewer alone: nothing is loaded into the editor. "
+            "Press E to bring the editor up over the photo you are looking at, and E again to put it away. "
+            "Turn this off to have the editor follow every photo (slower to browse)."
+        ))
+
         self.show_hidden_folders_checkbox = QCheckBox("Show hidden folders")
         self.show_hidden_folders_checkbox.setChecked(show_hidden_folders)
         self.show_hidden_folders_checkbox.setToolTip(_settings_tooltip(
@@ -721,6 +731,7 @@ class WorkflowSettingsDialog(QDialog):
         self._add_checkbox_row(interface_layout, "Scrolling", self.free_smooth_scroll_checkbox)
         self._add_form_row(interface_layout, "Preview preload", self.preview_preload_batch_spin)
         self._add_form_row(interface_layout, "Editor browsing", self.photocraft_overlay_combo)
+        self._add_checkbox_row(interface_layout, "Editor key", self.photocraft_editor_on_demand_checkbox)
         self._add_checkbox_row(interface_layout, "Camera Raw", self.photocraft_camera_raw_first_checkbox)
         self._add_checkbox_row(interface_layout, "Folders", self.show_hidden_folders_checkbox)
         self._add_category_heading(interface_layout, "Review flow")
@@ -1464,6 +1475,7 @@ class WorkflowSettingsDialog(QDialog):
             preview_preload_batch_size=max(0, int(self.preview_preload_batch_spin.value())),
             photocraft_overlay_region=str(self.photocraft_overlay_combo.currentData() or "canvas"),
             photocraft_camera_raw_first=self.photocraft_camera_raw_first_checkbox.isChecked(),
+            photocraft_editor_on_demand=self.photocraft_editor_on_demand_checkbox.isChecked(),
             show_hidden_folders=self.show_hidden_folders_checkbox.isChecked(),
             single_drive_expansion_enabled=self.single_drive_expansion_checkbox.isChecked(),
             auto_advance_enabled=self.auto_advance_checkbox.isChecked(),

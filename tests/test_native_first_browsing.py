@@ -44,6 +44,7 @@ def entry(path, color="blue"):
 def preview(qapp):
     window = FullScreenPreview()
     window.set_photocraft_available(True)
+    window._editor_on_demand = False  # these tests are about the editor that follows every photo
     yield window
     window.close()
 
@@ -645,3 +646,133 @@ def test_a_resize_report_for_a_photo_that_was_left_is_dropped(controller, tmp_pa
     controller._refresh_viewport_after_resize(proc, stale_generation, (800, 600))
     qapp.processEvents()
     preview.set_photocraft_viewport.assert_not_called()
+
+
+# --- the editor only when its key is pressed ---------------------------------------------------------
+
+@pytest.fixture
+def plain(qapp):
+    """A popout as it is by default: an editor is available, and it opens on demand."""
+    window = FullScreenPreview()
+    window.set_photocraft_available(True)
+    window._editor_on_demand = True
+    yield window
+    window.close()
+
+
+def requests_of(window):
+    asked = []
+    window.photocraft_edit_requested.connect(asked.append)
+    return asked
+
+
+def press(window, key):
+    QTest.keyClick(window, key)
+
+
+def test_the_editor_is_on_demand_by_default(qapp):
+    window = FullScreenPreview()
+    window.set_photocraft_available(True)
+    assert window.editor_on_demand()
+    assert not window.native_first_active() and not window.editor_engaged()
+    window.close()
+
+
+def test_browsing_never_asks_for_the_editor(plain, photo):
+    asked = requests_of(plain)
+    for _ in range(6):
+        plain.show_entries([entry(photo)])
+    assert asked == [], "no editor is started or asked for while browsing"
+    assert not plain._native_layer.isVisible(), "the popout's own viewer shows the photo"
+    assert not plain.photocraft_edit_active()
+
+
+def test_the_editor_key_brings_the_editor_up_over_the_photo_and_again_puts_it_away(plain, photo, qapp):
+    from PySide6.QtCore import Qt
+
+    plain.show_entries([entry(photo)])
+    asked, closed = requests_of(plain), []
+    plain.photocraft_close_requested.connect(lambda: closed.append(1))
+    press(plain, Qt.Key.Key_E)
+    assert plain.editor_engaged()
+    assert asked == [photo], "the editor is asked for the photo being looked at, once"
+    assert plain._native_layer_wanted, "the photo's own picture goes up over the editor's area while the editor opens"
+    assert plain.native_first_active()
+    press(plain, Qt.Key.Key_E)
+    assert not plain.editor_engaged() and closed == [1]
+    assert not plain.photocraft_edit_active() and not plain._native_layer.isVisible()
+    # Browsing is plain again: a new photo does not bring the editor back.
+    plain.show_entries([entry(photo)])
+    assert asked == [photo]
+
+
+def test_while_the_editor_is_up_it_follows_the_photos(plain, photo, tmp_path):
+    from PySide6.QtCore import Qt
+
+    plain.show_entries([entry(photo)])
+    asked = requests_of(plain)
+    press(plain, Qt.Key.Key_E)
+    other = tmp_path / "b.jpg"
+    solid(80, 60, "green").save(str(other), "JPEG")
+    plain.show_entries([entry(str(other))])
+    assert asked == [photo, str(other)], "an engaged editor goes with the photo, as it did before"
+
+
+def test_the_editor_key_needs_an_editor_the_mode_and_no_modifier(qapp, photo):
+    from PySide6.QtCore import Qt
+
+    window = FullScreenPreview()
+    window.show_entries([entry(photo)])
+    asked = requests_of(window)
+    press(window, Qt.Key.Key_E)  # no editor available
+    assert asked == [] and not window.editor_engaged()
+    window.set_photocraft_available(True)
+    QTest.keyClick(window, Qt.Key.Key_E, Qt.KeyboardModifier.ControlModifier)
+    assert asked == [] and not window.editor_engaged(), "Ctrl+E is not the editor key"
+    window._editor_on_demand = False
+    press(window, Qt.Key.Key_E)
+    assert not window.editor_engaged(), "with the editor following every photo there is nothing to open"
+    window.close()
+
+
+def test_closing_the_popout_puts_the_editor_away_for_next_time(plain, photo):
+    from PySide6.QtCore import Qt
+
+    plain.show_entries([entry(photo)])
+    press(plain, Qt.Key.Key_E)
+    assert plain.editor_engaged()
+    plain.close()
+    assert not plain.editor_engaged()
+
+
+def test_switching_to_on_demand_puts_a_running_editor_away(plain, photo):
+    from PySide6.QtCore import Qt
+
+    plain.show_entries([entry(photo)])
+    plain.set_editor_on_demand(False)
+    plain.set_editor_on_demand(True)  # back to on demand: nothing engaged
+    press(plain, Qt.Key.Key_E)
+    assert plain.editor_engaged()
+    plain.set_editor_on_demand(False)
+    assert plain.editor_engaged(), "automatic mode leaves an open editor as it is"
+    plain.set_editor_on_demand(True)
+    assert not plain.editor_engaged(), "on demand puts the editor away"
+
+
+def test_leaving_the_editor_settles_the_photo_off_the_ui_thread_and_cancels_pending_loads(controller, tmp_path, monkeypatch):
+    controller._photocraft = fast_proc(tmp_path)
+    settled = []
+    monkeypatch.setattr(controller, "_save_photocraft_sidecar_if_dirty", lambda proc, **kwargs: settled.append(proc))
+    generation = controller._photocraft_generation
+    controller._photocraft_dwell_request = (generation, "x.NEF")
+    controller._photocraft_dwell_timer.start()
+    controller.leave_photocraft_editor()
+    assert controller._photocraft_generation == generation + 1, "a load on its way for the photo that was left is stale"
+    assert controller._photocraft_dwell_request is None and not controller._photocraft_dwell_timer.isActive()
+    assert not controller._photocraft_save_timer.isActive(), "nothing polls the idle editor while browsing"
+    drain(controller)
+    assert settled == [controller._photocraft], "the recipe or document is kept, on the editor's worker"
+
+
+def test_leaving_without_a_running_editor_does_nothing(controller):
+    controller.leave_photocraft_editor()  # no process: must not raise
