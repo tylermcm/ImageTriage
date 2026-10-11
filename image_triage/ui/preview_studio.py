@@ -322,9 +322,20 @@ class FilmstripThumb(QWidget):
         self._pixmap = pixmap
         self._mockup_chrome = mockup_chrome
         self._editor_palette = None
+        self._strip_shape: tuple | None = None  # what the strip sized it for, so it knows when it must be rebuilt
         self.set_thumb_height(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def show_state(self, tag: str | None, current: bool, pixmap: QPixmap | None) -> bool:
+        """Shows ``tag``, ``current`` and ``pixmap`` and repaints, but only if one of them is not what it already shows (the
+        filmstrip keeps the thumbs that stay on screen and tells them what they show now). Returns whether it repainted."""
+        same_picture = (self._pixmap is None) == (pixmap is None) and (pixmap is None or self._pixmap.cacheKey() == pixmap.cacheKey())
+        if same_picture and tag == self._tag and current == self._current:
+            return False
+        self._tag, self._current, self._pixmap = tag, current, pixmap
+        self.update()
+        return True
 
     def set_thumb_height(self, height: int) -> None:
         height = max(24, int(height))
@@ -565,6 +576,8 @@ class Filmstrip(QFrame):
         self._right.installEventFilter(self)
         self._right.clicked.connect(lambda: self._scroll(1))
 
+        # The thumbs on screen, by frame index: a step along the strip moves them instead of rebuilding them.
+        self._thumbs: dict[int, FilmstripThumb] = {}
         self._offset = 0        # index of first visible frame (0-based)
         self._count = 0
         self._recenter_pending = True
@@ -730,17 +743,24 @@ class Filmstrip(QFrame):
         return self._thumb_provider(index) if self._thumb_provider is not None else None
 
     def _populate(self) -> None:
+        # Thumbs that stay on screen are kept (they leave the layout and go back in), so a step along the strip, or a thumbnail
+        # arriving, repaints only what changed instead of rebuilding every thumb from nothing: that rebuild was the flash.
+        previous = self._thumbs
+        self._thumbs = {}
         while self._layout.count():
             item = self._layout.takeAt(0)
             widget = item.widget()
-            if widget is not None:
-                # Hide immediately (deleteLater is async, so the old thumbs
+            if widget is not None and not isinstance(widget, FilmstripThumb):
+                # Hide immediately (deleteLater is async, so the old spacers
                 # would otherwise linger and ghost during a rapid drag). NOT
                 # setParent(None) — that reparents a visible widget into its
                 # own floating top-level window.
                 widget.hide()
                 widget.deleteLater()
         if self._collapsed:
+            for thumb in previous.values():
+                thumb.hide()
+                thumb.deleteLater()
             self._left.hide()
             self._right.hide()
             return
@@ -768,27 +788,40 @@ class Filmstrip(QFrame):
                 spacer.installEventFilter(self)
                 self._layout.addWidget(spacer)
                 continue
-            thumb = FilmstripThumb(
-                index,
-                self._tag_for(index),
-                index == self._current,
-                self._thumb_for(index),
-                height=self._thumb_h,
-                mockup_chrome=self.mockup_chrome,
-            )
-            thumb._editor_palette = self._editor_palette
-            if not fill:
-                thumb.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                thumb.setFixedWidth(target_w)
-            thumb.installEventFilter(self)
-            thumb.clicked.connect(self.frame_selected)
+            shape = (self._thumb_h, fill, target_w, self.mockup_chrome)
+            thumb = previous.pop(index, None)
+            if thumb is not None and thumb._strip_shape == shape:
+                thumb.show_state(self._tag_for(index), index == self._current, self._thumb_for(index))
+            else:
+                if thumb is not None:
+                    thumb.hide()
+                    thumb.deleteLater()
+                thumb = FilmstripThumb(
+                    index,
+                    self._tag_for(index),
+                    index == self._current,
+                    self._thumb_for(index),
+                    height=self._thumb_h,
+                    mockup_chrome=self.mockup_chrome,
+                )
+                thumb._strip_shape = shape
+                thumb._editor_palette = self._editor_palette
+                if not fill:
+                    thumb.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                    thumb.setFixedWidth(target_w)
+                thumb.installEventFilter(self)
+                thumb.clicked.connect(self.frame_selected)
+            self._thumbs[index] = thumb
             self._layout.addWidget(thumb)
+        for thumb in previous.values():
+            # Scrolled out of view.
+            thumb.hide()
+            thumb.deleteLater()
         if not fill:
             self._layout.addStretch(1)
         self._left.setVisible(self._total > 0 and self._current > 0)
         self._right.setVisible(self._total > 0 and self._current < self._total - 1)
-        self._left.raise_()
-        self._right.raise_()
+        self._raise_arrows()
 
     def _scroll(self, direction: int) -> None:
         step = max(1, self._count // 2)
@@ -850,8 +883,13 @@ class Filmstrip(QFrame):
         inset = round(self.width() * self.ARROW_INSET_FRAC)
         self._left.move(inset, y)
         self._right.move(self.width() - inset - self._right.width(), y)
-        self._left.raise_()
-        self._right.raise_()
+        self._raise_arrows()
+
+    def _raise_arrows(self) -> None:
+        # Raising repaints whatever is under the arrows (the thumbs at both ends of the strip), so only when they are not already on top.
+        if self.children()[-2:] != [self._left, self._right]:
+            self._left.raise_()
+            self._right.raise_()
 
     def _reflow(self, *, force: bool) -> None:
         fit = self._fit_count()

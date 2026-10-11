@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from bisect import bisect_left
@@ -14,6 +16,7 @@ from pathlib import Path
 
 from . import edit_storage, photocraft_bridge, photocraft_preview
 from .brackets import BracketDetector
+from .cache import edit_state_for
 from .formats import RAW_SUFFIXES
 from .models import ImageRecord, SessionAnnotation
 from .app_identity import user_settings
@@ -59,6 +62,7 @@ class PreviewController(QObject):
     _photocraft_viewport_ready = Signal(int, object)
     _photocraft_camera_raw_up = Signal(int, str)
     _photocraft_document_closed = Signal(str)
+    _filmstrip_edit_state_probed = Signal(str, object)
 
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
@@ -74,6 +78,17 @@ class PreviewController(QObject):
         # behind a RAW load.
         self._photocraft_preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="photocraft-preview")
         self._photocraft_dwell_request: tuple[int, str] | None = None
+        # Filmstrip pixmaps by the cache key of the image they were made from: the strip asks for every visible thumb on each
+        # step, and making a pixmap from the same image again each time was most of the cost (and a new pixmap repaints).
+        self._filmstrip_pixmaps: dict[int, QPixmap] = {}
+        # What the edits of a photo look like on disk (``edit_state_for``: several file lookups, 1.4 ms each on a quiet drive and tens of
+        # ms while photos are being read from it), by path, with when it was found. The strip asks about a dozen photos on every step, so
+        # the answers are found on a thread of their own and remembered; until one has arrived the strip uses what it knew (no edits).
+        self._filmstrip_edit_states: dict[str, tuple[float, tuple[int, int]]] = {}
+        self._filmstrip_probing: set[str] = set()
+        self._filmstrip_probe_queue: queue.SimpleQueue[str] = queue.SimpleQueue()
+        self._filmstrip_prober: threading.Thread | None = None
+        self._filmstrip_edit_state_probed.connect(self._filmstrip_edit_state_known)
         self._photocraft_raw_inflight = False
         self._photocraft_needs_preview_refresh = False
         self._photocraft_current_path = ""
@@ -1008,6 +1023,7 @@ class PreviewController(QObject):
     def _refresh_photocraft_save(self, path: str) -> None:
         from .grid import GridDeltaUpdate
 
+        self._filmstrip_edit_state_stale(path)
         self._window.grid.update_items(GridDeltaUpdate(changed_paths=(path,), preserve_pixmap_cache=False))
         preview = self.preview_if_built()
         if preview is not None:
@@ -1436,6 +1452,7 @@ class PreviewController(QObject):
         self._photocraft_dwell_timer.stop()
         self._photocraft_dwell_request = None
         self._photocraft_save_timer.stop()
+        self._filmstrip_edit_state_stale()  # the photo that was being edited has changed on disk, or soon will
         proc = self._photocraft
         if proc is None or not proc.is_running():
             return
@@ -1633,6 +1650,73 @@ class PreviewController(QObject):
                 total=len(browsable),
             )
 
+    FILMSTRIP_EDIT_STATE_TTL_S = 10.0
+
+    def _filmstrip_edit_state(self, path: str) -> tuple[int, int]:
+        """``edit_state_for(path)`` as far as the strip knows it, without looking at the disk: what was found in the last
+        ``FILMSTRIP_EDIT_STATE_TTL_S`` seconds, else (while it is found again, on a thread of its own) what was found before, else
+        "no edits", which is right for nearly every photo. The strip is refreshed if the answer turns out different."""
+        known = self._filmstrip_edit_states.get(path)
+        if known is not None and time.monotonic() - known[0] < self.FILMSTRIP_EDIT_STATE_TTL_S:
+            return known[1]
+        self._probe_filmstrip_edit_state(path)
+        return known[1] if known is not None else (0, 0)
+
+    def _filmstrip_edit_state_stale(self, path: str | None = None) -> None:
+        """The edits of ``path`` (of every photo, without it) can have changed: find them again the next time the strip asks, and
+        until then show what it knew."""
+        paths = list(self._filmstrip_edit_states) if path is None else [path]
+        for each in paths:
+            known = self._filmstrip_edit_states.get(each)
+            if known is not None:
+                self._filmstrip_edit_states[each] = (float("-inf"), known[1])
+
+    def _probe_filmstrip_edit_state(self, path: str) -> None:
+        if path in self._filmstrip_probing:
+            return
+        self._filmstrip_probing.add(path)
+        self._filmstrip_probe_queue.put(path)
+        if self._filmstrip_prober is None:
+            # A thread of its own that never keeps the program from closing: a photo on a drive that has gone away can hold a lookup for
+            # many seconds.
+            self._filmstrip_prober = threading.Thread(target=self._find_filmstrip_edit_states, name="filmstrip-edit-states", daemon=True)
+            self._filmstrip_prober.start()
+
+    def _find_filmstrip_edit_states(self) -> None:
+        while True:
+            path = self._filmstrip_probe_queue.get()
+            try:
+                state = edit_state_for(path)
+            except Exception:  # edit_state_for answers "no edits" for anything it cannot read; this is for the unforeseen
+                state = (0, 0)
+            try:
+                self._filmstrip_edit_state_probed.emit(path, state)
+            except RuntimeError:  # the controller has been deleted: the program is closing
+                return
+
+    def _filmstrip_edit_state_known(self, path: str, state) -> None:
+        self._filmstrip_probing.discard(path)
+        state = (int(state[0]), int(state[1]))
+        previous = self._filmstrip_edit_states.get(path)
+        shown = previous[1] if previous is not None else (0, 0)
+        if previous is None and len(self._filmstrip_edit_states) >= 512:
+            self._filmstrip_edit_states.pop(next(iter(self._filmstrip_edit_states)))
+        self._filmstrip_edit_states[path] = (time.monotonic(), state)
+        if state != shown and self.preview_is_visible():
+            # The strip drew this photo as it was before (or as unedited): draw it again.
+            self._window.preview.refresh_filmstrip()
+
+    def _filmstrip_pixmap(self, image) -> QPixmap:
+        """The pixmap for ``image``: the same one every time for the same image, so a thumb that is already showing it need not repaint."""
+        key = int(image.cacheKey())
+        pixmap = self._filmstrip_pixmaps.get(key)
+        if pixmap is None:
+            pixmap = QPixmap.fromImage(image)
+            if len(self._filmstrip_pixmaps) >= 512:
+                self._filmstrip_pixmaps.pop(next(iter(self._filmstrip_pixmaps)))
+            self._filmstrip_pixmaps[key] = pixmap
+        return pixmap
+
     def preview_filmstrip_thumb(self, index: int) -> QPixmap | None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
@@ -1646,9 +1730,10 @@ class PreviewController(QObject):
                     state="invalid_record",
                 )
             return None
-        image = self._window.thumbnail_manager.get_cached(record, self._window.PREVIEW_FILMSTRIP_THUMB_SIZE)
+        edit_state = self._filmstrip_edit_state(record.path)
+        image = self._window.thumbnail_manager.get_cached(record, self._window.PREVIEW_FILMSTRIP_THUMB_SIZE, edit_state)
         if image is not None and not image.isNull():
-            pixmap = QPixmap.fromImage(image)
+            pixmap = self._filmstrip_pixmap(image)
             if logger.enabled:
                 logger.duration(
                     "preview.filmstrip_thumbnail",
@@ -1667,10 +1752,11 @@ class PreviewController(QObject):
             self._window.PREVIEW_FILMSTRIP_THUMB_SIZE,
             priority=25_000,
             drop_if_not_wanted=False,
+            edit_state=edit_state,
         )
-        fallback = self._window.grid.thumbnail_for(index)
+        fallback = self._window.grid.thumbnail_for(index, edit_state)
         if fallback is not None and not fallback.isNull():
-            pixmap = QPixmap.fromImage(fallback)
+            pixmap = self._filmstrip_pixmap(fallback)
             if logger.enabled:
                 logger.duration(
                     "preview.filmstrip_thumbnail",
@@ -1709,7 +1795,10 @@ class PreviewController(QObject):
             return preview_studio.INFO
         return None
 
-    def handle_preview_filmstrip_thumbnail_ready(self, *_args) -> None:
+    def handle_preview_filmstrip_thumbnail_ready(self, *args) -> None:
+        # A thumbnail arriving may be the render of a photo that was just edited: look at its edits again next time.
+        if args and getattr(args[0], "path", None):
+            self._filmstrip_edit_state_stale(args[0].path)
         if self.preview_is_visible():
             logger = perf_logger()
             if logger.enabled:

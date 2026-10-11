@@ -214,18 +214,20 @@ class ThumbnailManager(QObject):
         self._drain_timer.setInterval(12)
         self._drain_timer.timeout.connect(self._drain_results)
 
-    def make_key(self, record: ImageRecord, target_size: QSize) -> ThumbnailKey:
+    def make_key(self, record: ImageRecord, target_size: QSize, edit_state: tuple[int, int] | None = None) -> ThumbnailKey:
+        """``edit_state`` is the photo's ``edit_state_for``; a caller that asks about many photos at once and has it already
+        (it costs file lookups) passes it in."""
         return ThumbnailKey(
             path=record.path,
             modified_ns=record.modified_ns,
             file_size=record.size,
             width=target_size.width(),
             height=target_size.height(),
-            edit_state=edit_state_for(record.path),
+            edit_state=edit_state if edit_state is not None else edit_state_for(record.path),
         )
 
-    def get_cached(self, record: ImageRecord, target_size: QSize) -> QImage | None:
-        return self.memory_cache.get(self.make_key(record, target_size))
+    def get_cached(self, record: ImageRecord, target_size: QSize, edit_state: tuple[int, int] | None = None) -> QImage | None:
+        return self.memory_cache.get(self.make_key(record, target_size, edit_state))
 
     def set_wanted_keys(self, keys: set[ThumbnailKey]) -> None:
         with self._wanted_keys_lock:
@@ -245,8 +247,9 @@ class ThumbnailManager(QObject):
         priority: int = 0,
         *,
         drop_if_not_wanted: bool = True,
+        edit_state: tuple[int, int] | None = None,
     ) -> ThumbnailKey:
-        key = self.make_key(record, target_size)
+        key = self.make_key(record, target_size, edit_state)
         cached = self.memory_cache.get(key)
         if cached is not None:
             perf_logger().log("thumbnail.request", state="memory_hit", path=record.path, width=target_size.width(), height=target_size.height(), priority=priority)

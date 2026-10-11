@@ -20,6 +20,17 @@
 > A photo in another folder than the one the editor was started for still means a fresh start (the editor's file access is
 > fixed at launch). The start creates the hidden `.image_triage_edits` folder in the browsed folder, which the editor requires
 > to exist; set `IMAGE_TRIAGE_NO_EDITOR_PRESTART=1` or turn the setting off to start the editor only on the first E.
+>
+> **The filmstrip no longer limits how fast photos can be flipped.** Every step rebuilt all of the strip's thumbs and, for each of
+> a dozen photos, looked at the disk for the photo's edits (`cache.edit_state_for`: five file lookups, 1.4 ms each on the photo
+> drive and tens of ms while photos are being read from it) on the UI thread: 40-80 ms per step, and the strip flashed. Now
+> (`Filmstrip._populate`) the thumbs that stay on screen are kept and told what they show (`FilmstripThumb.show_state` repaints
+> only if the picture, tag or ring changed), the pixmaps are made once per image (`PreviewController._filmstrip_pixmap`), and the
+> edit state of each photo is found on a daemon thread (`_filmstrip_edit_state`): the strip uses the last answer, or "not edited"
+> before there is one (right for nearly every photo), and is redrawn if the answer turns out different. An answer is looked for again
+> after 10 s, and at once when a thumbnail of the photo arrives, the editor saves it, or the editor is left. Measured with a key
+> every 80 ms through 45 MP NEFs, the popout alone: 5 of 20 photos shown, 5.4 s of UI-thread pauses (worst 2.2 s) before; 19-20 shown,
+> 0.3-0.5 s of pauses (worst 0.22 s) after; the strip's own work fell from 3.8 s to 0.16 s over the 22 steps.
 
 Status: phase 1 (the fast browsing layer) is implemented on branch `camera-raw-first-nav`, unit-tested,
 timed in isolation and run through the live editor check; it has **not** been exercised against real RAW
