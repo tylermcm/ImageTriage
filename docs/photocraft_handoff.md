@@ -16,6 +16,11 @@ this day is on the fork's `scratch/upstream-merge-2026-10-11` until the user fas
   over the dialog; the picture now covers the window until the editor reports again, and a resize re-asks).
 * Measured on real 45 MP NEFs (Intel UHD 620): picture on screen 34-65 ms after the key; dialog swap to a prepared
   photo ~140-170 ms, to an unprepared one ~1.7-2.2 s (was ~4 s).
+* Open no longer freezes the editor: its first canvas draw builds the GPU compositor on a worker thread (the driver's
+  shader compile took ~14 s on the UI thread on this laptop) and the canvas draws on the CPU meanwhile. An Open pressed as
+  soon as the first photo's dialog is up now gets its first control answer after ~0.2 s instead of 14 s. The compositor is
+  deliberately not built ahead of time while browsing: that slowed every swap it overlapped (prepared 165 -> 189 ms,
+  unprepared 1.72 -> 1.99 s). The full 45 MP CPU redraw after Open (~2.4 s) still blocks the editor that long.
 * Checks that need the host's Qt event loop pumped while they wait (an embedded editor shares its parent's input
   queue): `scripts/check_camera_raw_recipe.py` now polls with short timeouts for that reason.
 
