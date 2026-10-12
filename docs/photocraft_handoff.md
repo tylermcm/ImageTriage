@@ -281,15 +281,23 @@ identifiable; avoid rewriting or force-pushing the fork's history.
   run: since the editor opens only after E, they timed out waiting for the first photo. `check_photocraft_handoff.py`
   still fails at once on "filmstrip flashed during editor startup": it predates the popout changes of 2026-10-11 and
   was not updated.
-- Not run: the ui-egui integration tests, the desktop app's tests, the layers and wasm checks, and anything with a
-  real raw file (this machine has none): `check_camera_raw_recipe.py`, Save routing, themes, stash/restore on a real
-  photo. The reduced development's new route has only its synthetic tests; its speed on a 45 MP NEF has not been
-  measured. Automatic merges in `control.rs`, `jobs_ui.rs`, `lib.rs` and `services.rs` were compiled and tested, not
-  read.
-- Candidate to drop next, needs real NEFs to decide: upstream decodes Nikon compressed NEF itself (`raw/nefc.rs`,
-  #1310). If the owner's cameras all open that way, the retained-raw smart object route (`rawSmartObject`,
-  `rawSensorPath`, `raw_smart.rs`, `raw_development.rs`, `raw_develop_cmds.rs`, `raw_develop_ui.rs`, about 1,000 lines
-  in the fork, and `photocraft_raw_source.py` here) is only a fallback for files upstream cannot read.
+- Real NEFs (public samples from raw.pixls.us, kept in `C:\Users\Checkout\Pictures\nef-samples`; desktop with 20
+  threads, not the laptop). Upstream's decoder reads D850 12/14-bit lossy and 14-bit lossless, Z 7 14-bit lossy and
+  lossless and Z 8 14-bit lossless; it refuses Z 8 / Z 9 High Efficiency ("Nikon compressed NEF without a
+  linearization table"). Library timings per file: decode 0.4-0.65 s, reduced browse import 0.5-0.85 s (2072 x 1380),
+  full default import 1.2-2.1 s.
+- `check_camera_raw_recipe.py` on D850 14-bit lossy + Z 8 14-bit lossless passed: first raw in Camera Raw 2.3 s,
+  second 1.5 s, return to the first 0.9 s, recipe and render written, Open continues the saved document; picture on
+  screen 121-190 ms after the key. With `--unsupported Z9-high-efficiency.NEF` it fails at that step: the sensor
+  DNG fallback cannot read the file either (LibRaw: "Unsupported file format or not RAW file"); the popout keeps
+  the previous photo and reports it.
+- So the retained-raw smart object route (`rawSmartObject`, `rawSensorPath`, `raw_smart.rs`, `raw_development.rs`,
+  `raw_develop_cmds.rs`, `raw_develop_ui.rs`, about 1,000 lines in the fork, and `photocraft_raw_source.py` here)
+  no longer covers anything upstream does not for these cameras: compressed NEFs open upstream's way, and High
+  Efficiency files open neither way. It is the next thing to drop, pending the owner's word.
+- Not run: the ui-egui integration tests, the desktop app's tests, the layers and wasm checks, Save routing, themes
+  and window handling in the live app. Automatic merges in `control.rs`, `jobs_ui.rs`, `lib.rs` and `services.rs`
+  were compiled and tested, not read.
 - Run cargo with `-j 6` or so on this 16 GB machine: a fully parallel workspace test build froze it.
 
 PhotoCraft is the popout's default editor. The current filmstrip, navigation,
