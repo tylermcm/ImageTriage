@@ -322,6 +322,42 @@ identifiable; avoid rewriting or force-pushing the fork's history.
   value stored and keeps it.
 - Run cargo with `-j 6` or so on this 16 GB machine: a fully parallel workspace test build froze it.
 
+### 2026-10-12 update, later (validation gaps, the save stall, more of the fork dropped)
+
+Fork `codex/image-triage-integration` at `823d9890` (local, not pushed), Image Triage `main`.
+
+- Upstream: no release after 0.8.2; main is 33 commits ahead of it and merges without conflicts. Nothing merged
+  (releases only, per the owner).
+- `check_photocraft_handoff.py` runs again (it pins the two settings it needs) and passes at 1 MP and 24 MP: hidden
+  start, embedding, stash and restore, PhotoCraft's own Save, reopen after closing the tab, five themes, cleanup,
+  no editor hides. `desktop_captures_verified` is false on this machine, as in earlier sessions. One 24 MP run of
+  five ended with the Python process gone (exit 127, no traceback) and the editor left running; not reproduced in
+  three reruns, cause unknown. A check that dies leaves its pinned settings in the real profile
+  (`preview/photocraft_camera_raw_first`, `preview/editor_on_demand`): remove them by hand if that happens.
+- The fork's changes in `main.rs`, `services.rs`, `control.rs`, `jobs_ui.rs`, `lib.rs` and `menus.rs` were read
+  against upstream after the merge: nothing found.
+- The occasional empty control reply: `PhotoCraftControl` had no lock, and the fast-lane connection is used from
+  several threads (prefetch, viewport, saves). Each request and its reply are now one locked exchange. With it,
+  `check_camera_raw_first.py` passed 6 runs of 6 (1 of 4 failed before).
+- Save stall. `scripts/measure_stash_stall.py` (new) opens a photo, edits it, saves with `app.stash` and times
+  `ui.viewport` while zooming; `--cores N` holds the editor to N logical processors. On a 45 MP Z 7II NEF: all 20
+  threads, no stall either way (save 3.0-3.7 s). Held to 8: slowest answer 97-901 ms before; with the fork's
+  encoders on a pool of their own (`100aedc2`) 35-154 ms, save 5.5-8.8 s against 5.2-5.9 s. Held to 4: unchanged,
+  about 1-3 s (the two large encoders start a thread per core themselves; letting them take turns did not help
+  and was not kept). Not measured on the laptop, where the 9-12 s stall was seen.
+- A save still writes 310 MB (`.pcraft`) + 211 MB (preview PNG) for a 45 MP photo. Unchanged; the format decisions
+  are the owner's.
+- Dropped from the fork: its tweak inside upstream's `codecs/image.rs`. Checked against upstream and kept, as
+  upstream has no equivalent: the 16-bit canvas upload table (`gpu/src/lib.rs`), the background compositor build
+  and full redraw (`gpu_canvas.rs`), the reduced browse development. Fork delta: 24 files, +3,846 / -84.
+- Full Image Triage suite on this machine: 1,814 passed, 7 failed, 3 collection errors. All ten are the same at
+  `f10ba09` (before this day's work): the three sandbox packages are not in the checkout (3 errors, 1 failure);
+  `test_preview_right_click` (5); and the architecture ratchet, which the PhotoCraft branch exceeded before it was
+  merged (main window 2,829 -> 2,848 lines, 109 -> 110 methods, 342 -> 343 attributes; private reaches in
+  `preview_controller` 164/163, `settings_controller` 347/343, `startup_controller` 27/25). The ratchet was not
+  re-registered. This Python has a `tests` package of its own in site-packages (from pyppeteer2) that hides
+  `tests.harness`; the suite was run with the repository's `tests` registered first.
+
 PhotoCraft is the popout's default editor. The current filmstrip, navigation,
 review controls and comparison views remain in Image Triage. Opening a photo
 automatically loads the native editor in the image pane; there is no editor
