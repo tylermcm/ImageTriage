@@ -26,7 +26,9 @@ from image_triage.edit_render_headless import render_edited_image
 from image_triage.models import ImageRecord
 from image_triage.preview import FullScreenPreview, PreviewEntry
 from image_triage.preview_controller import PreviewController
+from image_triage.app_identity import user_settings
 from image_triage.scanner import normalized_path_key
+from image_triage.ui.native_image_layer import CAMERA_RAW_FIRST_KEY, EDITOR_ON_DEMAND_KEY
 
 
 def main() -> None:
@@ -39,6 +41,12 @@ def main() -> None:
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     app = QApplication.instance() or QApplication([])
+    # This check drives the ordinary editor on every photo: not the Camera Raw workspace (the default since
+    # 2026-10-12), and not an editor that waits for E.
+    settings = user_settings()
+    previous_settings = {key: settings.value(key, True, bool) for key in (CAMERA_RAW_FIRST_KEY, EDITOR_ON_DEMAND_KEY)}
+    for key in previous_settings:
+        settings.setValue(key, False)
     parent = QObject()
     controller = PreviewController(parent)
     preview = FullScreenPreview()
@@ -234,6 +242,8 @@ def main() -> None:
         (output / "timings.json").write_text(json.dumps(timings, indent=2), encoding="utf-8")
         print(json.dumps(timings, indent=2))
     finally:
+        for key, value in previous_settings.items():
+            settings.setValue(key, value)
         bridge._find_window_for_pid = find_window
         controller.shutdown_photocraft()
         controller._photocraft_executor.shutdown(wait=True)
