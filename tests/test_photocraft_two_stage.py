@@ -240,16 +240,9 @@ def test_cancel_open_jobs_never_touches_saves():
     assert not [c for c in fast.call.call_args_list if c.args[0] == "jobs.cancel"]
 
 
-def test_an_open_is_abandoned_if_the_selection_moved_on_while_the_raw_was_unpacking(tmp_path, monkeypatch):
-    from image_triage import photocraft_raw_source
-
+def test_an_open_is_abandoned_if_the_selection_moved_on_before_it_was_sent():
     control = bridge.PhotoCraftControl.__new__(bridge.PhotoCraftControl)
-    control.raw_smart_supported = True
-    control.raw_sensor_supported = True
-    control.read_root = tmp_path
     control.call = Mock(return_value={})
-    sensor = tmp_path / ".image_triage_edits" / "raw-sensors" / "s.sensor.dng"
-    monkeypatch.setattr(photocraft_raw_source, "materialize_sensor_dng", Mock(return_value=sensor))
     with pytest.raises(bridge.PhotoCraftSuperseded):
         control.app_open("camera.NEF", replace=True, should_continue=lambda: False)
     control.call.assert_not_called()

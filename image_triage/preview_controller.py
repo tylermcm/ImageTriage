@@ -1259,13 +1259,6 @@ class PreviewController(QObject):
         if proc.current_sidecar is None:
             return
         control = control if control is not None else proc.control
-        if getattr(proc.control, "raw_smart_supported", False) is True:
-            # Commit the RAW draft on an engine worker before stash/switch/close.
-            # Polling revision alone must never close a dialog the user is editing.
-            if commit_raw_draft:
-                control.call("ui.rawDevelopment", {"commit": True})
-            elif control.call("ui.rawDevelopment").get("open"):
-                return
         if proc.camera_raw_first:
             # Leaving the photo ("Done"): a raw's Camera Raw settings are kept as its recipe by the editor and
             # nothing is developed or saved; another kind of dialog applies as one step so the revision below,

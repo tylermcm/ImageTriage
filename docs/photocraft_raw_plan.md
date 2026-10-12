@@ -1,5 +1,10 @@
 # RAW editing integration plan
 
+> **Superseded 2026-10-12.** The RAW-backed smart object this plan describes (`rawSmartObject`, the sensor DNG
+> adapter, `ui.rawDevelopment`, `photocraft_raw_source.py`) was removed from both repositories: upstream PhotoCraft
+> now decodes Nikon compressed NEFs itself, and raws are edited through the Camera Raw workspace and its per-photo
+> recipes ([camera_raw_first_browsing.md](camera_raw_first_browsing.md)). Kept as a record of the earlier design.
+
 Research date: 2026-10-08. Initial implementation validated; see the
 [handoff](photocraft_handoff.md) for the promoted build, checks and performance limits.
 

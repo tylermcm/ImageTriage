@@ -143,35 +143,23 @@ def test_the_bridge_asks_the_editor_to_open_a_raw_in_camera_raw():
     assert result["cameraRaw"]["dialog"] is True
 
 
-def test_a_raw_the_editor_cannot_develop_takes_the_retained_raw_route(monkeypatch):
+def test_a_raw_the_editor_cannot_develop_is_left_as_the_editor_opened_it():
     control = object.__new__(bridge.PhotoCraftControl)
     control.camera_raw_supported = True
-    control.raw_smart_supported = True
-    control.raw_sensor_supported = True
-    control.read_root = None
-    calls = []
-
-    def call(method, params=None):
-        calls.append((method, params))
-        return {"cameraRaw": {"dialog": False}} if len(calls) == 1 else {"ok": True}
-
-    control.call = call
+    control.call = Mock(return_value={"cameraRaw": {"dialog": False}})
     result = control.app_open("frame.dng", replace=True, camera_raw={"recipePath": "a.json"})
-    assert [c[0] for c in calls] == ["app.open", "app.open"]
-    assert "cameraRaw" in calls[0][1] and calls[1][1].get("rawSmartObject") is True and "cameraRaw" not in calls[1][1]
-    assert result == {"ok": True}
+    # One open: the editor showed the camera's embedded preview, and there is no second route to try.
+    control.call.assert_called_once()
+    assert result == {"cameraRaw": {"dialog": False}}
 
 
 def test_an_editor_without_the_capability_ignores_the_spec():
     control = object.__new__(bridge.PhotoCraftControl)
     control.camera_raw_supported = False
-    control.raw_smart_supported = True
-    control.raw_sensor_supported = False
-    control.read_root = None
     control.call = Mock(return_value={})
     control.app_open("frame.dng", replace=True, camera_raw={"recipePath": "a.json"})
     (method, params), = [c.args for c in control.call.call_args_list]
-    assert "cameraRaw" not in params and params.get("rawSmartObject") is True
+    assert params == {"path": "frame.dng", "replace": True}
 
 
 def test_the_handoff_probe_reads_the_capability():
@@ -192,8 +180,8 @@ def test_the_handoff_probe_reads_the_capability():
         control.require_hosted_handoff()
         return control
 
-    assert probe({"version": 2, "rawSmartObject": 1, "rawSensorAdapter": 1, "cameraRaw": 1}).camera_raw_supported is True
-    assert probe({"version": 2, "rawSmartObject": 1, "rawSensorAdapter": 1}).camera_raw_supported is False
+    assert probe({"version": 2, "cameraRaw": 1}).camera_raw_supported is True
+    assert probe({"version": 2}).camera_raw_supported is False
     assert probe({"version": 2, "cameraRaw": 1, "cameraRawSwitch": 1}).camera_raw_switch_supported is True
     assert probe({"version": 2, "cameraRaw": 1, "cameraRawPrefetch": 1}).camera_raw_switch_supported is False
 

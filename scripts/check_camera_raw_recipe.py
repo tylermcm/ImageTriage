@@ -12,7 +12,7 @@ Runs the real popout and controller against a real PhotoCraft launched with ``--
 4. Open develops the raw (the full editor); developing it is not mistaken for editing it;
 5. editing in the full editor saves a document and a render;
 6. closing that document returns to the raw in Camera Raw with its recipe, and Open continues the document;
-7. a raw the editor cannot develop from sensor data (``--unsupported``) takes the retained-RAW route.
+7. a raw the editor cannot develop from sensor data (``--unsupported``) opens as its embedded preview, without Camera Raw.
 """
 from __future__ import annotations
 
@@ -309,12 +309,12 @@ def main() -> None:
         wait_for(lambda: not any(j.get("state") == "running" for j in fast().call("jobs.list").get("jobs", [])), "the saved document to open", timeout=120)
         results["open_continues_saved_document"] = True
 
-        # 7. A raw the editor cannot develop from sensor data takes the retained-RAW route.
+        # 7. A raw the editor cannot develop from sensor data opens as its embedded preview, without Camera Raw.
         if args.unsupported:
             index = len(records) - 1
             results["unsupported_raw_ms"] = select(index, dialog=False)
             wait_for(lambda: len(documents()) == 1, "the fallback document")
-            assert not camera_raw().get("open"), "the fallback route must not open Camera Raw"
+            assert not camera_raw().get("open"), "an undeveloped raw must not open Camera Raw"
             results["unsupported_raw_fallback"] = True
 
         controller.nav_timer.flush()
