@@ -316,6 +316,10 @@ identifiable; avoid rewriting or force-pushing the fork's history.
 - With "Open photos in Camera Raw first" off (the default), a raw now opens as upstream's ordinary developed
   document: there is no sensor-level re-development after the open in that mode. Not run live in that mode
   (`check_photocraft_handoff.py` is stale).
+- "Open photos in Camera Raw first" is now on by default (`CAMERA_RAW_FIRST_DEFAULT`), and no longer labelled
+  experimental: it is the mode that works as Photoshop does (Camera Raw, then the editor, settings kept per photo),
+  and the only one with raw-level editing. A profile where the settings dialog was accepted before has the old
+  value stored and keeps it.
 - Run cargo with `-j 6` or so on this 16 GB machine: a fully parallel workspace test build froze it.
 
 PhotoCraft is the popout's default editor. The current filmstrip, navigation,

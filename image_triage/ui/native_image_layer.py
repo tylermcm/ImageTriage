@@ -26,9 +26,10 @@ REGION_OFF = "off"
 REGIONS = (REGION_CANVAS, REGION_FULL, REGION_OFF)
 DEFAULT_REGION = REGION_CANVAS
 SETTINGS_KEY = "preview/photocraft_overlay_region"
-# Launch the editor in its Camera Raw workspace (``photocraft --raw-workspace``): off until it has been
-# used on real RAW files.
+# Launch the editor in its Camera Raw workspace (``photocraft --raw-workspace``). On unless turned off: a raw
+# opens in Camera Raw before the full editor, as in Photoshop.
 CAMERA_RAW_FIRST_KEY = "preview/photocraft_camera_raw_first"
+CAMERA_RAW_FIRST_DEFAULT = True
 # The editor opens only when its key is pressed (default), instead of following every photo that is browsed.
 EDITOR_ON_DEMAND_KEY = "preview/editor_on_demand"
 # The editor is started quietly in the background after Image Triage boots (default), so the first editor key finds it running.

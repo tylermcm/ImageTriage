@@ -117,9 +117,9 @@ class SettingsController(QObject):
         )
 
     def _photocraft_camera_raw_first(self) -> bool:
-        from .ui.native_image_layer import CAMERA_RAW_FIRST_KEY
+        from .ui.native_image_layer import CAMERA_RAW_FIRST_DEFAULT, CAMERA_RAW_FIRST_KEY
 
-        return bool(self._window._settings.value(CAMERA_RAW_FIRST_KEY, False, bool))
+        return bool(self._window._settings.value(CAMERA_RAW_FIRST_KEY, CAMERA_RAW_FIRST_DEFAULT, bool))
 
     def _photocraft_editor_prestart(self) -> bool:
         from .app_identity import user_settings

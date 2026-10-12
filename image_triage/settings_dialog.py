@@ -64,7 +64,7 @@ class WorkflowSettingsResult:
     free_smooth_scroll_enabled: bool = False
     preview_preload_batch_size: int = 10
     photocraft_overlay_region: str = "canvas"
-    photocraft_camera_raw_first: bool = False
+    photocraft_camera_raw_first: bool = True
     photocraft_editor_on_demand: bool = True
     photocraft_editor_prestart: bool = True
     show_hidden_folders: bool = False
@@ -308,7 +308,7 @@ class WorkflowSettingsDialog(QDialog):
         free_smooth_scroll_enabled: bool = False,
         preview_preload_batch_size: int = 10,
         photocraft_overlay_region: str = "canvas",
-        photocraft_camera_raw_first: bool = False,
+        photocraft_camera_raw_first: bool = True,
         photocraft_editor_on_demand: bool = True,
         photocraft_editor_prestart: bool = True,
         show_hidden_folders: bool = False,
@@ -673,7 +673,7 @@ class WorkflowSettingsDialog(QDialog):
             "so browsing never waits on the editor. This chooses how much of the editor that picture covers."
         ))
 
-        self.photocraft_camera_raw_first_checkbox = QCheckBox("Open photos in Camera Raw first (experimental)")
+        self.photocraft_camera_raw_first_checkbox = QCheckBox("Open photos in Camera Raw first")
         self.photocraft_camera_raw_first_checkbox.setChecked(photocraft_camera_raw_first)
         self.photocraft_camera_raw_first_checkbox.setToolTip(_settings_tooltip(
             "The embedded editor opens each photo in Camera Raw, inside its window; OK leaves the full editor on the same photo, "

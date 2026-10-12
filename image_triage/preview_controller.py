@@ -29,7 +29,7 @@ from .scanner import normalized_path_key
 from .shell_actions import detect_photocraft_executable, open_in_photoshop
 from .ui import load_shortcut_overrides
 from .ui import preview_studio
-from .ui.native_image_layer import CAMERA_RAW_FIRST_KEY, EDITOR_PRESTART_KEY
+from .ui.native_image_layer import CAMERA_RAW_FIRST_DEFAULT, CAMERA_RAW_FIRST_KEY, EDITOR_PRESTART_KEY
 
 _log = logging.getLogger(__name__)
 
@@ -864,7 +864,7 @@ class PreviewController(QObject):
 
     def _photocraft_launch_args(self) -> tuple[str, ...]:
         """Extra command-line flags for the editor: the Camera Raw workspace when that setting is on."""
-        return ("--raw-workspace",) if user_settings().value(CAMERA_RAW_FIRST_KEY, False, bool) else ()
+        return ("--raw-workspace",) if user_settings().value(CAMERA_RAW_FIRST_KEY, CAMERA_RAW_FIRST_DEFAULT, bool) else ()
 
     # How long to wait for Camera Raw to appear after its document opened, and how often to look.
     CAMERA_RAW_WAIT_S = 1.5
