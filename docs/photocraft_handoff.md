@@ -298,6 +298,24 @@ identifiable; avoid rewriting or force-pushing the fork's history.
 - Not run: the ui-egui integration tests, the desktop app's tests, the layers and wasm checks, Save routing, themes
   and window handling in the live app. Automatic merges in `control.rs`, `jobs_ui.rs`, `lib.rs` and `services.rs`
   were compiled and tested, not read.
+- Removed the same day, on the owner's word: the retained-raw smart object route, from both repositories. Fork
+  (`scratch/drop-raw-smart-route`): `raw_development.rs`, `raw_develop_cmds.rs`, `raw_smart.rs`, `raw_develop_ui.rs`,
+  their tests and examples, `rawSmartObject` / `rawSensorPath` on `app.open`, `ui.rawDevelopment`, and the two
+  capability flags; `doc`, `engine`, `format`, `psd_export` / `psd_import` and `shortcuts.rs` are upstream's files
+  again. Image Triage: `photocraft_raw_source.py`, its two test modules, `check_photocraft_raw.py`; `app_open` sends
+  one plain `app.open` (with `cameraRaw` in the Camera Raw workspace). A raw the editor cannot develop from sensor
+  data (Z 8 / Z 9 High Efficiency today) opens as the camera's embedded preview, with no Camera Raw dialog.
+  `.pcraft` projects saved earlier with a RAW-backed smart object still load (the extra manifest fields are ignored)
+  but lose their development settings; this was not tested on a real saved project.
+- After the removal (fork commit `8dfc5340`, release build): fork delta against upstream 25 files, +3,808 / -88.
+  rustfmt and clippy clean; raw 142, io 501, doc 58, format 114, engine 1,578 passed; ui-egui library 2,381 passed
+  and the same 2 upstream catalog failures. Image Triage: 237 PhotoCraft-related tests pass. Live:
+  `check_camera_raw_recipe.py` on two Z 7II NEFs (the owner's camera) plus the Z 9 High Efficiency file passed
+  (second raw 1.4 s, return 1.5 s, the High Efficiency file opens as its preview in 1.0 s with no dialog; the first
+  photo took 7.5 s on the new executable's first launch); `check_camera_raw_first.py` passed.
+- With "Open photos in Camera Raw first" off (the default), a raw now opens as upstream's ordinary developed
+  document: there is no sensor-level re-development after the open in that mode. Not run live in that mode
+  (`check_photocraft_handoff.py` is stale).
 - Run cargo with `-j 6` or so on this 16 GB machine: a fully parallel workspace test build froze it.
 
 PhotoCraft is the popout's default editor. The current filmstrip, navigation,

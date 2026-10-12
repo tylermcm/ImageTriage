@@ -26,7 +26,7 @@ from .formats import RAW_SUFFIXES
 from .shell_actions import companion_photocraft_executables, detect_photocraft_executable
 
 # Formats PhotoCraft can open directly (docs/README "Formats" section). Anything
-# else must be decoded first, except RAW which requires the sensor-backed handoff.
+# else must be decoded first, except RAW, which the editor develops itself.
 NATIVE_SUFFIXES = {
     ".psd", ".psb", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".gif",
     ".bmp", ".tga", ".ico", ".qoi", ".pnm", ".exr", ".hdr", ".avif", ".heic", ".pcraft",
@@ -258,52 +258,18 @@ class PhotoCraftControl:
 
     def app_open(self, path: str, *, replace: bool = False, should_continue=None, camera_raw: dict | None = None) -> dict:
         params = {"path": _automation_path(path)}
-        sensor = None
         if replace:
             params["replace"] = True
-        source_suffix = Path(path).suffix.lower()
-        if camera_raw is not None and source_suffix in RAW_SUFFIXES and getattr(self, "camera_raw_supported", False):
-            # Camera Raw workspace: the editor develops the raw itself and opens it in Camera Raw.
-            if should_continue is not None and not should_continue():
-                raise PhotoCraftSuperseded(f"{path} is no longer the selected photo")
-            result = self.call("app.open", {**params, "cameraRaw": camera_raw})
-            if (result.get("cameraRaw") or {}).get("dialog"):
-                return result
-            # It could not be developed from sensor data (the editor opened the camera's embedded preview
-            # instead): take the route that retains the raw and its sensor adapter for this file.
-            return self.app_open(path, replace=True, should_continue=should_continue)
-        raw_project = source_suffix == ".pcraft" and Path(Path(path).stem).suffix.lower() in RAW_SUFFIXES
-        if source_suffix in RAW_SUFFIXES or raw_project:
-            if not getattr(self, "raw_smart_supported", False):
-                raise PhotoCraftCompatibilityError("This PhotoCraft build cannot retain editable RAW data. Update the hosted editor build.")
-            if not raw_project:
-                params["rawSmartObject"] = True
-                if source_suffix == ".nef":
-                    if not getattr(self, "raw_sensor_supported", False):
-                        raise PhotoCraftCompatibilityError("This PhotoCraft build lacks the Nikon sensor adapter. Update the hosted editor build.")
-                    read_root = getattr(self, "read_root", None)
-                    if read_root is None:
-                        raise PhotoCraftError("Nikon RAW import requires the editor's automation read root")
-                    source = (Path(read_root) / path).resolve()
-                    try:
-                        source.relative_to(Path(read_root).resolve())
-                        from .photocraft_raw_source import materialize_sensor_dng
-                        sensor = materialize_sensor_dng(str(source), edit_root_for(source.parent) / "raw-sensors")
-                        params["rawSensorPath"] = sensor.relative_to(Path(read_root).resolve()).as_posix()
-                    except (OSError, ValueError, RuntimeError) as error:
-                        raise PhotoCraftError(f"Could not unpack Nikon sensor data: {error}") from error
-        try:
-            # The unpack above can take a while; if the caller has moved on meanwhile, do not
-            # start an open that would later replace the photo now on screen.
-            if should_continue is not None and not should_continue():
-                raise PhotoCraftSuperseded(f"{path} is no longer the selected photo")
-            return self.call("app.open", params)
-        finally:
-            # PhotoCraft embeds the sensor bytes before replying. Recently used unpacked
-            # sensors stay in a small bounded cache so revisiting a photo skips the unpack.
-            if sensor is not None:
-                from .photocraft_raw_source import trim_sensor_cache
-                trim_sensor_cache(sensor.parent, keep=sensor)
+        if camera_raw is not None and Path(path).suffix.lower() in RAW_SUFFIXES and getattr(self, "camera_raw_supported", False):
+            # Camera Raw workspace: the editor develops the raw itself and opens it in Camera Raw. A raw it cannot
+            # develop from sensor data opens as the camera's embedded preview, with no dialog (``cameraRaw.dialog``
+            # is false in the reply).
+            params["cameraRaw"] = camera_raw
+        # The caller may have moved on while this request waited its turn: do not start an open that would later
+        # replace the photo now on screen.
+        if should_continue is not None and not should_continue():
+            raise PhotoCraftSuperseded(f"{path} is no longer the selected photo")
+        return self.call("app.open", params)
 
     def app_prefetch(self, path: str, signature: str) -> dict:
         """Ask the editor to develop ``path`` for Camera Raw in the background (``signature`` is the file's
@@ -320,8 +286,6 @@ class PhotoCraftControl:
             raise PhotoCraftCompatibilityError("This PhotoCraft build lacks persistent hosted document replacement") from error
         if capabilities.get("version", 0) < 2:
             raise PhotoCraftCompatibilityError("This PhotoCraft build lacks persistent hosted document replacement")
-        self.raw_smart_supported = capabilities.get("rawSmartObject", 0) >= 1
-        self.raw_sensor_supported = capabilities.get("rawSensorAdapter", 0) >= 1
         self.camera_raw_supported = capabilities.get("cameraRaw", 0) >= 1
         self.camera_raw_prefetch_supported = capabilities.get("cameraRawPrefetch", 0) >= 1
         self.camera_raw_switch_supported = capabilities.get("cameraRawSwitch", 0) >= 1

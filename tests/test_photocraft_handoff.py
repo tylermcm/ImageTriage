@@ -57,30 +57,9 @@ def test_raw_handoff_preserves_source_and_requires_capability(controller, tmp_pa
     assert sidecar == str(bridge.sidecar_pcraft_path(path))
     control = object.__new__(bridge.PhotoCraftControl)
     control.call = Mock(return_value={})
-    with pytest.raises(bridge.PhotoCraftCompatibilityError):
-        control.app_open("frame.dng", replace=True)
-    control.raw_smart_supported = True
+    # A raw is the editor's to develop: the open asks for nothing special.
     control.app_open("frame.dng", replace=True)
-    control.call.assert_called_once_with("app.open", {"path": "frame.dng", "replace": True, "rawSmartObject": True})
-
-
-def test_raw_dialog_commits_before_revision_and_stash(controller, tmp_path):
-    proc = process(tmp_path)
-    proc.control.raw_smart_supported = True
-    controller._save_photocraft_sidecar_if_dirty(proc)
-    calls = proc.control.method_calls
-    assert calls[0][0:2] == ("call", ("ui.rawDevelopment", {"commit": True}))
-    assert calls[1][0] == "document_revision"
-    assert calls[2][1][0] == "app.stash"
-
-
-def test_autosave_does_not_commit_or_close_raw_dialog(controller, tmp_path):
-    proc = process(tmp_path)
-    proc.control.raw_smart_supported = True
-    proc.control.call.return_value = {"open": True}
-    controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False)
-    proc.control.call.assert_called_once_with("ui.rawDevelopment")
-    proc.control.document_revision.assert_not_called()
+    control.call.assert_called_once_with("app.open", {"path": "frame.dng", "replace": True})
 
 
 def test_read_and_write_roots_are_independent(tmp_path):
@@ -644,21 +623,3 @@ def test_early_attachment_keeps_original_viewer_covered(controller, tmp_path, mo
     finally:
         preview.close()
 
-
-def test_nef_handoff_embeds_original_and_uses_scoped_sensor_adapter(tmp_path, monkeypatch):
-    control = bridge.PhotoCraftControl.__new__(bridge.PhotoCraftControl)
-    control.raw_smart_supported = True
-    control.raw_sensor_supported = True
-    control.read_root = tmp_path
-    control.call = Mock(return_value={})
-    from image_triage import photocraft_raw_source
-    sensor = tmp_path / '.image_triage_edits' / 'sensor.dng'
-    unpack = Mock(return_value=sensor)
-    monkeypatch.setattr(photocraft_raw_source, 'materialize_sensor_dng', unpack)
-    control.app_open('camera.NEF', replace=True)
-    assert unpack.call_args.args[0] == str(tmp_path / 'camera.NEF')
-    control.call.assert_called_once_with('app.open', {'path':'camera.NEF','replace':True,'rawSmartObject':True,'rawSensorPath':'.image_triage_edits/sensor.dng'})
-    control.call.reset_mock()
-    with pytest.raises(bridge.PhotoCraftError, match='sensor data'):
-        control.app_open('../outside.NEF')
-    control.call.assert_not_called()
