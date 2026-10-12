@@ -36,7 +36,7 @@ from image_triage.nav_timing import format_summary, summarize  # noqa: E402
 from image_triage.preview import FullScreenPreview, PreviewEntry  # noqa: E402
 from image_triage.preview_controller import PreviewController  # noqa: E402
 from image_triage.scanner import normalized_path_key  # noqa: E402
-from image_triage.ui.native_image_layer import CAMERA_RAW_FIRST_KEY  # noqa: E402
+from image_triage.ui.native_image_layer import CAMERA_RAW_FIRST_KEY, EDITOR_ON_DEMAND_KEY  # noqa: E402
 
 
 def main() -> None:
@@ -50,6 +50,9 @@ def main() -> None:
     settings = user_settings()
     previous_setting = settings.value(CAMERA_RAW_FIRST_KEY, False, bool)
     settings.setValue(CAMERA_RAW_FIRST_KEY, True)
+    # The check drives the editor on every photo; by default it now opens only after E.
+    previous_on_demand = settings.value(EDITOR_ON_DEMAND_KEY, True, bool)
+    settings.setValue(EDITOR_ON_DEMAND_KEY, False)
     parent = QObject()
     controller = PreviewController(parent)
     preview = FullScreenPreview()
@@ -162,6 +165,7 @@ def main() -> None:
         print(format_summary(results["navigation"]))
     finally:
         settings.setValue(CAMERA_RAW_FIRST_KEY, previous_setting)
+        settings.setValue(EDITOR_ON_DEMAND_KEY, previous_on_demand)
         try:
             preview.photocraft_close_guard = None
             controller.shutdown_photocraft()

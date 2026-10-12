@@ -18,7 +18,13 @@ Review conflicts individually and review automatic merges in shared integration
 files too: desktop startup/services, UI control/jobs/menus, theme tokens, native
 window behavior and automation authorization. Record the old/new upstream hashes,
 conflicted files, resolution decisions and validation in
-`docs/photocraft_handoff.md`. Do not resolve conflicts wholesale using ours/theirs.
+`docs/photocraft_handoff.md`.
+
+The fork carries only what hosting PhotoCraft inside Image Triage needs. Where upstream
+has built something the fork also built (in this version or a later one), drop the fork's
+version and take upstream's; keep ours only for host behaviour upstream does not have.
+Decide that per conflict and per automatic merge, not for a whole file at a time unless the
+file holds nothing of the host's.
 
 Read the companion's AGENTS.md and apply its validation requirements. Rebuild and
 run the Image Triage handoff checks before promoting a new editor build. Preserve
