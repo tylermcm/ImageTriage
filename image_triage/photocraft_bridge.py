@@ -17,6 +17,7 @@ import secrets
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -197,6 +198,7 @@ class PhotoCraftControl:
         self._token = token
         self._timeout = timeout
         self._next_id = 1
+        self._exchange_lock = threading.RLock()
         self._open(timeout)
 
     def _open(self, timeout: float) -> None:
@@ -226,6 +228,15 @@ class PhotoCraftControl:
             raise PhotoCraftError(f"PhotoCraft control auth failed: {reply.get('error')}")
 
     def _request(self, method: str, params: dict | None = None) -> dict:
+        # One request and its reply at a time: the connection is used from the UI thread and from workers (prefetch, the
+        # viewport query, saves), and two exchanges interleaved on one socket read each other's replies, or half of one.
+        lock = self.__dict__.get("_exchange_lock")
+        if lock is None:
+            lock = self.__dict__.setdefault("_exchange_lock", threading.RLock())
+        with lock:
+            return self._exchange(method, params)
+
+    def _exchange(self, method: str, params: dict | None) -> dict:
         if method != "auth":
             self._reconnect_if_quiet()
         req_id = self._next_id
