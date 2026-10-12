@@ -57,6 +57,9 @@ def test_the_setting_decides_the_launch_flag(controller):
     assert controller._photocraft_launch_args() == ()
     settings.setValue(CAMERA_RAW_FIRST_KEY, True)
     assert controller._photocraft_launch_args() == ("--raw-workspace",)
+    # Never set: Camera Raw first is the default.
+    settings.remove(CAMERA_RAW_FIRST_KEY)
+    assert controller._photocraft_launch_args() == ("--raw-workspace",)
     settings.setValue(CAMERA_RAW_FIRST_KEY, False)
 
 

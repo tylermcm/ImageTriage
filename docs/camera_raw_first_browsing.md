@@ -224,7 +224,7 @@ is not a browsing number: `selection_ms` (7-15 ms) is the popout's side.
 ## Camera Raw workspace (built; not yet used on real RAWs)
 
 `photocraft --raw-workspace` (a mode of the one editor, not a second program). Image Triage launches the
-editor with it when **Settings > Interface > Camera Raw > "Open photos in Camera Raw first (experimental)"**
+editor with it when **Settings > Interface > Camera Raw > "Open photos in Camera Raw first"** (on by default since 2026-10-12)
 is on (default off until it has been used on real RAW files; applies the next time the editor starts).
 
 * Camera Raw opens by itself on each document, drawn inside the main window (the web build's embedded

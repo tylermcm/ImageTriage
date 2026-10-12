@@ -72,7 +72,7 @@ def main() -> None:
 
         bridge.PhotoCraftControl.call = traced
     settings = user_settings()
-    previous_setting = settings.value(CAMERA_RAW_FIRST_KEY, False, bool)
+    previous_setting = settings.value(CAMERA_RAW_FIRST_KEY, True, bool)
     settings.setValue(CAMERA_RAW_FIRST_KEY, True)
     # The check drives the editor on every photo; by default it now opens only after E.
     previous_on_demand = settings.value(EDITOR_ON_DEMAND_KEY, True, bool)
