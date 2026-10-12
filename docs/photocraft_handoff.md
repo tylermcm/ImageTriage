@@ -248,6 +248,50 @@ identifiable; avoid rewriting or force-pushing the fork's history.
   checks, the full live handoff.
 - Semantic change: the fork no longer has `ui.cameraRaw {set}`; scripts use upstream's `ui.menu.invoke` route.
 
+### 2026-10-12 update (upstream 0.8.2; the fork takes upstream's side)
+
+- Previous upstream in the branch: `d45b3718`. Incoming: `d43db3e1` (storytold/photocraft main, "Release 0.8.2"), 310
+  commits. Merge commit `14ac59e9` on the fork's local `scratch/upstream-merge-0.8.2`, made from `c6092f86`. Nothing
+  pushed; `codex/image-triage-integration` is unchanged until the user fast-forwards it. Upstream was fetched by URL
+  into `refs/upstream-peek/main`.
+- Rule from the owner, now in both AGENTS.md files: the fork carries only what hosting needs; where upstream built the
+  same thing, ours is dropped. Nothing is ever sent to storytold.
+- Ten conflicted files. Dropped for upstream's: the fork's split of `raw/develop.rs` (the file is upstream's again,
+  byte for byte), the as-shot colour fit and `with_fitted_look` in `io/raw.rs` (upstream's `default_look` does this
+  since #3201), `import_raw_browse` (MHC demosaic), and the fork's white-balance and exposure fit tests.
+- Kept beside upstream's: `raw/reduced.rs`, rewritten so it no longer edits upstream code (it averages the sensor
+  into a small Bayer mosaic and calls upstream's `develop_sensor`; sensors with black-level deltas or gain maps are
+  developed in full, as are non-Bayer ones); the Camera Raw workspace's busy state, prepared proxy and stand-in size
+  in `camera_raw_ui.rs` beside upstream's raw tone curve and display colour; the background full redraw in
+  `canvas.rs` / `gpu_canvas.rs` beside upstream's canvas texture budget; hosted start not waiting for the monitor
+  profile in `main.rs`; the display JPEG exports in `io/lib.rs`.
+- Fork delta against upstream after the merge: 45 files, +5,002 / -98 (was 47 files, +5,208 / -205).
+- Validation on this machine (Rust 1.99, first build here): `cargo check --workspace --all-targets`, rustfmt and
+  clippy `-D warnings` clean. Tests: raw 142, io 501, doc 58, format 114, codecs 664, gpu 77, engine 1,582 passed, none
+  failed; ui-egui library 2,389 passed, 2 failed. Both failures are upstream's: the Turkish catalog (`i18n/tr.tsv`) at
+  `d43db3e1` has no entry for "8 bit" and some preference labels, in files the fork does not touch.
+- Image Triage side: 221 PhotoCraft-related Python tests pass (handoff, control, two-stage, sensor cache, Camera Raw
+  first, prefetch, recipe flow, editor prestart, native-first browsing).
+- Live, release build of `14ac59e9` (`target/release/photocraft.exe`, PhotoCraft 0.8.2), synthetic photos only:
+  `check_raw_workspace.py` passed (control ready 1.7 s, Camera Raw opens, adjust, commit, one document left);
+  `check_camera_raw_first.py` passed 3 runs of 4. The failed run got an empty line instead of a JSON reply to
+  `ui.cameraRaw` right after `file.close`; cause not established (the script and the controller both use the
+  fast-lane connection at that moment, which would explain it; not shown to predate this merge).
+- `check_camera_raw_first.py` and `check_camera_raw_recipe.py` now turn `preview/editor_on_demand` off while they
+  run: since the editor opens only after E, they timed out waiting for the first photo. `check_photocraft_handoff.py`
+  still fails at once on "filmstrip flashed during editor startup": it predates the popout changes of 2026-10-11 and
+  was not updated.
+- Not run: the ui-egui integration tests, the desktop app's tests, the layers and wasm checks, and anything with a
+  real raw file (this machine has none): `check_camera_raw_recipe.py`, Save routing, themes, stash/restore on a real
+  photo. The reduced development's new route has only its synthetic tests; its speed on a 45 MP NEF has not been
+  measured. Automatic merges in `control.rs`, `jobs_ui.rs`, `lib.rs` and `services.rs` were compiled and tested, not
+  read.
+- Candidate to drop next, needs real NEFs to decide: upstream decodes Nikon compressed NEF itself (`raw/nefc.rs`,
+  #1310). If the owner's cameras all open that way, the retained-raw smart object route (`rawSmartObject`,
+  `rawSensorPath`, `raw_smart.rs`, `raw_development.rs`, `raw_develop_cmds.rs`, `raw_develop_ui.rs`, about 1,000 lines
+  in the fork, and `photocraft_raw_source.py` here) is only a fallback for files upstream cannot read.
+- Run cargo with `-j 6` or so on this 16 GB machine: a fully parallel workspace test build froze it.
+
 PhotoCraft is the popout's default editor. The current filmstrip, navigation,
 review controls and comparison views remain in Image Triage. Opening a photo
 automatically loads the native editor in the image pane; there is no editor
