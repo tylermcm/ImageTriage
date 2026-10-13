@@ -5,7 +5,7 @@
 Launches the editor on its own (no popout), opens the photo in full, edits it, starts the hosted save without waiting and
 times a cheap control request (``ui.viewport``) on a second connection every 20 ms until the save is done. The editor answers
 control requests from its UI thread, so a slow answer is the window not responding. Prints the slowest answers, the save's
-duration and the sizes written.
+duration and the sizes written. ``--lean`` leaves the full-size render out of the save, which is what the autosave does while a photo is open.
 """
 from __future__ import annotations
 
@@ -50,6 +50,7 @@ def main() -> int:
     parser.add_argument("--saves", type=int, default=2, help="edit-and-save rounds (the first also pays one-time costs)")
     parser.add_argument("--redraw", action="store_true", help="zoom in and out while timing, so the canvas redraws during the save")
     parser.add_argument("--cores", type=int, default=0, help="confine the editor to this many logical processors (a smaller machine)")
+    parser.add_argument("--lean", action="store_true", help="leave the full-size render out of the save, as the autosave does (needs an editor that says stashWithoutPreview)")
     args = parser.parse_args()
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -76,7 +77,7 @@ def main() -> int:
         import ctypes
 
         ctypes.windll.kernel32.SetProcessAffinityMask(ctypes.c_void_p(int(process._handle)), ctypes.c_size_t((1 << args.cores) - 1))
-    results: dict = {"image": image.name, "cores": args.cores or os.cpu_count(), "rounds": []}
+    results: dict = {"image": image.name, "cores": args.cores or os.cpu_count(), "lean": args.lean, "rounds": []}
     control = probe = None
     try:
         control = wait_for(lambda: _connect(port, token), "the control channel")
@@ -107,8 +108,10 @@ def main() -> int:
             control.execute("image.adjustments.invert")
             time.sleep(4.0)  # the full-size redraw after the edit is a separate cost
             sent = time.perf_counter()
-            job = control.call("app.stash", {"path": f"{stem}.pcraft", "preview": f"{stem}.photocraft.png",
-                                             "display": f"{stem}.photocraft.display.jpg", "wait": False})
+            params = {"path": f"{stem}.pcraft", "display": f"{stem}.photocraft.display.jpg", "wait": False}
+            if not args.lean:
+                params["preview"] = f"{stem}.photocraft.png"
+            job = control.call("app.stash", params)
             answers = []
             while True:
                 answers.append(answer_ms())
