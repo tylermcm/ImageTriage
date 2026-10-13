@@ -39,6 +39,7 @@ class PreviewRightClickCloseTests(unittest.TestCase):
         self.app.processEvents()
 
     def test_studio_ui_surfaces_are_not_close_targets(self) -> None:
+        checked = 0
         for surface in (
             self.preview._studio_toolbar,
             self.preview._studio_actionbar,
@@ -46,16 +47,20 @@ class PreviewRightClickCloseTests(unittest.TestCase):
             self.preview._filmstrip,
             self.preview._mockup_status_bar,
         ):
+            if not surface.isVisible():
+                continue  # the popout hides some of these bars; a hidden widget's rectangle is not a place on screen
+            checked += 1
             with self.subTest(surface=surface.objectName()):
                 point = _center_in_dialog(surface, self.preview)
                 self.assertFalse(self.preview._right_click_closes_at(point))
+        self.assertGreater(checked, 0, "at least the filmstrip is on screen")
 
     def test_passive_stage_remains_a_close_target(self) -> None:
         point = _center_in_dialog(self.preview.content_widget, self.preview)
         self.assertTrue(self.preview._right_click_closes_at(point))
 
-    def test_right_clicking_toolbar_does_not_arm_or_close_dialog(self) -> None:
-        point = _center_in_dialog(self.preview._studio_toolbar, self.preview)
+    def test_right_clicking_the_filmstrip_does_not_arm_or_close_dialog(self) -> None:
+        point = _center_in_dialog(self.preview._filmstrip, self.preview)
         self.preview.mousePressEvent(
             _right_event(QMouseEvent.Type.MouseButtonPress, point)
         )

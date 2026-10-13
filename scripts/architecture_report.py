@@ -307,6 +307,10 @@ def check_controller_calls() -> list[str]:
 
 _REPO_ROOTS = ("image_triage", "aiculler", "packaging", "scripts", "benchmarks", "sandboxes", "tests")
 
+# Experiments whose code .gitignore lists, so that only the machine they were written on has them. Their tracked tests skip when the
+# code is absent (see tests/test_oneformer_sandbox.py), and an import of them from those tests is not a dangling reference.
+_LOCAL_ONLY_PACKAGES = ("sandboxes.efficientvit_sam", "sandboxes.grounded_sam", "sandboxes.oneformer")
+
 
 def _module_path(dotted: str) -> Path | None:
     base = REPO.joinpath(*dotted.split("."))
@@ -365,6 +369,8 @@ def check_internal_imports() -> list[str]:
             if target.split(".")[0] not in _REPO_ROOTS:
                 continue
             mp = _module_path(target)
+            if mp is None and target.startswith(_LOCAL_ONLY_PACKAGES):
+                continue
             if mp is None:
                 problems.append(f"{f.relative_to(REPO).as_posix()}:{n.lineno}: module {target} not found")
                 continue

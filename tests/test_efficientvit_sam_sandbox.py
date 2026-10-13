@@ -6,6 +6,17 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
+import importlib.util
+import unittest
+
+try:
+    _present = importlib.util.find_spec("sandboxes.efficientvit_sam") is not None
+except ImportError:
+    _present = False
+if not _present:
+    # The experiment's code is not tracked (.gitignore lists it), so only the machine it was written on has it.
+    raise unittest.SkipTest("sandboxes/efficientvit_sam is a local experiment that git ignores; it is not in this checkout")
+
 from sandboxes.efficientvit_sam.core import (
     MaskProposal,
     ModelPaths,
