@@ -169,26 +169,130 @@ def test_quitting_saves_lean_and_leaves_the_render_behind(controller, tmp_path, 
     assert controller._photocraft is None
 
 
-def test_closing_the_popout_saves_what_changed_lean_and_quits_the_editor_at_once(controller, tmp_path, monkeypatch, shutdowns):
-    """An editor under a popout that has been hidden does not answer, so nothing can be left for after the close: the UI thread waits for
-    the save, and the save leaves the 211 MB render out."""
+@pytest.fixture
+def parkings(monkeypatch):
+    """(editor window, new parent) for every time the editor's window was moved."""
+    moves = []
+    monkeypatch.setattr(bridge, "embed_in_widget", lambda hwnd, parent: moves.append((hwnd, parent)))
+    return moves
+
+
+def test_closing_the_popout_saves_what_changed_lean_and_keeps_the_editor(controller, tmp_path, shutdowns, parkings):
+    """The close waits only for the lean save. The editor is not quit: it is moved out of the popout, whose native window Qt destroys
+    on close (a child window goes with it), and stays up for the next time."""
     proc = editing(tmp_path, lean_supported=True)
+    proc.attached_parent = 555  # in the popout
     controller._photocraft = proc
     controller._wait_photocraft_stashes = lambda proc, only=None: None
     assert controller.prepare_photocraft_preview_close() is True
     (params,) = stashes(proc)
     assert "preview" not in params
-    assert shutdowns == [proc], "the editor is quit while its window is still there"
-    assert controller._photocraft is None
+    assert shutdowns == [] and controller._photocraft is proc
+    park = controller._photocraft_park_id
+    assert parkings == [(proc.hwnd, park)] and proc.attached_parent == park and park not in (None, 555)
 
 
-def test_closing_the_popout_with_the_render_behind_does_not_write_it(controller, tmp_path, shutdowns):
+def test_an_editor_that_was_never_in_the_popout_is_not_moved(controller, tmp_path, shutdowns, parkings):
+    """Started in the background and never shown: it has no window of ours to lose."""
+    proc = editing(tmp_path, lean_supported=True, revision=1, opened=1)
+    controller._photocraft = proc
+    assert controller.prepare_photocraft_preview_close() is True
+    assert parkings == [] and shutdowns == [] and proc.attached_parent is None
+
+
+def test_closing_twice_parks_once(controller, tmp_path, shutdowns, parkings):
+    proc = editing(tmp_path, lean_supported=True, revision=1, opened=1)
+    proc.attached_parent = 555
+    controller._photocraft = proc
+    controller.prepare_photocraft_preview_close()
+    controller.prepare_photocraft_preview_close()
+    assert len(parkings) == 1
+
+
+def test_the_render_the_close_left_out_is_written_after_it(controller, tmp_path, shutdowns, parkings):
+    """Closing does not wait for the 211 MB render; once the popout has gone, the parked editor writes it."""
     proc = editing(tmp_path, lean_supported=True, revision=5, opened=5)
+    proc.attached_parent = 555
     proc.preview_missing.add(str(proc.current_sidecar))
     controller._photocraft = proc
     controller._wait_photocraft_stashes = lambda proc, only=None: None
     controller.prepare_photocraft_preview_close()
-    assert stashes(proc) == [] and shutdowns == [proc]
+    assert stashes(proc) == [], "nothing changed since the last autosave: the close saves nothing"
+    controller._settle_closed_photocraft()
+    (params,) = stashes(proc)
+    assert params.get("preview"), "the full-size render is asked for"
+    assert shutdowns == []
+
+
+def test_settling_after_the_close_survives_an_editor_that_has_gone(controller, tmp_path):
+    controller._photocraft = None
+    controller._settle_closed_photocraft()
+    proc = editing(tmp_path, lean_supported=True)
+    proc.process.poll.return_value = 1
+    controller._photocraft = proc
+    controller._settle_closed_photocraft()
+    assert stashes(proc) == []
+
+
+def _asked_for_a_window(controller, proc, tmp_path, monkeypatch):
+    """Runs the start of an open on ``proc`` (stopped where the document would be switched) and returns the editors the popout
+    was asked to take in."""
+    controller._photocraft = proc
+    proc.current_source = "another photo"
+    asked = []
+    controller._photocraft_window_ready.connect(lambda generation, editor: asked.append(editor))
+    target = str(tmp_path / "IMG2.NEF")
+    monkeypatch.setattr(controller, "_resolve_photocraft_target", lambda path: (target, str(proc.write_root / "IMG2.NEF.pcraft")))
+    monkeypatch.setattr(bridge.PhotoCraftProcess, "path_within_root", lambda self, path: "IMG2.NEF")
+    monkeypatch.setattr(bridge.PhotoCraftProcess, "path_within_write_root", lambda self, path: "IMG2.NEF.pcraft")
+    monkeypatch.setattr(controller, "_camera_raw_mode", lambda path: False)
+
+    def stop(*args, **kwargs):
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(controller, "_switch_photocraft_document", stop)
+    with pytest.raises(RuntimeError, match="stop here"):
+        controller._open_in_photocraft(None, target)
+    return asked
+
+
+def test_a_parked_editor_is_put_back_in_the_popout_before_its_next_photo(controller, tmp_path, parkings, monkeypatch):
+    proc = editing(tmp_path, lean_supported=True, revision=1, opened=1)
+    proc.attached_parent = 555
+    controller._photocraft = proc
+    controller.prepare_photocraft_preview_close()
+    assert proc.attached_parent == controller._photocraft_park_id
+    assert _asked_for_a_window(controller, proc, tmp_path, monkeypatch) == [proc]
+
+
+def test_an_editor_already_in_the_popout_is_not_asked_for_again(controller, tmp_path, monkeypatch):
+    proc = editing(tmp_path, lean_supported=True, revision=1, opened=1)
+    proc.attached_parent = 555
+    assert _asked_for_a_window(controller, proc, tmp_path, monkeypatch) == []
+
+
+def test_the_ui_thread_wait_keeps_its_message_queue_running(controller, qapp):
+    """A blocking wait here stops the editor from closing its window (it is our child) until the wait times out."""
+    import threading
+
+    from PySide6.QtCore import QTimer
+
+    ticks = []
+    timer = QTimer()
+    timer.timeout.connect(lambda: ticks.append(1))
+    timer.start(5)
+    release = threading.Event()
+    future = controller._photocraft_executor.submit(lambda: (release.wait(5), "done")[1])
+    QTimer.singleShot(60, release.set)
+    assert controller._pump_until_done(future) == "done"
+    timer.stop()
+    assert ticks, "events were processed while waiting"
+
+
+def test_the_ui_thread_wait_passes_on_what_the_work_raised(controller):
+    future = controller._photocraft_executor.submit(lambda: (_ for _ in ()).throw(bridge.PhotoCraftError("disk full")))
+    with pytest.raises(bridge.PhotoCraftError, match="disk full"):
+        controller._pump_until_done(future)
 
 
 # --- the render is written after a pause in editing ---------------------------------------------------------

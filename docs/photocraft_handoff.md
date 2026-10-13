@@ -1,5 +1,59 @@
 # PhotoCraft handoff
 
+## Quick handoff - 2026-10-13 (closing the popout keeps the editor)
+
+Image Triage `main`, local commits on top of `b7bcbdf`; the fork is unchanged (`ca2d3298`). Desktop only (`C:\Users\Checkout`); not
+run on the laptop.
+
+**What was wrong.** Two separate things, both found by experiment (a stand-in popout, then the real one):
+- **Qt destroys the popout's native window when it closes**, and a child window goes with its parent whatever process owns it. The
+  editor left inside lost its window, drew no more frames and so never answered a control request again: that was "nothing in 84 s".
+  Hiding the popout (not closing it) does not do this, which is why a stand-in that only hid its window showed nothing wrong. An
+  editor moved out first keeps its window and answers in ~110 ms.
+- **The UI thread waited for the editor in a blocking wait.** The editor's window is a child of one of ours; closing it waits for
+  its parent's thread. With that thread blocked the editor could not exit (not in 10 s; 0.6 s with the thread's message queue
+  running), so every quit ran into the 3 s timeout and ended in `terminate()`. That was the ~3 s freeze.
+
+**What changed** (`preview_controller.py`, `photocraft_bridge.py`):
+- Closing the popout no longer quits the editor. `prepare_photocraft_preview_close` saves what changed (lean) and parks the editor
+  (`_park_photocraft`: `SetParent` into a hidden frameless window of its own, kept for the life of the app; not a child of the main
+  window, whose native window Qt re-creates when its flags change). `handle_preview_closed` queues `_settle_closed_photocraft`, which
+  writes the full-size render the close did not wait for. A parked editor is treated like one that was never in a window: the next
+  open puts it in the popout before the photo renders.
+- UI-thread waits on the editor's worker go through `_pump_until_done` (the message queue keeps running, user input stays queued):
+  the close-time save, Discard, and `shutdown_photocraft` (app exit, development restart).
+- `bridge.tie_to_this_process`: the editor is put in a Windows job object that ends it when Image Triage's process ends, however it
+  ends (the editor now lives as long as the app; a crash or a kill runs no cleanup). Tested on a throwaway child: killed with its
+  parent when tied, left running when not.
+
+**Measured** (release editor `ca2d3298`, 45 MP Z 7II NEF unless noted, `check_lean_save.py`):
+- Closing holds the UI thread 75-105 ms (was ~3 s). With something to save on an editor without the lean save: 646 ms.
+- Close right after an edit: the full-size render is on disk 4.1 s after the close (it used to be left behind).
+- Reopen the same photo: 0.53-0.59 s, same process (a cold start here is ~1.8-2.3 s; ~3.6-6 s on the laptop).
+- Quit: 0.65-0.73 s, the editor exits by itself (was 3 s and a kill).
+- Parked, the editor answers in ~110 ms, also with the main window minimized, and also while the UI thread is blocked.
+
+**Checked.** Full suite 1,891 passed, none failed (the laptop session's test fixes are in). New tests in `test_lean_autosave.py` and
+`test_photocraft_handoff.py` (parking before the native host closes, parking once, the render after the close, re-attaching a parked
+editor, the pumping wait); breaking the park call or the re-attach condition fails four of them. Live, all passing: handoff at 1 MP
+and 24 MP, camera-raw-first, camera-raw-recipe (two Z 7II NEFs and the Z 9 High Efficiency file), lean save both ways.
+`check_lean_save.py` now checks the new behaviour (editor still up and answering after the close, the render written after it,
+reopen without a new editor, quit under 2.5 s).
+
+**Live checks and the owner's desktops.** `scripts/_desktop.py`: with `IMAGE_TRIAGE_CHECK_DESKTOP_OF=claude.exe` the popout-based
+checks open on the virtual desktop holding that program, at the bottom of the window stack, without taking the keyboard (the owner
+works on another desktop of the same PC). The two scripts that start the editor as its own window (`measure_stash_stall.py`,
+`check_raw_workspace.py`) wait for that desktop to be the active one instead.
+
+**Open.**
+- Not run in the real app: the main window's own close and the development restart go through the same functions but were exercised
+  only through the checks' stand-in window and the unit tests. Not run on the laptop.
+- The parked editor keeps the last photo open (a 45 MP document in memory) until the next open, a folder change or quit. Releasing
+  it after the render was left out: in the Camera Raw workspace a closed document is reopened by the host.
+- A full-size export of a photo whose render is behind still falls back to the 2,560 px JPEG without saying so (the window for it is
+  now a few seconds after a close instead of "until the photo is next opened").
+- From the section below, still open: `_entry_source_signature` on the UI thread; the 310 MB project.
+
 ## Quick handoff - 2026-10-12/13, later (the laptop: the "still open" items)
 
 Worked through the previous section's **Open** list on the laptop (Intel UHD 620, 4 cores / 8 threads, 15.9 GB). Image Triage commits are
@@ -41,7 +95,7 @@ Fork: formatted, 14 `control_files` tests pass. Live on the new editor: handoff 
 the Python process gone on the other machine did not recur), camera-raw-first passes, camera-raw-recipe passes, `check_lean_save` passes both
 ways (render written 19 s after a pause; closing right after an edit leaves it behind).
 
-**Open**
+**Open** (the first item, and the render left behind by a quick close, were fixed on 2026-10-13: see the section above)
 - Closing the popout holds the UI thread ~3 s even with nothing to save: `PhotoCraftProcess.shutdown` waits 3 s for the editor to exit and then
   terminates it. Quitting takes 0.4-0.6 s with the window shown or hidden on its own, so it is the embedded-under-a-closing-popout case; not looked into.
   Closing the popout also always quits the editor (the prestarted one too), so the next E after reopening the popout pays the cold start.

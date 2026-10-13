@@ -155,23 +155,27 @@ def place(widget) -> None:
         def __init__(self, parent):
             super().__init__(parent)
             self.before = user32.GetForegroundWindow()
+            self.pending = False
 
         def settle(self):
-            hwnd = int(widget.winId())
+            self.pending = False
+            try:
+                hwnd = int(widget.winId())
+            except RuntimeError:  # the window is gone
+                return
             pin(widget)  # a window re-created by a state change (full screen) starts on the active desktop again
             _send_to_back(hwnd)
-            front = user32.GetForegroundWindow()
-            if front == hwnd and self.before and self.before != hwnd:
+            if user32.GetForegroundWindow() == hwnd and self.before and self.before != hwnd:
                 user32.SetForegroundWindow(wintypes.HWND(self.before))
 
         def eventFilter(self, watched, event):
-            kind = event.type()
-            if kind in (QEvent.Type.Show, QEvent.Type.WindowActivate, QEvent.Type.WindowStateChange, QEvent.Type.WinIdChange):
-                if kind != QEvent.Type.WindowActivate:
-                    front = user32.GetForegroundWindow()
-                    if front and front != int(widget.winId()):
-                        self.before = front
-                QTimer.singleShot(0, self.settle)
+            # Nothing here may ask the window for its handle: that creates it, which sends the events this filter listens for.
+            if event.type() in (QEvent.Type.Show, QEvent.Type.WindowActivate, QEvent.Type.WindowStateChange, QEvent.Type.WinIdChange):
+                if event.type() == QEvent.Type.Show:
+                    self.before = user32.GetForegroundWindow() or self.before
+                if not self.pending:
+                    self.pending = True
+                    QTimer.singleShot(0, self.settle)
             return False
 
     widget.installEventFilter(_Behind(widget))

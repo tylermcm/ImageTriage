@@ -707,6 +707,7 @@ def _launch_photocraft_binary(
             if log_path is not None:
                 log_file.close()  # the editor has its own copy of the handle
         timings["spawn_ms"] = (time.perf_counter() - started) * 1000
+        tie_to_this_process(process)
         control = _connect_with_retry(port, token, process)
         timings["control_ready_ms"] = (time.perf_counter() - started) * 1000
         control.require_hosted_handoff()
@@ -756,6 +757,57 @@ def _launch_photocraft_binary(
 _BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 _NORMAL_PRIORITY_CLASS = 0x00000020
 _PROCESS_SET_INFORMATION = 0x0200
+
+
+_editor_job = None  # the job object's handle, kept for the life of this process
+
+
+def tie_to_this_process(process: subprocess.Popen) -> bool:
+    """Makes sure the editor cannot outlive Image Triage. The editor now stays up for as long as the app does, and an app that
+    crashes, is killed or restarts for development runs no cleanup: the editor is put in a Windows job object that ends its
+    processes when the last handle to the job closes, which the system does for us when this process ends, however it ends.
+    Returns whether it was tied (False elsewhere than Windows, or if the system refused: the editor then runs as before)."""
+    global _editor_job
+    if os.name != "nt":
+        return False
+
+    class _BasicLimits(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64), ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t), ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD), ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint64) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount", "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class _ExtendedLimits(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _BasicLimits), ("IoInfo", _IoCounters), ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    try:
+        if _editor_job is None:
+            job = kernel32.CreateJobObjectW(None, None)
+            if not job:
+                return False
+            limits = _ExtendedLimits()
+            limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):  # JobObjectExtendedLimitInformation
+                kernel32.CloseHandle(wintypes.HANDLE(job))
+                return False
+            _editor_job = job
+        return bool(kernel32.AssignProcessToJobObject(_editor_job, wintypes.HANDLE(int(process._handle))))
+    except (OSError, AttributeError, TypeError, ValueError):
+        return False
 
 
 def raise_priority(proc: PhotoCraftProcess) -> None:

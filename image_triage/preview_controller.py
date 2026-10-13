@@ -4,12 +4,12 @@ from __future__ import annotations
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as wait_for_futures
 from bisect import bisect_left
 
-from PySide6.QtCore import QObject, QSignalBlocker, QTimer, Signal
+from PySide6.QtCore import QEventLoop, QObject, QSignalBlocker, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 from pathlib import Path
 
 from . import edit_storage, photocraft_bridge, photocraft_preview
@@ -68,6 +68,9 @@ class PreviewController(QObject):
         self._photocraft_executable = detect_photocraft_executable()
         self._photocraft: photocraft_bridge.PhotoCraftProcess | None = None
         self._photocraft_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="photocraft")
+        # Where the editor's window lives while no popout shows it (see `_park_photocraft`), and that window's handle.
+        self._photocraft_park: QWidget | None = None
+        self._photocraft_park_id: int | None = None
         self._photocraft_generation = 0
         self._photocraft_future = None
         # Previews use their own worker and PhotoCraft connection so they never queue
@@ -368,7 +371,8 @@ class PreviewController(QObject):
         self._window._records_view.resume_background_indexing()
         self._photocraft_generation += 1
         self._photocraft_save_timer.stop()
-        self._photocraft_future = self._photocraft_executor.submit(self._shutdown_photocraft)
+        # The editor stays up (parked by the close guard) for the next time; what the close did not wait for is finished now.
+        self._photocraft_future = self._photocraft_executor.submit(self._settle_closed_photocraft)
         if self._window._winner_ladder_state is not None:
             self.finish_winner_ladder(reopen_preview=False, show_message=False)
         if self._window._quick_view_mode:
@@ -1137,8 +1141,9 @@ class PreviewController(QObject):
         launched = proc is None
         if proc is not None and proc.idle_priority:
             photocraft_bridge.raise_priority(proc)  # it was started in the background; now it is what the user is using
-        if proc is not None and proc.attached_parent is None:
-            # Started without a window to go in: put it in the popout now, before the first photo renders.
+        if proc is not None and (proc.attached_parent is None or proc.attached_parent == self._photocraft_park_id):
+            # Started without a window to go in, or parked when the popout last closed: put it in the popout now, before the
+            # photo renders.
             self._photocraft_window_ready.emit(generation, proc)
         camera_raw = self._camera_raw_spec(path, proc) if self._camera_raw_mode(path) else None
         if launched:
@@ -1386,7 +1391,7 @@ class PreviewController(QObject):
         if self._photocraft is None and (self._photocraft_future is None or self._photocraft_future.done()):
             return True
         try:
-            self._photocraft_executor.submit(self._save_active_photocraft).result()
+            self._pump_until_done(self._photocraft_executor.submit(self._save_active_photocraft))
         except Exception as error:
             choice = QMessageBox.warning(
                 self.preview_if_built(), "PhotoCraft edits could not be saved",
@@ -1398,7 +1403,7 @@ class PreviewController(QObject):
             if choice == QMessageBox.StandardButton.Discard:
                 self._photocraft_generation += 1
                 self._photocraft_save_timer.stop()
-                self._photocraft_executor.submit(self._discard_photocraft).result()
+                self._pump_until_done(self._photocraft_executor.submit(self._discard_photocraft))
                 return True
             return False
         return True
@@ -1410,13 +1415,65 @@ class PreviewController(QObject):
             self._photocraft = None
 
     def prepare_photocraft_preview_close(self) -> bool:
+        """The popout is about to close. What changed is saved (without the full-size render, which is written afterwards: see
+        `_settle_closed_photocraft`), and the editor is kept: it is moved out of the popout first, because Qt destroys the popout's
+        native window when it closes and a child window goes with its parent, whatever process it belongs to. An editor left inside
+        lost its window and never answered again (measured: nothing in 84 s), which is why it used to be quit here."""
         if not self.prepare_photocraft_close():
             return False
-        # Quit while the native host is still alive. Hiding/destroying its Qt parent first can stop PhotoCraft servicing control
-        # requests: an editor under a popout that has been hidden does not answer at all (measured: nothing in 84 s), so whatever must
-        # be saved is saved before this returns, and the full-size render is not part of it (it is written while the editor is up).
-        self.shutdown_photocraft()
+        self._park_photocraft()
         return True
+
+    def _park_window_id(self) -> int:
+        park = self._photocraft_park
+        if park is None:
+            # A window of its own, never shown: not a child of the main window, whose native window Qt re-creates (and its
+            # children with it) when its flags change. Hidden and frameless, it has no taskbar entry and nothing to look at.
+            park = QWidget(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+            park.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+            park.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            park.resize(1280, 800)
+            self._photocraft_park = park
+            self._photocraft_park_id = int(park.winId())
+        return self._photocraft_park_id
+
+    def _park_photocraft(self) -> None:
+        """Moves the editor's window out of the popout into a hidden window that lasts as long as the app. Parked, the editor
+        keeps running and answering (about 110 ms a request, against 12 ms on screen), so it can finish a save after the popout
+        has gone and is there, warm, the next time it is wanted. On the UI thread."""
+        proc = self._photocraft
+        if proc is None or not proc.is_running() or proc.attached_parent is None:
+            return  # nothing running, or it has not been put in a window yet
+        park = self._park_window_id()
+        if proc.attached_parent != park:
+            photocraft_bridge.embed_in_widget(proc.hwnd, park)
+            proc.attached_parent = park
+
+    def _pump_until_done(self, future):
+        """Waits, on the UI thread, for work on the editor's worker without stopping this thread's message queue. The editor's
+        window is a child of one of ours, and a child that closes (or is re-parented) waits for its parent's thread to answer:
+        with this thread in a plain blocking wait the editor could not exit at all (measured: not in 10 s; 0.6 s with the queue
+        running), so every quit ran into its timeout and the process was killed. User input stays queued, so nothing else in the
+        app runs meanwhile. Returns the work's result, or raises what it raised."""
+        app = QApplication.instance()
+        if app is None or QThread.currentThread() is not app.thread():
+            return future.result()
+        while not future.done():
+            app.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            wait_for_futures([future], timeout=0.01)
+        return future.result()
+
+    def _settle_closed_photocraft(self) -> None:
+        """After the popout has closed, on the editor's worker: write the full-size render the close did not wait for. The editor
+        is parked and still has the photo open."""
+        proc = self._photocraft
+        if proc is None or not proc.is_running():
+            return
+        try:
+            self._save_photocraft_sidecar_if_dirty(proc)
+            self._wait_photocraft_stashes(proc)
+        except (photocraft_bridge.PhotoCraftError, OSError):
+            _log.exception("Could not finish saving the photo the editor had open when the popout closed")
 
     def _save_active_photocraft(self) -> None:
         proc = self._photocraft
@@ -1498,11 +1555,11 @@ class PreviewController(QObject):
         self._photocraft_save_timer.stop()
         if self._photocraft is None and (self._photocraft_future is None or self._photocraft_future.done()):
             return
-        self._photocraft_executor.submit(self._shutdown_photocraft).result()
+        self._pump_until_done(self._photocraft_executor.submit(self._shutdown_photocraft))
 
     def _shutdown_photocraft(self) -> None:
-        """Saves the open photo and quits the editor. The UI thread waits for this (closing the popout, quitting), and an editor under a
-        hidden popout cannot answer: the save leaves the full-size render out."""
+        """Saves the open photo and quits the editor (quitting the app, a development restart). The UI thread waits for this, its
+        message queue running (`_pump_until_done`): the save leaves the full-size render out."""
         proc = self._photocraft
         if proc is None:
             return
