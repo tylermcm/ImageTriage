@@ -790,7 +790,8 @@ class PreviewController(QObject):
         except Exception as caught:
             error = caught
             if generation == self._photocraft_generation:
-                _log.exception("PhotoCraft handoff failed for %s", path)
+                proc = self._photocraft
+                _log.exception("PhotoCraft handoff failed for %s (%s)", path, proc.exit_note() if proc is not None else "no editor was running")
         finally:
             self._photocraft_raw_inflight = False
             self._photocraft_open_generation = None
