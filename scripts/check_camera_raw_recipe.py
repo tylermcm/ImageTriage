@@ -33,6 +33,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from image_triage import photocraft_bridge as bridge  # noqa: E402
 from image_triage.app_identity import user_settings  # noqa: E402
+from _check_settings import use_throwaway_settings  # noqa: E402
 from image_triage.models import ImageRecord  # noqa: E402
 from image_triage.nav_timing import format_summary, summarize  # noqa: E402
 from image_triage.preview import FullScreenPreview, PreviewEntry  # noqa: E402
@@ -71,6 +72,7 @@ def main() -> None:
                     print(f"CALL t={(began - origin):7.2f}s {method:<22} {took:8.0f} ms", flush=True)
 
         bridge.PhotoCraftControl.call = traced
+    use_throwaway_settings()  # never the profile the app uses: a check that dies must not leave settings pinned there
     settings = user_settings()
     previous_setting = settings.value(CAMERA_RAW_FIRST_KEY, True, bool)
     settings.setValue(CAMERA_RAW_FIRST_KEY, True)

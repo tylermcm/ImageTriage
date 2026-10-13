@@ -27,6 +27,7 @@ from image_triage.models import ImageRecord
 from image_triage.preview import FullScreenPreview, PreviewEntry
 from image_triage.preview_controller import PreviewController
 from image_triage.app_identity import user_settings
+from _check_settings import use_throwaway_settings
 from image_triage.scanner import normalized_path_key
 from image_triage.ui.native_image_layer import CAMERA_RAW_FIRST_KEY, EDITOR_ON_DEMAND_KEY
 
@@ -43,6 +44,7 @@ def main() -> None:
     app = QApplication.instance() or QApplication([])
     # This check drives the ordinary editor on every photo: not the Camera Raw workspace (the default since
     # 2026-10-12), and not an editor that waits for E.
+    use_throwaway_settings()  # never the profile the app uses: a check that dies must not leave settings pinned there
     settings = user_settings()
     previous_settings = {key: settings.value(key, True, bool) for key in (CAMERA_RAW_FIRST_KEY, EDITOR_ON_DEMAND_KEY)}
     for key in previous_settings:
