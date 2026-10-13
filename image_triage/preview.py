@@ -2434,6 +2434,8 @@ class FullScreenPreview(QDialog):
         self._editor_engaged = True
         self.show_browsing_picture()
         self.photocraft_edit_requested.emit(path)
+        # The key was pressed for this photo: nothing to hold the load back for (the dwell is for a selection that may move on).
+        self.photocraft_prioritize_requested.emit()
 
     def close_editor(self) -> None:
         """Puts the editor away: the popout is plain again, and the controller settles the photo the editor had open."""

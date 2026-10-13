@@ -464,6 +464,11 @@ class PhotoCraftProcess:
     preview_missing: set[str] = field(default_factory=set)
     # When the open photo was last found changed (``time.monotonic()``): the autosave writes the full-size render after a pause in editing.
     last_edit_at: float = 0.0
+    # The editor's colours have been fetched once (the filmstrip follows them); the autosave tick keeps them current after that.
+    theme_synced: bool = False
+    # The open photo has been left (the editor key, or the popout closing): it was settled, which in the Camera Raw workspace
+    # closes its dialog. Coming back to the same photo must open it again, not show what is left of it.
+    left: bool = False
 
     def exit_note(self) -> str:
         """Whether the editor is still running or has exited (with what code), and where its own output is: for the log line of a

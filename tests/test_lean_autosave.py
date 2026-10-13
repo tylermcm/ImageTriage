@@ -190,16 +190,15 @@ def test_closing_the_popout_waits_for_nothing_and_keeps_the_editor(controller, t
     assert parkings == [(proc.hwnd, park)] and proc.attached_parent == park and park not in (None, 555)
 
 
-def test_what_changed_is_saved_after_the_close_project_first_then_the_render(controller, tmp_path, shutdowns, parkings):
+def test_what_changed_is_saved_once_after_the_close_with_the_render(controller, tmp_path, shutdowns, parkings):
     proc = editing(tmp_path, lean_supported=True)
     proc.attached_parent = 555
     controller._photocraft = proc
     controller._wait_photocraft_stashes = lambda proc, only=None: proc.pending_stashes.clear()
     controller.prepare_photocraft_preview_close()
     controller._settle_closed_photocraft()
-    first, second = stashes(proc)
-    assert "preview" not in first, "the project is saved first, without the 211 MB render"
-    assert second.get("preview"), "then the full-size render"
+    (params,) = stashes(proc)
+    assert params.get("preview"), "one save, project and full-size render together"
     assert shutdowns == []
 
 
