@@ -9,7 +9,7 @@ from typing import Callable
 from PySide6.QtCore import QObject, QPoint, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygon
 
-from .cache import DiskThumbnailCache, MemoryThumbnailCache, ThumbnailKey, edit_state_for
+from .cache import DiskThumbnailCache, EditStateMemo, MemoryThumbnailCache, ThumbnailKey
 from .edit_storage import session_has_edits
 from .formats import suffix_for_path
 from .imaging import load_image_for_display, sanitize_display_error, thumbnail_skip_reason
@@ -114,6 +114,9 @@ class ThumbnailTask(QRunnable):
             if rendered is not None and not rendered.isNull():
                 image = rendered
                 source = "edited_render"
+        # A key made while the photo's edits were not yet known says "no edits"; a picture of the edits is not kept under it, or it would
+        # come back as the unedited photo's thumbnail if the edits were later removed.
+        keep = not (source == "edited_render" and self.request.key.edit_state == (0, 0))
 
         if image is None:
             image, error = load_image_for_display(
@@ -149,8 +152,9 @@ class ThumbnailTask(QRunnable):
                 Qt.TransformationMode.SmoothTransformation,
             )
 
-        self.memory_cache.put(self.request.key, image)
-        self.disk_cache.save(self.request.key, image)
+        if keep:
+            self.memory_cache.put(self.request.key, image)
+            self.disk_cache.save(self.request.key, image)
         if self._drop_stale_result(start, "decode"):
             return
         self.result_queue.put(("ready", self.request.key, image))
@@ -191,6 +195,8 @@ class ThumbnailTask(QRunnable):
 class ThumbnailManager(QObject):
     thumbnail_ready = Signal(object, object)
     thumbnail_failed = Signal(object, str)
+    # A photo's edits turned out different from what was known when its thumbnails were looked up (see EditStateMemo): ask for them again.
+    edit_state_changed = Signal(str)
     RESULTS_PER_TICK = 8
 
     def __init__(
@@ -202,6 +208,7 @@ class ThumbnailManager(QObject):
         super().__init__()
         self.memory_cache = memory_cache or MemoryThumbnailCache()
         self.disk_cache = disk_cache or DiskThumbnailCache()
+        self.edit_states = EditStateMemo(on_changed=self.edit_state_changed.emit)
         self.pool = QThreadPool(self)
         worker_count = max_workers or 2
         self.pool.setMaxThreadCount(worker_count)
@@ -215,15 +222,15 @@ class ThumbnailManager(QObject):
         self._drain_timer.timeout.connect(self._drain_results)
 
     def make_key(self, record: ImageRecord, target_size: QSize, edit_state: tuple[int, int] | None = None) -> ThumbnailKey:
-        """``edit_state`` is the photo's ``edit_state_for``; a caller that asks about many photos at once and has it already
-        (it costs file lookups) passes it in."""
+        """``edit_state`` is the photo's ``edit_state_for``; a caller that has it already passes it in (it costs file lookups), and
+        otherwise it comes from ``edit_states``, which looks at the disk once and then remembers."""
         return ThumbnailKey(
             path=record.path,
             modified_ns=record.modified_ns,
             file_size=record.size,
             width=target_size.width(),
             height=target_size.height(),
-            edit_state=edit_state if edit_state is not None else edit_state_for(record.path),
+            edit_state=edit_state if edit_state is not None else self.edit_states.exact(record.path),
         )
 
     def get_cached(self, record: ImageRecord, target_size: QSize, edit_state: tuple[int, int] | None = None) -> QImage | None:

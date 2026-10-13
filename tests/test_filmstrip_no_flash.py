@@ -247,151 +247,90 @@ def test_the_pixmap_memo_is_bounded_and_forgets_the_oldest_first(controller):
 
 
 # --- looking at the disk for each photo's edits ----------------------------------------------------------
+# The memory of the edit states is ``EditStateMemo`` (tests/test_edit_state_memo.py); these are what the strip does with it.
 
 class Looks:
-    """Stands in for ``edit_state_for``: counts the times the disk would have been looked at, and on which thread."""
+    """Stands in for ``edit_state_for``: counts the lookups and the threads that made them."""
 
     def __init__(self) -> None:
         self.paths: list[str] = []
         self.threads: list[threading.Thread] = []
-        self.state: tuple[int, int] = (0, 0)
         self.states: dict[str, tuple[int, int]] = {}
 
     def __call__(self, path):
         self.threads.append(threading.current_thread())
         self.paths.append(str(path))
-        return self.states.get(str(path), self.state)
+        return self.states.get(str(path), (0, 0))
 
 
 @pytest.fixture
-def looks(monkeypatch):
-    from image_triage import preview_controller as module
-
-    counter = Looks()
-    monkeypatch.setattr(module, "edit_state_for", counter)
-    return counter
+def looks():
+    return Looks()
 
 
 @pytest.fixture
-def popout(controller):
-    """A popout on screen that counts the times its strip is told to draw again."""
+def popout(controller, looks):
+    """A popout on screen that counts the times its strip is told to draw again, and a thumbnail manager's memory of edit states."""
     from unittest.mock import Mock
+
+    from image_triage.cache import EditStateMemo
 
     preview = Mock()
     preview.isVisible.return_value = True
-    controller._window = SimpleNamespace(_preview=preview, preview=preview, grid=Mock())
+    controller._window = SimpleNamespace(
+        _preview=preview, preview=preview, grid=Mock(), thumbnail_manager=SimpleNamespace(edit_states=EditStateMemo(probe=looks)),
+    )
     return preview
 
 
-def settle(qapp, controller, looks, probes: int) -> None:
-    """Waits until ``probes`` lookups have been made on the background thread and their answers have been delivered."""
+def settle(qapp, controller, probes: int) -> None:
+    """Waits until ``probes`` lookups have been made on the background thread."""
+    memo = controller._window.thumbnail_manager.edit_states
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         qapp.processEvents()
-        if len(looks.paths) >= probes and not controller._filmstrip_probing:
-            qapp.processEvents()
+        if len(memo._probe.paths) >= probes and not memo._pending:
             return
         time.sleep(0.002)
-    raise AssertionError(f"lookups made: {looks.paths}, still being looked up: {controller._filmstrip_probing}")
+    raise AssertionError(f"lookups made: {memo._probe.paths}, still being looked up: {memo._pending}")
 
 
-def test_the_strip_never_looks_at_the_disk_on_the_ui_thread(controller, looks, qapp):
-    assert controller._filmstrip_edit_state("a.NEF") == (0, 0), "until the answer arrives: no edits"
-    settle(qapp, controller, looks, 1)
-    assert looks.paths == ["a.NEF"]
+def test_the_strip_never_looks_at_the_disk_on_the_ui_thread(controller, looks, popout, qapp):
+    looks.states["a.NEF"] = (5, 6)
+    assert controller._filmstrip_edit_state("a.NEF") == (0, 0), "until the answer is found: no edits"
+    settle(qapp, controller, 1)
     assert looks.threads[0] is not threading.main_thread()
-    assert looks.threads[0].daemon, "a lookup stuck on a drive that went away must not hold the program open"
-
-
-def test_the_answer_is_used_once_it_has_arrived_and_not_looked_for_again_for_a_while(controller, looks, qapp):
-    looks.states["a.NEF"] = (123, 456)
-    assert controller._filmstrip_edit_state("a.NEF") == (0, 0)
-    settle(qapp, controller, looks, 1)
-    for _ in range(5):
-        assert controller._filmstrip_edit_state("a.NEF") == (123, 456)
+    assert controller._filmstrip_edit_state("a.NEF") == (5, 6)
     assert looks.paths == ["a.NEF"]
 
 
-def test_a_photo_that_is_asked_about_again_before_the_answer_arrives_is_looked_up_once(controller, looks, qapp):
-    for _ in range(10):
-        controller._filmstrip_edit_state("a.NEF")
-    settle(qapp, controller, looks, 1)
-    assert looks.paths == ["a.NEF"]
+def test_the_strip_is_drawn_again_when_an_answer_is_not_what_it_drew(controller, popout):
+    controller.handle_edit_state_changed("edited.NEF")
+    popout.refresh_filmstrip.assert_called_once()
 
 
-def test_the_strip_is_drawn_again_when_an_answer_is_not_what_it_drew(controller, looks, popout, qapp):
-    looks.states["edited.NEF"] = (5, 6)
-    controller._filmstrip_edit_state("edited.NEF")
-    controller._filmstrip_edit_state("plain.NEF")
-    settle(qapp, controller, looks, 2)
-    assert popout.refresh_filmstrip.call_count == 1, "for the edited photo only; an unedited photo is what the strip drew already"
-
-
-def test_no_redraw_is_asked_of_a_popout_that_is_not_on_screen(controller, looks, popout, qapp):
+def test_no_redraw_is_asked_of_a_popout_that_is_not_on_screen(controller, popout):
     popout.isVisible.return_value = False
-    looks.states["edited.NEF"] = (5, 6)
-    controller._filmstrip_edit_state("edited.NEF")
-    settle(qapp, controller, looks, 1)
+    controller.handle_edit_state_changed("edited.NEF")
     popout.refresh_filmstrip.assert_not_called()
 
 
-def test_after_a_moment_the_strip_shows_what_it_knew_and_looks_again(controller, looks, popout, qapp, monkeypatch):
-    looks.states["a.NEF"] = (1, 1)
-    controller._filmstrip_edit_state("a.NEF")
-    settle(qapp, controller, looks, 1)
-    monkeypatch.setattr(PreviewController, "FILMSTRIP_EDIT_STATE_TTL_S", 0.0)
-    looks.states["a.NEF"] = (2, 2)
-    assert controller._filmstrip_edit_state("a.NEF") == (1, 1), "what it knew, without waiting"
-    settle(qapp, controller, looks, 2)
-    monkeypatch.setattr(PreviewController, "FILMSTRIP_EDIT_STATE_TTL_S", 10.0)
-    assert controller._filmstrip_edit_state("a.NEF") == (2, 2)
-    assert popout.refresh_filmstrip.call_count == 2, "once for each answer that was not what the strip had drawn"
+def test_a_saved_edit_makes_the_photo_s_edits_be_looked_at_again(controller, looks, popout, qapp):
+    popout_grid = controller._window.grid
+    memo = controller._window.thumbnail_manager.edit_states
+    memo.exact("a.NEF")
+    memo.exact("b.NEF")
+    controller._refresh_photocraft_save("a.NEF")
+    assert memo._known["a.NEF"][0] == float("-inf") and memo._known["b.NEF"][0] != float("-inf")
+    popout_grid.update_items.assert_called_once()
 
 
-@pytest.mark.parametrize("how", ["a thumbnail arrives", "an edit is saved"])
-def test_a_photo_that_may_have_changed_is_looked_at_again_and_meanwhile_shown_as_it_was(controller, looks, popout, qapp, how):
-    looks.states["a.NEF"] = (1, 1)
-    looks.states["b.NEF"] = (3, 3)
-    controller._filmstrip_edit_state("a.NEF")
-    controller._filmstrip_edit_state("b.NEF")
-    settle(qapp, controller, looks, 2)
-    looks.states["a.NEF"] = (9, 9)
-    if how == "a thumbnail arrives":
-        controller.handle_preview_filmstrip_thumbnail_ready(SimpleNamespace(path="a.NEF"), None)
-    else:
-        controller._refresh_photocraft_save("a.NEF")
-    assert controller._filmstrip_edit_state("b.NEF") == (3, 3)
-    assert controller._filmstrip_edit_state("a.NEF") == (1, 1), "as it was, without waiting for the disk"
-    settle(qapp, controller, looks, 3)
-    assert looks.paths == ["a.NEF", "b.NEF", "a.NEF"], "only the photo that may have changed"
-    assert controller._filmstrip_edit_state("a.NEF") == (9, 9)
-
-
-def test_a_signal_that_says_nothing_about_a_photo_changes_nothing(controller, looks, popout, qapp):
-    controller._filmstrip_edit_state("a.NEF")
-    settle(qapp, controller, looks, 1)
-    controller.handle_preview_filmstrip_thumbnail_ready()
-    controller.handle_preview_filmstrip_thumbnail_ready(object())
-    controller._filmstrip_edit_state("a.NEF")
-    assert looks.paths == ["a.NEF"]
-
-
-def test_leaving_the_editor_makes_the_strip_look_at_every_photo_again(controller, looks, popout, qapp):
-    controller._filmstrip_edit_state("a.NEF")
-    controller._filmstrip_edit_state("b.NEF")
-    settle(qapp, controller, looks, 2)
+def test_leaving_the_editor_makes_every_photo_s_edits_be_looked_at_again(controller, looks, popout, qapp):
+    memo = controller._window.thumbnail_manager.edit_states
+    memo.exact("a.NEF")
+    memo.exact("b.NEF")
     controller.leave_photocraft_editor()
-    controller._filmstrip_edit_state("a.NEF")
-    controller._filmstrip_edit_state("b.NEF")
-    settle(qapp, controller, looks, 4)
-    assert sorted(looks.paths) == ["a.NEF", "a.NEF", "b.NEF", "b.NEF"]
-
-
-def test_the_edit_state_memo_is_bounded_and_forgets_the_oldest_first(controller, looks, popout, qapp):
-    for n in range(520):
-        controller._filmstrip_edit_state_known(f"{n}.NEF", (0, 0))
-    assert len(controller._filmstrip_edit_states) <= 512
-    assert "0.NEF" not in controller._filmstrip_edit_states and "519.NEF" in controller._filmstrip_edit_states
+    assert memo._known["a.NEF"][0] == float("-inf") and memo._known["b.NEF"][0] == float("-inf")
 
 
 def test_a_filmstrip_thumb_is_found_without_the_ui_thread_looking_at_the_disk(controller, looks, popout, qapp):
@@ -400,6 +339,8 @@ def test_a_filmstrip_thumb_is_found_without_the_ui_thread_looking_at_the_disk(co
     asked = []
 
     class Manager:
+        edit_states = controller._window.thumbnail_manager.edit_states
+
         def get_cached(self, record, size, edit_state=None):
             asked.append((record.path, edit_state))
             return image
@@ -408,7 +349,7 @@ def test_a_filmstrip_thumb_is_found_without_the_ui_thread_looking_at_the_disk(co
     controller._window.__dict__.update(_record_at=lambda index: records[index], thumbnail_manager=Manager(), PREVIEW_FILMSTRIP_THUMB_SIZE=None)
     for _ in range(4):
         pixmaps = [controller.preview_filmstrip_thumb(index) for index in range(12)]
-    settle(qapp, controller, looks, 12)
+    settle(qapp, controller, 12)
     assert len(looks.paths) == 12, "each photo's edits were looked at once, not once per step"
     assert all(thread is not threading.main_thread() for thread in looks.threads)
     assert all(state is not None for _path, state in asked), "the answer is always passed on: the manager is never left to look for itself"
@@ -422,6 +363,7 @@ def test_a_thumbnail_that_is_not_there_yet_is_asked_for_without_the_disk_being_l
     manager = Mock()
     manager.get_cached.return_value = None
     manager.request_thumbnail.side_effect = lambda *args, **kwargs: requested.append(kwargs)
+    manager.edit_states = controller._window.thumbnail_manager.edit_states
     grid = Mock()
     grid.thumbnail_for.return_value = None
     record = SimpleNamespace(path="a.NEF", is_folder=False)
@@ -432,32 +374,9 @@ def test_a_thumbnail_that_is_not_there_yet_is_asked_for_without_the_disk_being_l
     controller.preview_filmstrip_thumb(0)
     assert requested[0]["edit_state"] == (0, 0)
     assert grid.thumbnail_for.call_args.args == (0, (0, 0))
-    settle(qapp, controller, looks, 1)
+    settle(qapp, controller, 1)
     controller.preview_filmstrip_thumb(0)
     assert requested[1]["edit_state"] == (4, 4)
-
-
-def test_the_thumbnail_manager_uses_an_edit_state_it_is_given_and_looks_otherwise(monkeypatch, qapp):
-    from PySide6.QtCore import QSize
-
-    from image_triage import thumbnails
-
-    looks = Looks()
-    monkeypatch.setattr(thumbnails, "edit_state_for", looks)
-    manager = thumbnails.ThumbnailManager()
-    manager.pool.start = lambda *args, **kwargs: None
-    record = SimpleNamespace(path="a.NEF", modified_ns=1, size=2)
-    given = manager.make_key(record, QSize(8, 8), (5, 6))
-    assert given.edit_state == (5, 6) and looks.paths == []
-    looked = manager.make_key(record, QSize(8, 8))
-    assert looked.edit_state == (0, 0) and looks.paths == ["a.NEF"]
-    zero = manager.make_key(record, QSize(8, 8), (0, 0))
-    assert zero.edit_state == (0, 0) and looks.paths == ["a.NEF"], "(0, 0) is a real answer (no edits), not 'not given'"
-    manager.get_cached(record, QSize(8, 8), (7, 7))
-    manager.request_thumbnail(record, QSize(8, 8), edit_state=(8, 8))
-    assert looks.paths == ["a.NEF"], "neither lookup looked at the disk"
-    assert any(key.edit_state == (8, 8) for key in manager._pending)
-    manager._drain_timer.stop()
 
 
 def test_the_grids_fallback_thumbnail_uses_the_edit_state_it_is_given_for_the_photo_itself_and_not_for_a_variant():

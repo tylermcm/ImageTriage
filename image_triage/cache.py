@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from hashlib import sha1
 from pathlib import Path
+from queue import SimpleQueue
 from threading import Lock, Thread
+from typing import Callable
 
 from PySide6.QtCore import QStandardPaths
 from PySide6.QtGui import QImage, QImageReader
@@ -45,6 +48,103 @@ def edit_state_for(path: str | Path) -> tuple[int, int]:
     except Exception:
         return (0, 0)
     return (stat.st_mtime_ns, stat.st_size)
+
+
+class EditStateMemo:
+    """``edit_state_for`` for callers that ask about the same photos again and again.
+
+    ``edit_state_for`` looks at the disk (five file lookups: 1.4 ms on a card, tens of ms while photos are being read from it). The grid
+    asked about every visible photo, twice, on every repaint, and the filmstrip about a dozen on every step: more than half of the UI
+    thread's time while flipping through photos. So each answer is remembered for ``TTL_S``; after that the old answer is still given
+    and a thread of its own looks again, and ``on_changed(path)`` is called (on that thread) if the answer turned out different.
+
+    ``exact`` finds a photo's first answer on the calling thread (what the grid's keys need: a thumbnail made now is stored under it);
+    ``peek`` never touches the disk on the calling thread and says "no edits" until the first answer has been found (right for nearly
+    every photo; what the filmstrip uses). ``stale`` says that an answer may be out of date, which makes the next ask look again.
+    """
+
+    TTL_S = 10.0
+    MAX_ENTRIES = 4096
+
+    def __init__(
+        self,
+        probe: Callable[[str], tuple[int, int]] | None = None,
+        on_changed: Callable[[str], None] | None = None,
+    ) -> None:
+        self._probe = probe
+        self._on_changed = on_changed
+        self._known: dict[str, tuple[float, tuple[int, int]]] = {}
+        self._pending: set[str] = set()
+        self._queue: SimpleQueue[str] = SimpleQueue()
+        self._thread: Thread | None = None
+        self._lock = Lock()
+
+    def peek(self, path: str | Path) -> tuple[int, int]:
+        key = str(path)
+        with self._lock:
+            known = self._known.get(key)
+        if known is None or time.monotonic() - known[0] >= self.TTL_S:
+            self._look_again(key)
+        return known[1] if known is not None else (0, 0)
+
+    def exact(self, path: str | Path) -> tuple[int, int]:
+        key = str(path)
+        with self._lock:
+            known = self._known.get(key)
+        if known is None:
+            state = self._find(key)
+            self._remember(key, state)
+            return state
+        if time.monotonic() - known[0] >= self.TTL_S:
+            self._look_again(key)
+        return known[1]
+
+    def stale(self, path: str | Path | None = None) -> None:
+        """The edits of ``path`` (of every photo, without it) may have changed: the next ask looks again, and gives the old answer
+        meanwhile."""
+        with self._lock:
+            for key in list(self._known) if path is None else [str(path)]:
+                known = self._known.get(key)
+                if known is not None:
+                    self._known[key] = (float("-inf"), known[1])
+
+    def _find(self, key: str) -> tuple[int, int]:
+        try:
+            return (self._probe or edit_state_for)(key)
+        except Exception:  # edit_state_for answers "no edits" for anything it cannot read; this is for the unforeseen
+            return (0, 0)
+
+    def _remember(self, key: str, state: tuple[int, int]) -> tuple[int, int] | None:
+        with self._lock:
+            previous = self._known.get(key)
+            if previous is None and len(self._known) >= self.MAX_ENTRIES:
+                self._known.pop(next(iter(self._known)))
+            self._known[key] = (time.monotonic(), state)
+        return previous[1] if previous is not None else None
+
+    def _look_again(self, key: str) -> None:
+        with self._lock:
+            if key in self._pending:
+                return
+            self._pending.add(key)
+            if self._thread is None:
+                # Never keeps the program from closing: a photo on a drive that has gone away can hold a lookup for many seconds.
+                self._thread = Thread(target=self._run, name="edit-state-memo", daemon=True)
+                self._thread.start()
+        self._queue.put(key)
+
+    def _run(self) -> None:
+        while True:
+            key = self._queue.get()
+            state = self._find(key)
+            previous = self._remember(key, state)
+            with self._lock:
+                self._pending.discard(key)
+            if state != (previous if previous is not None else (0, 0)) and self._on_changed is not None:
+                try:
+                    self._on_changed(key)
+                except RuntimeError:  # its receiver has been deleted: the program is closing
+                    return
 
 
 @dataclass(slots=True, frozen=True)

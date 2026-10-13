@@ -157,6 +157,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self.thumbnail_manager = thumbnail_manager
         self.thumbnail_manager.thumbnail_ready.connect(self._handle_thumbnail_ready)
         self.thumbnail_manager.thumbnail_failed.connect(self._handle_thumbnail_failed)
+        self.thumbnail_manager.edit_state_changed.connect(self._handle_edit_state_changed)
         self.metadata_manager = MetadataManager(parent=self)
         self.metadata_manager.metadata_ready.connect(self._handle_metadata_ready)
 
@@ -703,6 +704,8 @@ class ThumbnailGridView(QAbstractScrollArea):
             self._schedule_visible_thumbnail_requests(immediate=True)
             return
 
+        for path in changed_paths:
+            self.thumbnail_manager.edit_states.stale(path)  # its edits may be what changed: look at them again, off this thread
         dirty_indexes = self._indexes_for_paths(changed_paths)
         for index in dirty_indexes:
             if not 0 <= index < len(self._items):
@@ -1303,7 +1306,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 key = self.thumbnail_manager.make_key(variant, target_size)
                 pixmap = self._cached_pixmap_for_key(key)
                 if pixmap is None:
-                    image = self.thumbnail_manager.get_cached(variant, target_size)
+                    image = self.thumbnail_manager.memory_cache.get(key)
                     pixmap = self._pixmap_for(key, image)
                 else:
                     pixmap_hits += 1
@@ -2017,6 +2020,14 @@ class ThumbnailGridView(QAbstractScrollArea):
             self.viewport().update(self._item_rect(previous_index))
 
     def _handle_scroll_value_changed(self) -> None:
+        self._schedule_visible_thumbnail_requests()
+
+    def _handle_edit_state_changed(self, path: str) -> None:
+        """A photo's edits turned out different from what its thumbnail was looked up under: draw it again with a thumbnail of its edits."""
+        if path not in self._variant_path_to_index:
+            return
+        self._clear_pixmap_cache(paths=(path,))
+        self.viewport().update()
         self._schedule_visible_thumbnail_requests()
 
     def _handle_thumbnail_ready(self, key: ThumbnailKey, _image: QImage) -> None:
@@ -4625,7 +4636,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             if variant.path in self._failed_paths:
                 continue
             if self._cached_pixmap_for_key(key) is None:
-                self.thumbnail_manager.request_thumbnail(variant, target, priority=priority)
+                self.thumbnail_manager.request_thumbnail(variant, target, priority=priority, edit_state=key.edit_state)
             self.metadata_manager.request_metadata(variant, priority=priority)
 
     def _schedule_visible_thumbnail_requests(self, immediate: bool = False) -> None:

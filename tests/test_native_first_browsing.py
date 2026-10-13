@@ -760,6 +760,7 @@ def test_switching_to_on_demand_puts_a_running_editor_away(plain, photo):
 
 
 def test_leaving_the_editor_settles_the_photo_off_the_ui_thread_and_cancels_pending_loads(controller, tmp_path, monkeypatch):
+    controller._window = SimpleNamespace(thumbnail_manager=SimpleNamespace(edit_states=Mock()))
     controller._photocraft = fast_proc(tmp_path)
     settled = []
     monkeypatch.setattr(controller, "_save_photocraft_sidecar_if_dirty", lambda proc, **kwargs: settled.append(proc))
@@ -775,4 +776,5 @@ def test_leaving_the_editor_settles_the_photo_off_the_ui_thread_and_cancels_pend
 
 
 def test_leaving_without_a_running_editor_does_nothing(controller):
+    controller._window = SimpleNamespace(thumbnail_manager=SimpleNamespace(edit_states=Mock()))
     controller.leave_photocraft_editor()  # no process: must not raise
