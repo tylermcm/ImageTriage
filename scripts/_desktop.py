@@ -131,3 +131,47 @@ def pin(widget) -> None:
         _state().move(int(widget.winId()), home[1])
     except OSError:
         pass
+
+
+def _send_to_back(hwnd: int) -> None:
+    user32 = ctypes.windll.user32
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # HWND_BOTTOM; no size, no move, no activate
+
+
+def place(widget) -> None:
+    """For a check's top-level window, before it is shown: it goes to the home desktop, never takes the keyboard, and stays
+    under every other window, so it runs without getting in front of whatever its owner is doing. Does nothing without a home."""
+    if _home() is None:
+        return
+    from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+
+    user32 = ctypes.windll.user32
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    widget.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+    pin(widget)
+
+    class _Behind(QObject):
+        def __init__(self, parent):
+            super().__init__(parent)
+            self.before = user32.GetForegroundWindow()
+
+        def settle(self):
+            hwnd = int(widget.winId())
+            pin(widget)  # a window re-created by a state change (full screen) starts on the active desktop again
+            _send_to_back(hwnd)
+            front = user32.GetForegroundWindow()
+            if front == hwnd and self.before and self.before != hwnd:
+                user32.SetForegroundWindow(wintypes.HWND(self.before))
+
+        def eventFilter(self, watched, event):
+            kind = event.type()
+            if kind in (QEvent.Type.Show, QEvent.Type.WindowActivate, QEvent.Type.WindowStateChange, QEvent.Type.WinIdChange):
+                if kind != QEvent.Type.WindowActivate:
+                    front = user32.GetForegroundWindow()
+                    if front and front != int(widget.winId()):
+                        self.before = front
+                QTimer.singleShot(0, self.settle)
+            return False
+
+    widget.installEventFilter(_Behind(widget))
