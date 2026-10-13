@@ -1,4 +1,53 @@
-# PhotoCraft handoff — remove-builtin-editor
+# PhotoCraft handoff
+
+## Quick handoff - 2026-10-12 (upstream 0.8.2, a smaller fork, Camera Raw first by default)
+
+**Where things are.** Image Triage: everything is on `main` (the `camera-raw-first-nav` branch was fast-forwarded into
+it). PhotoCraft fork: `codex/image-triage-integration`, on upstream release 0.8.2 (`d43db3e1`) plus the fork's own
+commits; fork delta 24 files, +3,846 / -84. Both pushed to the owner's GitHub repositories. Details, numbers and what
+was not run: the two "2026-10-12 update" sections below.
+
+**Rules the owner set this day** (also in both AGENTS.md files):
+- The fork carries only what hosting PhotoCraft in Image Triage needs. Where upstream has built the same thing, now or
+  later, drop ours and take theirs.
+- Nothing is ever sent to storytold: no pull requests, no pushes.
+- Merge upstream at its release tags, not at every tip. (No release after 0.8.2 yet; main was 33 commits ahead of it
+  and merged cleanly in a trial.)
+- No AI attribution line on commits.
+
+**What changed.**
+- Upstream 0.8.2 merged (310 commits, ten conflicts). The raw develop pipeline and colour fit are upstream's; the
+  reduced browse development was rewritten to call upstream's develop unchanged.
+- The retained-raw smart object route is gone from both repositories (upstream decodes Nikon compressed NEFs).
+  A raw the editor cannot develop (Z 8 / Z 9 High Efficiency) opens as its embedded preview.
+- "Open photos in Camera Raw first" is on by default: Camera Raw, then the editor, settings kept per photo, as in
+  Photoshop. It is the only mode with raw-level editing.
+- The control connection is locked per request (the occasional empty reply). The hosted save encodes on a pool of
+  its own (no stall with the editor held to 8 logical processors; unchanged at 4).
+- The architecture ratchet was re-registered at the numbers the PhotoCraft work brought (main window 2,848 lines,
+  110 methods, 343 attributes; `preview_controller` 164, `settings_controller` 347, `startup_controller` 27).
+
+**This machine** (`C:\Users\Checkout`, 20 threads, 16 GB): Rust stable via rustup (`~/.cargo/bin`); run cargo with
+`-j 6` to `-j 8` and one crate at a time (a fully parallel workspace test build froze it). The release editor is
+`..\photocraft\target\release\photocraft.exe` (built from `823d9890`); `photocraft-known-good-8dfc5340.exe` beside
+it is the build before the save pool. Sample NEFs (raw.pixls.us: D850, Z 7, Z 7II, Z 8, Z 9) are in
+`C:\Users\Checkout\Pictures\nef-samples`. Python's site-packages has a `tests` package of its own (pyppeteer2) that
+hides `tests.harness`: run the suite with the repository's `tests` registered first (see the later section).
+
+**For the owner to try on the home PC and the laptop** (nothing here was run on the owner's photos or machines):
+- Camera Raw first on real Z 7II NEFs from the NAS; browsing speed there.
+- The save after an edit on the laptop (the 9-12 s stall was seen there): `scripts/measure_stash_stall.py`.
+- A `.pcraft` saved earlier with a RAW-backed smart object: it should open, without its development settings.
+- If the settings dialog was accepted on that machine before, "Open photos in Camera Raw first" is stored as off
+  there and stays off until ticked.
+
+**Open.**
+- Each save of a 45 MP photo writes about 520 MB (310 MB project, 211 MB preview PNG): format decisions are the owner's.
+- The save stall on four logical processors or fewer (upstream's encoders start a thread per core themselves).
+- One handoff check run of five ended with the Python process gone and no traceback; not reproduced.
+- Not run: the ui-egui integration tests, the desktop app's tests, the layers and wasm checks.
+- Still on the UI thread while the editor runs: about 53 file-system probes per key press; the editor's stderr is discarded.
+- Pre-existing test failures: `test_preview_right_click` (5 assertions); the three sandbox packages missing from the checkout.
 
 ## Quick handoff - 2026-10-11 (the editor is on demand)
 
@@ -324,7 +373,7 @@ identifiable; avoid rewriting or force-pushing the fork's history.
 
 ### 2026-10-12 update, later (validation gaps, the save stall, more of the fork dropped)
 
-Fork `codex/image-triage-integration` at `823d9890` (local, not pushed), Image Triage `main`.
+Fork `codex/image-triage-integration` at `823d9890`, Image Triage `main`; both pushed at the end of the day.
 
 - Upstream: no release after 0.8.2; main is 33 commits ahead of it and merges without conflicts. Nothing merged
   (releases only, per the owner).
@@ -354,8 +403,9 @@ Fork `codex/image-triage-integration` at `823d9890` (local, not pushed), Image T
   `f10ba09` (before this day's work): the three sandbox packages are not in the checkout (3 errors, 1 failure);
   `test_preview_right_click` (5); and the architecture ratchet, which the PhotoCraft branch exceeded before it was
   merged (main window 2,829 -> 2,848 lines, 109 -> 110 methods, 342 -> 343 attributes; private reaches in
-  `preview_controller` 164/163, `settings_controller` 347/343, `startup_controller` 27/25). The ratchet was not
-  re-registered. This Python has a `tests` package of its own in site-packages (from pyppeteer2) that hides
+  `preview_controller` 164/163, `settings_controller` 347/343, `startup_controller` 27/25). Re-registered at
+  those numbers afterwards, on the owner's word; a local named `window` that the checker read as the main window
+  (`preview_controller.py`) was renamed. This Python has a `tests` package of its own in site-packages (from pyppeteer2) that hides
   `tests.harness`; the suite was run with the repository's `tests` registered first.
 
 PhotoCraft is the popout's default editor. The current filmstrip, navigation,
