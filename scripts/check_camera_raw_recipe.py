@@ -32,6 +32,7 @@ from PySide6.QtGui import QImage, QPixmap  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from image_triage import photocraft_bridge as bridge  # noqa: E402
+from image_triage.cache import EditStateMemo  # noqa: E402
 from image_triage.app_identity import user_settings  # noqa: E402
 from _check_settings import use_throwaway_settings  # noqa: E402
 from image_triage.models import ImageRecord  # noqa: E402
@@ -87,6 +88,7 @@ def main() -> None:
         _preview=preview,
         statusBar=lambda: SimpleNamespace(showMessage=lambda *message: statuses.append(message)),
         grid=SimpleNamespace(update_items=lambda *_: None),
+        thumbnail_manager=SimpleNamespace(edit_states=EditStateMemo()),
         _records=[],
     )
     controller._photocraft_executable = str(Path(args.executable).resolve())
