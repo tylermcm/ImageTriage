@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PIL import Image
 from PySide6.QtCore import QSize
 from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QApplication
 
 from image_triage.cache import ThumbnailKey, edit_state_for
 from image_triage.edit_storage import editor_session_path
@@ -91,7 +92,16 @@ class ThumbnailKeyEditStateTests(unittest.TestCase):
         self.assertEqual((0, 0), key_before.edit_state)
 
         _write_session(self.image_path, operations=[{"id": "op-1", "type": "adjust.exposure", "enabled": True, "params": {"exposure": 1.0}}])
+        # The key's edit state is remembered (EditStateMemo): it is looked at again when something says the edits may have changed
+        # (a save does), on a thread of its own, and the key follows.
+        manager.edit_states.stale(str(self.image_path))
+        manager.make_key(record, QSize(64, 64))
+        deadline = time.monotonic() + 5
         key_after = manager.make_key(record, QSize(64, 64))
+        while key_after.edit_state == (0, 0) and time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.005)
+            key_after = manager.make_key(record, QSize(64, 64))
         self.assertNotEqual((0, 0), key_after.edit_state)
         self.assertNotEqual(key_before.digest(), key_after.digest())
 
@@ -131,6 +141,54 @@ class ThumbnailTaskEditRenderTests(unittest.TestCase):
         state, _key, image = result_queue.get_nowait()
         self.assertEqual("ready", state)
         return image
+
+    def _run_task_keyed(self, edit_state: tuple[int, int]):
+        """Runs the worker for a key that says ``edit_state`` and returns (memory cache, key, picture)."""
+        from queue import SimpleQueue
+
+        from image_triage.cache import DiskThumbnailCache, MemoryThumbnailCache
+        from image_triage.thumbnails import ThumbnailRequest, ThumbnailTask
+
+        memory_cache = MemoryThumbnailCache()
+        disk_cache = DiskThumbnailCache(self.dir / "disk_cache_keyed")
+        result_queue: SimpleQueue = SimpleQueue()
+        target_size = QSize(64, 64)
+        record_stat = self.image_path.stat()
+        key = ThumbnailKey(
+            path=str(self.image_path),
+            modified_ns=record_stat.st_mtime_ns,
+            file_size=record_stat.st_size,
+            width=target_size.width(),
+            height=target_size.height(),
+            edit_state=edit_state,
+        )
+        ThumbnailTask(ThumbnailRequest(key=key, path=str(self.image_path), target_size=target_size), memory_cache, disk_cache, result_queue).run()
+        state, _key, image = result_queue.get_nowait()
+        self.assertEqual("ready", state)
+        return memory_cache, disk_cache, key, image
+
+    def test_a_picture_of_the_edits_is_not_kept_under_a_key_that_says_no_edits(self) -> None:
+        _write_session(
+            self.image_path,
+            operations=[{"id": "op-1", "type": "adjust.exposure", "enabled": True, "params": {"exposure": 1.5}}],
+        )
+        memory_cache, disk_cache, key, image = self._run_task_keyed((0, 0))
+        self.assertFalse(image.isNull(), "it is still shown")
+        self.assertIsNone(memory_cache.get(key), "but not remembered as the unedited photo's thumbnail")
+        self.assertIsNone(disk_cache.load(key))
+
+    def test_a_picture_of_the_edits_is_kept_under_a_key_that_knows_the_edits(self) -> None:
+        _write_session(
+            self.image_path,
+            operations=[{"id": "op-1", "type": "adjust.exposure", "enabled": True, "params": {"exposure": 1.5}}],
+        )
+        memory_cache, _disk_cache, key, _image = self._run_task_keyed(edit_state_for(self.image_path))
+        self.assertNotEqual((0, 0), key.edit_state)
+        self.assertIsNotNone(memory_cache.get(key))
+
+    def test_an_unedited_photo_is_kept_under_a_key_that_says_no_edits(self) -> None:
+        memory_cache, _disk_cache, key, _image = self._run_task_keyed((0, 0))
+        self.assertIsNotNone(memory_cache.get(key))
 
     def test_edited_source_thumbnail_differs_from_plain_decode(self) -> None:
         plain, _error = load_image_for_display(str(self.image_path), QSize(64, 64), prefer_embedded=True)

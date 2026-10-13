@@ -26,11 +26,23 @@
 > drive and tens of ms while photos are being read from it) on the UI thread: 40-80 ms per step, and the strip flashed. Now
 > (`Filmstrip._populate`) the thumbs that stay on screen are kept and told what they show (`FilmstripThumb.show_state` repaints
 > only if the picture, tag or ring changed), the pixmaps are made once per image (`PreviewController._filmstrip_pixmap`), and the
-> edit state of each photo is found on a daemon thread (`_filmstrip_edit_state`): the strip uses the last answer, or "not edited"
-> before there is one (right for nearly every photo), and is redrawn if the answer turns out different. An answer is looked for again
-> after 10 s, and at once when a thumbnail of the photo arrives, the editor saves it, or the editor is left. Measured with a key
-> every 80 ms through 45 MP NEFs, the popout alone: 5 of 20 photos shown, 5.4 s of UI-thread pauses (worst 2.2 s) before; 19-20 shown,
-> 0.3-0.5 s of pauses (worst 0.22 s) after; the strip's own work fell from 3.8 s to 0.16 s over the 22 steps.
+> edit state of each photo is not looked up on the UI thread (see the next paragraph): the strip uses the remembered answer, or
+> "not edited" before there is one (right for nearly every photo), and is redrawn if the answer turns out different. Measured with a
+> key every 80 ms through 45 MP NEFs, the popout alone: 5 of 20 photos shown, 5.4 s of UI-thread pauses (worst 2.2 s) before; 19-20
+> shown, 0.3-0.5 s of pauses (worst 0.22 s) after; the strip's own work fell from 3.8 s to 0.16 s over the 22 steps.
+>
+> **One memory of every photo's edit state (`cache.EditStateMemo`, owned by the `ThumbnailManager` as `edit_states`).** The strip was
+> not the only one asking the disk: the grid behind the popout recomputed the thumbnail key of every visible cell, twice, on every
+> repaint (`make_key` -> `edit_state_for`), which with the strip came to about 55 file lookups per key press, 1.3 s of the UI thread's
+> 2.2 s while flipping 22 photos (`resolve_session_for_read` 560 calls, `saved_render_path` 690). Now an answer is remembered for 10 s;
+> after that the old answer is still given while a thread of its own looks again. `exact` (what keys use) finds a photo's first
+> answer on the asking thread, once; `peek` (what the strip uses) never touches the disk there and says "no edits" until the first
+> answer is in. `edit_states.stale(path)` (a save, `grid.update_items`, leaving the editor) makes the next ask look again, and a
+> changed answer raises `ThumbnailManager.edit_state_changed(path)`: the grid clears that photo's pixmap and asks again, the strip
+> is redrawn. A worker that rendered a photo's edits no longer keeps the picture under a key that says "no edits" (it would come back
+> as the unedited thumbnail if the edits were removed). After: 17 `resolve_session_for_read` and 128 `saved_render_path` calls over the
+> same 22 presses, 0.15 s of the UI thread instead of 1.3 s. What is left comes from the popout itself (`preview.py`
+> `_entry_source_signature`: the source-update poll, `_request_preview_loads`, `_rebuild_entries`), about 3.5 ms a call on the card.
 
 Status: phase 1 (the fast browsing layer) is implemented on branch `camera-raw-first-nav`, unit-tested,
 timed in isolation and run through the live editor check; it has **not** been exercised against real RAW
