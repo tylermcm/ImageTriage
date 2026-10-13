@@ -23,6 +23,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from image_triage import photocraft_bridge as bridge  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _desktop import wait_for_home_desktop  # noqa: E402
+
 
 def wait_for(check, what, timeout=60.0, interval=0.1):
     deadline = time.monotonic() + timeout
@@ -55,6 +58,7 @@ def main() -> int:
     env = dict(os.environ)
     env.setdefault("WGPU_BACKEND", "dx12")
     started = time.perf_counter()
+    wait_for_home_desktop()  # the editor's window opens on the checks' own virtual desktop
     process = subprocess.Popen(
         [args.executable, "--raw-workspace", "--control", str(port), "--control-token-file", token_path,
          "--automation-read-root", str(output), "--automation-write-root", str(write_root), str(image)],
