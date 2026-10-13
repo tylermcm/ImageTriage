@@ -1194,8 +1194,8 @@ class PreviewController(QObject):
                 viewport = proc.fast_lane().call("ui.viewport")
             except photocraft_bridge.PhotoCraftError:
                 return
-            window = viewport.get("window") or {}
-            drawn = abs(int(window.get("width", -1)) - size[0]) <= 2 and abs(int(window.get("height", -1)) - size[1]) <= 2
+            window_size = viewport.get("window") or {}
+            drawn = abs(int(window_size.get("width", -1)) - size[0]) <= 2 and abs(int(window_size.get("height", -1)) - size[1]) <= 2
             layout = (viewport.get("canvas"), (viewport.get("cameraRaw") or {}).get("view"))
             # At the new size, and the same layout twice running: it has finished laying out.
             if drawn and layout == previous:
