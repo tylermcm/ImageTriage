@@ -26,6 +26,7 @@ from image_triage.edit_render_headless import render_edited_image
 from image_triage.models import ImageRecord
 from image_triage.preview import FullScreenPreview, PreviewEntry
 from image_triage.preview_controller import PreviewController
+from image_triage.cache import EditStateMemo
 from image_triage.app_identity import user_settings
 from _check_settings import use_throwaway_settings
 from image_triage.scanner import normalized_path_key
@@ -57,6 +58,7 @@ def main() -> None:
         _preview=preview,
         statusBar=lambda: SimpleNamespace(showMessage=lambda *message: statuses.append(message)),
         grid=SimpleNamespace(update_items=grid_updates.append),
+        thumbnail_manager=SimpleNamespace(edit_states=EditStateMemo()),
     )
     if args.executable:
         controller._photocraft_executable = str(Path(args.executable).resolve())
