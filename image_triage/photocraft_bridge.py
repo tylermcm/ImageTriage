@@ -186,6 +186,21 @@ def full_render_path(image_path: str) -> Path | None:
     return display if shown_is_usable else None
 
 
+def render_is_behind(image_path: str) -> bool:
+    """Whether the photo has a saved project whose full-size render is missing or older than it: a save that left the render out (an
+    autosave does, and so does closing the popout or quitting) has been made since the render was. The project is written before the
+    render in a full save, so a render within ``FULL_RENDER_TOLERANCE_S`` of the project (or newer) belongs to it."""
+    try:
+        project = sidecar_pcraft_path(image_path).stat().st_mtime
+    except OSError:
+        return False  # no project: a photo with only a recipe has no full-size render, and nothing is behind
+    try:
+        render = rendered_preview_path(image_path).stat().st_mtime
+    except OSError:
+        return True
+    return render < project - FULL_RENDER_TOLERANCE_S
+
+
 def materialize_for_photocraft(path: str, cache_dir: Path) -> str:
     """Decode an unsupported non-RAW file to a TIFF PhotoCraft can open directly.
 
@@ -447,6 +462,8 @@ class PhotoCraftProcess:
     # Sidecars (as ``str``) whose last save left the full-size render out (an autosave while the editor is up writes the project and
     # the screen-sized JPEG only): leaving the photo saves it again, with the render, even if nothing changed since.
     preview_missing: set[str] = field(default_factory=set)
+    # When the open photo was last found changed (``time.monotonic()``): the autosave writes the full-size render after a pause in editing.
+    last_edit_at: float = 0.0
 
     def exit_note(self) -> str:
         """Whether the editor is still running or has exited (with what code), and where its own output is: for the log line of a

@@ -1,5 +1,55 @@
 # PhotoCraft handoff
 
+## Quick handoff - 2026-10-12/13, later (the laptop: the "still open" items)
+
+Worked through the previous section's **Open** list on the laptop (Intel UHD 620, 4 cores / 8 threads, 15.9 GB). Image Triage commits are
+on top of `df54738` (merged into `main`); the fork's one commit is on `codex/image-triage-integration`. Nothing was sent to storytold.
+
+**What changed**
+- **Edit state is looked up once and remembered** (`cache.EditStateMemo`, `ThumbnailManager.edit_states`). The grid behind the popout
+  asked the disk about every visible cell, twice, on every repaint; with the filmstrip that was ~55 file lookups per key press, 1.3 s of
+  the UI thread's 2.2 s while flipping 22 photos. Now 17 `resolve_session_for_read` and 128 `saved_render_path` calls over the same
+  presses (0.15 s). What is left comes from the popout itself (`preview.py` `_entry_source_signature`, ~3.5 ms a call on the card).
+  The filmstrip also keeps its thumbs instead of rebuilding them (`Filmstrip._populate`, `FilmstripThumb.show_state`). Measured with a
+  key every 80 ms through 45 MP NEFs, popout alone: 5 of 20 photos shown / 5.4 s of pauses before the filmstrip work, 19-20 shown / ~0.4 s after.
+- **The editor's own output is kept** (`photocraft_editor_*.log` in the log folder, last five starts; `PhotoCraftProcess.exit_note()` in the
+  handoff-failure log line).
+- **The editor's control connection** drops after 30 s of quiet; the client now reconnects first (`IDLE_RECONNECT_S`). That was the "PhotoCraft
+  could not open this photo ... WinError 10053" of 2026-10-11 (first E after five minutes idle).
+- **Saves: the full-size PNG is no longer written on every autosave.** The fork's `app.stash` takes `preview` as optional
+  (`stashWithoutPreview` in `app.handoff`, fork commit `ca2d3298`); the autosave leaves it out. Measured on a 45 MP Z 7II NEF with a zoom running
+  during the save: the save takes ~9 s instead of 16-18 s, the window keeps answering (slowest answer 61-96 ms; the old save 125-312 ms
+  with 4-14 slow answers); held to 4 logical processors 14-15 s with at most one slow answer instead of 27-28 s with 19-38. Writes
+  310 MB per save instead of 520 MB. The PNG is still written, so hand-offs, resize/export and the edited version beside the original keep
+  full size: when the photo is left (E, or a photo switch), and after 10 s without an edit (`RENDER_IDLE_S`, in `_autosave_photocraft`).
+  `bridge.full_render_path` (grid's edited version, full-size export) takes the PNG only when it is not older than the display JPEG, else the
+  JPEG; `bridge.render_is_behind` is the file-based test (project newer than render), so a render left behind in an earlier session is caught
+  up the next time the photo is left.
+- **Closing the popout or quitting does not write the PNG** (and cannot): an embedded editor under a *hidden popout* does not answer at all
+  (measured: nothing in 84 s), while hiding only its host inside the popout (what E does) leaves it answering in ~150 ms. So "edit, then close
+  the popout within 10 s" leaves the PNG behind (the JPEG is current; readers use it, so a full-size export of that photo is 2560 px until the
+  photo is next opened and left). Fixing that needs a parking window for the editor; not done.
+- **The live checks** (`check_camera_raw_first`, `check_camera_raw_recipe`, `check_photocraft_handoff`, new `check_lean_save`) run on a
+  throwaway settings key (`scripts/_check_settings.py`), so one that dies no longer leaves settings pinned in the real profile. Their stand-in
+  windows need a `thumbnail_manager` (a test guards it). `measure_stash_stall.py --lean`.
+- Tests: the right-click test measured hidden bars; the three sandbox test modules skip when their (git-ignored) code is absent and the import
+  check no longer counts them. Targeted suites pass; the architecture ratchet is unchanged by this work (no new private reaches).
+
+**The editor on this laptop.** `target/release/photocraft.exe` is rebuilt from the fork (0.8.2 + `ca2d3298`, 11-17 min with `-j 4`);
+`photocraft-baseline-823d9890.exe` (the build before the lean save) and `photocraft-known-good-2026-10-11-c6092f86.exe` are kept beside it.
+Fork: formatted, 14 `control_files` tests pass. Live on the new editor: handoff check passes at 1 MP and in 8 runs at 24 MP (the run that ended with
+the Python process gone on the other machine did not recur), camera-raw-first passes, camera-raw-recipe passes, `check_lean_save` passes both
+ways (render written 19 s after a pause; closing right after an edit leaves it behind).
+
+**Open**
+- Closing the popout holds the UI thread ~3 s even with nothing to save: `PhotoCraftProcess.shutdown` waits 3 s for the editor to exit and then
+  terminates it. Quitting takes 0.4-0.6 s with the window shown or hidden on its own, so it is the embedded-under-a-closing-popout case; not looked into.
+  Closing the popout also always quits the editor (the prestarted one too), so the next E after reopening the popout pays the cold start.
+- The `jobs.list` timeout at the end of one `check_camera_raw_recipe` run (60 s, at shutdown) did not recur in four more runs.
+- Not run: the ui-egui integration tests, the desktop app's tests, clippy, the layers and wasm checks (the editor was built and its `control_files` unit tests ran).
+- Still on the UI thread: `_entry_source_signature` (3 lookups per key press, ~3.5 ms each on the card) and the popout's source-update poll.
+- Format decisions about the 310 MB project (upstream's) are still the owner's.
+
 ## Quick handoff - 2026-10-12 (upstream 0.8.2, a smaller fork, Camera Raw first by default)
 
 **Where things are.** Image Triage: everything is on `main` (the `camera-raw-first-nav` branch was fast-forwarded into
