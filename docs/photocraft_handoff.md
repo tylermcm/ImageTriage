@@ -1,5 +1,62 @@
 # PhotoCraft handoff
 
+## Quick handoff - 2026-10-13, later (the editor key, two upstream raw problems, upstream tip merged)
+
+Image Triage `main` at `3bca249` plus this note; fork `scratch/upstream-merge-2026-10-13` at `9e94b0c0` (local; the
+integration branch has not been moved). Nothing pushed. Desktop only. **Another session (Codex) is editing this
+working copy at the same time** (inspector wrapping, top-right sizing; its note is at the end of this file): commit only
+your own files.
+
+**The editor key** (real app, 45 MP raw, editor started in the background): 1.85 s to the editor on screen, measured
+step by step: 0.30 s a dwell meant for a selection that may move on, 0.73 s the editor developing the raw, 0.65 s the
+editor decoding the raw a second time on its own thread for the dialog's tone curve (upstream's `raw::tone_curve` call
+in `open_raw`), 0.13 s asking for the theme. Now: the key skips the dwell; a raw on screen for 0.6 s with the editor
+up but idle is developed ahead (`_rest_on_photo`, `app.prefetch`); the theme is asked once per editor; the window is
+attached before the open is sent; in the fork the browsing worker hands the curve over with the dialog's proxy, and an
+open waits for a prefetch of the same photo that is in flight. Result: 0.50 s when the photo had been on screen two
+seconds, 0.71 s for another photo later, about 1.45 s when the key is pressed within the first second (the develop
+itself got slower with upstream's new colour fit).
+
+**A photo come back to opened in the full editor.** Leaving a photo (the key again, or closing the popout now that the
+editor outlives it) settles it, which closes its Camera Raw dialog; "already open" then skipped the reopen. A left
+photo (`PhotoCraftProcess.left`) is opened again. Random navigation in the real app: 2 of 30 steps wrong before, 0 of
+120 after.
+
+**Black pictures: upstream's Nikon decoder.** Lossy-compressed NEFs from Z bodies (maker note 0x0096 version
+`0x44 0x40`: Z 7 14-bit, Z 7II 12-bit) decoded to black: their 257 curve points are `2^(bits-2)/256` codes apart, not
+`2^bits/256`. One line in `crates/raw/src/nefc.rs` (fork commit `7c2d5716`, on its own so it can go upstream as a
+PR, which the owner wants for this fix; not opened yet). All 45,749,760 samples of each file equal LibRaw's
+(`rawpy.raw_image`), also for the D850 lossy and Z 7 lossless files that already worked.
+
+**Flat colour: upstream tip merged** (`99e11388`, 396 commits past 0.8.2, not a release; the owner's call, for #4598).
+At 0.8.2 the colour fit was rejected for a Z 7 lossless NEF; at the tip it is fitted. Before the merge the fork's own
+background full redraw was dropped for upstream's (#5001); the off-thread compositor build stays. Two conflicts
+(`camera_raw_ui.rs`, `menus.rs`). Two semantic changes the merge did not flag:
+- upstream names a loaded project after its file (#3571): two fork tests updated;
+- upstream centres a window with no saved position (#4850) after the hosted set-up ran: the hosted editor flashed as a
+  window of its own. The hosted block now comes after that line. The live handoff check caught it.
+Fork delta after all this: see `git diff --shortstat refs/upstream-peek/main` in the fork.
+
+**Checked.** Fork: rustfmt, clippy `-D warnings`; raw 171, io 573, engine 1,771, ui-egui library 2,753 passed, none
+failed (upstream's two catalog failures are gone). Image Triage: 208 related tests; the full suite was last run before
+the other session's edits. Live on the merged release editor: handoff 1 MP and 24 MP, camera-raw-first, camera-raw-recipe
+on the two formerly black files plus the Z 9 High Efficiency file, lean save, two random-navigation runs.
+
+**What was wrong on 2026-10-12.** The retained-raw route was dropped on the grounds that it covered nothing upstream
+did not. It did: LibRaw read these lossy Z files correctly and supplied camera colour. Files were checked for
+opening, not for coming out right.
+
+**Open.**
+- Colour of Z-body files is fitted but not close: mean dE about 7 against the camera JPEG (2 for the D850); oranges
+  and reds lean yellow (the Z 7II sample's roof, the chart's orange patches). Upstream's fit; not touched.
+- Closing the popout while the editor is busy (right after an edit to a 45 MP document) can still take up to ~2.5 s:
+  moving the editor's window out waits for the editor's thread. 135 ms otherwise. Not closing the popout's native
+  window at all would avoid the move; not tried.
+- The app reloads the photo list once about 5 s after start (the background editor start creates the hidden edits
+  folder); the list is empty for a moment.
+- After a close the save can take ~11 s to reach the disk when an autosave was already running.
+- Not run: the development restart; anything on the laptop; the full Image Triage suite with the other session's edits.
+
 ## Quick handoff - 2026-10-13 (closing the popout keeps the editor)
 
 Image Triage `main`, local commits on top of `b7bcbdf`; the fork is unchanged (`ca2d3298`). Desktop only (`C:\Users\Checkout`); not
