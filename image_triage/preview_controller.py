@@ -985,13 +985,26 @@ class PreviewController(QObject):
             return
         self._photocraft_future = self._photocraft_executor.submit(self._autosave_photocraft)
 
+    # How long the open photo must be left alone before its full-size render is written (it is the heaviest encode of a save, and the editor
+    # is slower to answer while it runs): about a pause in editing, not a moment between two edits.
+    RENDER_IDLE_S = 10.0
+
     def _autosave_photocraft(self) -> None:
         proc = self._photocraft
         if proc is not None and proc.is_running():
             try:
                 self._sync_photocraft_theme(proc)
                 self._poll_photocraft_stashes(proc)
-                self._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False, autosave=True)
+                self._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False, lean=True)
+                key = str(proc.current_sidecar)
+                if (
+                    proc.current_sidecar is not None
+                    and key in proc.preview_missing
+                    and key not in proc.pending_stashes
+                    and time.monotonic() - proc.last_edit_at >= self.RENDER_IDLE_S
+                ):
+                    # The photo has been left alone for a while: this is the time to write the render the autosaves left out.
+                    self._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False)
             except Exception:
                 _log.exception("PhotoCraft autosave failed; retaining the open document")
 
@@ -1242,11 +1255,12 @@ class PreviewController(QObject):
         return True
 
     def _save_photocraft_sidecar_if_dirty(
-        self, proc: photocraft_bridge.PhotoCraftProcess, *, commit_raw_draft: bool = True, control=None, autosave: bool = False
+        self, proc: photocraft_bridge.PhotoCraftProcess, *, commit_raw_draft: bool = True, control=None, lean: bool = False
     ) -> None:
         """``control`` selects the connection to use; the fast lane while a RAW open is
-        still outstanding on the main one. An ``autosave`` (the photo stays open) leaves the full-size render out when the editor can
-        save without it, and the save made on leaving the photo then writes it even if nothing changed since."""
+        still outstanding on the main one. A ``lean`` save leaves the full-size render out when the editor can save without it: the
+        autosave does (the photo stays open), and so do the saves the UI thread waits for (closing the popout, quitting). Any other save
+        writes it, even if nothing changed since, when an earlier save left it behind (``_render_behind``)."""
         if proc.current_sidecar is None:
             return
         control = control if control is not None else proc.control
@@ -1287,8 +1301,10 @@ class PreviewController(QObject):
                 # Closing the full editor's document goes back to the photo in Camera Raw.
                 self._photocraft_document_closed.emit(closed_source)
             return
-        if revision == proc.opened_revision and (autosave or str(proc.current_sidecar) not in proc.preview_missing):
+        if revision == proc.opened_revision and (lean or not self._render_behind(proc)):
             return
+        if revision != proc.opened_revision:
+            proc.last_edit_at = time.monotonic()
         relative = proc.path_within_write_root(str(proc.current_sidecar))
         if relative is None:
             raise photocraft_bridge.PhotoCraftError("PhotoCraft sidecar is outside the automation write root")
@@ -1309,7 +1325,7 @@ class PreviewController(QObject):
             params["display"] = display_relative
         # The full-size PNG is the heaviest encode of a save (211 MB for a 45 MP photo): an autosave, with the photo still open, leaves it
         # out when it can (the screen-sized JPEG is what browsing shows) and leaving the photo writes it.
-        lean = autosave and display_relative is not None and getattr(proc.control, "stash_without_preview_supported", False) is True
+        lean = lean and display_relative is not None and getattr(proc.control, "stash_without_preview_supported", False) is True
         if lean:
             proc.preview_missing.add(key)
         else:
@@ -1322,6 +1338,11 @@ class PreviewController(QObject):
         else:
             self._photocraft_saved.emit(proc.source_path)
         proc.opened_revision = revision
+
+    def _render_behind(self, proc: photocraft_bridge.PhotoCraftProcess) -> bool:
+        """Whether the open photo's full-size render is behind its project: an earlier save of this session left it out, or one of an
+        earlier session did (the files say so)."""
+        return str(proc.current_sidecar) in proc.preview_missing or photocraft_bridge.render_is_behind(proc.source_path)
 
     def _poll_photocraft_stashes(self, proc) -> None:
         jobs = {int(job["id"]): job for job in proc.control.call("jobs.list").get("jobs", [])}
@@ -1391,15 +1412,17 @@ class PreviewController(QObject):
     def prepare_photocraft_preview_close(self) -> bool:
         if not self.prepare_photocraft_close():
             return False
-        # Quit while the native host is still alive. Hiding/destroying its
-        # Qt parent first can stop PhotoCraft servicing control requests.
+        # Quit while the native host is still alive. Hiding/destroying its Qt parent first can stop PhotoCraft servicing control
+        # requests: an editor under a popout that has been hidden does not answer at all (measured: nothing in 84 s), so whatever must
+        # be saved is saved before this returns, and the full-size render is not part of it (it is written while the editor is up).
         self.shutdown_photocraft()
         return True
 
     def _save_active_photocraft(self) -> None:
         proc = self._photocraft
         if proc is not None and proc.is_running():
-            self._save_photocraft_sidecar_if_dirty(proc)
+            # The UI thread waits for this (closing the popout, quitting): not for the full-size render too.
+            self._save_photocraft_sidecar_if_dirty(proc, lean=True)
             self._wait_photocraft_stashes(proc)
 
     def run_deferred_editor_start(self) -> None:
@@ -1478,11 +1501,13 @@ class PreviewController(QObject):
         self._photocraft_executor.submit(self._shutdown_photocraft).result()
 
     def _shutdown_photocraft(self) -> None:
+        """Saves the open photo and quits the editor. The UI thread waits for this (closing the popout, quitting), and an editor under a
+        hidden popout cannot answer: the save leaves the full-size render out."""
         proc = self._photocraft
         if proc is None:
             return
         try:
-            self._save_photocraft_sidecar_if_dirty(proc)
+            self._save_photocraft_sidecar_if_dirty(proc, lean=True)
             if proc.is_running():
                 self._wait_photocraft_stashes(proc)
         except (photocraft_bridge.PhotoCraftError, OSError) as error:

@@ -16,7 +16,7 @@ import image_triage.app_identity as identity  # noqa: E402
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the settings store is the Windows registry")
 
-CHECKS = ("check_camera_raw_first.py", "check_camera_raw_recipe.py", "check_photocraft_handoff.py")
+CHECKS = ("check_camera_raw_first.py", "check_camera_raw_recipe.py", "check_photocraft_handoff.py", "check_lean_save.py")
 
 
 @pytest.fixture
