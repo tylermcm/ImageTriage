@@ -68,8 +68,11 @@ client reconnects after 25 s). The background editor sits idle for minutes, so t
 open this photo ... `app.open` failed: [WinError 10053] An established connection was aborted" (seen on the owner's machine 5 minutes
 after boot; reproduced with a 75 s wait). `PhotoCraftControl` now replaces a connection that has been quiet for `IDLE_RECONNECT_S`
 (20 s) with a fresh one (same token) before the next request, for the main connection and the cancel connection alike; `quit()` does
-the same with its short timeouts. The editor's stderr is still discarded (`subprocess.DEVNULL`), so a real crash of the editor leaves
-no trace beyond the exit code.
+the same with its short timeouts. The editor's own output (stdout and stderr: its log lines, and the message and backtrace of a panic,
+with `RUST_BACKTRACE=1` set unless the user set it) used to be thrown away (`subprocess.DEVNULL`); it now goes to
+`photocraft_editor_<time>_<pid>_<n>.log` in Image Triage's log folder (`%USERPROFILE%\AppData\LocalLow\ImageTriage\logs`, the last five
+starts kept), `PhotoCraftProcess.log_path`, and a failed handoff's line in `errors.log` says whether the editor has exited, with what
+code, and where that file is (`exit_note`).
 
 ## Quick handoff - 2026-10-11 (Camera Raw browsing without repaints; upstream merged)
 

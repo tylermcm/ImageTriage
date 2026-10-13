@@ -415,6 +415,15 @@ class PhotoCraftProcess:
     # Started in the background with no photo open, at below-normal priority so that starting it never slows what the user is
     # doing; `raise_priority` puts it back to normal when it is first used.
     idle_priority: bool = False
+    # Where the editor's own output goes (see ``_open_editor_log``); None when no file could be made.
+    log_path: Path | None = None
+
+    def exit_note(self) -> str:
+        """Whether the editor is still running or has exited (with what code), and where its own output is: for the log line of a
+        failed handoff, which otherwise says only that the connection broke."""
+        code = self.process.poll()
+        state = "the editor is still running" if code is None else f"the editor has exited with code {code}"
+        return f"{state}; its own output is in {self.log_path}" if self.log_path is not None else state
     # A raw is open in its Camera Raw dialog and has not been left yet: once the dialog is over (the user
     # pressed Open or Cancel, or we left the photo) the document's revision is taken as the baseline, so
     # developing the photo is not mistaken for editing it.
@@ -580,6 +589,29 @@ def launch_photocraft(
     raise PhotoCraftCompatibilityError(f"No compatible PhotoCraft build found. {last_error}")
 
 
+EDITOR_LOGS_KEPT = 5
+
+
+def _open_editor_log():
+    """A file for the editor's own output (the message and backtrace of a panic, which nothing else records), beside Image Triage's other
+    logs, with the last ``EDITOR_LOGS_KEPT`` starts kept. Returns (file object or ``subprocess.DEVNULL``, its path or None)."""
+    try:
+        from .perf import performance_log_dir
+
+        directory = performance_log_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        older = sorted(directory.glob("photocraft_editor_*.log"), key=lambda path: path.stat().st_mtime)
+        for stale in older[: max(0, len(older) - (EDITOR_LOGS_KEPT - 1))]:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        path = directory / f"photocraft_editor_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_{secrets.token_hex(2)}.log"
+        return open(path, "wb"), path
+    except OSError:
+        return subprocess.DEVNULL, None
+
+
 def _launch_photocraft_binary(
     initial_path: str | None, *, read_root: str, write_root: str, executable: str, on_window=None,
     extra_args: tuple[str, ...] = (),
@@ -613,14 +645,20 @@ def _launch_photocraft_binary(
         # PhotoCraft's automatic backend can pick Vulkan, where game-overlay layers
         # (Epic, Galaxy, ReShade) leave the embedded canvas blank; DX12 renders correctly.
         env.setdefault("WGPU_BACKEND", "dx12")
+    env.setdefault("RUST_BACKTRACE", "1")  # only a panic prints it
+    log_file, log_path = _open_editor_log()
     try:
-        process = subprocess.Popen(
-            args,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=env,
-            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | (_BELOW_NORMAL_PRIORITY_CLASS if idle else 0)) if os.name == "nt" else 0,
-        )
+        try:
+            process = subprocess.Popen(
+                args,
+                stdout=log_file,
+                stderr=subprocess.STDOUT if log_path is not None else subprocess.DEVNULL,
+                env=env,
+                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | (_BELOW_NORMAL_PRIORITY_CLASS if idle else 0)) if os.name == "nt" else 0,
+            )
+        finally:
+            if log_path is not None:
+                log_file.close()  # the editor has its own copy of the handle
         timings["spawn_ms"] = (time.perf_counter() - started) * 1000
         control = _connect_with_retry(port, token, process)
         timings["control_ready_ms"] = (time.perf_counter() - started) * 1000
@@ -636,7 +674,8 @@ def _launch_photocraft_binary(
         timings["shell_configured_ms"] = (time.perf_counter() - started) * 1000
         proc = PhotoCraftProcess(process=process, control=control, hwnd=hwnd, token_file=token_file,
                                 read_root=Path(read_root), write_root=Path(write_root), launch_timings=timings,
-                                port=port, token=token, camera_raw_first="--raw-workspace" in extra_args, idle_priority=idle)
+                                port=port, token=token, camera_raw_first="--raw-workspace" in extra_args, idle_priority=idle,
+                                log_path=log_path)
         control.read_root = Path(read_root)
         if initial_path is None:
             return proc
