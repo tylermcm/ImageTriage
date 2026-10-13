@@ -7,7 +7,7 @@
     "main_window_attributes": 343,
     "window_py_other_classes": 0,
     "forwarding_delegates": 1,
-    "private_accesses_total": 3606,
+    "private_accesses_total": 3607,
     "private_attributes_distinct_total": 927
   },
   "private_accesses_by_module": {
@@ -16,7 +16,7 @@
     "ai_workflow_center.py": 4,
     "aiculler_controller.py": 68,
     "annotation_controller.py": 191,
-    "appearance_controller.py": 102,
+    "appearance_controller.py": 103,
     "batch_rename_controller.py": 8,
     "catalog_controller.py": 83,
     "command_palette_controller.py": 68,
