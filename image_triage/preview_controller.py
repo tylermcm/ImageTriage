@@ -991,7 +991,7 @@ class PreviewController(QObject):
             try:
                 self._sync_photocraft_theme(proc)
                 self._poll_photocraft_stashes(proc)
-                self._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False)
+                self._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False, autosave=True)
             except Exception:
                 _log.exception("PhotoCraft autosave failed; retaining the open document")
 
@@ -1242,10 +1242,11 @@ class PreviewController(QObject):
         return True
 
     def _save_photocraft_sidecar_if_dirty(
-        self, proc: photocraft_bridge.PhotoCraftProcess, *, commit_raw_draft: bool = True, control=None
+        self, proc: photocraft_bridge.PhotoCraftProcess, *, commit_raw_draft: bool = True, control=None, autosave: bool = False
     ) -> None:
         """``control`` selects the connection to use; the fast lane while a RAW open is
-        still outstanding on the main one."""
+        still outstanding on the main one. An ``autosave`` (the photo stays open) leaves the full-size render out when the editor can
+        save without it, and the save made on leaving the photo then writes it even if nothing changed since."""
         if proc.current_sidecar is None:
             return
         control = control if control is not None else proc.control
@@ -1286,7 +1287,7 @@ class PreviewController(QObject):
                 # Closing the full editor's document goes back to the photo in Camera Raw.
                 self._photocraft_document_closed.emit(closed_source)
             return
-        if revision == proc.opened_revision:
+        if revision == proc.opened_revision and (autosave or str(proc.current_sidecar) not in proc.preview_missing):
             return
         relative = proc.path_within_write_root(str(proc.current_sidecar))
         if relative is None:
@@ -1299,13 +1300,21 @@ class PreviewController(QObject):
         key = str(proc.current_sidecar)
         if key in proc.pending_stashes:
             self._wait_photocraft_stashes(proc, only=key)
-        params = {"path": relative, "preview": render_relative, "wait": False}
+        params = {"path": relative, "wait": False}
         # Also ask for the screen-sized JPEG the viewer shows when this photo is browsed again; an
         # older PhotoCraft build ignores the parameter, and a write root that cannot hold it just
         # leaves the full-size PNG as the fallback.
         display_relative = proc.path_within_write_root(str(photocraft_bridge.display_render_path(proc.source_path)))
         if display_relative is not None:
             params["display"] = display_relative
+        # The full-size PNG is the heaviest encode of a save (211 MB for a 45 MP photo): an autosave, with the photo still open, leaves it
+        # out when it can (the screen-sized JPEG is what browsing shows) and leaving the photo writes it.
+        lean = autosave and display_relative is not None and getattr(proc.control, "stash_without_preview_supported", False) is True
+        if lean:
+            proc.preview_missing.add(key)
+        else:
+            params["preview"] = render_relative
+            proc.preview_missing.discard(key)
         result = control.call("app.stash", params)
         proc.stash_errors.pop(key, None)
         if result.get("pending"):

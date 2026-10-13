@@ -161,6 +161,31 @@ def saved_render_path(image_path: str) -> Path | None:
     return png if full is not None else None
 
 
+# A PNG written within this long before the display JPEG is taken as part of the same save (the JPEG is written first, the PNG when the
+# whole save lands); one older than that is from an earlier save.
+FULL_RENDER_TOLERANCE_S = 2.0
+
+
+def full_render_path(image_path: str) -> Path | None:
+    """The largest picture of the photo's saved PhotoCraft edits that is not out of date: the full-size PNG, unless a later save wrote only
+    the screen-sized JPEG (autosaves while the editor is up do; the PNG follows when the photo is left), else that JPEG; ``None`` when the
+    photo has neither. For readers that want full size (exports, hand-offs, the edited version beside the original)."""
+    png = rendered_preview_path(image_path)
+    display = display_render_path(image_path)
+    try:
+        shown = display.stat()
+    except OSError:
+        shown = None
+    try:
+        full = png.stat()
+    except OSError:
+        full = None
+    shown_is_usable = shown is not None and shown.st_size > 0
+    if full is not None and full.st_size > 0 and (not shown_is_usable or full.st_mtime >= shown.st_mtime - FULL_RENDER_TOLERANCE_S):
+        return png
+    return display if shown_is_usable else None
+
+
 def materialize_for_photocraft(path: str, cache_dir: Path) -> str:
     """Decode an unsupported non-RAW file to a TIFF PhotoCraft can open directly.
 
@@ -300,6 +325,8 @@ class PhotoCraftControl:
         self.camera_raw_supported = capabilities.get("cameraRaw", 0) >= 1
         self.camera_raw_prefetch_supported = capabilities.get("cameraRawPrefetch", 0) >= 1
         self.camera_raw_switch_supported = capabilities.get("cameraRawSwitch", 0) >= 1
+        # ``app.stash`` can save the project and the display JPEG without the full-size PNG (``preview`` left out).
+        self.stash_without_preview_supported = capabilities.get("stashWithoutPreview", 0) >= 1
         for method, validation in (
             ("app.stash", "stash requires path and preview"),
             ("app.bind", "bind requires an open document, .pcraft path and .png preview"),
@@ -417,6 +444,9 @@ class PhotoCraftProcess:
     idle_priority: bool = False
     # Where the editor's own output goes (see ``_open_editor_log``); None when no file could be made.
     log_path: Path | None = None
+    # Sidecars (as ``str``) whose last save left the full-size render out (an autosave while the editor is up writes the project and
+    # the screen-sized JPEG only): leaving the photo saves it again, with the render, even if nothing changed since.
+    preview_missing: set[str] = field(default_factory=set)
 
     def exit_note(self) -> str:
         """Whether the editor is still running or has exited (with what code), and where its own output is: for the log line of a
