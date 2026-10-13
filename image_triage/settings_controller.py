@@ -127,6 +127,12 @@ class SettingsController(QObject):
 
         return bool(user_settings().value(EDITOR_PRESTART_KEY, True, bool))
 
+    def _photocraft_editor_starts_open(self) -> bool:
+        from .app_identity import user_settings
+        from .ui.native_image_layer import EDITOR_STARTS_OPEN_DEFAULT, EDITOR_STARTS_OPEN_KEY
+
+        return bool(user_settings().value(EDITOR_STARTS_OPEN_KEY, EDITOR_STARTS_OPEN_DEFAULT, bool))
+
     def _photocraft_editor_on_demand(self) -> bool:
         from .app_identity import user_settings
         from .ui.native_image_layer import EDITOR_ON_DEMAND_KEY
@@ -782,6 +788,7 @@ class SettingsController(QObject):
             photocraft_overlay_region=self._photocraft_overlay_region(),
             photocraft_camera_raw_first=self._photocraft_camera_raw_first(),
             photocraft_editor_on_demand=self._photocraft_editor_on_demand(),
+            photocraft_editor_starts_open=self._photocraft_editor_starts_open(),
             photocraft_editor_prestart=self._photocraft_editor_prestart(),
             show_hidden_folders=self._window._show_hidden_folders,
             single_drive_expansion_enabled=self._window._single_drive_expansion_enabled,
@@ -920,6 +927,9 @@ class SettingsController(QObject):
         from .ui.native_image_layer import EDITOR_ON_DEMAND_KEY
 
         user_settings().setValue(EDITOR_ON_DEMAND_KEY, bool(result.photocraft_editor_on_demand))
+        from .ui.native_image_layer import EDITOR_STARTS_OPEN_KEY
+
+        user_settings().setValue(EDITOR_STARTS_OPEN_KEY, bool(result.photocraft_editor_starts_open))
         from .ui.native_image_layer import EDITOR_PRESTART_KEY
 
         user_settings().setValue(EDITOR_PRESTART_KEY, bool(result.photocraft_editor_prestart))
@@ -950,6 +960,7 @@ class SettingsController(QObject):
             preview.set_preload_batch_size(self._window._preview_preload_batch_size)
             preview.set_overlay_region(new_overlay_region)
             preview.set_editor_on_demand(bool(result.photocraft_editor_on_demand))
+            preview.set_editor_starts_open(bool(result.photocraft_editor_starts_open))
         # Apply through the resolution policy so the effective (coerced) style
         # and column thresholds land on the grid.
         self._window._display.apply_display_style_policy(show_warning=False)

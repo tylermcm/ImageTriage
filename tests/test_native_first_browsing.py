@@ -652,10 +652,23 @@ def test_a_resize_report_for_a_photo_that_was_left_is_dropped(controller, tmp_pa
 
 @pytest.fixture
 def plain(qapp):
-    """A popout as it is by default: an editor is available, and it opens on demand."""
+    """A popout that opens plain: an editor is available and comes up only when its key is pressed ("open the viewer with
+    the editor up" off)."""
     window = FullScreenPreview()
     window.set_photocraft_available(True)
     window._editor_on_demand = True
+    window._editor_starts_open = False
+    yield window
+    window.close()
+
+
+@pytest.fixture
+def starting(qapp):
+    """A popout as it is by default: the editor is on demand, and the viewer opens with it already up."""
+    window = FullScreenPreview()
+    window.set_photocraft_available(True)
+    window._editor_on_demand = True
+    assert window.editor_starts_open(), "on unless turned off"
     yield window
     window.close()
 
@@ -676,6 +689,68 @@ def test_the_editor_is_on_demand_by_default(qapp):
     assert window.editor_on_demand()
     assert not window.native_first_active() and not window.editor_engaged()
     window.close()
+
+
+def test_the_viewer_opens_with_the_editor_up(starting, photo):
+    asked, now = requests_of(starting), []
+    starting.photocraft_prioritize_requested.connect(lambda: now.append(1))
+    starting.show_entries([entry(photo)])
+    assert starting.editor_engaged(), "as if the editor key had been pressed"
+    assert asked == [photo] and now == [1], "the photo is asked for once, and without the dwell"
+    assert starting.native_first_active(), "its own picture stays up over the editor's area meanwhile"
+
+
+def test_opened_with_the_editor_up_it_follows_the_photos_and_the_key_still_puts_it_away(starting, photo, qapp):
+    from PySide6.QtCore import Qt
+
+    starting.show_entries([entry(photo)])
+    asked = requests_of(starting)
+    starting.show_entries([entry(photo)])
+    assert asked == [photo], "the next photo is followed, not opened a second time over"
+    press(starting, Qt.Key.Key_E)
+    assert not starting.editor_engaged()
+    asked.clear()
+    starting.show_entries([entry(photo)])
+    assert asked == [] and not starting.editor_engaged(), "put away, it stays away while the viewer is open"
+
+
+def test_put_away_the_editor_is_up_again_the_next_time_the_viewer_opens(starting, photo, qapp):
+    from PySide6.QtCore import Qt
+
+    starting.show_entries([entry(photo)])
+    press(starting, Qt.Key.Key_E)
+    starting.close()
+    assert not starting.isVisible() and not starting.editor_engaged()
+    asked = requests_of(starting)
+    starting.show_entries([entry(photo)])
+    assert starting.editor_engaged() and asked == [photo]
+
+
+def test_the_setting_off_opens_the_viewer_plain(starting, photo):
+    starting.set_editor_starts_open(False)
+    asked = requests_of(starting)
+    starting.show_entries([entry(photo)])
+    assert asked == [] and not starting.editor_engaged()
+
+
+def test_an_editor_that_follows_every_photo_is_not_affected(starting, photo):
+    """With "open the editor only when I press E" off there is no key to stand in for: the editor follows every photo as before."""
+    starting.set_editor_on_demand(False)
+    asked, now = requests_of(starting), []
+    starting.photocraft_prioritize_requested.connect(lambda: now.append(1))
+    starting.show_entries([entry(photo)])
+    assert asked == [photo] and now == [] and not starting.editor_engaged()
+
+
+def test_without_an_editor_the_viewer_just_opens(qapp, photo):
+    window = FullScreenPreview()
+    try:
+        window.set_photocraft_available(False)
+        asked = requests_of(window)
+        window.show_entries([entry(photo)])
+        assert asked == [] and not window.editor_engaged()
+    finally:
+        window.close()
 
 
 def test_browsing_never_asks_for_the_editor(plain, photo):

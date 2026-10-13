@@ -66,6 +66,7 @@ class WorkflowSettingsResult:
     photocraft_overlay_region: str = "canvas"
     photocraft_camera_raw_first: bool = True
     photocraft_editor_on_demand: bool = True
+    photocraft_editor_starts_open: bool = True
     photocraft_editor_prestart: bool = True
     show_hidden_folders: bool = False
     single_drive_expansion_enabled: bool = True
@@ -310,6 +311,7 @@ class WorkflowSettingsDialog(QDialog):
         photocraft_overlay_region: str = "canvas",
         photocraft_camera_raw_first: bool = True,
         photocraft_editor_on_demand: bool = True,
+        photocraft_editor_starts_open: bool = True,
         photocraft_editor_prestart: bool = True,
         show_hidden_folders: bool = False,
         single_drive_expansion_enabled: bool = True,
@@ -688,6 +690,16 @@ class WorkflowSettingsDialog(QDialog):
             "Turn this off to have the editor follow every photo (slower to browse)."
         ))
 
+        self.photocraft_editor_starts_open_checkbox = QCheckBox("Open the viewer with the editor up")
+        self.photocraft_editor_starts_open_checkbox.setChecked(photocraft_editor_starts_open)
+        self.photocraft_editor_starts_open_checkbox.setToolTip(_settings_tooltip(
+            "The full-screen viewer opens with the editor already on the photo, as if you had pressed E. "
+            "E still puts the editor away and brings it back; put away, it stays away until the viewer is opened again. "
+            "Turn this off to open the viewer plain and bring the editor up with E. Only applies when the editor waits for E."
+        ))
+        self.photocraft_editor_starts_open_checkbox.setEnabled(photocraft_editor_on_demand)
+        self.photocraft_editor_on_demand_checkbox.toggled.connect(self.photocraft_editor_starts_open_checkbox.setEnabled)
+
         self.photocraft_editor_prestart_checkbox = QCheckBox("Start the editor in the background when Image Triage opens")
         self.photocraft_editor_prestart_checkbox.setChecked(photocraft_editor_prestart)
         self.photocraft_editor_prestart_checkbox.setToolTip(_settings_tooltip(
@@ -743,6 +755,7 @@ class WorkflowSettingsDialog(QDialog):
         self._add_form_row(interface_layout, "Preview preload", self.preview_preload_batch_spin)
         self._add_form_row(interface_layout, "Editor browsing", self.photocraft_overlay_combo)
         self._add_checkbox_row(interface_layout, "Editor key", self.photocraft_editor_on_demand_checkbox)
+        self._add_checkbox_row(interface_layout, "Editor at open", self.photocraft_editor_starts_open_checkbox)
         self._add_checkbox_row(interface_layout, "Editor start", self.photocraft_editor_prestart_checkbox)
         self._add_checkbox_row(interface_layout, "Camera Raw", self.photocraft_camera_raw_first_checkbox)
         self._add_checkbox_row(interface_layout, "Folders", self.show_hidden_folders_checkbox)
@@ -1488,6 +1501,7 @@ class WorkflowSettingsDialog(QDialog):
             photocraft_overlay_region=str(self.photocraft_overlay_combo.currentData() or "canvas"),
             photocraft_camera_raw_first=self.photocraft_camera_raw_first_checkbox.isChecked(),
             photocraft_editor_on_demand=self.photocraft_editor_on_demand_checkbox.isChecked(),
+            photocraft_editor_starts_open=self.photocraft_editor_starts_open_checkbox.isChecked(),
             photocraft_editor_prestart=self.photocraft_editor_prestart_checkbox.isChecked(),
             show_hidden_folders=self.show_hidden_folders_checkbox.isChecked(),
             single_drive_expansion_enabled=self.single_drive_expansion_checkbox.isChecked(),

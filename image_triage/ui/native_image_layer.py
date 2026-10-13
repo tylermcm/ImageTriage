@@ -32,6 +32,10 @@ CAMERA_RAW_FIRST_KEY = "preview/photocraft_camera_raw_first"
 CAMERA_RAW_FIRST_DEFAULT = True
 # The editor opens only when its key is pressed (default), instead of following every photo that is browsed.
 EDITOR_ON_DEMAND_KEY = "preview/editor_on_demand"
+# With the editor on demand: the viewer opens with the editor already up on the photo, as if its key had been pressed; the key
+# still puts it away and brings it back. On unless turned off (the owner is trying it out).
+EDITOR_STARTS_OPEN_KEY = "preview/editor_starts_open"
+EDITOR_STARTS_OPEN_DEFAULT = True
 # The editor is started quietly in the background after Image Triage boots (default), so the first editor key finds it running.
 EDITOR_PRESTART_KEY = "preview/editor_prestart"
 
