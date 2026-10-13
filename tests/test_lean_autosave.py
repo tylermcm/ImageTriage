@@ -177,19 +177,45 @@ def parkings(monkeypatch):
     return moves
 
 
-def test_closing_the_popout_saves_what_changed_lean_and_keeps_the_editor(controller, tmp_path, shutdowns, parkings):
-    """The close waits only for the lean save. The editor is not quit: it is moved out of the popout, whose native window Qt destroys
-    on close (a child window goes with it), and stays up for the next time."""
+def test_closing_the_popout_waits_for_nothing_and_keeps_the_editor(controller, tmp_path, shutdowns, parkings):
+    """The close saves nothing itself and does not quit the editor: it is moved out of the popout, whose native window Qt destroys
+    on close (a child window goes with it), and what changed is saved afterwards."""
     proc = editing(tmp_path, lean_supported=True)
     proc.attached_parent = 555  # in the popout
     controller._photocraft = proc
-    controller._wait_photocraft_stashes = lambda proc, only=None: None
     assert controller.prepare_photocraft_preview_close() is True
-    (params,) = stashes(proc)
-    assert "preview" not in params
+    assert stashes(proc) == [], "the close does not wait for a save"
     assert shutdowns == [] and controller._photocraft is proc
     park = controller._photocraft_park_id
     assert parkings == [(proc.hwnd, park)] and proc.attached_parent == park and park not in (None, 555)
+
+
+def test_what_changed_is_saved_after_the_close_project_first_then_the_render(controller, tmp_path, shutdowns, parkings):
+    proc = editing(tmp_path, lean_supported=True)
+    proc.attached_parent = 555
+    controller._photocraft = proc
+    controller._wait_photocraft_stashes = lambda proc, only=None: proc.pending_stashes.clear()
+    controller.prepare_photocraft_preview_close()
+    controller._settle_closed_photocraft()
+    first, second = stashes(proc)
+    assert "preview" not in first, "the project is saved first, without the 211 MB render"
+    assert second.get("preview"), "then the full-size render"
+    assert shutdowns == []
+
+
+def test_a_save_that_fails_after_the_close_is_reported_and_the_editor_keeps_the_photo(controller, tmp_path, shutdowns):
+    proc = editing(tmp_path, lean_supported=True)
+    controller._photocraft = proc
+    messages = []
+    controller._window = SimpleNamespace(statusBar=lambda: SimpleNamespace(showMessage=lambda text, ms=0: messages.append(text)))
+
+    def fail(proc, only=None):
+        raise bridge.PhotoCraftError("disk full")
+
+    controller._wait_photocraft_stashes = fail
+    controller._settle_closed_photocraft()
+    assert len(messages) == 1 and "disk full" in messages[0] and "IMG.NEF" in messages[0]
+    assert shutdowns == [] and controller._photocraft is proc, "the editor still has the photo open"
 
 
 def test_an_editor_that_was_never_in_the_popout_is_not_moved(controller, tmp_path, shutdowns, parkings):
@@ -209,15 +235,15 @@ def test_closing_twice_parks_once(controller, tmp_path, shutdowns, parkings):
     assert len(parkings) == 1
 
 
-def test_the_render_the_close_left_out_is_written_after_it(controller, tmp_path, shutdowns, parkings):
-    """Closing does not wait for the 211 MB render; once the popout has gone, the parked editor writes it."""
+def test_the_render_an_autosave_left_out_is_written_after_the_close(controller, tmp_path, shutdowns, parkings):
+    """Nothing changed since the last autosave, which left the render out: after the close the parked editor writes it."""
     proc = editing(tmp_path, lean_supported=True, revision=5, opened=5)
     proc.attached_parent = 555
     proc.preview_missing.add(str(proc.current_sidecar))
     controller._photocraft = proc
-    controller._wait_photocraft_stashes = lambda proc, only=None: None
+    controller._wait_photocraft_stashes = lambda proc, only=None: proc.pending_stashes.clear()
     controller.prepare_photocraft_preview_close()
-    assert stashes(proc) == [], "nothing changed since the last autosave: the close saves nothing"
+    assert stashes(proc) == []
     controller._settle_closed_photocraft()
     (params,) = stashes(proc)
     assert params.get("preview"), "the full-size render is asked for"

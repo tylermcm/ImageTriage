@@ -15,11 +15,13 @@ run on the laptop.
   running), so every quit ran into the 3 s timeout and ended in `terminate()`. That was the ~3 s freeze.
 
 **What changed** (`preview_controller.py`, `photocraft_bridge.py`):
-- Closing the popout no longer quits the editor. `prepare_photocraft_preview_close` saves what changed (lean) and parks the editor
+- Closing the popout no longer quits the editor and waits for nothing. `prepare_photocraft_preview_close` parks the editor
   (`_park_photocraft`: `SetParent` into a hidden frameless window of its own, kept for the life of the app; not a child of the main
   window, whose native window Qt re-creates when its flags change). `handle_preview_closed` queues `_settle_closed_photocraft`, which
-  writes the full-size render the close did not wait for. A parked editor is treated like one that was never in a window: the next
-  open puts it in the popout before the photo renders.
+  saves what changed (the project first, then the full-size render). A save that fails there is reported in the status bar for 30 s
+  and logged; the photo is still open in the parked editor, so nothing is lost. (The Cancel / Discard dialog is no longer shown when
+  the popout closes; it still is when the app quits or restarts, where the save is waited for.) A parked editor is treated like one
+  that was never in a window: the next open puts it in the popout before the photo renders.
 - UI-thread waits on the editor's worker go through `_pump_until_done` (the message queue keeps running, user input stays queued):
   the close-time save, Discard, and `shutdown_photocraft` (app exit, development restart).
 - `bridge.tie_to_this_process`: the editor is put in a Windows job object that ends it when Image Triage's process ends, however it
@@ -27,13 +29,16 @@ run on the laptop.
   parent when tied, left running when not.
 
 **Measured** (release editor `ca2d3298`, 45 MP Z 7II NEF unless noted, `check_lean_save.py`):
-- Closing holds the UI thread 75-105 ms (was ~3 s). With something to save on an editor without the lean save: 646 ms.
-- Close right after an edit: the full-size render is on disk 4.1 s after the close (it used to be left behind).
+- Closing holds the UI thread 75-105 ms in the check's stand-in window and 410 ms in the real app, edited photo or not (was ~3 s,
+  plus the save). A first version still waited for the project save: 2.1 s in the real app right after an edit to a developed raw,
+  which is why the save moved to after the close.
+- Close right after an edit: the project and the full-size render are on disk 4.4-5.8 s after the close (the render used to be left
+  behind).
 - Reopen the same photo: 0.53-0.59 s, same process (a cold start here is ~1.8-2.3 s; ~3.6-6 s on the laptop).
 - Quit: 0.65-0.73 s, the editor exits by itself (was 3 s and a kill).
 - Parked, the editor answers in ~110 ms, also with the main window minimized, and also while the UI thread is blocked.
 
-**Checked.** Full suite 1,891 passed, none failed (the laptop session's test fixes are in). New tests in `test_lean_autosave.py` and
+**Checked.** Full suite 1,893 passed, none failed (the laptop session's test fixes are in). New tests in `test_lean_autosave.py` and
 `test_photocraft_handoff.py` (parking before the native host closes, parking once, the render after the close, re-attaching a parked
 editor, the pumping wait); breaking the park call or the re-attach condition fails four of them. Live, all passing: handoff at 1 MP
 and 24 MP, camera-raw-first, camera-raw-recipe (two Z 7II NEFs and the Z 9 High Efficiency file), lean save both ways.
@@ -45,9 +50,15 @@ checks open on the virtual desktop holding that program, at the bottom of the wi
 works on another desktop of the same PC). The two scripts that start the editor as its own window (`measure_stash_stall.py`,
 `check_raw_workspace.py`) wait for that desktop to be the active one instead.
 
+**The real app** (a throwaway driver: the real `MainWindow`, its popout and controllers, default settings, sandboxed app data, two
+Z 7II NEFs): the editor started in the background is the one used throughout (same process); first E 1.7-1.8 s; Camera Raw, Open,
+an edit; close 410 ms with the editor parked and its window intact; project and render written 5.8 s later; E after reopening the
+popout 2.0 s (the saved 304 MB document is loaded again); closing the main window 1.1 s, the editor exits with code 0. Quitting with
+the popout still open and an unsaved edit: 1.9 s (the project is saved first), exit code 0, no full-size render (as designed: it is
+caught up when the photo is next left).
+
 **Open.**
-- Not run in the real app: the main window's own close and the development restart go through the same functions but were exercised
-  only through the checks' stand-in window and the unit tests. Not run on the laptop.
+- Not run: the development restart. Not run on the laptop.
 - The parked editor keeps the last photo open (a 45 MP document in memory) until the next open, a folder change or quit. Releasing
   it after the render was left out: in the Camera Raw workspace a closed document is reopened by the host.
 - A full-size export of a photo whose render is behind still falls back to the 2,560 px JPEG without saying so (the window for it is

@@ -53,6 +53,7 @@ class PreviewController(QObject):
     _photocraft_ready = Signal(int, str, object)
     _photocraft_preview_shown = Signal(int, str, object)
     _photocraft_window_ready = Signal(int, object)
+    _photocraft_close_save_failed = Signal(str, str)
     _photocraft_saved = Signal(str)
     _photocraft_save_failed = Signal(str)
     _photocraft_theme_changed = Signal(object)
@@ -105,6 +106,7 @@ class PreviewController(QObject):
         self._photocraft_ready.connect(self._finish_photocraft_open)
         self._photocraft_preview_shown.connect(self._finish_photocraft_preview)
         self._photocraft_window_ready.connect(self._prepare_photocraft_window)
+        self._photocraft_close_save_failed.connect(self._report_close_save_failure)
         self._photocraft_saved.connect(self._refresh_photocraft_save)
         self._photocraft_save_failed.connect(lambda error: self._window.statusBar().showMessage(error, 15000))
         self._photocraft_theme_changed.connect(self._apply_photocraft_theme)
@@ -1415,12 +1417,11 @@ class PreviewController(QObject):
             self._photocraft = None
 
     def prepare_photocraft_preview_close(self) -> bool:
-        """The popout is about to close. What changed is saved (without the full-size render, which is written afterwards: see
-        `_settle_closed_photocraft`), and the editor is kept: it is moved out of the popout first, because Qt destroys the popout's
-        native window when it closes and a child window goes with its parent, whatever process it belongs to. An editor left inside
-        lost its window and never answered again (measured: nothing in 84 s), which is why it used to be quit here."""
-        if not self.prepare_photocraft_close():
-            return False
+        """The popout is about to close. Nothing is waited for: the editor is kept, so what changed is saved after the close
+        (`_settle_closed_photocraft`) instead of holding the close up for it (2 s for a developed 45 MP raw on a fast machine, far
+        longer on a slow one). The editor is moved out of the popout first, because Qt destroys the popout's native window when it
+        closes and a child window goes with its parent, whatever process it belongs to. An editor left inside lost its window and
+        never answered again (measured: nothing in 84 s), which is why it used to be saved and quit here."""
         self._park_photocraft()
         return True
 
@@ -1464,16 +1465,27 @@ class PreviewController(QObject):
         return future.result()
 
     def _settle_closed_photocraft(self) -> None:
-        """After the popout has closed, on the editor's worker: write the full-size render the close did not wait for. The editor
-        is parked and still has the photo open."""
+        """After the popout has closed, on the editor's worker: save what changed, the project first (it is what holds the
+        edits), then the full-size render. The editor is parked and still has the photo open, so a save that fails loses
+        nothing: the user is told, and the photo is as they left it when the editor is next brought up."""
         proc = self._photocraft
         if proc is None or not proc.is_running():
             return
         try:
+            self._save_photocraft_sidecar_if_dirty(proc, lean=True)
+            self._wait_photocraft_stashes(proc)
             self._save_photocraft_sidecar_if_dirty(proc)
             self._wait_photocraft_stashes(proc)
-        except (photocraft_bridge.PhotoCraftError, OSError):
-            _log.exception("Could not finish saving the photo the editor had open when the popout closed")
+        except (photocraft_bridge.PhotoCraftError, OSError) as error:
+            _log.exception("Could not save the photo the editor had open when the popout closed")
+            self._photocraft_close_save_failed.emit(proc.source_path, str(error))
+
+    def _report_close_save_failure(self, path: str, error: str) -> None:
+        name = Path(path).name if path else "the photo"
+        self._window.statusBar().showMessage(
+            f"PhotoCraft could not save the edits to {name}: {error}. They are still open in the editor: open the photo and press the editor key to try again.",
+            30000,
+        )
 
     def _save_active_photocraft(self) -> None:
         proc = self._photocraft
