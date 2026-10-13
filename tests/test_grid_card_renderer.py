@@ -45,6 +45,21 @@ class GridCardRendererTests(unittest.TestCase):
     def setUp(self) -> None:
         _ensure_app()
 
+    def test_photo_only_cards_keep_folder_names_visible(self) -> None:
+        options = dict(compact=True, compact_overlay=False)
+        named = render_grid_card_pixmap(QSize(450, 300), None,
+            GridCardData(filename="Camera Roll", is_folder=True, show_actions=False), **options).toImage()
+        unnamed = render_grid_card_pixmap(QSize(450, 300), None,
+            GridCardData(filename="", is_folder=True, show_actions=False), **options).toImage()
+        self.assertNotEqual(named, unnamed)
+        source = QPixmap(QSize(450, 300))
+        source.fill(QColor("#345678"))
+        first = render_grid_card_pixmap(QSize(450, 300), source,
+            GridCardData(filename="one.jpg"), **options).toImage()
+        second = render_grid_card_pixmap(QSize(450, 300), source,
+            GridCardData(filename="two.jpg"), **options).toImage()
+        self.assertEqual(first, second)
+
     def test_bottom_scrim_keeps_top_bright_and_bottom_dark(self) -> None:
         source = QPixmap(QSize(1200, 800))
         source.fill(QColor(230, 230, 230))

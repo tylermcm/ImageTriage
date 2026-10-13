@@ -593,11 +593,16 @@ class AppearanceController(QObject):
         def text_px(ratio: float) -> int:
             return px(ratio, height, minimum=floor)
 
-        # The Menu button is icon only, so it has no text size (MENU_ICON_H).
+        bar_height = self._window.app_top_bar.height()
+
+        def bar_text(ratio: float) -> int:
+            return px(ratio, bar_height, minimum=floor)
+
+        # The Menu button uses an icon.
         glyph_floor = layout_ratios.MIN_GLYPH_PX
 
         def glyph_px(ratio: float) -> int:
-            return px(ratio, height, minimum=glyph_floor)
+            return px(ratio, bar_height, minimum=glyph_floor)
 
         crumb = getattr(self._window._toolbar, "app_breadcrumb", None)
         if crumb is not None:
@@ -606,27 +611,32 @@ class AppearanceController(QObject):
             sheet = (
                 "QToolButton#breadcrumbSegment, QToolButton#breadcrumbCurrent,"
                 " QLabel#breadcrumbCurrentLabel"
-                f" {{ font-size: {text_px(layout_ratios.BREADCRUMB_TEXT_H)}px; }}"
+                f" {{ font-size: {bar_text(layout_ratios.BREADCRUMB_TEXT_BAR)}px; }}"
                 " QLabel#breadcrumbChevron"
-                f" {{ font-size: {glyph_px(layout_ratios.BREADCRUMB_CHEVRON_H)}px; }}"
+                f" {{ font-size: {glyph_px(layout_ratios.BREADCRUMB_CHEVRON_BAR)}px; }}"
             )
             if crumb.styleSheet() != sheet:
                 crumb.setStyleSheet(sheet)
         search_box = getattr(self._window._toolbar, "app_search_box", None)
         if search_box is not None:
-            search_height = px(layout_ratios.SEARCH_H, height, minimum=24)
-            field_px = text_px(layout_ratios.SEARCH_TEXT_H)
+            search_height = px(layout_ratios.SEARCH_BAR, bar_height, minimum=24)
+            field_px = bar_text(layout_ratios.SEARCH_TEXT_BAR)
             sheet = (
                 f"QFrame#appSearchBox {{ min-height: {search_height}px;"
                 f" max-height: {search_height}px; }}"
-                f" QLineEdit#workspaceSearchField {{ font-size: {field_px}px; }}"
+                f" QLineEdit#workspaceSearchField, QLineEdit#workspaceSearchField:focus"
+                f" {{ font-size: {field_px}px; padding: 0px; border: none;"
+                f" min-height: {search_height - 2}px; max-height: {search_height - 2}px; }}"
                 " QLabel#appSearchGlyph"
-                f" {{ font-size: {glyph_px(layout_ratios.SEARCH_GLYPH_H)}px; }}"
+                f" {{ font-size: {glyph_px(layout_ratios.SEARCH_GLYPH_BAR)}px; }}"
                 " QToolButton#appSearchKeyHint"
-                f" {{ font-size: {glyph_px(layout_ratios.SEARCH_HINT_H)}px; }}"
+                f" {{ font-size: {glyph_px(layout_ratios.SEARCH_HINT_BAR)}px; }}"
             )
             if search_box.styleSheet() != sheet:
                 search_box.setStyleSheet(sheet)
+        path = getattr(self._window, "topbar_path_combo", None)
+        if path is not None:
+            self._window._set_widget_font_px(path, bar_text(layout_ratios.BREADCRUMB_TEXT_BAR))
         heading_px = text_px(layout_ratios.SECTION_TITLE_H)
         for header in (
             getattr(self._window, "drives_header", None),
@@ -658,21 +668,27 @@ class AppearanceController(QObject):
                 button.setFixedSize(box, box)
             button.setIconSize(QSize(icon, icon))
 
+        # Top-right controls follow the actual bar, including its small-screen floor.
+        bar_height = self._window.app_top_bar.height()
         # Top bar
-        size(getattr(self._window._toolbar, "app_menu_button", None), None, glyph(layout_ratios.MENU_ICON_H))
+        size(
+            getattr(self._window._toolbar, "app_menu_button", None),
+            max(32, round(bar_height * 0.9)),
+            max(16, round(bar_height * layout_ratios.MENU_ICON_BAR)),
+        )
         size(
             getattr(self._window._toolbar, "app_settings_button", None),
-            glyph(layout_ratios.TOP_GEAR_BOX_H),
-            glyph(layout_ratios.TOP_GEAR_ICON_H),
+            max(26, round(bar_height * layout_ratios.TOP_GEAR_BOX_BAR)),
+            max(16, round(bar_height * layout_ratios.TOP_GEAR_ICON_BAR)),
         )
         update_button = getattr(self._window, "update_download_button", None)
         if update_button is not None:
             update_button.setFixedSize(
-                glyph(layout_ratios.UPDATE_BOX_W_H), glyph(layout_ratios.UPDATE_BOX_H)
+                max(26, round(bar_height * layout_ratios.UPDATE_BOX_BAR)), max(26, round(bar_height * layout_ratios.UPDATE_BOX_BAR))
             )
-            update_icon = glyph(layout_ratios.UPDATE_ICON_H)
+            update_icon = max(15, round(bar_height * layout_ratios.UPDATE_ICON_BAR))
             update_button.setIconSize(QSize(update_icon, update_icon))
-        window_glyph = glyph(layout_ratios.WINDOW_BUTTON_GLYPH_H)
+        window_glyph = max(10, round(bar_height * layout_ratios.WINDOW_BUTTON_GLYPH_BAR))
         for control in getattr(self._window._toolbar, "_window_control_buttons", {}).values():
             self._window._set_widget_font_px(control, window_glyph)
 

@@ -407,6 +407,7 @@ def _paint_grid_card_native(
         photo_rect=photo_rect,
         round_photo=round_photo,
         folder=data.is_folder,
+        folder_name=data.filename if compact and not compact_overlay else "",
     )
     state_colors = interaction_colors or default_grid_card_interaction_colors()
     _paint_interaction_fill(painter, QRectF(rect), image_radius, data, state_colors)
@@ -1056,6 +1057,7 @@ def _paint_image(
     photo_rect: QRect | None = None,
     round_photo: bool = False,
     folder: bool = False,
+    folder_name: str = "",
 ) -> None:
     path = _rounded_path(QRectF(content_rect), radius)
     if photo_rect is None:
@@ -1066,7 +1068,7 @@ def _paint_image(
     painter.fillRect(content_rect, QColor(8, 9, 11))
     if source_pixmap is None or source_pixmap.isNull():
         if folder:
-            _paint_folder_image(painter, photo_rect)
+            _paint_folder_image(painter, photo_rect, folder_name)
         else:
             _paint_empty_image(painter, photo_rect)
     else:
@@ -1100,7 +1102,7 @@ def _paint_image(
     painter.drawRoundedRect(QRectF(content_rect).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
 
 
-def _paint_folder_image(painter: QPainter, image_rect: QRect) -> None:
+def _paint_folder_image(painter: QPainter, image_rect: QRect, name: str = "") -> None:
     """Folder tile: the flat folder glyph centered on the dark photo pane."""
     painter.fillRect(image_rect, QColor(17, 18, 20))
     icon_size = max(24, round(min(image_rect.width(), image_rect.height()) * 0.55))
@@ -1109,6 +1111,16 @@ def _paint_folder_image(painter: QPainter, image_rect: QRect) -> None:
     target.moveCenter(image_rect.center())
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
     painter.drawPixmap(target, icon, icon.rect())
+    if name:
+        font = ui_font()
+        font.setPixelSize(max(11, min(18, round(image_rect.width() * 0.04))))
+        painter.setFont(font)
+        painter.setPen(QColor(225, 230, 238))
+        text_height = QFontMetrics(font).height() + 4
+        text_top = min(target.bottom() + 8, image_rect.bottom() - text_height - 6)
+        text_rect = QRect(image_rect.left() + 12, text_top, max(1, image_rect.width() - 24), text_height)
+        text = painter.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, text_rect.width())
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, text)
 
 
 def _paint_empty_image(painter: QPainter, image_rect: QRect) -> None:

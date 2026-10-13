@@ -3174,7 +3174,7 @@ def _app_bar_rules(theme: ThemePalette) -> str:
             border-radius: 6px;
             color: {theme.text_primary.css};
             font-size: 13px;
-            padding: 4px 8px;
+            padding: 2px;
         }}
         QToolButton#appMenuButton:hover, QToolButton#appSettingsButton:hover {{
             background-color: {theme.input_hover_bg.css};
