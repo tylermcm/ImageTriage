@@ -1037,3 +1037,29 @@ At the user's explicit request, checkpoint push destinations are
 `tylermcm/photocraft:codex/image-triage-integration` and
 `tylermcm/ImageTriage:remove-builtin-editor`, including this handoff.
 No upstream push or PR is involved. Step 1 is not yet closed out.
+
+
+## 2026-10-13 — inspector wrapping and top-right control sizing
+
+Host-only UI change: inspector sections keep their baseline heights but grow to
+fit wrapped body content; the AI invitation also grows and its chips wrap.
+Settings/update hit areas and window-control glyphs now follow the actual top-bar
+height, including the 36px small-screen floor.
+
+Session fetch: the companion checkout is on `scratch/dialog-curve`, HEAD
+`ca2d32985370e486e3b98f3a1e25be471b3c2ba2`, with active user/Claude edits.
+Its configured `origin` is tylermcm/photocraft, and `git fetch fork` failed because
+there is no `fork` remote. Both repositories were then fetched directly into
+`session-upstream/main` and `session-fork/integration`. Integrated upstream base:
+`d43db3e153c76aefce9b32cef9099e458eaf17a8`; fetched upstream tip:
+`99e1138877e6aa7e856c6883b415e708d042fc59`; fetched fork integration tip:
+`ca2d32985370e486e3b98f3a1e25be471b3c2ba2` (no fork-only updates).
+At the user's instruction to avoid Claude's active work, no companion merge,
+conflict resolution, rebuild, executable promotion or push was performed.
+Upstream integration and its full native handoff validation remain pending.
+
+Validation: 56 tests passed plus 11 subtests across inspector, top-right sizing,
+top-bar rebuild and theme suites, using registered Windows fonts for offscreen
+Qt. Inspected the rendered inspector at 220px width with wrapped Nikon capture
+metadata and the AI invitation; content stays within the pane. `git diff --check`
+passed. Existing preview/bridge/autosave edits were left untouched.

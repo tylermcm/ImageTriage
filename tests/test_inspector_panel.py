@@ -277,6 +277,29 @@ class InspectorPanelTests(unittest.TestCase):
 
         panel.close()
 
+    def test_narrow_pane_fits_wrapped_capture_and_ai_invitation(self) -> None:
+        panel = InspectorPanel()
+        panel.resize(220, 700)
+        panel.apply_display_profile(COMPACT_DISPLAY)
+        panel.set_ai_box_size(300, 120)
+        _fill_capture(panel, "NIKON CORPORATION NIKON Z 7 2 NIKKOR Z 24-70mm f/2.8 S")
+        panel.show()
+        for _ in range(4):
+            self.app.processEvents()
+        panel._sync_inspector_geometry()
+        for section in panel._sections.values():
+            self.assertGreaterEqual(section.height(), panel._section_content_height(section))
+        placeholder = panel.ai_stack.widget(0)
+        self.assertGreaterEqual(placeholder.height(), placeholder.layout().totalHeightForWidth(placeholder.width()))
+        self.assertGreater(panel.details_scroll.verticalScrollBar().maximum(), 0)
+        capture = panel._sections["capture"]
+        tall = capture.height()
+        _fill_capture(panel, "Short")
+        for _ in range(4):
+            self.app.processEvents()
+        self.assertLess(capture.height(), tall)
+        panel.close()
+
     def test_ui_state_round_trip_covers_every_section(self) -> None:
         panel = InspectorPanel()
         panel.preview_collapse_button.setChecked(False)
@@ -398,7 +421,7 @@ class InspectorPanelTests(unittest.TestCase):
 
         self.assertGreater(bar.maximum(), 0)
         self.assertTrue(bar.isVisible())
-        self.assertEqual(section.height(), panel.SECTION_HEIGHTS["capture"])
+        self.assertGreater(section.height(), panel.SECTION_HEIGHTS["capture"])
         self.assertTrue(all(candidate.body_scroll is None for candidate in panel._sections.values()))
         host.close()
 
@@ -523,7 +546,7 @@ class InspectorPanelTests(unittest.TestCase):
         previous_bottom = -1
         for section in panel._sections.values():
             self.assertEqual(section.geometry().top(), previous_bottom + 1)
-            self.assertEqual(section.height(), panel.SECTION_HEIGHTS[section.key])
+            self.assertGreaterEqual(section.height(), panel.SECTION_HEIGHTS[section.key])
             self.assertIsNone(section.body_scroll)
             self.assertLessEqual(section.body.geometry().bottom(), section.height() - 1)
             previous_bottom = section.geometry().bottom()

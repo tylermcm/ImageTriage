@@ -2280,6 +2280,7 @@ class InspectorPanel(QWidget):
         for position, name in enumerate(self.AI_DIMENSIONS):
             chip = QLabel(name, placeholder)
             chip.setObjectName("inspectorAiChip")
+            chip.setWordWrap(True)
             chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
             chips.addWidget(chip, position // 3, position % 3)
         placeholder_layout.addLayout(chips)
@@ -2331,7 +2332,10 @@ class InspectorPanel(QWidget):
         room = self.details_scroll.viewport().width() - 2 * max(8, round(12 * self._display_profile.scale))
         fitted = max(120, min(width, room)) if room > 0 else width
         placeholder = self.ai_stack.widget(0)
-        placeholder.setFixedSize(fitted, height)
+        placeholder.setFixedWidth(fitted)
+        placeholder_layout = placeholder.layout()
+        needed = placeholder_layout.totalHeightForWidth(fitted)
+        placeholder.setFixedHeight(max(height, needed, placeholder_layout.minimumSize().height()))
         self.ai_stack.setFixedWidth(fitted)
 
     def set_position(self, position: int, count: int) -> None:
@@ -2346,6 +2350,7 @@ class InspectorPanel(QWidget):
     def _register_section(self, section: InspectorSection) -> None:
         self._sections[section.key] = section
         section.header.toggled.connect(self._sync_section_heights)
+        section.body.installEventFilter(self)
 
     def _sync_section_heights(self, _expanded: bool | None = None) -> None:
         layout = self._inspector_body_layout
@@ -2362,12 +2367,13 @@ class InspectorPanel(QWidget):
             if natural is None:
                 natural = round(self.SECTION_HEIGHTS[key] * self._display_profile.scale)
             height = (
-                max(section.header.height(), natural)
+                max(section.header.height(), natural, self._section_content_height(section))
                 if section.is_expanded()
                 else section.header.height()
             )
             assigned_heights.append(height)
-            section.setFixedHeight(height)
+            if section.height() != height or section.minimumHeight() != height:
+                section.setFixedHeight(height)
 
         margins = layout.contentsMargins()
         stack_height = (
@@ -2379,6 +2385,16 @@ class InspectorPanel(QWidget):
         self.details_body.setMinimumHeight(stack_height)
         layout.invalidate()
         layout.activate()
+
+    def _section_content_height(self, section: InspectorSection) -> int:
+        """Keep wrapped content inside its section; overflow uses the shared scroller."""
+        body_layout = section.body.layout()
+        if body_layout is None:
+            return section.header.height()
+        width = max(1, self.details_scroll.viewport().width())
+        body_layout.invalidate()
+        needed = body_layout.totalHeightForWidth(width)
+        return section.header.height() + max(needed, body_layout.minimumSize().height())
 
     def _make_header_button(self, text: str, tooltip: str, object_name: str) -> QToolButton:
         button = QToolButton(self)
@@ -2436,6 +2452,11 @@ class InspectorPanel(QWidget):
         self._sync_inspector_geometry()
 
     def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.LayoutRequest and any(
+            watched is section.body for section in getattr(self, "_sections", {}).values()
+        ):
+            self._fit_ai_box()
+            self._sync_section_heights()
         if watched is getattr(self, "_preview_header_bar", None):
             if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                 self.preview_collapse_button.toggle()

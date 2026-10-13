@@ -34,7 +34,7 @@ STATUS_PIPELINE_W = 0.1328      # max width of "Review: ... | Workflow: ..."
 
 # --- Heights (share of window height) ---------------------------------------
 TOP_BAR_H = 0.0315               # top bar holding Menu, breadcrumb and search
-SEARCH_H = 0.02                  # search bar height
+SEARCH_BAR = 0.67                # search height, share of top bar height
 DRIVE_ROW_H = 0.031              # one drive row, top of its name to the next
 FLOATING_TOOLBAR_H = 0.0425        # floating button bar height
 SETTINGS_BAR_H = 0.035           # settings strip at the foot of the left pane
@@ -43,8 +43,8 @@ AI_BOX_H = 0.13                  # AI analysis box in the inspector
 # --- Text sizes (share of window height) ------------------------------------
 # Raise a value to enlarge that text. MIN_TEXT_PX stops any of them going
 # unreadable on a short window.
-BREADCRUMB_TEXT_H = 0.01       # folder path in the top bar
-SEARCH_TEXT_H = 0.008          # text typed into the search bar
+BREADCRUMB_TEXT_BAR = 0.36       # folder path in the top bar
+SEARCH_TEXT_BAR = 0.28          # text typed into the search bar
 SECTION_TITLE_H = 0.01035      # "Drives" and "Folders" headings
 DRIVE_TEXT_H = 0.0092          # drive names in the Drives list
 FOLDER_TEXT_H = 0.009          # folder names in the Folders tree
@@ -66,17 +66,16 @@ MIN_TEXT_PX = 11                # floor for every text size above
 # since several of them are meant to be smaller than readable text.
 
 # Top bar
-MENU_ICON_H = 0.0165           # hamburger icon beside "Menu"
-TOP_GEAR_ICON_H = 0.018        # settings gear beside the window buttons
-TOP_GEAR_BOX_H = 0.025          # its clickable box
-UPDATE_ICON_H = 0.015          # update arrow beside the gear (shows when an
-                                # update is available)
-UPDATE_BOX_W_H = 0.021         # its clickable box, width
-UPDATE_BOX_H = 0.021           # its clickable box, height
-SEARCH_GLYPH_H =0.01         # magnifier inside the search bar
-SEARCH_HINT_H = 0.007          # the "Ctrl K" hint in the search bar
-BREADCRUMB_CHEVRON_H = 0.0057   # the ">" between breadcrumb folders
-WINDOW_BUTTON_GLYPH_H = 0.007  # minimize / maximize / close glyphs
+MENU_ICON_BAR = 0.56           # hamburger, share of actual top bar height
+# These controls use the top bar's actual height, including its 36px floor.
+TOP_GEAR_ICON_BAR = 0.44
+TOP_GEAR_BOX_BAR = 0.75
+UPDATE_ICON_BAR = 0.42
+UPDATE_BOX_BAR = 0.75
+WINDOW_BUTTON_GLYPH_BAR = 0.28
+SEARCH_GLYPH_BAR = 0.32         # magnifier inside the search bar
+SEARCH_HINT_BAR = 0.31          # the "Ctrl K" hint in the search bar
+BREADCRUMB_CHEVRON_BAR = 0.22   # the ">" between breadcrumb folders
 
 # Drives and Folders headings
 SECTION_HEADER_H = 0.0287       # height of the heading row

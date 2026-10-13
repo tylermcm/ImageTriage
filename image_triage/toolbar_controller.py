@@ -153,6 +153,7 @@ class ToolbarController(QObject):
         self.topbar_search_field.setMinimumWidth(180)
         self.topbar_search_field.setMaximumWidth(16777215)
         self.topbar_search_field.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.topbar_search_field.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.topbar_search_field.textChanged.connect(
             lambda text: self._window._records_view.handle_search_text_changed(text, source="topbar")
         )
@@ -166,8 +167,9 @@ class ToolbarController(QObject):
         search_layout.setSpacing(6)
         search_glyph = QLabel("\uE721", self.app_search_box)
         search_glyph.setObjectName("appSearchGlyph")
+        search_glyph.setAlignment(Qt.AlignmentFlag.AlignCenter)
         search_layout.addWidget(search_glyph, 0, Qt.AlignmentFlag.AlignVCenter)
-        search_layout.addWidget(self.topbar_search_field, 1)
+        search_layout.addWidget(self.topbar_search_field, 1, Qt.AlignmentFlag.AlignVCenter)
         palette_hint = QToolButton(self.app_search_box)
         palette_hint.setObjectName("appSearchKeyHint")
         palette_hint.setText("Ctrl K")
