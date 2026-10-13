@@ -366,13 +366,40 @@ def test_shutdown_waits_after_force_kill(tmp_path):
     proc.control.close.assert_called_once()
 
 
-def test_the_editor_is_moved_out_before_the_native_host_closes(controller, tmp_path, monkeypatch):
-    """Qt destroys the popout's native window on close, and the editor's window with it if it is still inside: the editor is
-    parked first, and not quit."""
+def test_closing_the_popout_hides_it_and_moves_nothing(controller, tmp_path, monkeypatch):
+    """Closing hides the popout: its native window stays (a real close destroys it, and the embedded editor's window with it),
+    the editor is neither moved nor quit, and the app is still told the popout closed."""
     proc = process(tmp_path, revision=1)
     proc.attached_parent = 555
     controller._photocraft = proc
     preview = FullScreenPreview()
+    assert preview.hide_on_close
+    controller._window = SimpleNamespace(_preview=preview)
+    preview.photocraft_close_guard = controller.prepare_photocraft_preview_close
+    happened = []
+    monkeypatch.setattr(bridge, "embed_in_widget", lambda hwnd, parent: happened.append("moved"))
+    preview.closed.connect(lambda: happened.append("closed"))
+    preview.show()
+    window_before = int(preview.winId())
+    preview.close()
+    assert happened == ["closed"]
+    assert not preview.isVisible() and int(preview.winId()) == window_before, "hidden, with the same native window"
+    proc.control.quit.assert_not_called()
+    preview.show()
+    assert preview.isVisible(), "and it comes back"
+    preview.photocraft_close_guard = None
+    preview.hide()
+
+
+def test_the_editor_is_moved_out_before_a_popout_that_closes_for_real(controller, tmp_path, monkeypatch):
+    """The fallback (``hide_on_close`` off). Qt destroys the popout's native window on close, and the editor's window with it if
+    it is still inside: the editor is parked first, and not quit."""
+    proc = process(tmp_path, revision=1)
+    proc.attached_parent = 555
+    controller._photocraft = proc
+    preview = FullScreenPreview()
+    preview.hide_on_close = False
+    controller._window = SimpleNamespace(_preview=preview)
     preview.photocraft_close_guard = controller.prepare_photocraft_preview_close
     order = []
     monkeypatch.setattr(bridge, "embed_in_widget", lambda hwnd, parent: order.append(("parked", preview.isVisible())))

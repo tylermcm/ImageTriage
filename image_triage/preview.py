@@ -708,6 +708,9 @@ class FullScreenPreview(QDialog):
         self._editor_on_demand = True
         self._editor_engaged = False
         self.photocraft_close_guard = None
+        # Closing hides the popout and keeps its native window (see closeEvent). IMAGE_TRIAGE_POPOUT_REAL_CLOSE=1 goes back to
+        # a real close, before which the controller moves the editor out.
+        self.hide_on_close = not os.environ.get("IMAGE_TRIAGE_POPOUT_REAL_CLOSE")
         self._overlay_region = DEFAULT_REGION
         self._photocraft_viewport: dict | None = None
         self._native_layer_wanted = False
@@ -2664,6 +2667,15 @@ class FullScreenPreview(QDialog):
         self._pending_zoom_refresh_slots = []
         self._deferred_zoom_refreshes.clear()
         self.closed.emit()
+        if self.hide_on_close:
+            # Hidden, not closed. Qt destroys the native window of a top-level that closes, and the embedded editor's window
+            # with it, so the editor had to be moved out first; that move waits for the editor's own thread, and an editor
+            # busy redrawing a 45 MP photo after an edit held the close for up to 6 s (measured). Hiding waits for nothing
+            # (3-9 ms with the editor just as busy), the editor keeps running where it is, and the next time the popout is
+            # shown it is still in place.
+            event.ignore()
+            self.hide()
+            return
         super().closeEvent(event)
 
     def set_review_action_shortcuts(self, winner: QKeySequence | str, reject: QKeySequence | str) -> None:

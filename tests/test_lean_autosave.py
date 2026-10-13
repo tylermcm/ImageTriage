@@ -170,16 +170,32 @@ def test_quitting_saves_lean_and_leaves_the_render_behind(controller, tmp_path, 
 
 
 @pytest.fixture
-def parkings(monkeypatch):
-    """(editor window, new parent) for every time the editor's window was moved."""
+def parkings(monkeypatch, controller):
+    """(editor window, new parent) for every time the editor's window was moved. The popout here closes for real
+    (``hide_on_close`` off, the fallback): that is when the editor has to be moved out before the close."""
+    controller._window = SimpleNamespace(_preview=SimpleNamespace(hide_on_close=False))
     moves = []
     monkeypatch.setattr(bridge, "embed_in_widget", lambda hwnd, parent: moves.append((hwnd, parent)))
     return moves
 
 
-def test_closing_the_popout_waits_for_nothing_and_keeps_the_editor(controller, tmp_path, shutdowns, parkings):
-    """The close saves nothing itself and does not quit the editor: it is moved out of the popout, whose native window Qt destroys
-    on close (a child window goes with it), and what changed is saved afterwards."""
+def test_a_popout_that_hides_on_close_leaves_the_editor_where_it_is(controller, tmp_path, shutdowns, monkeypatch):
+    """The default: closing hides the popout and keeps its native window, so nothing is moved (moving the editor's window waits
+    for the editor's thread: up to 6 s when it is busy redrawing), nothing is saved and nothing is quit before the close."""
+    moves = []
+    monkeypatch.setattr(bridge, "embed_in_widget", lambda hwnd, parent: moves.append((hwnd, parent)))
+    controller._window = SimpleNamespace(_preview=SimpleNamespace(hide_on_close=True))
+    proc = editing(tmp_path, lean_supported=True)
+    proc.attached_parent = 555
+    controller._photocraft = proc
+    assert controller.prepare_photocraft_preview_close() is True
+    assert moves == [] and proc.attached_parent == 555
+    assert stashes(proc) == [] and shutdowns == [] and controller._photocraft is proc
+
+
+def test_a_popout_that_closes_for_real_has_the_editor_moved_out_first(controller, tmp_path, shutdowns, parkings):
+    """The fallback (``hide_on_close`` off): the close saves nothing itself and does not quit the editor; it is moved out of the
+    popout, whose native window Qt destroys on close (a child window goes with it), and what changed is saved afterwards."""
     proc = editing(tmp_path, lean_supported=True)
     proc.attached_parent = 555  # in the popout
     controller._photocraft = proc

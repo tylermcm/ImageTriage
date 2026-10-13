@@ -1,5 +1,38 @@
 # PhotoCraft handoff
 
+## Quick handoff - 2026-10-13, evening (closing the popout hides it)
+
+Image Triage `main`; the fork is unchanged (`9e94b0c0`, pushed). Desktop only.
+
+**Why.** Closing the popout moved the editor's window to the parking window first (Qt destroys a closed top-level's
+native window, and a child window with it). `SetParent` across processes waits for the thread that owns the window:
+with the editor redrawing a 45 MP photo after an edit the close was held for 26 ms to 6.3 s, depending on how long
+before the close the edit was made (0.1 s before: 5.5-6.3 s; 0.3 s: 0.4-0.5 s; 1 s: under 30 ms). Hiding the popout
+waits for nothing: 3-9 ms in the same ten rounds, the editor's window intact and answering afterwards.
+
+**What changed.** `FullScreenPreview.closeEvent` does its clean-up, emits `closed`, then ignores the event and hides
+(`hide_on_close`, on by default). The editor stays embedded in the hidden popout, where it keeps running and saving;
+the next time the popout shows, nothing has to be re-attached. `prepare_photocraft_preview_close` moves the editor to
+the parking window only when the popout closes for real (`IMAGE_TRIAGE_POPOUT_REAL_CLOSE=1`), which is kept as the
+fallback and still tested. `preview.close()` now returns False (the event is ignored); nothing in the app reads it.
+
+**Not a fallback, tried:** moving the editor out when Qt announces the native window's destruction
+(`QEvent.PlatformSurface`, `SurfaceAboutToBeDestroyed`). The event arrives and the move runs with the editor's window
+still alive, but the window is gone afterwards all the same. So if Qt re-creates the popout's native window for some
+other reason (a change of window flags or of screen), the embedded editor is lost, as it always was.
+
+**Measured.** Real app: close 4-7 ms in three runs (135 ms to 2.5 s before, and ~3 s before 2026-10-13).
+`check_lean_save.py` has a new step, closing a tenth of a second into an edit to the whole photo: 4-34 ms in three runs;
+with `IMAGE_TRIAGE_POPOUT_REAL_CLOSE=1` the step fails (the close waited over a second). Quitting the app with the popout
+open and an unsaved edit still waits for the 304 MB project save: 2.6-4.9 s over four runs on the merged editor (1.9 s
+on the editor before the merge); two runs each way did not separate hide from real close.
+
+**Checked.** Full suite 1,922 passed, none failed. Live: handoff 1 MP and 24 MP, camera-raw-first, camera-raw-recipe,
+lean save three times, the real-app trial four times, two random-navigation runs without a wrong state.
+
+**Open.** Not run on the laptop or in the development restart. The upstream fix for the black Z-body files is PR
+storytold/photocraft#3238 (a comment confirming the change was left there); the fork carries the same line until it lands.
+
 ## Quick handoff - 2026-10-13, later (the editor key, two upstream raw problems, upstream tip merged)
 
 Image Triage `main` at `3bca249` plus this note; fork `scratch/upstream-merge-2026-10-13` at `9e94b0c0` (local; the
@@ -51,9 +84,7 @@ opening, not for coming out right.
 **Open.**
 - Colour of Z-body files is fitted but not close: mean dE about 7 against the camera JPEG (2 for the D850); oranges
   and reds lean yellow (the Z 7II sample's roof, the chart's orange patches). Upstream's fit; not touched.
-- Closing the popout while the editor is busy (right after an edit to a 45 MP document) can still take up to ~2.5 s:
-  moving the editor's window out waits for the editor's thread. 135 ms otherwise. Not closing the popout's native
-  window at all would avoid the move; not tried.
+- (Fixed the same evening, see the section above: closing the popout while the editor was busy could take seconds.)
 - The app reloads the photo list once about 5 s after start (the background editor start creates the hidden edits
   folder); the list is empty for a moment.
 - After a close the save can take ~11 s to reach the disk when an autosave was already running.
