@@ -4,9 +4,9 @@ Run: python scripts/check_lean_save.py --executable PATH --image PHOTO --output 
 
 While a photo is open the autosave writes the project and the screen-sized JPEG and leaves the full-size render (the heaviest encode of a save)
 out. The check edits the photo and autosaves, then either leaves it alone until the render appears (the default: the autosave writes it after a
-pause in editing) and closes the popout, or closes the popout at once (``--close immediately``: the render is left behind, and closing
-must not wait for it: an editor under a hidden popout cannot answer, so nothing can be saved after the close). It times how long closing
-holds the UI thread.
+pause in editing) and closes the popout, or closes the popout at once (``--close immediately``: closing must not wait for the render; the
+editor, kept running outside the popout, writes it afterwards). It times how long closing holds the UI thread, checks that the editor
+is still up and answering after the close, reopens the photo without a new editor, and times quitting.
 """
 from __future__ import annotations
 
@@ -133,17 +133,43 @@ def main() -> None:
         closing = time.perf_counter()
         preview.close()
         results["close_held_the_ui_thread_ms"] = round((time.perf_counter() - closing) * 1000)
-        results["after_close"] = {"full_size_png": png.is_file(), "render_behind": bridge.render_is_behind(str(photo)), "editor_exited": proc.process.poll() is not None}
-        assert proc.process.poll() is not None, "the editor was not quit when the popout closed"
+        results["after_close"] = {"full_size_png": png.is_file(), "render_behind": bridge.render_is_behind(str(photo)), "editor_running": proc.process.poll() is None}
+        assert proc.process.poll() is None and controller._photocraft is proc, "closing the popout quit the editor"
+        started = time.perf_counter()
+        run(proc.fast_lane().call, "ui.viewport", timeout=20)
+        results["answer_after_close_ms"] = round((time.perf_counter() - started) * 1000)
         if args.close == "immediately":
-            assert bridge.render_is_behind(str(photo)), "expected the render to be left behind by a close right after an edit"
+            # What the close did not wait for is written by the parked editor.
+            wait_for(lambda: png.is_file() and not bridge.render_is_behind(str(photo)), "the full-size render after the close", 180)
+            results["render_written_after_close_s"] = round(time.perf_counter() - closing, 1)
+        wait_for(lambda: controller._photocraft_future is None or controller._photocraft_future.done(), "the after-close save to settle", 180)
+        assert not bridge.render_is_behind(str(photo)), "the full-size render is behind the project after the close"
+
+        # Reopen: the same editor, no cold start.
+        pid = proc.process.pid
+        reopening = time.perf_counter()
+        preview.show_entries([PreviewEntry(record, record.path)])
+        preview.set_browse_context(1, 0, lambda _index: QPixmap())
+        wait_for(lambda: preview.photocraft_edit_active() and controller._photocraft is not None
+                 and controller._photocraft.current_source == normalized_path_key(record.path)
+                 and (controller._photocraft_future is None or controller._photocraft_future.done()), "the editor to show the photo again")
+        results["reopen_ms"] = round((time.perf_counter() - reopening) * 1000)
+        assert controller._photocraft.process.pid == pid, "reopening started a new editor"
+        preview.close()
+        wait_for(lambda: controller._photocraft_future is None or controller._photocraft_future.done(), "the second close to settle", 180)
+
+        quitting = time.perf_counter()
+        controller.shutdown_photocraft()
+        results["quit_ms"] = round((time.perf_counter() - quitting) * 1000)
+        assert proc.process.poll() is not None, "the editor did not exit when asked to quit"
+        assert results["quit_ms"] < 2500, "quitting ran into its timeout"
         results["written_mb"] = {path.name.replace(photo.name, "*"): round(path.stat().st_size / 1048576, 1) for path in sorted(edits.iterdir()) if path.is_file()}
         results["ok"] = True
     finally:
         controller.shutdown_photocraft()
-        controller._photocraft_executor.shutdown(wait=True)
         preview.photocraft_close_guard = None
-        preview.close()
+        preview.close()  # before the worker goes: closing queues work on it
+        controller._photocraft_executor.shutdown(wait=True)
     (output / "lean-save.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(json.dumps(results, indent=2))
 

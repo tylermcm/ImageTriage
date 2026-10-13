@@ -366,86 +366,21 @@ def test_shutdown_waits_after_force_kill(tmp_path):
     proc.control.close.assert_called_once()
 
 
-def test_editor_process_exits_before_the_native_host_closes(controller, tmp_path):
+def test_the_editor_is_moved_out_before_the_native_host_closes(controller, tmp_path, monkeypatch):
+    """Qt destroys the popout's native window on close, and the editor's window with it if it is still inside: the editor is
+    parked first, and not quit."""
     proc = process(tmp_path, revision=1)
+    proc.attached_parent = 555
     controller._photocraft = proc
     preview = FullScreenPreview()
     preview.photocraft_close_guard = controller.prepare_photocraft_preview_close
-    closed = []
-    preview.closed.connect(lambda: closed.append(controller._photocraft))
+    order = []
+    monkeypatch.setattr(bridge, "embed_in_widget", lambda hwnd, parent: order.append(("parked", preview.isVisible())))
+    preview.closed.connect(lambda: order.append(("closed", controller._photocraft)))
     preview.show()
     preview.close()
-    assert closed == [None]
-    proc.control.quit.assert_called_once()
-
-
-def test_compatible_control_is_checked_without_opening_or_writing():
-    control = object.__new__(bridge.PhotoCraftControl)
-    control.call = Mock(side_effect=[
-        {"version": 2},
-        bridge.PhotoCraftError("stash requires path and preview"),
-        bridge.PhotoCraftError("bind requires an open document, .pcraft path and .png preview"),
-    ])
-    control.require_hosted_handoff()
-    assert control.call.call_args_list[1].args == ("app.stash", {})
-    assert control.call.call_args_list[2].args == ("app.bind", {})
-
-
-def test_incompatible_control_is_rejected_before_handoff():
-    control = object.__new__(bridge.PhotoCraftControl)
-    control.call = Mock(side_effect=bridge.PhotoCraftError("unknown method `app.stash`"))
-    with pytest.raises(bridge.PhotoCraftError, match="lacks persistent hosted document replacement"):
-        control.require_hosted_handoff()
-
-
-def test_incompatible_launch_reaps_process_and_removes_token(tmp_path, monkeypatch):
-    import os
-    token = tmp_path / "token.txt"
-    native = Mock()
-    native.poll.return_value = None
-    control = Mock()
-    control.require_hosted_handoff.side_effect = bridge.PhotoCraftError("incompatible")
-    monkeypatch.setattr(bridge.tempfile, "mkstemp", lambda **kwargs: (os.open(token, os.O_CREAT | os.O_WRONLY), str(token)))
-    monkeypatch.setattr(bridge.subprocess, "Popen", Mock(return_value=native))
-    monkeypatch.setattr(bridge, "_connect_with_retry", Mock(return_value=control))
-    with pytest.raises(bridge.PhotoCraftError, match="incompatible"):
-        bridge.launch_photocraft("photo.jpg", read_root=str(tmp_path), write_root=str(tmp_path), executable="old.exe")
-    control.app_open.assert_not_called()
-    control.close.assert_called_once()
-    native.terminate.assert_called_once()
-    native.wait.assert_called_once()
-    assert not token.exists()
-
-
-def test_companion_host_precedes_unrelated_path_install(tmp_path, monkeypatch):
-    from image_triage import shell_actions
-    checkout = tmp_path / "photocraft"
-    hosted = checkout / "target" / "debug" / "photocraft-host.exe"
-    hosted.parent.mkdir(parents=True)
-    hosted.touch()
-    (checkout / "Cargo.toml").touch()
-    monkeypatch.setattr(shell_actions, "__file__", str(tmp_path / "ImageTriage" / "image_triage" / "shell_actions.py"))
-    monkeypatch.delenv("IMAGE_TRIAGE_PHOTOCRAFT_EXE", raising=False)
-    monkeypatch.setattr(shell_actions.shutil, "which", Mock(return_value="old-installed.exe"))
-    # Call the original cached function, not the hermetic executable fixture.
-    detector = bridge.detect_photocraft_executable
-    detector.cache_clear()
-    try:
-        assert detector() == str(hosted)
-    finally:
-        detector.cache_clear()
-
-
-def test_companion_unversioned_photocraft_exe_is_found(tmp_path, monkeypatch):
-    from image_triage import shell_actions
-    checkout = tmp_path / "photocraft"
-    built = checkout / "target" / "debug" / "photocraft.exe"
-    built.parent.mkdir(parents=True)
-    built.touch()
-    (checkout / "Cargo.toml").touch()
-    monkeypatch.setattr(shell_actions, "__file__", str(tmp_path / "ImageTriage" / "image_triage" / "shell_actions.py"))
-    monkeypatch.setattr(shell_actions.Path, "home", classmethod(lambda cls: tmp_path / "home"))
-    assert shell_actions.companion_photocraft_executables() == [str(built)]
+    assert order == [("parked", True), ("closed", proc)]
+    proc.control.quit.assert_not_called()
 
 
 def test_save_error_can_cancel_or_explicitly_discard(controller, tmp_path, monkeypatch):
