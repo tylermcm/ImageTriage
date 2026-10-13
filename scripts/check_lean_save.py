@@ -155,7 +155,19 @@ def main() -> None:
                  and (controller._photocraft_future is None or controller._photocraft_future.done()), "the editor to show the photo again")
         results["reopen_ms"] = round((time.perf_counter() - reopening) * 1000)
         assert controller._photocraft.process.pid == pid, "reopening started a new editor"
+
+        # Close while the editor is busy: an edit to the whole photo started a tenth of a second ago. Closing must not wait
+        # for the editor (moving its window out did: up to 6 s here).
+        time.sleep(3)
+        import threading
+
+        threading.Thread(target=lambda: proc.control.execute("image.adjustments.invert"), daemon=True).start()
+        time.sleep(0.1)
+        closing = time.perf_counter()
         preview.close()
+        results["close_while_the_editor_is_busy_ms"] = round((time.perf_counter() - closing) * 1000)
+        assert not preview.isVisible() and proc.process.poll() is None
+        assert results["close_while_the_editor_is_busy_ms"] < 1000, "closing waited for the busy editor"
         wait_for(lambda: controller._photocraft_future is None or controller._photocraft_future.done(), "the second close to settle", 180)
 
         quitting = time.perf_counter()

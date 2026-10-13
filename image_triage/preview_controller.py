@@ -1482,10 +1482,13 @@ class PreviewController(QObject):
     def prepare_photocraft_preview_close(self) -> bool:
         """The popout is about to close. Nothing is waited for: the editor is kept, so what changed is saved after the close
         (`_settle_closed_photocraft`) instead of holding the close up for it (2 s for a developed 45 MP raw on a fast machine, far
-        longer on a slow one). The editor is moved out of the popout first, because Qt destroys the popout's native window when it
-        closes and a child window goes with its parent, whatever process it belongs to. An editor left inside lost its window and
+        longer on a slow one). The popout hides and keeps its native window, so the editor stays where it is. Only if the popout
+        is set to close for real (`hide_on_close` off) is the editor moved out first: Qt destroys a closed top-level's native
+        window and a child window goes with its parent, whatever process it belongs to; an editor left inside lost its window and
         never answered again (measured: nothing in 84 s), which is why it used to be saved and quit here."""
-        self._park_photocraft()
+        preview = self.preview_if_built()
+        if preview is None or not getattr(preview, "hide_on_close", False):
+            self._park_photocraft()
         return True
 
     def _park_window_id(self) -> int:
