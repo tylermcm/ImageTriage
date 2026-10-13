@@ -59,6 +59,8 @@ from .ui import preview_studio as studio
 from .ui.native_image_layer import (
     DEFAULT_REGION,
     EDITOR_ON_DEMAND_KEY,
+    EDITOR_STARTS_OPEN_DEFAULT,
+    EDITOR_STARTS_OPEN_KEY,
     REGION_OFF,
     SETTINGS_KEY as OVERLAY_REGION_KEY,
     NativeImageLayer,
@@ -706,6 +708,7 @@ class FullScreenPreview(QDialog):
         self._photocraft_edit_active = False
         # On-demand editor (the default): the popout browses on its own and the editor opens only after the editor key.
         self._editor_on_demand = True
+        self._editor_starts_open = EDITOR_STARTS_OPEN_DEFAULT
         self._editor_engaged = False
         self.photocraft_close_guard = None
         # Closing hides the popout and keeps its native window (see closeEvent). IMAGE_TRIAGE_POPOUT_REAL_CLOSE=1 goes back to
@@ -1028,6 +1031,7 @@ class FullScreenPreview(QDialog):
         self._native_layer.painted.connect(self.native_layer_painted)
         self._overlay_region = normalize_region(self._settings.value(self.PHOTOCRAFT_OVERLAY_REGION_KEY, DEFAULT_REGION, str))
         self._editor_on_demand = bool(self._settings.value(EDITOR_ON_DEMAND_KEY, True, bool))
+        self._editor_starts_open = bool(self._settings.value(EDITOR_STARTS_OPEN_KEY, EDITOR_STARTS_OPEN_DEFAULT, bool))
         self.panes_widget.installEventFilter(self)
 
         self.analysis_panel = QFrame()
@@ -2403,6 +2407,13 @@ class FullScreenPreview(QDialog):
     def editor_on_demand(self) -> bool:
         return self._editor_on_demand
 
+    def editor_starts_open(self) -> bool:
+        return self._editor_starts_open
+
+    def set_editor_starts_open(self, value: bool) -> None:
+        """Whether the viewer opens with the editor already up (see `show_entries`). Takes effect the next time it opens."""
+        self._editor_starts_open = bool(value)
+
     def set_editor_on_demand(self, value: bool) -> None:
         """Applies the setting to this popout at once: switching to on demand puts the editor away."""
         value = bool(value)
@@ -2543,7 +2554,15 @@ class FullScreenPreview(QDialog):
         self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         self._refresh_timer.start()
         QTimer.singleShot(0, self._request_preview_loads)
-        if self._editor_follows_photos() and not self._collection_browse_mode and not self._compare_mode and not self._before_after_enabled:
+        started_editor = False
+        if not was_visible and self._editor_starts_open and self._editor_on_demand and not self._editor_engaged:
+            # The viewer is opening and is set to open with the editor up: as if the editor key had been pressed on this photo
+            # (it does nothing where the key would not: no editor, a comparison, a collection).
+            self.open_editor()
+            started_editor = self._editor_engaged
+        if started_editor:
+            pass
+        elif self._editor_follows_photos() and not self._collection_browse_mode and not self._compare_mode and not self._before_after_enabled:
             path = self._source_entries[0].record.path if self._source_entries else ""
             if path:
                 self.photocraft_edit_requested.emit(path)

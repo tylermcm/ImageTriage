@@ -1,5 +1,24 @@
 # PhotoCraft handoff
 
+## Quick handoff - 2026-10-13, late (the viewer opens with the editor up, as a setting)
+
+The owner wants to try the viewer opening with the editor already on the photo. New setting
+`preview/editor_starts_open` (Settings > Interface > "Open the viewer with the editor up"), on by default
+(`EDITOR_STARTS_OPEN_DEFAULT`); it only applies while "Open the editor only when I press E" is on, and its checkbox
+is greyed out otherwise. When the viewer goes from hidden to shown, `show_entries` calls `open_editor()`: exactly the
+editor key, without the dwell. E still puts the editor away and brings it back; put away, it stays away until the
+viewer is next opened. It is a trial: if the owner turns it off, the viewer opens plain as before.
+
+Real app, two runs: the editor is up 1.18-1.19 s after the viewer opens (nothing was developed ahead, so this is the
+"key pressed at once" case), 1.26-1.38 s on reopening, E puts it away and brings it back in 1.2 s, close 5 ms.
+Flipping through photos with the editor up is the slower browsing that on-demand was built to avoid; with this on,
+that is what the viewer does until E is pressed.
+
+Tests: `test_native_first_browsing.py` (the `plain` fixture is now the setting off; new `starting` tests). Full suite
+1,927 passed; `test_char_move_delete_undo` failed once in the full run and passed three times on its own (unrelated,
+intermittent). The suite also died with a segmentation fault twice today in about fifteen full runs, with no test named
+and nothing in two traced reruns: the old intermittent native crash, not chased.
+
 ## Quick handoff - 2026-10-13, evening (closing the popout hides it)
 
 Image Triage `main`; the fork is unchanged (`9e94b0c0`, pushed). Desktop only.
