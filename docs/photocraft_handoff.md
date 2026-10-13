@@ -24,8 +24,10 @@ photo (`PhotoCraftProcess.left`) is opened again. Random navigation in the real 
 
 **Black pictures: upstream's Nikon decoder.** Lossy-compressed NEFs from Z bodies (maker note 0x0096 version
 `0x44 0x40`: Z 7 14-bit, Z 7II 12-bit) decoded to black: their 257 curve points are `2^(bits-2)/256` codes apart, not
-`2^bits/256`. One line in `crates/raw/src/nefc.rs` (fork commit `7c2d5716`, on its own so it can go upstream as a
-PR, which the owner wants for this fix; not opened yet). All 45,749,760 samples of each file equal LibRaw's
+`2^bits/256`. One line in `crates/raw/src/nefc.rs` (fork commit `7c2d5716`). The owner wanted it sent upstream as a
+PR; it was prepared (branch `fix/nef-lossy-0x40-curve` on the fork, one commit on upstream `99e11388`) and then not
+opened: upstream PR storytold/photocraft#3238 (open, by another contributor) already makes the same one-line change,
+with packed-NEF and crop fixes. When #3238 is merged and reaches us, drop `7c2d5716` for it. All 45,749,760 samples of each file equal LibRaw's
 (`rawpy.raw_image`), also for the D850 lossy and Z 7 lossless files that already worked.
 
 **Flat colour: upstream tip merged** (`99e11388`, 396 commits past 0.8.2, not a release; the owner's call, for #4598).
