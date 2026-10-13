@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait as wait_for_futures
 from bisect import bisect_left
@@ -49,6 +50,9 @@ class PreviewController(QObject):
     # seeing it, but loading a RAW for every photo flicked past is wasted work: start the load once the
     # selection has rested this long (or at once when something in the editor is touched).
     PHOTOCRAFT_NATIVE_DWELL_MS = 300
+    # How long a photo must be on screen in the popout, with the editor up but not in use, before the editor develops it ahead
+    # of the editor key (`_prefetch_rested_photo`): long enough that flipping through photos never starts one.
+    REST_PREFETCH_MS = 600
 
     _photocraft_ready = Signal(int, str, object)
     _photocraft_preview_shown = Signal(int, str, object)
@@ -70,6 +74,8 @@ class PreviewController(QObject):
         self._photocraft: photocraft_bridge.PhotoCraftProcess | None = None
         self._photocraft_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="photocraft")
         # Where the editor's window lives while no popout shows it (see `_park_photocraft`), and that window's handle.
+        # Set by the UI thread once it has dealt with a request to put the editor in the popout (see `_open_in_photocraft`).
+        self._photocraft_window_prepared = threading.Event()
         self._photocraft_park: QWidget | None = None
         self._photocraft_park_id: int | None = None
         self._photocraft_generation = 0
@@ -96,6 +102,11 @@ class PreviewController(QObject):
         self._photocraft_dwell_timer.setSingleShot(True)
         self._photocraft_dwell_timer.setInterval(self.PHOTOCRAFT_RAW_DWELL_MS)
         self._photocraft_dwell_timer.timeout.connect(self._photocraft_dwell_elapsed)
+        self._photocraft_rest_path: str | None = None
+        self._photocraft_rest_timer = QTimer(self)
+        self._photocraft_rest_timer.setSingleShot(True)
+        self._photocraft_rest_timer.setInterval(self.REST_PREFETCH_MS)
+        self._photocraft_rest_timer.timeout.connect(self._prefetch_rested_photo)
         # The editor was resized (the filmstrip shown or hidden, the popout resized): once it has stopped, ask it again
         # where its image area is, so a picture laid over it matches the new layout.
         self._photocraft_resize_size: tuple[int, int] | None = None
@@ -373,6 +384,7 @@ class PreviewController(QObject):
         self._window._records_view.resume_background_indexing()
         self._photocraft_generation += 1
         self._photocraft_save_timer.stop()
+        self._rest_on_photo(None)
         # The editor stays up (parked by the close guard) for the next time; what the close did not wait for is finished now.
         self._photocraft_future = self._photocraft_executor.submit(self._settle_closed_photocraft)
         if self._window._winner_ladder_state is not None:
@@ -809,18 +821,21 @@ class PreviewController(QObject):
         self._photocraft_ready.emit(generation, path, error)
 
     def _prepare_photocraft_window(self, generation: int, proc) -> None:
-        preview = self.preview_if_built()
-        if generation != self._photocraft_generation or preview is None or not preview.isVisible():
-            return
-        if not preview._uses_photocraft_editor() or not proc.is_running():
-            return
-        # Attach while the native shell is empty, before the costly first photo
-        # render. Keep the Qt host hidden and the loading cover in front.
-        preview._photocraft_host.setGeometry(preview.panes_widget.rect())
-        parent = preview.photocraft_host_hwnd()
-        photocraft_bridge.embed_in_widget(proc.hwnd, parent)
-        proc.attached_parent = parent
-        photocraft_bridge.resize_embedded(proc.hwnd, *preview.photocraft_host_size())
+        try:
+            preview = self.preview_if_built()
+            if generation != self._photocraft_generation or preview is None or not preview.isVisible():
+                return
+            if not preview._uses_photocraft_editor() or not proc.is_running():
+                return
+            # Attach while the native shell is empty, before the costly first photo
+            # render. Keep the Qt host hidden and the loading cover in front.
+            preview._photocraft_host.setGeometry(preview.panes_widget.rect())
+            parent = preview.photocraft_host_hwnd()
+            photocraft_bridge.embed_in_widget(proc.hwnd, parent)
+            proc.attached_parent = parent
+            photocraft_bridge.resize_embedded(proc.hwnd, *preview.photocraft_host_size())
+        finally:
+            self._photocraft_window_prepared.set()
 
     def _finish_photocraft_open(self, generation: int, path: str, error) -> None:
         preview = self.preview_if_built()
@@ -947,6 +962,39 @@ class PreviewController(QObject):
         # On its own connection and worker: a request must never wait behind, or delay, anything the user is doing.
         self._photocraft_preview_executor.submit(self._send_prefetch, proc, relative, signature, normalized_path_key(candidate))
 
+    def _rest_on_photo(self, path: str | None) -> None:
+        """The popout is showing ``path`` (or, with ``None``, nothing worth preparing). If it stays, the editor develops it ahead
+        of the editor key."""
+        if path and path == self._photocraft_rest_path and self._photocraft_rest_timer.isActive():
+            return  # the same photo shown again (a refresh, a re-sync): the wait it started still stands
+        self._photocraft_rest_path = path
+        if path:
+            self._photocraft_rest_timer.start()
+        else:
+            self._photocraft_rest_timer.stop()
+
+    def _prefetch_rested_photo(self) -> None:
+        """The photo has been on screen for a moment and the editor is up (started in the background, or parked) but not in
+        use: have it develop this raw now, on its own connection, so that pressing the editor key finds it ready (the open then
+        costs ~16 ms instead of ~0.7 s on a fast machine, more on a slow one). One photo at a time, the editor's one slot."""
+        path = self._photocraft_rest_path
+        proc = self._photocraft
+        preview = self.preview_if_built()
+        if not path or proc is None or not proc.is_running() or preview is None or not preview.isVisible():
+            return
+        if preview.photocraft_edit_active() or not self._camera_raw_mode(path):
+            return  # the editor is on a photo already (it prepares the next one itself), or this is not a raw it would develop
+        if not getattr(proc.control, "camera_raw_prefetch_supported", False):
+            return
+        key = normalized_path_key(path)
+        if proc.prefetch_sent is not None and proc.prefetch_sent[1] == key:
+            return
+        relative = proc.path_within_root(path)
+        signature = photocraft_bridge.file_signature(path)
+        if relative is None or signature is None:
+            return
+        self._photocraft_preview_executor.submit(self._send_prefetch, proc, relative, signature, key)
+
     def _send_prefetch(self, proc, relative: str, signature: str, key: str = "") -> None:
         try:
             proc.fast_lane().app_prefetch(relative, signature)
@@ -1027,6 +1075,7 @@ class PreviewController(QObject):
             if "unknown method" in str(error):
                 return
             raise
+        proc.theme_synced = True
         self._photocraft_theme_changed.emit(colors)
 
     def _refresh_photocraft_save(self, path: str) -> None:
@@ -1124,11 +1173,17 @@ class PreviewController(QObject):
             proc.shutdown()
             self._photocraft = proc = None
         if proc is not None and proc.current_source == normalized_path_key(path):
-            if proc.control.document_revision() is not None:
+            if proc.left and self._camera_raw_mode(path):
+                # The photo was left and is wanted again. Leaving it closed its Camera Raw dialog (its settings are kept as the
+                # recipe, or it was saved), so what the editor still shows is the bare document: without this the photo came
+                # back in the full editor. It is opened again like any photo come back to.
+                pass
+            elif proc.control.document_revision() is not None:
                 return
-            proc.current_source = None
-            proc.current_sidecar = None
-            proc.opened_revision = 0
+            else:
+                proc.current_source = None
+                proc.current_sidecar = None
+                proc.opened_revision = 0
         open_path, sidecar_path = self._resolve_photocraft_target(path)
         if proc is not None and proc.is_running() and (
             proc.path_within_root(open_path) is None or proc.path_within_write_root(sidecar_path) is None
@@ -1145,8 +1200,12 @@ class PreviewController(QObject):
             photocraft_bridge.raise_priority(proc)  # it was started in the background; now it is what the user is using
         if proc is not None and (proc.attached_parent is None or proc.attached_parent == self._photocraft_park_id):
             # Started without a window to go in, or parked when the popout last closed: put it in the popout now, before the
-            # photo renders.
+            # photo renders. The open is not sent until that is done: moving a window waits for the thread that owns it, and
+            # an editor already busy with the photo's first frame kept the popout's thread waiting half a second (measured,
+            # once a prepared photo made the open instant).
+            self._photocraft_window_prepared.clear()
             self._photocraft_window_ready.emit(generation, proc)
+            self._photocraft_window_prepared.wait(1.0)
         camera_raw = self._camera_raw_spec(path, proc) if self._camera_raw_mode(path) else None
         if launched:
             directory = str(Path(path).parent)
@@ -1178,8 +1237,12 @@ class PreviewController(QObject):
             raise
         proc.current_source = normalized_path_key(path)
         proc.source_path = path
+        proc.left = False
         proc.source_by_sidecar[relative_sidecar] = path
-        self._sync_photocraft_theme(proc)
+        if not proc.theme_synced:
+            # Once per editor (a background start has usually done it already): each request here is ~120 ms the user waits
+            # for the editor. While the editor is up the autosave tick asks again every 1.5 s, which is what follows a theme change.
+            self._sync_photocraft_theme(proc)
 
     def resize_photocraft(self, width: int, height: int) -> None:
         proc = self._photocraft
@@ -1465,15 +1528,15 @@ class PreviewController(QObject):
         return future.result()
 
     def _settle_closed_photocraft(self) -> None:
-        """After the popout has closed, on the editor's worker: save what changed, the project first (it is what holds the
-        edits), then the full-size render. The editor is parked and still has the photo open, so a save that fails loses
-        nothing: the user is told, and the photo is as they left it when the editor is next brought up."""
+        """After the popout has closed, on the editor's worker: save what changed, with the full-size render, in one save
+        (nobody is waiting, and saving the project first and then again with the render wrote its 300 MB twice). The editor
+        is parked and still has the photo open, so a save that fails loses nothing: the user is told, and the photo is as
+        they left it when the editor is next brought up."""
         proc = self._photocraft
         if proc is None or not proc.is_running():
             return
+        proc.left = True
         try:
-            self._save_photocraft_sidecar_if_dirty(proc, lean=True)
-            self._wait_photocraft_stashes(proc)
             self._save_photocraft_sidecar_if_dirty(proc)
             self._wait_photocraft_stashes(proc)
         except (photocraft_bridge.PhotoCraftError, OSError) as error:
@@ -1527,6 +1590,10 @@ class PreviewController(QObject):
         self._photocraft = proc
         if proc.executable:
             self._photocraft_executable = proc.executable
+        try:
+            self._sync_photocraft_theme(proc)  # now, while nobody is waiting, instead of at the first photo
+        except photocraft_bridge.PhotoCraftError:
+            _log.debug("The background editor did not report its theme", exc_info=True)
 
     def leave_photocraft_editor(self) -> None:
         """The editor key was pressed again: the popout is browsing on its own again. What was adjusted on the photo the editor
@@ -1543,6 +1610,7 @@ class PreviewController(QObject):
         self._photocraft_executor.submit(self._settle_photocraft_after_leaving, proc)
 
     def _settle_photocraft_after_leaving(self, proc: photocraft_bridge.PhotoCraftProcess) -> None:
+        proc.left = True
         try:
             self._save_photocraft_sidecar_if_dirty(proc)
         except photocraft_bridge.PhotoCraftError:
@@ -1635,6 +1703,7 @@ class PreviewController(QObject):
         self._window.preview.show_entries(entries)
         self.sync_preview_browse_context(anchor_index if anchor_index >= 0 else index)
         self.schedule_preview_preload(anchor_index if anchor_index >= 0 else index)
+        self._rest_on_photo(entries[0].record.path if len(entries) == 1 else None)
         if logger.enabled:
             logger.duration(
                 "window.open_preview",
