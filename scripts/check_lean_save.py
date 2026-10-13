@@ -31,7 +31,7 @@ from image_triage.preview_controller import PreviewController
 from image_triage.app_identity import user_settings
 from image_triage.cache import EditStateMemo
 from _check_settings import use_throwaway_settings
-from _desktop import pin, wait_for_home_desktop
+from _desktop import place
 from image_triage.scanner import normalized_path_key
 from image_triage.ui.native_image_layer import CAMERA_RAW_FIRST_KEY, EDITOR_ON_DEMAND_KEY
 
@@ -49,7 +49,6 @@ def main() -> None:
     photo = output / Path(args.image).name
     shutil.copyfile(args.image, photo)
     app = QApplication.instance() or QApplication([])
-    wait_for_home_desktop()  # the windows open on the checks' own virtual desktop, not over the owner's work
     use_throwaway_settings()  # never the profile the app uses: a check that dies must not leave settings pinned there
     settings = user_settings()
     settings.setValue(CAMERA_RAW_FIRST_KEY, False)  # the ordinary editor on the photo, as the handoff check does
@@ -57,7 +56,7 @@ def main() -> None:
     parent = QObject()
     controller = PreviewController(parent)
     preview = FullScreenPreview()
-    pin(preview)
+    place(preview)  # on the checks' own virtual desktop, behind other windows, never taking the keyboard
     statuses = []
     controller._window = SimpleNamespace(
         _preview=preview,

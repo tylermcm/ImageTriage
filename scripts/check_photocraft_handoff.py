@@ -29,7 +29,7 @@ from image_triage.preview_controller import PreviewController
 from image_triage.cache import EditStateMemo
 from image_triage.app_identity import user_settings
 from _check_settings import use_throwaway_settings
-from _desktop import pin, wait_for_home_desktop
+from _desktop import place
 from image_triage.scanner import normalized_path_key
 from image_triage.ui.native_image_layer import CAMERA_RAW_FIRST_KEY, EDITOR_ON_DEMAND_KEY
 
@@ -44,7 +44,6 @@ def main() -> None:
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     app = QApplication.instance() or QApplication([])
-    wait_for_home_desktop()  # the windows open on the checks' own virtual desktop, not over the owner's work
     # This check drives the ordinary editor on every photo: not the Camera Raw workspace (the default since
     # 2026-10-12), and not an editor that waits for E.
     use_throwaway_settings()  # never the profile the app uses: a check that dies must not leave settings pinned there
@@ -55,7 +54,7 @@ def main() -> None:
     parent = QObject()
     controller = PreviewController(parent)
     preview = FullScreenPreview()
-    pin(preview)
+    place(preview)  # on the checks' own virtual desktop, behind other windows, never taking the keyboard
     statuses, grid_updates = [], []
     controller._window = SimpleNamespace(
         _preview=preview,

@@ -35,7 +35,7 @@ from image_triage import photocraft_bridge as bridge  # noqa: E402
 from image_triage.cache import EditStateMemo  # noqa: E402
 from image_triage.app_identity import user_settings  # noqa: E402
 from _check_settings import use_throwaway_settings  # noqa: E402
-from _desktop import pin, wait_for_home_desktop  # noqa: E402
+from _desktop import place  # noqa: E402
 from image_triage.models import ImageRecord  # noqa: E402
 from image_triage.nav_timing import format_summary, summarize  # noqa: E402
 from image_triage.preview import FullScreenPreview, PreviewEntry  # noqa: E402
@@ -60,7 +60,6 @@ def main() -> None:
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     app = QApplication.instance() or QApplication([])
-    wait_for_home_desktop()  # the windows open on the checks' own virtual desktop, not over the owner's work
     if args.trace:
         original_call = bridge.PhotoCraftControl.call
         origin = time.perf_counter()
@@ -85,7 +84,7 @@ def main() -> None:
     parent = QObject()
     controller = PreviewController(parent)
     preview = FullScreenPreview()
-    pin(preview)
+    place(preview)  # on the checks' own virtual desktop, behind other windows, never taking the keyboard
     statuses = []
     controller._window = SimpleNamespace(
         _preview=preview,
