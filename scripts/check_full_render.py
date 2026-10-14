@@ -69,6 +69,22 @@ def main():
         assert not list(root.glob("*.photocraft.export-*")), "temporary export was not removed"
         results["hidden_recipe_render"] = {"size": size, "depth": bit_depth(edited.image), "icc": True}
 
+        cancelling = full_render.FullRenderService(lambda: None, launch=launch)
+        cancelled_replies = []
+        renderer = threading.Thread(target=lambda: cancelled_replies.append(cancelling.request(str(photo))))
+        renderer.start()
+        deadline = time.monotonic() + 60
+        while cancelling._running is None and renderer.is_alive() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+        assert cancelling._running is not None, "render finished before its running job could be cancelled"
+        cancelling.shutdown()
+        renderer.join(30)
+        assert not renderer.is_alive() and cancelled_replies[0].outcome == full_render.FAILED
+        assert all(proc.process.poll() is not None for proc in processes)
+        assert not list(root.glob("*.photocraft.export-*")), "cancelled render left temporary pixels"
+        results["shutdown_during_running_render"] = True
+
         # Hold a real launch just before its process is published to the service.
         entered, release = threading.Event(), threading.Event()
 
