@@ -1377,3 +1377,19 @@ Fork gates on that branch: fmt, clippy -D warnings, xtask layers OK; raw, io, en
 3. Rebuild the release editor from the fork branch (keep the current exe as known-good), then the handoff/camera-raw/lean-save/stress live checks with `IMAGE_TRIAGE_CHECK_DESKTOP_OF=claude.exe`, plus the plan's new E2E checks (F1 edit-before-poll, F8 restart during start/render, F4 read-only edits folder, F5 Ctrl+S after Open/continuation, F7 native Save after autosave, F2/F3 recipe-only raw export at source size). Confirm preferences.json hash unchanged.
 4. Invert `docs/audit_20261014/reproduce_*` defect assertions into permanent tests where not already covered.
 5. Then fast-forward `codex/image-triage-integration`, update this file's validation record. Push only when the owner asks; never push to storytold.
+
+### Update after Codex's session (2026-10-14 evening)
+
+Codex committed the F2/F3 host work (`ecba799`, tests in `tests/test_full_render.py`) and live-check scripts (`70829a0`,
+`af55d93`, `007266b`, new `scripts/check_full_render.py`) on Image Triage branch `codex/image-triage-integration`
+(pushed as `audit-fixes-2026-10-14`; `main` not moved). In the fork it merged upstream `620bccef` (`45933f08`) and added
+`0d674c0d` (16-bit Posterize/Threshold, an upstream-code change: check whether it belongs upstream), `036321dd`, `c105a3f7`
+on `scratch/upstream-merge-2026-10-14`. It ran out of tokens during live checks with a new build at
+`photocraft/target/audit-20261014/release/photocraft.exe` (16:10); which checks passed is not recorded.
+
+Verified on the final commits (Claude): Image Triage full suite 2004 passed, 5 skipped, 11 xfailed, 0 failed.
+Fork: fmt OK, clippy -D warnings (workspace) OK, ui-egui lib 2819 passed (print tests skipped) + print tests 3 passed
+serially. Owner's PhotoCraft preferences.json unchanged (same sha256 as above).
+
+Still to do: live checks on the new build (keep `target/release/photocraft.exe` as known-good until they pass), promote the
+build, merge to `main`, fast-forward `codex/image-triage-integration` in the fork. wasm gate still not run.
