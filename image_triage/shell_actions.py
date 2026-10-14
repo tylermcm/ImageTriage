@@ -89,6 +89,14 @@ def detect_photoshop_executable() -> str | None:
     return None
 
 
+def bundled_photocraft_executable() -> str | None:
+    """The editor inside the installed program (``<install dir>\\photocraft\\photocraft.exe``). Only the frozen app has one."""
+    if not getattr(sys, "frozen", False):
+        return None
+    candidate = Path(sys.executable).resolve().parent / "photocraft" / "photocraft.exe"
+    return str(candidate) if candidate.is_file() else None
+
+
 @lru_cache(maxsize=1)
 def detect_photocraft_executable() -> str | None:
     override = os.environ.get("IMAGE_TRIAGE_PHOTOCRAFT_EXE")
@@ -100,6 +108,11 @@ def detect_photocraft_executable() -> str | None:
             if hosted:
                 return hosted[0]
         return override
+
+    # The installed program carries its own editor, built together with it: that one first, whatever else is on the machine.
+    bundled = bundled_photocraft_executable()
+    if bundled:
+        return bundled
 
     # The integration's companion build must precede unrelated installed/PATH
     # copies: those may implement app.open but lack hosted stash/restore.
