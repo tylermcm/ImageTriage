@@ -80,6 +80,10 @@ class PreviewController(QObject):
         self._photocraft_park_id: int | None = None
         self._photocraft_generation = 0
         self._photocraft_future = None
+        # The background start of the editor (run_deferred_editor_start), kept so shutting down can wait for it or cancel it,
+        # and set once shutdown has begun: from then on no editor that finishes starting is taken into use.
+        self._photocraft_prestart = None
+        self._photocraft_closing = False
         # Previews use their own worker and PhotoCraft connection so they never queue
         # behind a RAW load.
         self._photocraft_preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="photocraft-preview")
@@ -1592,14 +1596,14 @@ class PreviewController(QObject):
         if not self._photocraft_executable or self._photocraft is not None:
             return
         directory = str(getattr(self._window, "_current_folder", "") or "")
-        if not directory:
+        if not directory or self._photocraft_closing:
             return
-        self._photocraft_executor.submit(self._prestart_photocraft, directory)
+        self._photocraft_prestart = self._photocraft_executor.submit(self._prestart_photocraft, directory)
 
     def _prestart_photocraft(self, directory: str) -> None:
         # On the editor's own worker, which also serialises it with a photo being opened: whichever comes first starts the process,
         # and the other uses it. The file-system calls (a folder on an unplugged card can take many seconds) stay off the UI thread.
-        if self._photocraft is not None:
+        if self._photocraft is not None or self._photocraft_closing:
             return
         try:
             if not os.path.isdir(directory):
@@ -1611,6 +1615,11 @@ class PreviewController(QObject):
             )
         except Exception:
             _log.warning("Could not start the editor in the background", exc_info=True)
+            return
+        if self._photocraft_closing:
+            # Image Triage began shutting down while this editor was starting: it is never taken into use, and it is ended here
+            # rather than left for the process's end.
+            proc.shutdown()
             return
         self._photocraft = proc
         if proc.executable:
@@ -1658,6 +1667,11 @@ class PreviewController(QObject):
     def shutdown_photocraft(self) -> None:
         self._photocraft_generation += 1
         self._photocraft_save_timer.stop()
+        self._photocraft_closing = True
+        prestart = self._photocraft_prestart
+        if prestart is not None and not prestart.cancel() and not prestart.done():
+            # A background start is under way: wait for it (it ends what it started, see _prestart_photocraft).
+            self._pump_until_done(prestart)
         if self._photocraft is None and (self._photocraft_future is None or self._photocraft_future.done()):
             return
         self._pump_until_done(self._photocraft_executor.submit(self._shutdown_photocraft))
