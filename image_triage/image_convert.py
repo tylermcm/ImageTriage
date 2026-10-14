@@ -7,8 +7,9 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QSize, Signal
 
 from .formats import FITS_SUFFIXES, MODEL_SUFFIXES, RAW_SUFFIXES, suffix_for_path
-from .image_ops import load_image_for_transform, normalized_output_path_key, save_transformed_image
-from .image_resize import OUTPUT_FORMAT_NAMES, apply_edits_if_present
+from .image_ops import normalized_output_path_key, save_transformed_image
+from .edited_export import BatchOutcome, EditedRenderFailed
+from .image_resize import OUTPUT_FORMAT_NAMES, load_image_for_export
 
 
 @dataclass(slots=True, frozen=True)
@@ -236,13 +237,23 @@ def apply_convert_plan(
         return ()
 
     written_paths: list[str] = []
+    failed: list[tuple[str, str]] = []
+    notes: list[str] = []
     total_steps = len(plan.executable_items)
     for index, item in enumerate(plan.executable_items, start=1):
-        _convert_item(item, plan, options)
+        try:
+            note = _convert_item(item, plan, options)
+        except EditedRenderFailed as error:
+            failed.append((item.source.source_path, error.reason))
+            if progress_callback is not None:
+                progress_callback(index, total_steps, f"Left out {item.source.source_name}")
+            continue
+        if note:
+            notes.append(note)
         written_paths.append(item.target_path)
         if progress_callback is not None:
             progress_callback(index, total_steps, f"Saved {item.target_name}")
-    return tuple(written_paths)
+    return BatchOutcome(written_paths, failed, notes)
 
 
 class ConvertApplySignals(QObject):
@@ -275,15 +286,14 @@ class ConvertApplyTask(QRunnable):
         self.signals.finished.emit(written_paths)
 
 
-def _convert_item(item: ConvertPlanItem, plan: ConvertPlan, options: ConvertOptions) -> None:
-    loaded = load_image_for_transform(
+def _convert_item(item: ConvertPlanItem, plan: ConvertPlan, options: ConvertOptions) -> str | None:
+    loaded = load_image_for_export(
         item.source.source_path,
         target_size=QSize(),
         ignore_orientation=False,
         strip_metadata=options.strip_metadata,
     )
-    loaded = apply_edits_if_present(item.source.source_path, loaded)
-    save_transformed_image(
+    return save_transformed_image(
         loaded.image,
         target_path=item.target_path,
         target_suffix=plan.output_suffix,

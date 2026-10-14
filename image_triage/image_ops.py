@@ -34,8 +34,8 @@ def save_transformed_image(
     target_suffix: str,
     exif_bytes: bytes | None,
     icc_profile: bytes | None,
-) -> None:
-    _save_resized_image(
+) -> str | None:
+    return _save_resized_image(
         image,
         target_path=target_path,
         target_suffix=target_suffix,

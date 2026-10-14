@@ -518,11 +518,11 @@ def discover_edited_paths(record: ImageRecord) -> tuple[str, ...]:
         return ()
 
     candidates.sort(key=lambda item: edited_candidate_sort_key(stem_key, item))
-    from .photocraft_bridge import full_render_path
+    from .photocraft_bridge import full_render_path, saved_render_path
 
     # The full-size render of the full editor's work, or, for a photo with only a Camera Raw recipe (or one whose latest
     # autosave has not been followed by the full-size render yet), its screen-sized render.
-    saved_render = full_render_path(record.path)
+    saved_render = full_render_path(record.path) or saved_render_path(record.path)
     rendered = (str(saved_render),) if saved_render is not None else ()
     return (*rendered, *(item.path for item in candidates))
 

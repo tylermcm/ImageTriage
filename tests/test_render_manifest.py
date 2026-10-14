@@ -83,6 +83,17 @@ def test_the_cheap_check_never_reads_the_project(tmp_path, monkeypatch):
     assert not bridge.render_is_behind(image)
 
 
+def test_same_size_project_change_invalidates_cheap_manifest_check(tmp_path):
+    image, root = photo(tmp_path)
+    save(image, root)
+    assert bridge.saved_render_path(image) is not None
+    project = bridge.sidecar_pcraft_path(image)
+    project.write_bytes(b"project v2")
+    stamp = bridge.render_manifest_path(image).stat().st_mtime_ns + 1_000_000
+    os.utime(project, ns=(stamp, stamp))
+    assert bridge.saved_render_path(image) is None
+
+
 def test_a_project_is_hashed_once_per_version(tmp_path, monkeypatch):
     image, root = photo(tmp_path)
     save(image, root)

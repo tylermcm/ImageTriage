@@ -7,7 +7,8 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QSize, Signal, Qt
 from PySide6.QtGui import QColor, QImage, QImageWriter, QPainter
 
-from .edit_storage import session_has_edits
+from .edit_storage import builtin_session_has_edits
+from .edited_export import _DEEP_FORMATS, BatchOutcome, EditedRenderFailed, bit_depth, edited_image_for_export, save_preserving_depth
 from .formats import FITS_SUFFIXES, JPEG_SUFFIXES, MODEL_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .imaging import load_image_for_resize
 
@@ -250,12 +251,22 @@ def apply_resize_plan(
 
     total_steps = len(plan.executable_items)
     written_paths: list[str] = []
+    failed: list[tuple[str, str]] = []
+    notes: list[str] = []
     for index, item in enumerate(plan.executable_items, start=1):
-        _resize_item(item, plan, options)
+        try:
+            note = _resize_item(item, plan, options)
+        except EditedRenderFailed as error:
+            failed.append((item.source.source_path, error.reason))
+            if progress_callback is not None:
+                progress_callback(index, total_steps, f"Left out {item.source.source_name}")
+            continue
+        if note:
+            notes.append(note)
         written_paths.append(item.target_path)
         if progress_callback is not None:
             progress_callback(index, total_steps, f"Saved {item.target_name}")
-    return tuple(written_paths)
+    return BatchOutcome(written_paths, failed, notes)
 
 
 class ResizeApplySignals(QObject):
@@ -329,37 +340,57 @@ def _unique_copy_target_path(source_path: str, requested_name: str, reserved_tar
 
 
 def apply_edits_if_present(source_path: str, loaded: _LoadedResizeImage) -> _LoadedResizeImage:
-    """If ``source_path`` has a real (non-empty) built-in editor session,
-    replace ``loaded.image`` with the full-resolution edited render.
+    """If ``source_path`` has edits (PhotoCraft's, or a built-in editor session), replace ``loaded.image`` with the edits at full
+    size, with the render's own colour profile (the camera's EXIF is kept).
 
     Shared by the resize, convert, and workflow-export batch paths (WI-5.3)
     so exports show the same edits the popout editor and thumbnails now show.
     ``session_has_edits`` is a cheap existence-check-before-parse, so an
     unedited source (the common case) costs one cheap check here and no more.
-    A missing render (no sidecar, corrupt sidecar, or render failure) always
-    falls back to the already-loaded original image -- an export must never
-    fail outright just because a sidecar happened to be unreadable.
+
+    Edits that cannot be rendered raise ``EditedRenderFailed``: the batch leaves the photo out and reports it. The original is
+    never exported in their place (audit finding F3).
     """
 
-    if not session_has_edits(source_path):
+    edited = edited_image_for_export(source_path)
+    if edited is not None:
+        return _LoadedResizeImage(image=edited.image, exif_bytes=loaded.exif_bytes, icc_profile=edited.icc_profile)
+    return _apply_builtin_edits(source_path, loaded)
+
+
+def _apply_builtin_edits(source_path: str, loaded: _LoadedResizeImage) -> _LoadedResizeImage:
+    if not builtin_session_has_edits(source_path):
         return loaded
     from .edit_render_headless import render_edited_image
 
     rendered = render_edited_image(source_path)
     if rendered is None or rendered.isNull():
-        return loaded
+        raise EditedRenderFailed(source_path, "its built-in editor session could not be rendered")
     return _LoadedResizeImage(image=rendered, exif_bytes=loaded.exif_bytes, icc_profile=loaded.icc_profile)
 
 
-def _resize_item(item: ResizePlanItem, plan: ResizePlan, options: ResizeOptions) -> None:
+def load_image_for_export(source_path: str, *, target_size: QSize, ignore_orientation: bool, strip_metadata: bool) -> _LoadedResizeImage:
+    """Resolve edit authority before decoding the original; only metadata needs the original when the editor rendered it."""
+    edited = edited_image_for_export(source_path)
+    try:
+        loaded = _load_resize_image(source_path, target_size=target_size, ignore_orientation=ignore_orientation, strip_metadata=strip_metadata)
+    except OSError:
+        if edited is None:
+            raise
+        loaded = _LoadedResizeImage(QImage())
+    if edited is not None:
+        return _LoadedResizeImage(edited.image, loaded.exif_bytes, edited.icc_profile)
+    return _apply_builtin_edits(source_path, loaded)
+
+
+def _resize_item(item: ResizePlanItem, plan: ResizePlan, options: ResizeOptions) -> str | None:
     target_size = QSize(plan.target_width, plan.target_height)
-    loaded = _load_resize_image(
+    loaded = load_image_for_export(
         item.source.source_path,
         target_size=target_size,
         ignore_orientation=options.ignore_orientation,
         strip_metadata=options.strip_metadata,
     )
-    loaded = apply_edits_if_present(item.source.source_path, loaded)
     resized = _scaled_image(
         loaded.image,
         target_size=target_size,
@@ -369,7 +400,7 @@ def _resize_item(item: ResizePlanItem, plan: ResizePlan, options: ResizeOptions)
         raise OSError(f"Could not resize {item.source.source_name}.")
 
     target_suffix = suffix_for_path(item.target_path)
-    _save_resized_image(
+    return _save_resized_image(
         resized,
         target_path=item.target_path,
         target_suffix=target_suffix,
@@ -447,7 +478,21 @@ def _save_resized_image(
     target_suffix: str,
     exif_bytes: bytes | None,
     icc_profile: bytes | None,
-) -> None:
+) -> str | None:
+    """Writes ``image``; returns a note when its bit depth could not be kept, else ``None``. A picture of more than 8 bits per
+    channel keeps them in a format that holds them (PNG, TIFF), and is converted, with its own profile, for one that does not."""
+    depth = bit_depth(image)
+    if depth > 8 and target_suffix in _DEEP_FORMATS:
+        return save_preserving_depth(
+            image, target_path=target_path, target_suffix=target_suffix, exif_bytes=exif_bytes, icc_profile=icc_profile,
+        )
+    note = f"{Path(target_path).name}: written with 8 bits per channel; the edits were rendered with {depth}" if depth > 8 else None
+    if depth > 8 and image.colorSpace().isValid():
+        from PySide6.QtGui import QColorSpace
+
+        image = image.convertedToColorSpace(QColorSpace(QColorSpace.NamedColorSpace.SRgb))
+        if icc_profile:
+            icc_profile = bytes(image.colorSpace().iccProfile())
     if Image is not None:
         try:
             _save_qimage_with_pillow(
@@ -457,10 +502,11 @@ def _save_resized_image(
                 exif_bytes=exif_bytes,
                 icc_profile=icc_profile,
             )
-            return
+            return note
         except Exception:
             pass
     _save_qimage_with_writer(image, target_path=target_path, target_suffix=target_suffix)
+    return note
 
 
 def _save_qimage_with_pillow(

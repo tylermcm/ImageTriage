@@ -497,13 +497,13 @@ def test_the_full_size_render_is_not_taken_once_a_later_autosave_wrote_only_the_
     photo, png, display = renders(tmp_path)
     write(png, 10, 1000.0)
     write(display, 10, 1060.0)
-    assert bridge.full_render_path(photo) == display
+    assert bridge.full_render_path(photo) is None
 
 
 def test_the_screen_sized_render_is_all_a_photo_with_only_a_recipe_or_a_lean_autosave_has(tmp_path):
     photo, png, display = renders(tmp_path)
     write(display, 10, 1000.0)
-    assert bridge.full_render_path(photo) == display
+    assert bridge.full_render_path(photo) is None
 
 
 def test_the_full_size_render_is_all_an_older_save_has(tmp_path):
@@ -519,9 +519,9 @@ def test_an_empty_or_missing_render_is_not_one(tmp_path):
     write(display, 0, 1000.0)
     assert bridge.full_render_path(photo) is None
     write(display, 10, 1000.0)
-    assert bridge.full_render_path(photo) == display
+    assert bridge.full_render_path(photo) is None
     write(png, 10, 500.0)  # an older full-size one beside a usable screen-sized one
-    assert bridge.full_render_path(photo) == display
+    assert bridge.full_render_path(photo) is None
 
 
 def test_the_edited_version_the_grid_offers_follows_the_same_rule(tmp_path):
@@ -538,7 +538,7 @@ def test_the_edited_version_the_grid_offers_follows_the_same_rule(tmp_path):
     assert discover_edited_paths(record)[0] == str(png), "until the leaving save brings it up to date"
 
 
-def test_a_full_size_export_of_edits_uses_the_same_rule(tmp_path, monkeypatch):
+def test_a_full_size_export_requests_editor_pixels_instead_of_display_decode(tmp_path, monkeypatch):
     from PySide6.QtCore import QSize
     from PySide6.QtGui import QImage
 
@@ -558,9 +558,13 @@ def test_a_full_size_export_of_edits_uses_the_same_rule(tmp_path, monkeypatch):
     import image_triage.imaging as imaging
 
     monkeypatch.setattr(imaging, "load_image_for_display", fake_load)
-    module.render_edited_image(photo)  # no target size: full resolution
-    assert loaded == [str(display)]
-    loaded.clear()
+    from image_triage import edited_export
+    image = QImage(120, 80, QImage.Format.Format_RGBA64)
+    full = Mock(return_value=edited_export.EditedImage(image, None))
+    monkeypatch.setattr(edited_export, "edited_image_for_export", full)
+    assert module.render_edited_image(photo).size() == image.size()
+    assert loaded == []
     write(png, 10, 1062.0)
-    module.render_edited_image(photo)
-    assert loaded == [str(png)]
+    assert module.render_edited_image(photo).size() == image.size()
+    assert loaded == []
+    assert full.call_count == 2

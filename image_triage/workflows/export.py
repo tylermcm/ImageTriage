@@ -8,14 +8,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QSize, Signal
 
+from ..edited_export import BatchOutcome, EditedRenderFailed
 from ..formats import suffix_for_path
 from ..image_resize import (
     OUTPUT_FORMAT_NAMES,
     ResizeSourceItem,
-    _load_resize_image,
     _save_resized_image,
     _scaled_image,
-    apply_edits_if_present,
+    load_image_for_export,
     preset_for_key,
 )
 from ..scanner import normalized_path_key
@@ -161,30 +161,35 @@ def apply_workflow_export_plan(
         return ()
 
     written_paths: list[str] = []
+    failed: list[tuple[str, str]] = []
+    notes: list[str] = []
     total = len(plan.executable_items)
     for index, item in enumerate(plan.executable_items, start=1):
         target_size = QSize(item.width, item.height) if item.width > 0 and item.height > 0 else QSize()
-        loaded = _load_resize_image(
-            item.source.source_path,
-            target_size=target_size,
-            ignore_orientation=False,
-            strip_metadata=plan.recipe.strip_metadata,
-        )
-        loaded = apply_edits_if_present(item.source.source_path, loaded)
+        try:
+            loaded = load_image_for_export(item.source.source_path, target_size=target_size, ignore_orientation=False,
+                                           strip_metadata=plan.recipe.strip_metadata)
+        except EditedRenderFailed as error:
+            failed.append((item.source.source_path, error.reason))
+            if progress_callback is not None:
+                progress_callback(index, total, f"Left out {item.source.source_name}")
+            continue
         image = loaded.image
         if item.width > 0 and item.height > 0:
             image = _scaled_image(image, target_size=QSize(item.width, item.height), shrink_only=True)
-        _save_resized_image(
+        note = _save_resized_image(
             image,
             target_path=item.target_path,
             target_suffix=item.target_suffix,
             exif_bytes=None if plan.recipe.strip_metadata else loaded.exif_bytes,
             icc_profile=None if plan.recipe.strip_metadata else loaded.icc_profile,
         )
+        if note:
+            notes.append(note)
         written_paths.append(item.target_path)
         if progress_callback is not None:
             progress_callback(index, total, f"Saved {item.target_name}")
-    return tuple(written_paths)
+    return BatchOutcome(written_paths, failed, notes)
 
 
 class WorkflowExportSignals(QObject):
