@@ -1,5 +1,27 @@
 # PhotoCraft handoff
 
+## Quick handoff - 2026-10-13, night (the laptop: the merged editor built and run here)
+
+Image Triage `main` at `91e3132`, fork `codex/image-triage-integration` at `9e94b0c0`, both pulled onto the laptop (Intel UHD 620, 4 cores / 8
+threads, 15.9 GB). Nothing changed in the code; this is the "not run on the laptop" gap closed.
+
+**Built.** `target/release/photocraft.exe` from `9e94b0c0` (upstream tip `99e11388` merged): 15 min 8 s with `-j 4`, no warnings, 77.5 MB. It
+needed crates the laptop did not have (downloaded with the owner's word). The build before it is kept as
+`photocraft-known-good-2026-10-12-ca2d3298.exe`, beside `photocraft-baseline-823d9890.exe` and `photocraft-known-good-2026-10-11-c6092f86.exe`.
+
+**Live checks on the laptop, all pass** (the checks of `main`, on this editor): `check_photocraft_handoff` at 1 MP and twice at 24 MP,
+`check_camera_raw_first`, `check_camera_raw_recipe` on two Z 7II NEFs and on the two files that used to decode black (`z7_compressed`,
+`z7_lossless`: the recipe render is not black, red level 190 against 88 for the Z 7II pair), `check_lean_save`. Closing the popout held the UI thread 15 ms in the lean-save check
+(3.2 s on 2026-10-12). Camera Raw on a 45 MP NEF on this laptop: first raw 6.5-6.6 s, the second 2.0-2.2 s, back to the first 0.5-0.6 s.
+
+**One number worth a second look.** The lean save of a 45 MP photo (`measure_stash_stall.py --lean --redraw`, run once for each editor): the
+editor before the merge took 8.3 and 8.8 s; the new one took 16.4 s for the first save and 9.3 s for the second. The first-save cost may be a
+one-off of the merged editor (the lean-save check showed 16.7 s for its autosave too); the second save matches. Slow answers while saving
+were 2-5 over 100 ms (worst 0.6-1.3 s) with either editor on a machine that was not idle, against none in quiet runs on 2026-10-12.
+
+**Open on the laptop.** The viewer now opens with the editor up by default (`preview/editor_starts_open`), which is the slower
+browsing on-demand was built to avoid: flipping speed with that setting on was not re-measured here. Not run: the Rust suites, clippy, layers, wasm.
+
 ## Quick handoff - 2026-10-13, late (the viewer opens with the editor up, as a setting)
 
 The owner wants to try the viewer opening with the editor already on the photo. New setting
