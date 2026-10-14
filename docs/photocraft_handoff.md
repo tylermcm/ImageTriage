@@ -1,5 +1,151 @@
 # PhotoCraft handoff
 
+## 2026-10-14 continuation — validation in progress
+
+Resumed Claude's scratch branch at `35e84fb3fc042115e11bd0474440f7db870e6132`
+and the host at `2ab676b580bdaa33665149acf5ea343049019e56`. Preserved the working
+tree and its uncommitted exports work; a patch and original copies are under
+`C:/Users/Checkout/AppData/Local/Temp/image_triage_resume_20261014`.
+
+Fetched the host origin and companion's configured origin successfully. The
+companion origin remains tylermcm's fork; `git fetch fork` failed because that
+remote is absent. Direct upstream/fork fetches succeeded into
+`session-upstream/main` and `session-fork/integration`. Fork tip remains
+`e0569ef00dd1c77d07d4f7ec02ef61588e497361`; no additional fork-only work.
+Upstream advanced from Claude's merged `c699e3cd` to
+`620bccef42b389d0735e753eb8a2f688a7092045` (64 commits). Merge `45933f08` stays
+on the scratch branch until candidate validation passes.
+
+Conflicts: `camera_raw_ui.rs` and `gpu_canvas.rs`. Kept upstream Camera Raw
+undo/redo/history handling and Intel-only DX12 mip-target behavior; retained
+hosted footer controls, exposed draft/commit access, and compositor warmup,
+which upstream does not provide. Reviewed automatic merges in control, jobs,
+menus, native startup/services/window frame, theme, and GPU code. The hosted
+open worker now uses upstream's layer-bounds warmup too. No authority expansion.
+
+Finished on-demand export handling on host branch `codex/image-triage-integration`:
+live changed RAW draft, then immutable pending full-editor snapshot / saved
+project, then saved recipe. An unchanged reopened RAW dialog does not override
+full-editor work. Missing, corrupt, invalid-UTF8 or quarantined recipes fail
+exports instead of becoming originals. Requests check the dialog's source and
+the returned output path, dimensions, depth and profile; a display JPEG never
+serves as a full-resolution render. Temporary editors and outputs are cleaned
+up, including shutdown while launch is in flight. Export/resize/convert and
+PocketDrop report skipped photos and depth conversions. PNG/TIFF keep supported
+precision and ICC; JPEG conversion uses sRGB for deep renders. Existing source
+EXIF is retained where available; deep TIFF output reports omitted EXIF.
+
+Fork `036321dd17361d1f5a6df1da1e97535ce63f8b5b` rejects missing/malformed pending
+snapshot keys, reports the open RAW source, records project depth separately
+from encoded output depth, and enables SHA-256 on wasm. Render algorithm is 2
+on both sides; older manifest renders are invalidated. A quantized PNG cannot
+stand in for a float project. Unique paths fix parallel recipe-test collisions.
+
+The owner explicitly approved fixing the newly found upstream regression in
+16-bit destructive Posterize/Threshold. Commit `0d674c0d` passes the sample depth
+for those adjustments, aligning saved pixels with upstream's preview rules;
+other integer tone-curve behavior is retained. The former failing preview test
+now passes, with an additional bin-boundary/luminosity regression.
+
+Completed so far: frozen full host suite 2,004 passed, 5 skipped, 11 xfailed and
+238 subtests (six warnings, including existing fake-NAS telemetry). An earlier
+repeat exited without a summary near 49%; the verbose diagnostic rerun passed
+the complete suite in 454 s. Export/schema/failure guards also passed separately.
+Rust RAW 172 and IO 582 tests; engine 1,817 before the depth correction, plus its
+new regression and the complete engine suite in the release corpus gate.
+UI 2,819 passed (12 ignored), print tests 3 passed separately, compositor warmup
+integration passed. Final engine/UI clippy, layers, 24 wasm checks and ignored
+adversarial panic hunt passed. The wasm target was installed with explicit user
+approval. IO corpus passed 610 tests across 65 binaries; the complete
+`cargo xtask test-corpus` gate passed 3,582 tests across 157 binaries, including
+HEIF, PSD/Photoshop oracles and mutation checks. `-p gpu` is unsupported by the
+runner; its default selection covers compositor/GPU changes. Corpus release
+tests used LTO off/codegen 16 to avoid repeated thin-LTO links; production build
+retains normal release settings. Candidate build/performance/native handoff
+validation remains pending. The production candidate built successfully in
+13 m 37 s at `target/audit-20261014/release/photocraft.exe` from `036321dd`,
+SHA-256 `92FE980C17C40F479F9E7882D521A933927AF68326545C3F61608585B1002A85`.
+`cargo xtask perf --quick` passed on Intel UHD 770. Camera Raw's 6000×4000 proxy
+update median was 12.09 ms (p95 12.37 ms); type-size drag total median 5.41 ms.
+Complex 174-layer layout updates remain slow (about 346–436 ms for opacity and
+some move commits); quick mode tracks these without enforcing full-mode budgets.
+Reports are in `target/audit-20261014/perf`, not published as a new baseline.
+
+The first candidate passed native handoff at 1 MP and 24 MP, all five themes,
+Save/grid propagation/reopen/cleanup, and Camera Raw-first. Its live recipe
+export failed safely because the dialog reported a null source: the host's
+byte-backed RAW handoff dropped `PendingRaw.path`. Commit `c105a3f7` preserves
+that existing read-root path alongside the retained bytes; developing still
+uses those bytes. Its A→B dialog-source regression passed. UI/clippy/wasm checks
+and an isolated release rebuild are being repeated before fresh native checks.
+The first candidate is unpromoted; no original-photo fallback was written.
+
+The known-good `target/release/photocraft.exe` remains unchanged:
+SHA-256 `548BF3688B1E332FEA6E67E8E635099BC4001F63E12F578AFE38FF02754FCB2B`.
+Build the candidate in isolated `target/audit-20261014`, outside normal discovery.
+Keep its release executable unpromoted until the native checks pass. Checks use
+private profiles and `IMAGE_TRIAGE_CHECK_DESKTOP_OF=claude.exe`; the marker's
+desktop currently exists and is inactive. Do not capture the owner's active
+desktop. Initial ordinary PhotoCraft preferences SHA-256:
+`E4F299B3EFEB97FA60DD8083682F68B1CB8F21097E0A3F07B29FD27F3AA09BF5`.
+No pushes or upstream PRs.
+
+## Audit handoff — 2026-10-14 (Checkout desktop)
+
+Audited Image Triage `1f6ebcc..ac4693d` and PhotoCraft `c6092f86..e0569ef0` at the
+owner's request. Both trees were initially clean. Image Triage's origin and
+PhotoCraft's configured origin (tylermcm's fork) fetched successfully. Fetching
+`fork` failed because that remote is not configured; direct URL fetches then
+succeeded into `audit-upstream/main` and `audit-fork/integration`.
+
+Integrated upstream base: `99e1138877e6aa7e856c6883b415e708d042fc59`.
+Fetched upstream tip: `7250e6e29a9248ac17bc0cb20296e03e7cbed86a` (45 new commits).
+Fetched fork integration tip: `e0569ef00dd1c77d07d4f7ec02ef61588e497361`, equal
+to the integration branch; no new fork-only work. This was an audit of fixed
+revisions: no upstream merge, conflicts/resolutions, product edits, commits,
+pushes, upstream PR or executable promotion. Integration/validation of the
+new upstream tip remains pending. The existing desktop release executable
+from `9e94b0c0` was preserved.
+
+**Findings:** [full report and reproductions](audit_20261014/report.md).
+Nine actionable defects: early post-Open edits swallowed by rebaseline;
+recipe-only edits omitted from thumbnails/exports; full exports using an
+enlarged display JPEG; recipe-write errors discarding adjustments; native Save
+binding lost on RAW replacement; saved recipe previews using different math;
+native Save leaving the display JPEG stale; startup not tracked during
+shutdown; live theme checks writing the normal PhotoCraft preferences.
+The host and Rust reproductions confirm the first eight; the ninth follows
+the live check and its actual preference-write path. No repairs were made.
+
+**Validation:** full host suite 1940 passed, 5 skipped, 11 xfailed, 238 subtests;
+no segmentation fault or intermittent move/undo failure in this one run.
+Six warnings included a telemetry-thread exception against a fake NAS path.
+Current fork source: UI library 2756 passed / 12 ignored; RAW library and
+integration tests 172 passed; four Rust reproduction tests passed (asserting
+the faulty behavior); layers passed (29 crates). Cargo used `-j 4`, one command
+at a time. Temporary Rust integration test removed after verifying its hash
+against the retained reproduction source.
+
+**Live, known-good desktop binary:** handoff at 1 MP passed hidden startup,
+embedding/fullscreen geometry, persistent navigation, five themes, native Save,
+grid notifications, tab reopen and process/token cleanup; native screenshot
+inspected. Desktop captures were not verified on the background virtual desktop.
+Recipe check passed on Z 7II 0027/0030. Lean-save check on 45 MP Z 7II 0027 passed:
+autosave 5.1 s, close 3 ms, full render 4.5 s after close, same-process reopen
+679 ms, busy close 118 ms, quit 1129 ms. Single-run timings under audit load.
+`IMAGE_TRIAGE_CHECK_DESKTOP_OF=claude.exe` was set; only check-owned processes
+were cleaned up. The existing theme check uses the normal editor profile
+unless `PHOTOCRAFT_CONFIG_DIR` is set; its ordinary preferences reported Classic
+after the check (prior value not recorded). Later lean checking used a private
+PhotoCraft profile. Never used process-name kills.
+
+**Limits:** no new editor build was promoted; live checks exercised `9e94b0c0`,
+not the final `e0569ef0` layout commit. Root causes of older native crashes,
+exit-127, undo flake and laptop slowdown remain unproved. No development-restart
+end-to-end run, clean-PC MSI upgrade/install, complete desktop/UI integration
+suites, wasm, clippy, corpus or performance gates. Audit logs/artifacts:
+`C:\Users\Checkout\AppData\Local\Temp\image_triage_audit_20261014`.
+
 ## Quick handoff - 2026-10-14 (later: the editor is inside the installer; release 2.3.1)
 
 Image Triage `main` at the 2.3.1 commit; fork unchanged at `e0569ef0`. Laptop.
@@ -1188,3 +1334,46 @@ top-bar rebuild and theme suites, using registered Windows fonts for offscreen
 Qt. Inspected the rendered inspector at 220px width with wrapped Nikon capture
 metadata and the AI invitation; content stays within the pane. `git diff --check`
 passed. Existing preview/bridge/autosave edits were left untouched.
+
+## 2026-10-14: audit fixes (F1-F9), state at hand-over from Claude to Codex
+
+Plan: `C:/Users/Checkout/.claude/plans/modular-growing-sutherland.md` (approved, with the owner's amendments). Audit:
+`docs/audit_20261014/` (report and repro scripts; still untracked, Codex's).
+
+### Committed, not pushed
+
+Image Triage `main` (ahead of origin):
+- `6a85a74` F1: an edit made before the first poll after Camera Raw is saved (document_state, save_required keyed by sidecar + document generation + revision).
+- `817a7e4` F8: shutdown waits for / cancels the background editor start.
+- `bb2a8ae` F9: live checks give the editor a private profile (`PHOTOCRAFT_CONFIG_DIR` temp dir). Owner's `%APPDATA%/Photocraft/preferences.json` sha256 before any live run: `e4f299b3efeb97fa60dd8083682f68b1cb8f21097e0a3f07b29fd27f3aa09bf5` (check it is unchanged after the live checks).
+- `2ab676b` F7 host: readers follow `<photo>.photocraft.renders.json` (tests/test_render_manifest.py).
+
+PhotoCraft fork, branch `scratch/upstream-merge-2026-10-14` (integration branch `codex/image-triage-integration` is still at `e0569ef0`; fast-forward it only after the release build passes the live checks):
+- `13b0193a` merge of upstream `c699e3cd` (Release 0.9.0), no conflicts.
+- `d35f4c96` F4: recipe written before the dialog changes; failure leaves dialog/settings/original untouched.
+- `92281079` F5: host binding follows the photo through Open (redevelop, continuation); fixed the in-memory continuation leaving `expect_continue` set (next photo got no Camera Raw dialog).
+- `7caaba23` F7: generation-named pictures + render manifest (SHA-256, not BLAKE3: host has no blake3), `renderManifest: 1`; bind carries display + manifest.
+- `e41f07f7` F6: `raw_recipe::apply` shared by the dialog and the recipe render.
+- `043c6af2` test isolation (process-wide manifest/render queues keyed by path).
+- `35e84fb3` `app.render` (`fullRender: 1`): project (snapshot or file) or recipe developed exactly as Open; PNG 8/16, float TIFF; recipes carry `"identity"`.
+
+Fork gates on that branch: fmt, clippy -D warnings, xtask layers OK; raw, io, engine suites pass; ui-egui lib 2783 passed. Upstream's new print tests (`file_ui::tests::print*`, from upstream commit a9ac922f) crash the test process (0xC0000005) when run in parallel, 15/15; each passes alone. Run the suite with `--skip file_ui::tests::print`, then those with `--test-threads 1`. Upstream bug, not ours. `cargo xtask wasm` NOT run: needs `rustup target add wasm32-unknown-unknown` (a download; ask the owner).
+
+### Uncommitted, in progress: F2/F3 host side (Image Triage working tree)
+
+- `image_triage/full_render.py` (new): `request_full_render(path)` -> NO_EDITS / rendered / failed. Precedence: live Camera Raw dialog on the photo (read via `ui.cameraRaw {}`), unsaved full-editor changes (saved first via `_save_open_photo_for_render`), saved project (manifest-verified PNG, else `app.render`, snapshot while a save is pending), recipe (`recipe_state`). Own render lane, one at a time, cancellable, hidden temp editor when no running editor covers the folder; `shutdown()`.
+- `image_triage/edited_export.py` (new): `EditedRenderFailed`, `BatchOutcome` (tuple of written paths + failed + notes), `edited_image_for_export` (decodes at rendered size, render's ICC), `save_preserving_depth` (16-bit PNG/TIFF via QImageWriter; PNG gets eXIf; 16/32-bit TIFF drops EXIF and says so).
+- `photocraft_bridge.py`: `classify_recipe`/`recipe_state` (read-only; invalid = edit data, not "no edits"; only numeric limit is exposure +-10, the editor has no other ranges), `render_lane()`, `full_render_supported`.
+- `edit_storage.py`: `session_has_edits` now includes edited/invalid recipes; old meaning moved to `builtin_session_has_edits` (used by the legacy built-in-session hand-off branch in preview_controller).
+- `edit_render_headless.py`: full size no longer uses PhotoCraft pictures (no 2560 px enlargement); thumbnails unchanged.
+- `image_resize.py`, `image_convert.py`, `image_ops.py`, `workflows/export.py`: `apply_edits_if_present` raises `EditedRenderFailed`; loops skip and list; `_save_resized_image` keeps depth or returns a note. `export_jobs_controller.py`: `_report_left_out` shows failures/notes.
+- `handoff_controller.py`: PocketDrop renders with `_wait_with_events`, leaves out and lists photos whose edits fail (no original sent).
+- `preview_controller.py`: registers `FullRenderService`, shuts it down first in `shutdown_photocraft`.
+
+### What is left
+
+1. Finish the host test run for the files above (it was running at hand-over) and fix tests that assumed the old fallbacks (PocketDrop/export "falls back to original" tests should now expect left-out + report). Then add tests: full_render precedence (dialog > dirty editor > project > recipe; cached valid render then dialog changed then export uses dialog; project + adjusted dialog renders dialog), pending save uses snapshot, invalid recipe -> failed, identity -> no edits, render failure -> batch leaves photo out, temp editor shut down, shutdown cancels a running render, 16-bit ProPhoto render -> 16-bit TIFF/PNG with ICC and an 8-bit JPEG noted, never enlarged. Commit F2/F3 host as one or two commits (no AI attribution).
+2. Full Image Triage suite (repo `tests` registered first, offscreen; one timing test `test_the_ui_thread_wait_keeps_its_message_queue_running` can flake under heavy CPU, passes alone), ratchet/stylesheet golden if touched.
+3. Rebuild the release editor from the fork branch (keep the current exe as known-good), then the handoff/camera-raw/lean-save/stress live checks with `IMAGE_TRIAGE_CHECK_DESKTOP_OF=claude.exe`, plus the plan's new E2E checks (F1 edit-before-poll, F8 restart during start/render, F4 read-only edits folder, F5 Ctrl+S after Open/continuation, F7 native Save after autosave, F2/F3 recipe-only raw export at source size). Confirm preferences.json hash unchanged.
+4. Invert `docs/audit_20261014/reproduce_*` defect assertions into permanent tests where not already covered.
+5. Then fast-forward `codex/image-triage-integration`, update this file's validation record. Push only when the owner asks; never push to storytold.
