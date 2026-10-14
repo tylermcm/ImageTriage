@@ -27,11 +27,14 @@ def controller():
     app.processEvents()
 
 
-def raw_process(tmp_path, *, name="frame.NEF", camera_raw_first=True, rebaseline=True, supported=True):
+def raw_process(tmp_path, *, name="frame.NEF", camera_raw_first=True, rebaseline=True, supported=True, dirty=False):
     source = str(tmp_path / name)
     control = Mock()
     control.camera_raw_supported = supported
     control.document_revision.return_value = 1
+    # The editor's own view of the document: its revision, and whether it holds it as changed since the develop.
+    control.dirty = dirty
+    control.document_state.side_effect = lambda: (control.document_revision.return_value, control.dirty)
     control.call.return_value = {"job": 5, "pending": True}
     proc = bridge.PhotoCraftProcess(
         process=Mock(), control=control, hwnd=123, token_file=tmp_path / "token",
@@ -246,6 +249,89 @@ def test_edits_after_open_are_saved_once_the_baseline_is_taken(controller, tmp_p
     proc.control.call.side_effect = [{"open": False}, {"job": 9, "pending": True}]
     controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False)
     assert methods(proc.control)[-1] == "app.stash"
+
+
+def stashes_sent(control):
+    return [call for call in control.call.call_args_list if call.args[0] == "app.stash"]
+
+
+def test_an_edit_made_before_the_first_poll_is_saved_not_taken_for_the_baseline(controller, tmp_path):
+    """Developed at revision 1, edited to 2 before the 1.5 s poll came round: the editor holds the document as changed, so the
+    poll that closes the dialog saves it at once instead of taking revision 2 as "unchanged"."""
+    proc = raw_process(tmp_path, rebaseline=True, dirty=True)
+    proc.control.document_revision.return_value = 2
+    proc.control.call.side_effect = [{"open": False}, {"jobs": []}, {"job": 9, "pending": True}]
+    controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False)
+    assert len(stashes_sent(proc.control)) == 1, "saved in the same call"
+    assert proc.camera_raw_rebaseline is False
+    assert str(proc.current_sidecar) in proc.save_required
+
+
+@pytest.mark.parametrize("leaving", [False, True], ids=["autosave", "leave/quit"])
+def test_the_required_save_happens_in_the_call_that_finds_it(controller, tmp_path, leaving):
+    proc = raw_process(tmp_path, rebaseline=True, dirty=True)
+    proc.control.document_revision.return_value = 2
+    proc.control.call.side_effect = [{"open": False}, {"jobs": []}, {"job": 9, "pending": True}]
+    controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=leaving)
+    assert len(stashes_sent(proc.control)) == 1
+
+
+def test_an_editor_that_does_not_say_whether_it_changed_is_saved_to_be_safe(controller, tmp_path):
+    proc = raw_process(tmp_path, rebaseline=True, dirty=None)
+    proc.control.document_revision.return_value = 3
+    proc.control.call.side_effect = [{"open": False}, {"jobs": []}, {"job": 9, "pending": True}]
+    controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False)
+    assert len(stashes_sent(proc.control)) == 1
+
+
+def _finish(controller, proc, job_id, state="done", revision=2, path=None):
+    proc.control.call.side_effect = None
+    proc.control.call.return_value = {"jobs": [{"id": job_id, "command": "app.stash", "state": state, "result": {"revision": revision, "path": path}}]}
+    controller._poll_photocraft_stashes(proc)
+
+
+def test_only_the_matching_save_settles_the_requirement(controller, tmp_path):
+    proc = raw_process(tmp_path, rebaseline=True, dirty=True)
+    proc.control.document_revision.return_value = 2
+    proc.control.call.side_effect = [{"open": False}, {"jobs": []}, {"job": 9, "pending": True}]
+    controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False)
+    key = str(proc.current_sidecar)
+    # Another photo's save finishing does not settle it.
+    proc.pending_stashes["other.pcraft"] = (7, "other.NEF")
+    proc.stash_meta[7] = ("other.pcraft", proc.document_generation, 100)
+    _finish(controller, proc, 7)
+    assert key in proc.save_required
+    # A failed save of this photo keeps it.
+    proc.pending_stashes[key] = (9, proc.source_path)
+    _finish(controller, proc, 9, state="failed")
+    assert key in proc.save_required
+    # The matching successful save settles it.
+    proc.pending_stashes[key] = (10, proc.source_path)
+    proc.stash_meta[10] = (key, proc.document_generation, 2)
+    _finish(controller, proc, 10)
+    assert key not in proc.save_required
+
+
+def test_an_older_documents_save_does_not_settle_a_newer_documents_requirement(controller, tmp_path):
+    """Revisions start again with every document: revision 100 of the photo's previous document says nothing about revision 2
+    of the one open now."""
+    proc = raw_process(tmp_path, rebaseline=True, dirty=True)
+    key = str(proc.current_sidecar)
+    old_generation = proc.document_generation
+    proc.pending_stashes[key] = (8, proc.source_path)
+    proc.stash_meta[8] = (key, old_generation, 100)
+    proc.document_generation += 1  # the photo was opened again
+    proc.save_required[key] = (proc.document_generation, 2)
+    _finish(controller, proc, 8, revision=100)
+    assert proc.save_required[key] == (proc.document_generation, 2)
+
+
+def test_a_save_that_completes_at_once_settles_its_requirement(controller, tmp_path):
+    proc = raw_process(tmp_path, rebaseline=True, dirty=True)
+    proc.control.document_revision.return_value = 2
+    proc.control.call.side_effect = [{"open": False}, {"jobs": []}, {"revision": 2}]
+    controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False)
+    assert str(proc.current_sidecar) not in proc.save_required
 
 
 def test_the_baseline_waits_for_a_develop_that_is_still_running(controller, tmp_path):
