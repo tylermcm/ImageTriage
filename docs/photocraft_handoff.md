@@ -1,5 +1,23 @@
 # PhotoCraft handoff
 
+## Quick handoff - 2026-10-14 (later: the editor is inside the installer; release 2.3.1)
+
+Image Triage `main` at the 2.3.1 commit; fork unchanged at `e0569ef0`. Laptop.
+
+**One program.** The 2.3.0 installer did not contain the editor (it was a separate download). Now `setup_msi.py` puts
+`photocraft\photocraft.exe` and the licences PhotoCraft asks to be kept (`LICENSE-APACHE`, `LICENSE-MIT`, `NOTICE`, `ATTRIBUTION.md`) in the
+install folder (`freeze_support.photocraft_bundle_files`), and the installed app looks there first
+(`shell_actions.bundled_photocraft_executable`, only when frozen; `IMAGE_TRIAGE_PHOTOCRAFT_EXE` still wins, then the companion checkout and
+`PATH` as before, so running from source is unchanged). Building the installer takes the editor from `IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT_EXE`, else
+`..\photocraft\target\release\photocraft.exe`; **a build that finds no editor stops** (a missing licence file is only a warning), and
+`IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT=0` builds one without it on purpose. So: build the editor first, then `python setup_msi.py bdist_msi`.
+
+Checked: 12 tests in `tests/test_bundled_editor.py` (each of 7 mutations of the change fails one of them); the MSI has the same upgrade code,
+version 2.3.1, `photocraft\photocraft.exe` (77.5 MB, same sha256 as the editor that shipped beside 2.3.0) and the four licence files; an
+administrative install (`msiexec /a`) into a scratch folder lays them out as `<dir>\photocraft\...`, and that copy answers `--version`
+(`photocraft 0.8.2`). The MSI went from 115 MB to 147 MB. Not done: a full install and a run of the installed app on a clean PC (the
+owner is testing the compiled program on another PC); an upgrade over a running 2.3.0 may ask for a restart as before.
+
 ## Quick handoff - 2026-10-14 (the Camera Raw layout; release 2.3.0 built by hand)
 
 Image Triage `main`; fork `codex/image-triage-integration` at `e0569ef0`. Both pushed to the owner's repositories (nothing to storytold). Laptop.
