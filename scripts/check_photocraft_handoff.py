@@ -29,7 +29,7 @@ from image_triage.preview_controller import PreviewController
 from image_triage.cache import EditStateMemo
 from image_triage.app_identity import user_settings
 from _check_settings import use_throwaway_settings
-from _desktop import place
+from _desktop import place, home_is_active
 from image_triage.scanner import normalized_path_key
 from image_triage.ui.native_image_layer import CAMERA_RAW_FIRST_KEY, EDITOR_ON_DEMAND_KEY
 
@@ -153,7 +153,7 @@ def main() -> None:
         assert controller._photocraft.process.pid == pid
         assert host_events.hides == 0, "filmstrip navigation hid the editor host"
         navigation_hides = host_events.hides
-        wait_for(lambda: bridge.rendered_preview_path(records[0].path).is_file())
+        wait_for(lambda: bridge.full_render_path(records[0].path) is not None)
         controller._photocraft_executor.submit(controller._save_active_photocraft).result(timeout=120)
         app.processEvents()
         edited = render_edited_image(records[0].path)
@@ -220,7 +220,9 @@ def main() -> None:
             while time.monotonic() < painted:
                 app.processEvents()
                 time.sleep(0.01)
-            desktop_image = preview.screen().grabWindow(0, preview.x(), preview.y(), preview.width(), preview.height()).toImage()
+            # A check on the other desktop must never capture the owner's active
+            # desktop. Control screenshots still validate the editor's pixels.
+            desktop_image = preview.screen().grabWindow(0, preview.x(), preview.y(), preview.width(), preview.height()).toImage() if home_is_active() else QImage()
             if desktop_image.isNull():
                 desktop_captures_verified = False
             else:

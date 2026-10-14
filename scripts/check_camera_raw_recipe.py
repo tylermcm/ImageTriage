@@ -220,6 +220,29 @@ def main() -> None:
         # 2. Adjust and move on: the recipe is kept, a render of it is written, nothing is developed or saved.
         fast().call("ui.menu.invoke", {"id": "filter.cameraRaw", "params": {"ui": {"set": {"exposure": 1.0, "contrast": 25}}}})
         assert camera_raw()["changed"] is True
+        # A write failure must keep the only copy of the draft in the dialog.
+        blocked = bridge.recipe_path(str(first))
+        blocked.mkdir()
+        try:
+            try:
+                fast().call("ui.cameraRaw", {"done": True})
+                raise AssertionError("a blocked recipe write reported success")
+            except bridge.PhotoCraftError:
+                pass
+            assert camera_raw()["open"] and camera_raw()["changed"]
+            assert camera_raw()["recipe"]["cameraRaw"]["exposure"] == 1.0
+            results["failed_recipe_write_keeps_draft"] = True
+        finally:
+            blocked.rmdir()
+
+        # Export the live draft before any sidecar exists. Rendering must leave
+        # the dialog alone and use the sensor size rather than its display cache.
+        from image_triage.handoff_controller import _wait_with_events
+        from image_triage.edited_export import edited_image_for_export
+        live = _wait_with_events(lambda: edited_image_for_export(str(first)))
+        assert live is not None and max(live.image.width(), live.image.height()) > 2560
+        assert camera_raw()["open"] and camera_raw()["changed"]
+        results["live_export_size"] = [live.image.width(), live.image.height()]
         results["second_raw_in_camera_raw_ms"] = select(1)
         mem("after second raw")
         look()
@@ -227,11 +250,15 @@ def main() -> None:
         wait_for(recipe_file.is_file, "the recipe to be written")
         recipe = json.loads(recipe_file.read_text(encoding="utf-8"))
         assert recipe["version"] == 1 and recipe["cameraRaw"]["exposure"] == 1.0, recipe
-        display = bridge.display_render_path(str(first))
-        wait_for(lambda: display.is_file() and display.stat().st_size > 0, "the recipe's render")
+        wait_for(lambda: bridge.saved_render_path(str(first)) is not None, "the recipe's render")
+        display = bridge.saved_render_path(str(first))
         results["recipe_render_red"] = render_red(display)
         assert not bridge.sidecar_pcraft_path(str(first)).exists(), "browsing past a photo saved a document"
         assert len(documents()) == 1
+        disk = _wait_with_events(lambda: edited_image_for_export(str(first)))
+        assert disk is not None and disk.image.size() == live.image.size()
+        assert disk.image == live.image, "saved recipe render differs from the live draft"
+        results["recipe_only_export_matches_live"] = True
 
         # 3. Back to the first raw: Camera Raw opens with the recipe.
         results["return_to_first_ms"] = select(0)
@@ -246,6 +273,7 @@ def main() -> None:
             return
 
         # 4. Open develops the raw (the full editor); that is not editing it.
+        controller._photocraft_save_timer.stop()
         opened = fast().call("ui.cameraRaw", {"commit": True})
         assert opened["open"] is False
 
@@ -260,14 +288,17 @@ def main() -> None:
                 return True
 
         wait_for(lambda: not develop_running(), "the develop to finish", timeout=180)
-        time.sleep(controller._photocraft_save_timer.interval() / 1000 * 2 + 0.5)
-        app.processEvents()
         assert not bridge.sidecar_pcraft_path(str(first)).exists(), "Open alone saved a document"
         fast().call("ui.screenshot", {"path": "2-full-editor.png", "focus": False})
         mem("after Open developed")
 
         # 5. Editing in the full editor saves a document.
         fast().execute("image.adjustments.invert")
+        assert proc().camera_raw_rebaseline, "the early edit test already took its baseline"
+        _wait_with_events(lambda: controller._photocraft_executor.submit(controller._save_photocraft_sidecar_if_dirty, proc(), lean=True).result(timeout=180))
+        assert not proc().camera_raw_rebaseline
+        results["edit_before_first_poll_saved"] = True
+        controller._photocraft_save_timer.start()
         sidecar = bridge.sidecar_pcraft_path(str(first))
         try:
             wait_for(sidecar.is_file, "the full editor's document to be saved", timeout=45)
@@ -314,6 +345,15 @@ def main() -> None:
         assert continued["result"].get("continued"), continued
         wait_for(lambda: not any(j.get("state") == "running" for j in fast().call("jobs.list").get("jobs", [])), "the saved document to open", timeout=120)
         results["open_continues_saved_document"] = True
+        # Native Save must retain the same host binding after both Open and
+        # continuation, and publish a current generation for grid readers.
+        controller._photocraft_save_timer.stop()
+        fast().execute("image.adjustments.invert")
+        fast().call("ui.menu.invoke", {"id": "file.save"})
+        wait_for(lambda: documents() and not documents()[0].get("dirty"), "native Save after continuation", timeout=180)
+        wait_for(lambda: bridge.saved_render_path(str(first)) is not None and not bridge.render_is_behind(str(first)), "native Save's current renders", timeout=180)
+        results["native_save_after_continuation"] = True
+        controller._photocraft_save_timer.start()
 
         # 7. A raw the editor cannot develop from sensor data opens as its embedded preview, without Camera Raw.
         if args.unsupported:

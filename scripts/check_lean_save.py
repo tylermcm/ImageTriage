@@ -105,15 +105,17 @@ def main() -> None:
         run(proc.control.execute, "image.adjustments.invert")
         time.sleep(4)
         edits = bridge.edit_root_for(photo.parent)
-        png, display, project = bridge.rendered_preview_path(str(photo)), bridge.display_render_path(str(photo)), bridge.sidecar_pcraft_path(str(photo))
+        project = bridge.sidecar_pcraft_path(str(photo))
+        has_png = lambda: bridge.full_render_path(str(photo), verify_project=False) is not None
+        has_display = lambda: bridge.saved_render_path(str(photo)) is not None
 
         started = time.perf_counter()
         run(controller._autosave_photocraft)
         wait_for(lambda: (run(controller._poll_photocraft_stashes, proc) or True) and not proc.pending_stashes, "the autosave to finish")
         results["autosave_s"] = round(time.perf_counter() - started, 1)
-        results["after_autosave"] = {"project": project.is_file(), "display_jpeg": display.is_file(), "full_size_png": png.is_file()}
-        assert project.is_file() and display.is_file(), "the autosave wrote neither the project nor the screen-sized JPEG"
-        assert not png.is_file(), "the autosave wrote the full-size render"
+        results["after_autosave"] = {"project": project.is_file(), "display_jpeg": has_display(), "full_size_png": has_png()}
+        assert project.is_file() and has_display(), "the autosave wrote neither the project nor the screen-sized JPEG"
+        assert not has_png(), "the autosave wrote the full-size render"
         assert bridge.render_is_behind(str(photo)) and str(proc.current_sidecar) in proc.preview_missing
 
         if args.close == "after-pause":
@@ -127,20 +129,20 @@ def main() -> None:
                     app.processEvents()
                     time.sleep(0.01)
             results["render_written_after_pause_s"] = round(time.perf_counter() - paused, 1)
-            assert png.is_file() and not bridge.render_is_behind(str(photo)), "the render was not written after a pause in editing"
+            assert has_png() and not bridge.render_is_behind(str(photo)), "the render was not written after a pause in editing"
             assert str(proc.current_sidecar) not in proc.preview_missing
 
         closing = time.perf_counter()
         preview.close()
         results["close_held_the_ui_thread_ms"] = round((time.perf_counter() - closing) * 1000)
-        results["after_close"] = {"full_size_png": png.is_file(), "render_behind": bridge.render_is_behind(str(photo)), "editor_running": proc.process.poll() is None}
+        results["after_close"] = {"full_size_png": has_png(), "render_behind": bridge.render_is_behind(str(photo)), "editor_running": proc.process.poll() is None}
         assert proc.process.poll() is None and controller._photocraft is proc, "closing the popout quit the editor"
         started = time.perf_counter()
         run(proc.fast_lane().call, "ui.viewport", timeout=20)
         results["answer_after_close_ms"] = round((time.perf_counter() - started) * 1000)
         if args.close == "immediately":
             # What the close did not wait for is written by the parked editor.
-            wait_for(lambda: png.is_file() and not bridge.render_is_behind(str(photo)), "the full-size render after the close", 180)
+            wait_for(lambda: has_png() and not bridge.render_is_behind(str(photo)), "the full-size render after the close", 180)
             results["render_written_after_close_s"] = round(time.perf_counter() - closing, 1)
         wait_for(lambda: controller._photocraft_future is None or controller._photocraft_future.done(), "the after-close save to settle", 180)
         assert not bridge.render_is_behind(str(photo)), "the full-size render is behind the project after the close"
