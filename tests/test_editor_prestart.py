@@ -200,3 +200,64 @@ def test_raising_the_priority_of_a_background_editor_sets_the_process_to_normal(
     finally:
         child.kill()
         child.wait()
+
+
+# --- shutting down while the background start is still running ------------------------------------------------------
+
+def test_shutting_down_during_the_background_start_ends_the_editor_it_was_starting(controller, tmp_path, monkeypatch):
+    """The start is slow (a minute on a cold machine is possible); shutdown must not return while it is still running and then
+    have it publish an editor nobody will shut down."""
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    proc = prestarted_proc(tmp_path)
+    ended = []
+    monkeypatch.setattr(bridge.PhotoCraftProcess, "shutdown", lambda self, **kwargs: ended.append(self))
+
+    def slow_launch(*args, **kwargs):
+        started.set()
+        release.wait(5)
+        return proc
+
+    monkeypatch.setattr(bridge, "launch_photocraft", slow_launch)
+    controller._window = SimpleNamespace(_current_folder=str(tmp_path))
+    controller.run_deferred_editor_start()
+    assert started.wait(5)
+    threading.Timer(0.2, release.set).start()
+    controller.shutdown_photocraft()
+    assert controller._photocraft is None, "the late editor is never taken into use"
+    assert ended == [proc], "and it is shut down, not left running"
+
+
+def test_a_background_start_still_queued_at_shutdown_never_runs(controller, tmp_path, monkeypatch):
+    import threading
+
+    gate = threading.Event()
+    controller._photocraft_executor.submit(gate.wait, 5)  # something else is on the editor's worker
+    launch = Mock(return_value=prestarted_proc(tmp_path))
+    monkeypatch.setattr(bridge, "launch_photocraft", launch)
+    controller._window = SimpleNamespace(_current_folder=str(tmp_path))
+    controller.run_deferred_editor_start()
+    controller.shutdown_photocraft()
+    gate.set()
+    drain(controller)
+    launch.assert_not_called()
+    assert controller._photocraft is None
+
+
+def test_no_background_start_begins_after_shutdown(controller, tmp_path, monkeypatch):
+    launch = Mock(return_value=prestarted_proc(tmp_path))
+    monkeypatch.setattr(bridge, "launch_photocraft", launch)
+    controller._window = SimpleNamespace(_current_folder=str(tmp_path))
+    controller.shutdown_photocraft()
+    controller.run_deferred_editor_start()
+    drain(controller)
+    launch.assert_not_called()
+
+
+def test_shutdown_with_nothing_started_returns_at_once(controller):
+    import time
+
+    started = time.perf_counter()
+    controller.shutdown_photocraft()
+    assert time.perf_counter() - started < 0.5
