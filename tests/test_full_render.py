@@ -331,5 +331,3 @@ def test_failed_edited_photo_is_reported_and_batch_continues(tmp_path, monkeypat
     assert result.failed == ((str(paths[0]), "editor render failed"),)
     assert "bad.png" in result.report()
     assert not Path(plan.executable_items[0].target_path).exists()
-
-
