@@ -1393,3 +1393,8 @@ serially. Owner's PhotoCraft preferences.json unchanged (same sha256 as above).
 
 Still to do: live checks on the new build (keep `target/release/photocraft.exe` as known-good until they pass), promote the
 build, merge to `main`, fast-forward `codex/image-triage-integration` in the fork. wasm gate still not run.
+
+Posterize/Threshold (`0d674c0d`): a real bug (16-bit commands split on an 8-bit grid, unlike their preview), but upstream
+fixed the same thing in storytold/photocraft#5711 (`1c6f1387`), after the `620bccef` we merged. No upstream PR. At the next
+upstream merge, expect a conflict in `crates/engine/src/pixels.rs`: take upstream's side and drop our commit and its test
+(`posterize_and_threshold_keep_the_16_bit_sample_grid_in_committed_pixels`).
