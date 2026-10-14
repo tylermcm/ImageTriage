@@ -380,6 +380,21 @@ class PhotoCraftControl:
             params["show"] = show
         return self.execute("edit.menus", params)
 
+    def document_state(self) -> tuple[int, bool | None] | None:
+        """The open document's revision and whether the editor holds it as changed since it was last saved or developed
+        (``dirty``; ``None`` from an editor that does not say), from one inspection. ``None`` when no document is open."""
+        session = self.execute("session.inspect")
+        if "active" not in session:
+            raise PhotoCraftError("PhotoCraft session inspection did not report an active document")
+        active = session["active"]
+        if active is None:
+            return None
+        for document in session.get("documents", []):
+            if document.get("index") == active:
+                dirty = document.get("dirty")
+                return int(document["revision"]), (bool(dirty) if isinstance(dirty, bool) else None)
+        raise PhotoCraftError("PhotoCraft session inspection omitted the active document")
+
     def document_revision(self) -> int | None:
         """The open document's undo/history revision counter: unchanged since
         open means nothing worth saving happened. None means no document is open."""
@@ -435,6 +450,15 @@ class PhotoCraftProcess:
     current_source: str | None = None
     source_path: str = ""
     pending_stashes: dict[str, tuple[int, str]] = field(default_factory=dict)
+    # Which document is open, counted: every open or replacement starts a new one, and its revisions start again. A save is
+    # matched to a requirement by (sidecar, document generation), never by revision alone.
+    document_generation: int = 0
+    # Saves that must happen, found when a Camera Raw dialog closed on a document that was already changed: sidecar ->
+    # (document generation, revision). Only a successful save of the same sidecar and generation, at that revision or later,
+    # clears one (see PreviewController._save_photocraft_sidecar_if_dirty).
+    save_required: dict[str, tuple[int, int]] = field(default_factory=dict)
+    # What each save job was sent for: job id -> (sidecar, document generation, revision).
+    stash_meta: dict[int, tuple[str, int, int]] = field(default_factory=dict)
     stash_errors: dict[str, str] = field(default_factory=dict)
     source_by_sidecar: dict[str, str] = field(default_factory=dict)
     observed_stashes: set[int] = field(default_factory=set)

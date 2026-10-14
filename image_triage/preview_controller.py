@@ -1222,6 +1222,7 @@ class PreviewController(QObject):
             # Hosted imports/restores use Session.add_document -> DocState.new,
             # whose initial revision and saved_revision are both one.
             proc.opened_revision = 1
+            proc.document_generation += 1
         elif not self._switch_photocraft_document(proc, open_path, sidecar_path, self._photocraft_open_generation, camera_raw=camera_raw):
             # The selection moved on while this RAW was opening: its result belongs to a photo
             # that is no longer shown, so it must not be bound or recorded.
@@ -1320,6 +1321,7 @@ class PreviewController(QObject):
         proc.preview_source = None
         proc.current_sidecar = Path(sidecar_path)
         proc.opened_revision = 1
+        proc.document_generation += 1
         if sidecar_path in proc.stash_errors:
             proc.opened_revision = -1
         return True
@@ -1349,16 +1351,22 @@ class PreviewController(QObject):
                 if state.get("open"):
                     return
                 if proc.camera_raw_rebaseline:
-                    # The raw's dialog is over (we left the photo, or the user pressed Open or Cancel). What the
-                    # document is now is where editing starts from, once any develop in progress has landed.
+                    # The raw's dialog is over (we left the photo, or the user pressed Open or Cancel). Once any develop in
+                    # progress has landed, a document the editor holds as unchanged is where editing starts from. One it holds
+                    # as changed was edited after the develop, before this poll came round (or the editor does not say): that
+                    # edit must be saved, here and now, not taken for the baseline.
                     if any(job.get("state") == "running" and job.get("command") != "app.stash"
                            for job in control.call("jobs.list").get("jobs", [])):
                         return
-                    baseline = control.document_revision()
-                    if baseline is not None:
-                        proc.opened_revision = baseline
+                    state = control.document_state()
                     proc.camera_raw_rebaseline = False
-                    return
+                    if state is None:
+                        return
+                    baseline, dirty = state
+                    if dirty is False:
+                        proc.opened_revision = baseline
+                        return
+                    proc.save_required[str(proc.current_sidecar)] = (proc.document_generation, baseline)
         revision = control.document_revision()
         if revision is None:
             # Closing a tab in PhotoCraft leaves its process/window alive.
@@ -1371,7 +1379,8 @@ class PreviewController(QObject):
                 # Closing the full editor's document goes back to the photo in Camera Raw.
                 self._photocraft_document_closed.emit(closed_source)
             return
-        if revision == proc.opened_revision and (lean or not self._render_behind(proc)):
+        required = str(proc.current_sidecar) in proc.save_required
+        if revision == proc.opened_revision and not required and (lean or not self._render_behind(proc)):
             return
         if revision != proc.opened_revision:
             proc.last_edit_at = time.monotonic()
@@ -1405,9 +1414,19 @@ class PreviewController(QObject):
         proc.stash_errors.pop(key, None)
         if result.get("pending"):
             proc.pending_stashes[key] = (int(result["job"]), proc.source_path)
+            proc.stash_meta[int(result["job"])] = (key, proc.document_generation, revision)
         else:
+            self._clear_save_requirement(proc, key, proc.document_generation, revision)
             self._photocraft_saved.emit(proc.source_path)
         proc.opened_revision = revision
+
+    @staticmethod
+    def _clear_save_requirement(proc, key: str, generation: int, revision: int) -> None:
+        """A save of ``key`` at ``revision`` of document ``generation`` succeeded: it settles a requirement for that document
+        at that revision or earlier, and nothing else."""
+        required = proc.save_required.get(key)
+        if required is not None and required[0] == generation and revision >= required[1]:
+            del proc.save_required[key]
 
     def _render_behind(self, proc: photocraft_bridge.PhotoCraftProcess) -> bool:
         """Whether the open photo's full-size render is behind its project: an earlier save of this session left it out, or one of an
@@ -1429,7 +1448,10 @@ class PreviewController(QObject):
             if job is None or job.get("state") == "running":
                 continue
             del proc.pending_stashes[key]
+            sent = proc.stash_meta.pop(job_id, None)
             if job.get("state") == "done":
+                if sent is not None:
+                    self._clear_save_requirement(proc, *sent)
                 if job_id not in proc.observed_stashes:
                     proc.observed_stashes.add(job_id)
                     self._photocraft_saved.emit(source)
