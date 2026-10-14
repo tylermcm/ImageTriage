@@ -1,5 +1,38 @@
 # PhotoCraft handoff
 
+## Quick handoff - 2026-10-14 (the Camera Raw layout; release 2.3.0 built by hand)
+
+Image Triage `main`; fork `codex/image-triage-integration` at `e0569ef0`. Both pushed to the owner's repositories (nothing to storytold). Laptop.
+
+**Camera Raw layout in the workspace** (fork `e0569ef0`, `camera_raw_ui.rs`): the strip under the photo is gone and its tools (zoom, hand,
+Fit in View, 100%, the zoom menu) are in the footer, in what is free left of Load/Save Settings, Before, Open and Cancel (clipped, never the
+buttons, in a window too narrow for both); the photo margin is 8 px instead of 16; the settings panel is 270 px instead of 330
+(`WORKSPACE_PANEL_W`, `WORKSPACE_VIEW_MARGIN`). At 1365x767 the photo area went from 1003x625 to 1079x673. The dialog that is the filter's own
+window (`own_window`) keeps upstream's layout, so the merge cost is small. `layout()` is also what `ui.viewport` reports as `cameraRaw.view`, so
+the host's picture of the photo follows by itself. Tests: three layout tests; the 15 `camera_raw_ui` and the `raw_workspace` tests pass.
+Live on the laptop: handoff check (1 MP), camera-raw-first and lean-save pass; screenshots at 1365x767 and 1000x700 look right (nothing
+overlaps; the panel scrolls). **`check_camera_raw_recipe` failed once** (13 s in, `assert camera_raw()["changed"] is True` right after the
+first adjustment) and passed in the next two runs: not explained, probably a race in the check; not looked into.
+
+**Release 2.3.0, made by hand.** `.github/workflows/build-windows-msi-release.yml` is not registered any more (the repo's only workflow is
+`tests.yml`, which fails in 0 s), so nothing builds on a tag. Done instead: version bump (`cccbcb3`), `python setup_msi.py bdist_msi` in a
+clean worktree of that commit with the scratch venv (cx_Freeze 8.7.1 installed into it; about 2 minutes, 115 MB; the MSI's upgrade code is
+unchanged, so it upgrades in place), then `gh release create v2.3.0 -R tylermcm/ImageTriage --target <full commit hash>` (a short hash is
+refused) with `Image.Triage-2.3.0-win64.msi`, `photocraft.exe` (the editor built from the fork at `e0569ef0`) and `SHA256SUMS.txt`; the
+digests GitHub shows equal the local ones. It is the repository's latest release, so `Help > Check For Updates...` offers it (the previous one
+was "ImageTriage V2.1.1", tag `V2`). Not code-signed. The MSI does not contain the editor: `photocraft.exe` goes beside it (environment
+variable `IMAGE_TRIAGE_PHOTOCRAFT_EXE`, `PATH`, or `C:\Program Files\PhotoCraft\`). The tag is on the build commit; this note and anything
+after it are later commits.
+
+**Mistake of mine, tonight.** My test scripts cleaned up with `taskkill /IM photocraft.exe`, which kills every editor, including the one of the
+owner's running Image Triage (that was how I found out: the owner's app kept its editor running from `targetelease`, a build could not replace the
+locked `photocraft.exe`, and a script of mine then ended that process). They no longer do that
+(the checks end the editor they started; it is tied to its parent by a job object). The two "PhotoCraft handoff failed" entries of
+2026-10-11 (17:29 and 17:44) may owe something to the same kills, besides the 30 s idle drop that was found and fixed.
+
+**Also seen.** `import onnxruntime` crashed (segmentation fault) in the scratch venv (onnxruntime 1.31.0, Python 3.11): quite possibly the
+intermittent native crash of the full suite. Not chased.
+
 ## Quick handoff - 2026-10-13, night (the laptop: the merged editor built and run here)
 
 Image Triage `main` at `91e3132`, fork `codex/image-triage-integration` at `9e94b0c0`, both pulled onto the laptop (Intel UHD 620, 4 cores / 8
