@@ -121,7 +121,7 @@ def main() -> None:
         if args.close == "after-pause":
             # The autosave timer ticks every 1.5 s while the editor is up; after a pause in editing it writes the render.
             paused = time.perf_counter()
-            while not png.is_file() and time.perf_counter() - paused < 180:
+            while not has_png() and time.perf_counter() - paused < 180:
                 run(controller._autosave_photocraft)
                 wait_for(lambda: (run(controller._poll_photocraft_stashes, proc) or True) and not proc.pending_stashes, "a save to finish")
                 pump_until = time.monotonic() + 1.5
@@ -141,6 +141,14 @@ def main() -> None:
         run(proc.fast_lane().call, "ui.viewport", timeout=20)
         results["answer_after_close_ms"] = round((time.perf_counter() - started) * 1000)
         if args.close == "immediately":
+            from image_triage.handoff_controller import _wait_with_events
+            from image_triage.edited_export import edited_image_for_export, bit_depth
+
+            results["pending_snapshot_at_export"] = bool(proc.pending_stashes)
+            exported = _wait_with_events(lambda: edited_image_for_export(str(photo)))
+            assert exported is not None and max(exported.image.width(), exported.image.height()) > 2560
+            assert bit_depth(exported.image) == 16
+            results["export_after_close_size"] = [exported.image.width(), exported.image.height()]
             # What the close did not wait for is written by the parked editor.
             wait_for(lambda: has_png() and not bridge.render_is_behind(str(photo)), "the full-size render after the close", 180)
             results["render_written_after_close_s"] = round(time.perf_counter() - closing, 1)
