@@ -99,7 +99,11 @@ def test_a_raw_opens_in_camera_raw_only_in_the_workspace_and_only_with_a_capable
 def test_the_spec_names_where_the_recipe_and_its_render_go(controller, tmp_path):
     photo = str(tmp_path / "frame.NEF")
     spec = controller._camera_raw_spec(photo, raw_process(tmp_path))
-    assert spec == {"recipePath": "frame.NEF.cameraraw.json", "displayPath": "frame.NEF.photocraft.display.jpg"}
+    assert spec == {
+        "recipePath": "frame.NEF.cameraraw.json",
+        "displayPath": "frame.NEF.photocraft.display.jpg",
+        "manifestPath": "frame.NEF.photocraft.renders.json",
+    }
 
 
 def test_the_spec_carries_the_stored_recipe(controller, tmp_path):

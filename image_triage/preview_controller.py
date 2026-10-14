@@ -1151,6 +1151,8 @@ class PreviewController(QObject):
         spec: dict = {
             "recipePath": photocraft_bridge.recipe_path(path).name,
             "displayPath": photocraft_bridge.display_render_path(path).name,
+            # Dropped by ``app_open`` for an editor that keeps no render manifest.
+            "manifestPath": photocraft_bridge.render_manifest_path(path).name,
         }
         recipe = photocraft_bridge.load_recipe(path)
         if recipe is not None:
@@ -1233,8 +1235,11 @@ class PreviewController(QObject):
             return
         relative_sidecar = proc.path_within_write_root(sidecar_path)
         relative_render = proc.path_within_write_root(str(photocraft_bridge.rendered_preview_path(path)))
+        bind = {"path": relative_sidecar, "preview": relative_render}
+        # The editor's own Save (Ctrl+S) then writes what the host's saves write: the screen-sized picture too, and the manifest.
+        bind.update(self._render_manifest_params(proc, path))
         try:
-            proc.control.call("app.bind", {"path": relative_sidecar, "preview": relative_render})
+            proc.control.call("app.bind", bind)
         except Exception:
             if launched:
                 proc.shutdown()
@@ -1406,6 +1411,7 @@ class PreviewController(QObject):
         display_relative = proc.path_within_write_root(str(photocraft_bridge.display_render_path(proc.source_path)))
         if display_relative is not None:
             params["display"] = display_relative
+        params.update({key: value for key, value in self._render_manifest_params(proc, proc.source_path).items() if key != "display"})
         # The full-size PNG is the heaviest encode of a save (211 MB for a 45 MP photo): an autosave, with the photo still open, leaves it
         # out when it can (the screen-sized JPEG is what browsing shows) and leaving the photo writes it.
         lean = lean and display_relative is not None and getattr(proc.control, "stash_without_preview_supported", False) is True
@@ -1423,6 +1429,19 @@ class PreviewController(QObject):
             self._clear_save_requirement(proc, key, proc.document_generation, revision)
             self._photocraft_saved.emit(proc.source_path)
         proc.opened_revision = revision
+
+    @staticmethod
+    def _render_manifest_params(proc, path: str) -> dict:
+        """What a save of ``path`` needs to keep a render manifest (an editor that can): where the manifest goes, the original's
+        signature it is made against, and the screen-sized picture's name. Empty for an editor that keeps none."""
+        if getattr(proc.control, "render_manifest_supported", False) is not True:
+            return {}
+        manifest = proc.path_within_write_root(str(photocraft_bridge.render_manifest_path(path)))
+        display = proc.path_within_write_root(str(photocraft_bridge.display_render_path(path)))
+        source = photocraft_bridge.file_signature(path)
+        if manifest is None or display is None or source is None:
+            return {}
+        return {"manifest": manifest, "display": display, "source": source}
 
     @staticmethod
     def _clear_save_requirement(proc, key: str, generation: int, revision: int) -> None:
@@ -1456,6 +1475,7 @@ class PreviewController(QObject):
             if job.get("state") == "done":
                 if sent is not None:
                     self._clear_save_requirement(proc, *sent)
+                photocraft_bridge.prune_render_generations(source)
                 if job_id not in proc.observed_stashes:
                     proc.observed_stashes.add(job_id)
                     self._photocraft_saved.emit(source)
@@ -2025,8 +2045,9 @@ class PreviewController(QObject):
         return entries, max(1, len(entries)), start
 
     def ordered_edited_candidates(self, record: ImageRecord, displayed_path: str) -> tuple[str, ...]:
-        saved_render = photocraft_bridge.rendered_preview_path(record.path)
-        if saved_render.is_file():
+        # The UI thread: the project is matched by size here, never read through.
+        saved_render = photocraft_bridge.full_render_path(record.path, verify_project=False)
+        if saved_render is not None and saved_render.suffix.lower() == ".png":
             return (str(saved_render), *[path for path in record.edited_paths if path != str(saved_render)])
         if record.edited_paths:
             edited_candidates = tuple(record.edited_paths)
