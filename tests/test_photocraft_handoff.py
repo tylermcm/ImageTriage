@@ -110,7 +110,7 @@ def test_existing_json_edits_become_the_first_photocraft_source(controller, tmp_
     from image_triage import edit_storage, edit_render_headless
     image = QImage(4, 4, QImage.Format.Format_RGB32)
     image.fill(QColor("green"))
-    monkeypatch.setattr(edit_storage, "session_has_edits", lambda path: True)
+    monkeypatch.setattr(edit_storage, "builtin_session_has_edits", lambda path: True)
     monkeypatch.setattr(edit_render_headless, "render_edited_image", lambda path: image)
     source, target = controller._resolve_photocraft_target(str(tmp_path / "old.jpg"))
     assert source.endswith("old.jpg__photocraft_legacy.tiff")

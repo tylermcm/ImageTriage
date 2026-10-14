@@ -108,6 +108,9 @@ def load_recipe(image_path: str) -> dict | None:
         text = target.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
+    except UnicodeError:
+        quarantine_recipe(image_path)
+        return None
     except OSError as error:
         logging.getLogger(__name__).warning("Could not read the Camera Raw recipe %s: %s", target, error)
         return None
@@ -119,6 +122,102 @@ def load_recipe(image_path: str) -> dict | None:
         pass
     quarantine_recipe(image_path)
     return None
+
+
+# What a photo's Camera Raw recipe amounts to (``recipe_state``).
+RECIPE_ABSENT = "absent"
+RECIPE_IDENTITY = "identity"  # there, but its settings change nothing
+RECIPE_EDITED = "edited"
+RECIPE_INVALID = "invalid"  # there, but unreadable: edit data we could not read, never "no edits"
+
+# The develop refuses an exposure outside this (photocraft_io::raw::import_raw_tuned); every other setting is clamped where it is
+# applied, so the editor has no other ranges to keep in step with.
+RECIPE_EXPOSURE_LIMIT = 10.0
+RECIPE_ACTIVE_FIELDS = (
+    "temperature", "tint", "exposure", "contrast", "highlights", "shadows", "whites", "blacks", "texture", "clarity", "dehaze",
+    "vibrance", "saturation", "curveHighlights", "curveLights", "curveDarks", "curveShadows", "sharpenAmount", "noiseLuminance",
+    "noiseColor", "grainAmount", "vignetteAmount",
+)
+RECIPE_SCALARS = frozenset((*RECIPE_ACTIVE_FIELDS, "gradeBlending", "gradeBalance", "sharpenRadius", "sharpenDetail", "sharpenMasking",
+                          "noiseLuminanceDetail", "noiseColorDetail", "grainSize", "grainRoughness", "vignetteMidpoint",
+                          "vignetteRoundness", "vignetteFeather", "vignetteHighlights", "pixelScale", "encodingGamma"))
+RECIPE_ARRAYS = {"curveSplits": 3, "hslHue": 8, "hslSat": 8, "hslLum": 8}
+RECIPE_CURVES = ("pointCurve", "pointCurveRed", "pointCurveGreen", "pointCurveBlue")
+RECIPE_WHEELS = ("gradeShadows", "gradeMidtones", "gradeHighlights", "gradeGlobal")
+RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle"}
+
+
+def _recipe_value_ok(value) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return value == value and abs(value) <= 3.4028234663852886e38
+    return False
+
+
+def classify_recipe(recipe) -> tuple[str, str]:
+    """``(state, reason)`` for a recipe's content (a parsed recipe file, or the open dialog's settings in the same form)."""
+    if not isinstance(recipe, dict) or type(recipe.get("version")) is not int or recipe.get("version") != RECIPE_VERSION:
+        return RECIPE_INVALID, "not a Camera Raw recipe this version of Image Triage reads"
+    settings = recipe.get("cameraRaw")
+    if not isinstance(settings, dict):
+        return RECIPE_INVALID, "the recipe has no settings"
+    for name, value in settings.items():
+        if name not in RECIPE_FIELDS:
+            return RECIPE_INVALID, f"the recipe's {name} is not a supported setting"
+        if name == "vignetteStyle":
+            valid = value in ("highlightPriority", "colorPriority", "paintOverlay") if isinstance(value, str) else False
+        elif name == "seed":
+            valid = type(value) is int and 0 <= value <= 0xFFFFFFFF
+        elif name in RECIPE_CURVES:
+            valid = (isinstance(value, list) and (len(value) == 0 or 2 <= len(value) <= 16)
+                     and all(isinstance(p, list) and len(p) == 2 and all(_recipe_value_ok(v) and 0 <= v <= 255 for v in p) for p in value)
+                     and all(b[0] - a[0] >= 1 for a, b in zip(value, value[1:])))
+        elif name in RECIPE_ARRAYS:
+            valid = isinstance(value, list) and len(value) == RECIPE_ARRAYS[name] and all(_recipe_value_ok(v) for v in value)
+        elif name in RECIPE_WHEELS:
+            valid = isinstance(value, dict) and all(k in ("hue", "sat", "lum") and isinstance(v, (int, float)) and _recipe_value_ok(v) for k, v in value.items())
+        else:
+            valid = isinstance(value, (int, float)) and _recipe_value_ok(value)
+        if not valid:
+            return RECIPE_INVALID, f"the recipe's {name} is not a valid setting"
+    exposure = settings.get("exposure", 0.0)
+    if abs(exposure) > RECIPE_EXPOSURE_LIMIT:
+        return RECIPE_INVALID, f"the recipe's exposure ({exposure} EV) is out of range"
+    identity = recipe.get("identity")
+    if identity is not None and not isinstance(identity, bool):
+        return RECIPE_INVALID, "the recipe's identity flag is not true or false"
+    # Match CameraRaw::is_identity, including controls that are inert on their
+    # own. The serialized flag is advisory; a stale flag cannot hide adjustments.
+    identity = all(settings.get(name, 0) == 0 for name in RECIPE_ACTIVE_FIELDS)
+    identity = identity and all(all(v == 0 for v in settings.get(name, [])) for name in ("hslHue", "hslSat", "hslLum"))
+    identity = identity and all(all(settings.get(name, {}).get(k, 0) == 0 for k in ("sat", "lum"))
+                                for name in ("gradeShadows", "gradeMidtones", "gradeHighlights", "gradeGlobal"))
+    identity = identity and all(len(settings.get(name, [])) < 2 or all(abs(x - y) < 1e-3 for x, y in settings[name])
+                                for name in ("pointCurve", "pointCurveRed", "pointCurveGreen", "pointCurveBlue"))
+    return (RECIPE_IDENTITY if identity else RECIPE_EDITED), ""
+
+
+def recipe_state(image_path: str) -> tuple[str, dict | None, str]:
+    """``(state, recipe, reason)`` for the photo's stored recipe, read-only: unlike ``load_recipe`` it never sets a damaged file
+    aside (that is for opening the photo in the editor)."""
+    target = recipe_path(image_path)
+    try:
+        text = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        if target.with_name(target.name + ".bad").exists():
+            return RECIPE_INVALID, None, "the saved Camera Raw settings were set aside as unreadable"
+        return RECIPE_ABSENT, None, ""
+    except UnicodeError:
+        return RECIPE_INVALID, None, "the recipe is not valid UTF-8"
+    except OSError as error:
+        return RECIPE_INVALID, None, f"the recipe could not be read: {error}"
+    try:
+        recipe = json.loads(text)
+    except ValueError:
+        return RECIPE_INVALID, None, "the recipe is not valid JSON"
+    state, reason = classify_recipe(recipe)
+    return state, (recipe if state != RECIPE_INVALID else None), reason
 
 
 def quarantine_recipe(image_path: str) -> None:
@@ -145,7 +244,7 @@ def display_render_path(image_path: str) -> Path:
 
 RENDER_MANIFEST_VERSION = 1
 # PhotoCraft's render_manifest::ALGORITHM. Pictures made by any other render algorithm are out of date. (A test keeps the two in step.)
-RENDER_ALGORITHM = 1
+RENDER_ALGORITHM = 2
 
 
 def render_manifest_path(image_path: str) -> Path:
@@ -172,6 +271,7 @@ class RenderManifest:
     outputs: dict[str, RenderOutput]
     project_size: int | None = None
     project_sha256: str | None = None
+    project_depth: int | None = None
     recipe_sha256: str | None = None
 
 
@@ -215,7 +315,8 @@ def read_render_manifest(image_path: str) -> RenderManifest | _InvalidManifest |
         )
         if kind == "project":
             project = data["project"]
-            return RenderManifest(**{**manifest.__dict__, "project_size": int(project["size"]), "project_sha256": str(project["sha256"])})
+            return RenderManifest(**{**manifest.__dict__, "project_size": int(project["size"]), "project_sha256": str(project["sha256"]),
+                                    "project_depth": int(project["depth"]) if "depth" in project else None})
         if kind == "recipe":
             return RenderManifest(**{**manifest.__dict__, "recipe_sha256": str(data["recipe"]["sha256"])})
         return INVALID_MANIFEST
@@ -265,11 +366,20 @@ def render_manifest_is_current(image_path: str, manifest: RenderManifest, *, ver
     project = sidecar_pcraft_path(image_path)
     if manifest.kind == "project":
         try:
-            size = project.stat().st_size
+            stat = project.stat()
+            size = stat.st_size
         except OSError:
             return False
         if size != manifest.project_size:
             return False
+        # Project writes finish before the manifest is published. A later write,
+        # even of the same size, invalidates the cheap UI check without hashing.
+        if not verify_project:
+            try:
+                if stat.st_mtime_ns > render_manifest_path(image_path).stat().st_mtime_ns:
+                    return False
+            except OSError:
+                return False
         if verify_project and file_sha256(project) != manifest.project_sha256:
             return False
     elif manifest.kind == "recipe":
@@ -383,16 +493,15 @@ FULL_RENDER_TOLERANCE_S = 2.0
 
 
 def full_render_path(image_path: str, *, verify_project: bool = True) -> Path | None:
-    """The largest picture of the photo's saved PhotoCraft edits that is not out of date: the full-size PNG, unless a later save wrote only
-    the screen-sized JPEG (autosaves while the editor is up do; the PNG follows when the photo is left), else that JPEG; ``None`` when the
-    photo has neither. For readers that want full size (exports, hand-offs, the edited version beside the original).
+    """The current full-size PNG, or None when the editor must render one.
+    A screen-sized display picture is never a full-size render.
 
     ``verify_project`` (the default) checks the project's SHA-256 against the manifest: workers only, see ``file_sha256``."""
     manifest = current_render_manifest(image_path, verify_project=verify_project)
     if manifest is not False:
         if manifest is None:
             return None
-        chosen = manifest.outputs.get("png") or manifest.outputs.get("display")
+        chosen = manifest.outputs.get("png")
         return chosen.path if chosen is not None else None
     png = rendered_preview_path(image_path)
     display = display_render_path(image_path)
@@ -407,7 +516,7 @@ def full_render_path(image_path: str, *, verify_project: bool = True) -> Path | 
     shown_is_usable = shown is not None and shown.st_size > 0
     if full is not None and full.st_size > 0 and (not shown_is_usable or full.st_mtime >= shown.st_mtime - FULL_RENDER_TOLERANCE_S):
         return png
-    return display if shown_is_usable else None
+    return None
 
 
 def render_is_behind(image_path: str) -> bool:
@@ -577,6 +686,8 @@ class PhotoCraftControl:
         self.stash_without_preview_supported = capabilities.get("stashWithoutPreview", 0) >= 1
         # Saves and recipe renders write generation-named pictures and a render manifest (``render_manifest_path``).
         self.render_manifest_supported = capabilities.get("renderManifest", 0) >= 1
+        # ``app.render``: a photo's edits at full size, on request (``full_render``).
+        self.full_render_supported = capabilities.get("fullRender", 0) >= 1
         for method, validation in (
             ("app.stash", "stash requires path and preview"),
             ("app.bind", "bind requires an open document, .pcraft path and .png preview"),
@@ -710,6 +821,9 @@ class PhotoCraftProcess:
     # connection on its own thread.
     fast: PhotoCraftControl | None = None
     fast_unavailable: bool = False
+    # A third connection for full-size renders (``full_render``): a render takes seconds and must not hold up either of the others,
+    # and a shutdown can always cancel it.
+    render: PhotoCraftControl | None = None
     preview_source: str | None = None
     # Launched with ``--raw-workspace``: Camera Raw opens by itself on each document, inside the window.
     camera_raw_first: bool = False
@@ -754,6 +868,13 @@ class PhotoCraftProcess:
             self.fast = fast
         return self.fast
 
+    def render_lane(self) -> PhotoCraftControl:
+        if self.render is None:
+            lane = PhotoCraftControl(self.port, self.token)
+            lane.read_root = self.read_root
+            self.render = lane
+        return self.render
+
     def cancel_open_jobs(self) -> int:
         """Cancel a RAW (or any) document open that is still running, never a save."""
         fast = self.fast_lane()
@@ -790,6 +911,12 @@ class PhotoCraftProcess:
             except OSError:
                 pass
             self.fast = None
+        if self.render is not None:
+            try:
+                self.render.close()
+            except OSError:
+                pass
+            self.render = None
         try:
             if self.is_running():
                 self.control.quit()

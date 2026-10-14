@@ -179,21 +179,30 @@ def render_edited_image(
     ``editor_copy.write_edited_copy``'s behavior.
     """
 
+    # Full-size consumers must use the editor's actual pixels. Thumbnail failures
+    # remain recoverable, but an export must report a failed PhotoCraft render.
+    wanted = max(target_size.width(), target_size.height()) if target_size is not None else 0
+    if wanted == 0 or wanted > 2560:
+        from .edited_export import edited_image_for_export
+
+        edited = edited_image_for_export(str(source_path))
+        if edited is not None:
+            return edited.image
+
     try:
         source = Path(source_path)
-        from .photocraft_bridge import full_render_path, saved_render_path
+        from .photocraft_bridge import saved_render_path
         from .imaging import load_image_for_display
 
         wanted = max(target_size.width(), target_size.height()) if target_size is not None else 0
         if 0 < wanted <= 2560:
-            # A thumbnail or screen-sized request: the small render is exactly as good and far cheaper to decode.
+            # A thumbnail or screen-sized request: PhotoCraft's screen-sized picture is exactly as good and far cheaper to decode.
             saved_render = saved_render_path(str(source))
-        else:
-            # Full size: the full-size render, or the display render when that is all the photo has (or all that is up to date).
-            saved_render = full_render_path(str(source))
-        if saved_render is not None and saved_render.is_file():
-            image, _error = load_image_for_display(str(saved_render), target_size or QSize(16384, 16384), prefer_embedded=False)
-            return image if not image.isNull() else None
+            if saved_render is not None and saved_render.is_file():
+                image, _error = load_image_for_display(str(saved_render), target_size, prefer_embedded=False)
+                return image if not image.isNull() else None
+        # Full size: PhotoCraft's edits come from ``edited_export.edited_image_for_export`` (the editor renders them at the photo's
+        # size), never from here, where the screen-sized picture could only have been enlarged. What is left is the built-in editor.
         session_path = edit_storage.resolve_session_for_read(source)
         if not session_path.exists():
             return None

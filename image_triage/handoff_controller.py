@@ -22,6 +22,21 @@ if TYPE_CHECKING:
     from .window import MainWindow
 
 
+def _wait_with_events(work):
+    """Runs ``work`` on a worker and returns its result, keeping the UI thread's events moving meanwhile (user input excepted)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from PySide6.QtCore import QEventLoop
+    from PySide6.QtWidgets import QApplication
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="edited-render") as pool:
+        future = pool.submit(work)
+        while not future.done():
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents, 50)
+            time.sleep(0.005)
+        return future.result()
+
+
 def _pocketdrop_edited_export_dir() -> Path:
     """Scratch folder for edited-render temp files handed to PocketDrop.
 
@@ -70,6 +85,7 @@ class HandoffController(QObject):
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
         self._window = window
+        self._pocketdrop_export_notes: list[str] = []
 
     def apply_pocketdrop_background(self) -> None:
         """Paint the PocketDrop page in the same colour as the Library and
@@ -120,41 +136,51 @@ class HandoffController(QObject):
 
     def pocketdrop_send_path_for(self, record: ImageRecord) -> str:
         """The path to hand PocketDrop for ``record``: the original file,
-        unless the opt-in "apply edits" setting is on and this record has a
-        real built-in editor session that renders successfully.
+        unless the opt-in "apply edits" setting is on and this record has
+        edits, in which case a JPEG of the edits at full size.
 
-        Falls back to the original path whenever the setting is off, there is
-        no sidecar, or the render fails -- sending to PocketDrop must never
-        fail or silently drop a file just because a sidecar was unreadable.
+        Edits that cannot be rendered (or written) raise ``EditedRenderFailed``: the photo is left out and the person told, never
+        sent as the original in their place (audit finding F3).
         """
 
         if not self._window._apply_edits_to_pocketdrop:
             return record.path
-        from .edit_storage import session_has_edits
+        from .edit_storage import builtin_session_has_edits
+        from .edited_export import EditedRenderFailed, edited_image_for_export
 
-        if not session_has_edits(record.path):
-            return record.path
-        try:
+        # The editor renders in the background; the window keeps drawing meanwhile (a blocked UI thread would also hold up
+        # the editor's window, which is a child of ours).
+        edited = _wait_with_events(lambda: edited_image_for_export(record.path))
+        if edited is not None:
+            rendered = edited.image
+        else:
+            if not builtin_session_has_edits(record.path):
+                return record.path
             from .edit_render_headless import render_edited_image
 
             rendered = render_edited_image(record.path)
             if rendered is None or rendered.isNull():
-                return record.path
-            folder = _pocketdrop_edited_export_dir()
-            fd, temp_name = tempfile.mkstemp(prefix="pocketdrop_edit_", suffix=".jpg", dir=str(folder))
-            os.close(fd)
-            # JPEG: PocketDrop and the receiving end need a universally
-            # supported format, and a RAW/PSD/etc. source can't be "rendered
-            # with edits applied" back into its original format anyway.
-            if not rendered.save(temp_name, "JPEG", quality=92):
-                try:
-                    os.unlink(temp_name)
-                except OSError:
-                    pass
-                return record.path
-            return temp_name
-        except Exception:
-            return record.path
+                raise EditedRenderFailed(record.path, "its built-in editor session could not be rendered")
+        folder = _pocketdrop_edited_export_dir()
+        fd, temp_name = tempfile.mkstemp(prefix="pocketdrop_edit_", suffix=".jpg", dir=str(folder))
+        os.close(fd)
+        # JPEG: PocketDrop and the receiving end need a universally
+        # supported format, and a RAW/PSD/etc. source can't be "rendered
+        # with edits applied" back into its original format anyway.
+        from .image_resize import _save_resized_image
+
+        profile = bytes(rendered.colorSpace().iccProfile()) if rendered.colorSpace().isValid() else None
+        try:
+            note = _save_resized_image(rendered, target_path=temp_name, target_suffix=".jpg", exif_bytes=None, icc_profile=profile)
+            if note:
+                self._pocketdrop_export_notes.append(note)
+        except OSError:
+            try:
+                os.unlink(temp_name)
+            except OSError:
+                pass
+            raise EditedRenderFailed(record.path, "the JPEG of its edits could not be written")
+        return temp_name
 
     def send_selection_to_pocketdrop(self, _checked: bool = False) -> None:
         """Add the selected files to PocketDrop and bring its page forward."""
@@ -168,11 +194,28 @@ class HandoffController(QObject):
             self._window.statusBar().showMessage(f"PocketDrop isn't available. {detail}".strip())
             return
         _cleanup_pocketdrop_edited_exports()
-        paths = [self.pocketdrop_send_path_for(record) for record in records]
-        self.show_pocketdrop_page()
-        panel.add_paths(paths)
+        from .edited_export import EditedRenderFailed
+
+        paths: list[str] = []
+        self._pocketdrop_export_notes = []
+        left_out: list[EditedRenderFailed] = []
+        for record in records:
+            try:
+                paths.append(self.pocketdrop_send_path_for(record))
+            except EditedRenderFailed as error:
+                left_out.append(error)
+        if paths:
+            self.show_pocketdrop_page()
+            panel.add_paths(paths)
         noun = "file" if len(paths) == 1 else "files"
-        self._window.statusBar().showMessage(f"Added {len(paths)} {noun} to PocketDrop")
+        message = f"Added {len(paths)} {noun} to PocketDrop"
+        if left_out:
+            names = ", ".join(Path(error.source_path).name for error in left_out)
+            message += f". Not sent, their edits could not be rendered: {names}"
+            QMessageBox.warning(self._window, "PocketDrop", "\n".join(str(error) for error in left_out))
+        if self._pocketdrop_export_notes:
+            QMessageBox.information(self._window, "PocketDrop export", "\n".join(self._pocketdrop_export_notes))
+        self._window.statusBar().showMessage(message)
 
     def open_send_to_editor_pipeline(self) -> None:
         recipe = next((item for item in built_in_workflow_recipes() if item.key == "send_to_editor"), None)
