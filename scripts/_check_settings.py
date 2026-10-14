@@ -27,6 +27,10 @@ def use_throwaway_settings() -> None:
     if sys.platform != "win32":
         return  # the other platforms' store cannot be told apart by key; these checks are Windows-only anyway
     import image_triage.app_identity as identity
+    from PySide6.QtGui import QImageReader
+
+    # Match main.py: a source-size 45 MP RGBA16 render exceeds Qt's default limit.
+    QImageReader.setAllocationLimit(1024)
 
     identity._REGISTRY_KEY = CHECK_KEY
     if not _registered:
