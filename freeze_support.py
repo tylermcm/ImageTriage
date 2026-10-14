@@ -19,6 +19,11 @@ QT_WINDOWS_BINARY_EXCLUDES = ("icu.dll", "icuin.dll", "icuuc.dll", "icudt78.dll"
 AI_SITE_PACKAGES_ENV = "IMAGE_TRIAGE_AI_SITE_PACKAGES"
 AI_STDLIB_ENV = "IMAGE_TRIAGE_AI_STDLIB"
 AI_BINARY_MODULES_ENV_NAMES = ("IMAGE_TRIAGE_AI_DLLS", "IMAGE_TRIAGE_AI_BINARY_MODULES")
+# The PhotoCraft editor ships inside the installer: <install dir>\photocraft\photocraft.exe, with the licences PhotoCraft asks to be kept.
+PHOTOCRAFT_BUNDLE_ENV = "IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT_EXE"
+PHOTOCRAFT_BUNDLE_SWITCH_ENV = "IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT"
+PHOTOCRAFT_BUNDLE_DIR = "photocraft"
+PHOTOCRAFT_LICENSE_FILES = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "ATTRIBUTION.md")
 
 def _env_flag(name: str, default: str = "0") -> bool:
     value = os.environ.get(name, default)
@@ -163,6 +168,45 @@ def prepare_ai_build_assets(layout: FreezeAssetLayout | None = None) -> FreezeAs
     stage_ai_stdlib(resolved)
     stage_ai_binary_modules(resolved)
     return resolved
+
+
+def photocraft_bundle_source() -> Path | None:
+    """The editor to put in the installer: ``IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT_EXE``, else the release build in the companion checkout."""
+    configured = _configured_path(PHOTOCRAFT_BUNDLE_ENV)
+    if configured is not None:
+        return configured if configured.is_file() else None
+    for checkout in (ROOT.parent / "photocraft", Path.home() / "Documents" / "photocraft"):
+        candidate = checkout / "target" / "release" / "photocraft.exe"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def photocraft_bundle_files() -> list[tuple[str, str]]:
+    """The editor and its licences for the installer, as ``(source, destination under the install dir)``.
+
+    An installer without the editor is a mistake, so a build that cannot find it stops; ``IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT=0`` says that
+    one without it is what is wanted.
+    """
+    if os.environ.get(PHOTOCRAFT_BUNDLE_SWITCH_ENV, "1").strip().lower() in {"0", "false", "no", "off"}:
+        print(f"Leaving the PhotoCraft editor out ({PHOTOCRAFT_BUNDLE_SWITCH_ENV}=0): this installer has no editor.")
+        return []
+    executable = photocraft_bundle_source()
+    if executable is None:
+        raise SystemExit(
+            "The installer carries the PhotoCraft editor, and there is none to put in it. Build it (cargo build --release -p photocraft in the "
+            f"companion checkout), or name it with {PHOTOCRAFT_BUNDLE_ENV}, or set {PHOTOCRAFT_BUNDLE_SWITCH_ENV}=0 for an installer without it."
+        )
+    files = [(str(executable), f"{PHOTOCRAFT_BUNDLE_DIR}/photocraft.exe")]
+    # The licences sit in the checkout the editor was built in (target/release/photocraft.exe is two folders below it), or beside the file.
+    folders = [executable.parent, *([executable.parents[2]] if len(executable.parents) > 2 else [])]
+    for name in PHOTOCRAFT_LICENSE_FILES:
+        source = next((folder / name for folder in folders if (folder / name).is_file()), None)
+        if source is None:
+            print(f"Warning: {name} was not found beside the PhotoCraft editor; it is not in the installer.")
+        else:
+            files.append((str(source), f"{PHOTOCRAFT_BUNDLE_DIR}/{name}"))
+    return files
 
 
 def _configured_path(env_name: str) -> Path | None:

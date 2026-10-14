@@ -6,6 +6,7 @@ from freeze_support import (
     AI_FREEZE_EXCLUDES,
     APP_ICON_WINDOWS_PATH,
     QT_WINDOWS_BINARY_EXCLUDES,
+    photocraft_bundle_files,
     prepare_ai_build_assets,
     read_project_version,
 )
@@ -51,7 +52,8 @@ build_exe_options = {
         "pillow_heif",
         "uuid",
     ],
-    "include_files": freeze_assets.include_files,
+    # The editor is part of the program: <install dir>\photocraft\photocraft.exe, found there by shell_actions.bundled_photocraft_executable.
+    "include_files": [*freeze_assets.include_files, *photocraft_bundle_files()],
     "excludes": [
         "tkinter",
         "test",
