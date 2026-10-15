@@ -75,8 +75,12 @@ workspace smoke passes; the hosted NEF recipe/Open/continuation path passes.
 Normal PhotoCraft preferences still match this session's baseline.
 
 Final source clippy (selected host/raw/IO/engine/UI crates, all targets) and
-layers passed. wasm, Rust tests, corpus tests and quick performance are still
-running or queued. No candidate executable has been promoted. Logs and
+layers passed. All 24 wasm checks and the RAW Rust suites also passed. The
+serial source runner is compiling/testing IO, then engine, UI (print tests
+separately and serially), desktop, GPU warmup, panic hunt, corpus and quick
+performance. GPU crate tests and GPU/compose Clippy remain to be run after that
+runner; they were added after its argument list was selected. No candidate
+executable has been promoted. Logs and
 the isolated desktop runners are in
 `C:/Users/Tyler/.codex/visualizations/2026/10/15/01a13d25-9afa-7c50-8c2e-28d668c0d556/audit_validation`.
 
