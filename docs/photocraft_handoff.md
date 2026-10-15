@@ -1,5 +1,192 @@
 # PhotoCraft handoff
 
+## Source sync and ACR 18.4 reference audit — 2026-10-15
+
+Both working trees were clean before this session. Fetches succeeded for Image
+Triage `origin`, PhotoCraft upstream `origin` (storytold), and PhotoCraft `fork`
+(tylermcm). No remote changes were pushed.
+
+- Image Triage started on `remove-builtin-editor` at `9601f2a`; fast-forwarded
+  that branch to fetched `a4caa3a`, then checked out the newer remote integration
+  branch as local `codex/image-triage-integration` at
+  `127c7ca187126555916fc845672e4995a31c5357`. The previous branches/commits are
+  retained. The integration tip includes `origin/remove-builtin-editor`.
+- PhotoCraft started at `0a3bbea1` on `codex/image-triage-integration` (last
+  merged upstream `652b9726`). Fast-forwarded to the user's fetched integration
+  `242daf70ae47baec19584420831c3fdbef3049c2`, including the fork's hosted RAW
+  workspace, recipe/render, lifecycle and audit work. Its upstream base was
+  `4446ec6d65049b92a1b73f02e79d97ef4153135a`.
+- Fetched upstream advanced that base by 18 commits to
+  `1b666f4790f9f2e9907218a8e786a3af5305f200`; merged with a merge commit,
+  `fa8a1f218b00879d14867f17cec2397b18fbf5d0`. The merge had no textual conflicts.
+  All 47 fork/integration-only commits relative to this upstream remain in the
+  ancestry; no wholesale ours/theirs resolution or history rewrite was used.
+- Reviewed incoming automatic merges and the retained integration differences
+  in desktop startup/services, control I/O/authorization, jobs, menus, themes and
+  native window handling. Incoming services changes add PDF to Save As and its
+  test; startup, host Save routing, authorization, jobs, menus and theme/window
+  integration have no new upstream changes in this 18-commit merge. Retained
+  hosted hidden geometry/no native caption, scoped bound Save, RAW workspace
+  handling and snapshot bookkeeping. Incoming shared GPU/IO/RAW changes still
+  require native/corpus validation; textual review is not compatibility proof.
+
+Validation: the focused Image Triage integration run passed **273 tests** in
+21.63 seconds using Python 3.13 and offscreen Qt. It covered handoff mocks,
+Camera Raw recipe/first-open, first editor key, prestart, full render, lean
+autosave, filmstrip no-flash, control robustness/idle, manifests and bundled
+editor detection. `git diff --check` passed in both repositories. These are
+unit/regression results, not live handoff results.
+
+An isolated `cargo check -p photocraft-ui-egui -p photocraft -j 2` was started
+under `target/acr18` (dev debug=0, incremental=false). Dependency downloads and
+compilation began; it was deliberately stopped while establishing the missing
+18.4 visual reference, before producing a check result. Native tests/clippy,
+wasm/layers/corpus, candidate build and live handoff have **not** been completed
+in this session. No candidate was promoted, and the hosted executables remain
+unchanged. The companion's referenced `../craftrules/README.md` is absent on this
+machine; the available companion AGENTS.md and public docs were read.
+
+The owner selected **ACR 18.4, interface and functional behavior**. Adobe's current
+overview page links an image explicitly labeled Camera Raw 13.3; the owner
+identified it and it is rejected as a redesign reference. No UI implementation
+changes were made from that image. Versioned Adobe 18.4 release notes were
+consulted; living documentation mixes later-version features. The source audit,
+reference gate, outstanding functional gaps and acceptance order are recorded in
+[`acr18_parity.md`](acr18_parity.md). A verified 18.4 visual baseline is still
+needed before changing layout or claiming visual parity.
+
+## Supplied Camera Raw screen references — 2026-10-15
+
+The owner supplied 19 local image files covering the whole workspace, edit
+sections, Crop/Remove/Masking/Red Eye, Snapshots/Presets/Info, grid/sampler,
+settings menu, Save Options and Preferences General. Inventory:
+[`acr_reference_inventory.md`](acr_reference_inventory.md). These are visual
+reference data; no source image or personal metadata was copied into the repo.
+
+The full-window title says Camera Raw 18.6; Preferences identifies 18.6.0.2698.
+This differs from the earlier selected 18.4 target, and a target-version
+clarification is pending. The dark JPEG has no readable interface. The remaining
+captures provide enough reference coverage to begin the main workspace; hidden
+states can be verified as their features are implemented. No redesign code has
+been applied while the exact target version is being clarified.
+
+The isolated target/acr18 native source check was resumed at four Cargo jobs;
+its result will be recorded when available. This is compilation only and does
+not authorize promotion or substitute for the live handoff gates.
+
+## ACR 18.6 native work and live JSON — 2026-10-15
+
+The owner confirmed using the supplied ACR 18.6.0.2698 captures instead of 18.4,
+and requested live JSON design edits instead of recompiling for each visual
+change. No further access to a reference version is required to start. Source
+work remains on both repositories' codex/image-triage-integration branches.
+
+Companion work in progress adds a separate rail/navigation strip, full-width
+section headers with multiple/single-panel behavior, interactive grading wheels,
+per-color HSL and RGB point-curve channels, compact Effects/Detail controls,
+correct nonzero slider resets, Reset to Open/Default and RAW Done routing. These
+use the existing filter parameters and processing; unsupported ACR tools are
+not represented as enabled no-op controls. Full ACR parity is not complete.
+
+Live design files are companion design/camera-raw/layout.json (geometry,
+spacing, typography, panel order and preview selection) and tokens.json (the
+existing native debug live-theme loader). A new bounded/validated layout loader
+retains the last good layout on invalid writes. Drawing and ui.viewport share
+that layout, including the host's loading overlay geometry. External reload is
+native-debug-only and explicitly enabled by PHOTOCRAFT_CAMERA_RAW_LAYOUT_FILE;
+release/wasm and normal launches use embedded defaults. The JSON accepts view
+state, not executable actions or photo adjustment values. The preview preset
+only reapplies when its JSON value changes.
+
+The one-time native preview build is isolated in target/acr18, outside Image
+Triage discovery. scripts/preview_camera_raw.ps1 opens it with a separate profile
+and generated synthetic fixture; visual changes then reload without rebuilding.
+No installed/hosted executable is replaced. Native checks, visual inspection and
+a same-process JSON reload proof are being completed before delivery.
+
+The first affected integration run passed histogram/localization and 19 of 21
+scope tests. Two scope regressions exposed an inherited header height in body
+controls and a test's fixed 260px curve assumption. Body spacing was restored;
+the curve test now derives coordinates from the actual graph. Final rerun is
+pending; do not record those preliminary failures as a passing suite.
+
+## Live JSON proof and native filmstrip direction — 2026-10-15
+
+Built isolated native debug target/acr18/debug/photocraft.exe. Its live preview
+passed same-process geometry (270 to 330 panel width), panel-selection and theme
+reload checks, invalid JSON fallback, unchanged photo parameters/preview revision
+and unchanged executable SHA-256. Both source JSON files were restored afterward.
+The synthetic-fixture screenshots were visually inspected. The native preview
+remains separate from the hosted executable; no editor build was promoted.
+
+The owner favors a native PhotoCraft filmstrip. Source inspection found no
+filmstrip implementation in the fetched companion tree. Its RAW switching and
+prefetch infrastructure exists; the current strip is host Qt Filmstrip in
+image_triage/ui/preview_studio.py. Proposed ownership and migration acceptance
+are recorded in filmstrip_native_plan.md. Native presentation should retain the
+host's browse order, selection/metadata and stash/restore/Save pipeline. Do not
+remove the docked strip before replacement validation or display duplicate strips.
+
+## Slider fidelity correction and validation follow-up — 2026-10-15
+
+Owner identified the generic circular handles and excessive spacing, and
+reaffirmed closest-possible 1:1 parity as the acceptance standard. Added compact
+Camera Raw-only slider metrics, upward-facing handles and gray-to-light tracks;
+exposed density/handle controls in live layout JSON. Other editor sliders retain
+their existing rendering. Fixed decimal display for Camera Raw fields is separate
+from the general editor's trailing-zero formatting.
+
+The isolated native preview was rebuilt and the live reload proof repeated.
+Selected workspace 4, zoom 6, scopes 21 and RAW workspace unit filter 60 tests
+passed before the last visual correction. Native all-target clippy passed before
+that correction. Layering passed (30 crates); wasm passed all 24 checks with
+existing dead-code warnings. The first broad parallel UI run exited with Windows
+STATUS_ACCESS_VIOLATION. Serial audit of that binary completed without the native
+crash: 3030 passed, 13 ignored, two localization failures, two known new tests
+excluded. Translation coverage and test texture cleanup were corrected; final
+serial UI, selected integrations and final clippy are pending. No hosted promotion.
+
+## Overlay comparison and full UI checkpoint — 2026-10-15
+
+The owner requested regular source overlays as the visual acceptance workflow.
+Added companion scripts/compare_camera_raw.py: explicit matching crop anchors,
+uniform scaling only, 50% overlay, absolute difference and alignment metadata.
+Outputs and reference crops remain in the local visualization directory, outside
+Git. The first Light/Color overlay exposed header/chevron indentation, generic
+track-end insets, row pitch and section-bottom spacing. Added JSON controls for
+those metrics. The tuned Light track centers measured within one normalized
+pixel of the supplied 13289 reference; this is not a whole-interface parity claim.
+White-balance selector/Kelvin behavior and other known visual/functional gaps
+remain open.
+
+Full serial UI suite checkpoint: 3034 passed, 13 ignored, no failures. The 35
+focused Camera Raw integration checks passed. An intermediate geometry revision
+exposed two real curve-grab regressions: scrollbar appearance resized the graph
+when selected-point fields appeared. Made settings scrollbars float so overflow
+cannot change curve width; both existing capture regressions now pass, as does
+the complete focused run. Native all-target clippy passed again. Final preview
+capture and wasm recheck are being recorded below; hosted handoff/promotion remain
+pending and the known-good executable has not been replaced.
+
+## Final native visual proof — 2026-10-15
+
+Rebuilt target/acr18/debug/photocraft.exe after the floating-scrollbar fix.
+SHA-256 971bfc1cb3b34947fc2342a86ac70d47010ce7e27742356d190af671b24b870f.
+Repeated same-process layout, theme, panel selection and invalid-write recovery
+checks; photo parameters and preview revision stayed unchanged and both source
+JSON files were restored. Captured and visually inspected the final Light overlay
+against 13289.png. Reference crop (38,594,550,1092), preview crop
+(1134,211,1404,474), uniform normalized width 270. The reference and native Light
+section borders, row pitch and header indentation now closely align; eye/bypass
+controls and exact glyph/field/track details remain visible differences. Full
+18.6 visual/functional parity is still incomplete.
+
+Native all-target clippy passed on the final source; wasm UI check passed with
+pre-existing dead-code warnings. Final repeated focused run passed all 35 tests, including both curve-capture regressions.
+No hosted build was promoted, no remote was pushed, no personal reference image
+was bundled. Native filmstrip remains the preferred migration plan, not an
+implemented replacement.
+
 ## Laptop validation resumed - 2026-10-14 (candidate not promoted)
 
 Started from host audit branch `ea41cc6`; local host changes are on
