@@ -44,9 +44,15 @@ def main():
     bridge.recipe_path(str(photo)).write_text(json.dumps({"version": 1, "cameraRaw": {"exposure": 1.0, "contrast": 25}, "identity": False}))
     with rawpy.imread(str(photo)) as raw:
         sizes = raw.sizes
-        expected = (getattr(sizes, "crop_width", 0) or sizes.width, getattr(sizes, "crop_height", 0) or sizes.height)
+        # LibRaw exposes both visible/cropped dimensions and the full sensor.
+        # PhotoCraft can retain optical-black edge columns for some NEFs. Both
+        # are source extents; a screen-sized proxy is neither.
+        expected = {
+            (getattr(sizes, "crop_width", 0) or sizes.width, getattr(sizes, "crop_height", 0) or sizes.height),
+            (sizes.raw_width, sizes.raw_height),
+        }
         if sizes.flip in (5, 6):
-            expected = expected[::-1]
+            expected = {size[::-1] for size in expected}
     processes = []
 
     def launch(folder):
@@ -63,11 +69,11 @@ def main():
         edited = edited_image_for_export(str(photo))
         assert edited is not None
         size = (edited.image.width(), edited.image.height())
-        assert size == expected, (size, expected)
+        assert size in expected, (size, expected)
         assert bit_depth(edited.image) == 16 and edited.icc_profile
         assert all(proc.process.poll() is not None for proc in processes)
         assert not list(root.glob("*.photocraft.export-*")), "temporary export was not removed"
-        results["hidden_recipe_render"] = {"size": size, "depth": bit_depth(edited.image), "icc": True}
+        results["hidden_recipe_render"] = {"size": size, "source_extents": sorted(expected), "depth": bit_depth(edited.image), "icc": True}
 
         cancelling = full_render.FullRenderService(lambda: None, launch=launch)
         cancelled_replies = []

@@ -46,7 +46,37 @@ because that binary lacks fullRender. Its owned process cleaned up; the owner
 editor (PID 18904, parent 10840) was left alone. The private-desktop runner now
 uses an outer cleanup job too. All pinned test corpora downloaded and verified.
 
-Validation is in progress; no candidate executable has been promoted. Logs and
+Candidate built from 8ddc0ffd with the normal release profile in 35 min 41 s:
+SHA-256 A714F5611D36E9F792B72FAC940BA123A4E79C7E97C72998C48E7BD1199B1C1B,
+PhotoCraft 0.9.0. Hosted native gates passed: handoff at 1/24 MP (zero editor hides,
+menu Save, grid propagation, reopen, five themes, hidden start, full-screen sizing
+and cleanup), Camera Raw first, recipe persistence and failed-write retention,
+full-size live/disk recipe equality, edit-before-first-poll, saved-project
+continuation, native Save after continuation, lean save/close/reopen, hidden
+16-bit ICC render, cancellation during rendering and shutdown during a real launch.
+The NEF fixture is 12 MP (two copies for navigation), not the other machine's
+45 MP Z 7II samples. Native screenshots were inspected; no desktop capture.
+
+Fixed three check scripts rather than changing the editor for stale assertions:
+the handoff used blocking Future.result on Qt's thread (24 MP native Save
+replied only when shutdown resumed message pumping); it now pumps while waiting
+with the same deadlines. The recipe check now accepts a synchronous cached
+continuation only when its returned path names the expected project, as well as
+an asynchronous continuation; its native Save also pumps events. The full-render
+check accepts either of LibRaw's exact visible/cropped or sensor extents, reporting
+both: this NEF exports 4320x2868, while LibRaw's visible crop is 4312x2868.
+Depth, ICC, cancellation, output cleanup and original checks remain required.
+All affected native checks were rerun successfully on fresh output folders.
+
+Separate limitation: the initial standalone --raw-workspace smoke, given an
+unbound NEF, timed out waiting for Camera Raw to close after Open. This path is
+not the host's bound RAW open; it remains unresolved. The intended raster
+workspace smoke passes; the hosted NEF recipe/Open/continuation path passes.
+Normal PhotoCraft preferences still match this session's baseline.
+
+Final source clippy (selected host/raw/IO/engine/UI crates, all targets) and
+layers passed. wasm, Rust tests, corpus tests and quick performance are still
+running or queued. No candidate executable has been promoted. Logs and
 the isolated desktop runners are in
 `C:/Users/Tyler/.codex/visualizations/2026/10/15/01a13d25-9afa-7c50-8c2e-28d668c0d556/audit_validation`.
 
