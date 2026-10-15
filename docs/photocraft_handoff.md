@@ -1,5 +1,41 @@
 # PhotoCraft handoff
 
+## Laptop validation resumed - 2026-10-14 (candidate not promoted)
+
+Started from host audit branch `ea41cc6`; local host changes are on
+`codex/image-triage-integration`. The fork's audit tip `c105a3f7` is included
+in local integration `6b841d56` (upstream `7bb10a77`); its four conflicts took
+upstream's Nikon decoder and Posterize/Threshold implementation/tests, while
+keeping hosted control modules alongside upstream's corner-radius module.
+That source passed rustfmt, desktop cargo check and layers. All user work and
+the untracked `codex_briefing/` folder were preserved; nothing was pushed.
+
+Fresh fork/upstream fetches succeeded. Upstream advanced another 15 commits,
+`7bb10a77` -> `fd28da56`, merged without conflicts as `8ddc0ffd`. Reviewed native
+startup/runtime icon and UI automatic merges: hosted hidden-start setup remains
+after standalone geometry decisions; native chrome is still disabled for hosted
+mode. The other incoming changes are upstream UI fixes, including modal titlebar
+dragging, layer-scroll state and proxy preview resolution. No host authority
+or Save-routing change was introduced. The earlier fork-only fixes are included.
+
+This laptop has no `target/audit-20261014` candidate from the other machine.
+Building the current merged source there with the normal release profile and
+four Cargo jobs. The wasm target was installed to verify the inconsistent prior
+wasm notes. A fresh Python 3.11 test venv is under LocalAppData/Temp; full host
+suite started with offscreen Qt and registered Windows fonts. Live checks will
+run on a private non-input Win32 desktop (native Qt HWND preflight passed), with
+private editor profiles and desktop capture disabled. They use copies of the
+available 12 MP NEF plus synthetic 1/24 MP photos. No owner's active desktop is
+captured. Only check-owned processes are cleaned up.
+
+Baseline hashes on this machine (different from the Checkout desktop):
+- `target/release/photocraft.exe`: `3EB062191F360AACF33BA4D27430B942FE0B595F3FEB8DFA6477388E3842B1D4`.
+- Normal PhotoCraft `preferences.json`: `0C6081BB0790A5E0F56210C7087365FD277D421FD0D3EE443755BB7D549280E4`.
+
+Validation is in progress; no candidate executable has been promoted. Logs and
+the isolated desktop runners are in
+`C:/Users/owner/.codex/visualizations/2026/10/15/01a13d25-9afa-7c50-8c2e-28d668c0d556/audit_validation`.
+
 ## 2026-10-14 continuation — validation in progress
 
 Resumed Claude's scratch branch at `35e84fb3fc042115e11bd0474440f7db870e6132`
