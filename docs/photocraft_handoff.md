@@ -1,5 +1,50 @@
 # PhotoCraft handoff
 
+## Source sync - 2026-10-14 (upstream tip; executable unchanged)
+
+Image Triage `main` at `ac4693d2071d0089b2342b3dfc05aad5d6b95bd8` already matched freshly fetched
+`origin/main`. The untracked `codex_briefing/` folder was preserved.
+
+PhotoCraft's configured `origin` is the user's fork, not storytold; there is no `fork` remote.
+Fetched that origin and fetched storytold's `main` directly into `refs/remotes/session-upstream/main`.
+The initial sandboxed fetches failed with `FETCH_HEAD: Permission denied`; the subsequent authorized
+fetches of both repositories and upstream succeeded. No pushes were made.
+
+The clean integration checkout began at `e0569ef00dd1c77d07d4f7ec02ef61588e497361`, also the fetched
+fork integration tip. Reviewed and fast-forwarded the fork's `scratch/upstream-merge-2026-10-14`
+at `c105a3f7683c830606004106115ce96c09c0bcde`: it carries release 0.9.0 and an upstream merge through
+`620bccef42b389d0735e753eb8a2f688a7092045`, plus scoped full-render requests, render manifests,
+recipe/render consistency and hosted RAW/cache fixes. The previous upstream base at session start
+was `99e1138877e6aa7e856c6883b415e708d042fc59`; the newly fetched tip is
+`7bb10a77591c14bc426155594b904e2b45ab5159` (172 upstream commits since that base, 62 beyond the
+fork's latest merge). Merged that fetched tip as `6b841d56b8054bdf9f551e0e086babc93bead2d0` on `codex/image-triage-integration`.
+
+Four conflicted files, resolved individually:
+- `crates/engine/src/pixels.rs` and `pixels_tests.rs`: take upstream's implementation and tests;
+  upstream now supplies the fork's 16-bit Posterize/Threshold fix, plus additional CMYK fixes.
+- `crates/raw/src/nefc.rs`: take upstream's decoder and documentation, replacing our equivalent
+  Nikon lossy `0x44 0x40` curve-spacing patch while retaining upstream's other decoder work.
+- `crates/ui-egui/src/lib.rs`: retain hosted `control_files` and `control_render` modules alongside
+  upstream's new `corner_radius` module.
+
+Reviewed automatic merges in native services, UI control/menus and automation authorization:
+upstream's shared export-options conversion and new tool/menu behavior remain; hosted Save still
+uses scoped I/O, and background read/write callbacks remain capability-scoped. The new ambient
+brush-image import path is denied by upstream's authorization gate. Startup/window-frame/theme/job
+hooks did not change in this final upstream merge; checked that hidden startup still follows the
+restore/centre decision, disables standalone chrome, and that host snapshot/job hooks remain.
+The hosted Camera Raw layout and compositor warmup remain host-specific.
+
+Validation: rustfmt, whitespace checks and cargo xtask layers passed (29 crates, no violations). The desktop compile check passed
+(cargo check -p photocraft -j 4, 11 min 20 s). The initial offline compile could not
+resolve the new pinned printing dependency; the successful check fetched missing dependencies.
+The companion craftrules checkout is absent here.
+Only the native Rust target is installed. No release build or executable promotion is part of
+this source pull: `target/release/photocraft.exe` and the known-good copies remain untouched.
+The full native tests, clippy, wasm/corpus checks and live Image Triage handoff (filmstrip,
+stash/restore, native Save/grid propagation, tab reopen, hidden start, theme/resize/fullscreen,
+shutdown and child cleanup) must pass before a new editor executable is promoted.
+
 ## Quick handoff - 2026-10-14 (later: the editor is inside the installer; release 2.3.1)
 
 Image Triage `main` at the 2.3.1 commit; fork unchanged at `e0569ef0`. Laptop.
