@@ -90,6 +90,13 @@ def main() -> None:
             time.sleep(0.01)
         app.processEvents()
 
+    def on_editor(work, *args, timeout=120, **kwargs):
+        # A foreign child can need its Qt parent's message queue while drawing
+        # or finishing a save. Blocking result() here can deadlock the check.
+        future = controller._photocraft_executor.submit(work, *args, **kwargs)
+        wait_for(future.done, timeout=timeout)
+        return future.result()
+
     timings = {}
     class HostEvents(QObject):
         hides = 0
@@ -146,7 +153,7 @@ def main() -> None:
         get_parent.argtypes = [wintypes.HWND]
         get_parent.restype = wintypes.HWND
         assert get_parent(proc.hwnd) == preview.photocraft_host_hwnd(), "editor was not embedded"
-        controller._photocraft_executor.submit(proc.control.execute, "image.adjustments.invert").result(timeout=120)
+        on_editor(proc.control.execute, "image.adjustments.invert", timeout=120)
         timings["switch"] = select(1)
         assert controller._photocraft.process.pid == pid
         timings["return"] = select(0)
@@ -154,23 +161,23 @@ def main() -> None:
         assert host_events.hides == 0, "filmstrip navigation hid the editor host"
         navigation_hides = host_events.hides
         wait_for(lambda: bridge.full_render_path(records[0].path) is not None)
-        controller._photocraft_executor.submit(controller._save_active_photocraft).result(timeout=120)
+        on_editor(controller._save_active_photocraft, timeout=120)
         app.processEvents()
         edited = render_edited_image(records[0].path)
         assert edited is not None and edited.pixelColor(0, 0).green() > 240
         assert grid_updates, "the main app never received a saved-render update"
-        documents = controller._photocraft_executor.submit(proc.control.execute, "session.inspect").result(timeout=10)
+        documents = on_editor(proc.control.execute, "session.inspect", timeout=10)
         assert len(documents["documents"]) == 1
         # Exercise PhotoCraft's own Save command and its host binding.
         if not args.skip_menu_save:
-            controller._photocraft_executor.submit(proc.control.execute, "image.adjustments.invert").result(timeout=120)
-            controller._photocraft_executor.submit(proc.control.call, "ui.menu.invoke", {"id": "file.save"}).result(timeout=120)
+            on_editor(proc.control.execute, "image.adjustments.invert", timeout=120)
+            on_editor(proc.control.call, "ui.menu.invoke", {"id": "file.save"}, timeout=120)
             wait_for(lambda: controller._photocraft_future is None or controller._photocraft_future.done())
-            controller._photocraft_executor.submit(controller._save_active_photocraft).result(timeout=120)
+            on_editor(controller._save_active_photocraft, timeout=120)
         # Closing PhotoCraft's document tab must not strand the filmstrip.
         for index in (0, 1):
-            controller._photocraft_executor.submit(proc.control.call, "ui.menu.invoke", {"id": "file.close"}).result(timeout=120)
-            session = controller._photocraft_executor.submit(proc.control.execute, "session.inspect").result(timeout=10)
+            on_editor(proc.control.call, "ui.menu.invoke", {"id": "file.close"}, timeout=120)
+            session = on_editor(proc.control.execute, "session.inspect", timeout=10)
             assert not session["documents"], "PhotoCraft's document did not close"
             if index == 0:
                 preview._handle_studio_filmstrip_selected(0)
@@ -179,21 +186,21 @@ def main() -> None:
                 def reopened_document():
                     if controller._photocraft_dwell_timer.isActive():
                         return False
-                    inspected = controller._photocraft_executor.submit(proc.control.execute, "session.inspect").result(timeout=10)
+                    inspected = on_editor(proc.control.execute, "session.inspect", timeout=10)
                     return len(inspected["documents"]) == 1 and controller._photocraft.current_source == normalized_path_key(records[0].path)
                 wait_for(reopened_document)
             else:
                 timings["reopen_other_after_close"] = select(index)
-            session = controller._photocraft_executor.submit(proc.control.execute, "session.inspect").result(timeout=10)
+            session = on_editor(proc.control.execute, "session.inspect", timeout=10)
             assert len(session["documents"]) == 1
             assert controller._photocraft.process.pid == pid, "reopening restarted PhotoCraft"
         assert host_events.hides == 0
         navigation_hides = host_events.hides
         desktop_captures_verified = True
         for theme in ("pro", "proMedium", "studio", "studioLight", "classic"):
-            controller._photocraft_executor.submit(proc.control.ui_set, theme=theme).result(timeout=10)
-            colors = controller._photocraft_executor.submit(proc.control.call, "ui.theme").result(timeout=10)
-            controller._photocraft_executor.submit(controller._sync_photocraft_theme, proc).result(timeout=10)
+            on_editor(proc.control.ui_set, theme=theme, timeout=10)
+            colors = on_editor(proc.control.call, "ui.theme", timeout=10)
+            on_editor(controller._sync_photocraft_theme, proc, timeout=10)
             app.processEvents()
             assert preview._filmstrip._editor_palette["panel"] == colors["panel"]
             assert preview._filmstrip._editor_palette["accent"] == colors["accent"]
@@ -208,7 +215,7 @@ def main() -> None:
             handle_image = handle.grab().toImage()
             assert handle_image.pixelColor(2, (handle_image.height() - 2) // 2).name() == colors["accent"]
             handle.leaveEvent(QEvent(QEvent.Type.Leave))
-            controller._photocraft_executor.submit(proc.control.call, "ui.screenshot", {"path": f"theme-{theme}.png", "focus": False}).result(timeout=120)
+            on_editor(proc.control.call, "ui.screenshot", {"path": f"theme-{theme}.png", "focus": False}, timeout=120)
             native_image = QImage(str(output / ".image_triage_edits" / f"theme-{theme}.png"))
             assert not native_image.isNull(), "PhotoCraft did not capture its rendered editor"
             center = native_image.pixelColor(native_image.width() // 2, native_image.height() // 2)
@@ -232,7 +239,7 @@ def main() -> None:
         timings["filmstrip_themes_checked"] = 5
         timings["native_screenshots_verified"] = True
         timings["desktop_captures_verified"] = bool(desktop_captures_verified)
-        controller._photocraft_executor.submit(proc.control.call, "ui.screenshot", {"path": "hosted-editor.png", "focus": False}).result(timeout=120)
+        on_editor(proc.control.call, "ui.screenshot", {"path": "hosted-editor.png", "focus": False}, timeout=120)
         preview.grab().save(str(output / "popout.png"))
         for path, digest in originals.items():
             assert hashlib.sha256(Path(path).read_bytes()).hexdigest() == digest

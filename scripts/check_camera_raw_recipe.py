@@ -342,14 +342,19 @@ def main() -> None:
         assert state["recipe"]["cameraRaw"]["exposure"] == 1.0
         fast().call("ui.screenshot", {"path": "3-back-in-camera-raw.png", "focus": False})
         continued = fast().call("ui.cameraRaw", {"commit": True})
-        assert continued["result"].get("continued"), continued
+        # A warm snapshot restores synchronously and returns its project path;
+        # a disk continuation returns `continued` with a pending job instead.
+        continuation = continued["result"]
+        project = continuation.get("continued") or continuation.get("path")
+        assert project and Path(project).name == sidecar.name, continued
         wait_for(lambda: not any(j.get("state") == "running" for j in fast().call("jobs.list").get("jobs", [])), "the saved document to open", timeout=120)
         results["open_continues_saved_document"] = True
         # Native Save must retain the same host binding after both Open and
         # continuation, and publish a current generation for grid readers.
         controller._photocraft_save_timer.stop()
         fast().execute("image.adjustments.invert")
-        fast().call("ui.menu.invoke", {"id": "file.save"})
+        # Native Save can need the embedded window parent to process messages.
+        _wait_with_events(lambda: fast().call("ui.menu.invoke", {"id": "file.save"}))
         wait_for(lambda: documents() and not documents()[0].get("dirty"), "native Save after continuation", timeout=180)
         wait_for(lambda: bridge.saved_render_path(str(first)) is not None and not bridge.render_is_behind(str(first)), "native Save's current renders", timeout=180)
         results["native_save_after_continuation"] = True
