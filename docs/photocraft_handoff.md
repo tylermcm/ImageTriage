@@ -32,6 +32,20 @@ Baseline hashes on this machine (different from the Checkout desktop):
 - `target/release/photocraft.exe`: `3EB062191F360AACF33BA4D27430B942FE0B595F3FEB8DFA6477388E3842B1D4`.
 - Normal PhotoCraft `preferences.json`: `0C6081BB0790A5E0F56210C7087365FD277D421FD0D3EE443755BB7D549280E4`.
 
+Host coverage: all 2,016 collected nodes accounted for across the interrupted
+monolithic run, the isolated grid module and five fresh-process batches: 2,002
+passed, 11 xfailed, 3 failed; four additional collection skips. The failures are
+unchanged tests assuming Python 3.13 AI lock files (two) or os.listdrives (one,
+not present in Python 3.11). Audit regression tests passed. The monolithic run
+stalled in thumbnails._drain_results at thumbnail_failed.emit after about 51%;
+two py-spy stack dumps agree. Stopped only its PID 17276. That grid module passed
+all 11 tests alone. This is combined coverage, not a successful single full run.
+
+The old executable baseline handoff failed safely at full-resolution export
+because that binary lacks fullRender. Its owned process cleaned up; the owner
+editor (PID 18904, parent 10840) was left alone. The private-desktop runner now
+uses an outer cleanup job too. All pinned test corpora downloaded and verified.
+
 Validation is in progress; no candidate executable has been promoted. Logs and
 the isolated desktop runners are in
 `C:/Users/Tyler/.codex/visualizations/2026/10/15/01a13d25-9afa-7c50-8c2e-28d668c0d556/audit_validation`.
