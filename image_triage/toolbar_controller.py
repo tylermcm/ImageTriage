@@ -24,6 +24,35 @@ if TYPE_CHECKING:
     from .window import MainWindow
 
 
+def topbar_button_rows(profile: DisplayProfile, caption: QLabel) -> tuple[int, int]:
+    """The caption row's height and the button content's height (icon row plus caption row). The caption row is at least one
+    full line of the font the caption is drawn in, whatever the profile says: the font is the theme's or the system's, and a
+    row shorter than its line cut the bottoms off p, g and y."""
+    caption.ensurePolished()
+    caption_height = max(profile.topbar_caption_height, caption.fontMetrics().height())
+    return caption_height, max(profile.topbar_button_height, profile.topbar_glyph_size + caption_height)
+
+
+def resize_topbar_button(button: QToolButton, profile: DisplayProfile) -> None:
+    """Size a composite top-bar button (see ToolbarController.apply_topbar_button_style) for ``profile``."""
+    caption = button.findChild(QLabel, "appTopBarButtonCaption")
+    caption_height, content_height = (
+        topbar_button_rows(profile, caption) if caption is not None
+        else (profile.topbar_caption_height, profile.topbar_button_height)
+    )
+    margin = profile.topbar_hover_margin
+    button.setFixedSize(profile.topbar_slot_button_width + 2 * margin, content_height + 2 * margin)
+    content = button.findChild(QWidget, "appTopBarButtonContent")
+    if content is not None:
+        content.setGeometry(margin, margin, profile.topbar_slot_button_width, content_height)
+    glyph = button.findChild(QToolButton, "appTopBarGlyph")
+    if glyph is not None:
+        glyph.setIconSize(QSize(profile.topbar_glyph_size, profile.topbar_glyph_size))
+        glyph.setFixedSize(profile.topbar_slot_button_width, profile.topbar_glyph_size)
+    if caption is not None:
+        caption.setFixedSize(profile.topbar_slot_button_width, caption_height)
+
+
 class ToolbarController(QObject):
     """The top bar and the workspace toolbar: building and rebuilding their buttons, slots and layouts, overflow handling, pinned tools, placement and position. Extracted from MainWindow (docs/mainwindow_decomposition_plan.md, DC-4.5)."""
 
@@ -718,9 +747,6 @@ class ToolbarController(QObject):
         button.setMinimumSize(0, 0)
         button.setMaximumSize(16777215, 16777215)
         button.setObjectName("appTopBarIconButton")
-        hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
-        hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
-        button.setFixedSize(hover_width, hover_height)
         button.setAccessibleName(caption)
         button.setProperty("topbarCaption", caption)
         button.setText("")
@@ -731,12 +757,6 @@ class ToolbarController(QObject):
         content = QWidget(button)
         content.setObjectName("appTopBarButtonContent")
         content.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        content.setGeometry(
-            profile.topbar_hover_margin,
-            profile.topbar_hover_margin,
-            profile.topbar_slot_button_width,
-            profile.topbar_button_height,
-        )
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -755,8 +775,8 @@ class ToolbarController(QObject):
         caption_label.setObjectName("appTopBarButtonCaption")
         caption_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         caption_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-        caption_label.setFixedSize(profile.topbar_slot_button_width, profile.topbar_caption_height)
         layout.addWidget(caption_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        resize_topbar_button(button, profile)
 
     def topbar_nav_icon(self, item_id: str) -> QIcon:
         glyphs = self._window.TOPBAR_NAV_FLUENT_ICONS.get(item_id)
