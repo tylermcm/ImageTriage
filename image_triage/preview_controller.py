@@ -10,7 +10,7 @@ from bisect import bisect_left
 
 from PySide6.QtCore import QEventLoop, QObject, QSignalBlocker, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QWidget
 from pathlib import Path
 
 from . import edit_storage, full_render, photocraft_bridge, photocraft_preview
@@ -198,6 +198,8 @@ class PreviewController(QObject):
         preview.move_requested.connect(self.handle_preview_move_requested)
         preview.tag_requested.connect(self.handle_preview_tag_requested)
         preview.collect_requested.connect(self.handle_preview_collect_requested)
+        preview.collections_menu_requested.connect(self.handle_preview_collections_menu)
+        preview.set_collection_chip_provider(self._window._catalog.collection_chip_text)
         # A popout built after the active collection was set still needs its members.
         QTimer.singleShot(0, self._window._catalog.refresh_collection_markers)
         preview.rating_requested.connect(self.handle_preview_rating_requested)
@@ -313,6 +315,13 @@ class PreviewController(QObject):
 
     def handle_preview_tag_requested(self, path: str) -> None:
         self.dispatch_preview_action(path, self._window._annotation_ctl.tag_record, preserve_anchor=True)
+
+    def handle_preview_collections_menu(self, path: str, global_pos) -> None:
+        if self._window._collection_mode:
+            return
+        menu = QMenu(self._window.preview)
+        self._window._catalog.populate_collections_menu(menu, [path])
+        menu.exec(global_pos)
 
     def preview_filmstrip_marked(self, index: int) -> bool:
         record = self._window._record_at(index) if index >= 0 else None

@@ -317,6 +317,8 @@ def collection_help_pages() -> tuple[HelpPage, ...]:
             - **Add All Visible to Collection** adds everything the current filter, regex or semantic search shows. Filter to winners, then add them all in one step.
             - **Add Selection to Collection** adds the selected images.
             - **Drag** images from the grid onto a collection in the sidebar to add them. Files never move.
+            - **Right-click** an image (or a selection) and open **Collections**: every collection is listed with a tick where the photo already is; pick one to add or remove.
+            - In the popout, the **collections chip** in the top bar shows which collections the photo is in ("● Portfolio", "● 2 collections", or "+ Collection"). Click it to change them.
             - **Set Active Collection**, then press **B** to add the photo at the cursor (or the selection) to it, in the grid or the popout. Press **B** again to take it back out. Photos in the active collection carry its name on their tile and in the popout caption, and the active collection has a dot in the sidebar.
             - Turn on **Winners Also Go to Active Collection** and every new winner, including the Winner Ladder's pick, is added as you cull. Un-marking or rejecting one of those winners takes it back out; images you added yourself stay.
 

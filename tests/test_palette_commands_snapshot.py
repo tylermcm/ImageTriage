@@ -57,12 +57,12 @@ _GOLDEN: dict[str, tuple[str, int]] = {
     "main|alternate-enabled|flags-on|data|docks": ("b8de23651d057b265124f8f23322c271437b876d811c1b678671d3a0cc6fa4d3", 36442),
     "main|alternate-enabled|flags-off|no-data|docks": ("926dd0c9bb38030218cf2fbbc947059201bf2e01e677e70349203c966b186914", 28178),
     "main|no-actions|data|no-docks": ("09866cb08f4c6fa175bba9e249b31c96fa7670ac852435661c4e75776f49ca6b", 22149),
-    "main|visible-preview-ignored": ("532bfe9ec7c29c184a66e8212c2c0c920d75433aba2b679ee60897b6060b6b95", 48956),
-    "preview|hidden-preview": ("670529980267b91e7d09890d1e767ca9e427b818f7952f988ae57cec9f3e099c", 48865),
+    "main|visible-preview-ignored": ("417e55ca02792436738499b2f3c2d3bbee90628948e8d77731d500000537c7ae", 49046),
+    "preview|hidden-preview": ("8af6750162dc8ec23eca82c7cebb7aed03d60dc97f19e046e3b9e556ad083f2a", 48955),
     "preview|no-preview-built": ("3252e76e6abe2342a5e64506344855a3dd091497e577c792ed337ddb9ab24756", 48757),
-    "preview|visible|full": ("cd6a7bcd121c97374c57def2650e37e2e73bb388968f6d33783e32c3b5db5c04", 55120),
-    "preview|visible|focused-photoshop-missing-exe": ("37fe56850faddea4f47d84068fd6b1b667a30912ea5dd4a3d7e5107014eeafda", 54860),
-    "preview|visible|bare": ("2124613b5ff06bb0f3af90fe0780060e0ea3cbb30139fd3faf44b3712fce633a", 26907),
+    "preview|visible|full": ("f98e5b8561383aeb72a9c57663c0ee645d7b1cf4613b4c7c1bede104298f59b8", 55210),
+    "preview|visible|focused-photoshop-missing-exe": ("b70d16cb57d82564f51947a5964778249105fdf70bea688e5afc4dfc6393dc0c", 54950),
+    "preview|visible|bare": ("7dc8c45e86c205ca178e83a7d3d24c4b7f923c026c0816f3ea154a8e86c5e452", 26997),
 }
 
 _COUNTS = {

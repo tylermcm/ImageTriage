@@ -73,6 +73,7 @@ ARTICLES = [
 
         - **Add All Visible to Collection** adds everything the current filter, regex or semantic search shows — for example, filter to winners and add them all at once.
         - **Add Selection to Collection** adds the selected images, and you can drag images from the grid onto a collection in the sidebar.
+        - Right-click an image and open **Collections** to tick or untick it in any collection. In the popout, the collections chip in the top bar shows where the photo is and opens the same list.
         - **Set Active Collection**, then press **B** to add the photo at the cursor (or the selection); press **B** again to remove it. Photos already in the active collection show its name on their tile and in the popout.
         - **Winners Also Go to Active Collection** adds each new winner, including the Winner Ladder's pick, while you cull, and takes it back out if you un-mark or reject it.
 

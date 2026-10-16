@@ -699,8 +699,101 @@ class CatalogController:
         if collection_id and flash_row is not None:
             flash_row(collection_id)
 
+    # -- Every collection a photo is in (right-click submenu, popout chip) ----
+
+    _SUBMENU_LIMIT = 10
+
+    def collection_ids_for_path(self, path: str) -> tuple[str, ...]:
+        """Cached: the popout asks on every step, so this must not touch the database each time."""
+        cache = getattr(self, "_membership_cache", None)
+        if cache is None:
+            cache = self._membership_cache = self._window._library_store.collection_ids_by_path()
+        return cache.get(normalized_path_key(path), ())
+
+    def invalidate_membership_cache(self) -> None:
+        self._membership_cache = None
+
+    def collection_chip_text(self, path: str) -> tuple[str, str]:
+        """(button text, tooltip) for the popout's collections chip."""
+        ids = self.collection_ids_for_path(path) if path else ()
+        if not ids:
+            return "+ Collection", "Not in any collection. Click to add it to one."
+        names = {collection.id: collection.name for collection in self._window._library_store.list_collections()}
+        listed = [names[collection_id] for collection_id in ids if collection_id in names]
+        if not listed:
+            return "+ Collection", "Not in any collection. Click to add it to one."
+        text = f"● {listed[0]}" if len(listed) == 1 else f"● {len(listed)} collections"
+        return text, "In: " + ", ".join(listed) + "\nClick to change"
+
+    def populate_collections_menu(self, menu, paths) -> None:
+        """Checkable rows, one per collection (recent and active first): checked when every path is in it,
+        a dash when some are. Picking a row adds them all, or removes them when all were in already."""
+        window = self._window
+        paths = [path for path in paths if path]
+        store = window._library_store
+        collections = store.list_collections()
+        by_id = {collection.id: collection for collection in collections}
+        active_id = self.active_collection_id()
+        leading = [collection_id for collection_id in (active_id, *self.recent_collection_ids()) if collection_id in by_id]
+        ordered = [by_id[collection_id] for collection_id in dict.fromkeys(leading)]
+        ordered += [collection for collection in collections if collection.id not in leading]
+        keys = [normalized_path_key(path) for path in paths]
+        busy = bool(self._session.collection_mode) or not paths
+        for collection in ordered[: self._SUBMENU_LIMIT]:
+            held = sum(1 for key in keys if collection.id in self._membership_for_key(key))
+            label = collection.name + ("  (active)" if collection.id == active_id else "")
+            if 0 < held < len(keys):
+                label += f"  — {held} of {len(keys)} in"
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(bool(keys) and held == len(keys))
+            action.setEnabled(not busy)
+            action.triggered.connect(
+                lambda _checked=False, target=collection.id, all_in=(bool(keys) and held == len(keys)): self._toggle_paths_in(target, paths, all_in)
+            )
+        if len(ordered) > self._SUBMENU_LIMIT:
+            more = menu.addAction("More collections...")
+            more.setEnabled(not busy)
+            more.triggered.connect(lambda _checked=False: self._add_paths_via_picker(paths))
+        if ordered:
+            menu.addSeparator()
+        new_action = menu.addAction("New collection...")
+        new_action.setEnabled(not busy)
+        new_action.triggered.connect(lambda _checked=False: self._add_paths_to_new_collection(paths))
+
+    def _membership_for_key(self, key: str) -> tuple[str, ...]:
+        cache = getattr(self, "_membership_cache", None)
+        if cache is None:
+            cache = self._membership_cache = self._window._library_store.collection_ids_by_path()
+        return cache.get(key, ())
+
+    def _toggle_paths_in(self, collection_id: str, paths, all_in: bool) -> None:
+        if all_in:
+            updated, removed = self.remove_paths_with_undo(collection_id, paths)
+            if updated is not None and removed:
+                noun = Path(paths[0]).name if len(paths) == 1 else f"{removed} images"
+                self.show_collection_feedback(f"Removed {noun} from {updated.name}", updated.id)
+            return
+        updated, added = self.add_paths_with_undo(collection_id, paths)
+        if updated is not None:
+            if len(paths) == 1:
+                self.show_collection_feedback(f"Added {Path(paths[0]).name} to {updated.name}", updated.id)
+            else:
+                self._report_add(updated, added, len(paths), source="image(s)")
+
+    def _add_paths_via_picker(self, paths) -> None:
+        collection = self.choose_virtual_collection(title="Add to Collection", prompt="Collection", allow_new=True)
+        if collection is not None:
+            self._toggle_paths_in(collection.id, paths, all_in=False)
+
+    def _add_paths_to_new_collection(self, paths) -> None:
+        collection = self.prompt_new_collection(title="New Collection")
+        if collection is not None:
+            self._toggle_paths_in(collection.id, paths, all_in=False)
+
     def refresh_collection_markers(self) -> None:
         """Mark the active collection's members on grid tiles and popout captions."""
+        self.invalidate_membership_cache()
         window = self._window
         grid = getattr(window, "grid", None)
         if grid is None or not hasattr(grid, "set_active_collection_members"):
@@ -714,6 +807,8 @@ class CatalogController:
         preview = preview_ctl.preview_if_built() if preview_ctl is not None else None
         if preview is not None and hasattr(preview, "set_active_collection_members"):
             preview.set_active_collection_members(paths, label)
+        if preview is not None and hasattr(preview, "refresh_collection_chip"):
+            preview.refresh_collection_chip()
 
     # -- Membership changes (each one undoable) ----------------------------
 
