@@ -1,5 +1,22 @@
 # PhotoCraft handoff
 
+## Keep visual iteration in JSON — 2026-10-15
+
+Owner clarified that this design pass should use live JSON and the PS1 launcher,
+without native rebuilds. Stopped only the owned Camera Raw test-build tree before
+results; no test pass is claimed. Preserved the tentative native numeric-alignment
+patch (including tests) outside Git at acr-parity-overlays/
+deferred-native-field-alignment.patch and restored widgets.rs to the committed
+source. The existing preview process remains open; its executable was not rebuilt.
+
+The companion PS1 now reuses the isolated debug executable, or target/debug when
+that isolated build is absent. It invokes Cargo only with explicit -Build; a
+normal launch with no available executable reports the one-time requirement.
+PowerShell parsing passed, and a dry launch with Cargo set to throw proved that
+the normal path selects the existing executable without compiling or starting a
+duplicate preview. Inactive numeric left alignment remains a native backlog item;
+the current JSON option cannot correct that widget behavior by itself.
+
 ## Overlay design resumed on laptop — 2026-10-15
 
 The merged native development build (38038711) passed in 33 min 27 s. Launched
