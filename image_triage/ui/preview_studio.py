@@ -416,6 +416,8 @@ class FilmstripThumb(QWidget):
         painter.end()
 
 
+_QWIDGETSIZE_MAX = 16777215  # Qt's QWIDGETSIZE_MAX: no maximum width
+
 # Placeholder source used until the owner calls ``set_source`` (Phase 1 look).
 _PLACEHOLDER_TOTAL = 248
 _PLACEHOLDER_CURRENT = 11  # 0-based -> frame 12
@@ -578,6 +580,7 @@ class Filmstrip(QFrame):
 
         # The thumbs on screen, by frame index: a step along the strip moves them instead of rebuilding them.
         self._thumbs: dict[int, FilmstripThumb] = {}
+        self._spacers: list[QWidget] = []  # the empty slots past either end, kept like the thumbs (see _populate)
         self._offset = 0        # index of first visible frame (0-based)
         self._count = 0
         self._recenter_pending = True
@@ -702,10 +705,16 @@ class Filmstrip(QFrame):
         thumb_provider: Callable[[int], QPixmap | None] | None = None,
         tag_provider: Callable[[int], str | None] | None = None,
     ) -> None:
-        self._total = max(0, int(total))
-        self._current = max(0, min(self._total - 1, int(current))) if self._total else 0
+        total = max(0, int(total))
+        current = max(0, min(total - 1, int(current))) if total else 0
+        unchanged = (total, current) == (self._total, self._current) and self._count == self._fit_count()
+        self._total, self._current = total, current
         self._thumb_provider = thumb_provider
         self._tag_provider = tag_provider
+        if unchanged:
+            # Holding an arrow key against either end asks again for the same photo on every repeat: nothing moves.
+            self.refresh()
+            return
         self._recenter_pending = True
         self._reflow(force=True)
 
@@ -748,19 +757,16 @@ class Filmstrip(QFrame):
         previous = self._thumbs
         self._thumbs = {}
         while self._layout.count():
-            item = self._layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None and not isinstance(widget, FilmstripThumb):
-                # Hide immediately (deleteLater is async, so the old spacers
-                # would otherwise linger and ghost during a rapid drag). NOT
-                # setParent(None) — that reparents a visible widget into its
-                # own floating top-level window.
-                widget.hide()
-                widget.deleteLater()
+            self._layout.takeAt(0)  # thumbs and the empty slots are kept and go back in; the stretches are made again
+        # The empty slots past either end are kept too. Made afresh, they were not on screen until a later pass of the event
+        # loop, so the strip was laid out without them: the thumbs near an end stretched into their room, then shrank back.
+        free_spacers = list(self._spacers)
         if self._collapsed:
             for thumb in previous.values():
                 thumb.hide()
                 thumb.deleteLater()
+            for spacer in free_spacers:
+                spacer.hide()
             self._left.hide()
             self._right.hide()
             return
@@ -774,19 +780,26 @@ class Filmstrip(QFrame):
         for slot in range(self._count):
             index = self._offset + slot
             if not 0 <= index < self._total:
-                spacer = QWidget()
+                if free_spacers:
+                    spacer = free_spacers.pop(0)
+                else:
+                    spacer = QWidget()
+                    spacer.installEventFilter(self)
+                    self._spacers.append(spacer)
                 spacer.setFixedHeight(self._thumb_h)
-                spacer.setMinimumWidth(
-                    round(FilmstripThumb.BASE_MIN_WIDTH * self._thumb_h / FilmstripThumb.BASE_HEIGHT)
-                )
                 spacer.setSizePolicy(
                     QSizePolicy.Policy.Expanding if fill else QSizePolicy.Policy.Fixed,
                     QSizePolicy.Policy.Fixed,
                 )
-                if not fill:
+                if fill:
+                    spacer.setMinimumWidth(
+                        round(FilmstripThumb.BASE_MIN_WIDTH * self._thumb_h / FilmstripThumb.BASE_HEIGHT)
+                    )
+                    spacer.setMaximumWidth(_QWIDGETSIZE_MAX)
+                else:
                     spacer.setFixedWidth(target_w)
-                spacer.installEventFilter(self)
                 self._layout.addWidget(spacer)
+                spacer.show()
                 continue
             shape = (self._thumb_h, fill, target_w, self.mockup_chrome)
             thumb = previous.pop(index, None)
@@ -813,12 +826,18 @@ class Filmstrip(QFrame):
                 thumb.clicked.connect(self.frame_selected)
             self._thumbs[index] = thumb
             self._layout.addWidget(thumb)
+            thumb.show()  # a widget added to a shown reel is otherwise shown only on a later pass of the event loop
         for thumb in previous.values():
             # Scrolled out of view.
             thumb.hide()
             thumb.deleteLater()
+        for spacer in free_spacers:
+            spacer.hide()  # not needed at this place along the strip; kept for when an end comes back into view
         if not fill:
             self._layout.addStretch(1)
+        # Place the thumbs now, not on a later pass of the event loop: until then the kept thumbs sat where they were, so a
+        # repaint in between (the popout's decode holds the UI thread) drew the ring one slot right of the middle.
+        self._layout.activate()
         self._left.setVisible(self._total > 0 and self._current > 0)
         self._right.setVisible(self._total > 0 and self._current < self._total - 1)
         self._raise_arrows()

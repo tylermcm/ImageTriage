@@ -71,6 +71,23 @@ class FilmstripTests(unittest.TestCase):
             with self.subTest(current=current):
                 self.assert_current_is_centered(current)
 
+    def test_a_step_is_centered_before_the_event_loop_runs_again(self) -> None:
+        # The popout's decode can hold the UI thread right after a step; a repaint then must not find the thumbs where
+        # they were before it, which drew the ring one slot right of the middle.
+        # Near the ends the empty slots must be in place at once too, or the thumbs stretch into their room; and pressing on
+        # against an end (the same photo again) must leave the strip as it is.
+        self.strip.set_source(100, 50)
+        QApplication.processEvents()
+        width = self.strip._thumbs[50].width()
+        for current in (51, 52, 51, 96, 97, 98, 99, 99, 99, 0, 0, 1):
+            self.strip.set_source(100, current)
+            with self.subTest(current=current):
+                thumb = self.strip._thumbs[current]
+                self.assertTrue(thumb._current)
+                thumb_center = thumb.mapTo(self.strip._reel, thumb.rect().center()).x()
+                self.assertAlmostEqual(thumb_center, self.strip._reel.rect().center().x(), delta=2)
+                self.assertAlmostEqual(thumb.width(), width, delta=1)
+
     def test_resizing_keeps_an_odd_slot_count_and_recenters_current_frame(self) -> None:
         self.strip.set_source(100, 50)
         for width in (620, 760, 1000, 1240):
