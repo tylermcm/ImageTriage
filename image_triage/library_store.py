@@ -679,6 +679,26 @@ class LibraryStore:
             if record is not None and not is_editor_asset_path(record.path)
         ]
 
+    def catalog_folder_sources(self) -> dict[str, tuple[str, list[str]]]:
+        """{folder path: (root path, image paths)} for every enabled catalog root, without decoding records."""
+        folders: dict[str, tuple[str, list[str]]] = {}
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT c.folder_path, c.root_path, c.path
+                FROM catalog_records c
+                JOIN catalog_roots r ON r.root_path = c.root_path
+                WHERE r.enabled = 1
+                ORDER BY c.folder_path, c.path
+                """
+            ).fetchall()
+        for folder_path, root_path, path in rows:
+            if not path or is_editor_asset_path(str(path)):
+                continue
+            entry = folders.setdefault(str(folder_path), (str(root_path), []))
+            entry[1].append(str(path))
+        return folders
+
     def load_catalog_records_for_paths(self, paths: tuple[str, ...] | list[str]) -> dict[str, ImageRecord]:
         normalized_paths = [path for path in _unique_paths(paths) if not is_editor_asset_path(path)]
         if not normalized_paths:

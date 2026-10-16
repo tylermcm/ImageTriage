@@ -107,6 +107,9 @@ class MainWindowActions:
     remove_catalog_folder: QAction
     refresh_catalog: QAction
     rebuild_folder_catalog_cache: QAction
+    start_library_index: QAction
+    pause_library_index: QAction
+    library_index_status: QAction
     share_to_phone: QAction
     handoff_builder: QAction
     send_to_editor_pipeline: QAction
@@ -540,6 +543,23 @@ def _catalog_actions(window: "MainWindow") -> dict[str, QAction]:
             window,
             "Rebuild Open Folder Cache",
             slot=window._scan.rebuild_current_folder_catalog_cache,
+        ),
+        start_library_index=_create_action(
+            window,
+            "Index Library For Search",
+            slot=window._library_index.start,
+        ),
+        pause_library_index=_create_action(
+            window,
+            "Pause Library Indexing",
+            slot=window._library_index.pause,
+        ),
+        # How much of the library a semantic search covers (text set by LibraryIndexController);
+        # choosing it shows the per-folder-root breakdown.
+        library_index_status=_create_action(
+            window,
+            "Library search: not indexed yet",
+            slot=window._library_index.show_coverage_details,
         ),
     )
 

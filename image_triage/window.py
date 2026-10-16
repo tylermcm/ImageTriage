@@ -109,6 +109,7 @@ from .aiculler_workflow import AICullerRunTask, aiculler_db_path
 from .ai_results import AIBundle, AIConfidenceBucket, load_ai_bundle
 from .batch_rename_controller import BatchRenameApplyController, BatchRenameExecutionContext
 from .catalog_controller import CatalogController, CatalogExecutionContext
+from .library_index_controller import LibraryIndexController
 from .command_palette_controller import CommandPaletteController
 from .folder_ops_controller import FolderOpsController
 from .folder_session import FolderSession, session_field
@@ -972,6 +973,7 @@ class MainWindow(QMainWindow):
         self._batch_rename = BatchRenameApplyController(self)
         self._folder_ops = FolderOpsController(self)
         self._catalog = CatalogController(self)
+        self._library_index = LibraryIndexController(self)
         self._resize_pool = QThreadPool(self)
         self._resize_pool.setMaxThreadCount(1)
         self._convert_pool = QThreadPool(self)
@@ -1625,6 +1627,7 @@ class MainWindow(QMainWindow):
         ``build_main_menu_bar`` reads, so this phase must run before ``_init_menu_bar_and_zen_menu``."""
         self.actions = build_main_window_actions(self)
         apply_shortcut_overrides(self.actions)
+        self._library_index.install()
         self._toolbar_menus = ToolbarMenuController(self, self.actions)
         self._toolbar.build_left_rail_pinned_tools()
         self._command_palette.setup_shortcuts()
