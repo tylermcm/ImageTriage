@@ -681,6 +681,7 @@ class FullScreenPreview(QDialog):
     move_requested = Signal(str)
     tag_requested = Signal(str)
     collect_requested = Signal(str)
+    collections_menu_requested = Signal(str, QPoint)
     rating_requested = Signal(str, int)
     winner_ladder_choice_requested = Signal(str)
     winner_ladder_skip_requested = Signal()
@@ -1375,6 +1376,15 @@ class FullScreenPreview(QDialog):
         self._mockup_breadcrumb = QLabel("Preview")
         self._mockup_breadcrumb.setObjectName("mockupBreadcrumb")
         layout.addWidget(self._mockup_breadcrumb, 1)
+        # Which collections the photo is in; click to change. Text comes from the owner (set_collection_chip_provider).
+        collections_button = QToolButton(toolbar)
+        collections_button.setObjectName("mockupWindowButton")
+        collections_button.setText("+ Collection")
+        collections_button.setToolTip("Collections this photo is in")
+        collections_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        collections_button.clicked.connect(self._request_collections_menu)
+        self._mockup_collections_button = collections_button
+        layout.addWidget(collections_button)
         layout.addWidget(self._build_studio_nav_pill())
         settings_menu = QMenu(toolbar)
         settings_menu.addAction("Open commands", self.command_palette_requested.emit)
@@ -4688,6 +4698,30 @@ class FullScreenPreview(QDialog):
         pane.caption_label.setText(caption_text)
         pane.caption_label.setToolTip(caption_text)
 
+    def set_collection_chip_provider(self, provider) -> None:
+        """``provider(path) -> (text, tooltip)``; must be cheap, it runs on every step."""
+        self._collection_chip_provider = provider
+        self.refresh_collection_chip()
+
+    def refresh_collection_chip(self) -> None:
+        button = getattr(self, "_mockup_collections_button", None)
+        provider = getattr(self, "_collection_chip_provider", None)
+        if button is None or provider is None:
+            return
+        path = self._focused_path()
+        try:
+            text, tooltip = provider(path) if path else ("+ Collection", "")
+        except Exception:
+            return
+        button.setText(text)
+        button.setToolTip(tooltip)
+
+    def _request_collections_menu(self) -> None:
+        path = self._focused_path()
+        button = getattr(self, "_mockup_collections_button", None)
+        if path and button is not None:
+            self.collections_menu_requested.emit(path, button.mapToGlobal(QPoint(0, button.height())))
+
     def set_active_collection_members(self, paths, label: str) -> None:
         """Captions only: no re-render, so B in the popout costs nothing on the picture."""
         keys = frozenset(os.path.normpath(path).casefold() for path in paths) if label else frozenset()
@@ -4828,6 +4862,7 @@ class FullScreenPreview(QDialog):
         path = Path(entry.source_path)
         trail = [part for part in path.parts[-4:] if part not in ("\\", "/")]
         self._mockup_breadcrumb.setText("  ›  ".join(trail))
+        self.refresh_collection_chip()
         self._mockup_filename.setText(entry.record.name)
         metadata = (self._current_metadata[slot] if slot < len(self._current_metadata) else None) or EMPTY_METADATA
         capture = " · ".join(part for part in (

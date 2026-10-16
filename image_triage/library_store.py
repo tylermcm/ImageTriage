@@ -313,6 +313,16 @@ class LibraryStore:
         existing = {normalized_path_key(str(row[0] or "")) for row in rows}
         return [path for path in normalized_paths if normalized_path_key(path) not in existing]
 
+    def collection_ids_by_path(self) -> dict[str, tuple[str, ...]]:
+        """Every collection each stored path belongs to, keyed by normalized path (one query)."""
+        with self._connect() as connection:
+            rows = connection.execute("SELECT item_path, collection_id FROM collection_items").fetchall()
+        memberships: dict[str, list[str]] = {}
+        for item_path, collection_id in rows:
+            if item_path and collection_id:
+                memberships.setdefault(normalized_path_key(str(item_path)), []).append(str(collection_id))
+        return {key: tuple(ids) for key, ids in memberships.items()}
+
     def collection_positions(self, collection_id: str, item_paths: tuple[str, ...] | list[str]) -> list[tuple[str, int]]:
         """(stored path, index) for each given path the collection holds, in collection order."""
         collection = self.load_collection(collection_id)

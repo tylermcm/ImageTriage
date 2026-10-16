@@ -11,7 +11,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QApplication, QStatusBar, QWidget
+from PySide6.QtWidgets import QApplication, QMenu, QStatusBar, QWidget
 
 from image_triage.catalog_controller import CatalogController
 from image_triage.folder_session import FolderSession, session_field
@@ -282,6 +282,40 @@ class CollectionFastAddTests(unittest.TestCase):
         self.assertEqual(CollectionPickerChoice(new_name="Moab picks"), dialog.choice())
         no_new = CollectionPickerDialog([("a", "Portfolio", 3)], title="t", allow_new=False)
         self.assertEqual(1, no_new.list_widget.count())
+
+    def test_collections_submenu_shows_membership_and_toggles(self) -> None:
+        catalog = self.host._catalog
+        prints = self.store.create_collection(name="Prints", item_paths=("C:/a/2.jpg",))
+        catalog.set_active_collection(prints.id, show_message=False)
+
+        menu = QMenu()
+        catalog.populate_collections_menu(menu, ["C:/a/1.jpg", "C:/a/2.jpg"])
+        rows = {action.text(): action for action in menu.actions() if action.text()}
+        # Active first; partial membership shows as a count, not a tick.
+        self.assertEqual(["Prints  (active)  \u2014 1 of 2 in", "Portfolio  \u2014 1 of 2 in", "New collection..."], list(rows))
+        self.assertFalse(rows["Portfolio  \u2014 1 of 2 in"].isChecked())
+
+        rows["Portfolio  \u2014 1 of 2 in"].trigger()
+        self.assertEqual(("C:/a/1.jpg", "C:/a/2.jpg"), self._members())
+
+        menu = QMenu()
+        catalog.populate_collections_menu(menu, ["C:/a/1.jpg"])
+        portfolio_row = next(action for action in menu.actions() if action.text() == "Portfolio")
+        self.assertTrue(portfolio_row.isChecked())
+        portfolio_row.trigger()  # all in -> removes
+        self.assertEqual(("C:/a/2.jpg",), self._members())
+
+    def test_chip_text_lists_collections_from_the_cache(self) -> None:
+        catalog = self.host._catalog
+        self.store.create_collection(name="Prints", item_paths=("C:/a/1.jpg",))
+        self.assertEqual("\u25CF 2 collections", catalog.collection_chip_text("C:/a/1.jpg")[0])
+        self.assertIn("Portfolio", catalog.collection_chip_text("C:/a/1.jpg")[1])
+        self.assertEqual("+ Collection", catalog.collection_chip_text("D:/b/3.jpg")[0])
+        # The cache is per change, not per call: a direct store write is not seen until refreshed.
+        self.store.add_paths_to_collection(self.portfolio.id, ["D:/b/3.jpg"])
+        self.assertEqual("+ Collection", catalog.collection_chip_text("D:/b/3.jpg")[0])
+        catalog.invalidate_membership_cache()
+        self.assertEqual("\u25CF Portfolio", catalog.collection_chip_text("D:/b/3.jpg")[0])
 
     def test_winner_auto_add_is_a_no_op_without_a_batch_id(self) -> None:
         self.assertEqual("", self.host._catalog.auto_add_winner_paths(["D:/b/3.jpg"], batch_id=""))
