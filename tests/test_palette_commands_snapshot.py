@@ -51,33 +51,33 @@ from tests import builder_snapshot_support as support
 
 # state label -> (sha256 of the dump, its length in characters)
 _GOLDEN: dict[str, tuple[str, int]] = {
-    "main|all-enabled|flags-on|data|docks": ("57984c0711c9647f542ad7a990071c452cf5828eceedd24c4e4b637c43d6ba09", 46142),
-    "main|all-enabled|flags-off|data|docks-unchecked": ("9512e3a1af6cc9c20c9da770c3b63663e0a6e95068bb405a991d47430a8c3f75", 46158),
+    "main|all-enabled|flags-on|data|docks": ("c444711ff5d4ad987e212b98fa1d6373d53feeeb1abbf6ac0fcc3914354c9f58", 48766),
+    "main|all-enabled|flags-off|data|docks-unchecked": ("0b19d54d688dda2b7ec1435b80b0f5df6a564d24975fe4fd264ff045c0a44b2f", 48782),
     "main|all-disabled|no-data|no-docks": ("ccc2c940bd8f4e2384c01384f4eac2073d9a5dc1a4902f3e80781fbb6ef7f916", 13856),
-    "main|alternate-enabled|flags-on|data|docks": ("6b7450f222d0ea5108001519e0437bae1d490d2705b5bad76e09726237da5205", 33864),
-    "main|alternate-enabled|flags-off|no-data|docks": ("f346eb12a108ea4ee7546c3dd48319dd5dbf45d4378a08d5c28651a2380a5435", 27051),
-    "main|no-actions|data|no-docks": ("b29a6454d15fe941fc6da0e253e33ac62a44bdec8cdd2221a00902a1527116bb", 20699),
-    "main|visible-preview-ignored": ("82f7aa8522844e885d54d1e50ff6c1eff54693c8a4cba40247815a20cd7a22cf", 46134),
-    "preview|hidden-preview": ("4d1ebc0ccbba4b955c2510c167fbeae1d0a14a51209a6861fe39d533c1b92b5a", 46131),
-    "preview|no-preview-built": ("6d48b5908ff713219e419dae8e936985d1ef2dabb6d49d51f9c9ab1dc22c28ac", 46133),
-    "preview|visible|full": ("d7a8090b9630def7a8ed77e7ee5ca60429ae239a525a51a0e360f5355cb60bb3", 52298),
-    "preview|visible|focused-photoshop-missing-exe": ("4dd3abaec11431aa0a74a6b5fcef28af50b1c2c6af281ea95b7fef55caf5797f", 52038),
-    "preview|visible|bare": ("400a228cd112a3e186c833b0725d5edae37257f4a2893fdc58fe7fb6b63b7dc0", 25259),
+    "main|alternate-enabled|flags-on|data|docks": ("b8de23651d057b265124f8f23322c271437b876d811c1b678671d3a0cc6fa4d3", 36442),
+    "main|alternate-enabled|flags-off|no-data|docks": ("926dd0c9bb38030218cf2fbbc947059201bf2e01e677e70349203c966b186914", 28178),
+    "main|no-actions|data|no-docks": ("09866cb08f4c6fa175bba9e249b31c96fa7670ac852435661c4e75776f49ca6b", 22149),
+    "main|visible-preview-ignored": ("532bfe9ec7c29c184a66e8212c2c0c920d75433aba2b679ee60897b6060b6b95", 48956),
+    "preview|hidden-preview": ("670529980267b91e7d09890d1e767ca9e427b818f7952f988ae57cec9f3e099c", 48865),
+    "preview|no-preview-built": ("3252e76e6abe2342a5e64506344855a3dd091497e577c792ed337ddb9ab24756", 48757),
+    "preview|visible|full": ("cd6a7bcd121c97374c57def2650e37e2e73bb388968f6d33783e32c3b5db5c04", 55120),
+    "preview|visible|focused-photoshop-missing-exe": ("37fe56850faddea4f47d84068fd6b1b667a30912ea5dd4a3d7e5107014eeafda", 54860),
+    "preview|visible|bare": ("2124613b5ff06bb0f3af90fe0780060e0ea3cbb30139fd3faf44b3712fce633a", 26907),
 }
 
 _COUNTS = {
-    "main|all-enabled|flags-on|data|docks": 164,
-    "main|all-enabled|flags-off|data|docks-unchecked": 164,
+    "main|all-enabled|flags-on|data|docks": 175,
+    "main|all-enabled|flags-off|data|docks-unchecked": 175,
     "main|all-disabled|no-data|no-docks": 18,
-    "main|alternate-enabled|flags-on|data|docks": 101,
-    "main|alternate-enabled|flags-off|no-data|docks": 85,
-    "main|no-actions|data|no-docks": 34,
-    "main|visible-preview-ignored": 164,
-    "preview|hidden-preview": 164,
-    "preview|no-preview-built": 164,
-    "preview|visible|full": 188,
-    "preview|visible|focused-photoshop-missing-exe": 187,
-    "preview|visible|bare": 53,
+    "main|alternate-enabled|flags-on|data|docks": 112,
+    "main|alternate-enabled|flags-off|no-data|docks": 90,
+    "main|no-actions|data|no-docks": 40,
+    "main|visible-preview-ignored": 175,
+    "preview|hidden-preview": 175,
+    "preview|no-preview-built": 175,
+    "preview|visible|full": 199,
+    "preview|visible|focused-photoshop-missing-exe": 198,
+    "preview|visible|bare": 59,
 }
 
 _FULL = "main|all-enabled|flags-on|data|docks"
@@ -132,7 +132,7 @@ def test_section_order_with_everything_enabled(states) -> None:
         ("Edit", 2),
         ("Tools", 6),
         ("Export", 6),
-        ("Library", 10),
+        ("Library", 15),
         ("Review", 12),
         ("View", 11),
         ("Search", 4),
@@ -145,7 +145,7 @@ def test_section_order_with_everything_enabled(states) -> None:
         ("Search", 10),  # smart filters 8 + saved searches 2
         ("Export", 7),  # recipes 5 + saved recipes 2
         ("Workspace", 7),  # workspace presets 5 + saved 2
-        ("Library", 4),  # collections 2 + catalog roots 2
+        ("Library", 10),  # collections 2 x (open, add selection, add visible, set active) + catalog roots 2
         ("Review", 6),  # recent folders, capped at 6 of the 8 offered
     ]
 
@@ -176,7 +176,7 @@ def test_only_presets_remain_when_nothing_is_enabled_and_nothing_is_saved(states
 
 def test_without_actions_only_the_data_driven_sections_remain(states) -> None:
     lines, ids = states["main|no-actions|data|no-docks"]
-    assert _sections(lines) == [("Search", 10), ("Export", 7), ("Workspace", 7), ("Library", 4), ("Review", 6)]
+    assert _sections(lines) == [("Search", 10), ("Export", 7), ("Workspace", 7), ("Library", 10), ("Review", 6)]
     assert ids[0] == "smart_filter.unreviewed_raw"
 
 

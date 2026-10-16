@@ -74,6 +74,13 @@ class ToolbarMenuController:
         actions = self._actions
         menu = QMenu("Collections", self._parent)
         menu.addAction(actions.create_virtual_collection)
+        menu.addAction(actions.add_selected_to_collection)
+        menu.addAction(actions.add_visible_to_collection)
+        menu.addSeparator()
+        menu.addAction(actions.add_to_active_collection)
+        menu.addAction(actions.set_active_collection)
+        menu.addAction(actions.auto_add_winners_to_collection)
+        menu.addSeparator()
         menu.addAction(actions.add_selection_to_collection)
         menu.addAction(actions.remove_selection_from_collection)
         menu.addAction(actions.delete_virtual_collection)

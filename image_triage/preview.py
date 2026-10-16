@@ -680,6 +680,7 @@ class FullScreenPreview(QDialog):
     delete_requested = Signal(str)
     move_requested = Signal(str)
     tag_requested = Signal(str)
+    collect_requested = Signal(str)
     rating_requested = Signal(str, int)
     winner_ladder_choice_requested = Signal(str)
     winner_ladder_skip_requested = Signal()
@@ -723,10 +724,14 @@ class FullScreenPreview(QDialog):
         self._reject_shortcut = QKeySequence("X")
         # Mirrors grid.py's review-key registry (WI-3.2); brackets and the
         # 1-5 adapter labels are grid-only, so they're not needed here.
+        # Members of the active collection; their captions say so (set_active_collection_members).
+        self._active_collection_keys: frozenset[str] = frozenset()
+        self._active_collection_label = ""
         self._review_key_shortcuts: dict[str, QKeySequence] = {
             "keep_at_cursor": QKeySequence("K"),
             "move_at_cursor": QKeySequence("M"),
             "tag_at_cursor": QKeySequence("T"),
+            "collect_at_cursor": QKeySequence("B"),
         }
         self._settings = user_settings()
         self._manual_zoom = False
@@ -1733,6 +1738,7 @@ class FullScreenPreview(QDialog):
         current: int,
         thumb_provider=None,
         tag_provider=None,
+        marked_provider=None,
     ) -> None:
         """Give the filmstrip and nav pill their place in the full image list.
 
@@ -1754,6 +1760,7 @@ class FullScreenPreview(QDialog):
                 )
             return
         self._filmstrip.set_source(total, current, thumb_provider, tag_provider)
+        self._filmstrip.set_marked_provider(marked_provider)
         self._studio_nav_count.setText(f"{current + 1} / {total}" if total > 0 else "—")
         if logger.enabled:
             logger.duration(
@@ -2854,6 +2861,12 @@ class FullScreenPreview(QDialog):
                 self.tag_requested.emit(path)
                 event.accept()
                 return
+        if matches_shortcut(event, self._review_key_shortcuts["collect_at_cursor"]):
+            path = self._focused_path()
+            if path:
+                self.collect_requested.emit(path)
+                event.accept()
+                return
         if key == Qt.Key.Key_C and review_shortcut_allowed:
             self.compare_mode_changed.emit(not self._compare_mode)
             event.accept()
@@ -3680,14 +3693,7 @@ class FullScreenPreview(QDialog):
         entry = self._entries[slot]
         display_image = self._display_image_for_slot(slot)
         metadata = self._current_metadata[slot] if slot < len(self._current_metadata) else EMPTY_METADATA
-        if entry.label:
-            caption_text = f"{entry.label} | {Path(entry.source_path).name}"
-        else:
-            caption_text = entry.record.name
-        if entry.ai_result is not None and entry.ai_result.is_top_pick:
-            caption_text = f"{caption_text} | AI Top Pick"
-        pane.caption_label.setText(caption_text)
-        pane.caption_label.setToolTip(caption_text)
+        self._update_pane_caption(slot)
 
         metadata_lines: list[str] = []
         if metadata.display_text:
@@ -4662,6 +4668,39 @@ class FullScreenPreview(QDialog):
 
     def toggle_focus_assist_background_command(self) -> None:
         self.set_focus_assist_dim_background(not self._focus_assist_dim_background)
+
+    def _pane_caption_text(self, entry) -> str:
+        if entry.label:
+            caption_text = f"{entry.label} | {Path(entry.source_path).name}"
+        else:
+            caption_text = entry.record.name
+        if entry.ai_result is not None and entry.ai_result.is_top_pick:
+            caption_text = f"{caption_text} | AI Top Pick"
+        if self._active_collection_label and os.path.normpath(entry.record.path).casefold() in self._active_collection_keys:
+            caption_text = f"{caption_text} | \u25CF In {self._active_collection_label}"
+        return caption_text
+
+    def _update_pane_caption(self, slot: int) -> None:
+        if not (0 <= slot < len(self._entries) and slot < len(self._panes)):
+            return
+        caption_text = self._pane_caption_text(self._entries[slot])
+        pane = self._panes[slot]
+        pane.caption_label.setText(caption_text)
+        pane.caption_label.setToolTip(caption_text)
+
+    def set_active_collection_members(self, paths, label: str) -> None:
+        """Captions only: no re-render, so B in the popout costs nothing on the picture."""
+        keys = frozenset(os.path.normpath(path).casefold() for path in paths) if label else frozenset()
+        if keys == self._active_collection_keys and label == self._active_collection_label:
+            return
+        self._active_collection_keys = keys
+        self._active_collection_label = label
+        for slot in range(len(self._entries)):
+            self._update_pane_caption(slot)
+        filmstrip = getattr(self, "_filmstrip", None)
+        provider = getattr(filmstrip, "_marked_provider", None) if filmstrip is not None else None
+        if provider is not None:
+            filmstrip.set_marked_provider(provider)  # repaint the bars on screen
 
     def set_annotation_state(self, path: str, winner: bool, reject: bool, rating: int | None = None) -> None:
         updated = False

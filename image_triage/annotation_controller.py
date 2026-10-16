@@ -603,6 +603,11 @@ class AnnotationController(QObject):
             annotation.reject = False
 
         winner_sync = self.build_winner_sync_request(record, annotation.winner, self._window._current_folder)
+        # One Undo takes back both the winner and its trip into (or out of) the active collection.
+        catalog = self._window._catalog
+        collection_batch_id = (
+            catalog.winner_auto_add_batch_id() if annotation.winner else catalog.winner_auto_remove_batch_id([record.path])
+        )
 
         self._window._record_ops.push_undo(
             UndoAction(
@@ -618,6 +623,7 @@ class AnnotationController(QObject):
                 source_paths=self._window._record_paths(record),
                 session_id=self._window._session_id,
                 winner_mode=self._window._winner_mode.value,
+                batch_id=collection_batch_id,
             )
         )
         self.queue_annotation_persist(record, previous_annotation=previous_annotation, winner_sync=winner_sync)
@@ -626,7 +632,15 @@ class AnnotationController(QObject):
         self.apply_review_count_delta(previous_annotation, annotation)
         self.apply_annotation_change_effects([record.path], current_path=next_path, counts_already_updated=True)
         if annotation.winner:
+            collection_name = catalog.auto_add_winner_paths([record.path], batch_id=collection_batch_id)
+        else:
+            collection_name = catalog.auto_remove_unwinner_paths([record.path], batch_id=collection_batch_id)
+        if annotation.winner and collection_name:
+            catalog.show_collection_feedback(f"Winner added: {record.name} (and to {collection_name})", catalog.active_collection_id())
+        elif annotation.winner:
             self._window.statusBar().showMessage(f"Winner added: {record.name}")
+        elif collection_name:
+            catalog.show_collection_feedback(f"Winner removed: {record.name} (and from {collection_name})", catalog.active_collection_id())
         else:
             self._window.statusBar().showMessage(f"Winner removed: {record.name}")
         if logger.enabled:
@@ -669,6 +683,10 @@ class AnnotationController(QObject):
             if previous_winner != annotation.winner
             else None
         )
+        catalog = self._window._catalog
+        collection_batch_id = (
+            catalog.winner_auto_remove_batch_id([record.path]) if previous_winner and not annotation.winner else ""
+        )
 
         self._window._record_ops.push_undo(
             UndoAction(
@@ -684,6 +702,7 @@ class AnnotationController(QObject):
                 source_paths=self._window._record_paths(record),
                 session_id=self._window._session_id,
                 winner_mode=self._window._winner_mode.value,
+                batch_id=collection_batch_id,
             )
         )
         self.queue_annotation_persist(record, previous_annotation=previous_annotation, winner_sync=winner_sync)
@@ -691,7 +710,10 @@ class AnnotationController(QObject):
         self.capture_annotation_feedback(record, previous_annotation, annotation, source_mode="reject_toggle")
         self.apply_review_count_delta(previous_annotation, annotation)
         self.apply_annotation_change_effects([record.path], current_path=next_path, counts_already_updated=True)
-        if annotation.reject:
+        collection_name = catalog.auto_remove_unwinner_paths([record.path], batch_id=collection_batch_id)
+        if annotation.reject and collection_name:
+            catalog.show_collection_feedback(f"Rejected: {record.name} (and removed from {collection_name})", catalog.active_collection_id())
+        elif annotation.reject:
             self._window.statusBar().showMessage(f"Rejected: {record.name}")
         else:
             self._window.statusBar().showMessage(f"Reject removed: {record.name}")
@@ -707,9 +729,20 @@ class AnnotationController(QObject):
         candidates = [record for record in records if not self._window._annotations.get(record.path, SessionAnnotation()).winner]
         if not self.maybe_show_fast_rating_hint(candidates):
             return
-        changed, failures = self.batch_apply_annotation_state(records, winner=True, reject=False, source_mode="winner_toggle")
+        collection_batch_id = self._window._catalog.winner_auto_add_batch_id()
+        changed, failures = self.batch_apply_annotation_state(
+            records, winner=True, reject=False, source_mode="winner_toggle", batch_id=collection_batch_id
+        )
+        collection_name = self._window._catalog.auto_add_winner_paths(
+            [record.path for record in candidates], batch_id=collection_batch_id
+        ) if changed else ""
         if failures:
             self._window.statusBar().showMessage(f"Marked {changed} winner image(s); {failures} failed to sync winner artifacts")
+            return
+        if collection_name:
+            self._window._catalog.show_collection_feedback(
+                f"Marked {changed} winner image(s) (and added to {collection_name})", self._window._catalog.active_collection_id()
+            )
             return
         self._window.statusBar().showMessage(f"Marked {changed} winner image(s)")
 
@@ -719,9 +752,20 @@ class AnnotationController(QObject):
         candidates = [record for record in records if not self._window._annotations.get(record.path, SessionAnnotation()).reject]
         if not self.maybe_show_fast_rating_hint(candidates):
             return
-        changed, failures = self.batch_apply_annotation_state(records, winner=False, reject=True, source_mode="reject_toggle")
+        catalog = self._window._catalog
+        former_winners = [
+            record.path for record in records if self._window._annotations.get(record.path, SessionAnnotation()).winner
+        ]
+        collection_batch_id = catalog.winner_auto_remove_batch_id(former_winners)
+        changed, failures = self.batch_apply_annotation_state(
+            records, winner=False, reject=True, source_mode="reject_toggle", batch_id=collection_batch_id
+        )
+        collection_name = catalog.auto_remove_unwinner_paths(former_winners, batch_id=collection_batch_id) if changed else ""
         if failures:
             self._window.statusBar().showMessage(f"Rejected {changed} image(s); {failures} failed to update")
+            return
+        if collection_name:
+            catalog.show_collection_feedback(f"Rejected {changed} image(s) (and removed from {collection_name})", catalog.active_collection_id())
             return
         self._window.statusBar().showMessage(f"Rejected {changed} image(s)")
 
@@ -732,6 +776,7 @@ class AnnotationController(QObject):
         winner: bool,
         reject: bool,
         source_mode: str,
+        batch_id: str = "",
     ) -> tuple[int, int]:
         if not records:
             return 0, 0
@@ -775,6 +820,7 @@ class AnnotationController(QObject):
                     source_paths=self._window._record_paths(record),
                     session_id=self._window._session_id,
                     winner_mode=self._window._winner_mode.value,
+                    batch_id=batch_id,
                 )
             )
             self.queue_annotation_persist(record, previous_annotation=previous_annotation, winner_sync=winner_sync)

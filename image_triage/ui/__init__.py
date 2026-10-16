@@ -14,7 +14,7 @@ from .apply_ai_decisions_dialog import ApplyAIDecisionsDialog
 from .batch_rename_dialog import BatchRenameDialog
 from .best_of_dialog import BestOfSetDialog
 from .catalog_dialog import CatalogSearchDialog
-from .collection_dialog import CollectionEditDialog
+from .collection_dialog import CollectionEditDialog, CollectionPickerChoice, CollectionPickerDialog
 from .command_palette import CommandPaletteDialog, PaletteCommand
 from .convert_dialog import ConvertDialog
 from .docks import (
@@ -67,6 +67,8 @@ __all__ = [
     "BestOfSetDialog",
     "CatalogSearchDialog",
     "CollectionEditDialog",
+    "CollectionPickerChoice",
+    "CollectionPickerDialog",
     "ColorToken",
     "CommandPaletteDialog",
     "ConvertDialog",
