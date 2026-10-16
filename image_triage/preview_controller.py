@@ -197,6 +197,9 @@ class PreviewController(QObject):
         preview.delete_requested.connect(self.handle_preview_delete_requested)
         preview.move_requested.connect(self.handle_preview_move_requested)
         preview.tag_requested.connect(self.handle_preview_tag_requested)
+        preview.collect_requested.connect(self.handle_preview_collect_requested)
+        # A popout built after the active collection was set still needs its members.
+        QTimer.singleShot(0, self._window._catalog.refresh_collection_markers)
         preview.rating_requested.connect(self.handle_preview_rating_requested)
         preview.winner_ladder_choice_requested.connect(self.handle_preview_winner_ladder_choice)
         preview.winner_ladder_skip_requested.connect(self.handle_preview_winner_ladder_skip)
@@ -310,6 +313,17 @@ class PreviewController(QObject):
 
     def handle_preview_tag_requested(self, path: str) -> None:
         self.dispatch_preview_action(path, self._window._annotation_ctl.tag_record, preserve_anchor=True)
+
+    def preview_filmstrip_marked(self, index: int) -> bool:
+        record = self._window._record_at(index) if index >= 0 else None
+        return record is not None and self._window.grid.in_active_collection(record.path)
+
+    def handle_preview_collect_requested(self, path: str) -> None:
+        self.dispatch_preview_action(
+            path,
+            lambda index: self._window._catalog.add_index_to_active_collection(index, whole_selection=False),
+            preserve_anchor=True,
+        )
 
     def handle_preview_rating_requested(self, path: str, rating: int) -> None:
         if self._window._collection_mode:
@@ -559,7 +573,17 @@ class PreviewController(QObject):
             self._window.grid.set_current_index(winner_index)
             if reopen_preview and self._window.preview.isVisible():
                 self.open_preview(winner_index)
-        if show_message and winner_path:
+        collection_name = ""
+        if winner_path and show_message:
+            collection_name = self._window._catalog.auto_add_winner_paths(
+                [winner_path], batch_id=self._window._catalog.winner_auto_add_batch_id()
+            )
+        if show_message and winner_path and collection_name:
+            self._window._catalog.show_collection_feedback(
+                f"Winner Ladder complete: {Path(winner_path).name} (added to {collection_name})",
+                self._window._catalog.active_collection_id(),
+            )
+        elif show_message and winner_path:
             self._window.statusBar().showMessage(f"Winner Ladder complete: {Path(winner_path).name}")
 
     def preview_path_for_index(self, index: int) -> str:
@@ -1884,6 +1908,7 @@ class PreviewController(QObject):
             self._browse_position(browsable, current_index),
             lambda position: self.preview_filmstrip_thumb(record_index(position)),
             lambda position: self.preview_filmstrip_tag(record_index(position)),
+            lambda position: self.preview_filmstrip_marked(record_index(position)),
         )
         if logger.enabled:
             logger.duration(

@@ -99,6 +99,11 @@ class MainWindowActions:
     winner_ladder_mode: QAction
     create_virtual_collection: QAction
     add_selection_to_collection: QAction
+    add_selected_to_collection: QAction
+    add_visible_to_collection: QAction
+    add_to_active_collection: QAction
+    set_active_collection: QAction
+    auto_add_winners_to_collection: QAction
     remove_selection_from_collection: QAction
     delete_virtual_collection: QAction
     browse_catalog: QAction
@@ -494,6 +499,34 @@ def _collection_actions(window: "MainWindow") -> dict[str, QAction]:
             window,
             "Edit Collection Items...",
             slot=window._catalog.add_selection_to_virtual_collection,
+        ),
+        add_selected_to_collection=_create_action(
+            window,
+            "Add Selection to Collection...",
+            slot=window._catalog.add_selected_to_collection,
+        ),
+        add_visible_to_collection=_create_action(
+            window,
+            "Add All Visible to Collection...",
+            slot=window._catalog.add_visible_to_collection,
+        ),
+        # The B key is handled by the grid, details view and popout (collect_at_cursor);
+        # this menu entry runs the same add without a shortcut of its own.
+        add_to_active_collection=_create_action(
+            window,
+            "Add to Active Collection",
+            slot=window._catalog.add_selected_to_active_collection,
+        ),
+        set_active_collection=_create_action(
+            window,
+            "Set Active Collection...",
+            slot=window._catalog.choose_active_collection,
+        ),
+        auto_add_winners_to_collection=_create_action(
+            window,
+            "Winners Also Go to Active Collection",
+            slot=window._catalog.set_auto_add_winners,
+            checkable=True,
         ),
         remove_selection_from_collection=_create_action(
             window,
