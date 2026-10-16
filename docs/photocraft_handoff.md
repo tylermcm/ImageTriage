@@ -1,5 +1,38 @@
 # PhotoCraft handoff
 
+## Laptop pull and comparison preview — 2026-10-15
+
+Fetched both user origins successfully and PhotoCraft upstream by URL (this
+checkout's origin is tylermcm; no fork remote is configured). Fast-forwarded host
+127c7ca -> 6f51b78 and companion 242daf70 -> c00bd4aa, preserving the ACR 18.6
+redesign. Existing untracked codex_briefing/ was untouched. Upstream advanced
+1b666f4790f9f2e9907218a8e786a3af5305f200 ->
+b630d7cb9aeb2a79ab5224ebf6e8266f1d858873, merged as
+38038711. No pushes.
+
+Conflicts: apps/photocraft/src/main.rs, crates/ui-egui/src/control.rs and all
+20 translation catalogs. Main retains hosted/raw-workspace flags and upstream
+presentation/trace options; control retains both the host-theme regression and
+upstream trace regression. Catalog additions are independent and both retained.
+Reviewed automatic merges in lib.rs, menus.rs, GPU, engine jobs and authorization:
+upstream owns presentation throttling, engine shell-command catalog and stricter
+stored-filter authorization/authentication deadlines. Host hidden startup,
+geometry/chrome, Save routing, workspace/design modules and host controls remain.
+No equivalent upstream ACR redesign replaces the fork's new modules. Rust syntax
+formatting and git diff --check passed; native compilation is in progress.
+
+The immediate request is an isolated visual preview, not hosted promotion.
+Building and launching a development executable from the existing target/debug
+cache (separate from release executable discovery). The base
+comparison uses the already-built pre-redesign 8ddc0ffd candidate, rather than
+claiming it is the exact parent c00bd4aa^ or current upstream. Both use the same
+synthetic image and separate temporary comparison profiles. No personal image,
+normal preferences or known-good hosted executable is modified. Further source
+and native handoff gates remain required before promotion. The owner requested
+no further changes after this build; only launch the redesigned preview. The
+base comparison window was closed at the owner's clarification; its captured
+image remains available for comparison without another visible base window.
+
 ## Source sync and ACR 18.4 reference audit — 2026-10-15
 
 Both working trees were clean before this session. Fetches succeeded for Image
