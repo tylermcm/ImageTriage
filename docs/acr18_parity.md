@@ -1,5 +1,11 @@
 # Camera Raw 18.6 redesign
 
+2026-10-15 laptop overlay checkpoint: source-underneath opacity/blink comparisons
+now register to the full settings dock, including its reserved scrollbar gutter.
+Six Light track vertical bands match after live JSON calibration; numeric glyphs,
+handle shapes and advanced panels remain visibly different. This changes no
+feature-parity percentage. See the latest photocraft_handoff.md checkpoint.
+
 Target updated by the owner on 2026-10-15: match the supplied Adobe Camera Raw
 **18.6.0.2698** screenshots, interface and functional behavior. This replaces
 the earlier 18.4 selection; access to an older version is not required. This is a development brief and source audit, not a

@@ -1,5 +1,42 @@
 # PhotoCraft handoff
 
+## Overlay design resumed on laptop — 2026-10-15
+
+The merged native development build (38038711) passed in 33 min 27 s. Launched
+it from target/debug with separate comparison settings and the synthetic image;
+closed the pre-redesign base at the owner's clarification. The owner then
+explicitly resumed design work with 19 local ACR 18.6 reference screenshots,
+superseding the temporary instruction to make no changes after the build.
+
+Compared source underneath PhotoCraft, including a corrected registration:
+anchor the entire 540px settings dock, not its 512px inner expanded content.
+The latter normalized to our 270-point full dock hid the reserved-scrollbar
+width and enlarged the reference about 5%. Uniform 0.5 reference scaling now
+keeps the real difference visible. Source images remain outside Git.
+
+Companion live JSON now uses 40pt section headers, 31pt slider-row pitch and
+adjusted insets/field metrics. At normalized width 540px all six Light tracks
+match reference vertical bands: 126–131, 188–193, 250–255, 312–317, 374–379,
+436–441. Before, offsets increased from 8 to 26px. This verifies those track
+positions only, not complete visual or functional parity. Inactive numeric
+text still centers despite the left-aligned option; that needs a native fix.
+Handles, header glyphs/bypass, scrollbar behavior, Curve/Grading selectors and
+panel-specific geometry remain. Optics, Lens Blur, Calibration, several rail
+tools, RAW WB/Kelvin, profiles, filmstrip and ACR dialogs remain separate work.
+
+Added an interactive index.html to the companion comparison script: reference
+underneath, opacity/blink/uniform zoom, difference and alignment metadata.
+Five native view-state before/after captures retained photo parameters and
+preview revision in the same running process, without recompiling. Python/JSON
+syntax, viewer/image HTTP delivery and git diff --check passed. No new native
+code changes or hosted promotion. The native preview stays open on Light/Color.
+
+Artifacts: the chat visualization directory's acr-parity-overlays/ contains
+reference hashes, cropped overlays, reload-proof.json, light-metrics.json,
+initial/captured states and gap-notes.md. Local overlay viewer is served on
+127.0.0.1:52180 (private helper; it can be stopped after review). It is a design
+workbench, not a product dependency. No push.
+
 ## Laptop pull and comparison preview — 2026-10-15
 
 Fetched both user origins successfully and PhotoCraft upstream by URL (this
