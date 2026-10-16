@@ -1,0 +1,29 @@
+//! Timing of decode and develop per demosaic on real files (a local measuring tool).
+use photocraft_raw::{Demosaic, DevelopOptions, Limits};
+use std::time::Instant;
+
+fn main() {
+    for path in std::env::args().skip(1) {
+        let bytes = std::fs::read(&path).expect("read");
+        let t = Instant::now();
+        let sensor = match photocraft_raw::decode(&bytes, &Limits::default()) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("{path}: decode failed: {e}");
+                continue;
+            }
+        };
+        println!("{path}: decode {} ms", t.elapsed().as_millis());
+        for d in [Demosaic::Bilinear, Demosaic::Mhc, Demosaic::Ahd] {
+            let opts = DevelopOptions { demosaic: d, ..Default::default() };
+            let t = Instant::now();
+            match photocraft_raw::develop_sensor(&sensor, &opts) {
+                Ok(dev) => println!("   {}: develop {} ms", d.id(), t.elapsed().as_millis()),
+                Err(e) => println!("   {}: failed {e}", d.id()),
+            }
+        }
+        let t = Instant::now();
+        let preview = photocraft_raw::embedded_preview(&bytes);
+        println!("   embedded preview: {} ms ({})", t.elapsed().as_millis(), preview.map_or("none".into(), |p| format!("{}x{}", p.width, p.height)));
+    }
+}

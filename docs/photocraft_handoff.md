@@ -1756,3 +1756,11 @@ Posterize/Threshold (`0d674c0d`): a real bug (16-bit commands split on an 8-bit 
 fixed the same thing in storytold/photocraft#5711 (`1c6f1387`), after the `620bccef` we merged. No upstream PR. At the next
 upstream merge, expect a conflict in `crates/engine/src/pixels.rs`: take upstream's side and drop our commit and its test
 (`posterize_and_threshold_keep_the_16_bit_sample_grid_in_committed_pixels`).
+
+## Camera Raw bars: uncompiled design batch (2026-10-16)
+
+Owner requested seven native chrome corrections against the supplied ACR 18.6 reference: Curve selectors, White balance combo/dropper, Profile/browser glyph, Edit controls, metadata row, filled corner histogram triangles and top actions. Work is in companion camera_raw_ui.rs, new child module camera_raw_bars_ui.rs, camera_raw_scope_ui.rs, camera_raw_workspace_ui.rs and camera_raw_design.rs. New visual metrics are documented in design/camera-raw/README.md but not added to active layout.json because the running executable rejects unknown properties. The previous section border correction was rebuilt at owner request; the new bar batch has NOT been compiled. Rustfmt and git diff --check pass; added tests await execution. Additional camera profiles, Auto, HDR and tutorials remain disabled, rather than pretending processing parity. B&W reuses saturation, and a neutral picker uses the existing relative gain model. Preserve target/release/photocraft.exe: no hosted promotion or new handoff regression claim. No new upstream integration performed in this continuation; another agent is working independently elsewhere.
+
+### Native bar rebuild authorized and launched (2026-10-16)
+
+Owner requested the quick rebuild. Cached dev build passed in 3m08s and scripts/preview_camera_raw.ps1 launched the rebuilt native preview (PID 49864). Executable SHA256 A302F1C84B5931449875F02E195BCA09CB6B7971CF02463CC55EC2D274C27CF0. The previous preview remains running, with its executable preserved as target/debug/photocraft-before-bars-64192.exe. No hosted promotion. Unit tests and screenshot parity validation remain pending; compilation success is not a claim of exact visual parity.
