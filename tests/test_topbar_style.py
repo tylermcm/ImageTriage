@@ -55,7 +55,6 @@ class TopbarStyleTests(unittest.TestCase):
         self.assertEqual(Qt.ToolButtonStyle.ToolButtonIconOnly, button.toolButtonStyle())
         self.assertEqual("appTopBarIconButton", button.objectName())
         self.assertEqual(38, button.width())
-        self.assertEqual(38, button.height())
         self.assertEqual(36, MainWindow.TOPBAR_SLOT_CELL_MIN)
         self.assertEqual(4, MainWindow.TOPBAR_SLOT_SPACING)
 
@@ -68,10 +67,13 @@ class TopbarStyleTests(unittest.TestCase):
         self.assertEqual(2, content.x())
         self.assertEqual(2, content.y())
         self.assertEqual(34, content.width())
-        self.assertEqual(34, content.height())
         self.assertEqual(22, glyph.height())
         self.assertEqual(22, glyph.iconSize().height())
-        self.assertEqual(12, caption.height())
+        # The caption row holds a full line of its font, so p, g and y keep their descenders.
+        self.assertGreaterEqual(caption.height(), caption.fontMetrics().height())
+        self.assertGreaterEqual(caption.height(), 14)
+        self.assertEqual(glyph.height() + caption.height(), content.height())
+        self.assertEqual(content.height() + 4, button.height())
         self.assertEqual("Review", caption.text())
         self.assertEqual("Review", button.accessibleName())
         self.assertEqual(Qt.FocusPolicy.TabFocus, button.focusPolicy())
