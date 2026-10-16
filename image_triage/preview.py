@@ -289,6 +289,7 @@ class PreviewPane(QWidget):
         self._active = False
         self._frame_visible = True
         self._studio = False
+        self.shown_path = ""  # the photo whose picture image_label holds (see FullScreenPreview._render_pane)
         self.setObjectName("previewPane")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._theme = default_theme()
@@ -730,6 +731,7 @@ class FullScreenPreview(QDialog):
         self._settings = user_settings()
         self._manual_zoom = False
         self._zoom_scale = 1.0
+        self._zoom_long_edges: dict[str, int] = {}
         self._focus_assist_enabled = self._settings.value(self.FOCUS_ASSIST_ENABLED_KEY, False, bool)
         self._focus_assist_color = focus_assist_color_by_id(
             self._settings.value(self.FOCUS_ASSIST_COLOR_KEY, DEFAULT_FOCUS_ASSIST_COLOR_ID, str)
@@ -771,6 +773,7 @@ class FullScreenPreview(QDialog):
         self._preview_cache_bytes = 0
         self._preview_cache_limit = 320 * 1024 * 1024
         self._pending_cache_keys: set[tuple[object, ...]] = set()
+        self._preload_wanted: frozenset[str] = frozenset()  # the paths of the latest preload batch (see preload_paths)
         self._pending_metadata_requests: set[tuple[int, int, str, bool]] = set()
         self._preload_batch_size = self.DEFAULT_PRELOAD_BATCH_SIZE
         self._current_placeholder_flags: list[bool] = []
@@ -1764,7 +1767,9 @@ class FullScreenPreview(QDialog):
     def refresh_filmstrip(self) -> None:
         """Repopulate filmstrip thumbs soon (debounced); used by the owner when
         async thumbnails finish loading."""
-        if getattr(self, "_studio_layout_active", False) and self.isVisible():
+        if getattr(self, "_studio_layout_active", False) and self.isVisible() and not self._filmstrip_refresh_timer.isActive():
+            # Throttle, not debounce: restarted by every arrival, the timer never fired while a folder's thumbnails kept
+            # streaming in, and the strip stayed on placeholders until a key press drew it.
             self._filmstrip_refresh_timer.start()
 
     def _refresh_studio_filmstrip(self) -> None:
@@ -2530,6 +2535,7 @@ class FullScreenPreview(QDialog):
         self._focused_slot = 0
         self._manual_zoom = False
         self._zoom_scale = 1.0
+        self._zoom_long_edges.clear()
         self._pending_zoom_refresh_slots = []
         self._deferred_zoom_refreshes.clear()
         self._zoom_request_timer.stop()
@@ -3330,6 +3336,30 @@ class FullScreenPreview(QDialog):
                 zoom_refresh=zoom_refresh,
             )
 
+    def _adopt_late_image(self, request: PreviewRequest, image: QImage) -> None:
+        """A decode of a photo on screen landed from a request other than the photo's current one (a preload, or a request
+        made before a re-request): show it if the photo has nothing yet, instead of leaving it cached and unseen until its own
+        decode lands. While flipping fast through raws on a network share that own decode can be queued behind running
+        preloads for seconds, and the photo sat on "Loading" with its picture already in memory."""
+        if image.isNull():
+            return
+        for slot, entry in enumerate(self._entries):
+            if entry.source_path != request.path or request.apply_saved_edits != (entry.label != "Before"):
+                continue
+            if slot >= len(self._current_images) or not self._current_images[slot].isNull():
+                continue
+            self._current_images[slot] = image
+            if slot < len(self._current_image_display_tokens):
+                self._current_image_display_tokens[slot] = self._fits_display_cache_key_for_path(
+                    request.path, request.fits_display_settings,
+                )
+            if slot < len(self._current_placeholder_flags):
+                self._current_placeholder_flags[slot] = False
+            self._render_pane(slot)
+            if slot == self._focused_slot:
+                self._schedule_analysis_panel_update()
+                self._update_mockup_image_info()
+
     def _drain_results(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
@@ -3398,6 +3428,8 @@ class FullScreenPreview(QDialog):
                 self._cache_preview_image(cache_key, image)
                 if metadata is not None:
                     self._metadata_cache[request.path] = metadata
+                if request.cache_only or request.token != self._load_token:
+                    self._adopt_late_image(request, image)
             if request.cache_only:
                 processed += 1
                 continue
@@ -3498,6 +3530,10 @@ class FullScreenPreview(QDialog):
                 )
             return
         queued = 0
+        # A preload still waiting for a worker when the user has moved on is dropped (see PreviewTask.is_current): flipping
+        # fast through a folder queued a batch per step, and those stale decodes held the workers the photo on screen needed.
+        wanted = frozenset(path for path in paths[:max_paths] if path)
+        self._preload_wanted = wanted
         for index, path in enumerate(paths[:max_paths]):
             if not path:
                 continue
@@ -3531,6 +3567,7 @@ class FullScreenPreview(QDialog):
                     queued_at_perf=time.perf_counter() if logger.enabled else 0.0,
                 ),
                 self._result_queue,
+                is_current=lambda path=path: path in self._preload_wanted,
             )
             self._pool.start(task, -20 - index)
         if not self._drain_timer.isActive():
@@ -3674,16 +3711,32 @@ class FullScreenPreview(QDialog):
             pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             current_pixmap = pane.image_label.pixmap()
             target = self._fit_target_size(pane)
+            # Keep what is up only while it is this photo's: kept regardless, the previous photo stayed under the next one's
+            # ring in the filmstrip until its decode landed (seconds for a raw on a network share).
             has_stable_pixmap = (
                 current_pixmap is not None
                 and not current_pixmap.isNull()
+                and pane.shown_path == entry.source_path
                 and pane.image_label.width() <= target.width() + 4
                 and pane.image_label.height() <= target.height() + 4
             )
-            if not has_stable_pixmap:
+            stand_in = entry.placeholder_image
+            if has_stable_pixmap:
+                pass
+            elif stand_in is not None and not stand_in.isNull():
+                # This photo's grid thumbnail, fitted, until its decode lands.
+                pixmap = QPixmap.fromImage(
+                    stand_in.scaled(target, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                )
+                pane.image_label.setText("")
+                pane.image_label.setPixmap(pixmap)
+                pane.image_label.resize(pixmap.size())
+                pane.shown_path = entry.source_path
+            else:
                 pane.image_label.resize(target)
                 pane.image_label.clear()
                 pane.image_label.setText("Loading full preview...")
+                pane.shown_path = ""
             if slot < len(self._rendered_display_keys):
                 self._rendered_display_keys[slot] = None
             if logger.enabled:
@@ -3703,23 +3756,15 @@ class FullScreenPreview(QDialog):
         """Scale ``display_image`` to fit/zoom and set it on the pane. Split out
         of _render_pane so the async render delivery can present a freshly
         rendered image without recomputing the pipeline."""
+        pane.shown_path = entry.source_path
         if self._manual_zoom:
             viewport_center = self._pane_viewport_center(pane)
             pane.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-            # Zoom is relative to the loaded image's pixels. An edited frame is
-            # capped at EDITOR_PREVIEW_MAX_EDGE, so size it from the source
-            # (same aspect) or it would lay out smaller and flash out of zoom.
-            layout_size = display_image.size()
-            if 0 <= slot < len(self._current_images):
-                source = self._current_images[slot]
-                if (
-                    not source.isNull()
-                    and source.size() != layout_size
-                    and abs(source.width() * layout_size.height() - source.height() * layout_size.width())
-                    <= max(source.width(), source.height())
-                ):
-                    layout_size = source.size()
+            # Zoom is relative to the photo's full size (see _zoom_long_edge), not to whichever decode is loaded: the
+            # decode grows as you zoom in, and sizing from it applied the zoom twice once the sharper one landed.
+            long_edge = self._zoom_long_edge(slot) or max(display_image.width(), display_image.height())
+            layout_size = display_image.size().scaled(long_edge, long_edge, Qt.AspectRatioMode.KeepAspectRatio)
             scaled_size = QSize(
                 max(1, int(round(layout_size.width() * self._zoom_scale))),
                 max(1, int(round(layout_size.height() * self._zoom_scale))),
@@ -3981,6 +4026,7 @@ class FullScreenPreview(QDialog):
         pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         pane.image_label.resize(self._fit_target_size(pane))
         pane.image_label.clear()
+        pane.shown_path = ""
         if slot < len(self._rendered_display_keys):
             self._rendered_display_keys[slot] = None
         pane.image_label.setText(f"Failed\n{message}")
@@ -3993,9 +4039,6 @@ class FullScreenPreview(QDialog):
         slack = 0 if getattr(self, "_studio_layout_active", False) else 8
         width = max(1, viewport.width() - slack)
         height = max(1, viewport.height() - slack)
-        if (getattr(self, "_studio_layout_active", False) and len(self._entries) <= 1
-                and not self._compare_mode):
-            width = min(width, popout_ratios.ratio_px(popout_ratios.PHOTO_MAX_W, self.width()))
         return QSize(width, height)
 
     def _decode_target_size(self, slot: int) -> QSize:
@@ -4014,13 +4057,15 @@ class FullScreenPreview(QDialog):
                 max(1, int((window_size.width() - sidebar_width) / columns) - 48),
                 max(1, window_size.height() - 188),
             )
-        if self._manual_zoom and slot == self._focused_slot:
-            zoom_scale = max(1.0, self._zoom_scale)
-            overscan = 1.25 if len(self._entries) <= 1 else 1.15
+        long_edge, exact = self._zoom_long_edge_and_exactness(slot)
+        if self._manual_zoom and slot == self._focused_slot and long_edge:
+            # Enough pixels for the zoomed size, and never less than the fit decode. With the real full size known, never
+            # more than the photo has; without it, the decoder stops at what the photo has.
+            wanted = round(long_edge * (min(1.0, self._zoom_scale) if exact else self._zoom_scale))
             max_edge = 8192 if len(self._entries) <= 1 else 6144
             return QSize(
-                min(max_edge, max(1, int(round(fit_target.width() * zoom_scale * overscan)))),
-                min(max_edge, max(1, int(round(fit_target.height() * zoom_scale * overscan)))),
+                min(max_edge, max(wanted, int(round(fit_target.width() * 1.25)))),
+                min(max_edge, max(wanted, int(round(fit_target.height() * 1.25)))),
             )
         overscan = 1.25 if len(self._entries) <= 1 else 1.12
         max_edge = 3840 if len(self._entries) <= 1 else 2560
@@ -4171,20 +4216,36 @@ class FullScreenPreview(QDialog):
             _image, cost = self._preview_cache.pop(key)
             self._preview_cache_bytes -= cost
 
+    def _zoom_long_edge(self, slot: int) -> int:
+        """The long edge, in pixels, of the photo in ``slot`` at full size: zoom percentages refer to it (100% is one screen
+        pixel per photo pixel). 0 while nothing is loaded. See _zoom_long_edge_and_exactness."""
+        return self._zoom_long_edge_and_exactness(slot)[0]
+
+    def _zoom_long_edge_and_exactness(self, slot: int) -> tuple[int, bool]:
+        """The long edge zoom refers to, and whether it is the photo's real full size. That comes from the metadata, unless
+        the metadata is smaller than a decode already is: a NEF's says 160 x 120, its thumbnail. Otherwise the first decode
+        seen for the photo stands in, kept so that a sharper decode arriving while zoomed does not change what the zoom means."""
+        if not 0 <= slot < len(self._current_images) or self._current_images[slot].isNull():
+            return 0, False
+        image = self._current_images[slot]
+        decoded = max(image.width(), image.height())
+        metadata = self._current_metadata[slot] if slot < len(self._current_metadata) else EMPTY_METADATA
+        known = max(int(metadata.width or 0), int(metadata.height or 0))
+        if known >= decoded:
+            return known, True
+        path = self._entries[slot].source_path if slot < len(self._entries) else ""
+        return self._zoom_long_edges.setdefault(path, decoded), False
+
     def _fit_scale_threshold(self) -> float:
+        """The zoom (as _zoom_long_edge means it) at which the photo fits the viewer: zooming in starts from here."""
         scales: list[float] = []
         for slot, image in enumerate(self._current_images):
-            if image.isNull():
+            long_edge = self._zoom_long_edge(slot)
+            if not long_edge:
                 continue
-            pane = self._panes[slot]
-            target = self._fit_target_size(pane)
-            scales.append(
-                min(
-                    1.0,
-                    target.width() / max(1, image.width()),
-                    target.height() / max(1, image.height()),
-                )
-            )
+            full = image.size().scaled(long_edge, long_edge, Qt.AspectRatioMode.KeepAspectRatio)
+            target = self._fit_target_size(self._panes[slot])
+            scales.append(min(target.width() / max(1, full.width()), target.height() / max(1, full.height())))
         return max(scales, default=1.0)
 
     def _toggle_zoom(self) -> None:

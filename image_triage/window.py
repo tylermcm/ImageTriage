@@ -128,7 +128,7 @@ from .preview_controller import PreviewController
 from .help_update_controller import HelpUpdateController
 from .export_jobs_controller import ExportJobsController
 from .appearance_controller import AppearanceController
-from .toolbar_controller import ToolbarController
+from .toolbar_controller import ToolbarController, resize_topbar_button
 from .zen_controller import ZenController
 from .tool_mode_controller import ToolModeController
 from .ai_run_controller import AiRunController
@@ -2286,25 +2286,7 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _resize_topbar_button(button: QToolButton, profile: DisplayProfile) -> None:
         """Resize an existing composite top-bar button without rebuilding it."""
-
-        hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
-        hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
-        button.setFixedSize(hover_width, hover_height)
-        content = button.findChild(QWidget, "appTopBarButtonContent")
-        if content is not None:
-            content.setGeometry(
-                profile.topbar_hover_margin,
-                profile.topbar_hover_margin,
-                profile.topbar_slot_button_width,
-                profile.topbar_button_height,
-            )
-        glyph = button.findChild(QToolButton, "appTopBarGlyph")
-        if glyph is not None:
-            glyph.setIconSize(QSize(profile.topbar_glyph_size, profile.topbar_glyph_size))
-            glyph.setFixedSize(profile.topbar_slot_button_width, profile.topbar_glyph_size)
-        caption = button.findChild(QLabel, "appTopBarButtonCaption")
-        if caption is not None:
-            caption.setFixedSize(profile.topbar_slot_button_width, profile.topbar_caption_height)
+        resize_topbar_button(button, profile)
 
     @staticmethod
     def _trim_icon_transparency(icon: QIcon, *, padding: int = 3) -> QIcon:
