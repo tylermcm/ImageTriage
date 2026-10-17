@@ -177,6 +177,13 @@ class ProjectsController(QObject):
         self._window._folder_session.scope_id = scope_id
         self._scope_label = label
         self.apply_scope_label()
+        catalog = getattr(self._window, "_catalog", None)
+        if catalog is not None and catalog.active_collection_id():
+            catalog.refresh_collection_markers()  # tiles drop the collection tag inside that collection
+
+    def viewing_collection(self, collection_id: str) -> bool:
+        session = self._window._folder_session
+        return bool(collection_id) and session.scope_kind == "collection" and session.scope_id == collection_id
 
     def current_scope_key(self) -> str:
         if self._window._scope_kind == "folder":
@@ -360,46 +367,53 @@ class ProjectsController(QObject):
 
     def show_projects_context_menu(self, point) -> None:
         panel = self._window.projects_list
-        item = panel.itemAt(point)
-        collection_id = self.project_id_for_item(item)
-        menu = QMenu(panel)
+        menu = self.build_projects_context_menu(self.project_id_for_item(panel.itemAt(point)))
+        menu.exec(panel.viewport().mapToGlobal(point))
+        menu.deleteLater()
+
+    def build_projects_context_menu(self, collection_id: str) -> QMenu:
+        menu = QMenu(self._window.projects_list)
         menu.addAction(self._window.actions.create_virtual_collection)
         if collection_id:
             catalog = self._window._catalog
             menu.addSeparator()
-            open_action = menu.addAction("Open collection")
-            open_action.triggered.connect(
-                lambda _checked=False, target=collection_id: catalog.open_virtual_collection(target)
-            )
+            inside = self.viewing_collection(collection_id)
+            if not inside:
+                open_action = menu.addAction("Open collection")
+                open_action.triggered.connect(
+                    lambda _checked=False, target=collection_id: catalog.open_virtual_collection(target)
+                )
             edit_action = menu.addAction("Edit...")
             edit_action.triggered.connect(lambda _checked=False, target=collection_id: catalog.edit_collection(target))
-            add_selected = menu.addAction("Add selection here")
-            add_selected.setEnabled(self._window.grid.current_index() >= 0)
-            add_selected.triggered.connect(
-                lambda _checked=False, target=collection_id: catalog.add_selected_to_collection(collection_id=target)
-            )
-            visible_count = sum(1 for record in self._window._records if not record.is_folder)
-            add_visible = menu.addAction(f"Add all {visible_count} visible here")
-            add_visible.setEnabled(visible_count > 0)
-            add_visible.triggered.connect(
-                lambda _checked=False, target=collection_id: catalog.add_visible_to_collection(collection_id=target)
-            )
-            if catalog.active_collection_id() == collection_id:
-                active_action = menu.addAction("Stop adding new winners here")
-                active_action.triggered.connect(catalog.clear_active_collection)
-            else:
-                active_action = menu.addAction("Add new winners here")
-                active_action.triggered.connect(
-                    lambda _checked=False, target=collection_id: catalog.set_active_collection(target)
+            add_actions = []
+            # Inside the collection everything on screen is already in it, so there is nothing to add.
+            if not inside:
+                add_selected = menu.addAction("Add selection here")
+                add_selected.setEnabled(self._window.grid.current_index() >= 0)
+                add_selected.triggered.connect(
+                    lambda _checked=False, target=collection_id: catalog.add_selected_to_collection(collection_id=target)
                 )
+                visible_count = sum(1 for record in self._window._records if not record.is_folder)
+                add_visible = menu.addAction(f"Add all {visible_count} visible here")
+                add_visible.setEnabled(visible_count > 0)
+                add_visible.triggered.connect(
+                    lambda _checked=False, target=collection_id: catalog.add_visible_to_collection(collection_id=target)
+                )
+                add_actions = [add_selected, add_visible]
+            active_action = menu.addAction("New winners go here")
+            active_action.setCheckable(True)
+            active_action.setChecked(catalog.active_collection_id() == collection_id)
+            active_action.toggled.connect(
+                lambda on, target=collection_id: catalog.set_active_collection(target) if on else catalog.clear_active_collection()
+            )
             if self._window._collection_mode:
-                for action in (add_selected, add_visible, active_action):
+                for action in (*add_actions, active_action):
                     action.setEnabled(False)
             export_action = menu.addAction("Export...")
             export_action.triggered.connect(lambda _checked=False, target=collection_id: catalog.export_collection(target))
             menu.addAction(self._window.actions.remove_selection_from_collection)
             menu.addAction(self._window.actions.delete_virtual_collection)
-        menu.exec(panel.viewport().mapToGlobal(point))
+        return menu
 
     def refresh_collections_menu(self) -> None:
         self.refresh_projects_panel()

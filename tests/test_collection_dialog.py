@@ -14,7 +14,7 @@ from image_triage.ui.collection_ring import COLLECTION_COLORS
 
 
 class CollectionEditDialogTests(unittest.TestCase):
-    """The New Collection / Edit Collection window: name, color, add new winners here, fill hints."""
+    """The New Collection / Edit Collection window: name, color, new winners go here, fill hints."""
 
     @classmethod
     def setUpClass(cls) -> None:

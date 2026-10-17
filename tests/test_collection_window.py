@@ -70,6 +70,36 @@ def test_edit_collection_items_is_gone(main_window) -> None:
     assert not hasattr(main_window.actions, "add_selection_to_collection")
 
 
+def test_inside_the_collection_the_tag_and_add_items_go_away(main_window) -> None:
+    window = main_window
+    catalog, projects = window._catalog, window._projects
+    session = window._folder_session
+    old_scope = (session.scope_kind, session.scope_id)
+
+    def menu_texts(collection_id):
+        menu = projects.build_projects_context_menu(collection_id)
+        texts = [action.text() for action in menu.actions() if action.text()]
+        menu.deleteLater()
+        return texts
+
+    collection = window._library_store.create_collection(name="Claire")
+    window._library_store.add_paths_to_collection(collection.id, ["C:/shots/a.jpg"])
+    catalog.set_active_collection(collection.id, show_message=False)
+    try:
+        assert window.grid._active_collection_keys, "outside it, members carry the tag"
+        outside = menu_texts(collection.id)
+        assert "Add selection here" in outside and "Open collection" in outside and "New winners go here" in outside
+
+        projects.set_scope_state(kind="collection", scope_id=collection.id, label="Collection: Claire")
+        assert not window.grid._active_collection_keys, "inside it, the tag would only repeat the collection's name"
+        inside = menu_texts(collection.id)
+        assert not any(text.startswith("Add ") for text in inside) and "Open collection" not in inside
+        assert "New winners go here" in inside and "Edit..." in inside
+    finally:
+        catalog.set_active_collection("", show_message=False)
+        projects.set_scope_state(kind=old_scope[0], scope_id=old_scope[1])
+
+
 def test_older_library_gains_a_color_column(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("IMAGE_TRIAGE_APPDATA", str(tmp_path))
     db = Path(tmp_path) / "ImageTriage" / "library.sqlite3"
