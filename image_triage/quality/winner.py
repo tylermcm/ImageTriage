@@ -151,11 +151,18 @@ def load_winner_inputs(
                 row = None
             model_version = row["model_version"] if row else None
 
+        # A folder database written before these columns existed just has no base score.
+        image_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(images)")}
+        base_columns = [f"images.{name}" for name in ("final_score", "technical_score") if name in image_columns]
+        if len(base_columns) > 1:
+            base_expression = f"COALESCE({', '.join(base_columns)})"
+        else:
+            base_expression = base_columns[0] if base_columns else "NULL"
         all_rows = connection.execute(
-            """
+            f"""
             SELECT images.id AS image_id, embeddings.embedding AS emb, embeddings.dtype AS dt,
                    adapter_scores.adapter_score AS global_score,
-                   COALESCE(images.final_score, images.technical_score) AS base_score
+                   {base_expression} AS base_score
             FROM images
             JOIN embeddings ON embeddings.image_id = images.id
             LEFT JOIN adapter_scores
