@@ -249,7 +249,7 @@ from .ui import (
     show_paged_help,
 )
 from .ui.busy_overlay import BusyOverlay
-from .ui.display_metrics import DisplayProfile, normalize_display_profile_preference
+from .ui.display_metrics import TOPBAR_BUTTON_EXTRA_PX, DisplayProfile, normalize_display_profile_preference
 from .ui.backdrop import paint_backdrop
 from .pocketdrop import PocketDropPanel
 from .ui import layout_ratios
@@ -552,8 +552,8 @@ class MainWindow(QMainWindow):
     # the live top-bar width; anything beyond that count goes into More.
     TOPBAR_SLOT_COUNT = 35
     TOPBAR_SLOT_CELL_MIN = 36
-    TOPBAR_SLOT_BUTTON_WIDTH = 34
-    TOPBAR_SLOT_SPACING = WORKSPACE_METRICS.space_4
+    TOPBAR_SLOT_BUTTON_WIDTH = 34 + TOPBAR_BUTTON_EXTRA_PX
+    TOPBAR_SLOT_SPACING = max(1, WORKSPACE_METRICS.space_4 - TOPBAR_BUTTON_EXTRA_PX)
     TOPBAR_INITIAL_VISIBLE_SLOTS = 8
     # Items that may appear more than once and are exempt from de-duplication
     # (a visual divider is inert and you can drop as many as you like).
