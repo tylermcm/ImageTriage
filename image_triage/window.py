@@ -3056,8 +3056,10 @@ class MainWindow(QMainWindow):
         return None
 
     def _is_winners_folder(self, folder: str | None = None) -> bool:
-        target = folder or self._current_folder
-        return bool(target) and Path(target).name.lower() == "_winners"
+        # Winners are marks now, never copies in a _winners folder (docs/winners_collections_redesign.md),
+        # so an existing _winners folder is browsed and culled like any other folder.
+        del folder
+        return False
 
     def _is_recycle_folder(self, folder: str | None = None) -> bool:
         target = folder or self._current_folder

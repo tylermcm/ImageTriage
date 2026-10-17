@@ -71,7 +71,7 @@ class ApplyAIDecisionsDialog(QDialog):
 
         header = QLabel(
             "This will organize the current folder using the loaded AI review.\n\n"
-            f"- Move {len(self.ai_pick_records)} AI Pick image(s) into _winners\n"
+            f"- Mark {len(self.ai_pick_records)} AI Pick image(s) as winners (no files move)\n"
             f"- Move {len(self.reject_records)} Reject image(s) into the program recycle bin\n"
             f"- Leave {self.keeper_count} Keeper image(s) and {self.review_count} Needs Review "
             "image(s) for manual follow-up",
@@ -82,7 +82,7 @@ class ApplyAIDecisionsDialog(QDialog):
 
         if self.ai_pick_records:
             root.addWidget(
-                self._build_section(f"AI Pick → _winners ({len(self.ai_pick_records)})", self.ai_pick_records),
+                self._build_section(f"AI Pick → Winner ({len(self.ai_pick_records)})", self.ai_pick_records),
                 1,
             )
         if self.reject_records:

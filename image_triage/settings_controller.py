@@ -474,11 +474,8 @@ class SettingsController(QObject):
         self._window.statusBar().showMessage(f"Applied workspace preset: {preset.name}")
 
     def load_winner_mode(self) -> WinnerMode:
-        raw = self._window._settings.value(self._window.WINNER_MODE_KEY, WinnerMode.COPY.value, str)
-        for mode in WinnerMode:
-            if raw in {mode.name, mode.value}:
-                return mode
-        return WinnerMode.COPY
+        # Marking a winner never copies or links files any more; a saved Copy/Link preference is ignored.
+        return WinnerMode.LOGICAL
 
     def load_delete_mode(self) -> DeleteMode:
         raw = self._window._settings.value(self._window.DELETE_MODE_KEY, DeleteMode.SAFE_TRASH.value, str)
@@ -506,9 +503,8 @@ class SettingsController(QObject):
             session_id = " ".join(str(item.get("session_id") or name).split())
             if not name or name.casefold() in seen:
                 continue
-            winner_raw = str(item.get("winner_mode") or WinnerMode.COPY.value)
             delete_raw = str(item.get("delete_mode") or DeleteMode.SAFE_TRASH.value)
-            winner_mode = next((mode for mode in WinnerMode if winner_raw in {mode.name, mode.value}), WinnerMode.COPY)
+            winner_mode = WinnerMode.LOGICAL  # presets saved with Copy/Link To _winners now just mark
             delete_mode = next((mode for mode in DeleteMode if delete_raw in {mode.name, mode.value}), DeleteMode.SAFE_TRASH)
             presets.append(
                 WorkflowPreset(
@@ -858,6 +854,7 @@ class SettingsController(QObject):
         phash_prefilter_changed = result.phash_prefilter_settings.normalized() != self._window._phash_prefilter_settings
 
         self._window._folder_session.session_id = new_session
+        # Always WinnerMode.LOGICAL: the dialog no longer offers Copy/Link To _winners.
         self._window._winner_mode = result.winner_mode
         self._window._delete_mode = result.delete_mode
         # Only overwrite the saved preference when the user actively changed it,
