@@ -504,51 +504,6 @@ end-to-end run, clean-PC MSI upgrade/install, complete desktop/UI integration
 suites, wasm, clippy, corpus or performance gates. Audit logs/artifacts:
 `C:\Users\Checkout\AppData\Local\Temp\image_triage_audit_20261014`.
 
-## Source sync - 2026-10-14 (upstream tip; executable unchanged)
-
-Image Triage `main` at `ac4693d2071d0089b2342b3dfc05aad5d6b95bd8` already matched freshly fetched
-`origin/main`. The untracked `codex_briefing/` folder was preserved.
-
-PhotoCraft's configured `origin` is the user's fork, not storytold; there is no `fork` remote.
-Fetched that origin and fetched storytold's `main` directly into `refs/remotes/session-upstream/main`.
-The initial sandboxed fetches failed with `FETCH_HEAD: Permission denied`; the subsequent authorized
-fetches of both repositories and upstream succeeded. No pushes were made.
-
-The clean integration checkout began at `e0569ef00dd1c77d07d4f7ec02ef61588e497361`, also the fetched
-fork integration tip. Reviewed and fast-forwarded the fork's `scratch/upstream-merge-2026-10-14`
-at `c105a3f7683c830606004106115ce96c09c0bcde`: it carries release 0.9.0 and an upstream merge through
-`620bccef42b389d0735e753eb8a2f688a7092045`, plus scoped full-render requests, render manifests,
-recipe/render consistency and hosted RAW/cache fixes. The previous upstream base at session start
-was `99e1138877e6aa7e856c6883b415e708d042fc59`; the newly fetched tip is
-`7bb10a77591c14bc426155594b904e2b45ab5159` (172 upstream commits since that base, 62 beyond the
-fork's latest merge). Merged that fetched tip as `6b841d56b8054bdf9f551e0e086babc93bead2d0` on `codex/image-triage-integration`.
-
-Four conflicted files, resolved individually:
-- `crates/engine/src/pixels.rs` and `pixels_tests.rs`: take upstream's implementation and tests;
-  upstream now supplies the fork's 16-bit Posterize/Threshold fix, plus additional CMYK fixes.
-- `crates/raw/src/nefc.rs`: take upstream's decoder and documentation, replacing our equivalent
-  Nikon lossy `0x44 0x40` curve-spacing patch while retaining upstream's other decoder work.
-- `crates/ui-egui/src/lib.rs`: retain hosted `control_files` and `control_render` modules alongside
-  upstream's new `corner_radius` module.
-
-Reviewed automatic merges in native services, UI control/menus and automation authorization:
-upstream's shared export-options conversion and new tool/menu behavior remain; hosted Save still
-uses scoped I/O, and background read/write callbacks remain capability-scoped. The new ambient
-brush-image import path is denied by upstream's authorization gate. Startup/window-frame/theme/job
-hooks did not change in this final upstream merge; checked that hidden startup still follows the
-restore/centre decision, disables standalone chrome, and that host snapshot/job hooks remain.
-The hosted Camera Raw layout and compositor warmup remain host-specific.
-
-Validation: rustfmt, whitespace checks and cargo xtask layers passed (29 crates, no violations). The desktop compile check passed
-(cargo check -p photocraft -j 4, 11 min 20 s). The initial offline compile could not
-resolve the new pinned printing dependency; the successful check fetched missing dependencies.
-The companion craftrules checkout is absent here.
-Only the native Rust target is installed. No release build or executable promotion is part of
-this source pull: `target/release/photocraft.exe` and the known-good copies remain untouched.
-The full native tests, clippy, wasm/corpus checks and live Image Triage handoff (filmstrip,
-stash/restore, native Save/grid propagation, tab reopen, hidden start, theme/resize/fullscreen,
-shutdown and child cleanup) must pass before a new editor executable is promoted.
-
 ## Quick handoff - 2026-10-14 (later: the editor is inside the installer; release 2.3.1)
 
 Image Triage `main` at the 2.3.1 commit; fork unchanged at `e0569ef0`. Laptop.
@@ -1809,3 +1764,238 @@ Owner requested seven native chrome corrections against the supplied ACR 18.6 re
 ### Native bar rebuild authorized and launched (2026-10-16)
 
 Owner requested the quick rebuild. Cached dev build passed in 3m08s and scripts/preview_camera_raw.ps1 launched the rebuilt native preview (PID 49864). Executable SHA256 A302F1C84B5931449875F02E195BCA09CB6B7971CF02463CC55EC2D274C27CF0. The previous preview remains running, with its executable preserved as target/debug/photocraft-before-bars-64192.exe. No hosted promotion. Unit tests and screenshot parity validation remain pending; compilation success is not a claim of exact visual parity.
+
+## 2026-10-16 — JSON overlay parity resumed
+
+Both user origins fetched successfully and integration branches were current.
+PhotoCraft upstream fetched: old integrated base
+b630d7cb9aeb2a79ab5224ebf6e8266f1d858873, new upstream tip
+2a952f16 (28 commits). Merge conflicted in apps/photocraft/src/main.rs and
+crates/ui-egui/src/gpu_canvas.rs. Owner requested skipping conflicting updates;
+merge aborted, preserving 0f488ea3. No resolution or integration claimed.
+
+Existing debug executable launched with isolated profile and synthetic fixture.
+All 19 references hashed in companion design/camera-raw/reference-inventory.json.
+Reference 10 full-dock overlays show histogramHeight=124 and metadataHeight=24
+close the 8-pixel downstream offset. Measured separators now align within 1-2
+reference pixels. Evidence/crop anchors: companion README and local
+target/acr18/parity-20261016. Every-tab/every-element parity remains incomplete.
+No rebuild, hosted promotion, full handoff validation or processing parity claim.
+
+### Native support authorized; Grading overlay follow-up
+
+Owner explicitly authorized native UI support for missing reference screens.
+Companion now has reference-wide observed-control inventory and baseline captures
+for Curve, Mixer, Grading, Detail, collapsed Edit and Info. Before overlays for
+references 7/11/12/14 retain uniform full-dock scaling and missing coverage.
+Grading glyph-selector enabling build passed (3m42s), launched isolated preview
+PID 45928/control 57832. Its executable is preserved under
+ target/debug/photocraft-parity-selectors-45928.exe. Old owned preview 21876 stopped.
+The overlay exposed incorrect wheel artwork brightness and extra luminance fields.
+Follow-up source adds display-referred HSV wheel art and compact editable tracks,
+with geometry/color/interaction tests; these latest edits remain unvalidated.
+
+Live test/build handles and exact commands are recorded in companion
+ target/acr18/parity-20261016/active-work.json. Test session 16583 was compiling;
+build session 15032 queued behind its target lock. Revalidate their live state
+before deciding to restart. Rerun current-source tests if the first compilation
+read earlier source. Clippy, current xtask layers/wasm and fresh wheel overlay
+remain outstanding. Cached xtask.exe is stale (did not know web-boot); its layers
+output is not a current validation result. No hosted promotion/full parity claim.
+
+### Wheel build captured; verification continues
+
+Wheel follow-up build passed in 7m57s. Preview PID 65360/control 57833 uses
+isolated parity-profile-v3 and synthetic fixture. Prior owned preview45928 was
+stopped after validating all six new states. Capture script now lives in
+companion scripts/capture_camera_raw.py: all six screenshots retained identical
+photo parameters/document revision and restored original layout bytes.
+
+Reference-12 fixed wheel-interior mask mean RGB errors improved from
+[46.06,36.53,66.71] to [7.52,7.05,8.52]. This is a narrow visual measurement,
+not full-panel parity. Rail measured80 reference pixels; JSON railWidth40.
+Lower-wheel positions, label offsets, tracks, handles and missing dots/eyes
+remain measured work. Companion grading-next-layout.json records exact bounds.
+
+First camera_raw suite:48 passed/2 failed (geometry test measurement and stale
+i18n source scan). Corrected tests/scanner and added Adjust translations to20
+catalogs. All-target clippy then passed; corrected current-source tests are
+running in session53449 (compiler64460), with fresh layers/wasm queued.
+Offscreen snapshot --raw-workspace flag added after clippy; example build in
+session59323 queued. That flag needs build/render and updated clippy validation.
+No host build, known-good release replacement or handoff promotion.
+
+### Validation passed; next native batch building
+
+Prior wheel batch:52 Camera Raw tests passed, all-target clippy passed, layers
+30-crate check passed, xtask wasm all listed crates passed (4 existing dead-code
+warnings). Offscreen root Camera Raw rendered1440x1400 and full-height overlay
+captured without vertical clipping. Capture runner now checks every requested
+preview field, fixing acceptance of stale pre-reload state. Strict six-state
+recapture verified matching state and unchanged photo parameters/revision.
+
+Latest native source batch adds measured Grading layout controls and a constant
+settings gutter, Info card/metadata/credentials layout and an operational
+in-dialog Snapshots tab. Snapshots are not durable across dialog close/photo
+switch yet; no broader persistence claim. New batch all-target clippy passed;
+example/app builds, tests and fresh overlays pending in session82463. Desktop
+preview65360 remains the preceding wheel build, preserved under
+photocraft-parity-wheel-65360.exe. Active handles/plans are recorded in companion
+ target/acr18/parity-20261016/active-work.json. No hosted release promotion.
+
+## 2026-10-16 — ACR overlay iteration v6 (current 19-reference set)
+
+Resumed the existing native JSON ACR parity work. Read current source and generated
+evidence; old build handle82463 was absent and its recorded compiler/preview
+processes were gone. Current reference set is
+c0f524f7-ece8-4a8b-a8f6-7f0f327cf262. All19 hashes matched the earlier references,
+but numbering differed; companion inventory now preserves legacyImage and uses
+current numbering. Snapshots/Info/Grading are now references1/4/9.
+
+Session update check: initial direct upstream and fork fetches failed with HTTP/2
+stream errors. Both retries with git http.version=HTTP/1.1 succeeded. The configured
+origin still points to the user's fork, with no fork remote, so explicit URLs and
+separate session refs were used. Old integrated upstream base remains
+b630d7cb9aeb2a79ab5224ebf6e8266f1d858873; fetched upstream tip remains
+2a952f164c0b4cf936b1c6497db10dd095341c00 (28 commits pending). Fetched fork
+integration and local integration HEAD both remain
+0f488ea3def930fac9fa46a458225b2b2548aebf. No new fork integration commits.
+The earlier recorded request to skip conflicting updates remains in effect: no
+new merge attempted, conflicts resolved or automatic merge compatibility claimed.
+All existing Camera Raw work preserved; no push or upstream PR.
+
+Native changes refine Info/Snapshots heading alignment, typography and spacing;
+Grading selector group geometry/separators, wheel antialiasing, lower labels,
+luminance tracks/handles and footer spacing. The shared numeric field now paints
+inactive Camera Raw values at the requested left edge while keeping full-width
+click-to-edit and typed arithmetic behavior. Measured geometry remains live JSON.
+
+Validation passed:56 camera_raw library tests,5 camera_raw_workspace integration
+tests, shared widget unit tests, all-target ui-egui clippy -D warnings,30-crate
+xtask layers, and every xtask wasm check. Four existing wasm dead-code warnings.
+Overlay auditor has4 passing Python regression tests. Native snapshot executable
+SHA256 F2832DA7C1285F296FF7F4BA08C6BE72A1C9EF584C9C6373DA85F85FBDA8CEAC.
+All11 supported named states captured at1440x1400 with requested views verified
+and photo parameters/document identity unchanged. Whole-window Info/grid/Edit
+captures and source-sized comparisons for references16-19 also generated.
+
+Evidence and exact current state: companion target/acr18/parity-20261016,
+active-work.json, native-v6-offscreen/capture-report.json and v6 overlay folders.
+64 named element regions are audited across Grading/Info/Snapshots under a single
+registration per comparison; no independent control alignment or image warping.
+They are improved, not pixel-identical. Missing native tabs/sections and individual
+controls are recorded per reference. The full19-reference parity goal remains
+active/incomplete; no full UI or processing parity claim. No desktop editor rebuild,
+hosted executable replacement or live handoff validation/promotion in this batch.
+
+## 2026-10-16 — ACR native sections v8 and Detail v9 follow-up
+
+The v8 native snapshot batch added all ten Edit headers, temporary press-and-hold
+bypass for seven implemented stages, and Optics/Lens Blur/Calibration layouts.
+Unsupported processing remains disabled. Canonical parameters/history/export
+remain unchanged by view-only bypass. Capture ordering now preserves neighboring
+sections; thirteen native states were captured with requested views and invariant
+photo identity. Added 40 collapsed-header and 93 lower-panel element regions.
+V8 passed 58 Camera Raw library tests, 7 workspace tests, all-target clippy,
+30-crate layers, wasm (four existing warnings) and 5 Python auditor tests.
+Snapshot SHA256: 27657465fe8e3fe49c7c4164a6aea28545180bb5eca2dbff90eb7e7b31b6dab8.
+Evidence: companion target/acr18/parity-20261016/native-v8-offscreen and v8 overlays.
+These measurements do not establish complete visual or processing parity.
+
+Fresh session fetches succeeded for upstream and user fork via explicit HTTPS
+URLs and HTTP/1.1. Upstream moved from 2a952f164c0b4cf936b1c6497db10dd095341c00
+to db46713c2ca0140e119956ed695cf92837fc50e3 (45 commits after the integrated base
+b630d7cb9aeb2a79ab5224ebf6e8266f1d858873). Fork integration and local HEAD remain
+0f488ea3def930fac9fa46a458225b2b2548aebf, with no new fork integration work.
+The recorded owner direction to skip conflicting updates still applies; no new
+merge, resolution, or automatic-merge compatibility is claimed. Earlier conflicts
+were apps/photocraft/src/main.rs and crates/ui-egui/src/gpu_canvas.rs.
+
+V9 source adds Detail enhancement rows with unavailable processing, an operational
+Manual Noise Reduction disclosure, procedural focus/Defringe glyphs, responsive
+Bokeh sizing and hard-edged section divider meshes. Validation and fresh overlays
+are pending; active handles are recorded in companion active-work.json.
+Full 19-reference/every-element parity remains active and incomplete. No hosted
+build was replaced, no live handoff promotion was attempted, and nothing pushed.
+
+## 2026-10-17 - PhotoCraft source push checkpoint
+
+Owner requested pushing all PhotoCraft work. Both fetches succeeded. The checkout
+still configures origin as tylermcm/photocraft; fetched that remote and used the
+explicit storytold URL into refs/remotes/upstream/* without changing remotes.
+Previously fetched upstream db46713c2ca0140e119956ed695cf92837fc50e3 advanced to
+5f65579ecb44047c2a619036c18ff273202e1389. Integrated upstream remains
+b630d7cb9aeb2a79ab5224ebf6e8266f1d858873, with 71 upstream commits pending.
+Fetched fork integration matched local pre-commit HEAD 0f488ea3; no new fork-only
+integration commits. This push checkpoint preserves the recorded upstream merge
+deferral; no merge/conflict resolution or automatic-merge validation performed.
+
+Committed all 44 pending PhotoCraft files as 86de9dca (Camera Raw panels,
+translations, reference inventories/regions, capture scripts and regression tests).
+Current checks: 58 Camera Raw library tests, 8 workspace tests and 5 Python tests
+passed; all-target ui-egui clippy, 30-crate layers and xtask wasm passed. Full
+ui-egui suite compiled but its library test process exited with Windows access
+violation 0xc0000005; no full-suite pass claimed. Known-good hosted executable
+preserved; no editor promotion, hosted handoff validation, or full parity claim.
+
+## 2026-10-17 - Resumed every-reference Camera Raw overlay work
+
+Continued on codex/image-triage-integration after requested push86de9dca. Both
+fetches in this session succeeded: fetched upstream5f65579ecb44047c2a619036c18ff273202e1389,
+integrated base remains b630d7cb9aeb2a79ab5224ebf6e8266f1d858873; previous fetched
+upstream db46713c2ca0140e119956ed695cf92837fc50e3. Existing recorded owner deferral
+of conflicting upstream updates retained; no merge/resolution/promotion claimed.
+
+Goal reference set004b6ab0-f1b0-4278-a478-4890b6fff1d0 matches all19 old hashes,
+with changed numbering. Remapped inventory and SHA-bound region specifications.
+Added native Red Eye presentation/live JSON layout; unavailable Camera Raw
+processing correctly disabled. Nine workspace tests and six Python auditor tests
+pass. Native14-state capture verified view/photo invariants. A19-reference audit
+reports235 named regions and13 references without individual audits; no full
+reference is complete. Shared chrome and missing tabs/dialogs remain.
+
+Overlay-driven body font11 matches reference text widths. Grading footer was20px
+early; footer gap14.5 corrected it but shifted Detail20px. Added independent
+Grading bottom padding13 to preserve Detail while moving footer; combined final
+source rebuild/recapture/gates are running in session53266. Preceding lib tests
+33138 and gates29319 were live on inspection. Current evidence/hashes/next steps:
+companion target/acr18/parity-20261017/active-work.json. Current source has not yet
+passed final rebuilt validation. Known-good hosted editor preserved; no native
+handoff promotion, full parity claim, or push of this new batch.
+
+### Verified padding fix; next native Curve batch
+
+Padding build b4c1e230ea47dd4da1875c8e1354b8ff0a3b9ff52b9dd76dc4eb975eee1b6728
+captured14 states with requested-view/photo invariants. Grading footer correction
+keeps Detail's divider: RGB means5.05 and7.16 respectively; no pixel parity claim.
+Added114 Edit and98 Curve/Mixer region specifications, for447 current regions and
+11 references without individual audits. Baseline overlays identify graph width/
+top spacing, missing parametric split strip and early White Balance rows.
+
+New source adds live Curve-specific geometry, functional parametric split handles
+using existing parameters, continuous histogram mesh/frame/grid ink corrections,
+and White Balance bottom gap/chevron. New drag/clamp/history regression test.
+A preceding library run had58 pass/1 missing Not available translation; added the
+translation in20 catalogs. New current-source pipeline95549 is queued/live; check
+80389 and preceding padding pipeline53266 also live on inspection. See companion
+active-work.json for hashes, evidence, scope and next steps. New Curve source has
+not yet passed rebuilt native validation. Known-good hosted executable untouched.
+
+## 2026-10-17 - Push all code checkpoint
+
+Owner requested pushing all code. Fetched Image Triage origin and PhotoCraft's
+configured origin (tylermcm fork) successfully. A fetch of the named fork remote
+failed because that remote is absent; the successful origin fetch covers the user
+fork. Explicit storytold upstream fetch succeeded into refs/remotes/upstream/*.
+Old/new fetched upstream both remain 5f65579ecb44047c2a619036c18ff273202e1389;
+integrated upstream remains b630d7cb9aeb2a79ab5224ebf6e8266f1d858873, with 71
+upstream commits pending. Fork integration matched pre-commit HEAD 86de9dca.
+Preserved the previously recorded owner deferral of conflicting upstream updates;
+no new merge, conflict resolution, or automatic-merge validation performed.
+
+Committed all 51 pending PhotoCraft files as
+00c154c46d4b8bc859aa07548224138d0e9a7c42 and pushed the integration branch to
+https://github.com/tylermcm/photocraft.git. Current Python auditor tests: 6 passed;
+staged diff whitespace check passed. Native Curve batch validation remains pending
+as recorded above; this is a source checkpoint, with no hosted editor promotion
+or full handoff/parity validation claim. Known-good hosted executable preserved.
