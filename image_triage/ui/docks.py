@@ -2277,12 +2277,14 @@ class InspectorPanel(QWidget):
         chips.setContentsMargins(0, 0, 0, 0)
         chips.setHorizontalSpacing(6)
         chips.setVerticalSpacing(6)
-        for position, name in enumerate(self.AI_DIMENSIONS):
+        self._ai_chip_grid = chips
+        self._ai_chips: list[QLabel] = []
+        for name in self.AI_DIMENSIONS:
             chip = QLabel(name, placeholder)
             chip.setObjectName("inspectorAiChip")
-            chip.setWordWrap(True)
             chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            chips.addWidget(chip, position // 3, position % 3)
+            self._ai_chips.append(chip)
+        self._arrange_ai_chips(3)
         placeholder_layout.addLayout(chips)
         self.analyze_button = QPushButton("Analyze folder", placeholder)
         self.analyze_button.setObjectName("inspectorAnalyzeButton")
@@ -2322,6 +2324,30 @@ class InspectorPanel(QWidget):
         self._section_height_overrides["ai_analysis"] = header + max(80, height) + 16
         self._sync_section_heights()
 
+    def _arrange_ai_chips(self, columns: int) -> None:
+        """Lay the dimension chips out ``columns`` to a row, each column as wide as its widest chip needs."""
+        grid = self._ai_chip_grid
+        for chip in self._ai_chips:
+            grid.removeWidget(chip)
+        for position, chip in enumerate(self._ai_chips):
+            grid.addWidget(chip, position // columns, position % columns)
+        for column in range(grid.columnCount()):
+            grid.setColumnStretch(column, 1 if column < columns else 0)
+        self._ai_chip_columns = columns
+
+    def _fit_ai_chips(self, available: int) -> None:
+        """As many chips per row as fit whole in ``available`` px (3 at most, 1 at least), so no word is cut."""
+        if not getattr(self, "_ai_chips", None):
+            return
+        spacing = self._ai_chip_grid.horizontalSpacing()
+        widest = 1
+        for chip in self._ai_chips:
+            chip.ensurePolished()
+            widest = max(widest, chip.sizeHint().width())
+        columns = max(1, min(3, (available + spacing) // (widest + spacing)))
+        if columns != getattr(self, "_ai_chip_columns", 0):
+            self._arrange_ai_chips(columns)
+
     def _fit_ai_box(self) -> None:
         """Target size, narrowed to the pane's room so the card never widens
         the inspector's content past its edge."""
@@ -2334,6 +2360,8 @@ class InspectorPanel(QWidget):
         placeholder = self.ai_stack.widget(0)
         placeholder.setFixedWidth(fitted)
         placeholder_layout = placeholder.layout()
+        margins = placeholder_layout.contentsMargins()
+        self._fit_ai_chips(fitted - margins.left() - margins.right())
         needed = placeholder_layout.totalHeightForWidth(fitted)
         placeholder.setFixedHeight(max(height, needed, placeholder_layout.minimumSize().height()))
         self.ai_stack.setFixedWidth(fitted)
