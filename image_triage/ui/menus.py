@@ -179,7 +179,6 @@ def _build_library_menu(
     collections_section.addSeparator()
     collections_section.addAction(actions.add_to_active_collection)
     collections_section.addAction(actions.set_active_collection)
-    collections_section.addAction(actions.auto_add_winners_to_collection)
     collections_section.addSeparator()
     collections_section.addAction(actions.add_selection_to_collection)
     collections_section.addAction(actions.remove_selection_from_collection)

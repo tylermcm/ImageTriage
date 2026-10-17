@@ -319,8 +319,8 @@ def collection_help_pages() -> tuple[HelpPage, ...]:
             - **Drag** images from the grid onto a collection in the sidebar to add them. Files never move.
             - **Right-click** an image (or a selection) and open **Collections**: every collection is listed with a tick where the photo already is; pick one to add or remove.
             - In the popout, the **collections chip** in the top bar shows which collections the photo is in ("● Portfolio", "● 2 collections", or "+ Collection"). Click it to change them.
-            - **Set Active Collection**, then press **B** to add the photo at the cursor (or the selection) to it, in the grid or the popout. Press **B** again to take it back out. Photos in the active collection carry its name on their tile and in the popout caption, and the active collection has a dot in the sidebar.
-            - Turn on **Winners Also Go to Active Collection** and every new winner, including the Winner Ladder's pick, is added as you cull. Un-marking or rejecting one of those winners takes it back out; images you added yourself stay.
+            - In the top bar, **Also add to** picks a collection that every new winner also goes into (including the Winner Ladder's pick). Un-marking or rejecting one of those winners takes it back out; photos you added yourself stay. It starts at **none**, so W just marks a winner.
+            - Press **B** to add the photo at the cursor (or the selection) to that collection without marking it a winner, and **B** again to take it out. With **Also add to** set to none, **B** asks which collection. Photos in that collection carry its name on their tile and a bar in the popout filmstrip, and it has a dot in the sidebar.
 
             The collection picker lists recently used collections first; type to filter, or type a new name to create one. Each add or removal is one step for **Undo** (Ctrl+Z), and undoing a removal puts images back where they were. Undoing a winner that was auto-added also takes it back out of the collection. Adding writes only the list of references, so even thousands of images add instantly.
             """,
