@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget
 
-from image_triage.ui.nav_rail import NavRail
+from image_triage.ui.nav_rail import NavRail, metrics_for
 from image_triage.appearance_controller import AppearanceController
 from image_triage.window import MainWindow
 
@@ -90,6 +90,21 @@ class NavRailTests(unittest.TestCase):
     def test_a_tooltip_leads_with_the_name(self) -> None:
         button = self.rail.add_destination("pocketdrop", "PocketDrop", "phone", tooltip="Send files to and from your phone")
         self.assertEqual("PocketDrop: Send files to and from your phone", button.toolTip())
+
+
+class RailProportionTests(unittest.TestCase):
+    def test_destination_buttons_and_icons_stay_the_same_share_of_the_rail(self) -> None:
+        # No floor may bind across the rail's real range, or the buttons drift out of proportion with it.
+        rails = (48, 56, 64, 80, 96, 115, 140)
+        shares = [(metrics_for(w).button_height / w, metrics_for(w).icon_px / w) for w in rails]
+        for height_share, icon_share in shares:
+            self.assertAlmostEqual(shares[0][0], height_share, delta=0.03)
+            self.assertAlmostEqual(shares[0][1], icon_share, delta=0.03)
+
+    def test_the_icon_always_fits_inside_its_button(self) -> None:
+        for width in range(48, 141, 4):
+            metrics = metrics_for(width)
+            self.assertLess(metrics.icon_px, min(metrics.button_width, metrics.button_height))
 
 
 class _Settings:
