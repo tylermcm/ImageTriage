@@ -210,8 +210,44 @@ class ProjectsController(QObject):
             return
         self._window._records_view.show_photos_for_person(group.filter_label, paths)
 
+    def refresh_winners_row(self) -> None:
+        """The pinned Winners row: every photo marked winner, from every shoot."""
+        panel = getattr(self._window, "winners_list", None)
+        catalog = getattr(self._window, "_catalog", None)
+        if panel is None or catalog is None:
+            return
+        count = catalog.winner_count()
+        panel.clear()
+        item = QListWidgetItem(f"\u2665 Winners  ({count})")
+        item.setToolTip("Every photo you've marked as a winner, from every shoot, grouped by folder")
+        item.setSizeHint(QSize(0, _PROJECT_ROW_PX))
+        panel.addItem(item)
+        panel.setFixedHeight(_PROJECT_ROW_PX + 2 * panel.frameWidth() + 2)
+
+    def schedule_winners_refresh(self) -> None:
+        """Recount the Winners row once marking settles (after the annotation queue has written)."""
+        timer = getattr(self, "_winners_refresh_timer", None)
+        if timer is None:
+            timer = self._winners_refresh_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(800)
+            timer.timeout.connect(self.refresh_winners_row)
+        timer.start()
+
+    def show_winners_context_menu(self, point) -> None:
+        panel = self._window.winners_list
+        catalog = self._window._catalog
+        menu = QMenu(panel)
+        menu.addAction("Open Winners", catalog.open_winners_view)
+        grouped = menu.addAction("Group by folder")
+        grouped.setCheckable(True)
+        grouped.setChecked(catalog.winners_grouped())
+        grouped.toggled.connect(catalog.set_winners_grouped)
+        menu.exec(panel.viewport().mapToGlobal(point))
+
     def refresh_projects_panel(self) -> None:
         """Mirror the collections menu into the sidebar section."""
+        self.refresh_winners_row()
         panel = getattr(self._window, "projects_list", None)
         if panel is None:
             return

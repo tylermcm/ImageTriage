@@ -294,6 +294,25 @@ class DecisionStore:
                 session=normalized_session,
             )
 
+    def winner_paths(self, session_id: str) -> list[str]:
+        """Every photo marked winner in this session, in any folder (the Winners view)."""
+        normalized_session = self._normalize_session_id(session_id)
+        with sqlite3.connect(self._db_path) as connection:
+            rows = connection.execute(
+                "SELECT path FROM decisions WHERE session_id = ? AND winner = 1",
+                (normalized_session,),
+            ).fetchall()
+        return [str(row[0]) for row in rows if row[0]]
+
+    def winner_count(self, session_id: str) -> int:
+        normalized_session = self._normalize_session_id(session_id)
+        with sqlite3.connect(self._db_path) as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM decisions WHERE session_id = ? AND winner = 1",
+                (normalized_session,),
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
+
     def list_sessions(self) -> list[str]:
         with sqlite3.connect(self._db_path) as connection:
             rows = connection.execute(

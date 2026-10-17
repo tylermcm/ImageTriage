@@ -545,6 +545,9 @@ class AnnotationController(QObject):
         if not paths:
             return
         self._window._records_view_cache.mark(ViewInvalidationReason.ANNOTATION_CHANGED, paths=paths)
+        schedule_winners_refresh = getattr(self._window._projects, "schedule_winners_refresh", None)
+        if schedule_winners_refresh is not None:
+            schedule_winners_refresh()
         if self._window._records_view.annotation_change_affects_active_filter():
             self._window._views.apply_records_view(current_path=current_path)
             if logger.enabled:
