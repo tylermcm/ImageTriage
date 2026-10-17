@@ -248,6 +248,8 @@ class CommandPaletteController:
         add_action_command("library.add_folder_to_catalog", actions.add_folder_to_catalog, section="Library", keywords=("catalog root", "index folder"))
         add_action_command("library.remove_catalog_root", actions.remove_catalog_folder, section="Library", keywords=("catalog root", "remove folder"))
         add_action_command("library.refresh_catalog", actions.refresh_catalog, section="Library", keywords=("refresh catalog", "reindex library"))
+        add_action_command("library.start_semantic_index", actions.start_library_index, section="Library", keywords=("semantic search", "index library", "search whole library", "find similar"))
+        add_action_command("library.pause_semantic_index", actions.pause_library_index, section="Library", keywords=("semantic search", "pause indexing", "stop indexing"))
         add_action_command("library.rebuild_open_folder_cache", actions.rebuild_folder_catalog_cache, section="Library", keywords=("rebuild cache", "rebuild folder cache", "rescan without cache"))
 
     def _add_review_commands(self, add_action_command: _AddActionCommand, actions: MainWindowActions, window: "MainWindow") -> None:
