@@ -136,8 +136,8 @@ def main() -> None:
         assert camera_raw()["changed"] is True
         results["second_photo_in_camera_raw_ms"] = select(1)
         assert len(documents()) == 1, "the first photo's document was not replaced"
-        first_render = bridge.rendered_preview_path(records[0].path)
-        wait_for(lambda: first_render.is_file() and first_render.stat().st_size > 0, "the first photo's saved render")
+        wait_for(lambda: bridge.saved_render_path(records[0].path) is not None, "the first photo's saved render")
+        first_render = bridge.saved_render_path(records[0].path)
         wait_for(lambda: not proc().pending_stashes, "the first photo's save to finish")
         kept = pixel(first_render)
         assert kept > 0x40 + 20, f"the adjustment was lost when moving on (red={kept}, original=64)"

@@ -264,6 +264,8 @@ class PreviewTaskTests(unittest.TestCase):
         self.assertEqual(1, len(fake_pool.started))
         first_request = fake_pool.started[0][0].request
         self.assertEqual(1, preview._inflight_preview_decodes[path])
+        # Zoom is relative to the photo's full size, so it needs one bigger than the screen to ask for more pixels.
+        preview._current_metadata[0] = CaptureMetadata(path=path, width=8256, height=5504)
 
         preview._manual_zoom = True
         preview._zoom_scale = 2.0
@@ -291,6 +293,79 @@ class PreviewTaskTests(unittest.TestCase):
         self.assertEqual(1, preview._inflight_preview_decodes[path])
         preview.close()
 
+
+    def test_the_next_photo_shows_its_own_thumbnail_not_the_last_photo_while_it_decodes(self) -> None:
+        def entry_for(name: str, color: int) -> PreviewEntry:
+            path = f"C:/temp/{name}.nef"
+            placeholder = QImage(160, 107, QImage.Format.Format_RGB32)
+            placeholder.fill(color)
+            record = ImageRecord(path=path, name=f"{name}.nef", size=2048, modified_ns=1)
+            return PreviewEntry(record=record, source_path=path, placeholder_image=placeholder)
+
+        preview = FullScreenPreview()
+        fake_pool = _FakePool()
+        preview._pool = fake_pool
+        first, second = entry_for("first", 0xAA0000), entry_for("second", 0x0000AA)
+        preview._source_entries = [first]
+        preview._rebuild_entries()
+        preview.show()
+        QApplication.processEvents()
+        preview._request_preview_loads()
+        decoded = QImage(1200, 800, QImage.Format.Format_RGB32)
+        decoded.fill(0xAA0000)
+        preview._result_queue.put(("ready", fake_pool.started[0][0].request, decoded, None))
+        preview._drain_results()
+        pane = preview._panes[0]
+        self.assertEqual(first.source_path, pane.shown_path)
+
+        # The next photo: its decode is under way and does not land.
+        preview._source_entries = [second]
+        preview._rebuild_entries()
+        QApplication.processEvents()
+
+        self.assertEqual(second.source_path, pane.shown_path)
+        shown = pane.image_label.pixmap().toImage()
+        self.assertEqual(0x0000AA, shown.pixel(shown.width() // 2, shown.height() // 2) & 0xFFFFFF)
+        preview.close()
+
+    def test_a_preload_of_the_photo_on_screen_is_shown_while_its_own_decode_waits(self) -> None:
+        preview = FullScreenPreview()
+        fake_pool = _FakePool()
+        preview._pool = fake_pool
+        path = "C:/temp/landed.nef"
+        entry = PreviewEntry(record=ImageRecord(path=path, name="landed.nef", size=2048, modified_ns=1), source_path=path)
+        preview._source_entries = [entry]
+        preview._rebuild_entries()
+        preview.show()
+        QApplication.processEvents()
+        preview._request_preview_loads()  # the photo's own decode: queued behind busy workers, it does not land here
+        self.assertTrue(preview._current_images[0].isNull())
+
+        preload = PreviewRequest(path=path, token=0, slot=-1, target_size=QSize(1200, 800), prefer_embedded=True, cache_only=True)
+        image = QImage(1200, 800, QImage.Format.Format_RGB32)
+        image.fill(0x00AA00)
+        preview._result_queue.put(("ready", preload, image, None))
+        preview._drain_results()
+
+        self.assertFalse(preview._current_images[0].isNull())
+        self.assertEqual(path, preview._panes[0].shown_path)
+        preview.close()
+
+    def test_preloads_for_photos_moved_past_are_dropped_before_they_take_a_worker(self) -> None:
+        preview = FullScreenPreview()
+        fake_pool = _FakePool()
+        preview._pool = fake_pool
+        preview._source_entries = [PreviewEntry(record=ImageRecord(path="C:/temp/x.nef", name="x.nef", size=1, modified_ns=1), source_path="C:/temp/x.nef")]
+        preview._rebuild_entries()
+
+        preview.preload_paths(["C:/temp/a.nef", "C:/temp/b.nef"])
+        first_batch = {task.request.path: task for task, _priority in fake_pool.started}
+        preview.preload_paths(["C:/temp/b.nef", "C:/temp/c.nef"])  # the user moved on
+
+        self.assertFalse(first_batch["C:/temp/a.nef"].is_current())
+        self.assertTrue(first_batch["C:/temp/b.nef"].is_current())  # still wanted: kept, not queued twice
+        self.assertEqual(["C:/temp/c.nef"], [task.request.path for task, _priority in fake_pool.started[2:]])
+        preview.close()
 
 if __name__ == "__main__":
     unittest.main()

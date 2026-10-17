@@ -92,13 +92,15 @@ def _profile(name: str, scale: float) -> DisplayProfile:
         inspector_width=_scaled(300, scale, minimum=276),
         inspector_min_width=_scaled(300, scale, minimum=276),
         inspector_max_width=_scaled(460, scale, minimum=400),
-        topbar_button_height=_scaled(34, scale, minimum=32),
+        # Icon row plus caption row: 22 + 14 (see topbar_caption_height).
+        topbar_button_height=_scaled(36, scale, minimum=34),
         topbar_hover_margin=_scaled(2, scale, minimum=2),
         topbar_slot_cell_min=_scaled(36, scale, minimum=34),
         topbar_slot_button_width=_scaled(34, scale, minimum=32),
         topbar_slot_spacing=_scaled(4, scale, minimum=3),
         topbar_glyph_size=_scaled(22, scale, minimum=20),
-        topbar_caption_height=_scaled(12, scale, minimum=11),
+        # 1.4x the 10px caption font: Segoe UI needs 1.33x for a full line, so p, g and y are not cut off at the bottom.
+        topbar_caption_height=_scaled(14, scale, minimum=14),
         topbar_nav_button_size=_scaled(34, scale, minimum=32),
         topbar_nav_font_size=_scaled(16, scale, minimum=15),
         topbar_search_min_width=_scaled(250, scale, minimum=210),
