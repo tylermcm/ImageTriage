@@ -1672,6 +1672,9 @@ class MainWindow(QMainWindow):
         self.winners_list.itemActivated.connect(lambda _item: self._catalog.open_winners_view())
         self.winners_list.itemClicked.connect(lambda _item: self._catalog.open_winners_view())
         self.winners_list.customContextMenuRequested.connect(self._projects.show_winners_context_menu)
+        self._folder_session.changed.connect(
+            lambda field: self._projects.sync_collection_selection() if field in ("scope_kind", "scope_id", "folder") else None
+        )
         self.face_groups_panel.group_activated.connect(self._projects.handle_face_group_activated)
         self.face_groups_panel.browse_all_requested.connect(
             lambda: self.actions.manage_people.trigger()
