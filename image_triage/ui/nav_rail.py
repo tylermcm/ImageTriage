@@ -1,6 +1,7 @@
 """The left navigation rail.
 
-A vertical column of labelled destinations beside the library panel. Choosing
+A vertical column of destinations beside the library panel. They are icon-only, like the pinned tools below
+them; the name lives in each button's tooltip and accessible name (``NavRail.SHOW_LABELS`` brings the text back). Choosing
 one swaps the whole pane beside it (Folders, Faces, Collections, ...) instead of
 splitting one pane between several lists, so each list gets the full height.
 
@@ -90,13 +91,13 @@ BUTTON_W_RATIO = 64 / DESIGN_RAIL_PX        # 94px  pill width. Capped by the
                                             #       rail: the leftover becomes
                                             #       the side margin, so this
                                             #       cannot exceed rail_width.
-BUTTON_H_RATIO = 50 / DESIGN_RAIL_PX        # 86px  pill height. Also sets how
+BUTTON_H_RATIO = 40 / DESIGN_RAIL_PX        # 86px  pill height. Also sets how
                                             #       far apart the icons sit,
                                             #       more than BUTTON_GAP does.
 BUTTON_RADIUS_RATIO = 10 / DESIGN_RAIL_PX   # 15px  pill corner rounding
 BUTTON_GAP_RATIO = 6 / DESIGN_RAIL_PX      # 24px  space between pills only;
                                             #       pinned tools use TOOL_GAP
-ICON_RATIO = 20 / DESIGN_RAIL_PX            # 37px  icon size. Icon + label must
+ICON_RATIO = 22 / DESIGN_RAIL_PX            # 37px  icon size. Icon + label must
                                             #       fit BUTTON_H or the label
                                             #       gets squeezed.
 ICON_TEXT_GAP_RATIO = 5 / DESIGN_RAIL_PX    # 12px  clear space from the icon to
@@ -127,8 +128,8 @@ ADD_ICON_RATIO = 24 / DESIGN_RAIL_PX        # 35px  the "+" mark itself
 # so lowering them is usually not what you want.
 
 MIN_RAIL_PX = 48
-MIN_BUTTON_H_PX = 44
-MIN_ICON_PX = 16
+MIN_BUTTON_H_PX = 38
+MIN_ICON_PX = 18
 MIN_LABEL_PX = 9
 MIN_TOOL_PX = 24
 
@@ -223,6 +224,7 @@ class _NavButton(QToolButton):
         super().__init__(parent)
         self._icon_box = ICON_PX
         self._gap = 0
+        self._show_label = True
         self._label_colors: tuple[QColor, QColor] | None = None
 
     # -- what the rail tells it ------------------------------------------------
@@ -233,6 +235,13 @@ class _NavButton(QToolButton):
             return
         self._icon_box = max(0, int(icon_box))
         self._gap = max(0, int(gap))
+        self.update()
+
+    def set_label_visible(self, visible: bool) -> None:
+        """Icon-only when False: the icon is centred in the pill and no text is painted."""
+        if visible == self._show_label:
+            return
+        self._show_label = bool(visible)
         self.update()
 
     def set_label_colors(self, normal: QColor, selected: QColor) -> None:
@@ -281,6 +290,8 @@ class _NavButton(QToolButton):
         metrics = self.fontMetrics()
         top, text_top, line_height = self._content_layout(metrics)
 
+        if not self._show_label:
+            top = max(0, (self.height() - self._icon_box) // 2)
         mark = self.icon()
         if not mark.isNull() and self._icon_box > 0:
             painter.drawPixmap(
@@ -288,7 +299,7 @@ class _NavButton(QToolButton):
                 mark.pixmap(self._icon_box, self._icon_box),
             )
 
-        label = self.text()
+        label = self.text() if self._show_label else ""
         if label:
             if self._label_colors is not None:
                 painter.setPen(self._label_colors[1 if self.isChecked() else 0])
@@ -305,9 +316,13 @@ class _NavButton(QToolButton):
 
 
 class NavRail(QWidget):
-    """Exclusive, labelled destination buttons that report the chosen key."""
+    """Exclusive icon-only destination buttons that report the chosen key."""
 
     current_changed = Signal(str)
+
+    # Text under each icon. Off: the pinned tools below have none either, and "Collections" / "PocketDrop"
+    # never fit the rail at a readable size. The name is in the tooltip and the accessible name.
+    SHOW_LABELS = False
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -342,12 +357,15 @@ class NavRail(QWidget):
         button.setObjectName("leftNavButton")
         button.setProperty("navKey", key)
         button.setText(label)
-        button.setToolTip(tooltip or label)
+        button.setToolTip(f"{label}: {tooltip}" if tooltip and tooltip != label else label)
         button.setAccessibleName(label)
+        button.set_label_visible(self.SHOW_LABELS)
         button.setCheckable(True)
         button.setAutoRaise(True)
         button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextUnderIcon if self.SHOW_LABELS else Qt.ToolButtonStyle.ToolButtonIconOnly
+        )
         button.clicked.connect(lambda _checked=False, target=key: self.set_current(target))
         self._group.addButton(button)
         self._buttons[key] = button
