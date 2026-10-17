@@ -196,6 +196,10 @@ def _build_library_menu(
     catalog_section.addSeparator()
     catalog_section.addAction(actions.refresh_catalog)
     catalog_section.addAction(actions.rebuild_folder_catalog_cache)
+    catalog_section.addSeparator()
+    catalog_section.addAction(actions.start_library_index)
+    catalog_section.addAction(actions.pause_library_index)
+    catalog_section.addAction(actions.library_index_status)
     if catalog_menu is not None:
         catalog_section.addSeparator()
         catalog_section.addMenu(catalog_menu)

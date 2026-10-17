@@ -75,6 +75,7 @@ def _controllers_by_window_attribute() -> dict[str, type]:
     from image_triage.view_controller import ViewController
     from image_triage.projects_controller import ProjectsController
     from image_triage.handoff_controller import HandoffController
+    from image_triage.library_index_controller import LibraryIndexController
     from image_triage.ui.toolbar_menus import ToolbarMenuController
 
     return {
@@ -108,6 +109,7 @@ def _controllers_by_window_attribute() -> dict[str, type]:
         "_views": ViewController,
         "_projects": ProjectsController,
         "_handoff": HandoffController,
+        "_library_index": LibraryIndexController,
     }
 
 
@@ -115,8 +117,8 @@ _CONTROLLERS_BY_WINDOW_ATTRIBUTE = _controllers_by_window_attribute()
 
 # case id -> (sha256 of the text, its length in characters)
 _GOLDEN: dict[str, tuple[str, int]] = {
-    "fields+slots": ("c8a3af7aa3327e3309a17a1c01a24c20a6fdb64c437af22239b7509e3c0636fe", 93410),
-    "creation-order": ("282fe52c7514be6f9db2f0738e2e3bd32ed373fc6a7d443758ed4809ba88f8cd", 5140),
+    "fields+slots": ("7768b104f71413f642400271bb090b5afa4ab1b9885a0b6ab67dc2833469e396", 95439),
+    "creation-order": ("4c1d04e73e3b4933b466c99ed15a0bd322a5028a413427b7ce24ec48128eaa80", 5243),
 }
 
 _DICT_FIELDS = (
@@ -181,8 +183,8 @@ _EXPECTED_CHECKABLE = {
 }
 
 # Position of each exclusive QActionGroup in the creation order: it is created
-# just before the actions it holds, after the 98 plain actions.
-_EXPECTED_GROUP_POSITIONS = [98, 109, 112, 119, 132]
+# just before the actions it holds, after the 101 plain actions.
+_EXPECTED_GROUP_POSITIONS = [101, 112, 115, 122, 135]
 
 
 @pytest.fixture(scope="module")
@@ -220,9 +222,9 @@ def test_actions_text_is_unchanged(built) -> None:
 def test_field_inventory(built) -> None:
     _window, actions, _created, _lines = built
     plain = _plain_field_names()
-    assert len(plain) == 98
+    assert len(plain) == 101
     assert [label for label, _ in support.action_fields(actions)][: len(plain)] == plain
-    assert sum(1 for _ in support.action_fields(actions)) == 136
+    assert sum(1 for _ in support.action_fields(actions)) == 139
     # The dict fields, in key order.
     assert [mode.name for mode in actions.appearance_actions] == [
         "SLATE", "INDIGO", "DARK", "MIDNIGHT", "GRAPHITE", "FOREST", "HIGH_CONTRAST", "WARM_NEUTRAL", "LIGHT", "AUTO"
@@ -242,10 +244,10 @@ def test_creation_order_is_declaration_order_then_each_group(built) -> None:
     _window, actions, created, _lines = built
     labels = support.action_label_map(actions)
     created_actions = [labels[id(child)] for child in created if id(child) in labels]
-    assert created_actions[:98] == _plain_field_names(), "plain actions must be created in declaration order"
+    assert created_actions[:101] == _plain_field_names(), "plain actions must be created in declaration order"
     assert [position for position, child in enumerate(created) if isinstance(child, QActionGroup)] == _EXPECTED_GROUP_POSITIONS
-    assert created_actions[98:] == [label for label, _ in support.action_fields(actions)][98:]
-    assert len(created) == 136 + len(_EXPECTED_GROUP_POSITIONS)
+    assert created_actions[101:] == [label for label, _ in support.action_fields(actions)][101:]
+    assert len(created) == 139 + len(_EXPECTED_GROUP_POSITIONS)
 
 
 def test_shortcuts(built) -> None:
