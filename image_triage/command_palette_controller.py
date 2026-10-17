@@ -239,6 +239,7 @@ class CommandPaletteController:
         add_action_command("library.add_selected_to_collection", actions.add_selected_to_collection, section="Library", keywords=("collection", "add selection", "save picks"))
         add_action_command("library.add_visible_to_collection", actions.add_visible_to_collection, section="Library", keywords=("collection", "add all", "add filtered", "add results", "bulk add"))
         add_action_command("library.add_to_active_collection", actions.add_to_active_collection, section="Library", keywords=("collection", "active collection", "target collection", "collect"))
+        add_action_command("library.export_current_set", actions.export_current_set, section="Library", keywords=("export", "copy to folder", "pocketdrop", "send to phone", "zip", "winners", "collection"))
         add_action_command("library.set_active_collection", actions.set_active_collection, section="Library", keywords=("collection", "active collection", "target collection"))
         add_action_command("library.remove_from_collection", actions.remove_selection_from_collection, section="Library", keywords=("collection", "remove picks"))
         add_action_command("library.delete_collection", actions.delete_virtual_collection, section="Library", keywords=("collection", "delete set"))

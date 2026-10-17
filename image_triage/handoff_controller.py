@@ -52,6 +52,16 @@ def _pocketdrop_edited_export_dir() -> Path:
     return folder
 
 
+def _pocketdrop_zip_export_dir() -> Path:
+    """Where zips made for PocketDrop exports are written (next to the edited-export scratch folder)."""
+
+    from .scan_cache import app_data_root
+
+    folder = app_data_root() / "PocketDrop" / "Exports"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
 def _cleanup_pocketdrop_edited_exports() -> None:
     """Best-effort sweep of stale rendered-for-PocketDrop temp files.
 
@@ -188,6 +198,60 @@ class HandoffController(QObject):
         if not records:
             self._window.statusBar().showMessage("Select one or more files to send with PocketDrop.")
             return
+        self.send_records_to_pocketdrop(records)
+
+    def pocketdrop_ready(self) -> bool:
+        panel = getattr(self._window, "pocketdrop_panel", None)
+        if panel is None or not panel.available:
+            detail = panel.error if panel is not None else ""
+            self._window.statusBar().showMessage(f"PocketDrop isn't available. {detail}".strip())
+            return False
+        return True
+
+    def send_zip_to_pocketdrop(self, records: list[ImageRecord], *, name: str) -> None:
+        """Export several photos to PocketDrop as one zip (docs/winners_collections_redesign.md):
+        one item to pick up on the phone, with each shoot's folder kept inside. Originals are zipped;
+        "apply edits" applies to single-photo sends only."""
+        if not self.pocketdrop_ready():
+            return
+        export_jobs = self._window._export_jobs
+        source_paths = export_jobs.archive_source_paths_for_records(records)
+        if not source_paths:
+            self._window.statusBar().showMessage("None of these photos can be found to send.")
+            return
+        folder = _pocketdrop_zip_export_dir()
+        safe_name = "".join(ch if ch.isalnum() or ch in " -_()" else "_" for ch in name).strip() or "photos"
+        archive_path = str(folder / f"{safe_name} {time.strftime('%Y-%m-%d %H%M')}.zip")
+        parents = [str(Path(path).parent) for path in source_paths]
+        try:
+            # Several shoots: the zip holds each shoot's folder; one shoot: just its photos.
+            root_dir = os.path.commonpath(parents) if len(set(parents)) > 1 else parents[0]
+        except ValueError:
+            root_dir = None  # different drives: entries keep their own folder names
+        count = len(records)
+
+        def hand_over(created_path: str) -> None:
+            panel = getattr(self._window, "pocketdrop_panel", None)
+            if panel is None or not panel.available:
+                self._window.statusBar().showMessage(f"Zip ready at {created_path}, but PocketDrop isn't available.")
+                return
+            self.show_pocketdrop_page()
+            panel.add_paths([created_path])
+            self._window.statusBar().showMessage(f"Added {Path(created_path).name} ({count} photos) to PocketDrop")
+
+        started = export_jobs.start_archive_create_task(
+            source_paths,
+            archive_path,
+            archive_key="zip",
+            root_dir=root_dir or None,
+            archive_label="PocketDrop zip",
+            on_created=hand_over,
+        )
+        if started:
+            self._window.statusBar().showMessage(f"Zipping {count} photos for PocketDrop...")
+
+    def send_records_to_pocketdrop(self, records: list[ImageRecord]) -> None:
+        """Add these files to PocketDrop and bring its page forward."""
         panel = getattr(self._window, "pocketdrop_panel", None)
         if panel is None or not panel.available:
             detail = panel.error if panel is not None else ""

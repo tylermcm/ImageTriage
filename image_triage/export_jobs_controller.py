@@ -419,6 +419,9 @@ class ExportJobsController(QObject):
             self._window.statusBar().showMessage(f"Extracted {len(extracted)} item(s) to {context.destination_dir}")
             return
 
+        if created_path and context is not None and callable(context.on_created):
+            context.on_created(created_path)
+            return
         if created_path:
             self._window._navigation.remember_recent_destination(str(Path(created_path).parent))
             label = context.archive_label if context is not None and context.archive_label else "archive"
@@ -884,10 +887,11 @@ class ExportJobsController(QObject):
         root_dir: str | None,
         refresh_folder: str = "",
         archive_label: str = "",
-    ) -> None:
+        on_created=None,
+    ) -> bool:
         if self._active_archive_task is not None:
             self._window.statusBar().showMessage("An archive task is already running.")
-            return
+            return False
         archive_format = archive_format_for_key(archive_key)
         task = CreateArchiveTask(source_paths, archive_path, archive_key=archive_key, root_dir=root_dir)
         task.signals.started.connect(self.handle_archive_started, Qt.ConnectionType.QueuedConnection)
@@ -901,8 +905,10 @@ class ExportJobsController(QObject):
             destination_dir=str(Path(archive_path).parent),
             archive_label=archive_label or f"{archive_format.label} archive",
             refresh_folder=refresh_folder,
+            on_created=on_created,
         )
         self._window._archive_pool.start(task)
+        return True
 
     def start_archive_extract_task(self, archive_path: str, destination_dir: str) -> None:
         if self._active_archive_task is not None:

@@ -44,3 +44,5 @@ class ArchiveExecutionContext:
     destination_dir: str = ""
     archive_label: str = ""
     refresh_folder: str = ""
+    # Called with the created archive's path when a create job finishes (e.g. hand it to PocketDrop).
+    on_created: object = None

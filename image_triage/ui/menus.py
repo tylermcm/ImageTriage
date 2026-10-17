@@ -180,6 +180,7 @@ def _build_library_menu(
     collections_section.addAction(actions.add_to_active_collection)
     collections_section.addAction(actions.set_active_collection)
     collections_section.addSeparator()
+    collections_section.addAction(actions.export_current_set)
     collections_section.addAction(actions.add_selection_to_collection)
     collections_section.addAction(actions.remove_selection_from_collection)
     collections_section.addAction(actions.delete_virtual_collection)

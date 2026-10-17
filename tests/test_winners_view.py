@@ -51,6 +51,12 @@ def test_winners_view_collects_every_shoot_and_hides_missing_files(main_window, 
     zion_paths = make_jpegs(zion, ["z1.jpg", "z2.jpg"])
     time.sleep(0.02)
     os.utime(zion_paths[0])  # Zion is the newer shoot
+    # The test session's window is shared, so other tests' winners may already be there.
+    before = window._catalog.winner_count()
+
+    def mine() -> list[tuple[bool, str]]:
+        root = str(tmp_path).casefold()
+        return [(r.is_folder, Path(r.path).name) for r in window._records if str(r.path).casefold().startswith(root)]
 
     for folder, paths in ((moab, moab_paths), (zion, zion_paths)):
         open_folder(window, folder, len(paths))
@@ -59,23 +65,22 @@ def test_winners_view_collects_every_shoot_and_hides_missing_files(main_window, 
         QTest.keyClick(window.grid, Qt.Key.Key_W)
         assert not (folder / "_winners").exists(), "W marks only; it never creates a _winners folder"
     window._annotation_persistence_queue.flush_blocking()
-    assert pump_until(lambda: window._catalog.winner_count() == 2, 10)
+    assert pump_until(lambda: window._catalog.winner_count() == before + 2, 10)
 
     window._projects.refresh_winners_row()
-    assert window.winners_list.item(0).text() == "\u2665 Winners  (2)"
+    assert window.winners_list.item(0).text() == f"\u2665 Winners  ({before + 2})"
 
     window._catalog.open_winners_view()
     assert window._scope_kind == "winners"
-    shown = [(r.is_folder, Path(r.path).name) for r in window._records]
-    assert shown == [(True, "2025 Zion"), (False, "z1.jpg"), (True, "2024 Moab"), (False, "m1.jpg")]
+    assert mine() == [(True, "2025 Zion"), (False, "z1.jpg"), (True, "2024 Moab"), (False, "m1.jpg")]
 
     # A winner whose file is gone is left out rather than shown broken.
     os.remove(moab_paths[0])
     window._catalog.open_winners_view()
-    assert [(r.is_folder, Path(r.path).name) for r in window._records] == [(True, "2025 Zion"), (False, "z1.jpg")]
+    assert mine() == [(True, "2025 Zion"), (False, "z1.jpg")]
 
     window._catalog.set_winners_grouped(False)
     try:
-        assert [r.is_folder for r in window._records] == [False]
+        assert mine() == [(False, "z1.jpg")]
     finally:
         window._catalog.set_winners_grouped(True)
