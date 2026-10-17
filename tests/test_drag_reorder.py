@@ -146,6 +146,19 @@ class DragReorderTests(unittest.TestCase):
         self.assertEqual([True], opened, "a drag opens no menu")
         self.assertEqual([["a", "c", "b", "d"]], row.committed)
 
+    def test_a_disabled_button_can_be_dragged_even_though_it_gets_no_moves(self) -> None:
+        row = _Row(Qt.Orientation.Horizontal)
+        button = row.buttons["a"]
+        button.setEnabled(False)
+        origin = button.mapToGlobal(button.rect().center())
+        _mouse(button, QEvent.Type.MouseButtonPress, origin, held=True)
+        for step in range(1, 7):
+            # The moves land on the row behind it, as they do in the real application.
+            _mouse(row, QEvent.Type.MouseMove, origin + QPoint(110 * step // 6, 0), held=True)
+        _mouse(row, QEvent.Type.MouseButtonRelease, origin + QPoint(110, 0), held=False)
+        QTest.qWait(400)
+        self.assertEqual([["b", "c", "a", "d"]], row.committed)
+
     def test_new_items_replace_the_old_ones(self) -> None:
         row = _Row(Qt.Orientation.Horizontal)
         row.reorder.set_items([("b", row.buttons["b"]), ("c", row.buttons["c"])])

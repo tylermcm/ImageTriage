@@ -212,6 +212,11 @@ class ToolbarController(QObject):
             lambda target=undo_button, action=self._window.actions.undo: target.setToolTip(action.toolTip())
         )
 
+        # Open, Back, Fwd, Up, Refresh and Undo can be dragged into a new order among themselves.
+        self._nav_reorder = DragReorder(Qt.Orientation.Horizontal, self, enabled=self.reorder_enabled)
+        self._nav_reorder.order_committed.connect(self.nav_cluster_reordered)
+        self.apply_nav_cluster_order(self.saved_nav_cluster_order())
+
         self.topbar_search_field = self._window._projects.build_search_field()
         self.topbar_search_field.setMinimumWidth(180)
         self.topbar_search_field.setMaximumWidth(16777215)
@@ -1260,6 +1265,30 @@ class ToolbarController(QObject):
 
     def save_left_nav_order(self, keys: list[str]) -> None:
         self._window._settings.setValue(self._window.LEFT_NAV_ORDER_KEY, json.dumps(list(keys)))
+
+    def saved_nav_cluster_order(self) -> list[str]:
+        raw = self._window._settings.value(self._window.TOPBAR_NAV_ORDER_KEY, None)
+        try:
+            values = json.loads(raw) if isinstance(raw, str) else list(raw or [])
+        except (TypeError, ValueError):
+            return []
+        return [str(value) for value in values if isinstance(value, str)]
+
+    def apply_nav_cluster_order(self, order: list[str]) -> None:
+        """Lay the cluster's buttons out in ``order`` (unknown ids ignored, missing ones keep their default place)."""
+        buttons = {item_id: button for button, item_id in self._topbar_labeled_nav_buttons}
+        wanted = [item_id for item_id in order if item_id in buttons]
+        wanted += [item_id for item_id in buttons if item_id not in wanted]
+        layout = self._topbar_nav_layout
+        for index, item_id in enumerate(wanted):
+            layout.removeWidget(buttons[item_id])
+            layout.insertWidget(index, buttons[item_id], 0, Qt.AlignmentFlag.AlignVCenter)
+        self._nav_reorder.set_items([(item_id, buttons[item_id]) for item_id in wanted])
+        layout.activate()
+
+    def nav_cluster_reordered(self, order: list[str]) -> None:
+        self.apply_nav_cluster_order(order)
+        self._window._settings.setValue(self._window.TOPBAR_NAV_ORDER_KEY, json.dumps(list(order)))
 
     def sync_pinned_reorder(self) -> None:
         reorder = getattr(self, "_pinned_reorder", None)

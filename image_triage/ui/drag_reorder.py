@@ -75,6 +75,7 @@ class DragReorder(QObject):
         self._animations.clear()
         self._press = None
         self._held_back = None
+        self._disarm()
         if self._drag is not None:
             self._drag = None
         self._restore_cursor()
@@ -106,31 +107,49 @@ class DragReorder(QObject):
     def eventFilter(self, watched, event) -> bool:  # noqa: D102 - Qt override
         kind = event.type()
         if kind == QEvent.Type.MouseButtonPress:
-            if event.button() == Qt.MouseButton.LeftButton and (self._enabled is None or self._enabled()):
+            if (
+                self._press is None
+                and event.button() == Qt.MouseButton.LeftButton
+                and (self._enabled is None or self._enabled())
+                and any(watched is widget for _key, widget in self._items)
+            ):
                 self._press = (watched, event.globalPosition().toPoint())
+                # From here until the button is released, watch the whole application: a disabled button gets its press
+                # but never the moves that follow, and a drag that strays off its button must keep going.
+                QApplication.instance().installEventFilter(self)
                 if self._opens_menu_on_press(watched):
                     self._held_back = watched
                     return True
             return False
-        if kind == QEvent.Type.MouseMove and self._press is not None and event.buttons() & Qt.MouseButton.LeftButton:
+        if self._press is None:
+            return False
+        if kind == QEvent.Type.MouseMove and event.buttons() & Qt.MouseButton.LeftButton:
             if self._drag is None:
                 travelled = (event.globalPosition().toPoint() - self._press[1]).manhattanLength()
                 if travelled >= QApplication.startDragDistance():
-                    self._begin(watched, event)
+                    self._begin(self._press[0], event)
             if self._drag is not None:
                 self._follow(event)
                 return True
             return False
         if kind == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
             self._press = None
+            self._disarm()
             held_back, self._held_back = self._held_back, None
             if self._drag is not None:
                 self._finish()
                 return True
-            if held_back is not None and held_back is watched:
-                held_back.showMenu()  # a plain press-and-release: do what the press would have done
+            if held_back is not None:
+                # A plain press-and-release on it: do what the press would have done.
+                if held_back.rect().contains(held_back.mapFromGlobal(event.globalPosition().toPoint())):
+                    held_back.showMenu()
                 return True
         return False
+
+    def _disarm(self) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
 
     @staticmethod
     def _opens_menu_on_press(widget: QWidget) -> bool:
