@@ -304,7 +304,9 @@ class MainWindow(QMainWindow):
     # One-shot switch of existing installs onto the Slate default.
     APPEARANCE_SLATE_MIGRATION_KEY = "window/appearance_slate_default"
     TOOLBAR_PLACEMENT_KEY = "ui/toolbar_placement"
-    TOOLBAR_PLACEMENTS = ("floating", "docked")
+    # The toolbar always floats over the grid. "docked" (a flat row above it) is no longer offered; a saved "docked"
+    # setting from an older version is read as "floating".
+    TOOLBAR_PLACEMENTS = ("floating",)
     # The floating bar's bottom margin, inner padding, row gap and fade are
     # FLOATING_TOOLBAR_*_H in layout_ratios.py. This one stays: it only caps the
     # bar's width against a narrow grid and never moves it (the bar is centred).

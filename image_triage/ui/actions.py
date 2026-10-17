@@ -136,7 +136,6 @@ class MainWindowActions:
     check_for_updates: QAction
     about: QAction
     appearance_actions: dict[AppearanceMode, QAction] = field(default_factory=dict)
-    toolbar_placement_actions: dict[str, QAction] = field(default_factory=dict)
     sort_actions: dict[SortMode, QAction] = field(default_factory=dict)
     filter_actions: dict[FilterMode, QAction] = field(default_factory=dict)
     ai_state_actions: dict[AIStateFilter, QAction] = field(default_factory=dict)
@@ -701,23 +700,6 @@ def _appearance_actions(window: "MainWindow") -> dict[AppearanceMode, QAction]:
     return actions
 
 
-def _toolbar_placement_actions(window: "MainWindow") -> dict[str, QAction]:
-    """Floating (bottom) versus docked (top) toolbar, keyed by placement name."""
-    group = QActionGroup(window)
-    group.setExclusive(True)
-    actions: dict[str, QAction] = {}
-    for placement, label in (("floating", "Floating Toolbar (Bottom)"), ("docked", "Docked Toolbar (Top)")):
-        action = _create_action(
-            window,
-            label,
-            slot=lambda _checked=False, selected=placement: window._toolbar.set_toolbar_placement(selected),
-            checkable=True,
-        )
-        group.addAction(action)
-        actions[placement] = action
-    return actions
-
-
 def _sort_actions(window: "MainWindow") -> dict[SortMode, QAction]:
     """One exclusive, checkable action per sort mode."""
     group = QActionGroup(window)
@@ -814,7 +796,6 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
     return MainWindowActions(
         **singles,
         appearance_actions=_appearance_actions(window),
-        toolbar_placement_actions=_toolbar_placement_actions(window),
         sort_actions=_sort_actions(window),
         filter_actions=_quick_filter_actions(window),
         column_actions=_column_actions(window),
