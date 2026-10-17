@@ -16,6 +16,7 @@ from .ui import WORKSPACE_METRICS, default_theme
 from .ui import layout_ratios
 from .ui.breadcrumb import BreadcrumbBar
 from .ui.display_metrics import DisplayProfile, STANDARD_DISPLAY
+from .ui.drag_reorder import DragReorder
 from .ui.topbar_sync import _TopbarActionSync
 
 from typing import TYPE_CHECKING
@@ -999,6 +1000,7 @@ class ToolbarController(QObject):
             self._topbar_action_items[target] = items
             self._topbar_slot_widgets[target] = slot_widgets
         self._topbar_rebuild_key = rebuild_key
+        self.sync_topbar_reorders()
         if logger.enabled:
             logger.duration("toolbar.rebuild_stack", (time.perf_counter() - start) * 1000.0, widgets=built)
         if getattr(self._window, "_toolbar_placement", "docked") == "floating" and getattr(self, "toolbar_strip", None) is not None:
@@ -1235,10 +1237,91 @@ class ToolbarController(QObject):
             )
             layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
         self.left_rail_pinned.setVisible(bool(pinned))
+        self.sync_pinned_reorder()
         self.left_rail_add_button.setIcon(
             self.fluent_toolbar_icon("E710", color=self._window._appearance.chrome_icon_color())
         )
         self._window._appearance.apply_left_rail_metrics()
+
+    # -- Dragging buttons into a new order -------------------------------------
+    # Three separate groups, each reordered only within itself: the rail's destinations (NavRail), the rail's pinned tools,
+    # and the top bar's buttons.
+
+    def reorder_enabled(self) -> bool:
+        return not getattr(self._window, "_collection_mode", False)
+
+    def saved_left_nav_order(self) -> list[str]:
+        raw = self._window._settings.value(self._window.LEFT_NAV_ORDER_KEY, None)
+        try:
+            values = json.loads(raw) if isinstance(raw, str) else list(raw or [])
+        except (TypeError, ValueError):
+            return []
+        return [str(value) for value in values if isinstance(value, str)]
+
+    def save_left_nav_order(self, keys: list[str]) -> None:
+        self._window._settings.setValue(self._window.LEFT_NAV_ORDER_KEY, json.dumps(list(keys)))
+
+    def sync_pinned_reorder(self) -> None:
+        reorder = getattr(self, "_pinned_reorder", None)
+        if reorder is None:
+            reorder = self._pinned_reorder = DragReorder(Qt.Orientation.Vertical, self, enabled=self.reorder_enabled)
+            reorder.order_committed.connect(self.pinned_tools_reordered)
+        reorder.set_items([(item_id, button) for button, item_id in getattr(self, "_left_rail_tool_buttons", ())])
+
+    def pinned_tools_reordered(self, order: list[str]) -> None:
+        # Pins that have no button right now (their action is unavailable) keep their place at the end.
+        unbuilt = [item_id for item_id in self.pinned_tool_ids() if item_id not in order]
+        self.set_pinned_tool_ids(list(order) + unbuilt)
+
+    def sync_topbar_reorders(self) -> None:
+        """Make the top bar's visible buttons draggable, one group per page of the shared bar."""
+        reorders = getattr(self, "_topbar_reorders", None)
+        if reorders is None:
+            reorders = self._topbar_reorders = {}
+        for target in ("manual", "ai"):
+            reorder = reorders.get(target)
+            if reorder is None:
+                reorder = reorders[target] = DragReorder(Qt.Orientation.Horizontal, self, enabled=self.reorder_enabled)
+                reorder.order_committed.connect(lambda order, name=target: self.topbar_buttons_reordered(name, order))
+            built = (getattr(self, "_topbar_action_items", None) or {}).get(target) or []
+            reorder.set_items(
+                [
+                    (item_id, widget)
+                    for item_id, widget in built
+                    if item_id not in ("more", "divider") and isinstance(widget, QToolButton)
+                ]
+            )
+
+    def topbar_buttons_reordered(self, target: str, order: list[str]) -> None:
+        """Hand the buttons' new left-to-right order to the slots they were occupying, then save and rebuild.
+
+        Only the draggable buttons trade places. Dividers, gaps and the buttons folded into More stay where they were."""
+        slots = list(getattr(self._window, "_topbar_slots", {}).get(target) or [])
+        slot_widgets = (getattr(self, "_topbar_slot_widgets", None) or {}).get(target) or []
+        built = dict((getattr(self, "_topbar_action_items", None) or {}).get(target) or [])
+        occupied = sorted(slot_widgets.index(built[item_id]) for item_id in order if item_id in built and built[item_id] in slot_widgets)
+        if len(occupied) != len(order):
+            return
+        slots += [None] * (max(occupied, default=-1) + 1 - len(slots))
+        for slot_index, item_id in zip(occupied, order):
+            slots[slot_index] = item_id
+        for mode in list(self._window._topbar_slots):
+            self._window._topbar_slots[mode] = list(slots)
+            self.sync_items_from_slots(mode, slots_override=slots)
+        self.save_topbar_slots()
+        self.rebuild_topbar_action_stack(force=True)
+
+    def save_topbar_slots(self) -> None:
+        """Write the shared slot layout back to the setting ``load_topbar_slots`` reads."""
+        raw = self._window._settings.value(self._window.WORKSPACE_TOOLBAR_LAYOUT_KEY, "", str)
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) and raw else {}
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload["slots"] = {mode: list(slots) for mode, slots in self._window._topbar_slots.items()}
+        self._window._settings.setValue(self._window.WORKSPACE_TOOLBAR_LAYOUT_KEY, json.dumps(payload))
 
     def show_pinned_tool_context_menu(self, item_id: str, anchor: QWidget) -> None:
         if self._window._collection_mode:

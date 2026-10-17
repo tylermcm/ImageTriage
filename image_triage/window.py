@@ -457,6 +457,7 @@ class MainWindow(QMainWindow):
     AI_EMBED_BATCH_SIZE_GPU_AUTO = 8
     AI_EMBED_BATCH_SIZE_CPU_AUTO = 4
     LEFT_NAV_PAGE_KEY = "ui/left_nav_page"
+    LEFT_NAV_ORDER_KEY = "ui/left_nav_order"
     PINNED_TOOLS_KEY = "ui/pinned_tools"
     DEFAULT_PINNED_TOOLS = ("command_palette", "open_in_photoshop", "compare", "keyboard_shortcuts")
     # Share of its box each rail painter actually inks, measured off the drawn
@@ -1576,6 +1577,8 @@ class MainWindow(QMainWindow):
             self.left_nav_rail.add_destination(key, label, glyph, tooltip=tooltip)
         self.left_nav_rail.set_icon_factory(self._appearance.left_nav_icon)
         self._appearance.apply_left_rail_label_colors()
+        self.left_nav_rail.set_order(self._toolbar.saved_left_nav_order())
+        self.left_nav_rail.order_changed.connect(self._toolbar.save_left_nav_order)
         self.left_nav_rail.current_changed.connect(self._appearance.show_left_nav_page)
         saved_page = str(self._settings.value(self.LEFT_NAV_PAGE_KEY, "folders") or "folders")
         self._appearance.show_left_nav_page(saved_page if saved_page in self._left_nav_page_widgets else "folders")
