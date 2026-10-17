@@ -273,14 +273,12 @@ class AiRunController(QObject):
         return is_same_or_child(saved_key, hidden_root_key)
 
     def restore_ai_results(self, *, force: bool = False) -> bool:
+        """Re-open the results file the user last loaded for this folder.
+
+        ``force`` is kept for callers that pass it; restore no longer depends on it. Only a results file that
+        belongs to the open folder (its hidden AI directory) is restored; a file from elsewhere is left alone."""
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
-        # Keep AI bundle loading off the normal startup/manual browse path.
-        if not force:
-            self.refresh_ai_state()
-            if logger.enabled:
-                logger.duration("ai_results.restore", (time.perf_counter() - start) * 1000.0, force=force, state="skipped_manual_mode")
-            return False
         # Fast path: bundle already loaded for this folder. Skip the re-parse
         # — this fires on every tab flip and was the dominant cost there.
         if (

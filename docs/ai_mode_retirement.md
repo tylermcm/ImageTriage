@@ -21,6 +21,15 @@ visible switch into it.
 Everything below still exists in code but can no longer be reached, or no longer
 behaves as it did. Nothing was rebuilt in manual mode; these are the items to decide on.
 
+## Update (October 2026)
+
+Items 1 and 2 below are out of date: grid badges follow the `show_ai_tags_in_grid` setting
+(off by default), saved hidden results load asynchronously after a scan, and
+`restore_ai_results()` now restores a results file that belongs to the open folder. The AI Wow
+sort now finds winner scores stored under an adapter's model version. The dispute chord (item 4)
+is deliberately left disconnected until its effect on later culling has been measured
+(docs/ai_culling_plan.md, once written). Probes: tests/test_ai_culling_end_to_end.py.
+
 ## Disconnected
 
 1. **AI badges on cards.** `grid.set_show_ai_annotations(...)` is now always
