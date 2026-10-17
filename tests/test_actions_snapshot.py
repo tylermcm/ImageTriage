@@ -117,13 +117,12 @@ _CONTROLLERS_BY_WINDOW_ATTRIBUTE = _controllers_by_window_attribute()
 
 # case id -> (sha256 of the text, its length in characters)
 _GOLDEN: dict[str, tuple[str, int]] = {
-    "fields+slots": ("23bb9f7e0dfa8a94a6bc891dd5e8b3c6d1cc6e0a0452eaeaa3e1c72b47323ea9", 94550),
-    "creation-order": ("dad91859d5cd8685c469d44f14f690061631534a68b6f9940b5bd66b12be5bed", 5189),
+    "fields+slots": ("d7cf064c65969e692c7812a4c4d33d5e6e400e9a4ce7be8be5fde863995ca75e", 93014),
+    "creation-order": ("fb5c72fcb4fd3da58b2c845ffc6447a401bf1e9902100183ecb24a5e68e7c35b", 5050),
 }
 
 _DICT_FIELDS = (
     "appearance_actions",
-    "toolbar_placement_actions",
     "sort_actions",
     "filter_actions",
     "ai_state_actions",
@@ -183,7 +182,7 @@ _EXPECTED_CHECKABLE = {
 
 # Position of each exclusive QActionGroup in the creation order: it is created
 # just before the actions it holds, after the 100 plain actions.
-_EXPECTED_GROUP_POSITIONS = [100, 111, 114, 121, 134]
+_EXPECTED_GROUP_POSITIONS = [100, 111, 118, 131]
 
 
 @pytest.fixture(scope="module")
@@ -223,12 +222,11 @@ def test_field_inventory(built) -> None:
     plain = _plain_field_names()
     assert len(plain) == 100
     assert [label for label, _ in support.action_fields(actions)][: len(plain)] == plain
-    assert sum(1 for _ in support.action_fields(actions)) == 138
+    assert sum(1 for _ in support.action_fields(actions)) == 136
     # The dict fields, in key order.
     assert [mode.name for mode in actions.appearance_actions] == [
         "SLATE", "INDIGO", "DARK", "MIDNIGHT", "GRAPHITE", "FOREST", "HIGH_CONTRAST", "WARM_NEUTRAL", "LIGHT", "AUTO"
     ]
-    assert list(actions.toolbar_placement_actions) == ["floating", "docked"]
     assert [mode.name for mode in actions.sort_actions] == ["NAME", "DATE", "SIZE", "TYPE", "AI_RANK", "AI_WOW"]
     assert [mode.name for mode in actions.filter_actions] == [
         "ALL", "WINNERS", "REJECTS", "UNREVIEWED", "EDITED", "SMART_GROUPS", "DUPLICATES", "AI_TOP_PICKS",
@@ -246,7 +244,7 @@ def test_creation_order_is_declaration_order_then_each_group(built) -> None:
     assert created_actions[:100] == _plain_field_names(), "plain actions must be created in declaration order"
     assert [position for position, child in enumerate(created) if isinstance(child, QActionGroup)] == _EXPECTED_GROUP_POSITIONS
     assert created_actions[100:] == [label for label, _ in support.action_fields(actions)][100:]
-    assert len(created) == 138 + len(_EXPECTED_GROUP_POSITIONS)
+    assert len(created) == 136 + len(_EXPECTED_GROUP_POSITIONS)
 
 
 def test_shortcuts(built) -> None:
@@ -284,13 +282,13 @@ def test_checkable_actions_and_auto_repeat(built) -> None:
 def test_group_membership_is_exclusive_per_dict_field(built) -> None:
     _window, actions, _created, _lines = built
     groups = []
-    for field in ("appearance_actions", "toolbar_placement_actions", "sort_actions", "filter_actions", "column_actions"):
+    for field in ("appearance_actions", "sort_actions", "filter_actions", "column_actions"):
         owners = {action.actionGroup() for action in getattr(actions, field).values()}
         assert len(owners) == 1 and None not in owners, field
         (group,) = owners
         assert group.isExclusive()
         groups.append(group)
-    assert len({id(group) for group in groups}) == 5, "each dict field has its own QActionGroup"
+    assert len({id(group) for group in groups}) == 4, "each dict field has its own QActionGroup"
     assert all(action.actionGroup() is None for label, action in support.action_fields(actions) if "[" not in label)
 
 

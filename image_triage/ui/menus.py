@@ -105,9 +105,6 @@ def _add_view_appearance_menu(view_menu: QMenu, actions: MainWindowActions) -> N
     appearance_menu = view_menu.addMenu("Appearance")
     for mode in appearance_profile_modes():
         appearance_menu.addAction(actions.appearance_actions[mode])
-    appearance_menu.addSeparator()
-    for placement in ("floating", "docked"):
-        appearance_menu.addAction(actions.toolbar_placement_actions[placement])
 
 
 def _add_view_layout_menu(view_menu: QMenu, actions: MainWindowActions) -> None:

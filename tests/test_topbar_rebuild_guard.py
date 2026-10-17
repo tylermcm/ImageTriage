@@ -193,11 +193,14 @@ def test_theme_refresh_always_rebuilds_even_for_an_equal_theme(window) -> None:
     assert not any(a is b for a, b in zip(before, _all_widgets(window)))
 
 
-def test_placement_change_rebuilds_through_its_setter(window) -> None:
+def test_the_toolbar_only_ever_floats(window) -> None:
+    # "docked" is gone: an old saved setting, or a stray request for it, reads as floating and rebuilds nothing.
+    assert window._toolbar_placement == "floating"
+    assert window._toolbar.normalize_toolbar_placement("docked") == "floating"
     before = _all_widgets(window)
-    target = "docked" if window._toolbar_placement == "floating" else "floating"
-    window._toolbar.set_toolbar_placement(target)
-    assert not any(a is b for a, b in zip(before, _all_widgets(window)))
+    window._toolbar.set_toolbar_placement("docked")
+    assert window._toolbar_placement == "floating"
+    assert _same_objects(before, _all_widgets(window))
 
 
 # ---------------------------------------------------------------- stale checkable buttons

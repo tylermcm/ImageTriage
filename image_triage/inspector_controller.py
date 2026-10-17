@@ -103,9 +103,6 @@ class InspectorController(QObject):
         for mode, action in self._window.actions.appearance_actions.items():
             with QSignalBlocker(action):
                 action.setChecked(self._window._appearance_mode == mode)
-        for placement, action in self._window.actions.toolbar_placement_actions.items():
-            with QSignalBlocker(action):
-                action.setChecked(self._window._toolbar_placement == placement)
         for mode, action in self._window.actions.sort_actions.items():
             with QSignalBlocker(action):
                 action.setChecked(self._window._sort_mode == mode)
