@@ -80,6 +80,7 @@ class ToolbarMenuController:
         menu.addAction(actions.add_to_active_collection)
         menu.addAction(actions.set_active_collection)
         menu.addSeparator()
+        menu.addAction(actions.export_current_set)
         menu.addAction(actions.add_selection_to_collection)
         menu.addAction(actions.remove_selection_from_collection)
         menu.addAction(actions.delete_virtual_collection)

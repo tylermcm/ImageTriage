@@ -102,6 +102,7 @@ class MainWindowActions:
     add_selected_to_collection: QAction
     add_visible_to_collection: QAction
     add_to_active_collection: QAction
+    export_current_set: QAction
     set_active_collection: QAction
     remove_selection_from_collection: QAction
     delete_virtual_collection: QAction
@@ -518,6 +519,12 @@ def _collection_actions(window: "MainWindow") -> dict[str, QAction]:
             window,
             "Add to Collection",
             slot=window._catalog.add_selected_to_active_collection,
+        ),
+        # Files only ever leave through Export: the open collection, Winners, or this folder's winners.
+        export_current_set=_create_action(
+            window,
+            "Export...",
+            slot=window._catalog.export_current,
         ),
         set_active_collection=_create_action(
             window,

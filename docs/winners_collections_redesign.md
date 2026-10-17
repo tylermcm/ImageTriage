@@ -137,12 +137,20 @@ the collections (recent first) and New collection. It is the single target for W
 collection" and the "Winners Also Go to Active Collection" toggle are gone; their saved values are not
 carried over, so everyone starts at none.
 
+Step 4 notes: "Export..." asks Copy to a Folder or Send to PocketDrop. It's on the Collections menu (exports
+what you're viewing: the open collection, the Winners view, or this folder's winners), on each collection's
+right-click, and on the Winners row ("Export Winners..."). Folder export copies with the usual confirm,
+progress and companion-files choice; same-named files from different shoots get unique names, nothing is
+overwritten. PocketDrop: one photo goes as is (honouring "apply edits"); several are zipped in the
+background into AppData/PocketDrop/Exports (one folder per shoot inside) and handed over when ready.
+Linking instead of copying was not built.
+
 1. **Done (2026-10-17). W = mark only.** Remove the winner modes and `_winners` side effects, and treat existing
    `_winners` folders as ordinary folders. Verify that AI feedback still fires and undo works.
 2. **Done (2026-10-17). Winners view** in the sidebar, computed from winner marks.
 3. **Done (2026-10-17). Also add to** selector in the top bar, replacing the active collection and the auto-add
    toggle.
-4. **Export…** to a folder and to PocketDrop.
+4. **Done (2026-10-17). Export…** to a folder and to PocketDrop.
 5. **Simplify the collection tools:** the "Add all" bar in place of the menu item, a slimmer
    Collections menu, and help/docs updated to the one-paragraph model above.
 

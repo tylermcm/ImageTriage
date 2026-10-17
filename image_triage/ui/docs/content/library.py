@@ -79,6 +79,8 @@ ARTICLES = [
 
         Every add is a single **Undo** step.
 
+        **Export...** (Collections menu, or right-click a collection or the Winners row) is how files leave: copy them to a folder you choose, or send them to your phone with PocketDrop (one photo as is, several zipped into one file with each shoot's folder inside). Marking winners never copies anything.
+
         ## Good uses
 
         - Portfolio candidates

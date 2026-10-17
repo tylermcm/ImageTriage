@@ -239,6 +239,7 @@ class ProjectsController(QObject):
         catalog = self._window._catalog
         menu = QMenu(panel)
         menu.addAction("Open Winners", catalog.open_winners_view)
+        menu.addAction("Export Winners...", catalog.export_winners)
         grouped = menu.addAction("Group by folder")
         grouped.setCheckable(True)
         grouped.setChecked(catalog.winners_grouped())
@@ -391,6 +392,8 @@ class ProjectsController(QObject):
             if self._window._collection_mode:
                 for action in (add_selected, add_visible, active_action):
                     action.setEnabled(False)
+            export_action = menu.addAction("Export...")
+            export_action.triggered.connect(lambda _checked=False, target=collection_id: catalog.export_collection(target))
             menu.addAction(self._window.actions.remove_selection_from_collection)
             menu.addAction(self._window.actions.delete_virtual_collection)
         menu.exec(panel.viewport().mapToGlobal(point))
@@ -417,6 +420,7 @@ class ProjectsController(QObject):
         self._window.collections_menu.addAction(actions.add_to_active_collection)
         self._window.collections_menu.addAction(actions.set_active_collection)
         self._window.collections_menu.addSeparator()
+        self._window.collections_menu.addAction(actions.export_current_set)
         self._window.collections_menu.addAction(actions.add_selection_to_collection)
         self._window.collections_menu.addAction(actions.remove_selection_from_collection)
         self._window.collections_menu.addAction(actions.delete_virtual_collection)

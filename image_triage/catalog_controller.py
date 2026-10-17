@@ -14,7 +14,8 @@ from .library_store import CatalogRefreshSummary, CatalogRefreshTask, VirtualCol
 from .models import ImageRecord
 from .record_ops_controller import UndoAction
 from .scanner import normalize_filesystem_path, normalized_path_key, scan_folder
-from .ui import CatalogSearchDialog, CollectionEditDialog, CollectionPickerChoice, CollectionPickerDialog
+from .transfer_progress import TransferItem, run_file_transfer
+from .ui import CatalogSearchDialog, CollectionEditDialog, CollectionPickerChoice, CollectionPickerDialog, confirm_transfer, show_transfer_complete
 from .ui.flash_toast import FlashToast
 from .folder_session import FolderSession
 
@@ -645,6 +646,113 @@ class CatalogController:
         if missing:
             message += f" ({missing} not found: moved, deleted, or on a disconnected drive)"
         window.statusBar().showMessage(message)
+
+    # -- Export: the only way files leave (docs/winners_collections_redesign.md, step 4) ----
+
+    def export_records(self, records, *, name: str) -> None:
+        """Ask where these photos go: a folder (copies) or PocketDrop (one photo loose, several zipped)."""
+        window = self._window
+        records = [record for record in records if not record.is_folder]
+        if not records:
+            window.statusBar().showMessage(f"{name} has no photos to export.")
+            return
+        count = len(records)
+        box = QMessageBox(window)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(f"Export {name}")
+        box.setText(f"Export {count} photo{'s' if count != 1 else ''} from {name}")
+        box.setInformativeText(
+            "Copy them into a folder you choose, or send them to your phone with PocketDrop"
+            + (" (zipped into one file)." if count > 1 else ".")
+        )
+        folder_button = box.addButton("Copy to a Folder...", QMessageBox.ButtonRole.AcceptRole)
+        pocketdrop_button = box.addButton("Send to PocketDrop", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(folder_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is folder_button:
+            self.export_records_to_folder(records, name=name)
+        elif clicked is pocketdrop_button:
+            self.export_records_to_pocketdrop(records, name=name)
+
+    def export_records_to_pocketdrop(self, records, *, name: str) -> None:
+        handoff = self._window._handoff
+        if len(records) == 1:
+            if handoff.pocketdrop_ready():
+                handoff.send_records_to_pocketdrop(list(records))
+            return
+        handoff.send_zip_to_pocketdrop(list(records), name=name)
+
+    def export_records_to_folder(self, records, *, name: str, destination_dir: str = "") -> int:
+        """Copy the photos (and, if chosen, their RAW/JPEG companions) into one folder. Name clashes
+        between shoots get a unique name; nothing is overwritten and the originals stay put."""
+        window = self._window
+        if not destination_dir:
+            destination_dir = QFileDialog.getExistingDirectory(window, f"Export {name} To Folder", QDir.homePath())
+        if not destination_dir:
+            return 0
+        include_default = window._settings.value(window.TRANSFER_INCLUDE_COMPANIONS_KEY, True, bool)
+        confirmed, include_companions = confirm_transfer(
+            window,
+            verb="Copy",
+            count=len(records),
+            destination=destination_dir,
+            include_companions_default=include_default,
+        )
+        if not confirmed:
+            return 0
+        window._settings.setValue(window.TRANSFER_INCLUDE_COMPANIONS_KEY, include_companions)
+        items = [
+            TransferItem(position, record.name, tuple(window._record_paths(record)) if include_companions else (record.path,))
+            for position, record in enumerate(records)
+        ]
+        result = run_file_transfer(window, items, destination_dir, source_label=name, verb="Copying", keep_source=True)
+        copied = sum(1 for item in items if item.key in result.moved)
+        if copied:
+            window._navigation.remember_recent_destination(destination_dir)
+        window.statusBar().showMessage(f"Exported {copied} photo(s) from {name} to {destination_dir}")
+        if copied >= 2:
+            show_transfer_complete(window, verb_past="Copied", count=copied, destination=destination_dir)
+        return copied
+
+    def winner_records(self) -> list[ImageRecord]:
+        window = self._window
+        paths = window._decision_store.winner_paths(window._session_id)
+        records, _missing = self.resolve_records_for_paths(paths) if paths else ([], 0)
+        return records
+
+    def export_winners(self, checked: bool = False) -> None:
+        del checked
+        self.export_records(self.winner_records(), name="Winners")
+
+    def export_collection(self, collection_id: str) -> None:
+        collection = self._window._library_store.load_collection(collection_id)
+        if collection is None:
+            return
+        records, _missing = self.resolve_records_for_paths(collection.item_paths)
+        self.export_records(records, name=collection.name)
+
+    def export_current(self, checked: bool = False) -> None:
+        """Export what you're looking at: the open collection, the Winners view, or this folder's winners."""
+        del checked
+        window = self._window
+        scope = self._session.scope_kind
+        if scope == "collection" and self._session.scope_id:
+            self.export_collection(self._session.scope_id)
+        elif scope == self.WINNERS_SCOPE:
+            self.export_winners()
+        else:
+            folder = window._current_folder
+            winners = [
+                record
+                for record in window._all_records
+                if not record.is_folder and window._annotations.get(record.path) is not None and window._annotations[record.path].winner
+            ]
+            if not winners:
+                window.statusBar().showMessage("No winners in this folder to export. Mark some with W first.")
+                return
+            self.export_records(winners, name=f"{Path(folder).name or folder} winners")
 
     def open_virtual_collection(self, collection_id: str) -> None:
         window = self._window

@@ -323,6 +323,8 @@ def collection_help_pages() -> tuple[HelpPage, ...]:
             - Press **B** to add the photo at the cursor (or the selection) to that collection without marking it a winner, and **B** again to take it out. With **Also add to** set to none, **B** asks which collection. Photos in that collection carry its name on their tile and a bar in the popout filmstrip, and it has a dot in the sidebar.
 
             The collection picker lists recently used collections first; type to filter, or type a new name to create one. Each add or removal is one step for **Undo** (Ctrl+Z), and undoing a removal puts images back where they were. Undoing a winner that was auto-added also takes it back out of the collection. Adding writes only the list of references, so even thousands of images add instantly.
+
+            **Export...** (Collections menu, or right-click a collection or the Winners row) is how files leave: copy them to a folder you choose, or send them to your phone with PocketDrop (one photo as is, several zipped into one file with each shoot's folder inside). Marking winners never copies anything.
             """,
         ),
         HelpPage(
