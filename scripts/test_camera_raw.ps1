@@ -5,8 +5,8 @@ Example: ./scripts/test_camera_raw.ps1 -OpenPath 'C:\Pictures\Test photos'
 param(
     [string]$OpenPath,
     [string]$PhotoCraftRoot,
-    [ValidateSet('acr18', 'acr-filmstrip', 'acr-glyphs')]
-    [string]$EditorBuild = 'acr-glyphs'
+    [ValidateSet('acr18', 'acr-filmstrip', 'acr-glyphs', 'acr-settings-menu')]
+    [string]$EditorBuild = 'acr-settings-menu'
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -19,6 +19,12 @@ $PhotoCraftRoot = (Resolve-Path -LiteralPath $PhotoCraftRoot).Path
 $editor = Join-Path $PhotoCraftRoot "target/$EditorBuild/debug/photocraft.exe"
 $layout = Join-Path $PhotoCraftRoot 'design/camera-raw/layout.json'
 $colors = Join-Path $PhotoCraftRoot 'design/camera-raw/tokens.json'
+# Older binaries cannot parse newly added live design fields. Keep their validated layouts too.
+$frozenDesign = Join-Path $PhotoCraftRoot "target/$EditorBuild/validated-design"
+if ($EditorBuild -ne 'acr-settings-menu' -and (Test-Path -LiteralPath (Join-Path $frozenDesign 'layout.json'))) {
+    $layout = Join-Path $frozenDesign 'layout.json'
+    $colors = Join-Path $frozenDesign 'tokens.json'
+}
 foreach ($file in @($editor, $layout, $colors)) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing local testing input: $file" }
 }

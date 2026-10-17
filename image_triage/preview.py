@@ -2464,7 +2464,8 @@ class FullScreenPreview(QDialog):
         self._editor_engaged = False
         self.hide_photocraft_host()
         self._render_pane(0)
-        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        if not self.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus:
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
         self.photocraft_close_requested.emit()
 
     def photocraft_host_hwnd(self) -> int:
@@ -2569,13 +2570,15 @@ class FullScreenPreview(QDialog):
         window_activated = False
         if not was_visible:
             self.showFullScreen()
-            self.raise_()
-            self.activateWindow()
-            window_activated = True
+            if not self.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus:
+                self.raise_()
+                self.activateWindow()
+                window_activated = True
         elif self.isMinimized() or not self.isFullScreen():
             self.showFullScreen()
             fullscreen_reapplied = True
-        self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        if not self.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus:
+            self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         self._refresh_timer.start()
         QTimer.singleShot(0, self._request_preview_loads)
         started_editor = False
