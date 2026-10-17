@@ -76,6 +76,11 @@ class DisplayProfile:
         raise KeyError(key)
 
 
+# Toolbar buttons are this much wider than the slot they were drawn at, and the space between them this much
+# smaller, so every button keeps its position (the pitch is unchanged) while captions get the room.
+TOPBAR_BUTTON_EXTRA_PX = 3
+
+
 def _scaled(value: int, scale: float, *, minimum: int = 0) -> int:
     return max(minimum, int(round(value * scale)))
 
@@ -96,8 +101,8 @@ def _profile(name: str, scale: float) -> DisplayProfile:
         topbar_button_height=_scaled(36, scale, minimum=34),
         topbar_hover_margin=_scaled(2, scale, minimum=2),
         topbar_slot_cell_min=_scaled(36, scale, minimum=34),
-        topbar_slot_button_width=_scaled(34, scale, minimum=32),
-        topbar_slot_spacing=_scaled(4, scale, minimum=3),
+        topbar_slot_button_width=_scaled(34, scale, minimum=32) + TOPBAR_BUTTON_EXTRA_PX,
+        topbar_slot_spacing=max(1, _scaled(4, scale, minimum=3) - TOPBAR_BUTTON_EXTRA_PX),
         topbar_glyph_size=_scaled(22, scale, minimum=20),
         # 1.4x the 10px caption font: Segoe UI needs 1.33x for a full line, so p, g and y are not cut off at the bottom.
         topbar_caption_height=_scaled(14, scale, minimum=14),
