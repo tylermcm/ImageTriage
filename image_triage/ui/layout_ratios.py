@@ -90,7 +90,9 @@ FOLDER_ICON_H = 0.0144          # folder icon size in the tree
 FOLDER_INDENT_H = 0.0158        # indent per nested folder level
 
 # Settings strip at the foot of the left pane
-SETTINGS_BUTTON_BOX_H = 0.0244  # each button's clickable box
+SETTINGS_BUTTON_BOX_H = 0.0244  # each button's clickable box (superseded: the strip's buttons follow the strip, below)
+SETTINGS_PAD_BAR = 0.18         # padding above/below the buttons, as a share of the strip's own height
+SETTINGS_ICON_BOX = 0.55        # a button's icon, as a share of its box (the buttons fill the strip minus padding)
 SETTINGS_ICON_H = 0.0144        # each button's icon
 SETTINGS_PAD_H = 0.0086         # padding around the row of buttons
 SETTINGS_GAP_H = 0.0101         # space between the buttons
