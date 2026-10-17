@@ -5,8 +5,8 @@ Example: ./scripts/test_camera_raw.ps1 -OpenPath 'C:\Pictures\Test photos'
 param(
     [string]$OpenPath,
     [string]$PhotoCraftRoot,
-    [ValidateSet('acr18', 'acr-filmstrip')]
-    [string]$EditorBuild = 'acr-filmstrip'
+    [ValidateSet('acr18', 'acr-filmstrip', 'acr-glyphs')]
+    [string]$EditorBuild = 'acr-glyphs'
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot

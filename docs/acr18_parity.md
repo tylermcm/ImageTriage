@@ -216,12 +216,14 @@ outside Git. This checkpoint measures differences; it does not certify full pari
 | 13 | Masking: subject, sky, background, tools and People | 0 |
 | 14 | Crop & Expand: geometry, rotation, flip and aspect controls | 0 |
 | 15 | Remove: modes, Generative AI, object detection, brush, distractions | 0 |
-| 16 | Full window: alternate Info/preview state | 0 |
-| 17 | Full window: grid overlay and Info | 0 |
-| 18 | Full window: Info, preview, header, navigation and footer | 0 |
-| 19 | Full window: Edit panels, filmstrip and navigation | 24 |
+| 16 | Full window: Color Sampler toolbar and Info | 69 |
+| 17 | Full window: grid overlay and Info | 70 |
+| 18 | Full window: Info, preview, header, navigation and footer | 63 |
+| 19 | Full window: Edit panels, filmstrip and navigation | 180 |
 
-The 471 measurements include 24 filmstrip/navigation regions from image 19.
+The latest 829 measured regions include 447 panel regions, 358 full-client regions
+and 24 filmstrip/navigation regions. Regions overlap and repeat controls across
+references; this is not a count of completed features.
 No full reference is complete. Unmeasured views, shared chrome, all remaining
 glyph/typography/spacing differences, and unsupported tool behavior stay open.
 Synthetic-photo pixels and the resulting Fit percentage are content-dependent;
