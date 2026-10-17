@@ -4,7 +4,8 @@ from __future__ import annotations
 import os
 import re
 
-from PySide6.QtCore import QObject, QSize, Qt
+from PySide6.QtCore import QObject, QSignalBlocker, QSize, Qt, QTimer
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidgetItem, QMenu, QSizePolicy, QToolButton, QWidget
 
 from .aiculler_workflow import aiculler_db_path
@@ -215,11 +216,23 @@ class ProjectsController(QObject):
         if panel is None:
             return
         collections = self._window._library_store.list_collections()
+        catalog = getattr(self._window, "_catalog", None)
+        active_id = catalog.active_collection_id() if catalog is not None else ""
         panel.clear()
         for collection in collections:
-            item = QListWidgetItem(f"{collection.name}  ({collection.item_count})")
+            is_active = collection.id == active_id
+            # The active collection (where B and auto-added winners go) wears a dot.
+            label = f"{collection.name}  ({collection.item_count})"
+            item = QListWidgetItem(f"\u25CF {label}" if is_active else label)
             item.setData(Qt.ItemDataRole.UserRole, collection.id)
-            item.setToolTip(collection.description or collection.name)
+            tooltip = collection.description or collection.name
+            if is_active:
+                tooltip += "\nActive collection: B adds the current image here"
+            item.setToolTip(tooltip + "\nDrop images here to add them")
+            if is_active:
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
             # Sized here for the same reason as the face rows: a stylesheet
             # min-height is only a floor and drifts with font size and DPI.
             item.setSizeHint(QSize(0, _PROJECT_ROW_PX))
@@ -235,6 +248,54 @@ class ProjectsController(QObject):
             empty.setSizeHint(QSize(0, _PROJECT_EMPTY_ROW_PX))
             panel.addItem(empty)
         self.update_projects_height()
+
+    def collection_row(self, collection_id: str):
+        panel = getattr(self._window, "projects_list", None)
+        if panel is None or not collection_id:
+            return None
+        for row in range(panel.count()):
+            item = panel.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == collection_id:
+                return item
+        return None
+
+    def flash_collection_row(self, collection_id: str) -> None:
+        """Briefly tint a collection's sidebar row so you see where an add went."""
+        item = self.collection_row(collection_id)
+        if item is None:
+            return
+        theme = getattr(self._window, "_theme", None) or default_theme()
+        tint = QColor(theme.accent.qcolor())
+        tint.setAlpha(90)
+        item.setBackground(QBrush(tint))
+
+        def clear() -> None:
+            # The list is rebuilt on every change, so look the row up again rather than keep the item.
+            current = self.collection_row(collection_id)
+            if current is not None and current is not self._drop_target_item():
+                current.setBackground(QBrush())
+
+        QTimer.singleShot(900, clear)
+
+    def _drop_target_item(self):
+        return self.collection_row(getattr(self, "_drop_target_id", ""))
+
+    def set_collection_drop_target(self, collection_id: str) -> None:
+        """Highlight the row a drag is over (empty clears), so a drop never lands on a guess."""
+        previous = getattr(self, "_drop_target_id", "")
+        if previous == collection_id:
+            return
+        if previous:
+            item = self.collection_row(previous)
+            if item is not None:
+                item.setBackground(QBrush())
+        self._drop_target_id = collection_id
+        item = self.collection_row(collection_id)
+        if item is not None:
+            theme = getattr(self._window, "_theme", None) or default_theme()
+            tint = QColor(theme.accent.qcolor())
+            tint.setAlpha(140)
+            item.setBackground(QBrush(tint))
 
     def update_projects_height(self) -> None:
         panel = getattr(self._window, "projects_list", None)
@@ -266,25 +327,67 @@ class ProjectsController(QObject):
         menu.addAction(self._window.actions.create_virtual_collection)
         menu.addAction(self._window.actions.add_selection_to_collection)
         if collection_id:
+            catalog = self._window._catalog
             menu.addSeparator()
             open_action = menu.addAction("Open collection")
             open_action.triggered.connect(
-                lambda _checked=False, target=collection_id: self._window._catalog.open_virtual_collection(target)
+                lambda _checked=False, target=collection_id: catalog.open_virtual_collection(target)
             )
+            add_selected = menu.addAction("Add selection here")
+            add_selected.setEnabled(self._window.grid.current_index() >= 0)
+            add_selected.triggered.connect(
+                lambda _checked=False, target=collection_id: catalog.add_selected_to_collection(collection_id=target)
+            )
+            visible_count = sum(1 for record in self._window._records if not record.is_folder)
+            add_visible = menu.addAction(f"Add all {visible_count} visible here")
+            add_visible.setEnabled(visible_count > 0)
+            add_visible.triggered.connect(
+                lambda _checked=False, target=collection_id: catalog.add_visible_to_collection(collection_id=target)
+            )
+            if catalog.active_collection_id() == collection_id:
+                active_action = menu.addAction("Stop using as active collection")
+                active_action.triggered.connect(catalog.clear_active_collection)
+            else:
+                active_action = menu.addAction("Make active collection (B adds here)")
+                active_action.triggered.connect(
+                    lambda _checked=False, target=collection_id: catalog.set_active_collection(target)
+                )
+            if self._window._collection_mode:
+                for action in (add_selected, add_visible, active_action):
+                    action.setEnabled(False)
             menu.addAction(self._window.actions.remove_selection_from_collection)
             menu.addAction(self._window.actions.delete_virtual_collection)
         menu.exec(panel.viewport().mapToGlobal(point))
 
     def refresh_collections_menu(self) -> None:
         self.refresh_projects_panel()
+        catalog = getattr(self._window, "_catalog", None)
+        if catalog is not None:
+            catalog.refresh_collection_markers()
         if not hasattr(self._window, "collections_menu") or self._window.collections_menu is None:
             return
         self._window.collections_menu.clear()
         self._window.collections_menu.setTitle("Collections")
-        self._window.collections_menu.addAction(self._window.actions.create_virtual_collection)
-        self._window.collections_menu.addAction(self._window.actions.add_selection_to_collection)
-        self._window.collections_menu.addAction(self._window.actions.remove_selection_from_collection)
-        self._window.collections_menu.addAction(self._window.actions.delete_virtual_collection)
+        actions = self._window.actions
+        if actions is None:
+            return
+        with QSignalBlocker(actions.auto_add_winners_to_collection):
+            actions.auto_add_winners_to_collection.setChecked(self._window._catalog.auto_add_winners_enabled())
+        active = self._window._catalog.active_collection()
+        actions.add_to_active_collection.setText(
+            f"Add to Active Collection ({active.name})" if active is not None else "Add to Active Collection"
+        )
+        self._window.collections_menu.addAction(actions.create_virtual_collection)
+        self._window.collections_menu.addAction(actions.add_selected_to_collection)
+        self._window.collections_menu.addAction(actions.add_visible_to_collection)
+        self._window.collections_menu.addSeparator()
+        self._window.collections_menu.addAction(actions.add_to_active_collection)
+        self._window.collections_menu.addAction(actions.set_active_collection)
+        self._window.collections_menu.addAction(actions.auto_add_winners_to_collection)
+        self._window.collections_menu.addSeparator()
+        self._window.collections_menu.addAction(actions.add_selection_to_collection)
+        self._window.collections_menu.addAction(actions.remove_selection_from_collection)
+        self._window.collections_menu.addAction(actions.delete_virtual_collection)
         self._window.collections_menu.addSeparator()
 
         collections = self._window._library_store.list_collections()

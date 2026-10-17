@@ -48,6 +48,7 @@ class _ModeHost(QWidget):
         super().__init__()
         self._folder_session = FolderSession()
         self._library_store = store
+        self._records: list[ImageRecord] = []
         self._collection_mode = ""
         self._collection_target_id = ""
         self._collection_previous_view = "grid"
@@ -137,6 +138,21 @@ class CollectionModeTests(unittest.TestCase):
         self.assertEqual("", self.host._collection_mode)
         self.assertFalse(self.host.grid.collection_checkbox_mode())
         self.assertTrue(self.host.inspector_panel.isEnabled())
+
+    def test_create_starts_with_the_selection_checked(self) -> None:
+        self.host._records = [_record("C:/album/a.jpg")]
+        self.host.grid.set_selected_indexes([0], current_index=0)
+        self.host._catalog.create_virtual_collection_from_selection()
+        self.assertEqual(("C:/album/a.jpg",), tuple(p.replace("\\", "/") for p in self.host.grid.collection_paths()))
+
+    def test_check_and_uncheck_all_visible(self) -> None:
+        self.host._records = [_record("C:/album/a.jpg"), _record("C:/album/b.jpg"), _record("C:/album/sub", folder=True)]
+        self.host._catalog.create_virtual_collection_from_selection()
+        self.host.grid.set_collection_paths_checked(["C:/elsewhere/z.jpg"], True)
+        self.host._catalog.check_visible_in_collection_mode()
+        self.assertEqual("3 images checked", self.host.collection_mode_count.text())
+        self.host._catalog.uncheck_visible_in_collection_mode()
+        self.assertEqual(("C:/elsewhere/z.jpg",), self.host.grid.collection_paths())
 
     def test_cancel_discards_unsaved_picks(self) -> None:
         self.host._catalog.begin_collection_mode("create")

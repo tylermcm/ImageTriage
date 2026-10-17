@@ -322,6 +322,7 @@ class FilmstripThumb(QWidget):
         self._pixmap = pixmap
         self._mockup_chrome = mockup_chrome
         self._editor_palette = None
+        self._marked = False  # in the active collection: a small accent bar along the top edge
         self._strip_shape: tuple | None = None  # what the strip sized it for, so it knows when it must be rebuilt
         self.set_thumb_height(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -336,6 +337,12 @@ class FilmstripThumb(QWidget):
         self._tag, self._current, self._pixmap = tag, current, pixmap
         self.update()
         return True
+
+    def set_marked(self, marked: bool) -> None:
+        marked = bool(marked)
+        if marked != self._marked:
+            self._marked = marked
+            self.update()
 
     def set_thumb_height(self, height: int) -> None:
         height = max(24, int(height))
@@ -382,6 +389,9 @@ class FilmstripThumb(QWidget):
             mountain.lineTo(rect.right(), rect.bottom())
             mountain.closeSubpath()
             painter.fillPath(mountain, QColor(ground))
+        if self._marked:
+            # Inside the clip, so the bar follows the rounded top corners.
+            painter.fillRect(QRect(rect.left(), rect.top(), rect.width(), 6), QColor(self._editor_palette["accent"] if self._editor_palette else ACCENT_BRIGHT))
         painter.setClipping(False)
 
         if self._mockup_chrome:
@@ -748,6 +758,16 @@ class Filmstrip(QFrame):
     def _tag_for(self, index: int) -> str | None:
         return self._tag_provider(index) if self._tag_provider is not None else None
 
+    def set_marked_provider(self, provider: Callable[[int], bool] | None) -> None:
+        """Which frames carry the active-collection bar; repaints the thumbs on screen."""
+        self._marked_provider = provider
+        for index, thumb in self._thumbs.items():
+            thumb.set_marked(self._marked_for(index))
+
+    def _marked_for(self, index: int) -> bool:
+        provider = getattr(self, "_marked_provider", None)
+        return bool(provider(index)) if provider is not None else False
+
     def _thumb_for(self, index: int) -> QPixmap | None:
         return self._thumb_provider(index) if self._thumb_provider is not None else None
 
@@ -824,6 +844,7 @@ class Filmstrip(QFrame):
                     thumb.setFixedWidth(target_w)
                 thumb.installEventFilter(self)
                 thumb.clicked.connect(self.frame_selected)
+            thumb.set_marked(self._marked_for(index))
             self._thumbs[index] = thumb
             self._layout.addWidget(thumb)
             thumb.show()  # a widget added to a shown reel is otherwise shown only on a later pass of the event loop

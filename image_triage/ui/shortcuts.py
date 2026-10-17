@@ -63,6 +63,7 @@ SHORTCUT_REGISTRY: tuple[tuple[str, str, str, str], ...] = (
     ("keep_at_cursor", "Review", "K", "Keep Photo At Cursor"),
     ("move_at_cursor", "Review", "M", "Move Photo At Cursor"),
     ("tag_at_cursor", "Review", "T", "Tag Photo At Cursor"),
+    ("collect_at_cursor", "Review", "B", "Add To Active Collection"),
     ("adapter_label_hero", "Review", "1", "Adapter Label: Hero"),
     ("adapter_label_strong", "Review", "2", "Adapter Label: Strong"),
     ("adapter_label_maybe", "Review", "3", "Adapter Label: Maybe"),

@@ -59,6 +59,49 @@ class DragDropController(QObject):
         event.accept()
         return True
 
+    def handle_collection_drop_event(self, event) -> bool | None:
+        """Dropping grid images on a sidebar collection adds them to it; files never move."""
+        event_type = event.type()
+        if event_type not in {
+            QEvent.Type.DragEnter,
+            QEvent.Type.DragMove,
+            QEvent.Type.DragLeave,
+            QEvent.Type.Drop,
+        }:
+            return None
+        projects = self._window._projects
+        if self._window._collection_mode:
+            event.ignore()
+            return True
+        if event_type == QEvent.Type.DragLeave:
+            projects.set_collection_drop_target("")
+            return False
+        paths = ThumbnailGridView.dragged_record_paths_from_mime(event.mimeData())
+        if not paths:
+            return None
+        if event_type == QEvent.Type.DragEnter:
+            # Accept the drag over the list as a whole; DragMove decides per row.
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            return True
+        collection_id = self.collection_drop_target(event.position().toPoint())
+        projects.set_collection_drop_target(collection_id if event_type == QEvent.Type.DragMove else "")
+        if not collection_id:
+            event.ignore()
+            return True
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        if event_type == QEvent.Type.Drop:
+            self._window._catalog.add_dropped_paths_to_collection(collection_id, paths)
+        return True
+
+    def collection_drop_target(self, point) -> str:
+        item = self._window.projects_list.itemAt(point)
+        if item is None:
+            return ""
+        collection_id = item.data(Qt.ItemDataRole.UserRole)
+        return collection_id if isinstance(collection_id, str) else ""
+
     def folder_drop_target(self, point) -> str:
         index = self._window.folder_tree.indexAt(point)
         if not index.isValid():

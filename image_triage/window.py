@@ -1480,6 +1480,10 @@ class MainWindow(QMainWindow):
         self.projects_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.projects_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.projects_list.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        # Dropping grid images on a collection adds them (links, never moves files).
+        self.projects_list.setAcceptDrops(True)
+        self.projects_list.viewport().setAcceptDrops(True)
+        self.projects_list.viewport().installEventFilter(self)
 
     def _init_left_rail_pages_and_nav_rail(self) -> None:
         """Assemble the rail pages (Folders, Faces, Collections, PocketDrop) and the nav rail, then show
@@ -1824,13 +1828,21 @@ class MainWindow(QMainWindow):
         self.collection_mode_help.setObjectName("secondaryText")
         self.collection_mode_count = QLabel("0 images checked")
         self.collection_mode_count.setObjectName("secondaryText")
+        self.collection_mode_check_visible_button = QPushButton("Check All Visible")
+        self.collection_mode_check_visible_button.setToolTip("Check every image the current filter or search shows")
+        self.collection_mode_uncheck_visible_button = QPushButton("Uncheck Visible")
+        self.collection_mode_uncheck_visible_button.setToolTip("Uncheck every image the current filter or search shows")
         self.collection_mode_save_button = QPushButton("Save Collection")
         self.collection_mode_cancel_button = QPushButton("Cancel")
+        self.collection_mode_check_visible_button.clicked.connect(self._catalog.check_visible_in_collection_mode)
+        self.collection_mode_uncheck_visible_button.clicked.connect(self._catalog.uncheck_visible_in_collection_mode)
         self.collection_mode_save_button.clicked.connect(self._catalog.save_collection_mode)
         self.collection_mode_cancel_button.clicked.connect(self._catalog.cancel_collection_mode)
         collection_mode_layout.addWidget(self.collection_mode_title)
         collection_mode_layout.addWidget(self.collection_mode_help, 1)
         collection_mode_layout.addWidget(self.collection_mode_count)
+        collection_mode_layout.addWidget(self.collection_mode_check_visible_button)
+        collection_mode_layout.addWidget(self.collection_mode_uncheck_visible_button)
         collection_mode_layout.addWidget(self.collection_mode_save_button)
         collection_mode_layout.addWidget(self.collection_mode_cancel_button)
         self.collection_mode_bar.hide()
@@ -2009,6 +2021,7 @@ class MainWindow(QMainWindow):
         self.grid.keep_requested.connect(self._annotation_ctl.keep_record)
         self.grid.move_requested.connect(self._record_ops.move_record_prompt)
         self.grid.tag_requested.connect(self._annotation_ctl.tag_record)
+        self.grid.collect_requested.connect(self._catalog.add_index_to_active_collection)
         self.grid.winner_requested.connect(self._annotation_ctl.toggle_winner)
         self.grid.reject_requested.connect(self._annotation_ctl.toggle_reject)
         self.grid.adapter_label_requested.connect(self._aiculler.handle_aiculler_adapter_label_requested)
@@ -2028,6 +2041,7 @@ class MainWindow(QMainWindow):
         self.details_view.keep_requested.connect(self._annotation_ctl.keep_record)
         self.details_view.move_requested.connect(self._record_ops.move_record_prompt)
         self.details_view.tag_requested.connect(self._annotation_ctl.tag_record)
+        self.details_view.collect_requested.connect(self._catalog.add_index_to_active_collection)
         self.details_view.winner_requested.connect(self._annotation_ctl.toggle_winner)
         self.details_view.reject_requested.connect(self._annotation_ctl.toggle_reject)
 
@@ -2487,6 +2501,7 @@ class MainWindow(QMainWindow):
         "keep_at_cursor",
         "move_at_cursor",
         "tag_at_cursor",
+        "collect_at_cursor",
         "adapter_label_hero",
         "adapter_label_strong",
         "adapter_label_maybe",
@@ -2705,6 +2720,11 @@ class MainWindow(QMainWindow):
             favorites_viewport = self.favorites_list.viewport() if hasattr(self, "favorites_list") else None
             if watched is favorites_viewport:
                 handled = self._dragdrop.handle_record_drop_event(event, source="favorites")
+                if handled is not None:
+                    return handled
+            projects_viewport = self.projects_list.viewport() if hasattr(self, "projects_list") else None
+            if watched is projects_viewport:
+                handled = self._dragdrop.handle_collection_drop_event(event)
                 if handled is not None:
                     return handled
             return super().eventFilter(watched, event)

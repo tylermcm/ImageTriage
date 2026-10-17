@@ -38,6 +38,8 @@ class UndoAction:
     source_paths: tuple[str, ...] = ()
     session_id: str = ""
     winner_mode: str = ""
+    # collection_remove: where each of source_paths sat, so Undo puts it back in place.
+    positions: tuple[int, ...] = ()
     # Actions pushed from the same batch operation (e.g. one multi-file move)
     # share a non-empty batch_id, so a single Undo reverses all of them and
     # does one view refresh, not one per file.
@@ -783,6 +785,8 @@ class RecordOpsController:
                 elif item.kind == "delete":
                     if self.undo_delete_files(item):
                         reload_needed = True
+                elif item.kind in {"collection_add", "collection_remove"}:
+                    window._catalog.undo_collection_change(item)
                 undone += 1
         except OSError as exc:
             # Push back whatever this batch hadn't gotten to yet, in the
@@ -809,10 +813,26 @@ class RecordOpsController:
                 window.statusBar().showMessage(f"Restored {name} from safe trash")
             elif action.kind == "annotation":
                 window.statusBar().showMessage(f"Undid annotation change: {name}")
+            elif action.kind == "collection_add":
+                window._catalog.show_collection_feedback(
+                    f"Undid adding {len(action.source_paths)} image(s) to {window._catalog.collection_name_for_undo(action.folder)}",
+                    action.folder,
+                )
+            elif action.kind == "collection_remove":
+                window._catalog.show_collection_feedback(
+                    f"Put {len(action.source_paths)} image(s) back in {window._catalog.collection_name_for_undo(action.folder)}",
+                    action.folder,
+                )
             else:
                 window.statusBar().showMessage(f"Undid {action.kind}: {name}")
             return
-        kind_labels = {"move": "move", "delete": "restore from safe trash", "annotation": "annotation change"}
+        kind_labels = {
+            "move": "move",
+            "delete": "restore from safe trash",
+            "annotation": "annotation change",
+            "collection_add": "collection add",
+            "collection_remove": "collection removal",
+        }
         kind_counts: dict[str, int] = {}
         for action in batch:
             kind_counts[action.kind] = kind_counts.get(action.kind, 0) + 1
@@ -820,7 +840,13 @@ class RecordOpsController:
             f"{count} {kind_labels.get(kind, kind)}{'s' if count != 1 else ''}"
             for kind, count in kind_counts.items()
         ]
-        window.statusBar().showMessage(f"Undid {len(batch)} action(s): " + ", ".join(parts))
+        collection_ids = list(dict.fromkeys(action.folder for action in batch if action.kind in {"collection_add", "collection_remove"}))
+        message = f"Undid {len(batch)} action(s): " + ", ".join(parts)
+        if collection_ids:
+            names = ", ".join(window._catalog.collection_name_for_undo(collection_id) for collection_id in collection_ids)
+            window._catalog.show_collection_feedback(f"{message} ({names})", collection_ids[0])
+            return
+        window.statusBar().showMessage(message)
 
     def undo_annotation(self, action: UndoAction) -> None:
         window = self._window

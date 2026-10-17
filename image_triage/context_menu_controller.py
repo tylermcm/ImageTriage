@@ -145,6 +145,10 @@ class ContextMenuController(QObject):
             if not self._window._photoshop_executable:
                 photoshop_action.setText("Open In Photoshop (Not Found)")
             menu.addSeparator()
+            # Its rows act on their own when picked; nothing below needs to match them.
+            self._window._catalog.populate_collections_menu(
+                menu.addMenu(f"Add {len(records)} Images To Collection"), [item.path for item in records]
+            )
             send_to_actions = self.add_send_to_actions(menu)
             menu.addSeparator()
             delete_action = menu.addAction(f"Delete {len(records)} Images")
@@ -241,6 +245,8 @@ class ContextMenuController(QObject):
         convert_action = menu.addAction("Convert...")
         convert_action.setEnabled(not self._window._is_recycle_folder() and self._window._export_jobs.record_supports_convert(record))
         menu.addSeparator()
+        # Its rows act on their own when picked; nothing below needs to match them.
+        self._window._catalog.populate_collections_menu(menu.addMenu("Collections"), [record.path])
         send_to_actions = self.add_send_to_actions(menu)
         menu.addSeparator()
         copy_path_action = menu.addAction("Copy Path")

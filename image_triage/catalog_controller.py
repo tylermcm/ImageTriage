@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -11,8 +12,10 @@ from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox, QProgressD
 from .job_controller import JobSpec
 from .library_store import CatalogRefreshSummary, CatalogRefreshTask, VirtualCollection
 from .models import ImageRecord
+from .record_ops_controller import UndoAction
 from .scanner import normalize_filesystem_path, normalized_path_key, scan_folder
-from .ui import CatalogSearchDialog, CollectionEditDialog
+from .ui import CatalogSearchDialog, CollectionEditDialog, CollectionPickerChoice, CollectionPickerDialog, effective_shortcuts
+from .ui.flash_toast import FlashToast
 from .folder_session import FolderSession
 
 if TYPE_CHECKING:
@@ -272,32 +275,79 @@ class CatalogController:
     def selected_record_paths_for_library(self) -> tuple[str, ...]:
         return tuple(record.path for record in self._window._selected_records_for_workflow())
 
-    def choose_virtual_collection(self, *, title: str, prompt: str) -> VirtualCollection | None:
+    RECENT_COLLECTIONS_KEY = "collections/recent_ids"
+    _RECENT_LIMIT = 6
+
+    def recent_collection_ids(self) -> tuple[str, ...]:
+        raw = str(self._window._settings.value(self.RECENT_COLLECTIONS_KEY, "", str) or "")
+        return tuple(part for part in raw.split("\n") if part)
+
+    def remember_recent_collection(self, collection_id: str) -> None:
+        if not collection_id:
+            return
+        recent = [collection_id, *(other for other in self.recent_collection_ids() if other != collection_id)]
+        self._window._settings.setValue(self.RECENT_COLLECTIONS_KEY, "\n".join(recent[: self._RECENT_LIMIT]))
+
+    def choose_virtual_collection(self, *, title: str, prompt: str, allow_new: bool = False) -> VirtualCollection | None:
+        """Ask for a collection in a type-to-filter picker: recently used first, then alphabetical.
+        The default is the collection on screen, else the active one. With ``allow_new`` the list
+        ends in "New collection", named from the search text, so adding never dead-ends."""
+        del prompt
         window = self._window
         collections = window._library_store.list_collections()
-        if not collections:
+        if not collections and not allow_new:
             window.statusBar().showMessage("Create a collection first.")
             return None
-        labels: list[str] = []
-        label_to_id: dict[str, str] = {}
-        for collection in collections:
-            label = f"{collection.name} ({collection.item_count})"
-            if label in label_to_id:
-                label = f"{label} [{collection.id}]"
-            labels.append(label)
-            label_to_id[label] = collection.id
-        default_label = labels[0]
-        if self._session.scope_kind == "collection" and self._session.scope_id:
-            current_collection = window._library_store.load_collection(self._session.scope_id)
-            if current_collection is not None:
-                for label, collection_id in label_to_id.items():
-                    if collection_id == current_collection.id:
-                        default_label = label
-                        break
-        choice, accepted = QInputDialog.getItem(window, title, prompt, labels, labels.index(default_label), False)
-        if not accepted or not choice:
+        by_id = {collection.id: collection for collection in collections}
+        recent = tuple(collection_id for collection_id in self.recent_collection_ids() if collection_id in by_id)
+        ordered = [by_id[collection_id] for collection_id in recent]
+        ordered += [collection for collection in collections if collection.id not in recent]
+        default_id = ""
+        if self._session.scope_kind == "collection" and self._session.scope_id in by_id:
+            default_id = self._session.scope_id
+        if not default_id:
+            default_id = self.active_collection_id()
+        choice = self.run_collection_picker(
+            [(collection.id, collection.name, collection.item_count) for collection in ordered],
+            title=title,
+            default_id=default_id,
+            recent_ids=recent,
+            allow_new=allow_new,
+        )
+        if choice is None:
             return None
-        return window._library_store.load_collection(label_to_id[str(choice)])
+        if choice.collection_id:
+            return window._library_store.load_collection(choice.collection_id)
+        return self.prompt_new_collection(title=title, name=choice.new_name)
+
+    def run_collection_picker(self, entries, *, title: str, default_id: str, recent_ids, allow_new: bool) -> CollectionPickerChoice | None:
+        dialog = CollectionPickerDialog(
+            entries, title=title, default_id=default_id, recent_ids=tuple(recent_ids), allow_new=allow_new, parent=self._window
+        )
+        if self._window._exec_dialog_with_geometry(dialog, "collection_picker") != dialog.DialogCode.Accepted:
+            return None
+        return dialog.choice()
+
+    def prompt_new_collection(self, *, title: str = "New Collection", name: str = "") -> VirtualCollection | None:
+        """Name-only creation for the add flows; an existing name is reused rather than replaced.
+        A name typed into the picker's search box is used as-is."""
+        window = self._window
+        name = " ".join(str(name or "").split())
+        if not name:
+            name, accepted = QInputDialog.getText(window, title, "New collection name")
+            name = " ".join(str(name or "").split())
+            if not accepted or not name:
+                return None
+        existing = window._library_store.find_collection_by_name(name)
+        if existing is not None:
+            return existing
+        try:
+            collection = window._library_store.create_collection(name=name)
+        except (ValueError, RuntimeError) as exc:
+            window.statusBar().showMessage(str(exc))
+            return None
+        window._projects.refresh_collections_menu()
+        return collection
 
     def resolve_records_for_paths(self, paths: tuple[str, ...] | list[str]) -> tuple[list[ImageRecord], int]:
         window = self._window
@@ -352,9 +402,24 @@ class CatalogController:
         return resolved, missing
 
     def create_virtual_collection_from_selection(self) -> None:
-        self.begin_collection_mode("create")
+        # Start with the selected images already checked, so "select, then create" works.
+        window = self._window
+        selected = [window._records[index] for index in window.grid.selected_indexes() if 0 <= index < len(window._records)]
+        seed = tuple(record.path for record in selected if not record.is_folder)
+        self.begin_collection_mode("create", seed_paths=seed)
+        skipped = len(selected) - len(seed)
+        if self._session.collection_mode and skipped:
+            window.statusBar().showMessage(
+                f"Collection mode: {len(seed)} selected image(s) checked; {skipped} folder(s) skipped (collections hold images)."
+            )
 
-    def begin_collection_mode(self, mode: str, *, collection: VirtualCollection | None = None) -> None:
+    def begin_collection_mode(
+        self,
+        mode: str,
+        *,
+        collection: VirtualCollection | None = None,
+        seed_paths: tuple[str, ...] = (),
+    ) -> None:
         window = self._window
         if self._session.collection_mode:
             return
@@ -367,7 +432,10 @@ class CatalogController:
         window._collection_previous_inspector_enabled = window.inspector_panel.isEnabled()
         self._session.collection_mode = mode
         window._collection_target_id = collection.id if collection is not None else ""
-        window.grid.set_collection_checkbox_mode(True, paths=collection.item_paths if collection is not None else ())
+        window.grid.set_collection_checkbox_mode(
+            True,
+            paths=(collection.item_paths if collection is not None else ()) + tuple(seed_paths),
+        )
         window.grid.clear_selection(keep_current=True)
         # An unbuilt popout picks collection mode up when it is built.
         preview = window._preview_ctl.preview_if_built()
@@ -395,6 +463,22 @@ class CatalogController:
             window.collection_mode_title.setText(f"Edit: {collection.name}" if collection else "Edit Collection")
             window.collection_mode_save_button.setText("Save Changes")
             window.collection_mode_save_button.setEnabled(collection is not None)
+
+    def check_visible_in_collection_mode(self, checked: bool = False) -> None:
+        del checked
+        self._set_visible_collection_checks(True)
+
+    def uncheck_visible_in_collection_mode(self, checked: bool = False) -> None:
+        del checked
+        self._set_visible_collection_checks(False)
+
+    def _set_visible_collection_checks(self, checked: bool) -> None:
+        window = self._window
+        if not self._session.collection_mode:
+            return
+        paths = [record.path for record in window._records if not record.is_folder]
+        window.grid.set_collection_paths_checked(paths, checked)
+        self.refresh_collection_mode_ui()
 
     def cancel_collection_mode(self, checked: bool = False, *, show_message: bool = True) -> None:
         del checked
@@ -523,22 +607,442 @@ class CatalogController:
             collection = self.choose_virtual_collection(title="Remove From Collection", prompt="Collection")
         if collection is None:
             return
-        updated = window._library_store.remove_paths_from_collection(collection.id, paths)
-        window._projects.refresh_collections_menu()
+        # remove_paths_with_undo reloads the collection view when it is on screen.
+        updated, removed = self.remove_paths_with_undo(collection.id, paths)
         if updated is None:
             return
-        if self._session.scope_kind == "collection" and self._session.scope_id == updated.id:
-            records, missing = self.resolve_records_for_paths(updated.item_paths)
+        if not removed:
+            self.show_collection_feedback(f"None of the selected images are in {updated.name}", updated.id)
+            return
+        self.show_collection_feedback(f"Removed {removed} image(s) from {updated.name}", updated.id)
+
+    # -- Fast adds: selection, visible results, the active collection ----
+    #
+    # These write membership rows only (one batched insert) and never touch
+    # thumbnails or decode anything, so adding thousands of images is instant.
+    # Each add or removal is one undo step, and every change is confirmed with a
+    # toast over the grid or popout (the status bar alone gets overwritten).
+
+    ACTIVE_COLLECTION_KEY = "collections/active_id"
+    AUTO_ADD_WINNERS_KEY = "collections/auto_add_winners"
+
+    def active_collection_id(self) -> str:
+        return str(self._window._settings.value(self.ACTIVE_COLLECTION_KEY, "", str) or "")
+
+    def active_collection(self) -> VirtualCollection | None:
+        collection_id = self.active_collection_id()
+        if not collection_id:
+            return None
+        return self._window._library_store.load_collection_header(collection_id)
+
+    def set_active_collection(self, collection_id: str, *, show_message: bool = True) -> None:
+        window = self._window
+        collection = window._library_store.load_collection_header(collection_id) if collection_id else None
+        window._settings.setValue(self.ACTIVE_COLLECTION_KEY, collection.id if collection is not None else "")
+        if collection is not None:
+            self.remember_recent_collection(collection.id)
+        window._projects.refresh_collections_menu()
+        if show_message:
+            if collection is None:
+                self.show_collection_feedback("No active collection")
+            else:
+                key = effective_shortcuts(("collect_at_cursor",)).get("collect_at_cursor", "")
+                self.show_collection_feedback(
+                    f"Active collection: {collection.name}" + (f" ({key} adds or removes the current image)" if key else ""),
+                    collection.id,
+                )
+
+    def choose_active_collection(self, checked: bool = False) -> None:
+        del checked
+        collection = self.choose_virtual_collection(title="Set Active Collection", prompt="Collection", allow_new=True)
+        if collection is not None:
+            self.set_active_collection(collection.id)
+
+    def clear_active_collection(self, checked: bool = False) -> None:
+        del checked
+        self.set_active_collection("")
+
+    def auto_add_winners_enabled(self) -> bool:
+        return bool(self._window._settings.value(self.AUTO_ADD_WINNERS_KEY, False, bool))
+
+    def set_auto_add_winners(self, enabled: bool) -> None:
+        window = self._window
+        enabled = bool(enabled)
+        window._settings.setValue(self.AUTO_ADD_WINNERS_KEY, enabled)
+        if not enabled:
+            self.show_collection_feedback("Winners no longer go to the active collection")
+            return
+        collection = self.active_collection()
+        if collection is None:
+            self.show_collection_feedback("Winners will go to the active collection once you set one")
+        else:
+            self.show_collection_feedback(f"New winners will also go to {collection.name}", collection.id)
+
+    # -- Feedback -------------------------------------------------------
+
+    def show_collection_feedback(self, message: str, collection_id: str = "") -> None:
+        """Status bar, a toast over whatever you are looking at, and a flash of the sidebar row."""
+        window = self._window
+        window.statusBar().showMessage(message)
+        toast = getattr(self, "_toast", None)
+        if toast is None:
+            toast = self._toast = FlashToast()
+        anchor = None
+        preview_ctl = getattr(window, "_preview_ctl", None)
+        preview = preview_ctl.preview_if_built() if preview_ctl is not None else None
+        if preview is not None and preview.isVisible():
+            anchor = getattr(preview, "panes_widget", None) or preview
+        if anchor is None:
+            anchor = getattr(window, "browser_stack", None)
+        toast.flash(anchor, message)
+        flash_row = getattr(window._projects, "flash_collection_row", None)
+        if collection_id and flash_row is not None:
+            flash_row(collection_id)
+
+    # -- Every collection a photo is in (right-click submenu, popout chip) ----
+
+    _SUBMENU_LIMIT = 10
+
+    def collection_ids_for_path(self, path: str) -> tuple[str, ...]:
+        """Cached: the popout asks on every step, so this must not touch the database each time."""
+        cache = getattr(self, "_membership_cache", None)
+        if cache is None:
+            cache = self._membership_cache = self._window._library_store.collection_ids_by_path()
+        return cache.get(normalized_path_key(path), ())
+
+    def invalidate_membership_cache(self) -> None:
+        self._membership_cache = None
+
+    def collection_chip_text(self, path: str) -> tuple[str, str]:
+        """(button text, tooltip) for the popout's collections chip."""
+        ids = self.collection_ids_for_path(path) if path else ()
+        if not ids:
+            return "+ Collection", "Not in any collection. Click to add it to one."
+        names = {collection.id: collection.name for collection in self._window._library_store.list_collections()}
+        listed = [names[collection_id] for collection_id in ids if collection_id in names]
+        if not listed:
+            return "+ Collection", "Not in any collection. Click to add it to one."
+        text = f"● {listed[0]}" if len(listed) == 1 else f"● {len(listed)} collections"
+        return text, "In: " + ", ".join(listed) + "\nClick to change"
+
+    def populate_collections_menu(self, menu, paths) -> None:
+        """Checkable rows, one per collection (recent and active first): checked when every path is in it,
+        a dash when some are. Picking a row adds them all, or removes them when all were in already."""
+        window = self._window
+        paths = [path for path in paths if path]
+        store = window._library_store
+        collections = store.list_collections()
+        by_id = {collection.id: collection for collection in collections}
+        active_id = self.active_collection_id()
+        leading = [collection_id for collection_id in (active_id, *self.recent_collection_ids()) if collection_id in by_id]
+        ordered = [by_id[collection_id] for collection_id in dict.fromkeys(leading)]
+        ordered += [collection for collection in collections if collection.id not in leading]
+        keys = [normalized_path_key(path) for path in paths]
+        busy = bool(self._session.collection_mode) or not paths
+        for collection in ordered[: self._SUBMENU_LIMIT]:
+            held = sum(1 for key in keys if collection.id in self._membership_for_key(key))
+            label = collection.name + ("  (active)" if collection.id == active_id else "")
+            if 0 < held < len(keys):
+                label += f"  — {held} of {len(keys)} in"
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(bool(keys) and held == len(keys))
+            action.setEnabled(not busy)
+            action.triggered.connect(
+                lambda _checked=False, target=collection.id, all_in=(bool(keys) and held == len(keys)): self._toggle_paths_in(target, paths, all_in)
+            )
+        if len(ordered) > self._SUBMENU_LIMIT:
+            more = menu.addAction("More collections...")
+            more.setEnabled(not busy)
+            more.triggered.connect(lambda _checked=False: self._add_paths_via_picker(paths))
+        if ordered:
+            menu.addSeparator()
+        new_action = menu.addAction("New collection...")
+        new_action.setEnabled(not busy)
+        new_action.triggered.connect(lambda _checked=False: self._add_paths_to_new_collection(paths))
+
+    def _membership_for_key(self, key: str) -> tuple[str, ...]:
+        cache = getattr(self, "_membership_cache", None)
+        if cache is None:
+            cache = self._membership_cache = self._window._library_store.collection_ids_by_path()
+        return cache.get(key, ())
+
+    def _toggle_paths_in(self, collection_id: str, paths, all_in: bool) -> None:
+        if all_in:
+            updated, removed = self.remove_paths_with_undo(collection_id, paths)
+            if updated is not None and removed:
+                noun = Path(paths[0]).name if len(paths) == 1 else f"{removed} images"
+                self.show_collection_feedback(f"Removed {noun} from {updated.name}", updated.id)
+            return
+        updated, added = self.add_paths_with_undo(collection_id, paths)
+        if updated is not None:
+            if len(paths) == 1:
+                self.show_collection_feedback(f"Added {Path(paths[0]).name} to {updated.name}", updated.id)
+            else:
+                self._report_add(updated, added, len(paths), source="image(s)")
+
+    def _add_paths_via_picker(self, paths) -> None:
+        collection = self.choose_virtual_collection(title="Add to Collection", prompt="Collection", allow_new=True)
+        if collection is not None:
+            self._toggle_paths_in(collection.id, paths, all_in=False)
+
+    def _add_paths_to_new_collection(self, paths) -> None:
+        collection = self.prompt_new_collection(title="New Collection")
+        if collection is not None:
+            self._toggle_paths_in(collection.id, paths, all_in=False)
+
+    def refresh_collection_markers(self) -> None:
+        """Mark the active collection's members on grid tiles and popout captions."""
+        self.invalidate_membership_cache()
+        window = self._window
+        grid = getattr(window, "grid", None)
+        if grid is None or not hasattr(grid, "set_active_collection_members"):
+            return
+        collection_id = self.active_collection_id()
+        collection = window._library_store.load_collection(collection_id) if collection_id else None
+        paths = collection.item_paths if collection is not None else ()
+        label = collection.name if collection is not None else ""
+        grid.set_active_collection_members(paths, label)
+        preview_ctl = getattr(window, "_preview_ctl", None)
+        preview = preview_ctl.preview_if_built() if preview_ctl is not None else None
+        if preview is not None and hasattr(preview, "set_active_collection_members"):
+            preview.set_active_collection_members(paths, label)
+        if preview is not None and hasattr(preview, "refresh_collection_chip"):
+            preview.refresh_collection_chip()
+
+    # -- Membership changes (each one undoable) ----------------------------
+
+    def add_paths_with_undo(self, collection_id: str, paths, *, batch_id: str = "") -> tuple[VirtualCollection | None, int]:
+        """Add paths as one undo step. Returns the collection and how many were new."""
+        window = self._window
+        new_paths = window._library_store.paths_missing_from_collection(collection_id, list(paths))
+        if not new_paths:
+            return window._library_store.load_collection_header(collection_id), 0
+        updated = window._library_store.add_paths_to_collection(collection_id, new_paths)
+        if updated is None:
+            return None, 0
+        window._record_ops.push_undo(
+            UndoAction(
+                kind="collection_add",
+                primary_path=new_paths[0],
+                folder=updated.id,
+                source_paths=tuple(new_paths),
+                batch_id=batch_id,
+            )
+        )
+        self.remember_recent_collection(updated.id)
+        self.after_collection_membership_change(updated)
+        return updated, len(new_paths)
+
+    def remove_paths_with_undo(self, collection_id: str, paths, *, batch_id: str = "") -> tuple[VirtualCollection | None, int]:
+        """Remove paths as one undo step that puts them back where they were."""
+        window = self._window
+        store = window._library_store
+        positions = store.collection_positions(collection_id, list(paths))
+        if not positions:
+            return store.load_collection_header(collection_id), 0
+        removed = tuple(path for path, _position in positions)
+        updated = store.remove_paths_from_collection(collection_id, removed)
+        if updated is None:
+            return None, 0
+        window._record_ops.push_undo(
+            UndoAction(
+                kind="collection_remove",
+                primary_path=removed[0],
+                folder=updated.id,
+                source_paths=removed,
+                positions=tuple(position for _path, position in positions),
+                batch_id=batch_id,
+            )
+        )
+        self.after_collection_membership_change(updated)
+        return updated, len(removed)
+
+    def after_collection_membership_change(self, collection: VirtualCollection) -> None:
+        window = self._window
+        window._projects.refresh_collections_menu()
+        if self._session.scope_kind == "collection" and self._session.scope_id == collection.id:
+            full = window._library_store.load_collection(collection.id) or collection
+            records, _missing = self.resolve_records_for_paths(full.item_paths)
             window._records_view.load_virtual_scope_records(
                 records,
                 scope_kind="collection",
-                scope_id=updated.id,
-                scope_label=f"Collection: {updated.name}",
+                scope_id=full.id,
+                scope_label=f"Collection: {full.name}",
             )
-            if missing:
-                window.statusBar().showMessage(f"Updated {updated.name} ({len(records)} available, {missing} missing)")
+
+    def undo_collection_change(self, action: UndoAction) -> None:
+        store = self._window._library_store
+        if action.kind == "collection_add":
+            updated = store.remove_paths_from_collection(action.folder, action.source_paths)
+        elif action.positions:
+            updated = store.insert_paths_at(action.folder, action.source_paths, action.positions)
+        else:
+            updated = store.add_paths_to_collection(action.folder, action.source_paths)
+        if updated is not None:
+            self.after_collection_membership_change(updated)
+
+    def collection_name_for_undo(self, collection_id: str) -> str:
+        collection = self._window._library_store.load_collection_header(collection_id)
+        return collection.name if collection is not None else "the collection"
+
+    # -- Commands -------------------------------------------------------
+
+    def _report_add(self, collection: VirtualCollection, added: int, requested: int, *, source: str) -> None:
+        already = requested - added
+        message = f"Added {added} {source} to {collection.name}"
+        if already:
+            message += f" ({already} already there)"
+        self.show_collection_feedback(message, collection.id)
+
+    def _collection_for_add(self, collection_id: str, *, title: str) -> VirtualCollection | None:
+        if collection_id:
+            return self._window._library_store.load_collection_header(collection_id)
+        return self.choose_virtual_collection(title=title, prompt="Collection", allow_new=True)
+
+    def add_selected_to_collection(self, checked: bool = False, *, collection_id: str = "") -> None:
+        del checked
+        window = self._window
+        if self._session.collection_mode:
             return
-        window.statusBar().showMessage(f"Removed selected items from {updated.name}")
+        paths = [record.path for record in window._selected_records_for_workflow() if not record.is_folder]
+        if not paths:
+            window.statusBar().showMessage("Select one or more images first.")
+            return
+        collection = self._collection_for_add(collection_id, title="Add Selection to Collection")
+        if collection is None:
+            return
+        updated, added = self.add_paths_with_undo(collection.id, paths)
+        if updated is not None:
+            self._report_add(updated, added, len(paths), source="selected image(s)")
+
+    def add_visible_to_collection(self, checked: bool = False, *, collection_id: str = "") -> None:
+        """Add every image the current filter, regex or semantic search shows."""
+        del checked
+        window = self._window
+        if self._session.collection_mode:
+            return
+        paths = [record.path for record in window._records if not record.is_folder]
+        if not paths:
+            window.statusBar().showMessage("No images are visible to add.")
+            return
+        collection = self._collection_for_add(collection_id, title=f"Add All {len(paths)} Visible to Collection")
+        if collection is None:
+            return
+        updated, added = self.add_paths_with_undo(collection.id, paths)
+        if updated is not None:
+            self._report_add(updated, added, len(paths), source="visible image(s)")
+
+    def add_dropped_paths_to_collection(self, collection_id: str, paths) -> None:
+        paths = [path for path in paths if path]
+        if not paths:
+            return
+        updated, added = self.add_paths_with_undo(collection_id, paths)
+        if updated is not None:
+            self._report_add(updated, added, len(paths), source="dropped image(s)")
+
+    def add_selected_to_active_collection(self, checked: bool = False) -> None:
+        del checked
+        window = self._window
+        index = window.grid.current_index()
+        if index < 0:
+            window.statusBar().showMessage("Select one or more images first.")
+            return
+        self.add_index_to_active_collection(index, toggle=False)
+
+    def add_index_to_active_collection(self, index: int, *, whole_selection: bool = True, toggle: bool = True) -> None:
+        """The collect key (B): the image at the cursor, or the whole selection when the cursor is in it.
+        Like W, it toggles - when every one of them is already in the collection, it takes them out.
+        The popout passes ``whole_selection=False``: there B means the photo on screen."""
+        window = self._window
+        if self._session.collection_mode:
+            return
+        if whole_selection:
+            records = window._selected_records_for_context(index)
+        else:
+            record = window._record_at(index)
+            records = [record] if record is not None else []
+        records = [record for record in records if not record.is_folder]
+        if not records:
+            return
+        collection = self.active_collection()
+        if collection is None:
+            collection = self.choose_virtual_collection(title="Choose the Active Collection", prompt="Collection", allow_new=True)
+            if collection is None:
+                return
+            self.set_active_collection(collection.id, show_message=False)
+        paths = [record.path for record in records]
+        name = records[0].name if len(records) == 1 else f"{len(records)} images"
+        if toggle and not window._library_store.paths_missing_from_collection(collection.id, paths):
+            updated, removed = self.remove_paths_with_undo(collection.id, paths)
+            if updated is not None and removed:
+                self.show_collection_feedback(f"Removed {name} from {updated.name}", updated.id)
+            return
+        updated, added = self.add_paths_with_undo(collection.id, paths)
+        if updated is None:
+            return
+        if len(paths) == 1:
+            message = f"Added {name} to {updated.name}" if added else f"{name} is already in {updated.name}"
+            self.show_collection_feedback(message, updated.id)
+            return
+        self._report_add(updated, added, len(paths), source="image(s)")
+
+    # -- Winners and the active collection ---------------------------------
+    #
+    # With the toggle on, a new winner is added to the active collection. Taking
+    # the winner back (W again, or rejecting it) takes it out again - but only if
+    # it got there by being a winner this session, never one you added yourself.
+
+    def winner_auto_add_batch_id(self) -> str:
+        """A batch id for a winner change that will also add to the active collection, else ''."""
+        if not self.auto_add_winners_enabled() or not self.active_collection_id():
+            return ""
+        return uuid.uuid4().hex
+
+    def auto_add_winner_paths(self, paths, *, batch_id: str) -> str:
+        """Add new winners to the active collection. Returns the collection name when any were added."""
+        if not batch_id:
+            return ""
+        collection_id = self.active_collection_id()
+        if not collection_id:
+            return ""
+        new_paths = self._window._library_store.paths_missing_from_collection(collection_id, list(paths))
+        updated, added = self.add_paths_with_undo(collection_id, new_paths, batch_id=batch_id)
+        if updated is None or not added:
+            return ""
+        auto_added = self._auto_added_winner_keys()
+        auto_added.update((collection_id, normalized_path_key(path)) for path in new_paths)
+        return updated.name
+
+    def _auto_added_winner_keys(self) -> set[tuple[str, str]]:
+        keys = getattr(self, "_auto_added_winners", None)
+        if keys is None:
+            keys = self._auto_added_winners = set()
+        return keys
+
+    def winner_auto_remove_batch_id(self, paths) -> str:
+        """A batch id when taking back these winners will also take auto-added ones out, else ''."""
+        collection_id = self.active_collection_id()
+        if not collection_id:
+            return ""
+        auto_added = self._auto_added_winner_keys()
+        if any((collection_id, normalized_path_key(path)) in auto_added for path in paths):
+            return uuid.uuid4().hex
+        return ""
+
+    def auto_remove_unwinner_paths(self, paths, *, batch_id: str) -> str:
+        """Take back auto-added winners that are no longer winners. Returns the collection name if any left."""
+        if not batch_id:
+            return ""
+        collection_id = self.active_collection_id()
+        auto_added = self._auto_added_winner_keys()
+        targets = [path for path in paths if (collection_id, normalized_path_key(path)) in auto_added]
+        if not collection_id or not targets:
+            return ""
+        updated, removed = self.remove_paths_with_undo(collection_id, targets, batch_id=batch_id)
+        for path in targets:
+            auto_added.discard((collection_id, normalized_path_key(path)))
+        return updated.name if updated is not None and removed else ""
 
     def delete_virtual_collection(self) -> None:
         window = self._window
@@ -559,6 +1063,8 @@ class CatalogController:
         if confirmation != QMessageBox.StandardButton.Yes:
             return
         deleted = window._library_store.delete_collection(collection.id)
+        if deleted and self.active_collection_id() == collection.id:
+            window._settings.setValue(self.ACTIVE_COLLECTION_KEY, "")
         window._projects.refresh_collections_menu()
         if deleted and self._session.scope_kind == "collection" and self._session.scope_id == collection.id:
             last_folder = window._settings.value(window.LAST_FOLDER_KEY, "", str)

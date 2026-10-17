@@ -236,6 +236,11 @@ class CommandPaletteController:
         """Virtual collections and the cross-folder catalog."""
         add_action_command("library.create_collection", actions.create_virtual_collection, section="Library", keywords=("virtual collection", "portfolio picks", "proofing set"))
         add_action_command("library.add_to_collection", actions.add_selection_to_collection, section="Library", keywords=("collection", "save picks"))
+        add_action_command("library.add_selected_to_collection", actions.add_selected_to_collection, section="Library", keywords=("collection", "add selection", "save picks"))
+        add_action_command("library.add_visible_to_collection", actions.add_visible_to_collection, section="Library", keywords=("collection", "add all", "add filtered", "add results", "bulk add"))
+        add_action_command("library.add_to_active_collection", actions.add_to_active_collection, section="Library", keywords=("collection", "active collection", "target collection", "collect"))
+        add_action_command("library.set_active_collection", actions.set_active_collection, section="Library", keywords=("collection", "active collection", "target collection"))
+        add_action_command("library.auto_add_winners", actions.auto_add_winners_to_collection, section="Library", keywords=("collection", "winners", "auto add", "active collection"))
         add_action_command("library.remove_from_collection", actions.remove_selection_from_collection, section="Library", keywords=("collection", "remove picks"))
         add_action_command("library.delete_collection", actions.delete_virtual_collection, section="Library", keywords=("collection", "delete set"))
         add_action_command("library.browse_catalog", actions.browse_catalog, section="Library", keywords=("catalog", "cross folder search", "global index"))
@@ -458,7 +463,8 @@ class CommandPaletteController:
             )
 
     def _add_collection_commands(self, commands: list[PaletteCommand], window: "MainWindow") -> None:
-        """Open commands for the saved virtual collections."""
+        """Open, add-to and make-active commands for the saved virtual collections."""
+        collection_mode = bool(window._collection_mode)
         for collection in window._library_store.list_collections():
             commands.append(
                 PaletteCommand(
@@ -468,6 +474,38 @@ class CommandPaletteController:
                     section="Library",
                     keywords=("collection", collection.name.casefold(), collection.kind.casefold()),
                     callback=lambda target=collection.id: window._catalog.open_virtual_collection(target),
+                )
+            )
+            if collection_mode:
+                continue
+            commands.append(
+                PaletteCommand(
+                    id=f"collection.add_selected.{collection.id}",
+                    title=f"Add Selection To Collection: {collection.name}",
+                    subtitle=f"{collection.item_count} item(s)",
+                    section="Library",
+                    keywords=("collection", "add", "add selection", collection.name.casefold()),
+                    callback=lambda target=collection.id: window._catalog.add_selected_to_collection(collection_id=target),
+                )
+            )
+            commands.append(
+                PaletteCommand(
+                    id=f"collection.add_visible.{collection.id}",
+                    title=f"Add All Visible To Collection: {collection.name}",
+                    subtitle="Everything the current filter or search shows",
+                    section="Library",
+                    keywords=("collection", "add all", "add filtered", "bulk add", collection.name.casefold()),
+                    callback=lambda target=collection.id: window._catalog.add_visible_to_collection(collection_id=target),
+                )
+            )
+            commands.append(
+                PaletteCommand(
+                    id=f"collection.set_active.{collection.id}",
+                    title=f"Set Active Collection: {collection.name}",
+                    subtitle="B adds the current image here",
+                    section="Library",
+                    keywords=("collection", "active collection", "target", collection.name.casefold()),
+                    callback=lambda target=collection.id: window._catalog.set_active_collection(target),
                 )
             )
 
