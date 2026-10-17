@@ -80,10 +80,18 @@ Set **Also add to**. Need the files? **Export** (to a folder or PocketDrop).
 2. **The B key stays for now** as "add to a collection without marking a winner". It can be
    kept or dropped later at any time.
 3. **PocketDrop payload:** more than one file is zipped, and a single file is sent loose.
+4. **Winners view scope: everything you've ever marked**, in any folder you've culled in,
+   whether or not it's in the Library. It needs no setup. Winners whose files were deleted or
+   moved are hidden, not shown as broken.
+5. **Winners view is grouped by folder.** Each shoot is a section with a header (folder
+   name, parent path, count), newest shoot first, and sections can be collapsed. Clicking a
+   header opens that folder. A switch shows the plain flat grid when you want to compare
+   across shoots. Exporting, or adding a section to a collection, works per section as well as
+   for the whole view.
 
-## Open decisions
+## Superseded open question
 
-4. **Winners view scope:** *the whole library* (every folder with winner marks, including
+- **Winners view scope:** *the whole library* (every folder with winner marks, including
    ones only opened, not catalogued), or only catalog roots.
 
 ## Code map (where the change lands)
