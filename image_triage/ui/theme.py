@@ -3281,15 +3281,9 @@ def _app_bar_rules(theme: ThemePalette) -> str:
 
 def _toolbar_placement_rules(theme: ThemePalette) -> str:
     """The customizable toolbar strip reuses the #appTopBar button rules and
-    only differs in its own surface: a flat row above the grid when docked,
-    a rounded dock floating over the grid's bottom edge otherwise."""
+    only differs in its own surface: a rounded dock floating over the grid's
+    bottom edge."""
     return f"""
-        QFrame#appTopBar[toolbarPlacement="docked"] {{
-            background-color: transparent;
-            border: none;
-            border-bottom: 1px solid {theme.border_muted.css};
-            border-radius: 0px;
-        }}
         QFrame#appTopBar[toolbarPlacement="floating"] {{
             background-color: {theme.toolbar_bg.css};
             border: 1px solid {theme.text_primary.with_alpha(26).css};

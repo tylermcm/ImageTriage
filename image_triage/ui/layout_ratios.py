@@ -110,8 +110,6 @@ INSPECTOR_NAV_H = 0.0108        # the < > arrows beside "10 / 48"
 ANALYZE_BUTTON_H = 0.0201       # "Analyze folder" button height
 
 # Status bar (bottom right: zoom slider and the pane show/hide buttons).
-# These apply while the toolbar floats; docked, they ride on the toolbar and
-# take its button sizes instead.
 STATUS_TOGGLE_BOX_H = 0.0244    # each pane show/hide button's box
 STATUS_TOGGLE_ICON_H = 0.0158   # its icon
 ZOOM_ICON_SMALL_H = 0.0129      # small magnifier left of the slider

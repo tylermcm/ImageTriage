@@ -57,7 +57,7 @@ def test_only_backdrop_themes_turn_the_window_chrome_translucent() -> None:
 def test_toolbar_strip_has_docked_and_floating_surfaces() -> None:
     stylesheet = build_app_stylesheet(default_theme())
 
-    assert 'QFrame#appTopBar[toolbarPlacement="docked"]' in stylesheet
+    assert 'QFrame#appTopBar[toolbarPlacement="docked"]' not in stylesheet
     assert 'QFrame#appTopBar[toolbarPlacement="floating"]' in stylesheet
 
 
