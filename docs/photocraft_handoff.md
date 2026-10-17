@@ -2289,3 +2289,63 @@ Refs6,7,10,11,13,14,15 still lack matching individual audits. Full rail, workflo
 grid rendering/settings, fonts/glyphs/spacing, Save Options, Preferences, Presets,
 settings menu, Masking, Crop/Expand, Remove, Open Object and every remaining element
 across all19 stay in the active goal.
+
+
+### Accepted settings-menu development checkpoint (2026-10-17)
+
+Companion source commit: `28153cbb`.
+
+The native Camera Raw settings menu now renders all 22 observed rows in 12
+sections. The user accepted the displayed reference-11 comparison as practically
+identical and requested no further refinement. Its fixed registration measures
+41 regions with one scale/translation, including the complete frame, labels,
+shortcuts, separators and submenu arrow. Evidence: this chat's private
+`acr-filmstrip/settings-menu/accepted-capture/settings-menu-audit.json` and
+`overlay/element-audit.json`. It preserves the underlying recipe/document identity.
+870 measured regions now include overlaps/repeated controls; this is not a full
+parity pass. References6,7,10,13,14,15 still need matching-view audits.
+
+Implemented operations use the existing Camera Raw transactions: reset, committed
+previous settings, named dialog snapshots, recipe JSON clipboard copy/paste,
+supported XMP/JSON loading and saving. Paste validates before applying atomically,
+preserves destination encoding/proxy fields, has a bounded input and a timeout,
+and supports undo. Keyboard navigation skips disabled rows. Menu Escape and
+focus cannot edit the image behind it. Closing/reopening clears transient popup
+state while retaining clipboard availability and previous committed parameters.
+Unavailable preset, selected-settings, AI, DNG, export and defaults operations
+remain disabled. First external clipboard paste uses the shortcut; the menu is
+not enabled until a known copy/valid paste. OS clipboard roundtrip is not certified.
+
+The development launchers now default to `acr-settings-menu`. Executable SHA256:
+`38112b97bd45d648edf0a9af7a03376381fd0cf416f20364f31e328232ab5d6f`.
+The offscreen snapshot renderer is `d66b09bd92f9523f1914842e4ed3815f282685545ce0260a77c58d3e75bbf3c9`.
+Earlier acr-glyphs/acr-filmstrip builds use frozen validated JSON, so newer design
+fields cannot break rollback launches. Their executables, acr18, normal debug
+(B7447438...; timestamp2026-10-09T03:15:19.5133667Z) and release remain preserved.
+No release build or push. Both branches remain codex/image-triage-integration;
+upstream/fork fetch and merge records earlier in this continuous session apply.
+
+Checks:3117 native library tests/13ignored, eight menu interactions,41 standard
+Camera Raw regressions,146 desktop tests,137 host regressions; all-target clippy,
+layers30 and wasm24. Live synthetic and Nikon RAW MainWindow checks passed native
+filmstrip detach/restore, navigation, ratings/reject, theme/resize/fullscreen and
+cleanup. Full editor handoff passed Save, four grid notifications, closed-tab
+reopen, hidden startup and five themes. D3/Z6 recipes matched exports and survived
+continuation/Save, although that lightweight harness lacks a thumbnail stub and
+logged errors; real MainWindow filmstrip tests independently passed. Timing
+ceilings were exceeded and remain diagnostic. Desktop screenshot capture was
+not verified by the handoff runner; native/offscreen and hosted screenshots are
+separate evidence, not a claim about focus-safe execution.
+
+The user is playing a game: all further agent-driven GUI launches must stay on
+secondary monitor without activation. Previous GUI pipeline completed and its
+candidate processes exited. No new visible launches have occurred since that
+instruction. Test helper now accepts IMAGE_TRIAGE_CHECK_MONITOR=secondary (or an
+exact screen name), fails before native-window creation if unavailable, sets
+Qt no-focus/no-activation flags and WS_EX_NOACTIVATE before showing, and no longer
+calls SetForegroundWindow as reactive recovery. Preview respects the no-focus
+flag instead of explicitly activating on open/close. Five offscreen regression
+checks cover selection/failure-before-create, placement without a virtual desktop
+marker, and absent preview activation calls. Live foreground preservation remains
+unverified: continue offscreen until a properly guarded secondary-monitor run.
+This is a test helper option, not a change to normal interactive user launches.
