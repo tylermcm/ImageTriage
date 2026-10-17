@@ -7,7 +7,7 @@ import time
 
 from PySide6.QtCore import QObject, QThreadPool, Qt
 
-from .aiculler_workflow import WINNER_SCORE_FALLBACK_MODEL_VERSION, aiculler_db_path, load_face_records_by_path, load_image_categories_by_path, load_latest_winner_scores
+from .aiculler_workflow import aiculler_db_path, load_face_records_by_path, load_image_categories_by_path, load_latest_winner_scores
 from .catalog import catalog_cache_env_override
 from .grid import GridDeltaUpdate
 from .models import FilterMode, ImageRecord, SessionAnnotation
@@ -588,10 +588,9 @@ class ScanController(QObject):
             return False
         db_path = aiculler_db_path(paths)
         try:
-            bundle = load_latest_winner_scores(
-                db_path,
-                model_version=WINNER_SCORE_FALLBACK_MODEL_VERSION,
-            )
+            # Scores are stored under the adapter's model version once one exists and under the
+            # fallback version before; whichever was computed last is the folder's current ranking.
+            bundle = load_latest_winner_scores(db_path)
         except Exception:
             _logger.exception("Failed to load winner scores from %s", db_path)
             self._window._winner_scores_by_path = {}
