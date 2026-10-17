@@ -1,5 +1,93 @@
 # PhotoCraft handoff
 
+## Camera Raw JSON preview rebuild — 2026-10-17 (preview open)
+
+Owner clarified that this request is to compile/launch the PS1 Camera Raw preview
+and see the live JSON mockup. Stopped only this session's release-build, native
+UI-test and full-host-test process trees; no full-suite/native result is claimed.
+The source integration below was already complete. Hosted promotion and live
+handoff checks are outside the clarified scope. Reusing the normal debug cache
+for compilation, copying the result to `target/acr18/debug/photocraft.exe`, then
+restoring the original ordinary debug executable and timestamp before launching
+`scripts/preview_camera_raw.ps1`. This keeps the preview out of host discovery.
+
+Both checkouts are on `codex/image-triage-integration`. Host fast-forwarded
+`d2d0f08` to fetched `27b8bb3` (handoff documentation only); pre-existing
+`main.py`, Qt logging, strategy/plan and screenshot changes are preserved.
+Companion is `C:/Users/tylle/Documents/photocraft`; the literal `../photocraft`
+beside this OneDrive host checkout does not exist. Its remote names differ from
+the protocol examples: `upstream` is storytold, `origin` is tylermcm's fork.
+
+Initial fetches failed with `getaddrinfo() thread failed to start`. Restoring
+missing Windows system/profile environment variables fixed networking; fetches
+then succeeded for all three remotes. Fork integration matched local
+`00c154c46d4b8bc859aa07548224138d0e9a7c42` with no fork-only incoming work.
+Upstream advanced 71 commits from
+`b630d7cb9aeb2a79ab5224ebf6e8266f1d858873` to
+`5f65579ecb44047c2a619036c18ff273202e1389`, merged as
+`91270cce2acea35ec6a51e026eb2b08a7752ef3c`. Pre-merge source is retained on
+`codex/pre-host-build-20261017`. No push.
+
+Conflicts reviewed and resolved individually:
+
+- `apps/photocraft/src/main.rs`: keep hosted/raw-workspace flags and hidden
+  native-window behavior; adopt upstream single-instance support. Both host
+  flags count as process-specific options so they never forward to a standalone
+  editor; control launches also retain upstream's own-process exemption.
+- `crates/ui-egui/src/gpu_canvas.rs`: adopt upstream adapter VRAM and shared
+  canvas-budget fields, while retaining the hosted off-thread compositor warmup
+  and CPU fallback. Upstream does not supply that warmup behavior.
+- `crates/ui-egui/src/widgets.rs`: retain Camera Raw fixed-decimal and left
+  alignment controls; apply upstream's numeric-input length guard before parsing.
+- All 20 `crates/ui-egui/src/i18n/*.tsv` catalogs: keep independent Camera Raw
+  and upstream GPU/Save translations. Checked each block's keys for overlap;
+  none collide. No whole-file ours/theirs selection.
+
+Reviewed automatic merges in desktop services/startup, control/files, jobs,
+menus, state, theme/window integration and automation authorization. Adopted
+upstream recovery-directory policy, Save disk-change prompts, GPU budgets and
+token-file checks. Bound hosted Save still routes through `save_bound` before
+ordinary standalone Save prompting; scoped host I/O, stash/restore and host
+theme hooks remain. The previous fork pixels fix already matches upstream, with
+no remaining `pixels.rs` delta. The companion's private `../craftrules` is absent.
+
+The release compile caught a semantic automatic-merge issue in the independent
+preset-set loader: its new `Persisted` initializer omitted the fork's export
+presets. Restored that field and extended the damaged-set preservation test
+(`77914c86`); formatted merged GPU initialization in `516b6d2b`. These tests
+await execution. Final source is `516b6d2b4e42f12b449040589e54a14f2e207290`.
+
+Validation so far: final rustfmt and Git whitespace checks pass; focused host
+regressions **188 passed, 1 skipped**. The initial release build exposed a missing
+MSVC linker environment, repaired using the installed VS 2022 Preview toolchain.
+Installed the missing wasm target, but no wasm result is claimed. The release
+retry and broader tests were stopped at the owner's clarification. The active
+preview build is `cargo build -p photocraft -j 6`, using the existing debug cache.
+No hosted candidate has been promoted.
+
+Known-good `target/release/photocraft.exe` SHA256:
+`EA42E1B82F1346091E18C210BD821194AD99CC446CB2FB9425108443049030C5`.
+Owner's `%APPDATA%/Photocraft/preferences.json` starting SHA256:
+`C9BD660D82FA1772B6881A02AEBD145792EF57F141A02395BDD6C11E5AFEF46E`.
+Logs/scripts are under
+`C:/Users/tylle/.codex/visualizations/2026/10/17/01a14901-444b-7781-b5e6-48730a8f5183`.
+
+Preview build passed in **5m10s**. Launched via the companion PS1 using the
+synthetic color fixture and separate preview profile; running PID **18464**.
+Isolated executable: `target/acr18/debug/photocraft.exe`, SHA256
+`E5464F3DD48B2AD95A96FAD6630511DDC8DEFACECA1B2684D00BCE5C54B40930`.
+Authenticated control inspection confirms Camera Raw is open and every supplied
+layout value, including the live preview preset, matches `layout.json`.
+Inspected `target/acr18/preview.png`: native mockup is visible with the current
+Light/Color/Effects layout. This is preview verification, not ACR parity or
+hosted-handoff certification. Leave this window open for live JSON work.
+
+The ordinary debug executable was restored byte-for-byte, including its original
+timestamp (SHA256 `B7447438BD9459FF61C3E0BE89D1BACF65DEC911FDD60DBF67D2D4CFCF6F3B53`).
+The ordinary release executable remains byte-identical to the starting hash.
+Normal `scripts/preview_camera_raw.ps1` now opens the isolated preview without
+compiling. No design JSON was modified in this build session, and nothing pushed.
+
 ## Keep visual iteration in JSON — 2026-10-15
 
 Owner clarified that this design pass should use live JSON and the PS1 launcher,
