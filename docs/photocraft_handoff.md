@@ -2405,3 +2405,65 @@ The versioned evidence now includes958 regions with overlap/repeated controls.
 References6(Save Options),7(Preferences),13(Masking),14(Crop) and15(Remove)
 still lack matching-view individual audits. All19 remain in the every-element
 goal; no full-reference or complete behavior parity pass is claimed.
+
+
+### Save Options native source checkpoint (2026-10-17)
+
+Companion source commit: ad960e14, codex/image-triage-integration. No desktop
+binary was rebuilt or promoted. The PS1 default remains the validated
+acr-settings-menu build38112...; ordinary debugB744... and releaseEA42... were
+hash-verified unchanged. Both checkouts stay on the integration branch, and the
+upstream/fork fetch/merge records from this continuous session still apply.
+No visible GUI launch, release or push occurred.
+
+Save Image in the native settings menu now opens Save Options. It is a real egui
+modal driven by72 JSON widget definitions, with typed draft settings in UiState.
+Naming choices, extension case and three DNG checkbox drafts support pointer/
+keyboard interactions; invalid mixed input is atomic. Cancel/Escape roll back
+only the export draft; parent close/reopen clears transient state. The modal has
+an explicit height and foreground parent relationship. Its720x900 test verifies
+actual wheel scrolling, not merely a visible scroll area. Paste/Y/Escape do not
+edit or cancel the photo behind it.
+
+No DNG writer is available in the existing export path. Save remains disabled,
+as do unsupported folder/provider actions. Format/compatibility/preview values
+are observed readonly choices; other output sections are disabled in DNG view.
+No differently encoded file is written with a DNG extension, and no success or
+compatibility is simulated. Complete export bindings remain unfinished. Dynamic
+filename/folder information comes from the actual document; no reference path,
+file stem or Adobe account identity was copied into the product. Default dialog
+labels and code labels have contextual/plain lookup coverage in all20 catalogs;
+this is not certification of all localized rendered layouts.
+
+The auditor merges save-options-design.json and save-options-tokens.json into
+private root layout/token copies, retaining the older validated launch schema.
+Final evidence: this chat's acr-filmstrip/save-options-v2/save-options-audit.json
+and overlay/comparison.png. All104 specified regions have complete candidate
+coverage. The full dialog uses one scale/translation: source[0,0,1574,2256],
+candidate[653, 272, 2227, 2528], scale2 at1440x1400. No individual row realignment or
+context-value masking. Closed/open captures retain identical document/photo/
+recipe identity and the synthetic original. Final PNG was inspected.
+
+Snapshot SHA256:
+c05abcf666e2545f316e6321bfd8983b2996c6cc9f19e4f99bef2f59fca944f5.
+Private merged layout:
+6fae93b6914663bc46e0dd2b61175a86e25ab4dc14f7477a16c0a1cd1d9b944f.
+Private merged tokens:
+5f7aca24cf6fc78a963b4521d45c480340ef7949271bc03e6d45985cfb022f3e.
+Region-mean RGB error improves11.798 to8.856. Source font/glyph/border differences,
+capability differences and dynamic context values remain visible; no parity pass.
+
+Checks:3120 library tests/13ignored,54 Camera Raw integrations, six overlay-auditor
+tests, final all-target clippy, layers30 and wasm24 pass. Three new integrations
+cover menu access, real draft controls/extension selection/Space, Cancel rollback,
+atomic validation, protected clipboard/Y/Escape and actual small-viewport scroll.
+Geometry validation covers finite/bounded coordinates, duplicate/mandatory IDs,
+and a design's inability to enable an output action. All checks were offscreen.
+Live secondary-monitor/no-activation preservation remains unverified and remains
+mandatory for any future agent-driven launch. Hosted validation is still required
+before selecting a new editor executable.
+
+Versioned measured regions now total1062 with overlaps/repeated controls.
+References7(Preferences),13(Masking),14(Crop) and15(Remove) still lack individual
+matching-view audits. All19 remain in the complete every-element goal, including
+unimplemented output behavior and every remaining shared/native element.
