@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -678,126 +677,64 @@ def test_declining_the_apply_ai_decisions_dialog_makes_no_file_changes(window, t
     )
 
 
-def test_accepting_apply_ai_decisions_moves_winners_and_recycles_rejects_in_one_undo_batch(window, tmp_path) -> None:
+def test_accepting_apply_ai_decisions_marks_winners_and_recycles_rejects_in_one_undo_batch(window, tmp_path) -> None:
+    """Winners are marks, not copies (docs/winners_collections_redesign.md): AI Picks stay where
+    they are and become winners; Rejects still go to the recycle bin; one Undo reverses both."""
     source = tmp_path / "src"
     a, b, c = make_jpegs(source, ["a.jpg", "b.jpg", "c.jpg"])
     open_folder(window, source, 3)
     by_path = {record.path: record for record in window._records}
-    winners_dir = source / "_winners"
 
     with _set_ai_cull_groups(window, ai_pick=[by_path[a]], reject=[by_path[b]], keeper=[by_path[c]]):
         patch_exec, _captured = _accept_apply_ai_dialog(window)
         with patch_exec:
             window._ai_run.apply_ai_culling()
 
-    assert not os.path.exists(a) and (winners_dir / "a.jpg").exists()
+    assert os.path.exists(a), "AI Picks are marked in place, never moved"
+    assert not (source / "_winners").exists()
+    assert window._annotations[a].winner
     assert not os.path.exists(b)
     recycled = list((tmp_path / "_recycle_sandbox").glob("*.jpg"))
     assert [p.name for p in recycled] == ["b.jpg"]
-    assert os.path.exists(c), "Keeper images are not moved by Apply AI Decisions"
+    assert os.path.exists(c), "Keeper images are not touched by Apply AI Decisions"
 
-    assert [action.kind for action in window._undo_stack] == ["move", "delete"]
+    assert [action.kind for action in window._undo_stack] == ["annotation", "delete"]
     batch_ids = {action.batch_id for action in window._undo_stack}
     assert len(batch_ids) == 1 and next(iter(batch_ids))
-    assert pump_until(lambda: len(window._records) == 1)
 
     window._record_ops.undo_last_action()
 
     assert window._undo_stack == []
-    # The reload picks up the (now-empty) "_winners" folder left behind on
-    # disk as its own record alongside the three restored images -- that
-    # leftover-empty-folder behaviour predates this work item and is
-    # unrelated to it, so this just accounts for it rather than re-litigating
-    # it.
     assert pump_until(lambda: len({Path(r.path).name for r in window._records if not r.is_folder}) == 3)
-    assert {Path(r.path).name for r in window._records if not r.is_folder} == {"a.jpg", "b.jpg", "c.jpg"}
     assert os.path.exists(a) and os.path.exists(b)
+    assert not window._annotations.get(a) or not window._annotations[a].winner
     assert not list((tmp_path / "_recycle_sandbox").glob("*.jpg"))
 
 
-def test_apply_ai_decisions_cancel_partway_through_winners_move_leaves_the_rest_untouched(
-    window, tmp_path
-) -> None:
-    """A user can cancel the winners move's progress dialog partway through a
-    multi-file Apply AI Decisions run. `move_records_by_paths` only pushes
-    undo entries and removes records for the subset `run_file_transfer`
-    actually reports as moved, so this should naturally do the right thing:
-    the moved subset is gone from the view and undoable, the rest stays on
-    disk and in the grid untouched, and the Reject loop / follow-up status
-    message still run normally afterwards without double-counting anything."""
+def test_ai_applied_winner_marks_are_not_ai_training_signals(window, tmp_path) -> None:
+    """The AI culler learns from the user's W/X. Marks it applied itself must not be fed back as
+    if the user had chosen them (adapter labels or disagreement feedback)."""
     source = tmp_path / "src"
-    a, b, c = make_jpegs(source, ["a.jpg", "b.jpg", "c.jpg"])
-    d, = make_jpegs(source, ["d.jpg"])
-    open_folder(window, source, 4)
+    a, b = make_jpegs(source, ["a.jpg", "b.jpg"])
+    open_folder(window, source, 2)
     by_path = {record.path: record for record in window._records}
-    winners_dir = source / "_winners"
-    winners_dir.mkdir(parents=True, exist_ok=True)
+    labelled: list[str] = []
+    feedback: list[str] = []
 
-    # Simulate the real TransferWorker: "a" finished moving before the user
-    # hit Cancel; "b" and "c" were never touched.
-    moved_target = str(winners_dir / "a.jpg")
-    shutil.move(a, moved_target)
-    fake_result = TransferResult(
-        moved={0: (FileMove(source_path=a, target_path=moved_target),)},
-        failed={},
-        cancelled=True,
-    )
-
-    with _set_ai_cull_groups(
-        window, ai_pick=[by_path[a], by_path[b], by_path[c]], reject=[by_path[d]]
+    with patch.object(
+        window._aiculler, "sync_annotation_to_global_adapter_label", side_effect=lambda record, _a: labelled.append(record.path)
+    ), patch.object(
+        window._annotation_ctl,
+        "capture_annotation_feedback",
+        side_effect=lambda record, *_args, **_kwargs: feedback.append(record.path),
     ):
-        patch_exec, _captured = _accept_apply_ai_dialog(window)
-        with patch_exec, patch(
-            "image_triage.record_ops_controller.run_file_transfer", return_value=fake_result
-        ):
-            window._ai_run.apply_ai_culling()
-        # Captured immediately: the directory watcher can overwrite the
-        # status bar with its own "Detected folder changes" refresh message
-        # once the event loop gets pumped again (see the pump_until calls
-        # below), which is unrelated noise, not something this feature sets.
-        status_message = window.statusBar().currentMessage()
+        with _set_ai_cull_groups(window, ai_pick=[by_path[a]]):
+            patch_exec, _captured = _accept_apply_ai_dialog(window)
+            with patch_exec:
+                window._ai_run.apply_ai_culling()
+        assert window._annotations[a].winner
+        assert labelled == [] and feedback == []
 
-    # "a" moved: gone from disk at its old path, present in _winners, removed
-    # from the grid, and undoable.
-    assert not os.path.exists(a)
-    assert os.path.exists(moved_target)
-    move_actions = [action for action in window._undo_stack if action.kind == "move"]
-    assert len(move_actions) == 1 and move_actions[0].primary_path == a
-
-    # "b" and "c" were never part of the cancelled transfer: still on disk at
-    # their original paths, still shown in the grid, not touched or counted.
-    assert os.path.exists(b) and os.path.exists(c)
-    assert pump_until(lambda: len(window._records) == 2)
-    names = set(_names(window))
-    assert names == {"b.jpg", "c.jpg"}
-
-    # The Reject loop (an unrelated record, "d") still ran to completion and
-    # shares the same undo batch as the one successfully-moved winner.
-    delete_actions = [action for action in window._undo_stack if action.kind == "delete"]
-    assert len(delete_actions) == 1 and delete_actions[0].primary_path == d
-    assert not os.path.exists(d)
-    recycled = list((tmp_path / "_recycle_sandbox").glob("*.jpg"))
-    assert [p.name for p in recycled] == ["d.jpg"]
-
-    batch_ids = {action.batch_id for action in window._undo_stack}
-    assert len(batch_ids) == 1 and next(iter(batch_ids)), "winners + reject halves share one Undo batch"
-
-    # Status bar reflects only what actually moved -- no double counting of
-    # the two files that never got there.
-    assert "moved 1 AI Pick image(s)" in status_message
-    assert "1 Reject image(s)" in status_message
-
-    # Undo reverses the whole shared batch in one click, including the
-    # cancelled-but-partially-applied winners half and the reject half.
-    window._record_ops.undo_last_action()
-
-    assert window._undo_stack == []
-    assert pump_until(lambda: len({Path(r.path).name for r in window._records if not r.is_folder}) == 4)
-    assert {Path(r.path).name for r in window._records if not r.is_folder} == {
-        "a.jpg",
-        "b.jpg",
-        "c.jpg",
-        "d.jpg",
-    }
-    assert os.path.exists(a) and os.path.exists(b) and os.path.exists(c) and os.path.exists(d)
-    assert not list((tmp_path / "_recycle_sandbox").glob("*.jpg"))
+        # A winner the user marks still teaches the AI.
+        window._annotation_ctl.batch_set_winner([by_path[b]])
+        assert labelled == [b] and feedback == [b]

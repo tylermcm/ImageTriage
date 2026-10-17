@@ -1309,8 +1309,8 @@ class AiRunController(QObject):
         if self._window._ai_bundle is None:
             self._window.statusBar().showMessage("Run Cull & Score or load AI results before applying AI decisions.")
             return
-        if self._window._is_winners_folder() or self._window._is_recycle_folder():
-            self._window.statusBar().showMessage("Apply AI Decisions only from the source folder, not from _winners or the recycle bin.")
+        if self._window._is_recycle_folder():
+            self._window.statusBar().showMessage("Apply AI Decisions only from the source folder, not from the recycle bin.")
             return
         if self._window._active_ai_task is not None:
             self._window.statusBar().showMessage("Wait for the current AI review run to finish first.")
@@ -1337,28 +1337,21 @@ class AiRunController(QObject):
         if self._window._exec_dialog_with_geometry(dialog, "apply_ai_decisions") != dialog.DialogCode.Accepted:
             return
 
-        winners_dir = os.path.join(self._window._current_folder, "_winners")
-        ai_pick_paths = [record.path for record in ai_pick_records]
+
         reject_paths = [record.path for record in reject_records]
         follow_up_paths = tuple(record.path for record in (*keeper_records, *review_records))
 
         batch_id = uuid.uuid4().hex
-        moved_winners = 0
+        marked_winners = 0
         moved_rejects = 0
         removed_reject_paths: list[str] = []
-        if ai_pick_paths:
-            # Routed through the same progress-dialog-and-cancel transfer the
-            # ordinary drag-drop/manual batch move uses (RecordOpsController.
-            # move_records_by_paths -> transfer_progress.run_file_transfer),
-            # rather than looping _move_record_to_path per file: hundreds of
-            # AI Picks used to move with no feedback and no way to cancel.
-            # The shared batch_id keeps this half of the action in the same
-            # Undo as the Reject -> Recycle half below. A user who cancels
-            # partway through only has the already-moved subset removed from
-            # the view/undo stack; the rest stays untouched in the source
-            # folder (see move_records_by_paths, which only acts on
-            # result.moved).
-            moved_winners = self._window._record_ops.move_records_by_paths(ai_pick_paths, winners_dir, batch_id=batch_id)
+        if ai_pick_records:
+            # AI Picks are marked as winners in place (winners are marks, not copies in a _winners
+            # folder). The shared batch_id keeps the marks in the same Undo as the Reject -> Recycle
+            # half below; it is also the auto-add batch when picks feed a collection.
+            marked_winners, _failures = self._window._annotation_ctl.batch_apply_annotation_state(
+                list(ai_pick_records), winner=True, reject=False, source_mode="ai_apply_decisions", batch_id=batch_id
+            )
         if reject_paths:
             # Recycling is fast/local enough (same as everywhere else in the
             # app that recycles) that a progress dialog would just be noise,
@@ -1371,7 +1364,7 @@ class AiRunController(QObject):
             self._window._record_ops.remove_records_by_paths(removed_reject_paths)
 
         self._window.statusBar().showMessage(
-            f"Applied AI decisions: moved {moved_winners} AI Pick image(s) to _winners and {moved_rejects} Reject image(s) to the recycle bin."
+            f"Applied AI decisions: marked {marked_winners} AI Pick image(s) as winners and moved {moved_rejects} Reject image(s) to the recycle bin."
         )
 
         reviewable_paths = tuple(path for path in follow_up_paths if self._window._record_index_by_path.get(path) is not None)

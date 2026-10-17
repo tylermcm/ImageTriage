@@ -493,6 +493,9 @@ class WorkflowSettingsDialog(QDialog):
         self.winner_mode_combo.setToolTip(_settings_tooltip(
             "What happens when you accept an image as a winner."
         ))
+        # Kept for the result type, but no longer offered: a winner is always just a mark.
+        self.winner_mode_combo.setCurrentIndex(max(0, self.winner_mode_combo.findData(WinnerMode.LOGICAL)))
+        self.winner_mode_combo.hide()
 
         self.delete_mode_combo = QComboBox()
         self.delete_mode_combo.setMinimumWidth(240)
@@ -562,11 +565,10 @@ class WorkflowSettingsDialog(QDialog):
 
         general_page, general_layout = self._build_settings_page(
             "General",
-            "Choose what happens to accepted and deleted images, and manage reusable review presets.",
+            "Choose what happens to deleted images, and manage reusable review presets.",
         )
         self._add_category_heading(general_layout, "Review behavior")
         self._add_form_row(general_layout, "Profile preset", session_row)
-        self._add_form_row(general_layout, "Accepted images", self.winner_mode_combo)
         self._add_form_row(general_layout, "Delete behavior", self.delete_mode_combo)
         self._add_category_heading(general_layout, "Appearance & diagnostics")
         self._add_form_row(general_layout, "Theme", self.theme_combo)

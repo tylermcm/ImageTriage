@@ -29,6 +29,10 @@ if TYPE_CHECKING:
     from .window import MainWindow
 
 
+# source_mode values for marks the AI culler applied (Apply AI Decisions), not the user.
+AI_APPLIED_SOURCE_MODES = frozenset({"ai_apply_decisions"})
+
+
 class AnnotationController(QObject):
     """Marking and review state: winners, rejects, tags, batch marks, persistence and winner sync, pairwise feedback, review counts and the burst view. Extracted from MainWindow (docs/mainwindow_decomposition_plan.md, DC-4.4)."""
 
@@ -824,8 +828,10 @@ class AnnotationController(QObject):
                 )
             )
             self.queue_annotation_persist(record, previous_annotation=previous_annotation, winner_sync=winner_sync)
-            self._window._aiculler.sync_annotation_to_global_adapter_label(record, annotation)
-            self.capture_annotation_feedback(record, previous_annotation, annotation, source_mode=source_mode)
+            if source_mode not in AI_APPLIED_SOURCE_MODES:
+                # Marks the AI applied itself are not the user's judgment: never train on them.
+                self._window._aiculler.sync_annotation_to_global_adapter_label(record, annotation)
+                self.capture_annotation_feedback(record, previous_annotation, annotation, source_mode=source_mode)
             self.apply_review_count_delta(previous_annotation, annotation)
             changed_paths.append(record.path)
 

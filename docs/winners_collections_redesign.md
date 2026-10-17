@@ -89,11 +89,6 @@ Set **Also add to**. Need the files? **Export** (to a folder or PocketDrop).
    across shoots. Exporting, or adding a section to a collection, works per section as well as
    for the whole view.
 
-## Superseded open question
-
-- **Winners view scope:** *the whole library* (every folder with winner marks, including
-   ones only opened, not catalogued), or only catalog roots.
-
 ## Code map (where the change lands)
 
 - **Winner modes and `_winners` copies:**
@@ -124,7 +119,12 @@ Set **Also add to**. Need the files? **Export** (to a folder or PocketDrop).
 
 ## Build order
 
-1. **W = mark only.** Remove the winner modes and `_winners` side effects, and treat existing
+Step 1 notes: Apply AI Decisions now marks AI Picks as winners in place (it used to move them into
+`_winners`); marks the AI applies itself are excluded from AI training signals
+(`AI_APPLIED_SOURCE_MODES`). The `_winners` file-copy code in `file_ops` is now unreachable and can be
+deleted with the winner-mode enum once nothing reads saved presets.
+
+1. **Done (2026-10-17). W = mark only.** Remove the winner modes and `_winners` side effects, and treat existing
    `_winners` folders as ordinary folders. Verify that AI feedback still fires and undo works.
 2. **Winners view** in the sidebar, computed from winner marks.
 3. **Also add to** selector in the top bar, replacing the active collection and the auto-add
