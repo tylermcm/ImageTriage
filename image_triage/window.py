@@ -458,6 +458,7 @@ class MainWindow(QMainWindow):
     AI_EMBED_BATCH_SIZE_CPU_AUTO = 4
     LEFT_NAV_PAGE_KEY = "ui/left_nav_page"
     LEFT_NAV_ORDER_KEY = "ui/left_nav_order"
+    TOPBAR_NAV_ORDER_KEY = "ui/topbar_nav_order"
     PINNED_TOOLS_KEY = "ui/pinned_tools"
     DEFAULT_PINNED_TOOLS = ("command_palette", "open_in_photoshop", "compare", "keyboard_shortcuts")
     # Share of its box each rail painter actually inks, measured off the drawn

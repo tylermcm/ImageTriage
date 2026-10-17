@@ -125,6 +125,38 @@ def test_top_bar_buttons_trade_places_and_the_layout_is_saved(main_window) -> No
         window.hide()
 
 
+def test_the_navigation_cluster_reorders_even_past_disabled_buttons_and_is_saved(main_window) -> None:
+    window = main_window
+    toolbar = window._toolbar
+    original = toolbar.saved_nav_cluster_order()
+    window.show()
+    window.resize(1600, 900)
+    for _ in range(10):
+        QApplication.instance().processEvents()
+    try:
+        keys = toolbar._nav_reorder.keys()
+        assert keys == ["open", "back", "forward", "up", "refresh", "undo"] or sorted(keys) == sorted(["open", "back", "forward", "up", "refresh", "undo"])
+        buttons = {item_id: button for button, item_id in toolbar._topbar_labeled_nav_buttons}
+        assert not buttons["back"].isEnabled(), "Back starts disabled: it can still be dragged"
+        # Move Back (disabled) two places to the right, over Forward and Up.
+        pitch = buttons[keys[1]].geometry().x() - buttons[keys[0]].geometry().x()
+        assert pitch > 0
+        before = list(keys)
+        _drag(buttons[before[1]], int(pitch * 2.1), 0)
+        expected = [before[0], before[2], before[3], before[1]] + before[4:]
+        assert toolbar._nav_reorder.keys() == expected
+        assert json.loads(window._settings.value(window.TOPBAR_NAV_ORDER_KEY)) == expected
+        xs = [buttons[item_id].x() for item_id in expected]
+        assert xs == sorted(xs), "the cluster is laid out in the new order"
+        # A saved order that names buttons that no longer exist (or leaves some out) still gives a whole cluster.
+        toolbar.apply_nav_cluster_order(["undo", "ghost"])
+        assert toolbar._nav_reorder.keys()[0] == "undo" and len(toolbar._nav_reorder.keys()) == 6
+    finally:
+        toolbar.apply_nav_cluster_order(original)
+        window._settings.setValue(window.TOPBAR_NAV_ORDER_KEY, json.dumps(original))
+        window.hide()
+
+
 def test_nothing_drags_in_collection_mode(main_window) -> None:
     window = main_window
     toolbar = window._toolbar
