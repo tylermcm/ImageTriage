@@ -5,6 +5,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget
 
@@ -79,8 +80,16 @@ class NavRailTests(unittest.TestCase):
         self.assertIn(("folder", False), recorder.calls)
         self.assertNotIn(("folder", True), recorder.calls)
 
-    def test_buttons_show_their_labels(self) -> None:
-        self.assertEqual("Faces", self.rail.button("faces").text())
+    def test_buttons_are_icon_only_but_keep_their_names(self) -> None:
+        button = self.rail.button("faces")
+        self.assertEqual("Faces", button.accessibleName())
+        self.assertEqual("Faces", button.toolTip())
+        self.assertEqual(Qt.ToolButtonStyle.ToolButtonIconOnly, button.toolButtonStyle())
+        self.assertFalse(button._show_label)
+
+    def test_a_tooltip_leads_with_the_name(self) -> None:
+        button = self.rail.add_destination("pocketdrop", "PocketDrop", "phone", tooltip="Send files to and from your phone")
+        self.assertEqual("PocketDrop: Send files to and from your phone", button.toolTip())
 
 
 class _Settings:
