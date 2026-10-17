@@ -682,7 +682,8 @@ variable `IMAGE_TRIAGE_PHOTOCRAFT_EXE`, `PATH`, or `C:\Program Files\PhotoCraft\
 after it are later commits.
 
 **Mistake of mine, tonight.** My test scripts cleaned up with `taskkill /IM photocraft.exe`, which kills every editor, including the one of the
-owner's running Image Triage (that was how I found out: the owner's app kept its editor running from `targetelease`, a build could not replace the
+owner's running Image Triage (that was how I found out: the owner's app kept its editor running from `target
+elease`, a build could not replace the
 locked `photocraft.exe`, and a script of mine then ended that process). They no longer do that
 (the checks end the editor they started; it is tied to its parent by a job object). The two "PhotoCraft handoff failed" entries of
 2026-10-11 (17:29 and 17:44) may owe something to the same kills, besides the 30 s idle drop that was found and fixed.
@@ -2232,3 +2233,59 @@ measurement is not a complete parity pass. Glyphs, type, remaining chrome and
 photo-dependent Fit/thumbnail geometry remain under review. References
 6, 7, 10, 11, 13, 14, 15, 16, 17 and 18 still lack individual matching-view audits.
 The broader all-19/every-element goal remains active.
+
+
+### Shared chrome and full-window development checkpoint (2026-10-17)
+
+Companion source commit: `ba7a6316620d7f13bda7675bebe3ba8c6b61fa47`.
+
+Both checkouts remain on `codex/image-triage-integration`. The upstream merge
+record above remains the integration base: upstream through
+`efa1edd079b259b0b1f77b835151ee904437a231`; no further merge/conflicts in this
+continuous session. Actual remotes are `upstream` (storytold) and `origin`
+(tylermcm); both fetches succeeded during this session. No push.
+
+The isolated `target/acr-glyphs/debug/photocraft.exe` contains measured filmstrip
+glyph corrections, fractional zoom labels, the 39-point header, a filename/camera
+heading centered over the preview, Grid and Color Sampler bars, and an ACR workspace
+footer using existing Cancel/Done/Open transactions. Sampler Reset/New Sample/Close
+and grid density/opacity modify view state. Open Object is disabled pending RAW
+object continuation. Workflow output settings remain absent; no fabricated output
+profile/bit-depth/ppi label. The Qt fallback detaches only after native readiness.
+
+Both PS1 test launchers now select `acr-glyphs`. `-EditorBuild acr-filmstrip` and
+`-EditorBuild acr18` select preserved earlier builds. Existing user processes were
+not stopped or overwritten. Re-run the launcher to use the new binary. SHA256:
+`7B32C91A72A25865E513BD7807114AA1A42326712490B2C3C59CC5EF934EB841`.
+Ordinary debug remains B7447438... with UTC timestamp
+`2026-10-09T03:15:19.5133667Z`; release remains EA42E1B8... . No release packaging.
+
+Checks pass: 3116 native library tests (13 ignored), 41 Camera Raw integrations,
+146 desktop tests, 137 host regressions, six overlay-auditor tests; all-target
+clippy, layers30 and wasm24. Localization assertions inspect the separate
+white-balance label/value and three named wheel luminance controls. Alt-drag's
+ownership test now keeps the Curve controls inside its viewport; it previously
+aimed below the visible area. Native Save, four grid notifications, closed-tab
+reopen, hidden startup, five themes, fullscreen, live theme reload, stash/restore,
+cleanup and unchanged originals passed live. D3/Z6 recipe exports match live and
+persist through document continuation and Save. One refined timing exceeded the
+ceiling; timing is diagnostic, not certified. Final synthetic lifecycle and all
+18 captures were repeated after reverting only the unsuccessful star trial;
+RAW and full-editor checks preceded that visual-only revert.
+
+Current evidence: 447 panel regions, 358 full-client regions and 24 filmstrip
+regions, totaling829 with overlaps/repeated controls. Fixed client crops use one
+scale/translation, prohibiting individual-control realignment. Native inventory
+records exact hashes. Private evidence: this chat's `acr-filmstrip` directory,
+`full-windows-final2`, `all-views-shared-ui-final2`,
+`all-reference-audit-shared-ui-final2`, `glyph-overlay-final2`, and
+`combined-reference-audit-shared-ui-final2.json`. Synthetic gray geometry and its
+thumbnail are explicit; photo, metadata and output text differences remain.
+
+Mean RGB differences improve for toggle7.552 to2.556, filter4.485 to2.258,
+reject6.817 to3.479 and comparison5.550 to1.659. Thicker stars increased error and
+were discarded; final first-star error returns to1.428. No full parity pass.
+Refs6,7,10,11,13,14,15 still lack matching individual audits. Full rail, workflow,
+grid rendering/settings, fonts/glyphs/spacing, Save Options, Preferences, Presets,
+settings menu, Masking, Crop/Expand, Remove, Open Object and every remaining element
+across all19 stay in the active goal.

@@ -67,3 +67,12 @@ Still required before default promotion: final native gates, a clean RAW handoff
 including Save/reopen/fullscreen/shutdown, latest-source measured overlays, and
 resolution of the remaining navigation/before-after and preference differences.
 The replacement is implemented for testing, not certified as complete ACR parity.
+
+
+The validated shared-chrome checkpoint defaults the PS1 test launchers to
+`acr-glyphs`. Native/host checks and Save/reopen/fullscreen/shutdown gates passed;
+the previous `acr-filmstrip` executable remains preserved. Current fixed overlays
+measure24 filmstrip regions plus full-client controls in refs16-19. Toggle/filter/
+reject/comparison paths improve; the worse star trial was discarded. Every-element
+parity, other tools/dialogs and independent multi-thumbnail spacing remain open.
+See photocraft_handoff.md and the native SHA-based inventory.
