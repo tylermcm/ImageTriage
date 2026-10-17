@@ -9,11 +9,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QMimeData, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal, QSignalBlocker
+from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QMimeData, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal, QSignalBlocker
 from PySide6.QtGui import QAction, QBrush, QColor, QContextMenuEvent, QCursor, QDrag, QFont, QFontMetrics, QImage, QKeyEvent, QKeySequence, QLinearGradient, QMouseEvent, QPainter, QPaintEvent, QPainterPath, QPalette, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QComboBox, QMenu, QToolButton, QWidget
 
-from .ai_results import AIConfidenceBucket, AIImageResult, refine_ai_result_with_review_insight
+from .ai_results import AICullBucket, AIConfidenceBucket, AIImageResult, ai_cull_bucket_for_result, refine_ai_result_with_review_insight
 from .ai_why import AIWhy, ai_why_tooltip_html, build_ai_why
 from .cache import ThumbnailKey
 from .metadata import CaptureMetadata, MetadataKey, MetadataManager
@@ -2256,6 +2256,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                     Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
                     failure_text,
                 )
+            self._paint_ai_verdict_dot(painter, rect, ai_result)
         else:
             if not use_loupe_card:
                 # Boxed cards paint a frame; the loupe photo sits directly on
@@ -2715,6 +2716,34 @@ class ThumbnailGridView(QAbstractScrollArea):
         if short_label in {"Needs Review", "Review"}:
             return self._workflow_review_badge_fill, self._workflow_review_badge_text
         return QColor(118, 54, 48, 220), QColor("#fff0ee")
+
+    def _ai_verdict_dot_color(self, ai_result: AIImageResult | None) -> QColor | None:
+        """Colour of the AI verdict dot, or None when the photo has no AI result (nothing is drawn before a cull)."""
+        if ai_result is None or not self._show_ai_annotations:
+            return None
+        bucket = ai_cull_bucket_for_result(ai_result)
+        return {
+            AICullBucket.AI_PICK: QColor("#3fb97a"),
+            AICullBucket.KEEPER: QColor("#4b8ff0"),
+            AICullBucket.NEEDS_REVIEW: QColor("#e0b04a"),
+            AICullBucket.REJECT: QColor("#e5635b"),
+        }.get(bucket)
+
+    def _paint_ai_verdict_dot(self, painter: QPainter, rect: QRect, ai_result: AIImageResult | None) -> None:
+        color = self._ai_verdict_dot_color(ai_result)
+        if color is None:
+            return
+        radius = max(4.0, rect.width() * 0.028)
+        inset = radius + max(5.0, rect.width() * 0.03)
+        center = QPointF(rect.right() - inset, rect.top() + inset)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 110))
+        painter.drawEllipse(center, radius + 2.0, radius + 2.0)
+        painter.setBrush(color)
+        painter.drawEllipse(center, radius, radius)
+        painter.restore()
 
     def _primary_ai_badge(self, ai_result: AIImageResult | None) -> tuple[str, QColor, QColor, int] | None:
         if not self._show_ai_annotations:

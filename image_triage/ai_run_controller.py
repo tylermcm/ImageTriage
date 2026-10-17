@@ -50,6 +50,7 @@ class AiRunController(QObject):
         self._ai_review_progress_dialog: AIReviewProgressDialog | None = None
         self._ai_status_terminal_notice_key = ""
         self._hidden_ai_results_token = 0
+        self._bucket_counts_cache: tuple[AIBundle, dict[AICullBucket, int]] | None = None
 
     def confirm_cpu_clip_run(self, runtime) -> bool:
         if runtime.device != "cpu":
@@ -806,6 +807,7 @@ class AiRunController(QObject):
         step_start = log_step("ai_state.refresh.summary_ui", step_start)
         self.update_ai_toolbar_state()
         step_start = log_step("ai_state.refresh.toolbar", step_start)
+        self.refresh_ai_bucket_bar()
         self._window._inspector.update_status()
         step_start = log_step("ai_state.refresh.status", step_start)
         self._window._inspector.update_inspector_context()
@@ -824,6 +826,26 @@ class AiRunController(QObject):
                 visible_records=len(self._window._records),
                 results=len(ai_results),
             )
+
+    def refresh_ai_bucket_bar(self) -> None:
+        """Show the bucket bar with the folder's verdict counts, or hide it when no AI results are loaded."""
+        bar = getattr(self._window, "ai_bucket_bar", None)
+        if bar is None:
+            return
+        bundle = self._window._ai_bundle
+        if bundle is None:
+            bar.set_state(None, None)
+            return
+        cached = self._bucket_counts_cache
+        if cached is None or cached[0] is not bundle:
+            cached = (bundle, dict(self.ai_review_bucket_counts(bundle)))
+            self._bucket_counts_cache = cached
+        bar.set_state(cached[1], self._window._filter_query.ai_cull_bucket)
+
+    def handle_bucket_bar_requested(self, bucket: object) -> None:
+        window = self._window
+        window._filter_query.ai_cull_bucket = bucket if isinstance(bucket, AICullBucket) else None
+        window._records_view.apply_filter_query_change()
 
     def ai_folder_probe(self, ai_paths) -> dict:
         folder = self._window._current_folder or ""

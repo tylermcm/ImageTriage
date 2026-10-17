@@ -2003,10 +2003,10 @@ class InspectorPanel(QWidget):
         "histogram": 152,
         "culling": 118,
         "capture": 142,
-        "ai_analysis": 214,
+        "ai_analysis": 218,
     }
     AI_DIMENSIONS = ("Focus", "Exposure", "Noise", "Detail", "Composition", "Group rank")
-    AI_ROWS = ("Suggestion", "Confidence", "Reason", "Subject", "Focus", "Exposure", "Noise", "Group rank")
+    AI_ROWS = ("Suggestion", "Confidence", "Reason", "Subject", "Focus", "Exposure", "Noise", "Group rank", "Wow rank", "Disagreement")
     keep_requested = Signal()
     previous_requested = Signal()
     next_requested = Signal()
@@ -2750,6 +2750,7 @@ class InspectorPanel(QWidget):
         face_preview: "QImage | None" = None,
         category_info: dict[str, object] | None = None,
         category_profile: str = "uncategorized",
+        wow_rank_text: str = "",
     ) -> None:
         if current_record is None:
             self.clear()
@@ -2828,6 +2829,8 @@ class InspectorPanel(QWidget):
                 "Exposure": self._exposure_label(stats),
                 "Noise": self._noise_level(stats.noise_score, analyzed=stats.width > 0),
                 "Group rank": ai_result.rank_text if ai_result.group_size > 1 else "",
+                "Wow rank": wow_rank_text or "Not ranked",
+                "Disagreement": self._disagreement_text(workflow_insight),
             }
             for row_name, value in ai_values.items():
                 self.ai_rows[row_name].set_value(
@@ -2839,6 +2842,12 @@ class InspectorPanel(QWidget):
         self._set_histogram_summary(stats)
 
         self._set_quick_actions_enabled(not current_record.is_folder, grouped=is_grouped)
+
+    @staticmethod
+    def _disagreement_text(workflow_insight: object | None) -> str:
+        if workflow_insight is None or not getattr(workflow_insight, "has_disagreement", False):
+            return "None"
+        return str(getattr(workflow_insight, "disagreement_badge", "") or "Differs from your rating")
 
     @staticmethod
     def _severity_for_value(row_name: str, value: str) -> InspectorSeverity:
@@ -2855,6 +2864,10 @@ class InspectorPanel(QWidget):
             return InspectorSeverity.WARNING
         if row_name == "Noise" and normalized == "high":
             return InspectorSeverity.WARNING
+        if row_name == "Disagreement" and normalized not in {"none", ""}:
+            return InspectorSeverity.WARNING
+        if row_name in {"Wow rank", "Disagreement"} and normalized in {"none", "not ranked"}:
+            return InspectorSeverity.MUTED
         if row_name == "Confidence":
             if normalized == "low":
                 return InspectorSeverity.WARNING

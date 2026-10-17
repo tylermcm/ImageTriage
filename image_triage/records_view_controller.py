@@ -1334,6 +1334,7 @@ class RecordsViewController:
         for mode, action in window._ai_state_actions.items():
             with QSignalBlocker(action):
                 action.setChecked(window._filter_query.ai_state == mode)
+        window._ai_run.refresh_ai_bucket_bar()
 
     def current_visible_record_path(self) -> str | None:
         window = self._window
