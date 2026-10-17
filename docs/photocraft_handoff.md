@@ -2349,3 +2349,59 @@ checks cover selection/failure-before-create, placement without a virtual deskto
 marker, and absent preview activation calls. Live foreground preservation remains
 unverified: continue offscreen until a properly guarded secondary-monitor run.
 This is a test helper option, not a change to normal interactive user launches.
+
+
+### Presets source and offscreen overlay checkpoint (2026-10-17)
+
+Companion source commit: `c5d76df4`, on codex/image-triage-integration. This is
+unpromoted UI source; the PS1 launchers continue selecting the validated
+acr-settings-menu executable. No desktop executable was rebuilt/promoted for this
+step, no visible window opened, no release build or push. Normal debug B744...,
+validated editor38112... and releaseEA42... were hash-verified unchanged.
+Earlier upstream/fork fetch and merge records apply to this continuous session.
+
+The native tool rail now reaches a Presets category browser with38 observed
+category titles. Serialized workspace fields tab=presets and presetGroups control
+which groups are expanded. Pointer/keyboard disclosures change only view state;
+unknown/duplicate names and mixed invalid requests are rejected atomically.
+Preset recipes are absent. Expanding a group explicitly says Not available;
+creation, amount and preset management remain disabled. The header management
+button does not impersonate the global Camera Raw menu; the existing rail menu
+remains usable while the tab is open. Catalog titles are retained verbatim;
+their localization is not certified. Other labels use existing translations.
+
+Native Rust Design accepts the measured presets-design.json fragment, and Tokens
+supplies scrollbar colors/radii (presets-tokens.json). The auditor merges these
+into private layout/token copies, keeping the validated launcher's older JSON
+schema usable. The scrollbar has a consistent native width rather than the
+generic thin overlay style; its scoped styling does not alter other tabs.
+
+Final evidence: this chat's acr-filmstrip/presets-v4/presets-audit.json and
+presets-v4/overlay/comparison.png. Reference10 SHA b7cb9423... is pinned. All88
+specified regions have full candidate crop coverage at one fixed registration:
+source[26,432,566,2532], candidate[2260,374,2800,2474], 540x2100 pixels at scale2
+with viewport1440x1297. Edit/Presets captures retain identical document/photo/
+recipe identity, and the synthetic source hash is unchanged. No source photo,
+font or proprietary preset assets entered the product. Final PNG was inspected.
+
+Snapshot SHA256:
+`69c9aacc8c908da1b08c787889f86bcddb6021dffaf758d71d68655d5bd174bb`.
+Private merged layout:
+`4ce0258e8ffbef43e600f237116110bf4bc1eba731f2b06b31535febfd98c00c`.
+Private merged tokens:
+`1459093c9f1170620613602abc82be66a865d29dc55153f1ddeb3d1147d45e56`.
+The mean of the88 region RGB means improves13.792 to5.973; scrollbar35.853
+to14.286. These are diagnostics, not parity certification. Font/glyph differences,
+scrollbar extent, disabled capabilities and shared rail/chrome remain explicit.
+
+Final source passes3118 library tests/13ignored,51 Camera Raw integrations
+(including two new view tests), six overlay-auditor tests, all-target clippy,
+layers30 and wasm24. Clippy/wasm began after the last Rust source change. Full
+native/hosted validation is still required before any new development editor is
+selected. No claim is made about live focus preservation: secondary-monitor-only,
+nonactivating launches remain mandatory, and this step was entirely offscreen.
+
+The versioned evidence now includes958 regions with overlap/repeated controls.
+References6(Save Options),7(Preferences),13(Masking),14(Crop) and15(Remove)
+still lack matching-view individual audits. All19 remain in the every-element
+goal; no full-reference or complete behavior parity pass is claimed.
