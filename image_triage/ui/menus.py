@@ -43,7 +43,6 @@ def add_collection_essentials(menu: QMenu, actions: MainWindowActions) -> QMenu:
     more = menu.addMenu("More")
     more.addAction(actions.add_visible_to_collection)
     more.addAction(actions.add_to_active_collection)
-    more.addAction(actions.add_selection_to_collection)
     more.addAction(actions.remove_selection_from_collection)
     more.addAction(actions.delete_virtual_collection)
     return more

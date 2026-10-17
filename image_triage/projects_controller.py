@@ -14,6 +14,7 @@ from .scanner import normalize_filesystem_path
 from .ui import WORKSPACE_METRICS, default_theme
 from .ui.directory_suggestions import _DirectorySuggestionController
 from .ui.face_groups import face_group_photo_paths, load_face_groups
+from .ui.collection_ring import collection_ring_icon
 from .ui.project_rows import _MAX_VISIBLE_PROJECT_ROWS, _PROJECT_EMPTY_ROW_PX, _PROJECT_ROW_PX
 
 from typing import TYPE_CHECKING
@@ -256,11 +257,12 @@ class ProjectsController(QObject):
         catalog = getattr(self._window, "_catalog", None)
         active_id = catalog.active_collection_id() if catalog is not None else ""
         panel.clear()
+        panel.setIconSize(QSize(14, 14))
         for collection in collections:
             is_active = collection.id == active_id
-            # The active collection (where B and auto-added winners go) wears a dot.
-            label = f"{collection.name}  ({collection.item_count})"
-            item = QListWidgetItem(f"\u25CF {label}" if is_active else label)
+            # Each row wears its color as a hollow ring; the "Also add to" collection is bold.
+            item = QListWidgetItem(f"{collection.name}  ({collection.item_count})")
+            item.setIcon(collection_ring_icon(collection.color))
             item.setData(Qt.ItemDataRole.UserRole, collection.id)
             tooltip = collection.description or collection.name
             if is_active:
@@ -362,7 +364,6 @@ class ProjectsController(QObject):
         collection_id = self.project_id_for_item(item)
         menu = QMenu(panel)
         menu.addAction(self._window.actions.create_virtual_collection)
-        menu.addAction(self._window.actions.add_selection_to_collection)
         if collection_id:
             catalog = self._window._catalog
             menu.addSeparator()
@@ -370,6 +371,8 @@ class ProjectsController(QObject):
             open_action.triggered.connect(
                 lambda _checked=False, target=collection_id: catalog.open_virtual_collection(target)
             )
+            edit_action = menu.addAction("Edit...")
+            edit_action.triggered.connect(lambda _checked=False, target=collection_id: catalog.edit_collection(target))
             add_selected = menu.addAction("Add selection here")
             add_selected.setEnabled(self._window.grid.current_index() >= 0)
             add_selected.triggered.connect(
@@ -385,7 +388,7 @@ class ProjectsController(QObject):
                 active_action = menu.addAction("Stop adding new winners here")
                 active_action.triggered.connect(catalog.clear_active_collection)
             else:
-                active_action = menu.addAction("Also add new winners here")
+                active_action = menu.addAction("Add new winners here")
                 active_action.triggered.connect(
                     lambda _checked=False, target=collection_id: catalog.set_active_collection(target)
                 )
@@ -420,7 +423,7 @@ class ProjectsController(QObject):
         collections = self._window._library_store.list_collections()
         if collections:
             for collection in collections:
-                action = self._window.collections_menu.addAction(f"{collection.name} ({collection.item_count})")
+                action = self._window.collections_menu.addAction(collection_ring_icon(collection.color), f"{collection.name} ({collection.item_count})")
                 action.setToolTip(collection.description or collection.kind)
                 action.triggered.connect(lambda _checked=False, target=collection.id: self._window._catalog.open_virtual_collection(target))
         else:

@@ -235,7 +235,6 @@ class CommandPaletteController:
     def _add_library_commands(self, add_action_command: _AddActionCommand, actions: MainWindowActions) -> None:
         """Virtual collections and the cross-folder catalog."""
         add_action_command("library.create_collection", actions.create_virtual_collection, section="Library", keywords=("virtual collection", "portfolio picks", "proofing set"))
-        add_action_command("library.add_to_collection", actions.add_selection_to_collection, section="Library", keywords=("collection", "save picks"))
         add_action_command("library.add_selected_to_collection", actions.add_selected_to_collection, section="Library", keywords=("collection", "add selection", "save picks"))
         add_action_command("library.add_visible_to_collection", actions.add_visible_to_collection, section="Library", keywords=("collection", "add all", "add filtered", "add results", "bulk add"))
         add_action_command("library.add_to_active_collection", actions.add_to_active_collection, section="Library", keywords=("collection", "active collection", "target collection", "collect"))

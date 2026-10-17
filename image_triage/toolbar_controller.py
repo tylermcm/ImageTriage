@@ -208,19 +208,22 @@ class ToolbarController(QObject):
         palette_hint.setCursor(Qt.CursorShape.PointingHandCursor)
         palette_hint.clicked.connect(lambda _checked=False: self._window._command_palette.open(context="main"))
         search_layout.addWidget(palette_hint, 0, Qt.AlignmentFlag.AlignVCenter)
-        layout.addWidget(self.app_search_box, 1)
-        # Where picks also go (docs/winners_collections_redesign.md): "Also add to: none" by default.
-        self.also_add_to_button = QToolButton(bar)
-        self.also_add_to_button.setObjectName("appAlsoAddToButton")
+        self.app_search_key_hint = palette_hint
+        # While a collection is set in "Also add to", this chip takes the Ctrl K hint's place (Ctrl+K still opens
+        # the palette); with none set the hint comes back (CatalogController.refresh_also_add_to_button).
+        self.also_add_to_button = QToolButton(self.app_search_box)
+        self.also_add_to_button.setObjectName("appAlsoAddToChip")
         self.also_add_to_button.setAutoRaise(True)
         self.also_add_to_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.also_add_to_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.also_add_to_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.also_add_to_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         also_add_to_menu = QMenu(self.also_add_to_button)
         also_add_to_menu.aboutToShow.connect(lambda menu=also_add_to_menu: self._window._catalog.populate_also_add_to_menu(menu))
         self.also_add_to_button.setMenu(also_add_to_menu)
-        self.also_add_to_button.setText("Also add to: none \u25BE")
-        layout.addWidget(self.also_add_to_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.also_add_to_button.hide()
+        search_layout.addWidget(self.also_add_to_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self.app_search_box, 1)
         update_button = getattr(self._window, "update_download_button", None)
         if update_button is not None:
             layout.addWidget(update_button, 0, Qt.AlignmentFlag.AlignVCenter)

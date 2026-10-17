@@ -56,6 +56,8 @@ class VirtualCollection:
     item_count: int = 0
     created_at: str = ""
     updated_at: str = ""
+    # "#rrggbb" for the hollow ring beside the name in the sidebar; "" = no color chosen.
+    color: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -88,7 +90,7 @@ class LibraryStore:
     - `library.sqlite3` tracks user-facing collections and catalog-root settings
     - the catalog repository tracks per-folder caches and expensive derived data
     """
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self) -> None:
         root = app_data_root()
@@ -107,13 +109,14 @@ class LibraryStore:
                     c.name,
                     c.description,
                     c.kind,
+                    c.color,
                     c.created_at,
                     c.updated_at,
                     COUNT(i.item_path) AS item_count
                 FROM virtual_collections c
                 LEFT JOIN collection_items i
                     ON i.collection_id = c.id
-                GROUP BY c.id, c.name, c.description, c.kind, c.created_at, c.updated_at
+                GROUP BY c.id, c.name, c.description, c.kind, c.color, c.created_at, c.updated_at
                 ORDER BY c.name COLLATE NOCASE, c.created_at ASC
                 """
             ).fetchall()
@@ -126,6 +129,7 @@ class LibraryStore:
                 item_count=int(row["item_count"] or 0),
                 created_at=str(row["created_at"] or ""),
                 updated_at=str(row["updated_at"] or ""),
+                color=str(row["color"] or ""),
             )
             for row in rows
             if row["id"] and row["name"]
@@ -140,7 +144,7 @@ class LibraryStore:
             connection.row_factory = sqlite3.Row
             row = connection.execute(
                 """
-                SELECT id, name, description, kind, created_at, updated_at
+                SELECT id, name, description, kind, color, created_at, updated_at
                 FROM virtual_collections
                 WHERE id = ?
                 """,
@@ -167,6 +171,7 @@ class LibraryStore:
             item_count=len(item_paths),
             created_at=str(row["created_at"] or ""),
             updated_at=str(row["updated_at"] or ""),
+            color=str(row["color"] or ""),
         )
 
     def load_collection_header(self, collection_id: str) -> VirtualCollection | None:
@@ -179,7 +184,7 @@ class LibraryStore:
             row = connection.execute(
                 """
                 SELECT
-                    c.id, c.name, c.description, c.kind, c.created_at, c.updated_at,
+                    c.id, c.name, c.description, c.kind, c.color, c.created_at, c.updated_at,
                     (SELECT COUNT(*) FROM collection_items i WHERE i.collection_id = c.id) AS item_count
                 FROM virtual_collections c
                 WHERE c.id = ?
@@ -196,6 +201,7 @@ class LibraryStore:
             item_count=int(row["item_count"] or 0),
             created_at=str(row["created_at"] or ""),
             updated_at=str(row["updated_at"] or ""),
+            color=str(row["color"] or ""),
         )
 
     def find_collection_by_name(self, name: str) -> VirtualCollection | None:
@@ -225,6 +231,7 @@ class LibraryStore:
         description: str = "",
         kind: str = "Custom",
         item_paths: tuple[str, ...] | list[str] = (),
+        color: str = "",
     ) -> VirtualCollection:
         """Create a new virtual collection and seed it with optional item paths."""
         normalized_name = " ".join((name or "").split())
@@ -236,10 +243,10 @@ class LibraryStore:
             collection_id = self._unique_collection_id(connection, normalized_name)
             connection.execute(
                 """
-                INSERT INTO virtual_collections (id, name, description, kind)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO virtual_collections (id, name, description, kind, color)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (collection_id, normalized_name, description.strip(), normalized_kind),
+                (collection_id, normalized_name, description.strip(), normalized_kind, (color or "").strip()),
             )
             self._replace_collection_items(connection, collection_id, normalized_paths)
             connection.commit()
@@ -262,6 +269,7 @@ class LibraryStore:
                     name = ?,
                     description = ?,
                     kind = ?,
+                    color = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
@@ -269,6 +277,7 @@ class LibraryStore:
                     normalized_name,
                     collection.description.strip(),
                     (collection.kind or "Custom").strip() or "Custom",
+                    (collection.color or "").strip(),
                     normalized_id,
                 ),
             )
@@ -808,6 +817,9 @@ class LibraryStore:
             self._create_schema(connection)
             if current_version < 2:
                 self._rebuild_catalog_fts(connection)
+            columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(virtual_collections)")}
+            if "color" not in columns:
+                connection.execute("ALTER TABLE virtual_collections ADD COLUMN color TEXT NOT NULL DEFAULT ''")
             if current_version < self.SCHEMA_VERSION:
                 connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
             connection.commit()

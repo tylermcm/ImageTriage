@@ -98,7 +98,6 @@ class MainWindowActions:
     review_ai_disagreements: QAction
     winner_ladder_mode: QAction
     create_virtual_collection: QAction
-    add_selection_to_collection: QAction
     add_selected_to_collection: QAction
     add_visible_to_collection: QAction
     add_to_active_collection: QAction
@@ -497,11 +496,6 @@ def _collection_actions(window: "MainWindow") -> dict[str, QAction]:
             window,
             "New Collection...",
             slot=window._catalog.create_virtual_collection_from_selection,
-        ),
-        add_selection_to_collection=_create_action(
-            window,
-            "Edit Collection Items...",
-            slot=window._catalog.add_selection_to_virtual_collection,
         ),
         add_selected_to_collection=_create_action(
             window,
