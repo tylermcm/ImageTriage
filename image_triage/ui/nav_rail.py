@@ -91,13 +91,13 @@ BUTTON_W_RATIO = 64 / DESIGN_RAIL_PX        # 94px  pill width. Capped by the
                                             #       rail: the leftover becomes
                                             #       the side margin, so this
                                             #       cannot exceed rail_width.
-BUTTON_H_RATIO = 40 / DESIGN_RAIL_PX        # 86px  pill height. Also sets how
+BUTTON_H_RATIO = 54 / DESIGN_RAIL_PX        # 86px  pill height. Also sets how
                                             #       far apart the icons sit,
                                             #       more than BUTTON_GAP does.
 BUTTON_RADIUS_RATIO = 10 / DESIGN_RAIL_PX   # 15px  pill corner rounding
 BUTTON_GAP_RATIO = 6 / DESIGN_RAIL_PX      # 24px  space between pills only;
                                             #       pinned tools use TOOL_GAP
-ICON_RATIO = 22 / DESIGN_RAIL_PX            # 37px  icon size. Icon + label must
+ICON_RATIO = 26 / DESIGN_RAIL_PX            # 37px  icon size. Icon + label must
                                             #       fit BUTTON_H or the label
                                             #       gets squeezed.
 ICON_TEXT_GAP_RATIO = 5 / DESIGN_RAIL_PX    # 12px  clear space from the icon to
@@ -128,8 +128,8 @@ ADD_ICON_RATIO = 24 / DESIGN_RAIL_PX        # 35px  the "+" mark itself
 # so lowering them is usually not what you want.
 
 MIN_RAIL_PX = 48
-MIN_BUTTON_H_PX = 38
-MIN_ICON_PX = 18
+MIN_BUTTON_H_PX = 30
+MIN_ICON_PX = 14
 MIN_LABEL_PX = 9
 MIN_TOOL_PX = 24
 
