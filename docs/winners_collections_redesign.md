@@ -124,9 +124,16 @@ Step 1 notes: Apply AI Decisions now marks AI Picks as winners in place (it used
 (`AI_APPLIED_SOURCE_MODES`). The `_winners` file-copy code in `file_ops` is now unreachable and can be
 deleted with the winner-mode enum once nothing reads saved presets.
 
+Step 2 notes: a pinned "♥ Winners (N)" row sits above the collections in the sidebar (its own one-row
+list). Opening it lists every winner mark from the current profile, missing files left out, newest shoot
+first. Grouping is a folder tile in front of each shoot's photos (click to open the shoot) rather than
+collapsible section headers, since the grid has no headers yet; right-click the row for "Group by folder"
+(on by default) or flat. Follow-ups: collapsible headers in the grid, and pressing W inside the Winners
+view (winner marks are still folder-first, so W is ignored outside a real folder).
+
 1. **Done (2026-10-17). W = mark only.** Remove the winner modes and `_winners` side effects, and treat existing
    `_winners` folders as ordinary folders. Verify that AI feedback still fires and undo works.
-2. **Winners view** in the sidebar, computed from winner marks.
+2. **Done (2026-10-17). Winners view** in the sidebar, computed from winner marks.
 3. **Also add to** selector in the top bar, replacing the active collection and the auto-add
    toggle.
 4. **Export…** to a folder and to PocketDrop.

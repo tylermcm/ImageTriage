@@ -967,6 +967,10 @@ class RecordsViewController:
 
     def sort_records_for_active_context(self, records: list[ImageRecord]) -> list[ImageRecord]:
         window = self._window
+        if self._session.scope_kind == "winners" and window._catalog.winners_grouped():
+            # Grouped Winners is already in shoot order with each shoot's folder tile first;
+            # the usual sort would pull every folder tile to the top.
+            return list(records)
         if window._sort_mode == SortMode.AI_WOW:
             if not window._winner_scores_by_path:
                 window._scan.refresh_winner_scores_for_current_folder()

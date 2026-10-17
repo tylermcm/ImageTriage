@@ -1476,6 +1476,16 @@ class MainWindow(QMainWindow):
         )
         self.projects_header.setProperty("sectionRole", "projects")
 
+        # Every winner from every shoot, pinned above the collections (CatalogController.open_winners_view).
+        # Its own one-row list, styled like the collections, so nothing that treats a collections row as a
+        # collection (drops, flashes, the active dot) has to know about it.
+        self.winners_list = QListWidget()
+        self.winners_list.setObjectName("projectsList")
+        self.winners_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.winners_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.winners_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.winners_list.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
         self.projects_list = QListWidget()
         self.projects_list.setObjectName("projectsList")
         self.projects_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1540,6 +1550,7 @@ class MainWindow(QMainWindow):
         collections_page = self._appearance.build_left_nav_page()
         collections_layout = collections_page.layout()
         collections_layout.addWidget(self.projects_header)
+        collections_layout.addWidget(self.winners_list)
         collections_layout.addWidget(self.projects_list, 1)
         collections_layout.addStretch(0)
 
@@ -1658,6 +1669,9 @@ class MainWindow(QMainWindow):
         self.projects_list.itemActivated.connect(self._projects.handle_project_activated)
         self.projects_list.itemClicked.connect(self._projects.handle_project_activated)
         self.projects_list.customContextMenuRequested.connect(self._projects.show_projects_context_menu)
+        self.winners_list.itemActivated.connect(lambda _item: self._catalog.open_winners_view())
+        self.winners_list.itemClicked.connect(lambda _item: self._catalog.open_winners_view())
+        self.winners_list.customContextMenuRequested.connect(self._projects.show_winners_context_menu)
         self.face_groups_panel.group_activated.connect(self._projects.handle_face_group_activated)
         self.face_groups_panel.browse_all_requested.connect(
             lambda: self.actions.manage_people.trigger()

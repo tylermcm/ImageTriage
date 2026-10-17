@@ -22,6 +22,37 @@ if TYPE_CHECKING:
     from .window import MainWindow
 
 
+def arrange_winner_records(records: list[ImageRecord], *, grouped: bool) -> list[ImageRecord]:
+    """Order the Winners view by shoot, newest shoot first (by its newest photo).
+
+    Grouped, each shoot starts with its folder as a tile (opening it opens the shoot); flat, the
+    photos alone, left for the grid's own sort to order."""
+    by_folder: dict[str, list[ImageRecord]] = {}
+    for record in records:
+        if record.is_folder:
+            continue
+        by_folder.setdefault(str(Path(record.path).parent), []).append(record)
+
+    def newest(items: list[ImageRecord]) -> int:
+        return max((item.modified_ns for item in items), default=0)
+
+    shoots = sorted(by_folder.items(), key=lambda item: (-newest(item[1]), item[0].casefold()))
+    arranged: list[ImageRecord] = []
+    for folder, items in shoots:
+        if grouped:
+            arranged.append(
+                ImageRecord(
+                    path=normalize_filesystem_path(folder),
+                    name=f"{Path(folder).name or folder}  \u00b7  {len(items)}",
+                    size=0,
+                    modified_ns=newest(items),
+                    is_folder=True,
+                )
+            )
+        arranged.extend(sorted(items, key=lambda item: item.name.casefold()))
+    return arranged
+
+
 @dataclass(slots=True)
 class CatalogExecutionContext:
     """Carries the currently running catalog refresh request through async handlers."""
@@ -567,6 +598,53 @@ class CatalogController:
         if collection is not None:
             self.cancel_collection_mode(show_message=False)
             window.statusBar().showMessage(f"Saved collection: {collection.name} ({collection.item_count} items)")
+
+    # -- Winners view: every photo marked winner, from every shoot -------------
+    #
+    # Computed from the winner marks each time it opens, so it never drifts and needs no upkeep
+    # (docs/winners_collections_redesign.md). Photos whose files are gone are left out.
+
+    WINNERS_SCOPE = "winners"
+    WINNERS_GROUP_KEY = "winners/group_by_folder"
+
+    def winners_grouped(self) -> bool:
+        return bool(self._window._settings.value(self.WINNERS_GROUP_KEY, True, bool))
+
+    def set_winners_grouped(self, grouped: bool) -> None:
+        self._window._settings.setValue(self.WINNERS_GROUP_KEY, bool(grouped))
+        if self._session.scope_kind == self.WINNERS_SCOPE:
+            self.open_winners_view()
+
+    def winner_count(self) -> int:
+        window = self._window
+        try:
+            return window._decision_store.winner_count(window._session_id)
+        except Exception:
+            return 0
+
+    def open_winners_view(self, checked: bool = False) -> None:
+        del checked
+        window = self._window
+        paths = window._decision_store.winner_paths(window._session_id)
+        if not paths:
+            window.statusBar().showMessage("No winners yet. Press W on a photo to mark it as a winner.")
+            return
+        records, missing = self.resolve_records_for_paths(paths)
+        if not records:
+            window.statusBar().showMessage("None of your winners can be found right now (moved, deleted, or on a disconnected drive).")
+            return
+        arranged = arrange_winner_records(records, grouped=self.winners_grouped())
+        window._records_view.load_virtual_scope_records(
+            arranged,
+            scope_kind=self.WINNERS_SCOPE,
+            scope_id=self.WINNERS_SCOPE,
+            scope_label=f"Winners ({len(records)})",
+        )
+        shoots = len({str(Path(record.path).parent).casefold() for record in records})
+        message = f"Winners: {len(records)} photo(s) from {shoots} shoot(s)"
+        if missing:
+            message += f" ({missing} not found: moved, deleted, or on a disconnected drive)"
+        window.statusBar().showMessage(message)
 
     def open_virtual_collection(self, collection_id: str) -> None:
         window = self._window
