@@ -177,6 +177,7 @@ class ProjectsController(QObject):
         self._window._folder_session.scope_id = scope_id
         self._scope_label = label
         self.apply_scope_label()
+        self.sync_collection_selection()
         catalog = getattr(self._window, "_catalog", None)
         if catalog is not None and catalog.active_collection_id():
             catalog.refresh_collection_markers()  # tiles drop the collection tag inside that collection
@@ -231,6 +232,7 @@ class ProjectsController(QObject):
         item.setSizeHint(QSize(0, _PROJECT_ROW_PX))
         panel.addItem(item)
         panel.setFixedHeight(_PROJECT_ROW_PX + 2 * panel.frameWidth() + 2)
+        self.sync_collection_selection()
 
     def schedule_winners_refresh(self) -> None:
         """Recount the Winners row once marking settles (after the annotation queue has written)."""
@@ -294,6 +296,37 @@ class ProjectsController(QObject):
             empty.setSizeHint(QSize(0, _PROJECT_EMPTY_ROW_PX))
             panel.addItem(empty)
         self.update_projects_height()
+        self.sync_collection_selection()
+
+    def sync_collection_selection(self) -> None:
+        """Highlight exactly the row for what is on screen: Winners, one collection, or neither.
+
+        The Winners row and the collections list are separate widgets, so each would otherwise keep
+        whatever you last clicked in it."""
+        window = self._window
+        winners = getattr(window, "winners_list", None)
+        panel = getattr(window, "projects_list", None)
+        session = getattr(window, "_folder_session", None)
+        if winners is None or panel is None or session is None:
+            return
+        kind, scope_id = session.scope_kind, session.scope_id
+        want_winners = kind == getattr(window._catalog, "WINNERS_SCOPE", "winners")
+        want_collection = scope_id if kind == "collection" else ""
+        for widget in (winners, panel):
+            widget.blockSignals(True)
+        try:
+            winners.clearSelection()
+            winners.setCurrentRow(-1)
+            if want_winners and winners.count():
+                winners.setCurrentRow(0)
+            panel.clearSelection()
+            panel.setCurrentRow(-1)
+            row = self.collection_row(want_collection)
+            if row is not None:
+                panel.setCurrentItem(row)
+        finally:
+            for widget in (winners, panel):
+                widget.blockSignals(False)
 
     def collection_row(self, collection_id: str):
         panel = getattr(self._window, "projects_list", None)

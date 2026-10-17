@@ -100,6 +100,38 @@ def test_inside_the_collection_the_tag_and_add_items_go_away(main_window) -> Non
         projects.set_scope_state(kind=old_scope[0], scope_id=old_scope[1])
 
 
+def test_sidebar_highlights_only_what_is_open(main_window) -> None:
+    window = main_window
+    projects, session = window._projects, window._folder_session
+    old_scope = (session.scope_kind, session.scope_id)
+    first = window._library_store.create_collection(name="Claire")
+    second = window._library_store.create_collection(name="Utah")
+    projects.refresh_projects_panel()
+    winners, panel = window.winners_list, window.projects_list
+
+    def selected():
+        return (
+            bool(winners.selectedItems()),
+            [item.data(0x0100) for item in panel.selectedItems()],
+        )
+
+    try:
+        projects.set_scope_state(kind="collection", scope_id=first.id, label="Collection: Claire")
+        assert selected() == (False, [first.id])
+        projects.set_scope_state(kind=window._catalog.WINNERS_SCOPE, label="Winners")
+        assert selected() == (True, []), "opening Winners lets go of the collection"
+        projects.set_scope_state(kind="collection", scope_id=second.id, label="Collection: Utah")
+        assert selected() == (False, [second.id]), "and opening a collection lets go of Winners"
+        projects.set_scope_state(kind="folder")
+        assert selected() == (False, [])
+        projects.refresh_projects_panel()
+        projects.set_scope_state(kind="collection", scope_id=first.id, label="Collection: Claire")
+        projects.refresh_projects_panel()
+        assert selected() == (False, [first.id]), "a rebuilt list keeps the highlight"
+    finally:
+        projects.set_scope_state(kind=old_scope[0], scope_id=old_scope[1])
+
+
 def test_older_library_gains_a_color_column(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("IMAGE_TRIAGE_APPDATA", str(tmp_path))
     db = Path(tmp_path) / "ImageTriage" / "library.sqlite3"
