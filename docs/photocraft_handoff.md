@@ -1,5 +1,52 @@
 # PhotoCraft handoff
 
+## Local Image Triage testing — 2026-10-17
+
+Owner requested the new Camera Raw UI inside Image Triage for local testing,
+explicitly without a release build. Both repositories remain on
+`codex/image-triage-integration`; companion fetches succeeded again and upstream
+and fork tips remain `5f65579e` and `00c154c4`, already accounted for below.
+The existing dev executable `target/acr18/debug/photocraft.exe` is unchanged.
+
+Added `scripts/test_camera_raw.ps1`. It launches this host checkout from source
+using the development executable through a process-local override, loads live
+`design/camera-raw/layout.json` and `tokens.json`, and gives the editor a separate
+`target/acr18/image-triage-test/editor-profile`. Logs are in that test root's
+`logs` folder. It restores the invoking PowerShell's environment after launch.
+Optional `-OpenPath` accepts a photo or folder; `-PhotoCraftRoot` selects another
+companion checkout. The launcher reports the selected editor and live JSON paths.
+PowerShell parsing, path quoting, exact editor selection and environment
+restoration were verified. No global discovery, installed editor or release
+packaging changes.
+
+Live checks passed against this exact dev executable with live JSON enabled:
+
+- `check_photocraft_handoff.py`, both 1 MP and 24 MP: hidden startup, native
+  parent, fullscreen, persistent filmstrip/navigation with zero host hides,
+  stash/restore, native Save, grid propagation, closed-tab reopening, five
+  themes with verified native/desktop captures, shutdown and token/process cleanup.
+- `check_camera_raw_first.py`: adjustment persistence when navigating, return
+  restoration, Open into the full editor, and Camera Raw return after tab close.
+- `check_camera_raw_recipe.py`, pinned public Nikon D3 and Z6 samples: failed
+  recipe writes keep drafts, recipe-only exports match live full-size results,
+  first-poll edits persist, Open continuation and native Save both work.
+
+Inspected the native Camera Raw capture from the hosted test. Evidence is under
+the session artifact directory's `hosted-dev` folder. These are local development
+handoff results; full native/wasm/release gates remain unclaimed.
+
+An owner's screenshot then exposed a separate stale app: `ImageTriage-main` on
+`main` was still running with an explicit old `target/release/photocraft.exe`
+override. That binary treated `--raw-workspace` as a filename. Requested a normal
+window close (no force termination), confirmed the stale app/editor exited, and
+relaunched this checkout's test app on the synthetic fixture. Verified the running
+test process's checkout, exact development-editor override, live layout and
+private editor profile. Created Desktop shortcut **Image Triage - Camera Raw Test**
+pointing at the new launcher so normal shortcuts don't reintroduce that old
+override. Press E in the popout to enter Camera Raw. The known-good release
+executable retains SHA256 `EA42E1B82F1346091E18C210BD821194AD99CC446CB2FB9425108443049030C5`.
+No push, release build or promotion.
+
 ## Camera Raw JSON preview rebuild — 2026-10-17 (preview open)
 
 Owner clarified that this request is to compile/launch the PS1 Camera Raw preview
