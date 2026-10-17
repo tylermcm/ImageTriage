@@ -158,7 +158,6 @@ class InspectorController(QObject):
         self._window.actions.add_visible_to_collection.setEnabled(bool(self._window._records))
         self._window.actions.add_to_active_collection.setEnabled(current_record is not None)
         self._window.actions.set_active_collection.setEnabled(True)
-        self._window.actions.auto_add_winners_to_collection.setEnabled(True)
         self._window.actions.remove_selection_from_collection.setEnabled(current_record is not None and bool(collections))
         self._window.actions.delete_virtual_collection.setEnabled(bool(collections))
         self._window.actions.browse_catalog.setEnabled(bool(catalog_roots))

@@ -14,7 +14,7 @@ from .library_store import CatalogRefreshSummary, CatalogRefreshTask, VirtualCol
 from .models import ImageRecord
 from .record_ops_controller import UndoAction
 from .scanner import normalize_filesystem_path, normalized_path_key, scan_folder
-from .ui import CatalogSearchDialog, CollectionEditDialog, CollectionPickerChoice, CollectionPickerDialog, effective_shortcuts
+from .ui import CatalogSearchDialog, CollectionEditDialog, CollectionPickerChoice, CollectionPickerDialog
 from .ui.flash_toast import FlashToast
 from .folder_session import FolderSession
 
@@ -701,8 +701,11 @@ class CatalogController:
     # Each add or removal is one undo step, and every change is confirmed with a
     # toast over the grid or popout (the status bar alone gets overwritten).
 
-    ACTIVE_COLLECTION_KEY = "collections/active_id"
-    AUTO_ADD_WINNERS_KEY = "collections/auto_add_winners"
+    # "Also add to": the one collection that picks also go into (top bar, docs/winners_collections_redesign.md).
+    # Set = every new winner (W) is also added there, and B adds there; none (the default) = plain culling.
+    # It replaces the earlier hidden "active collection" and the separate auto-add-winners toggle, whose
+    # saved values are deliberately not carried over.
+    ACTIVE_COLLECTION_KEY = "collections/also_add_to"
 
     def active_collection_id(self) -> str:
         return str(self._window._settings.value(self.ACTIVE_COLLECTION_KEY, "", str) or "")
@@ -722,17 +725,13 @@ class CatalogController:
         window._projects.refresh_collections_menu()
         if show_message:
             if collection is None:
-                self.show_collection_feedback("No active collection")
+                self.show_collection_feedback("Winners are no longer added to a collection")
             else:
-                key = effective_shortcuts(("collect_at_cursor",)).get("collect_at_cursor", "")
-                self.show_collection_feedback(
-                    f"Active collection: {collection.name}" + (f" ({key} adds or removes the current image)" if key else ""),
-                    collection.id,
-                )
+                self.show_collection_feedback(f"New winners will also go to {collection.name}", collection.id)
 
     def choose_active_collection(self, checked: bool = False) -> None:
         del checked
-        collection = self.choose_virtual_collection(title="Set Active Collection", prompt="Collection", allow_new=True)
+        collection = self.choose_virtual_collection(title="Also Add Winners To", prompt="Collection", allow_new=True)
         if collection is not None:
             self.set_active_collection(collection.id)
 
@@ -741,20 +740,55 @@ class CatalogController:
         self.set_active_collection("")
 
     def auto_add_winners_enabled(self) -> bool:
-        return bool(self._window._settings.value(self.AUTO_ADD_WINNERS_KEY, False, bool))
+        return bool(self.active_collection_id())
 
-    def set_auto_add_winners(self, enabled: bool) -> None:
-        window = self._window
-        enabled = bool(enabled)
-        window._settings.setValue(self.AUTO_ADD_WINNERS_KEY, enabled)
-        if not enabled:
-            self.show_collection_feedback("Winners no longer go to the active collection")
+    # -- The top bar's "Also add to" button ------------------------------------
+
+    def also_add_to_text(self) -> str:
+        collection = self.active_collection()
+        return f"Also add to: {collection.name if collection is not None else 'none'}"
+
+    def populate_also_add_to_menu(self, menu) -> None:
+        """None, then every collection (recently used first) as a radio choice, then New collection."""
+        menu.clear()
+        current = self.active_collection_id()
+        none_action = menu.addAction("None (just mark winners)")
+        none_action.setCheckable(True)
+        none_action.setChecked(not current)
+        none_action.triggered.connect(lambda _checked=False: self.set_active_collection(""))
+        collections = self._window._library_store.list_collections()
+        by_id = {collection.id: collection for collection in collections}
+        recent = [collection_id for collection_id in self.recent_collection_ids() if collection_id in by_id]
+        ordered = [by_id[collection_id] for collection_id in recent] + [c for c in collections if c.id not in recent]
+        if ordered:
+            menu.addSeparator()
+        for collection in ordered[: self._SUBMENU_LIMIT]:
+            action = menu.addAction(f"{collection.name}  ({collection.item_count})")
+            action.setCheckable(True)
+            action.setChecked(collection.id == current)
+            action.triggered.connect(lambda _checked=False, target=collection.id: self.set_active_collection(target))
+        if len(ordered) > self._SUBMENU_LIMIT:
+            menu.addAction("More collections...", self.choose_active_collection)
+        menu.addSeparator()
+        menu.addAction("New collection...", self._also_add_to_new_collection)
+
+    def _also_add_to_new_collection(self) -> None:
+        collection = self.prompt_new_collection(title="Also Add Winners To")
+        if collection is not None:
+            self.set_active_collection(collection.id)
+
+    def refresh_also_add_to_button(self) -> None:
+        button = getattr(self._window._toolbar, "also_add_to_button", None)
+        if button is None:
             return
         collection = self.active_collection()
-        if collection is None:
-            self.show_collection_feedback("Winners will go to the active collection once you set one")
-        else:
-            self.show_collection_feedback(f"New winners will also go to {collection.name}", collection.id)
+        button.setText(self.also_add_to_text() + " \u25BE")
+        button.setProperty("alsoAddToSet", collection is not None)
+        button.setToolTip(
+            f"New winners (W) are also added to {collection.name}; B adds the current photo there too."
+            if collection is not None
+            else "Choose a collection that new winners (W) also go into. None: W just marks a winner."
+        )
 
     # -- Feedback -------------------------------------------------------
 
@@ -1045,10 +1079,11 @@ class CatalogController:
             return
         collection = self.active_collection()
         if collection is None:
-            collection = self.choose_virtual_collection(title="Choose the Active Collection", prompt="Collection", allow_new=True)
+            # Nothing chosen in "Also add to": ask for this photo only, without changing that setting
+            # (which would quietly start sending every winner there too).
+            collection = self.choose_virtual_collection(title="Add to Collection", prompt="Collection", allow_new=True)
             if collection is None:
                 return
-            self.set_active_collection(collection.id, show_message=False)
         paths = [record.path for record in records]
         name = records[0].name if len(records) == 1 else f"{len(records)} images"
         if toggle and not window._library_store.paths_missing_from_collection(collection.id, paths):

@@ -240,7 +240,6 @@ class CommandPaletteController:
         add_action_command("library.add_visible_to_collection", actions.add_visible_to_collection, section="Library", keywords=("collection", "add all", "add filtered", "add results", "bulk add"))
         add_action_command("library.add_to_active_collection", actions.add_to_active_collection, section="Library", keywords=("collection", "active collection", "target collection", "collect"))
         add_action_command("library.set_active_collection", actions.set_active_collection, section="Library", keywords=("collection", "active collection", "target collection"))
-        add_action_command("library.auto_add_winners", actions.auto_add_winners_to_collection, section="Library", keywords=("collection", "winners", "auto add", "active collection"))
         add_action_command("library.remove_from_collection", actions.remove_selection_from_collection, section="Library", keywords=("collection", "remove picks"))
         add_action_command("library.delete_collection", actions.delete_virtual_collection, section="Library", keywords=("collection", "delete set"))
         add_action_command("library.browse_catalog", actions.browse_catalog, section="Library", keywords=("catalog", "cross folder search", "global index"))
@@ -503,8 +502,8 @@ class CommandPaletteController:
             commands.append(
                 PaletteCommand(
                     id=f"collection.set_active.{collection.id}",
-                    title=f"Set Active Collection: {collection.name}",
-                    subtitle="B adds the current image here",
+                    title=f"Also Add Winners To: {collection.name}",
+                    subtitle="New winners (W) also go here; B adds here too",
                     section="Library",
                     keywords=("collection", "active collection", "target", collection.name.casefold()),
                     callback=lambda target=collection.id: window._catalog.set_active_collection(target),

@@ -212,12 +212,12 @@ class CollectionFastAddTests(unittest.TestCase):
         self.host._catalog.add_visible_to_collection(collection_id=self.portfolio.id)
         self.assertEqual(("C:/a/1.jpg",), self._members())
 
-    def test_winner_auto_add_needs_the_toggle_and_an_active_collection(self) -> None:
+    def test_winners_also_go_to_the_also_add_to_collection_only_when_one_is_set(self) -> None:
         catalog = self.host._catalog
-        self.assertEqual("", catalog.winner_auto_add_batch_id())
+        self.assertEqual("", catalog.winner_auto_add_batch_id())  # default: none
+        self.assertEqual("Also add to: none", catalog.also_add_to_text())
         catalog.set_active_collection(self.portfolio.id, show_message=False)
-        self.assertEqual("", catalog.winner_auto_add_batch_id())
-        catalog.set_auto_add_winners(True)
+        self.assertEqual("Also add to: Portfolio", catalog.also_add_to_text())
         batch_id = catalog.winner_auto_add_batch_id()
         self.assertTrue(batch_id)
 
@@ -233,7 +233,6 @@ class CollectionFastAddTests(unittest.TestCase):
     def test_taking_back_an_auto_added_winner_takes_it_out_again(self) -> None:
         catalog = self.host._catalog
         catalog.set_active_collection(self.portfolio.id, show_message=False)
-        catalog.set_auto_add_winners(True)
         catalog.auto_add_winner_paths(["D:/b/3.jpg"], batch_id=catalog.winner_auto_add_batch_id())
         self.assertEqual(("C:/a/1.jpg", "D:/b/3.jpg"), self._members())
 
@@ -317,6 +316,25 @@ class CollectionFastAddTests(unittest.TestCase):
         catalog.invalidate_membership_cache()
         self.assertEqual("\u25CF Portfolio", catalog.collection_chip_text("D:/b/3.jpg")[0])
 
+    def test_menu_offers_none_then_collections_then_new(self) -> None:
+        from PySide6.QtWidgets import QMenu
+
+        catalog = self.host._catalog
+        self.store.create_collection(name="Prints")
+        menu = QMenu()
+        catalog.populate_also_add_to_menu(menu)
+        rows = [(action.text(), action.isChecked()) for action in menu.actions() if action.text()]
+        self.assertEqual(("None (just mark winners)", True), rows[0])
+        self.assertEqual({"Portfolio  (1)", "Prints  (0)"}, {text for text, _checked in rows[1:3]})
+        self.assertEqual("New collection...", rows[-1][0])
+
+        next(action for action in menu.actions() if action.text() == "Prints  (0)").trigger()
+        self.assertEqual("Also add to: Prints", catalog.also_add_to_text())
+        menu = QMenu()
+        catalog.populate_also_add_to_menu(menu)
+        checked = [action.text() for action in menu.actions() if action.isChecked()]
+        self.assertEqual(["Prints  (0)"], checked)
+
     def test_winner_auto_add_is_a_no_op_without_a_batch_id(self) -> None:
         self.assertEqual("", self.host._catalog.auto_add_winner_paths(["D:/b/3.jpg"], batch_id=""))
         self.assertEqual(("C:/a/1.jpg",), self._members())
@@ -331,3 +349,4 @@ class CollectionFastAddTests(unittest.TestCase):
         self.assertEqual("Portfolio", catalog.active_collection().name)
         self.store.delete_collection(self.portfolio.id)
         self.assertIsNone(catalog.active_collection())
+

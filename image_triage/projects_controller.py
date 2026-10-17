@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 
-from PySide6.QtCore import QObject, QSignalBlocker, QSize, Qt, QTimer
+from PySide6.QtCore import QObject, QSize, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidgetItem, QMenu, QSizePolicy, QToolButton, QWidget
 
@@ -263,7 +263,7 @@ class ProjectsController(QObject):
             item.setData(Qt.ItemDataRole.UserRole, collection.id)
             tooltip = collection.description or collection.name
             if is_active:
-                tooltip += "\nActive collection: B adds the current image here"
+                tooltip += "\nNew winners (W) also go here, and B adds here"
             item.setToolTip(tooltip + "\nDrop images here to add them")
             if is_active:
                 font = item.font()
@@ -381,10 +381,10 @@ class ProjectsController(QObject):
                 lambda _checked=False, target=collection_id: catalog.add_visible_to_collection(collection_id=target)
             )
             if catalog.active_collection_id() == collection_id:
-                active_action = menu.addAction("Stop using as active collection")
+                active_action = menu.addAction("Stop adding new winners here")
                 active_action.triggered.connect(catalog.clear_active_collection)
             else:
-                active_action = menu.addAction("Make active collection (B adds here)")
+                active_action = menu.addAction("Also add new winners here")
                 active_action.triggered.connect(
                     lambda _checked=False, target=collection_id: catalog.set_active_collection(target)
                 )
@@ -407,19 +407,15 @@ class ProjectsController(QObject):
         actions = self._window.actions
         if actions is None:
             return
-        with QSignalBlocker(actions.auto_add_winners_to_collection):
-            actions.auto_add_winners_to_collection.setChecked(self._window._catalog.auto_add_winners_enabled())
+        self._window._catalog.refresh_also_add_to_button()
         active = self._window._catalog.active_collection()
-        actions.add_to_active_collection.setText(
-            f"Add to Active Collection ({active.name})" if active is not None else "Add to Active Collection"
-        )
+        actions.add_to_active_collection.setText(f"Add to {active.name}" if active is not None else "Add to Collection...")
         self._window.collections_menu.addAction(actions.create_virtual_collection)
         self._window.collections_menu.addAction(actions.add_selected_to_collection)
         self._window.collections_menu.addAction(actions.add_visible_to_collection)
         self._window.collections_menu.addSeparator()
         self._window.collections_menu.addAction(actions.add_to_active_collection)
         self._window.collections_menu.addAction(actions.set_active_collection)
-        self._window.collections_menu.addAction(actions.auto_add_winners_to_collection)
         self._window.collections_menu.addSeparator()
         self._window.collections_menu.addAction(actions.add_selection_to_collection)
         self._window.collections_menu.addAction(actions.remove_selection_from_collection)
