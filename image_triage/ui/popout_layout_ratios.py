@@ -11,7 +11,6 @@ from .layout_ratios import ratio_px  # re-exported: callers use popout_ratios.ra
 # Width ratios: each value is a fraction of the popout window's width.
 EDITOR_W = 0.1625             # Editor and tool rail together; leaves 83.75% for the photo.
 TOOL_RAIL_W = 0.0203          # Outer button rail, about 2% of the window width.
-PHOTO_MAX_W = 0.576           # Maximum single-photo width at the reference size.
 STAGE_SIDE_W = 0.0            # No inset: the photo canvas reaches both side edges.
 SETTINGS_BUTTON_W = 0.0264   # Gear cell at the far right of the path bar.
 ZOOM_SLIDER_W = 0.0465        # Zoom track in the bar below the photo.

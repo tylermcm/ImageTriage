@@ -1,5 +1,509 @@
 # PhotoCraft handoff
 
+## Keep visual iteration in JSON — 2026-10-15
+
+Owner clarified that this design pass should use live JSON and the PS1 launcher,
+without native rebuilds. Stopped only the owned Camera Raw test-build tree before
+results; no test pass is claimed. Preserved the tentative native numeric-alignment
+patch (including tests) outside Git at acr-parity-overlays/
+deferred-native-field-alignment.patch and restored widgets.rs to the committed
+source. The existing preview process remains open; its executable was not rebuilt.
+
+The companion PS1 now reuses the isolated debug executable, or target/debug when
+that isolated build is absent. It invokes Cargo only with explicit -Build; a
+normal launch with no available executable reports the one-time requirement.
+PowerShell parsing passed, and a dry launch with Cargo set to throw proved that
+the normal path selects the existing executable without compiling or starting a
+duplicate preview. Inactive numeric left alignment remains a native backlog item;
+the current JSON option cannot correct that widget behavior by itself.
+
+## Overlay design resumed on laptop — 2026-10-15
+
+The merged native development build (38038711) passed in 33 min 27 s. Launched
+it from target/debug with separate comparison settings and the synthetic image;
+closed the pre-redesign base at the owner's clarification. The owner then
+explicitly resumed design work with 19 local ACR 18.6 reference screenshots,
+superseding the temporary instruction to make no changes after the build.
+
+Compared source underneath PhotoCraft, including a corrected registration:
+anchor the entire 540px settings dock, not its 512px inner expanded content.
+The latter normalized to our 270-point full dock hid the reserved-scrollbar
+width and enlarged the reference about 5%. Uniform 0.5 reference scaling now
+keeps the real difference visible. Source images remain outside Git.
+
+Companion live JSON now uses 40pt section headers, 31pt slider-row pitch and
+adjusted insets/field metrics. At normalized width 540px all six Light tracks
+match reference vertical bands: 126–131, 188–193, 250–255, 312–317, 374–379,
+436–441. Before, offsets increased from 8 to 26px. This verifies those track
+positions only, not complete visual or functional parity. Inactive numeric
+text still centers despite the left-aligned option; that needs a native fix.
+Handles, header glyphs/bypass, scrollbar behavior, Curve/Grading selectors and
+panel-specific geometry remain. Optics, Lens Blur, Calibration, several rail
+tools, RAW WB/Kelvin, profiles, filmstrip and ACR dialogs remain separate work.
+
+Added an interactive index.html to the companion comparison script: reference
+underneath, opacity/blink/uniform zoom, difference and alignment metadata.
+Five native view-state before/after captures retained photo parameters and
+preview revision in the same running process, without recompiling. Python/JSON
+syntax, viewer/image HTTP delivery and git diff --check passed. No new native
+code changes or hosted promotion. The native preview stays open on Light/Color.
+
+Artifacts: the chat visualization directory's acr-parity-overlays/ contains
+reference hashes, cropped overlays, reload-proof.json, light-metrics.json,
+initial/captured states and gap-notes.md. Local overlay viewer is served on
+127.0.0.1:52180 (private helper; it can be stopped after review). It is a design
+workbench, not a product dependency. No push.
+
+## Laptop pull and comparison preview — 2026-10-15
+
+Fetched both user origins successfully and PhotoCraft upstream by URL (this
+checkout's origin is tylermcm; no fork remote is configured). Fast-forwarded host
+127c7ca -> 6f51b78 and companion 242daf70 -> c00bd4aa, preserving the ACR 18.6
+redesign. Existing untracked codex_briefing/ was untouched. Upstream advanced
+1b666f4790f9f2e9907218a8e786a3af5305f200 ->
+b630d7cb9aeb2a79ab5224ebf6e8266f1d858873, merged as
+38038711. No pushes.
+
+Conflicts: apps/photocraft/src/main.rs, crates/ui-egui/src/control.rs and all
+20 translation catalogs. Main retains hosted/raw-workspace flags and upstream
+presentation/trace options; control retains both the host-theme regression and
+upstream trace regression. Catalog additions are independent and both retained.
+Reviewed automatic merges in lib.rs, menus.rs, GPU, engine jobs and authorization:
+upstream owns presentation throttling, engine shell-command catalog and stricter
+stored-filter authorization/authentication deadlines. Host hidden startup,
+geometry/chrome, Save routing, workspace/design modules and host controls remain.
+No equivalent upstream ACR redesign replaces the fork's new modules. Rust syntax
+formatting and git diff --check passed; native compilation is in progress.
+
+The immediate request is an isolated visual preview, not hosted promotion.
+Building and launching a development executable from the existing target/debug
+cache (separate from release executable discovery). The base
+comparison uses the already-built pre-redesign 8ddc0ffd candidate, rather than
+claiming it is the exact parent c00bd4aa^ or current upstream. Both use the same
+synthetic image and separate temporary comparison profiles. No personal image,
+normal preferences or known-good hosted executable is modified. Further source
+and native handoff gates remain required before promotion. The owner requested
+no further changes after this build; only launch the redesigned preview. The
+base comparison window was closed at the owner's clarification; its captured
+image remains available for comparison without another visible base window.
+
+## Source sync and ACR 18.4 reference audit — 2026-10-15
+
+Both working trees were clean before this session. Fetches succeeded for Image
+Triage `origin`, PhotoCraft upstream `origin` (storytold), and PhotoCraft `fork`
+(tylermcm). No remote changes were pushed.
+
+- Image Triage started on `remove-builtin-editor` at `9601f2a`; fast-forwarded
+  that branch to fetched `a4caa3a`, then checked out the newer remote integration
+  branch as local `codex/image-triage-integration` at
+  `127c7ca187126555916fc845672e4995a31c5357`. The previous branches/commits are
+  retained. The integration tip includes `origin/remove-builtin-editor`.
+- PhotoCraft started at `0a3bbea1` on `codex/image-triage-integration` (last
+  merged upstream `652b9726`). Fast-forwarded to the user's fetched integration
+  `242daf70ae47baec19584420831c3fdbef3049c2`, including the fork's hosted RAW
+  workspace, recipe/render, lifecycle and audit work. Its upstream base was
+  `4446ec6d65049b92a1b73f02e79d97ef4153135a`.
+- Fetched upstream advanced that base by 18 commits to
+  `1b666f4790f9f2e9907218a8e786a3af5305f200`; merged with a merge commit,
+  `fa8a1f218b00879d14867f17cec2397b18fbf5d0`. The merge had no textual conflicts.
+  All 47 fork/integration-only commits relative to this upstream remain in the
+  ancestry; no wholesale ours/theirs resolution or history rewrite was used.
+- Reviewed incoming automatic merges and the retained integration differences
+  in desktop startup/services, control I/O/authorization, jobs, menus, themes and
+  native window handling. Incoming services changes add PDF to Save As and its
+  test; startup, host Save routing, authorization, jobs, menus and theme/window
+  integration have no new upstream changes in this 18-commit merge. Retained
+  hosted hidden geometry/no native caption, scoped bound Save, RAW workspace
+  handling and snapshot bookkeeping. Incoming shared GPU/IO/RAW changes still
+  require native/corpus validation; textual review is not compatibility proof.
+
+Validation: the focused Image Triage integration run passed **273 tests** in
+21.63 seconds using Python 3.13 and offscreen Qt. It covered handoff mocks,
+Camera Raw recipe/first-open, first editor key, prestart, full render, lean
+autosave, filmstrip no-flash, control robustness/idle, manifests and bundled
+editor detection. `git diff --check` passed in both repositories. These are
+unit/regression results, not live handoff results.
+
+An isolated `cargo check -p photocraft-ui-egui -p photocraft -j 2` was started
+under `target/acr18` (dev debug=0, incremental=false). Dependency downloads and
+compilation began; it was deliberately stopped while establishing the missing
+18.4 visual reference, before producing a check result. Native tests/clippy,
+wasm/layers/corpus, candidate build and live handoff have **not** been completed
+in this session. No candidate was promoted, and the hosted executables remain
+unchanged. The companion's referenced `../craftrules/README.md` is absent on this
+machine; the available companion AGENTS.md and public docs were read.
+
+The owner selected **ACR 18.4, interface and functional behavior**. Adobe's current
+overview page links an image explicitly labeled Camera Raw 13.3; the owner
+identified it and it is rejected as a redesign reference. No UI implementation
+changes were made from that image. Versioned Adobe 18.4 release notes were
+consulted; living documentation mixes later-version features. The source audit,
+reference gate, outstanding functional gaps and acceptance order are recorded in
+[`acr18_parity.md`](acr18_parity.md). A verified 18.4 visual baseline is still
+needed before changing layout or claiming visual parity.
+
+## Supplied Camera Raw screen references — 2026-10-15
+
+The owner supplied 19 local image files covering the whole workspace, edit
+sections, Crop/Remove/Masking/Red Eye, Snapshots/Presets/Info, grid/sampler,
+settings menu, Save Options and Preferences General. Inventory:
+[`acr_reference_inventory.md`](acr_reference_inventory.md). These are visual
+reference data; no source image or personal metadata was copied into the repo.
+
+The full-window title says Camera Raw 18.6; Preferences identifies 18.6.0.2698.
+This differs from the earlier selected 18.4 target, and a target-version
+clarification is pending. The dark JPEG has no readable interface. The remaining
+captures provide enough reference coverage to begin the main workspace; hidden
+states can be verified as their features are implemented. No redesign code has
+been applied while the exact target version is being clarified.
+
+The isolated target/acr18 native source check was resumed at four Cargo jobs;
+its result will be recorded when available. This is compilation only and does
+not authorize promotion or substitute for the live handoff gates.
+
+## ACR 18.6 native work and live JSON — 2026-10-15
+
+The owner confirmed using the supplied ACR 18.6.0.2698 captures instead of 18.4,
+and requested live JSON design edits instead of recompiling for each visual
+change. No further access to a reference version is required to start. Source
+work remains on both repositories' codex/image-triage-integration branches.
+
+Companion work in progress adds a separate rail/navigation strip, full-width
+section headers with multiple/single-panel behavior, interactive grading wheels,
+per-color HSL and RGB point-curve channels, compact Effects/Detail controls,
+correct nonzero slider resets, Reset to Open/Default and RAW Done routing. These
+use the existing filter parameters and processing; unsupported ACR tools are
+not represented as enabled no-op controls. Full ACR parity is not complete.
+
+Live design files are companion design/camera-raw/layout.json (geometry,
+spacing, typography, panel order and preview selection) and tokens.json (the
+existing native debug live-theme loader). A new bounded/validated layout loader
+retains the last good layout on invalid writes. Drawing and ui.viewport share
+that layout, including the host's loading overlay geometry. External reload is
+native-debug-only and explicitly enabled by PHOTOCRAFT_CAMERA_RAW_LAYOUT_FILE;
+release/wasm and normal launches use embedded defaults. The JSON accepts view
+state, not executable actions or photo adjustment values. The preview preset
+only reapplies when its JSON value changes.
+
+The one-time native preview build is isolated in target/acr18, outside Image
+Triage discovery. scripts/preview_camera_raw.ps1 opens it with a separate profile
+and generated synthetic fixture; visual changes then reload without rebuilding.
+No installed/hosted executable is replaced. Native checks, visual inspection and
+a same-process JSON reload proof are being completed before delivery.
+
+The first affected integration run passed histogram/localization and 19 of 21
+scope tests. Two scope regressions exposed an inherited header height in body
+controls and a test's fixed 260px curve assumption. Body spacing was restored;
+the curve test now derives coordinates from the actual graph. Final rerun is
+pending; do not record those preliminary failures as a passing suite.
+
+## Live JSON proof and native filmstrip direction — 2026-10-15
+
+Built isolated native debug target/acr18/debug/photocraft.exe. Its live preview
+passed same-process geometry (270 to 330 panel width), panel-selection and theme
+reload checks, invalid JSON fallback, unchanged photo parameters/preview revision
+and unchanged executable SHA-256. Both source JSON files were restored afterward.
+The synthetic-fixture screenshots were visually inspected. The native preview
+remains separate from the hosted executable; no editor build was promoted.
+
+The owner favors a native PhotoCraft filmstrip. Source inspection found no
+filmstrip implementation in the fetched companion tree. Its RAW switching and
+prefetch infrastructure exists; the current strip is host Qt Filmstrip in
+image_triage/ui/preview_studio.py. Proposed ownership and migration acceptance
+are recorded in filmstrip_native_plan.md. Native presentation should retain the
+host's browse order, selection/metadata and stash/restore/Save pipeline. Do not
+remove the docked strip before replacement validation or display duplicate strips.
+
+## Slider fidelity correction and validation follow-up — 2026-10-15
+
+Owner identified the generic circular handles and excessive spacing, and
+reaffirmed closest-possible 1:1 parity as the acceptance standard. Added compact
+Camera Raw-only slider metrics, upward-facing handles and gray-to-light tracks;
+exposed density/handle controls in live layout JSON. Other editor sliders retain
+their existing rendering. Fixed decimal display for Camera Raw fields is separate
+from the general editor's trailing-zero formatting.
+
+The isolated native preview was rebuilt and the live reload proof repeated.
+Selected workspace 4, zoom 6, scopes 21 and RAW workspace unit filter 60 tests
+passed before the last visual correction. Native all-target clippy passed before
+that correction. Layering passed (30 crates); wasm passed all 24 checks with
+existing dead-code warnings. The first broad parallel UI run exited with Windows
+STATUS_ACCESS_VIOLATION. Serial audit of that binary completed without the native
+crash: 3030 passed, 13 ignored, two localization failures, two known new tests
+excluded. Translation coverage and test texture cleanup were corrected; final
+serial UI, selected integrations and final clippy are pending. No hosted promotion.
+
+## Overlay comparison and full UI checkpoint — 2026-10-15
+
+The owner requested regular source overlays as the visual acceptance workflow.
+Added companion scripts/compare_camera_raw.py: explicit matching crop anchors,
+uniform scaling only, 50% overlay, absolute difference and alignment metadata.
+Outputs and reference crops remain in the local visualization directory, outside
+Git. The first Light/Color overlay exposed header/chevron indentation, generic
+track-end insets, row pitch and section-bottom spacing. Added JSON controls for
+those metrics. The tuned Light track centers measured within one normalized
+pixel of the supplied 13289 reference; this is not a whole-interface parity claim.
+White-balance selector/Kelvin behavior and other known visual/functional gaps
+remain open.
+
+Full serial UI suite checkpoint: 3034 passed, 13 ignored, no failures. The 35
+focused Camera Raw integration checks passed. An intermediate geometry revision
+exposed two real curve-grab regressions: scrollbar appearance resized the graph
+when selected-point fields appeared. Made settings scrollbars float so overflow
+cannot change curve width; both existing capture regressions now pass, as does
+the complete focused run. Native all-target clippy passed again. Final preview
+capture and wasm recheck are being recorded below; hosted handoff/promotion remain
+pending and the known-good executable has not been replaced.
+
+## Final native visual proof — 2026-10-15
+
+Rebuilt target/acr18/debug/photocraft.exe after the floating-scrollbar fix.
+SHA-256 971bfc1cb3b34947fc2342a86ac70d47010ce7e27742356d190af671b24b870f.
+Repeated same-process layout, theme, panel selection and invalid-write recovery
+checks; photo parameters and preview revision stayed unchanged and both source
+JSON files were restored. Captured and visually inspected the final Light overlay
+against 13289.png. Reference crop (38,594,550,1092), preview crop
+(1134,211,1404,474), uniform normalized width 270. The reference and native Light
+section borders, row pitch and header indentation now closely align; eye/bypass
+controls and exact glyph/field/track details remain visible differences. Full
+18.6 visual/functional parity is still incomplete.
+
+Native all-target clippy passed on the final source; wasm UI check passed with
+pre-existing dead-code warnings. Final repeated focused run passed all 35 tests, including both curve-capture regressions.
+No hosted build was promoted, no remote was pushed, no personal reference image
+was bundled. Native filmstrip remains the preferred migration plan, not an
+implemented replacement.
+
+## Laptop validation resumed - 2026-10-14 (candidate not promoted)
+
+Started from host audit branch `ea41cc6`; local host changes are on
+`codex/image-triage-integration`. The fork's audit tip `c105a3f7` is included
+in local integration `6b841d56` (upstream `7bb10a77`); its four conflicts took
+upstream's Nikon decoder and Posterize/Threshold implementation/tests, while
+keeping hosted control modules alongside upstream's corner-radius module.
+That source passed rustfmt, desktop cargo check and layers. All user work and
+the untracked `codex_briefing/` folder were preserved; nothing was pushed.
+
+Fresh fork/upstream fetches succeeded. Upstream advanced another 15 commits,
+`7bb10a77` -> `fd28da56`, merged without conflicts as `8ddc0ffd`. Reviewed native
+startup/runtime icon and UI automatic merges: hosted hidden-start setup remains
+after standalone geometry decisions; native chrome is still disabled for hosted
+mode. The other incoming changes are upstream UI fixes, including modal titlebar
+dragging, layer-scroll state and proxy preview resolution. No host authority
+or Save-routing change was introduced. The earlier fork-only fixes are included.
+
+This laptop has no `target/audit-20261014` candidate from the other machine.
+Building the current merged source there with the normal release profile and
+four Cargo jobs. The wasm target was installed to verify the inconsistent prior
+wasm notes. A fresh Python 3.11 test venv is under LocalAppData/Temp; full host
+suite started with offscreen Qt and registered Windows fonts. Live checks will
+run on a private non-input Win32 desktop (native Qt HWND preflight passed), with
+private editor profiles and desktop capture disabled. They use copies of the
+available 12 MP NEF plus synthetic 1/24 MP photos. No owner's active desktop is
+captured. Only check-owned processes are cleaned up.
+
+Baseline hashes on this machine (different from the Checkout desktop):
+- `target/release/photocraft.exe`: `3EB062191F360AACF33BA4D27430B942FE0B595F3FEB8DFA6477388E3842B1D4`.
+- Normal PhotoCraft `preferences.json`: `0C6081BB0790A5E0F56210C7087365FD277D421FD0D3EE443755BB7D549280E4`.
+
+Host coverage: all 2,016 collected nodes accounted for across the interrupted
+monolithic run, the isolated grid module and five fresh-process batches: 2,002
+passed, 11 xfailed, 3 failed; four additional collection skips. The failures are
+unchanged tests assuming Python 3.13 AI lock files (two) or os.listdrives (one,
+not present in Python 3.11). Audit regression tests passed. The monolithic run
+stalled in thumbnails._drain_results at thumbnail_failed.emit after about 51%;
+two py-spy stack dumps agree. Stopped only its PID 17276. That grid module passed
+all 11 tests alone. This is combined coverage, not a successful single full run.
+
+The old executable baseline handoff failed safely at full-resolution export
+because that binary lacks fullRender. Its owned process cleaned up; the owner
+editor (PID 18904, parent 10840) was left alone. The private-desktop runner now
+uses an outer cleanup job too. All pinned test corpora downloaded and verified.
+
+Candidate built from 8ddc0ffd with the normal release profile in 35 min 41 s:
+SHA-256 A714F5611D36E9F792B72FAC940BA123A4E79C7E97C72998C48E7BD1199B1C1B,
+PhotoCraft 0.9.0. Hosted native gates passed: handoff at 1/24 MP (zero editor hides,
+menu Save, grid propagation, reopen, five themes, hidden start, full-screen sizing
+and cleanup), Camera Raw first, recipe persistence and failed-write retention,
+full-size live/disk recipe equality, edit-before-first-poll, saved-project
+continuation, native Save after continuation, lean save/close/reopen, hidden
+16-bit ICC render, cancellation during rendering and shutdown during a real launch.
+The NEF fixture is 12 MP (two copies for navigation), not the other machine's
+45 MP Z 7II samples. Native screenshots were inspected; no desktop capture.
+
+Fixed three check scripts rather than changing the editor for stale assertions:
+the handoff used blocking Future.result on Qt's thread (24 MP native Save
+replied only when shutdown resumed message pumping); it now pumps while waiting
+with the same deadlines. The recipe check now accepts a synchronous cached
+continuation only when its returned path names the expected project, as well as
+an asynchronous continuation; its native Save also pumps events. The full-render
+check accepts either of LibRaw's exact visible/cropped or sensor extents, reporting
+both: this NEF exports 4320x2868, while LibRaw's visible crop is 4312x2868.
+Depth, ICC, cancellation, output cleanup and original checks remain required.
+All affected native checks were rerun successfully on fresh output folders.
+
+Separate limitation: the initial standalone --raw-workspace smoke, given an
+unbound NEF, timed out waiting for Camera Raw to close after Open. This path is
+not the host's bound RAW open; it remains unresolved. The intended raster
+workspace smoke passes; the hosted NEF recipe/Open/continuation path passes.
+Normal PhotoCraft preferences still match this session's baseline.
+
+Final source clippy (selected host/raw/IO/engine/UI crates, all targets) and
+layers passed. All 24 wasm checks and the RAW Rust suites also passed. The
+serial source runner is compiling/testing IO, then engine, UI (print tests
+separately and serially), desktop, GPU warmup, panic hunt, corpus and quick
+performance. GPU crate tests and GPU/compose Clippy remain to be run after that
+runner; they were added after its argument list was selected. No candidate
+executable has been promoted. Logs and
+the isolated desktop runners are in
+`C:/Users/owner/.codex/visualizations/2026/10/15/01a13d25-9afa-7c50-8c2e-28d668c0d556/audit_validation`.
+
+## 2026-10-14 continuation — validation in progress
+
+Resumed Claude's scratch branch at `35e84fb3fc042115e11bd0474440f7db870e6132`
+and the host at `2ab676b580bdaa33665149acf5ea343049019e56`. Preserved the working
+tree and its uncommitted exports work; a patch and original copies are under
+`C:/Users/Checkout/AppData/Local/Temp/image_triage_resume_20261014`.
+
+Fetched the host origin and companion's configured origin successfully. The
+companion origin remains tylermcm's fork; `git fetch fork` failed because that
+remote is absent. Direct upstream/fork fetches succeeded into
+`session-upstream/main` and `session-fork/integration`. Fork tip remains
+`e0569ef00dd1c77d07d4f7ec02ef61588e497361`; no additional fork-only work.
+Upstream advanced from Claude's merged `c699e3cd` to
+`620bccef42b389d0735e753eb8a2f688a7092045` (64 commits). Merge `45933f08` stays
+on the scratch branch until candidate validation passes.
+
+Conflicts: `camera_raw_ui.rs` and `gpu_canvas.rs`. Kept upstream Camera Raw
+undo/redo/history handling and Intel-only DX12 mip-target behavior; retained
+hosted footer controls, exposed draft/commit access, and compositor warmup,
+which upstream does not provide. Reviewed automatic merges in control, jobs,
+menus, native startup/services/window frame, theme, and GPU code. The hosted
+open worker now uses upstream's layer-bounds warmup too. No authority expansion.
+
+Finished on-demand export handling on host branch `codex/image-triage-integration`:
+live changed RAW draft, then immutable pending full-editor snapshot / saved
+project, then saved recipe. An unchanged reopened RAW dialog does not override
+full-editor work. Missing, corrupt, invalid-UTF8 or quarantined recipes fail
+exports instead of becoming originals. Requests check the dialog's source and
+the returned output path, dimensions, depth and profile; a display JPEG never
+serves as a full-resolution render. Temporary editors and outputs are cleaned
+up, including shutdown while launch is in flight. Export/resize/convert and
+PocketDrop report skipped photos and depth conversions. PNG/TIFF keep supported
+precision and ICC; JPEG conversion uses sRGB for deep renders. Existing source
+EXIF is retained where available; deep TIFF output reports omitted EXIF.
+
+Fork `036321dd17361d1f5a6df1da1e97535ce63f8b5b` rejects missing/malformed pending
+snapshot keys, reports the open RAW source, records project depth separately
+from encoded output depth, and enables SHA-256 on wasm. Render algorithm is 2
+on both sides; older manifest renders are invalidated. A quantized PNG cannot
+stand in for a float project. Unique paths fix parallel recipe-test collisions.
+
+The owner explicitly approved fixing the newly found upstream regression in
+16-bit destructive Posterize/Threshold. Commit `0d674c0d` passes the sample depth
+for those adjustments, aligning saved pixels with upstream's preview rules;
+other integer tone-curve behavior is retained. The former failing preview test
+now passes, with an additional bin-boundary/luminosity regression.
+
+Completed so far: frozen full host suite 2,004 passed, 5 skipped, 11 xfailed and
+238 subtests (six warnings, including existing fake-NAS telemetry). An earlier
+repeat exited without a summary near 49%; the verbose diagnostic rerun passed
+the complete suite in 454 s. Export/schema/failure guards also passed separately.
+Rust RAW 172 and IO 582 tests; engine 1,817 before the depth correction, plus its
+new regression and the complete engine suite in the release corpus gate.
+UI 2,819 passed (12 ignored), print tests 3 passed separately, compositor warmup
+integration passed. Final engine/UI clippy, layers, 24 wasm checks and ignored
+adversarial panic hunt passed. The wasm target was installed with explicit user
+approval. IO corpus passed 610 tests across 65 binaries; the complete
+`cargo xtask test-corpus` gate passed 3,582 tests across 157 binaries, including
+HEIF, PSD/Photoshop oracles and mutation checks. `-p gpu` is unsupported by the
+runner; its default selection covers compositor/GPU changes. Corpus release
+tests used LTO off/codegen 16 to avoid repeated thin-LTO links; production build
+retains normal release settings. Candidate build/performance/native handoff
+validation remains pending. The production candidate built successfully in
+13 m 37 s at `target/audit-20261014/release/photocraft.exe` from `036321dd`,
+SHA-256 `92FE980C17C40F479F9E7882D521A933927AF68326545C3F61608585B1002A85`.
+`cargo xtask perf --quick` passed on Intel UHD 770. Camera Raw's 6000×4000 proxy
+update median was 12.09 ms (p95 12.37 ms); type-size drag total median 5.41 ms.
+Complex 174-layer layout updates remain slow (about 346–436 ms for opacity and
+some move commits); quick mode tracks these without enforcing full-mode budgets.
+Reports are in `target/audit-20261014/perf`, not published as a new baseline.
+
+The first candidate passed native handoff at 1 MP and 24 MP, all five themes,
+Save/grid propagation/reopen/cleanup, and Camera Raw-first. Its live recipe
+export failed safely because the dialog reported a null source: the host's
+byte-backed RAW handoff dropped `PendingRaw.path`. Commit `c105a3f7` preserves
+that existing read-root path alongside the retained bytes; developing still
+uses those bytes. Its A→B dialog-source regression passed. UI/clippy/wasm checks
+and an isolated release rebuild are being repeated before fresh native checks.
+The first candidate is unpromoted; no original-photo fallback was written.
+
+The known-good `target/release/photocraft.exe` remains unchanged:
+SHA-256 `548BF3688B1E332FEA6E67E8E635099BC4001F63E12F578AFE38FF02754FCB2B`.
+Build the candidate in isolated `target/audit-20261014`, outside normal discovery.
+Keep its release executable unpromoted until the native checks pass. Checks use
+private profiles and `IMAGE_TRIAGE_CHECK_DESKTOP_OF=claude.exe`; the marker's
+desktop currently exists and is inactive. Do not capture the owner's active
+desktop. Initial ordinary PhotoCraft preferences SHA-256:
+`E4F299B3EFEB97FA60DD8083682F68B1CB8F21097E0A3F07B29FD27F3AA09BF5`.
+No pushes or upstream PRs.
+
+## Audit handoff — 2026-10-14 (Checkout desktop)
+
+Audited Image Triage `1f6ebcc..ac4693d` and PhotoCraft `c6092f86..e0569ef0` at the
+owner's request. Both trees were initially clean. Image Triage's origin and
+PhotoCraft's configured origin (tylermcm's fork) fetched successfully. Fetching
+`fork` failed because that remote is not configured; direct URL fetches then
+succeeded into `audit-upstream/main` and `audit-fork/integration`.
+
+Integrated upstream base: `99e1138877e6aa7e856c6883b415e708d042fc59`.
+Fetched upstream tip: `7250e6e29a9248ac17bc0cb20296e03e7cbed86a` (45 new commits).
+Fetched fork integration tip: `e0569ef00dd1c77d07d4f7ec02ef61588e497361`, equal
+to the integration branch; no new fork-only work. This was an audit of fixed
+revisions: no upstream merge, conflicts/resolutions, product edits, commits,
+pushes, upstream PR or executable promotion. Integration/validation of the
+new upstream tip remains pending. The existing desktop release executable
+from `9e94b0c0` was preserved.
+
+**Findings:** [full report and reproductions](audit_20261014/report.md).
+Nine actionable defects: early post-Open edits swallowed by rebaseline;
+recipe-only edits omitted from thumbnails/exports; full exports using an
+enlarged display JPEG; recipe-write errors discarding adjustments; native Save
+binding lost on RAW replacement; saved recipe previews using different math;
+native Save leaving the display JPEG stale; startup not tracked during
+shutdown; live theme checks writing the normal PhotoCraft preferences.
+The host and Rust reproductions confirm the first eight; the ninth follows
+the live check and its actual preference-write path. No repairs were made.
+
+**Validation:** full host suite 1940 passed, 5 skipped, 11 xfailed, 238 subtests;
+no segmentation fault or intermittent move/undo failure in this one run.
+Six warnings included a telemetry-thread exception against a fake NAS path.
+Current fork source: UI library 2756 passed / 12 ignored; RAW library and
+integration tests 172 passed; four Rust reproduction tests passed (asserting
+the faulty behavior); layers passed (29 crates). Cargo used `-j 4`, one command
+at a time. Temporary Rust integration test removed after verifying its hash
+against the retained reproduction source.
+
+**Live, known-good desktop binary:** handoff at 1 MP passed hidden startup,
+embedding/fullscreen geometry, persistent navigation, five themes, native Save,
+grid notifications, tab reopen and process/token cleanup; native screenshot
+inspected. Desktop captures were not verified on the background virtual desktop.
+Recipe check passed on Z 7II 0027/0030. Lean-save check on 45 MP Z 7II 0027 passed:
+autosave 5.1 s, close 3 ms, full render 4.5 s after close, same-process reopen
+679 ms, busy close 118 ms, quit 1129 ms. Single-run timings under audit load.
+`IMAGE_TRIAGE_CHECK_DESKTOP_OF=claude.exe` was set; only check-owned processes
+were cleaned up. The existing theme check uses the normal editor profile
+unless `PHOTOCRAFT_CONFIG_DIR` is set; its ordinary preferences reported Classic
+after the check (prior value not recorded). Later lean checking used a private
+PhotoCraft profile. Never used process-name kills.
+
+**Limits:** no new editor build was promoted; live checks exercised `9e94b0c0`,
+not the final `e0569ef0` layout commit. Root causes of older native crashes,
+exit-127, undo flake and laptop slowdown remain unproved. No development-restart
+end-to-end run, clean-PC MSI upgrade/install, complete desktop/UI integration
+suites, wasm, clippy, corpus or performance gates. Audit logs/artifacts:
+`C:\Users\Checkout\AppData\Local\Temp\image_triage_audit_20261014`.
+
 ## Source sync - 2026-10-14 (upstream tip; executable unchanged)
 
 Image Triage `main` at `ac4693d2071d0089b2342b3dfc05aad5d6b95bd8` already matched freshly fetched
@@ -1233,3 +1737,75 @@ top-bar rebuild and theme suites, using registered Windows fonts for offscreen
 Qt. Inspected the rendered inspector at 220px width with wrapped Nikon capture
 metadata and the AI invitation; content stays within the pane. `git diff --check`
 passed. Existing preview/bridge/autosave edits were left untouched.
+
+## 2026-10-14: audit fixes (F1-F9), state at hand-over from Claude to Codex
+
+Plan: `C:/Users/Checkout/.claude/plans/modular-growing-sutherland.md` (approved, with the owner's amendments). Audit:
+`docs/audit_20261014/` (report and repro scripts; still untracked, Codex's).
+
+### Committed, not pushed
+
+Image Triage `main` (ahead of origin):
+- `6a85a74` F1: an edit made before the first poll after Camera Raw is saved (document_state, save_required keyed by sidecar + document generation + revision).
+- `817a7e4` F8: shutdown waits for / cancels the background editor start.
+- `bb2a8ae` F9: live checks give the editor a private profile (`PHOTOCRAFT_CONFIG_DIR` temp dir). Owner's `%APPDATA%/Photocraft/preferences.json` sha256 before any live run: `e4f299b3efeb97fa60dd8083682f68b1cb8f21097e0a3f07b29fd27f3aa09bf5` (check it is unchanged after the live checks).
+- `2ab676b` F7 host: readers follow `<photo>.photocraft.renders.json` (tests/test_render_manifest.py).
+
+PhotoCraft fork, branch `scratch/upstream-merge-2026-10-14` (integration branch `codex/image-triage-integration` is still at `e0569ef0`; fast-forward it only after the release build passes the live checks):
+- `13b0193a` merge of upstream `c699e3cd` (Release 0.9.0), no conflicts.
+- `d35f4c96` F4: recipe written before the dialog changes; failure leaves dialog/settings/original untouched.
+- `92281079` F5: host binding follows the photo through Open (redevelop, continuation); fixed the in-memory continuation leaving `expect_continue` set (next photo got no Camera Raw dialog).
+- `7caaba23` F7: generation-named pictures + render manifest (SHA-256, not BLAKE3: host has no blake3), `renderManifest: 1`; bind carries display + manifest.
+- `e41f07f7` F6: `raw_recipe::apply` shared by the dialog and the recipe render.
+- `043c6af2` test isolation (process-wide manifest/render queues keyed by path).
+- `35e84fb3` `app.render` (`fullRender: 1`): project (snapshot or file) or recipe developed exactly as Open; PNG 8/16, float TIFF; recipes carry `"identity"`.
+
+Fork gates on that branch: fmt, clippy -D warnings, xtask layers OK; raw, io, engine suites pass; ui-egui lib 2783 passed. Upstream's new print tests (`file_ui::tests::print*`, from upstream commit a9ac922f) crash the test process (0xC0000005) when run in parallel, 15/15; each passes alone. Run the suite with `--skip file_ui::tests::print`, then those with `--test-threads 1`. Upstream bug, not ours. `cargo xtask wasm` NOT run: needs `rustup target add wasm32-unknown-unknown` (a download; ask the owner).
+
+### Uncommitted, in progress: F2/F3 host side (Image Triage working tree)
+
+- `image_triage/full_render.py` (new): `request_full_render(path)` -> NO_EDITS / rendered / failed. Precedence: live Camera Raw dialog on the photo (read via `ui.cameraRaw {}`), unsaved full-editor changes (saved first via `_save_open_photo_for_render`), saved project (manifest-verified PNG, else `app.render`, snapshot while a save is pending), recipe (`recipe_state`). Own render lane, one at a time, cancellable, hidden temp editor when no running editor covers the folder; `shutdown()`.
+- `image_triage/edited_export.py` (new): `EditedRenderFailed`, `BatchOutcome` (tuple of written paths + failed + notes), `edited_image_for_export` (decodes at rendered size, render's ICC), `save_preserving_depth` (16-bit PNG/TIFF via QImageWriter; PNG gets eXIf; 16/32-bit TIFF drops EXIF and says so).
+- `photocraft_bridge.py`: `classify_recipe`/`recipe_state` (read-only; invalid = edit data, not "no edits"; only numeric limit is exposure +-10, the editor has no other ranges), `render_lane()`, `full_render_supported`.
+- `edit_storage.py`: `session_has_edits` now includes edited/invalid recipes; old meaning moved to `builtin_session_has_edits` (used by the legacy built-in-session hand-off branch in preview_controller).
+- `edit_render_headless.py`: full size no longer uses PhotoCraft pictures (no 2560 px enlargement); thumbnails unchanged.
+- `image_resize.py`, `image_convert.py`, `image_ops.py`, `workflows/export.py`: `apply_edits_if_present` raises `EditedRenderFailed`; loops skip and list; `_save_resized_image` keeps depth or returns a note. `export_jobs_controller.py`: `_report_left_out` shows failures/notes.
+- `handoff_controller.py`: PocketDrop renders with `_wait_with_events`, leaves out and lists photos whose edits fail (no original sent).
+- `preview_controller.py`: registers `FullRenderService`, shuts it down first in `shutdown_photocraft`.
+
+### What is left
+
+1. Finish the host test run for the files above (it was running at hand-over) and fix tests that assumed the old fallbacks (PocketDrop/export "falls back to original" tests should now expect left-out + report). Then add tests: full_render precedence (dialog > dirty editor > project > recipe; cached valid render then dialog changed then export uses dialog; project + adjusted dialog renders dialog), pending save uses snapshot, invalid recipe -> failed, identity -> no edits, render failure -> batch leaves photo out, temp editor shut down, shutdown cancels a running render, 16-bit ProPhoto render -> 16-bit TIFF/PNG with ICC and an 8-bit JPEG noted, never enlarged. Commit F2/F3 host as one or two commits (no AI attribution).
+2. Full Image Triage suite (repo `tests` registered first, offscreen; one timing test `test_the_ui_thread_wait_keeps_its_message_queue_running` can flake under heavy CPU, passes alone), ratchet/stylesheet golden if touched.
+3. Rebuild the release editor from the fork branch (keep the current exe as known-good), then the handoff/camera-raw/lean-save/stress live checks with `IMAGE_TRIAGE_CHECK_DESKTOP_OF=claude.exe`, plus the plan's new E2E checks (F1 edit-before-poll, F8 restart during start/render, F4 read-only edits folder, F5 Ctrl+S after Open/continuation, F7 native Save after autosave, F2/F3 recipe-only raw export at source size). Confirm preferences.json hash unchanged.
+4. Invert `docs/audit_20261014/reproduce_*` defect assertions into permanent tests where not already covered.
+5. Then fast-forward `codex/image-triage-integration`, update this file's validation record. Push only when the owner asks; never push to storytold.
+
+### Update after Codex's session (2026-10-14 evening)
+
+Codex committed the F2/F3 host work (`ecba799`, tests in `tests/test_full_render.py`) and live-check scripts (`70829a0`,
+`af55d93`, `007266b`, new `scripts/check_full_render.py`) on Image Triage branch `codex/image-triage-integration`
+(pushed as `audit-fixes-2026-10-14`; `main` not moved). In the fork it merged upstream `620bccef` (`45933f08`) and added
+`0d674c0d` (16-bit Posterize/Threshold, an upstream-code change: check whether it belongs upstream), `036321dd`, `c105a3f7`
+on `scratch/upstream-merge-2026-10-14`. It ran out of tokens during live checks with a new build at
+`photocraft/target/audit-20261014/release/photocraft.exe` (16:10); which checks passed is not recorded.
+
+Verified on the final commits (Claude): Image Triage full suite 2004 passed, 5 skipped, 11 xfailed, 0 failed.
+Fork: fmt OK, clippy -D warnings (workspace) OK, ui-egui lib 2819 passed (print tests skipped) + print tests 3 passed
+serially. Owner's PhotoCraft preferences.json unchanged (same sha256 as above).
+
+Still to do: live checks on the new build (keep `target/release/photocraft.exe` as known-good until they pass), promote the
+build, merge to `main`, fast-forward `codex/image-triage-integration` in the fork. wasm gate still not run.
+
+Posterize/Threshold (`0d674c0d`): a real bug (16-bit commands split on an 8-bit grid, unlike their preview), but upstream
+fixed the same thing in storytold/photocraft#5711 (`1c6f1387`), after the `620bccef` we merged. No upstream PR. At the next
+upstream merge, expect a conflict in `crates/engine/src/pixels.rs`: take upstream's side and drop our commit and its test
+(`posterize_and_threshold_keep_the_16_bit_sample_grid_in_committed_pixels`).
+
+## Camera Raw bars: uncompiled design batch (2026-10-16)
+
+Owner requested seven native chrome corrections against the supplied ACR 18.6 reference: Curve selectors, White balance combo/dropper, Profile/browser glyph, Edit controls, metadata row, filled corner histogram triangles and top actions. Work is in companion camera_raw_ui.rs, new child module camera_raw_bars_ui.rs, camera_raw_scope_ui.rs, camera_raw_workspace_ui.rs and camera_raw_design.rs. New visual metrics are documented in design/camera-raw/README.md but not added to active layout.json because the running executable rejects unknown properties. The previous section border correction was rebuilt at owner request; the new bar batch has NOT been compiled. Rustfmt and git diff --check pass; added tests await execution. Additional camera profiles, Auto, HDR and tutorials remain disabled, rather than pretending processing parity. B&W reuses saturation, and a neutral picker uses the existing relative gain model. Preserve target/release/photocraft.exe: no hosted promotion or new handoff regression claim. No new upstream integration performed in this continuation; another agent is working independently elsewhere.
+
+### Native bar rebuild authorized and launched (2026-10-16)
+
+Owner requested the quick rebuild. Cached dev build passed in 3m08s and scripts/preview_camera_raw.ps1 launched the rebuilt native preview (PID 49864). Executable SHA256 A302F1C84B5931449875F02E195BCA09CB6B7971CF02463CC55EC2D274C27CF0. The previous preview remains running, with its executable preserved as target/debug/photocraft-before-bars-64192.exe. No hosted promotion. Unit tests and screenshot parity validation remain pending; compilation success is not a claim of exact visual parity.

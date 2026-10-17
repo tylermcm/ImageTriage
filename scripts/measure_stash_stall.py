@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from image_triage import photocraft_bridge as bridge  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _check_settings import use_throwaway_editor_profile  # noqa: E402
 from _desktop import wait_for_home_desktop  # noqa: E402
 
 
@@ -67,6 +68,7 @@ def main() -> int:
     fd, token_path = tempfile.mkstemp(prefix="photocraft_token_", suffix=".txt")
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(token)
+    use_throwaway_editor_profile()  # the editor saves preferences: never into the owner's PhotoCraft profile
     env = dict(os.environ)
     env.setdefault("WGPU_BACKEND", "dx12")
     if args.cores:

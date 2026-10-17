@@ -244,6 +244,7 @@ class ExportJobsController(QObject):
         self._active_workflow_export_task = None
         self._workflow_context = None
         self.close_workflow_progress_dialog()
+        self._report_left_out("Export", written_paths)
 
         if context is None:
             self._window.statusBar().showMessage(f"Exported {len(written)} image(s)")
@@ -307,6 +308,7 @@ class ExportJobsController(QObject):
         self._active_resize_task = None
         self._resize_context = None
         self.close_resize_progress_dialog()
+        self._report_left_out("Resize", written_paths)
 
         if context is not None and context.refresh_folder:
             self._window.statusBar().showMessage(f"Resized {len(written)} image(s), refreshing folder...")
@@ -314,6 +316,12 @@ class ExportJobsController(QObject):
             return
 
         self._window.statusBar().showMessage(f"Resized {len(written)} image(s)")
+
+    def _report_left_out(self, title: str, outcome: object) -> None:
+        """Photos a batch left out (their edits could not be rendered) and conversions it made, told to the person who asked."""
+        report = outcome.report() if hasattr(outcome, "report") else ""
+        if report:
+            QMessageBox.warning(self._window, f"{title}: not everything as asked", report)
 
     def handle_resize_failed(self, message: str) -> None:
         self._active_resize_task = None
@@ -347,6 +355,7 @@ class ExportJobsController(QObject):
         self._active_convert_task = None
         self._convert_context = None
         self.close_convert_progress_dialog()
+        self._report_left_out("Convert", written_paths)
 
         if context is not None and context.refresh_folder:
             self._window.statusBar().showMessage(f"Converted {len(written)} image(s), refreshing folder...")

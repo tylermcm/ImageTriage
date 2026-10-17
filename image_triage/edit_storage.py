@@ -76,6 +76,23 @@ def editor_session_path(image_path: str | Path) -> Path:
 
 
 def session_has_edits(image_path: str | Path) -> bool:
+    """Whether ``image_path`` has edits: a PhotoCraft project, a Camera Raw recipe that changes the photo, or a built-in editor
+    session with real edits (``builtin_session_has_edits``).
+
+    A recipe that is there but cannot be read counts too: it is edit data that could not be read, never "no edits" (an export of
+    the photo then fails and says so, rather than exporting the original).
+    """
+
+    from .photocraft_bridge import RECIPE_EDITED, RECIPE_INVALID, recipe_state, sidecar_pcraft_path
+
+    if sidecar_pcraft_path(str(image_path)).is_file():
+        return True
+    if recipe_state(str(image_path))[0] in (RECIPE_EDITED, RECIPE_INVALID):
+        return True
+    return builtin_session_has_edits(image_path)
+
+
+def builtin_session_has_edits(image_path: str | Path) -> bool:
     """Whether ``image_path`` has a built-in editor session with real edits.
 
     A session that was merely opened (created by ``new_session``) but never
@@ -84,10 +101,6 @@ def session_has_edits(image_path: str | Path) -> bool:
     scan, so this is a broad try/except returning False rather than raising.
     """
 
-    from .photocraft_bridge import sidecar_pcraft_path
-
-    if sidecar_pcraft_path(str(image_path)).is_file():
-        return True
     session_path = resolve_session_for_read(image_path)
     if not session_path.exists():
         return False

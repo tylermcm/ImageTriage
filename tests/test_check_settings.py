@@ -3,6 +3,7 @@ uses. They run against a throwaway settings key instead."""
 from __future__ import annotations
 
 import ast
+import os
 import sys
 from pathlib import Path
 
@@ -80,3 +81,36 @@ def test_each_check_s_stand_in_window_has_what_the_controller_asks_of_a_window(n
     assert assigned, f"{name} builds no stand-in window"
     for node in assigned:
         assert "thumbnail_manager" in {keyword.arg for keyword in node.value.keywords}, name
+
+
+def test_the_editor_a_check_launches_gets_a_private_profile(real_key, monkeypatch, tmp_path):
+    """The handoff check switches the editor's theme, and the editor saves it in its preferences: never in the owner's profile."""
+    monkeypatch.delenv("PHOTOCRAFT_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(check_settings, "_editor_profile", None)
+    check_settings.use_throwaway_settings()
+    profile = os.environ.get("PHOTOCRAFT_CONFIG_DIR")
+    assert profile and Path(profile).is_dir() and "photocraft_check_profile_" in Path(profile).name
+    assert Path(profile).resolve() != Path(os.environ.get("APPDATA", str(tmp_path)), "Photocraft").resolve()
+    # And the bridge hands it to the editor it launches.
+    import image_triage.photocraft_bridge as bridge
+    import subprocess
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_popen(args, **kwargs):
+        seen.update(kwargs.get("env") or {})
+        raise Stop
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bridge.subprocess, "Popen", fake_popen)
+    with pytest.raises(Stop):
+        bridge._launch_photocraft_binary(None, read_root=str(tmp_path), write_root=str(tmp_path), executable="photocraft.exe", idle=True)
+    assert seen.get("PHOTOCRAFT_CONFIG_DIR") == profile
+
+
+@pytest.mark.parametrize("name", ["measure_stash_stall.py", "check_raw_workspace.py"])
+def test_scripts_that_launch_the_editor_themselves_give_it_a_private_profile(name):
+    text = (REPO / "scripts" / name).read_text(encoding="utf-8")
+    assert "use_throwaway_editor_profile()" in text.split("env = dict(os.environ)")[0]

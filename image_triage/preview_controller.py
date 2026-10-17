@@ -13,7 +13,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 from pathlib import Path
 
-from . import edit_storage, photocraft_bridge, photocraft_preview
+from . import edit_storage, full_render, photocraft_bridge, photocraft_preview
 from .brackets import BracketDetector
 from .formats import RAW_SUFFIXES
 from .models import ImageRecord, SessionAnnotation
@@ -80,6 +80,18 @@ class PreviewController(QObject):
         self._photocraft_park_id: int | None = None
         self._photocraft_generation = 0
         self._photocraft_future = None
+        # The background start of the editor (run_deferred_editor_start), kept so shutting down can wait for it or cancel it,
+        # and set once shutdown has begun: from then on no editor that finishes starting is taken into use.
+        self._photocraft_prestart = None
+        # Full-size renders of photos' edits for exports and hand-offs (full_render), through the editor this controller runs.
+        self._full_render = full_render.FullRenderService(
+            lambda: self._photocraft,
+            save_open_photo=self._save_open_photo_for_render,
+            launch=self._launch_editor_for_render,
+            source_key=normalized_path_key,
+        )
+        full_render.register(self._full_render)
+        self._photocraft_closing = False
         # Previews use their own worker and PhotoCraft connection so they never queue
         # behind a RAW load.
         self._photocraft_preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="photocraft-preview")
@@ -1116,7 +1128,7 @@ class PreviewController(QObject):
         # Keep the appearance of existing built-in sessions on first handoff.
         # PhotoCraft starts from their full-resolution render; the JSON bundle
         # remains available and the original is never changed.
-        if edit_storage.session_has_edits(path):
+        if edit_storage.builtin_session_has_edits(path):
             from .edit_render_headless import render_edited_image
 
             rendered = render_edited_image(path)
@@ -1147,6 +1159,8 @@ class PreviewController(QObject):
         spec: dict = {
             "recipePath": photocraft_bridge.recipe_path(path).name,
             "displayPath": photocraft_bridge.display_render_path(path).name,
+            # Dropped by ``app_open`` for an editor that keeps no render manifest.
+            "manifestPath": photocraft_bridge.render_manifest_path(path).name,
         }
         recipe = photocraft_bridge.load_recipe(path)
         if recipe is not None:
@@ -1222,14 +1236,18 @@ class PreviewController(QObject):
             # Hosted imports/restores use Session.add_document -> DocState.new,
             # whose initial revision and saved_revision are both one.
             proc.opened_revision = 1
+            proc.document_generation += 1
         elif not self._switch_photocraft_document(proc, open_path, sidecar_path, self._photocraft_open_generation, camera_raw=camera_raw):
             # The selection moved on while this RAW was opening: its result belongs to a photo
             # that is no longer shown, so it must not be bound or recorded.
             return
         relative_sidecar = proc.path_within_write_root(sidecar_path)
         relative_render = proc.path_within_write_root(str(photocraft_bridge.rendered_preview_path(path)))
+        bind = {"path": relative_sidecar, "preview": relative_render}
+        # The editor's own Save (Ctrl+S) then writes what the host's saves write: the screen-sized picture too, and the manifest.
+        bind.update(self._render_manifest_params(proc, path))
         try:
-            proc.control.call("app.bind", {"path": relative_sidecar, "preview": relative_render})
+            proc.control.call("app.bind", bind)
         except Exception:
             if launched:
                 proc.shutdown()
@@ -1320,6 +1338,7 @@ class PreviewController(QObject):
         proc.preview_source = None
         proc.current_sidecar = Path(sidecar_path)
         proc.opened_revision = 1
+        proc.document_generation += 1
         if sidecar_path in proc.stash_errors:
             proc.opened_revision = -1
         return True
@@ -1349,16 +1368,22 @@ class PreviewController(QObject):
                 if state.get("open"):
                     return
                 if proc.camera_raw_rebaseline:
-                    # The raw's dialog is over (we left the photo, or the user pressed Open or Cancel). What the
-                    # document is now is where editing starts from, once any develop in progress has landed.
+                    # The raw's dialog is over (we left the photo, or the user pressed Open or Cancel). Once any develop in
+                    # progress has landed, a document the editor holds as unchanged is where editing starts from. One it holds
+                    # as changed was edited after the develop, before this poll came round (or the editor does not say): that
+                    # edit must be saved, here and now, not taken for the baseline.
                     if any(job.get("state") == "running" and job.get("command") != "app.stash"
                            for job in control.call("jobs.list").get("jobs", [])):
                         return
-                    baseline = control.document_revision()
-                    if baseline is not None:
-                        proc.opened_revision = baseline
+                    state = control.document_state()
                     proc.camera_raw_rebaseline = False
-                    return
+                    if state is None:
+                        return
+                    baseline, dirty = state
+                    if dirty is False:
+                        proc.opened_revision = baseline
+                        return
+                    proc.save_required[str(proc.current_sidecar)] = (proc.document_generation, baseline)
         revision = control.document_revision()
         if revision is None:
             # Closing a tab in PhotoCraft leaves its process/window alive.
@@ -1371,7 +1396,8 @@ class PreviewController(QObject):
                 # Closing the full editor's document goes back to the photo in Camera Raw.
                 self._photocraft_document_closed.emit(closed_source)
             return
-        if revision == proc.opened_revision and (lean or not self._render_behind(proc)):
+        required = str(proc.current_sidecar) in proc.save_required
+        if revision == proc.opened_revision and not required and (lean or not self._render_behind(proc)):
             return
         if revision != proc.opened_revision:
             proc.last_edit_at = time.monotonic()
@@ -1393,6 +1419,7 @@ class PreviewController(QObject):
         display_relative = proc.path_within_write_root(str(photocraft_bridge.display_render_path(proc.source_path)))
         if display_relative is not None:
             params["display"] = display_relative
+        params.update({key: value for key, value in self._render_manifest_params(proc, proc.source_path).items() if key != "display"})
         # The full-size PNG is the heaviest encode of a save (211 MB for a 45 MP photo): an autosave, with the photo still open, leaves it
         # out when it can (the screen-sized JPEG is what browsing shows) and leaving the photo writes it.
         lean = lean and display_relative is not None and getattr(proc.control, "stash_without_preview_supported", False) is True
@@ -1405,9 +1432,32 @@ class PreviewController(QObject):
         proc.stash_errors.pop(key, None)
         if result.get("pending"):
             proc.pending_stashes[key] = (int(result["job"]), proc.source_path)
+            proc.stash_meta[int(result["job"])] = (key, proc.document_generation, revision)
         else:
+            self._clear_save_requirement(proc, key, proc.document_generation, revision)
             self._photocraft_saved.emit(proc.source_path)
         proc.opened_revision = revision
+
+    @staticmethod
+    def _render_manifest_params(proc, path: str) -> dict:
+        """What a save of ``path`` needs to keep a render manifest (an editor that can): where the manifest goes, the original's
+        signature it is made against, and the screen-sized picture's name. Empty for an editor that keeps none."""
+        if getattr(proc.control, "render_manifest_supported", False) is not True:
+            return {}
+        manifest = proc.path_within_write_root(str(photocraft_bridge.render_manifest_path(path)))
+        display = proc.path_within_write_root(str(photocraft_bridge.display_render_path(path)))
+        source = photocraft_bridge.file_signature(path)
+        if manifest is None or display is None or source is None:
+            return {}
+        return {"manifest": manifest, "display": display, "source": source}
+
+    @staticmethod
+    def _clear_save_requirement(proc, key: str, generation: int, revision: int) -> None:
+        """A save of ``key`` at ``revision`` of document ``generation`` succeeded: it settles a requirement for that document
+        at that revision or earlier, and nothing else."""
+        required = proc.save_required.get(key)
+        if required is not None and required[0] == generation and revision >= required[1]:
+            del proc.save_required[key]
 
     def _render_behind(self, proc: photocraft_bridge.PhotoCraftProcess) -> bool:
         """Whether the open photo's full-size render is behind its project: an earlier save of this session left it out, or one of an
@@ -1429,7 +1479,11 @@ class PreviewController(QObject):
             if job is None or job.get("state") == "running":
                 continue
             del proc.pending_stashes[key]
+            sent = proc.stash_meta.pop(job_id, None)
             if job.get("state") == "done":
+                if sent is not None:
+                    self._clear_save_requirement(proc, *sent)
+                photocraft_bridge.prune_render_generations(source)
                 if job_id not in proc.observed_stashes:
                     proc.observed_stashes.add(job_id)
                     self._photocraft_saved.emit(source)
@@ -1570,14 +1624,14 @@ class PreviewController(QObject):
         if not self._photocraft_executable or self._photocraft is not None:
             return
         directory = str(getattr(self._window, "_current_folder", "") or "")
-        if not directory:
+        if not directory or self._photocraft_closing:
             return
-        self._photocraft_executor.submit(self._prestart_photocraft, directory)
+        self._photocraft_prestart = self._photocraft_executor.submit(self._prestart_photocraft, directory)
 
     def _prestart_photocraft(self, directory: str) -> None:
         # On the editor's own worker, which also serialises it with a photo being opened: whichever comes first starts the process,
         # and the other uses it. The file-system calls (a folder on an unplugged card can take many seconds) stay off the UI thread.
-        if self._photocraft is not None:
+        if self._photocraft is not None or self._photocraft_closing:
             return
         try:
             if not os.path.isdir(directory):
@@ -1589,6 +1643,11 @@ class PreviewController(QObject):
             )
         except Exception:
             _log.warning("Could not start the editor in the background", exc_info=True)
+            return
+        if self._photocraft_closing:
+            # Image Triage began shutting down while this editor was starting: it is never taken into use, and it is ended here
+            # rather than left for the process's end.
+            proc.shutdown()
             return
         self._photocraft = proc
         if proc.executable:
@@ -1633,9 +1692,35 @@ class PreviewController(QObject):
             return
         self.handle_photocraft_edit_requested(path)
 
+    def _save_open_photo_for_render(self, proc, image_path: str) -> None:
+        """Saves the editor's open photo, with its full-size render, if it has changes the full-size render must include (for
+        ``full_render``, from a worker thread); waits for the save."""
+
+        def save() -> None:
+            if proc.current_source != normalized_path_key(image_path):
+                raise photocraft_bridge.PhotoCraftError("the editor switched photos during export; retry the export")
+            self._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False, lean=True)
+
+        self._photocraft_executor.submit(save).result(timeout=300)
+
+    def _launch_editor_for_render(self, folder: str):
+        """A hidden editor rooted at ``folder``, for rendering a photo there that no running editor can reach (``full_render``)."""
+        write_root = edit_storage.ensure_edit_root(folder)
+        return photocraft_bridge.launch_photocraft(
+            None, read_root=folder, write_root=str(write_root), executable=self._photocraft_executable, idle=True,
+        )
+
     def shutdown_photocraft(self) -> None:
         self._photocraft_generation += 1
         self._photocraft_save_timer.stop()
+        self._photocraft_closing = True
+        # Keep Qt pumping while an active render cancels and its hidden editor quits.
+        with ThreadPoolExecutor(max_workers=1) as render_shutdown:
+            self._pump_until_done(render_shutdown.submit(self._full_render.shutdown))
+        prestart = self._photocraft_prestart
+        if prestart is not None and not prestart.cancel() and not prestart.done():
+            # A background start is under way: wait for it (it ends what it started, see _prestart_photocraft).
+            self._pump_until_done(prestart)
         if self._photocraft is None and (self._photocraft_future is None or self._photocraft_future.done()):
             return
         self._pump_until_done(self._photocraft_executor.submit(self._shutdown_photocraft))
@@ -1989,8 +2074,9 @@ class PreviewController(QObject):
         return entries, max(1, len(entries)), start
 
     def ordered_edited_candidates(self, record: ImageRecord, displayed_path: str) -> tuple[str, ...]:
-        saved_render = photocraft_bridge.rendered_preview_path(record.path)
-        if saved_render.is_file():
+        # The UI thread: the project is matched by size here, never read through.
+        saved_render = photocraft_bridge.full_render_path(record.path, verify_project=False) or photocraft_bridge.saved_render_path(record.path)
+        if saved_render is not None and saved_render.suffix.lower() == ".png":
             return (str(saved_render), *[path for path in record.edited_paths if path != str(saved_render)])
         if record.edited_paths:
             edited_candidates = tuple(record.edited_paths)
