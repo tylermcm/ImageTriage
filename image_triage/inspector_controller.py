@@ -235,6 +235,17 @@ class InspectorController(QObject):
                 return score
         return None
 
+    def wow_rank_text_for_record(self, record: ImageRecord | None) -> str:
+        """"#12 of 148" for the folder's per-folder Wow ranking, or "" when the folder has no winner scores."""
+        if record is None:
+            return ""
+        score = self.winner_score_for_record(record)
+        if score is None:
+            return ""
+        own = float(score.get("blended_score") or 0.0)
+        scores = [float(item.get("blended_score") or 0.0) for item in self._window._winner_scores_by_path.values()]
+        return f"#{1 + sum(1 for value in scores if value > own)} of {len(scores)}"
+
     def face_bundle_for_record(self, record: ImageRecord | None) -> dict[str, object]:
         if record is None:
             return {}
@@ -516,6 +527,7 @@ class InspectorController(QObject):
             face_preview=face_preview,
             category_info=category_info,
             category_profile=category_profile,
+            wow_rank_text=self.wow_rank_text_for_record(current_record),
         )
         if current_record is not None and index is not None and index >= 0:
             self._window.inspector_panel.set_position(*self._window.grid.visible_position(index))

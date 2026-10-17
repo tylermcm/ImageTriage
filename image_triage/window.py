@@ -248,6 +248,7 @@ from .ui import (
     save_window_layout,
     show_paged_help,
 )
+from .ui.ai_bucket_bar import AIBucketBar
 from .ui.busy_overlay import BusyOverlay
 from .ui.display_metrics import DisplayProfile, normalize_display_profile_preference
 from .ui.backdrop import paint_backdrop
@@ -1241,7 +1242,7 @@ class MainWindow(QMainWindow):
         self._settings_ctl.apply_cull_thresholds_to_classifier()
         self._settings_ctl.apply_base_score_blend_to_workflow()
         self._ai_review_detail_progress_enabled = self._settings.value(self.AI_REVIEW_DETAIL_PROGRESS_KEY, False, bool)
-        self._show_ai_tags_in_grid = self._settings.value(self.SHOW_AI_TAGS_IN_GRID_KEY, False, bool)
+        self._show_ai_tags_in_grid = self._settings.value(self.SHOW_AI_TAGS_IN_GRID_KEY, True, bool)
         self.grid.set_show_ai_annotations(self._show_ai_tags_in_grid)
         self._apply_edits_to_pocketdrop = self._settings.value(self.APPLY_EDITS_TO_POCKETDROP_KEY, False, bool)
         self._phash_prefilter_settings = self._settings_ctl.load_phash_prefilter_settings()
@@ -1883,6 +1884,10 @@ class MainWindow(QMainWindow):
         add_all_layout.addWidget(self.add_all_button)
         self.add_all_bar.hide()
 
+        # AI verdict counts and a one-click filter; visible only while the open folder has AI results.
+        self.ai_bucket_bar = AIBucketBar()
+        self.ai_bucket_bar.bucket_requested.connect(self._ai_run.handle_bucket_bar_requested)
+
     def _init_center_column_and_docks(self) -> None:
         """Centre column, the docks shell around it, the inspector signal wiring and the menu
         refreshes that feed the menu bar."""
@@ -1904,6 +1909,7 @@ class MainWindow(QMainWindow):
         center_layout.addWidget(self.tool_mode_bar)
         center_layout.addWidget(self.collection_mode_bar)
         center_layout.addWidget(self.add_all_bar)
+        center_layout.addWidget(self.ai_bucket_bar)
         center_layout.addWidget(self.adapter_review_banner)
         center_layout.addWidget(self.browser_stack, 1)
         self._toolbar.apply_workspace_bar_position()

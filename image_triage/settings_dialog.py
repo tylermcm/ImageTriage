@@ -79,7 +79,7 @@ class WorkflowSettingsResult:
     check_updates_on_startup: bool = True
     theme: str = "auto"
     performance_logging_enabled: bool = False
-    show_ai_tags_in_grid: bool = False
+    show_ai_tags_in_grid: bool = True
     apply_edits_to_pocketdrop: bool = False
     ai_embed_batch_size: int = 0
     ai_review_detail_progress_enabled: bool = False
@@ -324,7 +324,7 @@ class WorkflowSettingsDialog(QDialog):
         check_updates_on_startup: bool = True,
         theme: str = "auto",
         performance_logging_enabled: bool = False,
-        show_ai_tags_in_grid: bool = False,
+        show_ai_tags_in_grid: bool = True,
         apply_edits_to_pocketdrop: bool = False,
         ai_embed_batch_size: int = 0,
         ai_review_detail_progress_enabled: bool = False,
