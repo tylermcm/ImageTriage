@@ -302,29 +302,34 @@ def collection_help_pages() -> tuple[HelpPage, ...]:
             """
             # Build a collection
 
-            Choose **Create Collection** to enter collection mode. Check images as you search, sort, filter, and browse folders. Checked images stay in the set even when they are no longer visible. Double-click an image away from its checkbox to inspect it in the popout viewer.
+            Choose **New Collection** to enter collection mode. Check images as you search, sort, filter, and browse folders. Checked images stay in the set even when they are no longer visible. Double-click an image away from its checkbox to inspect it in the popout viewer.
 
             Choose **Save Collection** to name the set, or **Cancel** to discard the picks. To change an existing set, choose **Edit Collection Items**; its current images start checked, and saving applies your changes.
 
-            Images you selected before choosing **Create Collection** start checked. **Check All Visible** checks everything the current filter or search shows; **Uncheck Visible** clears just those.
+            Images you selected before choosing **New Collection** start checked. **Check All Visible** checks everything the current filter or search shows; **Uncheck Visible** clears just those.
             """,
         ),
         HelpPage(
-            "Fill Collections Fast",
+            "Winners, Collections And Export",
             """
-            # Fill a collection without checking images one by one
+            # Winners, collections and export
 
-            - **Add All Visible to Collection** adds everything the current filter, regex or semantic search shows. Filter to winners, then add them all in one step.
-            - **Add Selection to Collection** adds the selected images.
-            - **Drag** images from the grid onto a collection in the sidebar to add them. Files never move.
-            - **Right-click** an image (or a selection) and open **Collections**: every collection is listed with a tick where the photo already is; pick one to add or remove.
-            - In the popout, the **collections chip** in the top bar shows which collections the photo is in ("● Portfolio", "● 2 collections", or "+ Collection"). Click it to change them.
-            - In the top bar, **Also add to** picks a collection that every new winner also goes into (including the Winner Ladder's pick). Un-marking or rejecting one of those winners takes it back out; photos you added yourself stay. It starts at **none**, so W just marks a winner.
-            - Press **B** to add the photo at the cursor (or the selection) to that collection without marking it a winner, and **B** again to take it out. With **Also add to** set to none, **B** asks which collection. Photos in that collection carry its name on their tile and a bar in the popout filmstrip, and it has a dot in the sidebar.
+            **W** marks a winner. Every shoot's winners show up in **Winners** at the top of the Collections list. Want them in a collection too? Set **Also add to** in the top bar. Need the files? **Export**.
 
-            The collection picker lists recently used collections first; type to filter, or type a new name to create one. Each add or removal is one step for **Undo** (Ctrl+Z), and undoing a removal puts images back where they were. Undoing a winner that was auto-added also takes it back out of the collection. Adding writes only the list of references, so even thousands of images add instantly.
+            That's the whole idea. Marking a winner never copies or moves a file.
 
-            **Export...** (Collections menu, or right-click a collection or the Winners row) is how files leave: copy them to a folder you choose, or send them to your phone with PocketDrop (one photo as is, several zipped into one file with each shoot's folder inside). Marking winners never copies anything.
+            ## Extra ways to fill a collection
+
+            - **Filter or search, then add everything:** when the grid is narrowed (or you've selected several photos), a bar above it offers **Add All to Collection**.
+            - **B** adds the photo at the cursor to the **Also add to** collection without marking it a winner; press it again to take it out. With none set, B asks which collection.
+            - **Drag** photos onto a collection in the sidebar.
+            - **Right-click** a photo, then **Collections**, to tick or untick it in any collection. In the popout, the chip in the top bar does the same.
+
+            ## Export
+
+            **Export...** (Collections menu, or right-click a collection or **Winners**) copies the photos to a folder you choose, or sends them to your phone with PocketDrop (one photo as is, several zipped into one file with each shoot's folder inside).
+
+            Every add, removal and winner is one step for **Undo** (Ctrl+Z).
             """,
         ),
         HelpPage(

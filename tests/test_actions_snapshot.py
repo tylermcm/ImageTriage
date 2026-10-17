@@ -117,7 +117,7 @@ _CONTROLLERS_BY_WINDOW_ATTRIBUTE = _controllers_by_window_attribute()
 
 # case id -> (sha256 of the text, its length in characters)
 _GOLDEN: dict[str, tuple[str, int]] = {
-    "fields+slots": ("f951f24efef9e0c9d25af4524ecfda87c98687bfc1b7e67dd9c3cec947c391c8", 95258),
+    "fields+slots": ("5318eb6a1eb66dce76765480daa4a856cbd54dbb948dc15cf4db23a79d86a819", 95246),
     "creation-order": ("76b2d903b688ac5bf3d207e38fa9d0c16ebf1df6464dacd884829ab979c3596e", 5231),
 }
 

@@ -1864,6 +1864,22 @@ class MainWindow(QMainWindow):
         collection_mode_layout.addWidget(self.collection_mode_cancel_button)
         self.collection_mode_bar.hide()
 
+        # Appears when a filter, search or multi-selection narrows the grid: one click puts those photos in a
+        # collection (CatalogController.refresh_add_all_bar), instead of a menu item nobody finds.
+        self.add_all_bar = QWidget()
+        self.add_all_bar.setObjectName("workspaceControls")
+        add_all_layout = QHBoxLayout(self.add_all_bar)
+        add_all_layout.setContentsMargins(12, 4, 12, 4)
+        add_all_layout.setSpacing(10)
+        self.add_all_label = QLabel("")
+        self.add_all_label.setObjectName("secondaryText")
+        self.add_all_button = QPushButton("Add All to Collection...")
+        self.add_all_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.add_all_button.clicked.connect(self._catalog.handle_add_all_bar_clicked)
+        add_all_layout.addWidget(self.add_all_label, 1)
+        add_all_layout.addWidget(self.add_all_button)
+        self.add_all_bar.hide()
+
     def _init_center_column_and_docks(self) -> None:
         """Centre column, the docks shell around it, the inspector signal wiring and the menu
         refreshes that feed the menu bar."""
@@ -1884,6 +1900,7 @@ class MainWindow(QMainWindow):
         center_layout.addWidget(self.workspace_bar)
         center_layout.addWidget(self.tool_mode_bar)
         center_layout.addWidget(self.collection_mode_bar)
+        center_layout.addWidget(self.add_all_bar)
         center_layout.addWidget(self.adapter_review_banner)
         center_layout.addWidget(self.browser_stack, 1)
         self._toolbar.apply_workspace_bar_position()
@@ -2049,6 +2066,7 @@ class MainWindow(QMainWindow):
         self.grid.dispute_chord_cancelled.connect(self._aiculler.handle_dispute_chord_cancelled)
         self.grid.context_menu_requested.connect(self._context_menus.show_grid_context_menu)
         self.grid.selection_changed.connect(self._inspector.handle_grid_selection_changed)
+        self.grid.selection_changed.connect(self._catalog.refresh_add_all_bar)
         self.grid.verticalScrollBar().valueChanged.connect(self._records_view.schedule_metadata_scroll_prefetch)
         self.details_view.current_changed.connect(self._views.handle_details_current_changed)
         self.details_view.selection_changed.connect(self._views.handle_details_selection_changed)

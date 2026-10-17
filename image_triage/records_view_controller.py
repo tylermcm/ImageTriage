@@ -1112,6 +1112,9 @@ class RecordsViewController:
         window._records = records
         window._record_index_by_path = {record.path: index for index, record in enumerate(records)}
         window._annotation_ctl.recalculate_review_counts()
+        refresh_add_all_bar = getattr(window._catalog, "refresh_add_all_bar", None)
+        if refresh_add_all_bar is not None:
+            refresh_add_all_bar(recount=True)
         if reasons.intersection(
             {
                 ViewInvalidationReason.LOAD_CHANGED,

@@ -51,17 +51,17 @@ from tests import builder_snapshot_support as support
 
 # state label -> (sha256 of the dump, its length in characters)
 _GOLDEN: dict[str, tuple[str, int]] = {
-    "main|all-enabled|flags-on|data|docks": ("dd641f01fbf33e5d3a8571e6c56f72c7ccc2b631ded01bac77407efd9f3e03b0", 49234),
-    "main|all-enabled|flags-off|data|docks-unchecked": ("0d1f3baf056d9450ebf4485db2dfa4506ed67becf9a3ff2cde6b41a3da49c4fe", 49250),
+    "main|all-enabled|flags-on|data|docks": ("5e34c5876350faf08b1632f98e6c08184155ee07d774bb92b17378bdd479e8c5", 49231),
+    "main|all-enabled|flags-off|data|docks-unchecked": ("c8e85dedbf29c3962da6aeb0e56a631d630b52560f9476ccebeb4bc36c99d0b4", 49247),
     "main|all-disabled|no-data|no-docks": ("ccc2c940bd8f4e2384c01384f4eac2073d9a5dc1a4902f3e80781fbb6ef7f916", 13856),
-    "main|alternate-enabled|flags-on|data|docks": ("da62439d7badfece95fb99634078a5366e3a3326074d12b5dbd1343d8188ff9c", 36291),
-    "main|alternate-enabled|flags-off|no-data|docks": ("2482071481eb876b9182c58848c100d3f3ea2a4a8481e8a309f019720ccf81b3", 28000),
+    "main|alternate-enabled|flags-on|data|docks": ("7556788d37021fea812bda4ac7f632bea7f72b2058b6afc16673e13652f12363", 36288),
+    "main|alternate-enabled|flags-off|no-data|docks": ("3fe5b69ed3912d582d60d288088a3ba091d06e4eaa466932222295f22d5b6c93", 27997),
     "main|no-actions|data|no-docks": ("bd0990f0680a55502caf607033c776214e51996d19fe1be0184bd9bf5bbd8df9", 22177),
-    "main|visible-preview-ignored": ("15bd532aad3d6ae67eb131510a8c9a929ecc1a1e577d830bcf613e706b140caf", 49514),
-    "preview|hidden-preview": ("257567f7ef9d9185d72f2141adf5a84817df5e1ea90c5bc1b2ae0ea3f438235a", 49423),
-    "preview|no-preview-built": ("1f2bb78941a6792132c31ee4c5054251edc97531fa519a600cc69a3e6149c02d", 49225),
-    "preview|visible|full": ("e9a8f9256e9d28688130840d36c4a4b34776bc088e14a2f8427cd527db88a5f7", 55678),
-    "preview|visible|focused-photoshop-missing-exe": ("5559d7023ee1cce6b9e74b6daf08e8fcad1f74b99d17eb2d48ecba49f7fdbd87", 55418),
+    "main|visible-preview-ignored": ("5e6220b7731cce637ef754a121fb1ee4b36c3155034f71d8408268b769d2fb5e", 49511),
+    "preview|hidden-preview": ("fe293312ae14a2745679a710e47bbe43799812c738163dcd6914643e682c10bc", 49420),
+    "preview|no-preview-built": ("9e194f0bcaaece352f75ec9c32cd6f1a354921b7b1d00934c33533cd2cbb3238", 49222),
+    "preview|visible|full": ("a3a05e70389e9c332a1e4ee2d6093e8c62fcb2933b5d9fc1c736b810821343c3", 55675),
+    "preview|visible|focused-photoshop-missing-exe": ("aeffd740cad899d089c6b6859719d93c60aa2236747ad8655c28992551107e0a", 55415),
     "preview|visible|bare": ("1a7197dcfa980f538c9d41fd9882744b5b6b8478bbeb9e4a0a9f831605f45550", 27025),
 }
 

@@ -476,6 +476,7 @@ class CatalogController:
         window.inspector_panel.setEnabled(False)
         window._views.set_browser_view_mode("grid")
         self.refresh_collection_mode_ui()
+        self.refresh_add_all_bar()
         window._inspector.update_action_states()
         window.statusBar().showMessage("Collection mode: check images across folders, then save or cancel.")
 
@@ -526,6 +527,7 @@ class CatalogController:
             preview.set_collection_browse_mode(False)
         window.inspector_panel.setEnabled(window._collection_previous_inspector_enabled)
         window.collection_mode_bar.hide()
+        self.refresh_add_all_bar()
         window._views.set_browser_view_mode(previous_view)
         window._inspector.update_action_states()
         if show_message:
@@ -646,6 +648,46 @@ class CatalogController:
         if missing:
             message += f" ({missing} not found: moved, deleted, or on a disconnected drive)"
         window.statusBar().showMessage(message)
+
+    # -- The "Add all to collection" bar above the grid ----------------------------
+
+    def refresh_add_all_bar(self, *_args, recount: bool = False) -> None:
+        """Show the bar when the grid is narrowed (a filter or search, or several photos selected).
+        Runs on every selection change, so it only counts photos when the records themselves changed."""
+        window = self._window
+        bar = getattr(window, "add_all_bar", None)
+        if bar is None:
+            return
+        if recount or not hasattr(self, "_visible_photo_count"):
+            self._visible_photo_count = sum(1 for record in window._records if not record.is_folder)
+        if self._session.collection_mode:
+            bar.hide()
+            return
+        selected = len(window.grid.selected_indexes())
+        filter_query = getattr(window, "_filter_query", None)
+        narrowed = bool(filter_query is not None and filter_query.has_active_filters)
+        if selected >= 2:
+            self._add_all_mode = "selection"
+            window.add_all_label.setText(f"{selected} photos selected")
+            window.add_all_button.setText("Add to Collection...")
+            bar.show()
+        elif narrowed and self._visible_photo_count:
+            self._add_all_mode = "visible"
+            count = self._visible_photo_count
+            window.add_all_label.setText(f"{count} photo{'s' if count != 1 else ''} match")
+            window.add_all_button.setText("Add All to Collection...")
+            bar.show()
+        else:
+            self._add_all_mode = ""
+            bar.hide()
+
+    def handle_add_all_bar_clicked(self, checked: bool = False) -> None:
+        del checked
+        mode = getattr(self, "_add_all_mode", "")
+        if mode == "selection":
+            self.add_selected_to_collection()
+        elif mode == "visible":
+            self.add_visible_to_collection()
 
     # -- Export: the only way files leave (docs/winners_collections_redesign.md, step 4) ----
 

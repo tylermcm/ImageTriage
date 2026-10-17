@@ -32,6 +32,23 @@ def add_ai_results_actions(menu: QMenu, actions: MainWindowActions) -> None:
     menu.addAction(actions.ai_review_tag_legend)
 
 
+def add_collection_essentials(menu: QMenu, actions: MainWindowActions) -> QMenu:
+    """The Collections menu, kept to what most people need (docs/winners_collections_redesign.md, step 5);
+    everything else sits under More, on a collection's right-click, or in the bar above the grid."""
+    menu.addAction(actions.create_virtual_collection)
+    menu.addAction(actions.add_selected_to_collection)
+    menu.addAction(actions.export_current_set)
+    menu.addSeparator()
+    menu.addAction(actions.set_active_collection)
+    more = menu.addMenu("More")
+    more.addAction(actions.add_visible_to_collection)
+    more.addAction(actions.add_to_active_collection)
+    more.addAction(actions.add_selection_to_collection)
+    more.addAction(actions.remove_selection_from_collection)
+    more.addAction(actions.delete_virtual_collection)
+    return more
+
+
 def _add_selection_actions(menu: QMenu, actions: MainWindowActions) -> None:
     menu.addAction(actions.rename_selection)
     menu.addAction(actions.accept_selection)
@@ -173,17 +190,7 @@ def _build_library_menu(
 ) -> None:
     library_menu = menu_bar.addMenu("&Library")
     collections_section = library_menu.addMenu("Collections")
-    collections_section.addAction(actions.create_virtual_collection)
-    collections_section.addAction(actions.add_selected_to_collection)
-    collections_section.addAction(actions.add_visible_to_collection)
-    collections_section.addSeparator()
-    collections_section.addAction(actions.add_to_active_collection)
-    collections_section.addAction(actions.set_active_collection)
-    collections_section.addSeparator()
-    collections_section.addAction(actions.export_current_set)
-    collections_section.addAction(actions.add_selection_to_collection)
-    collections_section.addAction(actions.remove_selection_from_collection)
-    collections_section.addAction(actions.delete_virtual_collection)
+    add_collection_essentials(collections_section, actions)
     if collections_menu is not None:
         collections_section.addSeparator()
         collections_section.addMenu(collections_menu)
