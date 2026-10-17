@@ -2323,7 +2323,9 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _keep_topbar_overflow_menu_source(menu: QMenu, source_menu: QMenu) -> None:
-        source_menu.setParent(menu)
+        # Owned by the overflow menu only for lifetime; keeping its popup flags stops it being painted
+        # as a child widget stacked over the overflow menu's own items.
+        source_menu.setParent(menu, source_menu.windowFlags())
         sources = getattr(menu, "_topbar_flattened_source_menus", None)
         if sources is None:
             sources = []

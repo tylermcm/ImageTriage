@@ -988,7 +988,9 @@ class ToolbarController(QObject):
         for action in actions:
             submenu = action.menu()
             if submenu is not None:
-                submenu.setParent(menu)
+                # Keep its popup window flags: a bare setParent() turns the submenu into a child widget
+                # painted over the top-left of the overflow menu instead of opening beside it.
+                submenu.setParent(menu, submenu.windowFlags())
                 menu.addMenu(submenu)
             elif action.isSeparator():
                 menu.addSeparator()
