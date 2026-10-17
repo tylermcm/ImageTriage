@@ -48,7 +48,7 @@ files as a side effect of culling. It has to be definitionally simple.
   winners. Destinations:
   - **Folder:** copy (or link, where supported) to a folder you choose. This covers what
     `_winners` was used for.
-  - **PocketDrop:** zip the photos with the existing archive code
+  - **PocketDrop:** a single photo goes in loose. For more than one, zip the photos with the existing archive code
     (`ExportJobsController.create_archive_for_records`), then hand the zip to PocketDrop
     (`PocketDropPanel.add_paths`), so the set is ready to pick up on the phone.
 - Export runs as a background job with progress, like the existing archive and handoff jobs.
@@ -74,14 +74,15 @@ above.
 W marks a winner. Every shoot's winners show up in **Winners**. Want them in a collection too?
 Set **Also add to**. Need the files? **Export** (to a folder or PocketDrop).
 
-## Open decisions (recommended default first)
+## Decided after review (2026-10-17)
 
-1. **Default for "Also add to":** *none* (recommended: plain culling stays plain), or
-   remember the last collection.
-2. **The B key:** *keep* as "add to a collection without marking a winner" (one key, shown
-   only in the popup/tooltip), or drop it.
-3. **PocketDrop payload:** *one zip* (recommended: one item on the phone, keeps folder
-   names), or the loose files. Check whether PocketDrop already zips folders.
+1. **"Also add to" defaults to none.** Plain culling stays plain.
+2. **The B key stays for now** as "add to a collection without marking a winner". It can be
+   kept or dropped later at any time.
+3. **PocketDrop payload:** more than one file is zipped, and a single file is sent loose.
+
+## Open decisions
+
 4. **Winners view scope:** *the whole library* (every folder with winner marks, including
    ones only opened, not catalogued), or only catalog roots.
 
