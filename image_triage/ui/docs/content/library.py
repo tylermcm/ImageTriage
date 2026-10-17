@@ -69,17 +69,11 @@ ARTICLES = [
 
         Collections appear in the Library panel's **Collections** section. Create and manage them from **`Library > Collections`**.
 
-        ## Filling a collection quickly
+        ## Winners, collections and export
 
-        - **Add All Visible to Collection** adds everything the current filter, regex or semantic search shows — for example, filter to winners and add them all at once.
-        - **Add Selection to Collection** adds the selected images, and you can drag images from the grid onto a collection in the sidebar.
-        - Right-click an image and open **Collections** to tick or untick it in any collection. In the popout, the collections chip in the top bar shows where the photo is and opens the same list.
-        - **Also add to** (top bar) picks a collection that every new winner also goes into, including the Winner Ladder's pick; un-marking or rejecting takes it back out. It starts at none.
-        - **B** adds the photo at the cursor (or the selection) to that collection without marking a winner, and removes it again; with none set it asks which collection.
+        **W** marks a winner, and every shoot's winners show up in **Winners** at the top of the Collections list. To put winners in a collection as you cull, set **Also add to** in the top bar. To get files out, use **Export** (to a folder, or to your phone with PocketDrop). Marking a winner never copies a file.
 
-        Every add is a single **Undo** step.
-
-        **Export...** (Collections menu, or right-click a collection or the Winners row) is how files leave: copy them to a folder you choose, or send them to your phone with PocketDrop (one photo as is, several zipped into one file with each shoot's folder inside). Marking winners never copies anything.
+        When a filter, search or selection narrows the grid, a bar above it offers **Add All to Collection**. You can also press **B**, drag photos onto a collection, or right-click a photo and open **Collections**. Every change is a single **Undo** step.
 
         ## Good uses
 

@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QMenu, QToolButton, QWidget
 
 from ..models import FilterMode, SortMode
 from .actions import MainWindowActions
-from .menus import add_ai_results_actions
+from .menus import add_ai_results_actions, add_collection_essentials
 
 
 class ToolbarMenuController:
@@ -73,17 +73,7 @@ class ToolbarMenuController:
     def build_projects_toolbar_menu(self) -> QMenu:
         actions = self._actions
         menu = QMenu("Collections", self._parent)
-        menu.addAction(actions.create_virtual_collection)
-        menu.addAction(actions.add_selected_to_collection)
-        menu.addAction(actions.add_visible_to_collection)
-        menu.addSeparator()
-        menu.addAction(actions.add_to_active_collection)
-        menu.addAction(actions.set_active_collection)
-        menu.addSeparator()
-        menu.addAction(actions.export_current_set)
-        menu.addAction(actions.add_selection_to_collection)
-        menu.addAction(actions.remove_selection_from_collection)
-        menu.addAction(actions.delete_virtual_collection)
+        add_collection_essentials(menu, actions)
         return menu
 
     def build_catalog_toolbar_menu(self) -> QMenu:

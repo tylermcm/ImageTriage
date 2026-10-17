@@ -39,19 +39,19 @@ from tests import builder_snapshot_support as support
 
 # scenario -> (sha256 of the dump, its length in characters)
 _GOLDEN: dict[str, tuple[str, int]] = {
-    "all-present": ("cc17af610d4d14c7e5b4b6bf6189e7aa241834ea7698df5c0a069428ccd33cbc", 24646),
-    "no-optional-menus": ("41572f1fa6735e726edcb76fd453472a5f361c5985526c059a59c951648c60d8", 23701),
-    "no-recipe-menu": ("3e6cbcec34d0178398b7dd4c2604b112d601e33582d67c2de8a1cd5c3e3b38cd", 24462),
-    "no-preset-menu": ("2fe7add83423efcda3cdb22923e31020c2e536e5d72bccec462f3563710aeb15", 24325),
-    "no-collections-menu": ("c8e454d96c6460f205cdd6fbb363c1ec0723953a61cb9c245399441f4b2d95f9", 24428),
-    "no-catalog-menu": ("2dda0ed91b00ff563bdf000980efcef9491dc5ae78e89d558f71e65421738e0e", 24436),
-    "dock-actions-none": ("248c22cb26054d7a54c1f2fb7451090b43447a72b24d7d6d5a6fe9d98592ba8a", 21554),
-    "dock-actions-empty": ("896ffe616c554c36995f0956fbce243a0b1695fba84e81b00277058d90223566", 21556),
-    "dock-actions-library-only": ("a4865a6dfe0c24ae78a68bd34e45a60015bd921e14694110391520edfe3332a6", 24542),
-    "dock-actions-inspector-only": ("980415511744cc988bb91174ecd2adcb142257b0821a843ad2b381b0da3283d1", 24550),
-    "dock-actions-unknown-key-only": ("f5a9fce6bdd89bc17281a8c2285fe4feed5c6fbb6fb75b378ac30bbd485d0591", 24429),
-    "no-workspace-docks-object": ("fdfca39411634282b9725277bd07efe67368fceb9c09c6013ddbb1af8e5397bf", 22423),
-    "no-docks-no-presets": ("d78df2f22cf70efd39807777878694433130da344087a717a7b22cf6573f25e7", 21466),
+    "all-present": ("3ef1f21765e3dd1a43c9848bcca9e8422eabd8502d1902f6e3b0c8a47ad655ad", 24697),
+    "no-optional-menus": ("1b260614da767a05dab4efd2eeb2ad046d9306ccacd16701647f8c0e438c6e2c", 23752),
+    "no-recipe-menu": ("eb5a44ca45a9265c245f3a4e1c1e9d2a22cb3f3ed484a620dc5ef9621e720f75", 24513),
+    "no-preset-menu": ("c7377d03b2523a42e2a2bbb64ce85a874893822c9213272a0b5356fac709fce4", 24376),
+    "no-collections-menu": ("2d3c455415217880fb383ca11604eca729d737c7e20df20451456f9e8f48fab9", 24479),
+    "no-catalog-menu": ("71aaaed1d7ef8b472623bc3566e8d4dc9d17a212fa1b580f882b7975fda2ecf7", 24487),
+    "dock-actions-none": ("2f9b78074067d51ebbd5d3183755c9da9edbd3e0d004efd221281cd912e50f0f", 21605),
+    "dock-actions-empty": ("bce5081b41b07b1ec420a47e6a579f2649cd17a3dd384d8e69106fb76f1d54f8", 21607),
+    "dock-actions-library-only": ("0f8bab3c72415029b545fdb1419c1018c448dc0323a6e0576bdf8dd9a88f8345", 24593),
+    "dock-actions-inspector-only": ("d0fc3d335b48054455502204cbbe43ffdc6fecb49491ee1224ffc10cae341949", 24601),
+    "dock-actions-unknown-key-only": ("86e41cb79b3970686928755333ba6bbea8043ce06688b4bf3518ce15ad3fb514", 24480),
+    "no-workspace-docks-object": ("ec38ab401294cf6de9c523dae32926bd1b2ac45630b9f3bdf45067b4df8d1e24", 22474),
+    "no-docks-no-presets": ("9fcf161d7e7f994e6eb5f8f1f96486099f5452e92d913e9c27e4d6f477992a66", 21517),
 }
 
 _TOP_LEVEL_TITLES = ["&File", "&Edit", "&View", "&Review", "&Library", "&Workflow", "&AI", "&Tools", "&Settings", "&Help"]

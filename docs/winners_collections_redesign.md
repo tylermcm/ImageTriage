@@ -145,13 +145,25 @@ overwritten. PocketDrop: one photo goes as is (honouring "apply edits"); several
 background into AppData/PocketDrop/Exports (one folder per shoot inside) and handed over when ready.
 Linking instead of copying was not built.
 
+Step 5 notes: a bar above the grid appears when a filter or search narrows it ("N photos match · Add All to
+Collection...") or when several photos are selected ("N photos selected · Add to Collection..."), and hides
+in collection mode. Library > Collections (and the toolbar Collections menu) now hold only New Collection,
+Add Selection to Collection, Export, Also Add Winners To, and More (Add All Visible, Add to Collection (B),
+Edit Collection Items, Remove Selection From Collection, Delete Collection). The nested menu that repeated
+every command is now just "Open Collection" (Winners plus each collection). Help leads with the
+one-paragraph model. All five steps are done.
+
+Known test flakiness (not caused by this work): in long combined runs on Windows, one file-operation test
+in tests/test_char_move_delete_undo.py occasionally finds a file still locked (a move or delete skips it);
+a different one each run, and each passes on its own.
+
 1. **Done (2026-10-17). W = mark only.** Remove the winner modes and `_winners` side effects, and treat existing
    `_winners` folders as ordinary folders. Verify that AI feedback still fires and undo works.
 2. **Done (2026-10-17). Winners view** in the sidebar, computed from winner marks.
 3. **Done (2026-10-17). Also add to** selector in the top bar, replacing the active collection and the auto-add
    toggle.
 4. **Done (2026-10-17). Export…** to a folder and to PocketDrop.
-5. **Simplify the collection tools:** the "Add all" bar in place of the menu item, a slimmer
+5. **Done (2026-10-17). Simplify the collection tools:** the "Add all" bar in place of the menu item, a slimmer
    Collections menu, and help/docs updated to the one-paragraph model above.
 
 Each step ships on its own with tests, and stays runnable between steps.

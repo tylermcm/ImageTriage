@@ -405,31 +405,20 @@ class ProjectsController(QObject):
             catalog.refresh_collection_markers()
         if not hasattr(self._window, "collections_menu") or self._window.collections_menu is None:
             return
+        # Just the collections to open: the commands live once, in Library > Collections (add_collection_essentials).
         self._window.collections_menu.clear()
-        self._window.collections_menu.setTitle("Collections")
+        self._window.collections_menu.setTitle("Open Collection")
         actions = self._window.actions
         if actions is None:
             return
         self._window._catalog.refresh_also_add_to_button()
         active = self._window._catalog.active_collection()
         actions.add_to_active_collection.setText(f"Add to {active.name}" if active is not None else "Add to Collection...")
-        self._window.collections_menu.addAction(actions.create_virtual_collection)
-        self._window.collections_menu.addAction(actions.add_selected_to_collection)
-        self._window.collections_menu.addAction(actions.add_visible_to_collection)
-        self._window.collections_menu.addSeparator()
-        self._window.collections_menu.addAction(actions.add_to_active_collection)
-        self._window.collections_menu.addAction(actions.set_active_collection)
-        self._window.collections_menu.addSeparator()
-        self._window.collections_menu.addAction(actions.export_current_set)
-        self._window.collections_menu.addAction(actions.add_selection_to_collection)
-        self._window.collections_menu.addAction(actions.remove_selection_from_collection)
-        self._window.collections_menu.addAction(actions.delete_virtual_collection)
+        self._window.collections_menu.addAction("Winners", self._window._catalog.open_winners_view)
         self._window.collections_menu.addSeparator()
 
         collections = self._window._library_store.list_collections()
         if collections:
-            header = self._window.collections_menu.addSection("Open Collection")
-            header.setEnabled(False)
             for collection in collections:
                 action = self._window.collections_menu.addAction(f"{collection.name} ({collection.item_count})")
                 action.setToolTip(collection.description or collection.kind)

@@ -495,7 +495,7 @@ def _collection_actions(window: "MainWindow") -> dict[str, QAction]:
     return dict(
         create_virtual_collection=_create_action(
             window,
-            "Create Collection...",
+            "New Collection...",
             slot=window._catalog.create_virtual_collection_from_selection,
         ),
         add_selection_to_collection=_create_action(
