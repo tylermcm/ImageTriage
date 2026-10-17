@@ -16,6 +16,7 @@ from .record_ops_controller import UndoAction
 from .scanner import normalize_filesystem_path, normalized_path_key, scan_folder
 from .transfer_progress import TransferItem, run_file_transfer
 from .ui import CatalogSearchDialog, CollectionEditDialog, CollectionPickerChoice, CollectionPickerDialog, confirm_transfer, show_transfer_complete
+from .ui.collection_ring import collection_ring_icon
 from .ui.flash_toast import FlashToast
 from .folder_session import FolderSession
 
@@ -433,8 +434,67 @@ class CatalogController:
             resolved.append(record)
         return resolved, missing
 
-    def create_virtual_collection_from_selection(self) -> None:
-        # Start with the selected images already checked, so "select, then create" works.
+    def create_virtual_collection_from_selection(self, checked: bool = False) -> None:
+        """New Collection: the window creates an empty collection; filling it comes after."""
+        del checked
+        self.open_collection_window()
+
+    def edit_collection(self, collection_id: str) -> None:
+        collection = self._window._library_store.load_collection_header(collection_id)
+        if collection is not None:
+            self.open_collection_window(collection)
+
+    def open_collection_window(self, collection: VirtualCollection | None = None) -> VirtualCollection | None:
+        """New Collection (``collection`` None) or Edit Collection: name, color, and whether new winners
+        go in (the top bar's Also add to). Returns the created or saved collection."""
+        window = self._window
+        store = window._library_store
+        editing = collection is not None
+        existing = tuple(item.name for item in store.list_collections() if not editing or item.id != collection.id)
+        dialog = CollectionEditDialog(
+            title="Edit Collection" if editing else "New Collection",
+            name=collection.name if editing else "",
+            kind=collection.kind if editing else "Custom",
+            description=collection.description if editing else "",
+            color=collection.color if editing else "",
+            add_new_winners=(self.active_collection_id() == collection.id) if editing else True,
+            existing_names=existing,
+            parent=window,
+        )
+        if window._exec_dialog_with_geometry(dialog, "collection_edit") != dialog.DialogCode.Accepted:
+            return None
+        result = dialog.result_data()
+        try:
+            if editing:
+                saved = store.update_collection(
+                    VirtualCollection(
+                        id=collection.id,
+                        name=result.name,
+                        description=result.description,
+                        kind=result.kind,
+                        color=result.color,
+                    )
+                )
+            else:
+                saved = store.create_collection(name=result.name, kind=result.kind, color=result.color)
+        except (ValueError, RuntimeError) as exc:
+            window.statusBar().showMessage(str(exc))
+            return None
+        if result.add_new_winners:
+            self.set_active_collection(saved.id, show_message=False)
+        elif self.active_collection_id() == saved.id:
+            self.set_active_collection("", show_message=False)
+        else:
+            window._projects.refresh_collections_menu()
+        self.remember_recent_collection(saved.id)
+        message = f"Saved {saved.name}" if editing else f"Created {saved.name}"
+        if result.add_new_winners:
+            message += " \u00b7 new winners go here"
+        self.show_collection_feedback(message, saved.id)
+        return saved
+
+    def start_collection_mode_from_selection(self) -> None:
+        """The older checkbox editor (no longer on a menu): start with the selected images checked."""
         window = self._window
         selected = [window._records[index] for index in window.grid.selected_indexes() if 0 <= index < len(window._records)]
         seed = tuple(record.path for record in selected if not record.is_folder)
@@ -816,12 +876,6 @@ class CatalogController:
         if missing:
             window.statusBar().showMessage(f"Loaded collection {collection.name} ({len(records)} available, {missing} missing)")
 
-    def add_selection_to_virtual_collection(self) -> None:
-        collection = self.choose_virtual_collection(title="Edit Collection Items", prompt="Collection")
-        if collection is None:
-            return
-        self.begin_collection_mode("edit", collection=collection)
-
     def remove_selection_from_virtual_collection(self) -> None:
         window = self._window
         paths = self.selected_record_paths_for_library()
@@ -928,17 +982,35 @@ class CatalogController:
             self.set_active_collection(collection.id)
 
     def refresh_also_add_to_button(self) -> None:
-        button = getattr(self._window._toolbar, "also_add_to_button", None)
+        """The search box shows "Also add to: <name> \u25be" while a collection is set, else its Ctrl K hint."""
+        toolbar = self._window._toolbar
+        button = getattr(toolbar, "also_add_to_button", None)
         if button is None:
             return
         collection = self.active_collection()
-        button.setText(self.also_add_to_text() + " \u25BE")
-        button.setProperty("alsoAddToSet", collection is not None)
+        hint = getattr(toolbar, "app_search_key_hint", None)
+        if collection is None:
+            button.hide()
+            if hint is not None:
+                hint.show()
+            self._fit_search_box()
+            return
+        button.setIcon(collection_ring_icon(collection.color, 12))
+        name = button.fontMetrics().elidedText(collection.name, Qt.TextElideMode.ElideRight, 140)
+        button.setText(f"Also add to: {name} \u25BE")
         button.setToolTip(
-            f"New winners (W) are also added to {collection.name}; B adds the current photo there too."
-            if collection is not None
-            else "Choose a collection that new winners (W) also go into. None: W just marks a winner."
+            f"New winners (W) also go into {collection.name}, and B adds the current photo there. "
+            "Click to switch collection or turn it off. Ctrl+K still opens the command palette."
         )
+        if hint is not None:
+            hint.hide()
+        button.show()
+        self._fit_search_box()
+
+    def _fit_search_box(self) -> None:
+        appearance = getattr(self._window, "_appearance", None)
+        if appearance is not None and self._window.width() > 0:
+            appearance.fit_search_box_width()
 
     # -- Feedback -------------------------------------------------------
 

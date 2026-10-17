@@ -126,6 +126,29 @@ class AppearanceController(QObject):
         self._window._layout_ratio_update_pending = True
         QTimer.singleShot(0, self.apply_layout_ratios)
 
+    def fit_search_box_width(self) -> None:
+        """The search box's share of the window width, plus room for the "Also add to" chip while it
+        stands in for the Ctrl K hint, so the chip never squeezes the search text."""
+        toolbar = getattr(self._window, "_toolbar", None)
+        box = getattr(toolbar, "app_search_box", None)
+        if box is None:
+            return
+        search_width = layout_ratios.ratio_px(layout_ratios.SEARCH_W, self._window.width(), minimum=200)
+        chip = getattr(toolbar, "also_add_to_button", None)
+        hint = getattr(toolbar, "app_search_key_hint", None)
+        chip_shown = chip is not None and hint is not None and not chip.isHidden()
+        field = getattr(toolbar, "topbar_search_field", None)
+        if field is not None:
+            field.setMinimumWidth(120 if chip_shown else 180)
+        if chip_shown:
+            search_width += max(0, chip.sizeHint().width() - hint.sizeHint().width())
+            layout = box.layout()
+            if layout is not None:
+                layout.invalidate()
+                search_width = max(search_width, layout.minimumSize().width())
+        box.setMinimumWidth(min(240, search_width))
+        box.setMaximumWidth(search_width)
+
     def apply_layout_ratios(self) -> None:
         """Resolve the shell's proportions (layout_ratios) against the
         current window size."""
@@ -137,9 +160,11 @@ class AppearanceController(QObject):
         self._window.app_top_bar.setFixedHeight(px(layout_ratios.TOP_BAR_H, height, minimum=36))
         for control in getattr(self._window._toolbar, "_window_control_buttons", {}).values():
             control.setFixedSize(round(self._window.app_top_bar.height() * 0.9), self._window.app_top_bar.height())
-        search_width = px(layout_ratios.SEARCH_W, width, minimum=200)
-        self._window._toolbar.app_search_box.setMinimumWidth(min(240, search_width))
-        self._window._toolbar.app_search_box.setMaximumWidth(search_width)
+        catalog = getattr(self._window, "_catalog", None)
+        if catalog is not None and hasattr(catalog, "refresh_also_add_to_button"):
+            catalog.refresh_also_add_to_button()  # re-elides the chip for the new width, then fits the box
+        else:
+            self.fit_search_box_width()
         self.apply_chrome_text_ratios(width, height)
         # Before the toolbar profile below: its button height reads the floating
         # bar's padding, which this sets.
@@ -629,8 +654,9 @@ class AppearanceController(QObject):
                 f" min-height: {search_height - 2}px; max-height: {search_height - 2}px; }}"
                 " QLabel#appSearchGlyph"
                 f" {{ font-size: {glyph_px(layout_ratios.SEARCH_GLYPH_BAR)}px; }}"
-                " QToolButton#appSearchKeyHint"
+                " QToolButton#appSearchKeyHint, QToolButton#appAlsoAddToChip"
                 f" {{ font-size: {glyph_px(layout_ratios.SEARCH_HINT_BAR)}px; }}"
+                " QToolButton#appAlsoAddToChip::menu-indicator { image: none; width: 0px; }"
             )
             if search_box.styleSheet() != sheet:
                 search_box.setStyleSheet(sheet)

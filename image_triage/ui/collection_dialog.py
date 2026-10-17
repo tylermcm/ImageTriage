@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QBrush, QPainter, QPalette, QPolygonF
+from PySide6.QtCore import QEvent, QSize, Qt
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
-    QComboBox,
+    QButtonGroup,
+    QCheckBox,
+    QColorDialog,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -13,13 +15,12 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
-    QSizePolicy,
-    QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from ..library_store import COLLECTION_KINDS
+from .collection_ring import COLLECTION_COLORS, collection_ring_pixmap, normalized_color
 
 
 COLLECTION_EXPLANATION = (
@@ -33,48 +34,37 @@ class CollectionDialogResult:
     name: str
     kind: str
     description: str = ""
-
-
-class _PurposeComboBox(QComboBox):
-    """Purpose picker with an explicit disclosure affordance on every style."""
-
-    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        colour = self.palette().color(QPalette.ColorRole.Text)
-        colour.setAlpha(205)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(colour))
-        center_x = self.width() - 16
-        center_y = self.height() / 2.0
-        painter.drawPolygon(
-            QPolygonF(
-                (
-                    QPointF(center_x - 4, center_y - 2),
-                    QPointF(center_x + 4, center_y - 2),
-                    QPointF(center_x, center_y + 2),
-                )
-            )
-        )
+    color: str = ""
+    add_new_winners: bool = False
 
 
 class CollectionEditDialog(QDialog):
+    """New Collection / Edit Collection: a name, a color for the sidebar ring, and whether new winners go
+    in. It creates an empty collection; the hints at the bottom say how to fill it
+    (docs/winners_collections_redesign.md). Purpose and description are kept as stored, no longer asked."""
+
     def __init__(
         self,
         *,
-        title: str = "Create Collection",
+        title: str = "New Collection",
         name: str = "",
         kind: str = "Custom",
         description: str = "",
         selection_count: int = 0,
+        color: str = "",
+        add_new_winners: bool = True,
+        existing_names: tuple[str, ...] = (),
         parent=None,
     ) -> None:
         super().__init__(parent)
+        del selection_count  # the window always creates or edits the collection itself, never its photos
         self.setObjectName("collectionEditDialog")
         self.setWindowTitle(title)
-        self.resize(460, 350)
         self.setMinimumWidth(420)
+        self._kind = kind or "Custom"
+        self._description = description
+        self._existing_names = {" ".join(item.split()).casefold() for item in existing_names if item}
+        editing = bool(name)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
@@ -84,17 +74,6 @@ class CollectionEditDialog(QDialog):
         self.title_label.setObjectName("collectionDialogTitle")
         self.title_label.setToolTip(COLLECTION_EXPLANATION)
         layout.addWidget(self.title_label)
-        layout.addSpacing(10)
-
-        self.target_badge = QLabel(self._target_text(selection_count, editing=bool(name)), self)
-        self.target_badge.setObjectName("collectionTargetBadge")
-        self.target_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.target_badge.setToolTip(COLLECTION_EXPLANATION)
-        target_row = QHBoxLayout()
-        target_row.setContentsMargins(0, 0, 0, 0)
-        target_row.addWidget(self.target_badge)
-        target_row.addStretch(1)
-        layout.addLayout(target_row)
         layout.addSpacing(16)
 
         self.name_label = self._field_label("Name")
@@ -102,39 +81,62 @@ class CollectionEditDialog(QDialog):
         layout.addSpacing(5)
         self.name_field = QLineEdit(name, self)
         self.name_field.setObjectName("collectionNameField")
-        self.name_field.setPlaceholderText("e.g., Portfolio Maybes")
+        self.name_field.setPlaceholderText("e.g. Utah Portfolio")
         layout.addWidget(self.name_field)
-        layout.addSpacing(12)
+        self.name_error = QLabel("", self)
+        self.name_error.setObjectName("collectionNameError")
+        self.name_error.setStyleSheet("color: #e0445a;")
+        self.name_error.hide()
+        layout.addWidget(self.name_error)
+        layout.addSpacing(14)
 
-        self.purpose_label = self._field_label("Purpose")
-        layout.addWidget(self.purpose_label)
-        layout.addSpacing(5)
-        self.kind_combo = _PurposeComboBox(self)
-        self.kind_combo.setObjectName("collectionPurposeCombo")
-        for item in COLLECTION_KINDS:
-            self.kind_combo.addItem(item, item)
-        index = self.kind_combo.findData(kind)
-        if index >= 0:
-            self.kind_combo.setCurrentIndex(index)
-        layout.addWidget(self.kind_combo)
-        layout.addSpacing(12)
+        self.color_label = self._field_label("Color")
+        layout.addWidget(self.color_label)
+        layout.addSpacing(6)
+        self._color = normalized_color(color)
+        self._swatch_group = QButtonGroup(self)
+        self._swatch_group.setExclusive(True)
+        self._swatch_row = QHBoxLayout()
+        self._swatch_row.setContentsMargins(0, 0, 0, 0)
+        self._swatch_row.setSpacing(6)
+        self._swatches: dict[str, QToolButton] = {}
+        self._add_swatch("", "No color")
+        for label, value in COLLECTION_COLORS:
+            self._add_swatch(value, label)
+        self._custom_swatch: QToolButton | None = None
+        if self._color and self._color not in self._swatches:
+            self._custom_swatch = self._add_swatch(self._color, "Custom color")
+        self.more_colors_button = QPushButton("More...", self)
+        self.more_colors_button.setObjectName("collectionMoreColorsButton")
+        self.more_colors_button.setAutoDefault(False)
+        self.more_colors_button.clicked.connect(self._choose_custom_color)
+        self._swatch_row.addWidget(self.more_colors_button)
+        self._swatch_row.addStretch(1)
+        layout.addLayout(self._swatch_row)
+        self._swatches.get(self._color, self._swatches[""]).setChecked(True)
+        layout.addSpacing(16)
 
-        self.description_label = self._field_label("Description")
-        layout.addWidget(self.description_label)
-        layout.addSpacing(5)
-        self.description_field = QTextEdit(self)
-        self.description_field.setObjectName("collectionDescriptionField")
-        self.description_field.setAcceptRichText(False)
-        self.description_field.setPlaceholderText("Optional notes")
-        self.description_field.setPlainText(description)
-        self.description_field.setFixedHeight(72)
-        layout.addWidget(self.description_field)
+        self.add_winners_check = QCheckBox("Add new winners here", self)
+        self.add_winners_check.setObjectName("collectionAddWinnersCheck")
+        self.add_winners_check.setChecked(bool(add_new_winners))
+        layout.addWidget(self.add_winners_check)
+        self.add_winners_hint = QLabel("Every winner you mark with W also goes in.", self)
+        self.add_winners_hint.setObjectName("secondaryText")
+        self.add_winners_hint.setContentsMargins(24, 0, 0, 0)
+        layout.addWidget(self.add_winners_hint)
+        layout.addSpacing(14)
+
+        self.fill_hints = QLabel(self)
+        self.fill_hints.setObjectName("secondaryText")
+        self.fill_hints.setWordWrap(True)
+        self.fill_hints.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self.fill_hints)
         layout.addStretch(1)
 
         actions = QWidget(self)
         actions.setObjectName("collectionDialogActions")
         action_layout = QHBoxLayout(actions)
-        action_layout.setContentsMargins(0, 14, 0, 0)
+        action_layout.setContentsMargins(0, 16, 0, 0)
         action_layout.setSpacing(8)
         action_layout.addStretch(1)
         self.cancel_button = QPushButton("Cancel", actions)
@@ -142,12 +144,7 @@ class CollectionEditDialog(QDialog):
         self.cancel_button.setAutoDefault(False)
         self.cancel_button.clicked.connect(self.reject)
         action_layout.addWidget(self.cancel_button)
-        primary_text = (
-            "Create Collection"
-            if title.strip().lower().startswith("create")
-            else "Save Changes"
-        )
-        self.primary_button = QPushButton(primary_text, actions)
+        self.primary_button = QPushButton("Save" if editing else "Create", actions)
         self.primary_button.setObjectName("collectionPrimaryButton")
         self.primary_button.setDefault(True)
         self.primary_button.clicked.connect(self._accept_if_valid)
@@ -155,35 +152,93 @@ class CollectionEditDialog(QDialog):
         layout.addWidget(actions)
 
         self.name_field.textChanged.connect(self._sync_primary_enabled)
+        self.add_winners_check.toggled.connect(self._sync_fill_hints)
         self._sync_primary_enabled()
+        self._sync_fill_hints()
         self.name_field.setFocus()
         self.name_field.selectAll()
 
-    @staticmethod
-    def _target_text(selection_count: int, *, editing: bool) -> str:
-        count = max(0, int(selection_count))
-        if count:
-            noun = "bundle" if count == 1 else "bundles"
-            return f"Target: {count} selected {noun}"
-        return "Target: Existing collection" if editing else "Target: Empty collection"
+    def _add_swatch(self, value: str, label: str) -> QToolButton:
+        button = QToolButton(self)
+        button.setObjectName("collectionColorSwatch")
+        button.setCheckable(True)
+        button.setAutoRaise(True)
+        button.setToolTip(label)
+        button.setAccessibleName(label)
+        button.setProperty("colorValue", value)
+        button.setIcon(QIcon(collection_ring_pixmap(value, 18)))
+        button.setIconSize(QSize(18, 18))
+        button.setFixedSize(28, 28)
+        button.toggled.connect(lambda checked, target=value: self._pick_color(target) if checked else None)
+        self._swatch_group.addButton(button)
+        index = max(0, self._swatch_row.count() - (2 if hasattr(self, "more_colors_button") else 0))
+        self._swatch_row.insertWidget(index, button)
+        self._swatches[value] = button
+        return button
+
+    def _pick_color(self, value: str) -> None:
+        self._color = value
+
+    def _choose_custom_color(self) -> None:
+        chosen = QColorDialog.getColor(QColor(self._color or "#4c8dff"), self, "Collection Color")
+        if not chosen.isValid():
+            return
+        value = chosen.name()
+        if value not in self._swatches:
+            if self._custom_swatch is not None:
+                self._swatches.pop(str(self._custom_swatch.property("colorValue")), None)
+                self._swatch_group.removeButton(self._custom_swatch)
+                self._custom_swatch.deleteLater()
+            self._custom_swatch = self._add_swatch(value, "Custom color")
+        self._swatches[value].setChecked(True)
+
+    def _sync_fill_hints(self, *_args) -> None:
+        on = self.add_winners_check.isChecked()
+        w_line = "Mark a winner and it goes in" if on else "Marks a winner only, unless <i>Add new winners here</i> is on"
+        rows = (
+            ("W", w_line),
+            ("B", "Add the photo you're on without marking it a winner"),
+            ("Add All bar", "Filter or select photos, then Add All to Collection above the grid"),
+            ("Drag", "Drop photos onto it in the sidebar"),
+            ("Right-click", "On a photo: Collections, then tick it"),
+        )
+        cells = "".join(
+            f"<tr><td style='padding:1px 10px 1px 0'><b>{how}</b></td><td style='padding:1px 0'>{text}</td></tr>"
+            for how, text in rows
+        )
+        self.fill_hints.setText(f"<table cellspacing='0'>{cells}</table>")
 
     def _field_label(self, text: str) -> QLabel:
         label = QLabel(text, self)
         label.setObjectName("collectionFieldLabel")
         return label
 
+    def _name_problem(self) -> str:
+        name = " ".join(self.name_field.text().split())
+        if not name:
+            return "Give it a name."
+        if name.casefold() in self._existing_names:
+            return f"You already have a collection called “{name}”."
+        return ""
+
     def _sync_primary_enabled(self, *_args) -> None:
-        self.primary_button.setEnabled(bool(" ".join(self.name_field.text().split())))
+        problem = self._name_problem()
+        self.primary_button.setEnabled(not problem)
+        show = bool(problem) and bool(self.name_field.text().strip())
+        self.name_error.setText(problem)
+        self.name_error.setVisible(show)
 
     def result_data(self) -> CollectionDialogResult:
         return CollectionDialogResult(
             name=" ".join(self.name_field.text().split()),
-            kind=str(self.kind_combo.currentData() or "Custom"),
-            description=self.description_field.toPlainText().strip(),
+            kind=self._kind,
+            description=self._description,
+            color=self._color,
+            add_new_winners=self.add_winners_check.isChecked(),
         )
 
     def _accept_if_valid(self) -> None:
-        if not " ".join(self.name_field.text().split()):
+        if self._name_problem():
             self.name_field.setFocus()
             return
         self.accept()

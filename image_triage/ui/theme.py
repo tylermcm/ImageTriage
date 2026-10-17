@@ -3255,6 +3255,22 @@ def _app_bar_rules(theme: ThemePalette) -> str:
             background-color: #c42b1c;
             color: #ffffff;
         }}
+        QToolButton#appAlsoAddToChip {{
+            background-color: transparent;
+            border: 1px solid {theme.border.css};
+            border-radius: 4px;
+            color: {theme.text_secondary.css};
+            font-size: 10px;
+            padding: 0px 6px;
+        }}
+        QToolButton#appAlsoAddToChip::menu-indicator {{
+            image: none;
+            width: 0px;
+        }}
+        QToolButton#appAlsoAddToChip:hover {{
+            color: {theme.text_primary.css};
+            border-color: {theme.text_muted.css};
+        }}
         QToolButton#appSearchKeyHint:hover {{
             color: {theme.text_primary.css};
             border-color: {theme.text_muted.css};

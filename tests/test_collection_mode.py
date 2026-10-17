@@ -117,7 +117,7 @@ class CollectionModeTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_create_collects_across_folder_changes_and_saves(self) -> None:
-        self.host._catalog.create_virtual_collection_from_selection()
+        self.host._catalog.start_collection_mode_from_selection()
         self.assertEqual("create", self.host._collection_mode)
         self.assertTrue(self.host.grid.collection_checkbox_mode())
         self.assertFalse(self.host.collection_mode_save_button.isEnabled())
@@ -142,12 +142,12 @@ class CollectionModeTests(unittest.TestCase):
     def test_create_starts_with_the_selection_checked(self) -> None:
         self.host._records = [_record("C:/album/a.jpg")]
         self.host.grid.set_selected_indexes([0], current_index=0)
-        self.host._catalog.create_virtual_collection_from_selection()
+        self.host._catalog.start_collection_mode_from_selection()
         self.assertEqual(("C:/album/a.jpg",), tuple(p.replace("\\", "/") for p in self.host.grid.collection_paths()))
 
     def test_check_and_uncheck_all_visible(self) -> None:
         self.host._records = [_record("C:/album/a.jpg"), _record("C:/album/b.jpg"), _record("C:/album/sub", folder=True)]
-        self.host._catalog.create_virtual_collection_from_selection()
+        self.host._catalog.start_collection_mode_from_selection()
         self.host.grid.set_collection_paths_checked(["C:/elsewhere/z.jpg"], True)
         self.host._catalog.check_visible_in_collection_mode()
         self.assertEqual("3 images checked", self.host.collection_mode_count.text())

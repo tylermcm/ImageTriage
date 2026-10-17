@@ -117,8 +117,8 @@ _CONTROLLERS_BY_WINDOW_ATTRIBUTE = _controllers_by_window_attribute()
 
 # case id -> (sha256 of the text, its length in characters)
 _GOLDEN: dict[str, tuple[str, int]] = {
-    "fields+slots": ("5318eb6a1eb66dce76765480daa4a856cbd54dbb948dc15cf4db23a79d86a819", 95246),
-    "creation-order": ("76b2d903b688ac5bf3d207e38fa9d0c16ebf1df6464dacd884829ab979c3596e", 5231),
+    "fields+slots": ("23bb9f7e0dfa8a94a6bc891dd5e8b3c6d1cc6e0a0452eaeaa3e1c72b47323ea9", 94550),
+    "creation-order": ("dad91859d5cd8685c469d44f14f690061631534a68b6f9940b5bd66b12be5bed", 5189),
 }
 
 _DICT_FIELDS = (
@@ -182,8 +182,8 @@ _EXPECTED_CHECKABLE = {
 }
 
 # Position of each exclusive QActionGroup in the creation order: it is created
-# just before the actions it holds, after the 101 plain actions.
-_EXPECTED_GROUP_POSITIONS = [101, 112, 115, 122, 135]
+# just before the actions it holds, after the 100 plain actions.
+_EXPECTED_GROUP_POSITIONS = [100, 111, 114, 121, 134]
 
 
 @pytest.fixture(scope="module")
@@ -221,9 +221,9 @@ def test_actions_text_is_unchanged(built) -> None:
 def test_field_inventory(built) -> None:
     _window, actions, _created, _lines = built
     plain = _plain_field_names()
-    assert len(plain) == 101
+    assert len(plain) == 100
     assert [label for label, _ in support.action_fields(actions)][: len(plain)] == plain
-    assert sum(1 for _ in support.action_fields(actions)) == 139
+    assert sum(1 for _ in support.action_fields(actions)) == 138
     # The dict fields, in key order.
     assert [mode.name for mode in actions.appearance_actions] == [
         "SLATE", "INDIGO", "DARK", "MIDNIGHT", "GRAPHITE", "FOREST", "HIGH_CONTRAST", "WARM_NEUTRAL", "LIGHT", "AUTO"
@@ -243,10 +243,10 @@ def test_creation_order_is_declaration_order_then_each_group(built) -> None:
     _window, actions, created, _lines = built
     labels = support.action_label_map(actions)
     created_actions = [labels[id(child)] for child in created if id(child) in labels]
-    assert created_actions[:101] == _plain_field_names(), "plain actions must be created in declaration order"
+    assert created_actions[:100] == _plain_field_names(), "plain actions must be created in declaration order"
     assert [position for position, child in enumerate(created) if isinstance(child, QActionGroup)] == _EXPECTED_GROUP_POSITIONS
-    assert created_actions[101:] == [label for label, _ in support.action_fields(actions)][101:]
-    assert len(created) == 139 + len(_EXPECTED_GROUP_POSITIONS)
+    assert created_actions[100:] == [label for label, _ in support.action_fields(actions)][100:]
+    assert len(created) == 138 + len(_EXPECTED_GROUP_POSITIONS)
 
 
 def test_shortcuts(built) -> None:

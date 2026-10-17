@@ -153,7 +153,6 @@ class InspectorController(QObject):
         self._window.actions.open_in_photoshop.setEnabled(bool(selected_records and self._window._photoshop_executable))
         self._window.actions.review_ai_disagreements.setEnabled(self._window._ai_bundle is not None)
         self._window.actions.create_virtual_collection.setEnabled(True)
-        self._window.actions.add_selection_to_collection.setEnabled(bool(collections))
         self._window.actions.add_selected_to_collection.setEnabled(current_record is not None)
         self._window.actions.add_visible_to_collection.setEnabled(bool(self._window._records))
         self._window.actions.add_to_active_collection.setEnabled(current_record is not None)
