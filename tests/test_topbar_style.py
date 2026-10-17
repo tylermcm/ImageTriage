@@ -64,9 +64,12 @@ class TopbarStyleTests(unittest.TestCase):
         self.assertIsNotNone(content)
         self.assertIsNotNone(glyph)
         self.assertIsNotNone(caption)
-        self.assertEqual(2, content.x())
+        # The content spans the whole button, hover margin included, so a caption as wide as the slot is not cut off.
+        self.assertEqual(0, content.x())
         self.assertEqual(2, content.y())
-        self.assertEqual(34, content.width())
+        self.assertEqual(38, content.width())
+        self.assertEqual(34, glyph.width())
+        self.assertEqual(38, caption.width())
         self.assertEqual(22, glyph.height())
         self.assertEqual(22, glyph.iconSize().height())
         # The caption row holds a full line of its font, so p, g and y keep their descenders.
