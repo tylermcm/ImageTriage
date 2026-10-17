@@ -2134,3 +2134,101 @@ https://github.com/tylermcm/photocraft.git. Current Python auditor tests: 6 pass
 staged diff whitespace check passed. Native Curve batch validation remains pending
 as recorded above; this is a source checkpoint, with no hosted editor promotion
 or full handoff/parity validation claim. Known-good hosted executable preserved.
+
+## 2026-10-17 - Native ACR filmstrip work in progress
+
+Both checkouts remain on `codex/image-triage-integration`. Actual companion is
+`C:/Users/tylle/Documents/photocraft`; its configured `upstream` is storytold and
+`origin` is tylermcm. Both fetches succeeded. Previously fetched upstream
+`5f65579ecb44047c2a619036c18ff273202e1389` advanced to
+`efa1edd079b259b0b1f77b835151ee904437a231`. The earlier deferred upstream base
+was integrated by `91270cce`; the new two-commit update is merged in
+`3b89ae1eaf3933f2d49ad92178017806724461f9`. Fork integration remains `00c154c4`,
+already an ancestor; no additional fork-only work was pending.
+
+The two-commit update had no textual conflicts. Reviewed both automatic merges:
+upstream's export-presets initializer matches our build repair; its version is
+retained alongside the existing regression test. The other change only gates
+algorithm test helpers with cfg(test). No new upstream startup, control, jobs,
+menus, theme, native-window or authorization changes occur in those two commits.
+Nothing was pushed.
+
+New native module `camera_raw_filmstrip_ui.rs` owns drawing, hit targets, collapse,
+scrolling and keyboard requests. `ui.filmstrip` exchanges a bounded metadata window
+and at most one 384px RGBA display thumbnail per request. Stable identities,
+browse generations and acknowledged serials protect against reordered/late
+responses. Image Triage retains browse order/filter/sort, annotations, undo,
+navigation, stash/restore and Save. New `photocraft_filmstrip.py` connects those
+existing paths. The old Qt strip is removed from its layout and retained intact;
+capability/data negotiation precedes detachment, then the native tray is enabled.
+A lost reply keeps the last presentation and retries so both strips cannot appear.
+Process exit restores the same Qt widget.
+
+135 focused host regressions pass. Hosted synthetic check v2 passes native clicks,
+grid selection, persistent PID, folder exclusion, host/native ratings, reject,
+collapsed keyboard navigation, collapse/expand, host resize, unchanged originals
+and process cleanup. Public RAW fixture testing also observed restored +1 exposure;
+one earlier occluded-window run logged a control dispatch timeout during teardown,
+so complete RAW/shutdown acceptance still needs a clean final run. Native full
+suite caught and prompted corrections for loading-shell geometry and test texture
+cleanup; final native gates and current-source overlays are still in progress.
+
+Candidate builds stay in `target/acr-filmstrip/debug/photocraft.exe`. Ordinary
+debug executable bytes and timestamp are restored after each cached build;
+release and the existing `target/acr18` hosted build are preserved. No default
+launcher promotion or release packaging has occurred. This is not a 1:1 parity pass.
+
+All 19 resupplied screenshots remain in the private attachment directory.
+Companion `design/camera-raw/reference-inventory.json` now resolves their current
+numbers by SHA256, and the auditor resolves registrations by hash. Reference 19
+has 24 explicit filmstrip/navigation regions. Artifacts, original screenshot pixels,
+native captures, inspection JSON, raw 50% overlays and element differences remain
+outside Git under the chat's `acr-filmstrip` visualization directory. The full
+every-element/every-reference goal remains active, including shared chrome,
+dialogs and unsupported tool behavior.
+
+### Validated filmstrip development checkpoint
+
+PhotoCraft source is committed locally as
+`2c2526820f045265cdf7ca7f73ba18c453f33633`. Isolated executable SHA256:
+`7285F75BDC2E95C56C46B77539D24DF2B58AC5F7CC6FBE6E2B5354B3497A0D92`.
+Both PS1 development launchers now select this candidate; `-EditorBuild acr18`
+selects the preserved preceding build. Ordinary installed-editor discovery is
+unchanged. No release build, packaging or push.
+
+Final checks: 137 host regressions; 3113 native library tests (13 ignored);
+146 desktop tests; 15 Camera Raw/workspace integrations; six overlay-auditor
+tests. All-target clippy, layers (30 crates) and wasm (24 checks) pass. Older
+Camera Raw catalog omissions were translated in all applicable catalogs to make
+the full native suite green, rather than exempting its translation test.
+
+MainWindow synthetic final13 and Nikon RAW final12 pass native clicks, retained
+Qt detachment, grid selection, annotations, collapsed arrow/Home navigation,
+split comparison, resize/fullscreen, private live-theme reload and clean draft
+saves/shutdown. The synthetic check also verifies different original/adjusted
+pixels across the comparison split. Two-camera recipe flow passes Nikon D3/Z6
+recipe/export equivalence, edit-before-first-poll persistence, document continuation
+and native Save. Separate full-editor handoff passes native Save, four grid save
+notifications, closed-tab reopen, hidden startup, five themes and zero navigation
+hides. Native rendered screenshots were reviewed; desktop-composite screenshots
+were not certified on the inactive virtual desktop.
+
+Live validation exposed two host issues and their regressions are covered:
+rescans briefly clear `_records`, so the adapter retains the committed browse
+window and defers actions until scanning finishes; fullscreen close can destroy
+the embedded window while the old Qt layout is restored, so the close guard parks
+the editor before that transition. Final checks explicitly reject close-save errors.
+
+Cargo desktop integration tests regenerated the ordinary debug executable too;
+after all Cargo commands it was restored to hash
+`B7447438BD9459FF61C3E0BE89D1BACF65DEC911FDD60DBF67D2D4CFCF6F3B53`
+and original UTC timestamp `2026-10-09T03:15:19.5133667Z`. Release remains
+`EA42E1B82F1346091E18C210BD821194AD99CC446CB2FB9425108443049030C5`.
+
+Current evidence has 14 verified native view captures, 447 body-region comparisons
+and 24 filmstrip/navigation comparisons (471 total). Frame edges and tray/nav
+background average about 0.3 RGB levels from the dithered reference; this limited
+measurement is not a complete parity pass. Glyphs, type, remaining chrome and
+photo-dependent Fit/thumbnail geometry remain under review. References
+6, 7, 10, 11, 13, 14, 15, 16, 17 and 18 still lack individual matching-view audits.
+The broader all-19/every-element goal remains active.

@@ -47,5 +47,23 @@ Control requests must retain the existing authorization/scoped file rules.
 - Resize/collapse, theme, fullscreen, hidden startup and shutdown/process cleanup pass.
 - Host hides its strip only after native capability is confirmed; fallback restores it.
 
-This is the recommended migration plan, not a completed native filmstrip or a
-claim that the currently fetched PhotoCraft build already supplies one.
+## Implementation checkpoint, 2026-10-17
+
+The in-progress native replacement now follows this ownership split. The retained
+Qt widget detaches after capability/data confirmation; it is not deleted. The
+first isolated candidate passes hosted click/grid navigation, bounded thumbnail
+delivery, host/native rating and reject requests, collapsed keyboard navigation,
+resize and process-cleanup checks. Native sorting/filtering dispatches through
+the host's existing controllers. Old builds retain the Qt presentation.
+
+Reference 19 supplies the expanded strip. Measured at scale 2: tray height 280px,
+selected frame 343x274px, top gap 4px, frame thickness 6px, navigation height 80px.
+Those dimensions feed live JSON. Fixed whole-strip overlays and 24 individual
+regions expose remaining glyph/color/type differences; different photo content
+is not evidence of a UI mismatch. The supplied reference shows one thumbnail,
+so spacing for multiple thumbnails is not independently established.
+
+Still required before default promotion: final native gates, a clean RAW handoff
+including Save/reopen/fullscreen/shutdown, latest-source measured overlays, and
+resolution of the remaining navigation/before-after and preference differences.
+The replacement is implemented for testing, not certified as complete ACR parity.

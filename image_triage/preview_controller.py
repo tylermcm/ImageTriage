@@ -27,6 +27,7 @@ from .scanner import normalized_path_key
 from .shell_actions import detect_photocraft_executable, open_in_photoshop
 from .ui import load_shortcut_overrides
 from .ui import preview_studio
+from .photocraft_filmstrip import NativeFilmstrip
 from .ui.native_image_layer import CAMERA_RAW_FIRST_DEFAULT, CAMERA_RAW_FIRST_KEY, EDITOR_PRESTART_KEY
 
 _log = logging.getLogger(__name__)
@@ -99,6 +100,7 @@ class PreviewController(QObject):
         # Filmstrip pixmaps by the cache key of the image they were made from: the strip asks for every visible thumb on each
         # step, and making a pixmap from the same image again each time was most of the cost (and a new pixmap repaints).
         self._filmstrip_pixmaps: dict[int, QPixmap] = {}
+        self._native_filmstrip = NativeFilmstrip(self)
         self._photocraft_raw_inflight = False
         self._photocraft_needs_preview_refresh = False
         self._photocraft_current_path = ""
@@ -877,6 +879,7 @@ class PreviewController(QObject):
             self._attach_photocraft(preview, proc)
             preview.show_photocraft_host()
             self._mark_navigation(path, "first_pixel", "preview", "refined")
+            self._native_filmstrip.attach(proc)
             if not proc.camera_raw_first:
                 preview.photocraft_document_ready(path)
             self._photocraft_future = self._photocraft_executor.submit(self._refresh_photocraft_viewport, proc, generation, path)
@@ -1541,7 +1544,11 @@ class PreviewController(QObject):
         window and a child window goes with its parent, whatever process it belongs to; an editor left inside lost its window and
         never answered again (measured: nothing in 84 s), which is why it used to be saved and quit here."""
         preview = self.preview_if_built()
-        if preview is None or not getattr(preview, "hide_on_close", False):
+        # Restoring the detached strip changes the native container's layout.
+        # On a fullscreen close Qt can destroy its foreign child during that
+        # transition even though the dialog itself is only hidden. Park first
+        # so pending draft saves retain a live editor window and frame loop.
+        if preview is None or not getattr(preview, "hide_on_close", False) or getattr(preview, "_native_filmstrip_active", False):
             self._park_photocraft()
         return True
 
@@ -1711,6 +1718,7 @@ class PreviewController(QObject):
         )
 
     def shutdown_photocraft(self) -> None:
+        self._native_filmstrip.stop()
         self._photocraft_generation += 1
         self._photocraft_save_timer.stop()
         self._photocraft_closing = True
@@ -1875,6 +1883,7 @@ class PreviewController(QObject):
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         browsable = self.browsable_indexes()
+        self._native_filmstrip.refresh_source()
 
         def record_index(position: int) -> int:
             return browsable[position] if 0 <= position < len(browsable) else -1

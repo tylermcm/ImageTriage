@@ -192,3 +192,43 @@ for 0. Crop scaling introduces antialiasing at the rectangle edges; compare
 fresh overlays and multiple rows rather than using only a single pixel cutoff.
 The wider numeric control must retain its full interactive width and support
 click-to-type, arithmetic, keyboard stepping and scrubbing.
+
+## 2026-10-17 - Native filmstrip and current reference registration
+
+All 19 current attachments are matched by SHA256. Whole-panel uniform scaling is
+fixed before measuring any individual element. Source pixels remain private,
+outside Git. This checkpoint measures differences; it does not certify full parity.
+
+| Current image | View | Individually measured regions |
+|---|---|---:|
+| 1 | Edit: Light, Color, Effects and Curve | 114 |
+| 2 | Edit: Curve, Color Mixer, Detail and Optics | 98 |
+| 3 | Edit: Color Grading, Detail, Optics and lower sections | 58 |
+| 4 | Edit: Optics, Lens Blur and Calibration | 93 |
+| 5 | Edit: all sections collapsed | 40 |
+| 6 | Save Options dialog: naming, format, metadata, sizing and sharpening | 0 |
+| 7 | Preferences dialog: pages, appearance, panels, filmstrip, zoom and shortcuts | 0 |
+| 8 | Red Eye: pupil size, darken, overlay | 18 |
+| 9 | Snapshots: empty state and header | 5 |
+| 10 | Presets: groups, favorites and preset list | 0 |
+| 11 | Settings menu: enabled/disabled commands and submenus | 0 |
+| 12 | Info: camera, capture date, filename and content credentials | 21 |
+| 13 | Masking: subject, sky, background, tools and People | 0 |
+| 14 | Crop & Expand: geometry, rotation, flip and aspect controls | 0 |
+| 15 | Remove: modes, Generative AI, object detection, brush, distractions | 0 |
+| 16 | Full window: alternate Info/preview state | 0 |
+| 17 | Full window: grid overlay and Info | 0 |
+| 18 | Full window: Info, preview, header, navigation and footer | 0 |
+| 19 | Full window: Edit panels, filmstrip and navigation | 24 |
+
+The 471 measurements include 24 filmstrip/navigation regions from image 19.
+No full reference is complete. Unmeasured views, shared chrome, all remaining
+glyph/typography/spacing differences, and unsupported tool behavior stay open.
+Synthetic-photo pixels and the resulting Fit percentage are content-dependent;
+the raw overlays retain them, but they are not structural parity evidence.
+Multiple-thumbnail spacing has no independent oracle in this one-thumbnail reference.
+
+Native filmstrip tests preserve the same Qt fallback widget, stable host browse
+identities, annotation ownership, draft stash/restore and Save pipeline. A rescan
+holds the committed native browse window. Fullscreen close parks the editor before
+restoring the detached Qt layout so its child window survives pending saves.
