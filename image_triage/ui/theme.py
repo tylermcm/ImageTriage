@@ -2087,9 +2087,10 @@ def _navigation_section_rules(theme: ThemePalette) -> str:
             margin: 0px;
             border-radius: 6px;
         }}
+        /* Rows start where the section header's icon does: they are the section's contents, not a nested level. */
         QListWidget#projectsList::item {{
             min-height: 32px;
-            padding: 1px 10px 1px 38px;
+            padding: 1px 10px 1px 10px;
             margin: 0px;
         }}
         QListWidget#faceGroupsList, QListWidget#projectsList {{
