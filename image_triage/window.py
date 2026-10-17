@@ -303,10 +303,6 @@ class MainWindow(QMainWindow):
     APPEARANCE_KEY = "window/appearance"
     # One-shot switch of existing installs onto the Slate default.
     APPEARANCE_SLATE_MIGRATION_KEY = "window/appearance_slate_default"
-    TOOLBAR_PLACEMENT_KEY = "ui/toolbar_placement"
-    # The toolbar always floats over the grid. "docked" (a flat row above it) is no longer offered; a saved "docked"
-    # setting from an older version is read as "floating".
-    TOOLBAR_PLACEMENTS = ("floating",)
     # The floating bar's bottom margin, inner padding, row gap and fade are
     # FLOATING_TOOLBAR_*_H in layout_ratios.py. This one stays: it only caps the
     # bar's width against a narrow grid and never moves it (the bar is centred).
@@ -930,9 +926,6 @@ class MainWindow(QMainWindow):
             self._settings.setValue(self.APPEARANCE_SLATE_MIGRATION_KEY, True)
         self._appearance_mode = parse_appearance_mode(
             self._settings.value(self.APPEARANCE_KEY, AppearanceMode.SLATE.value, str)
-        )
-        self._toolbar_placement = self._toolbar.normalize_toolbar_placement(
-            self._settings.value(self.TOOLBAR_PLACEMENT_KEY, "floating", str)
         )
         self._ui_gamma = normalize_ui_gamma(self._settings.value(self.UI_GAMMA_KEY, 1.0, float))
         self._interface_size = normalize_display_profile_preference(
@@ -2048,7 +2041,7 @@ class MainWindow(QMainWindow):
         status.addPermanentWidget(self.cache_pipeline_label)
         status.addPermanentWidget(self.filter_summary_label)
         status.addPermanentWidget(self.clear_filters_button)
-        self._toolbar.apply_toolbar_placement()
+        self._toolbar.attach_floating_toolbar()
         self._scan.refresh_catalog_status_indicator()
         self._aiculler.refresh_adapter_status_indicator()
         self._records_view.refresh_filter_toolbar_menu()

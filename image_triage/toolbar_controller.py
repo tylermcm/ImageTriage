@@ -299,8 +299,7 @@ class ToolbarController(QObject):
         self._window.topbar_action_stack = self.build_topbar_action_stack()
         self.toolbar_strip = self.build_toolbar_strip(nav_cluster, self._window.topbar_action_stack)
 
-        # Zoom and the panel toggles travel together: into the status bar when
-        # the toolbar floats, onto the end of the docked toolbar otherwise.
+        # Zoom and the panel toggles travel together, in the status bar.
         self.view_controls = QWidget()
         self.view_controls.setObjectName("viewControls")
         self.view_controls.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -393,10 +392,10 @@ class ToolbarController(QObject):
             self._window.showMaximized()
 
     def toolbar_profile(self) -> DisplayProfile:
-        """Button metrics for the customizable bar. Floating, the buttons grow
-        to fill the dock's proportional height while still fitting its width."""
+        """Button metrics for the customizable bar: the buttons grow to fill the dock's
+        proportional height while still fitting its width."""
         profile = getattr(self._window, "_display_profile", None) or STANDARD_DISPLAY
-        if getattr(self._window, "_toolbar_placement", "docked") != "floating" or self._window.height() <= 0:
+        if self._window.height() <= 0:
             return profile
         margins = getattr(self, "_toolbar_strip_layout", None)
         vertical = (margins.contentsMargins().top() + margins.contentsMargins().bottom()) if margins else 8
@@ -436,33 +435,23 @@ class ToolbarController(QObject):
             line_edit.selectAll()
 
     def size_view_controls(self) -> None:
-        """Compact zoom + panel toggles for the status bar; full size on the
-        docked toolbar."""
+        """Size the zoom slider and panel toggles that live in the status bar."""
         controls = getattr(self, "view_controls", None)
         if controls is None:
             return
-        compact = self._window._toolbar_placement == "floating"
-        profile = getattr(self._window, "_display_profile", None) or STANDARD_DISPLAY
-        # Status-bar sizes come from layout_ratios (STATUS_*, ZOOM_*); docked on
-        # the toolbar, the controls take the toolbar's own button metrics.
+        # Status-bar sizes come from layout_ratios (STATUS_*, ZOOM_*).
         px = layout_ratios.ratio_px
         height = max(1, self._window.height())
         floor = layout_ratios.MIN_GLYPH_PX
         toggle_box = px(layout_ratios.STATUS_TOGGLE_BOX_H, height, minimum=16)
         toggle_icon = px(layout_ratios.STATUS_TOGGLE_ICON_H, height, minimum=floor)
         for button in getattr(self, "_topbar_pane_buttons", {}).values():
-            if compact:
-                button.setFixedSize(toggle_box, toggle_box)
-                button.setIconSize(QSize(toggle_icon, toggle_icon))
-            else:
-                hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
-                hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
-                button.setFixedSize(hover_width, hover_height)
-                button.setIconSize(QSize(profile.topbar_glyph_size + 2, profile.topbar_glyph_size + 2))
+            button.setFixedSize(toggle_box, toggle_box)
+            button.setIconSize(QSize(toggle_icon, toggle_icon))
         slider = getattr(self, "topbar_zoom_slider", None)
         if slider is not None:
             slider_width = px(layout_ratios.ZOOM_SLIDER_W, max(1, self._window.width()), minimum=48)
-            slider.setFixedWidth(slider_width if compact else profile.topbar_zoom_width)
+            slider.setFixedWidth(slider_width)
 
         # The slider's line and handle, and the magnifiers either side of it.
         track = px(layout_ratios.ZOOM_TRACK_H, height, minimum=1)
@@ -512,12 +501,13 @@ class ToolbarController(QObject):
         """The customizable button bar as one movable unit.
 
         It shares the ``appTopBar`` object name so the top-bar button rules
-        style it; ``toolbarPlacement`` picks the docked row or floating dock
-        surface. ``_apply_toolbar_placement`` parents and positions it.
+        style it; ``toolbarPlacement`` marks it as the floating dock surface (the main
+        top bar shares the object name). ``attach_floating_toolbar`` parents and
+        positions it.
         """
         strip = QFrame()
         strip.setObjectName("appTopBar")
-        strip.setProperty("toolbarPlacement", self._window._toolbar_placement)
+        strip.setProperty("toolbarPlacement", "floating")
         strip.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         strip_layout = QHBoxLayout(strip)
         strip_layout.setContentsMargins(8, 4, 8, 4)
@@ -533,65 +523,29 @@ class ToolbarController(QObject):
         self._toolbar_strip_layout = strip_layout
         return strip
 
-    def normalize_toolbar_placement(self, value: object) -> str:
-        text = str(value or "").strip().lower()
-        return text if text in self._window.TOOLBAR_PLACEMENTS else "floating"
-
-    def set_toolbar_placement(self, placement: str) -> None:
-        normalized = self.normalize_toolbar_placement(placement)
-        if normalized == self._window._toolbar_placement:
-            return
-        self._window._toolbar_placement = normalized
-        self._window._settings.setValue(self._window.TOOLBAR_PLACEMENT_KEY, normalized)
-        self.apply_toolbar_placement()
-        # Forced: a rare, user-initiated change that just reparented the strip
-        # and swapped its surface, so fresh buttons are worth the few ms.
-        self.rebuild_topbar_action_stack(force=True)
-        profile = self.toolbar_profile()
-        for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
-            self._window._resize_topbar_button(button, profile)
-        self._window._appearance.schedule_layout_ratio_update()
-        self._window._inspector.update_action_states()
-
-    def apply_toolbar_placement(self) -> None:
+    def attach_floating_toolbar(self) -> None:
+        """Parent the toolbar strip over the grid's bottom edge and the status bar's zoom controls, once at startup."""
         strip = getattr(self, "toolbar_strip", None)
         center_layout = getattr(self._window, "workspace_center_layout", None)
         browser_stack = getattr(self._window, "browser_stack", None)
         if strip is None or center_layout is None or browser_stack is None:
             return
-        floating = self._window._toolbar_placement == "floating"
-        strip.setProperty("toolbarPlacement", self._window._toolbar_placement)
         center_layout.removeWidget(strip)
         controls = getattr(self, "view_controls", None)
         status = self._window.statusBar() if controls is not None else None
         if controls is not None and status is not None:
             status.removeWidget(controls)
-            self._toolbar_strip_layout.removeWidget(controls)
-            if floating:
-                status.insertPermanentWidget(0, controls, 0)
-            else:
-                self._toolbar_strip_layout.addWidget(controls, 0, Qt.AlignmentFlag.AlignVCenter)
+            status.insertPermanentWidget(0, controls, 0)
             controls.show()
             self.size_view_controls()
-        if floating:
-            strip.setParent(browser_stack.parentWidget())
-            shadow = QGraphicsDropShadowEffect(strip)
-            shadow.setBlurRadius(36)
-            shadow.setOffset(0, 12)
-            shadow.setColor(QColor(0, 0, 0, 150))
-            strip.setGraphicsEffect(shadow)
-            strip.show()
-            self.position_floating_toolbar()
-        else:
-            strip.setGraphicsEffect(None)
-            strip.setMinimumWidth(0)
-            strip.setMaximumWidth(16777215)
-            strip.setMinimumHeight(0)
-            strip.setMaximumHeight(16777215)
-            center_layout.insertWidget(0, strip)
-            strip.show()
-            self._window.grid.set_bottom_overlay(0, 0)
-            self._window.details_view.set_bottom_overlay_reserve(0)
+        strip.setParent(browser_stack.parentWidget())
+        shadow = QGraphicsDropShadowEffect(strip)
+        shadow.setBlurRadius(36)
+        shadow.setOffset(0, 12)
+        shadow.setColor(QColor(0, 0, 0, 150))
+        strip.setGraphicsEffect(shadow)
+        strip.show()
+        self.position_floating_toolbar()
         strip.style().unpolish(strip)
         strip.style().polish(strip)
         strip.update()
@@ -606,7 +560,7 @@ class ToolbarController(QObject):
     def position_floating_toolbar(self, *, expanded: bool = False) -> None:
         strip = getattr(self, "toolbar_strip", None)
         browser_stack = getattr(self._window, "browser_stack", None)
-        if strip is None or browser_stack is None or self._window._toolbar_placement != "floating":
+        if strip is None or browser_stack is None:
             return
         area = browser_stack.geometry()
         px = layout_ratios.ratio_px
@@ -878,10 +832,9 @@ class ToolbarController(QObject):
         cell = max(profile.topbar_slot_cell_min, hover_width)
         spacing = max(0, profile.topbar_slot_spacing)
         count = (available + spacing) // (cell + spacing)
-        if getattr(self._window, "_toolbar_placement", "docked") == "floating":
-            # The dock is a fixed share of the window: spread the buttons in
-            # use across it instead of leaving empty cells at the end.
-            count = min(count, max(1, self.used_toolbar_slot_count()))
+        # The dock is a fixed share of the window: spread the buttons in
+        # use across it instead of leaving empty cells at the end.
+        count = min(count, max(1, self.used_toolbar_slot_count()))
         return max(1, min(self._window.TOPBAR_SLOT_COUNT, int(count)))
 
     def configure_topbar_grid_columns(self, grid: QGridLayout, visible_slots: int) -> None:
@@ -906,11 +859,10 @@ class ToolbarController(QObject):
             visible_slots,
             tuple(slots.get("manual") or ()),
             tuple(slots.get("ai") or ()),
-            # Every button metric (and, floating, the scale derived from the window size).
+            # Every button metric (and the scale derived from the window size).
             self.toolbar_profile(),
             # Icon colours.
             getattr(self._window, "_theme", None),
-            getattr(self._window, "_toolbar_placement", "docked"),
         )
 
     def topbar_stack_intact(self) -> bool:
@@ -1008,7 +960,7 @@ class ToolbarController(QObject):
         self.sync_topbar_reorders()
         if logger.enabled:
             logger.duration("toolbar.rebuild_stack", (time.perf_counter() - start) * 1000.0, widgets=built)
-        if getattr(self._window, "_toolbar_placement", "docked") == "floating" and getattr(self, "toolbar_strip", None) is not None:
+        if getattr(self, "toolbar_strip", None) is not None:
             QTimer.singleShot(0, self.position_floating_toolbar)
 
     def normalize_topbar_slot_button(self, widget: QWidget) -> None:

@@ -79,7 +79,7 @@ def test_the_filmstrip_is_told_about_photos_only(main_window, dialogs, tmp_path,
     window.preview  # build the popout so its filmstrip can be observed
     seen: list[tuple[int, int, bool]] = []
 
-    def record_context(total, current, thumb_provider=None, tag_provider=None) -> None:
+    def record_context(total, current, thumb_provider=None, tag_provider=None, marked_provider=None) -> None:
         # the provider for cell 0 must be the first photo, never the subfolder entry (which has no thumbnail)
         seen.append((total, current, thumb_provider is not None and tag_provider is not None))
 
