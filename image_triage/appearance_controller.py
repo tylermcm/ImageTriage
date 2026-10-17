@@ -754,16 +754,20 @@ class AppearanceController(QObject):
             folder_tree.setIndentation(glyph(layout_ratios.FOLDER_INDENT_H))
 
         # Settings strip under the folder pane (the top-bar gear is sized above)
-        strip_box = glyph(layout_ratios.SETTINGS_BUTTON_BOX_H)
-        strip_icon = glyph(layout_ratios.SETTINGS_ICON_H)
+        # The strip's buttons follow the strip itself (as the window controls follow the top bar), including
+        # its small-screen floor, so they never drift smaller than the bar they sit in.
+        strip_height = px(layout_ratios.SETTINGS_BAR_H, height, minimum=40)
+        strip_pad = round(strip_height * layout_ratios.SETTINGS_PAD_BAR)
+        strip_box = max(20, strip_height - 2 * strip_pad)
+        strip_icon = max(12, round(strip_box * layout_ratios.SETTINGS_ICON_BOX))
         top_gear = getattr(self._window._toolbar, "app_settings_button", None)
         for button, _base in getattr(self._window, "_left_settings_buttons", ()):
             if button is not top_gear:
                 size(button, strip_box, strip_icon)
         settings_bar = getattr(self._window, "left_settings_bar", None)
         if settings_bar is not None and settings_bar.layout() is not None:
-            pad = glyph(layout_ratios.SETTINGS_PAD_H)
-            settings_bar.layout().setContentsMargins(pad, pad, pad, pad)
+            pad_x = glyph(layout_ratios.SETTINGS_PAD_H)
+            settings_bar.layout().setContentsMargins(pad_x, strip_pad, pad_x, strip_pad)
             settings_bar.layout().setSpacing(glyph(layout_ratios.SETTINGS_GAP_H))
 
         # Floating bar padding (its margin, row gap and fade are positional,
