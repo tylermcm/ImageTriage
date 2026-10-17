@@ -682,6 +682,7 @@ class PhotoCraftControl:
         self.camera_raw_supported = capabilities.get("cameraRaw", 0) >= 1
         self.camera_raw_prefetch_supported = capabilities.get("cameraRawPrefetch", 0) >= 1
         self.camera_raw_switch_supported = capabilities.get("cameraRawSwitch", 0) >= 1
+        self.filmstrip_supported = capabilities.get("filmstrip", 0) >= 1
         # ``app.stash`` can save the project and the display JPEG without the full-size PNG (``preview`` left out).
         self.stash_without_preview_supported = capabilities.get("stashWithoutPreview", 0) >= 1
         # Saves and recipe renders write generation-named pictures and a render manifest (``render_manifest_path``).

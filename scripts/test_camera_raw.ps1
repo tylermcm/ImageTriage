@@ -4,17 +4,19 @@ Example: ./scripts/test_camera_raw.ps1 -OpenPath 'C:\Pictures\Test photos'
 #>
 param(
     [string]$OpenPath,
-    [string]$PhotoCraftRoot
+    [string]$PhotoCraftRoot,
+    [ValidateSet('acr18', 'acr-filmstrip')]
+    [string]$EditorBuild = 'acr-filmstrip'
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $PhotoCraftRoot) {
     $roots = @((Join-Path (Split-Path -Parent $repoRoot) 'photocraft'), (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Documents/photocraft'))
-    $PhotoCraftRoot = $roots | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'target/acr18/debug/photocraft.exe') } | Select-Object -First 1
+    $PhotoCraftRoot = $roots | Where-Object { Test-Path -LiteralPath (Join-Path $_ "target/$EditorBuild/debug/photocraft.exe") } | Select-Object -First 1
 }
 if (-not $PhotoCraftRoot) { throw 'Camera Raw preview build missing. Build the native preview in the companion PhotoCraft checkout first.' }
 $PhotoCraftRoot = (Resolve-Path -LiteralPath $PhotoCraftRoot).Path
-$editor = Join-Path $PhotoCraftRoot 'target/acr18/debug/photocraft.exe'
+$editor = Join-Path $PhotoCraftRoot "target/$EditorBuild/debug/photocraft.exe"
 $layout = Join-Path $PhotoCraftRoot 'design/camera-raw/layout.json'
 $colors = Join-Path $PhotoCraftRoot 'design/camera-raw/tokens.json'
 foreach ($file in @($editor, $layout, $colors)) {
@@ -24,7 +26,7 @@ $python = @('.msi_build_venv/Scripts/pythonw.exe', '.venv/Scripts/pythonw.exe') 
 if (-not $python) { throw 'Image Triage Python environment missing (.msi_build_venv or .venv).' }
 $arguments = @('-m', 'image_triage')
 if ($OpenPath) { $arguments += '"' + (Resolve-Path -LiteralPath $OpenPath).Path + '"' }
-$testRoot = Join-Path $PhotoCraftRoot 'target/acr18/image-triage-test'
+$testRoot = Join-Path $PhotoCraftRoot "target/$EditorBuild/image-triage-test"
 $overrides = @{
     IMAGE_TRIAGE_PHOTOCRAFT_EXE = $editor
     PHOTOCRAFT_CAMERA_RAW_LAYOUT_FILE = $layout
