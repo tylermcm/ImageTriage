@@ -6,7 +6,7 @@ import os
 import time
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, QTimer, Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QPixmap
+from PySide6.QtGui import QAction, QColor, QFont, QFontInfo, QFontMetrics, QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel, QMenu, QSizePolicy, QSlider, QSpacerItem, QStackedWidget, QToolButton, QVBoxLayout, QWidget
 from collections.abc import Callable
 from dataclasses import replace
@@ -33,6 +33,35 @@ def topbar_button_rows(profile: DisplayProfile, caption: QLabel) -> tuple[int, i
     return caption_height, max(profile.topbar_button_height, profile.topbar_glyph_size + caption_height)
 
 
+MIN_CAPTION_PX = 8
+
+
+def fit_caption_font(caption: QLabel, available: int) -> None:
+    """Keep the whole caption inside ``available`` px: the theme's size when it fits, else the largest smaller size that does
+    (down to ``MIN_CAPTION_PX``). The size goes through the label's own stylesheet, which beats the application one, and is
+    dropped again when the caption fits at the theme's size (a wider button, another font, a shorter caption)."""
+    if caption.property("captionFitted"):
+        caption.setStyleSheet("")
+        caption.style().unpolish(caption)
+        caption.style().polish(caption)
+        caption.setProperty("captionFitted", False)
+    text = caption.text()
+    base = caption.font()
+    base_px = QFontInfo(base).pixelSize()
+    if base_px <= 0:  # no resolved font (a headless platform): work it out from the point size
+        base_px = base.pixelSize() if base.pixelSize() > 0 else round(base.pointSizeF() * 96 / 72)
+    if not text or base_px <= 0 or available <= 0:
+        return
+    for px in range(base_px, MIN_CAPTION_PX - 1, -1):
+        font = QFont(base)
+        font.setPixelSize(px)
+        if QFontMetrics(font).horizontalAdvance(text) <= available or px == MIN_CAPTION_PX:
+            if px != base_px:
+                caption.setStyleSheet(f"font-size: {px}px;")
+                caption.setProperty("captionFitted", True)
+            return
+
+
 def resize_topbar_button(button: QToolButton, profile: DisplayProfile) -> None:
     """Size a composite top-bar button (see ToolbarController.apply_topbar_button_style) for ``profile``."""
     caption = button.findChild(QLabel, "appTopBarButtonCaption")
@@ -42,15 +71,19 @@ def resize_topbar_button(button: QToolButton, profile: DisplayProfile) -> None:
     )
     margin = profile.topbar_hover_margin
     button.setFixedSize(profile.topbar_slot_button_width + 2 * margin, content_height + 2 * margin)
+    # The content spans the whole button, hover margin included: the caption is the widest thing in it, and a word
+    # such as "Refresh" or "Winner" is as wide as the slot, so it gets the margin's room instead of being cut off.
+    content_width = profile.topbar_slot_button_width + 2 * margin
     content = button.findChild(QWidget, "appTopBarButtonContent")
     if content is not None:
-        content.setGeometry(margin, margin, profile.topbar_slot_button_width, content_height)
+        content.setGeometry(0, margin, content_width, content_height)
     glyph = button.findChild(QToolButton, "appTopBarGlyph")
     if glyph is not None:
         glyph.setIconSize(QSize(profile.topbar_glyph_size, profile.topbar_glyph_size))
         glyph.setFixedSize(profile.topbar_slot_button_width, profile.topbar_glyph_size)
     if caption is not None:
-        caption.setFixedSize(profile.topbar_slot_button_width, caption_height)
+        caption.setFixedSize(content_width, caption_height)
+        fit_caption_font(caption, content_width - 2)
 
 
 class ToolbarController(QObject):
