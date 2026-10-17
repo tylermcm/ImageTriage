@@ -116,7 +116,7 @@ class CollectionEditDialog(QDialog):
         self._swatches.get(self._color, self._swatches[""]).setChecked(True)
         layout.addSpacing(16)
 
-        self.add_winners_check = QCheckBox("Add new winners here", self)
+        self.add_winners_check = QCheckBox("New winners go here", self)
         self.add_winners_check.setObjectName("collectionAddWinnersCheck")
         self.add_winners_check.setChecked(bool(add_new_winners))
         layout.addWidget(self.add_winners_check)
@@ -194,7 +194,7 @@ class CollectionEditDialog(QDialog):
 
     def _sync_fill_hints(self, *_args) -> None:
         on = self.add_winners_check.isChecked()
-        w_line = "Mark a winner and it goes in" if on else "Marks a winner only, unless <i>Add new winners here</i> is on"
+        w_line = "Mark a winner and it goes in" if on else "Marks a winner only, unless <i>New winners go here</i> is on"
         rows = (
             ("W", w_line),
             ("B", "Add the photo you're on without marking it a winner"),

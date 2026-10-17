@@ -1136,6 +1136,8 @@ class CatalogController:
         collection = window._library_store.load_collection(collection_id) if collection_id else None
         paths = collection.item_paths if collection is not None else ()
         label = collection.name if collection is not None else ""
+        if collection is not None and window._projects.viewing_collection(collection.id):
+            paths, label = (), ""  # inside the collection every photo is in it; the tag would only repeat that
         grid.set_active_collection_members(paths, label)
         preview_ctl = getattr(window, "_preview_ctl", None)
         preview = preview_ctl.preview_if_built() if preview_ctl is not None else None
