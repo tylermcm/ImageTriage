@@ -139,6 +139,7 @@ class ThumbnailGridView(QAbstractScrollArea):
     move_requested = Signal(int)
     keep_requested = Signal(int)
     tag_requested = Signal(int)
+    collect_requested = Signal(int)
     winner_requested = Signal(int)
     reject_requested = Signal(int)
     adapter_label_requested = Signal(str, str)
@@ -200,6 +201,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._tool_tile_toggle_mode = False
         self._collection_checkbox_mode = False
         self._collection_paths: dict[str, str] = {}
+        # Members of the active collection, marked on their tiles (see set_active_collection_members).
+        self._active_collection_keys: frozenset[str] = frozenset()
+        self._active_collection_label = ""
         self._free_smooth_scroll_enabled = False
         self._action_mode = "normal"
         self._show_ai_annotations = False
@@ -331,6 +335,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             "keep_at_cursor": QKeySequence("K"),
             "move_at_cursor": QKeySequence("M"),
             "tag_at_cursor": QKeySequence("T"),
+            "collect_at_cursor": QKeySequence("B"),
             "adapter_label_hero": QKeySequence("1"),
             "adapter_label_strong": QKeySequence("2"),
             "adapter_label_maybe": QKeySequence("3"),
@@ -1096,6 +1101,31 @@ class ThumbnailGridView(QAbstractScrollArea):
         else:
             self._collection_paths[key] = record.path
         self._update_selection_tiles({index})
+        self.collection_selection_changed.emit()
+
+    def set_active_collection_members(self, paths, label: str) -> None:
+        """Mark tiles that are in the active collection (``label`` is its name; empty clears)."""
+        keys = frozenset(_fast_path_key(path) for path in paths) if label else frozenset()
+        if keys == self._active_collection_keys and label == self._active_collection_label:
+            return
+        self._active_collection_keys = keys
+        self._active_collection_label = label
+        self.viewport().update()
+
+    def in_active_collection(self, path: str) -> bool:
+        return _fast_path_key(path) in self._active_collection_keys
+
+    def set_collection_paths_checked(self, paths, checked: bool) -> None:
+        """Check or uncheck many paths at once (the collection bar's visible-results buttons)."""
+        if not self._collection_checkbox_mode:
+            return
+        for path in paths:
+            key = _fast_path_key(path)
+            if checked:
+                self._collection_paths[key] = path
+            else:
+                self._collection_paths.pop(key, None)
+        self.viewport().update()
         self.collection_selection_changed.emit()
 
     def clear_selection(self, *, keep_current: bool = True) -> None:
@@ -1888,6 +1918,11 @@ class ThumbnailGridView(QAbstractScrollArea):
                 return
             self.tag_requested.emit(index)
             return
+        if self._matches_shortcut(event, self._review_key_shortcuts["collect_at_cursor"]):
+            if self._items[index].is_folder:
+                return
+            self.collect_requested.emit(index)
+            return
         if self._matches_shortcut(event, self._winner_shortcut):
             if self._items[index].is_folder:
                 return
@@ -2424,6 +2459,9 @@ class ThumbnailGridView(QAbstractScrollArea):
                 checked=self.collection_path_checked(record.path) if self._collection_checkbox_mode else is_selected,
                 hovered=index == self._hovered_checkbox_index,
             )
+
+        if self._active_collection_keys and not record.is_folder and self.in_active_collection(record.path):
+            self._paint_collection_marker(painter, image_rect)
 
         badge_y = image_rect.top() + 10
         if not use_loupe_card and not use_new_grid_card and record.has_edits:
@@ -3234,6 +3272,27 @@ class ThumbnailGridView(QAbstractScrollArea):
                 hover=hovered,
                 active_color=QColor(255, 107, 107),
             )
+        painter.restore()
+
+    def _paint_collection_marker(self, painter: QPainter, image_rect: QRect) -> None:
+        """Bottom-left pill naming the active collection: this photo is already in it."""
+        label = self._active_collection_label
+        if len(label) > 16:
+            label = label[:15] + "\u2026"
+        text = f"\u25CF {label}"
+        width = min(image_rect.width() - 20, QFontMetrics(self._meta_font).horizontalAdvance(text) + 18)
+        if width < 24:
+            return
+        rect = QRect(image_rect.left() + 10, image_rect.bottom() - 30, width, 22)
+        painter.save()
+        painter.setPen(Qt.PenStyle.NoPen)
+        fill = QColor(self._burst_accent)
+        fill.setAlpha(225)
+        painter.setBrush(fill)
+        painter.drawRoundedRect(QRectF(rect), 8, 8)
+        painter.setPen(QColor("#ffffff"))
+        painter.setFont(self._meta_font)
+        painter.drawText(rect.adjusted(8, 0, -6, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
         painter.restore()
 
     def _paint_state_badge(

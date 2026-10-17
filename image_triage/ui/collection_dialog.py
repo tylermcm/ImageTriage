@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QBrush, QPainter, QPalette, QPolygonF
 from PySide6.QtWidgets import (
     QComboBox,
@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QSizePolicy,
     QTextEdit,
@@ -185,3 +187,129 @@ class CollectionEditDialog(QDialog):
             self.name_field.setFocus()
             return
         self.accept()
+
+
+@dataclass(slots=True, frozen=True)
+class CollectionPickerChoice:
+    """What the picker returned: an existing collection id, or a name to create."""
+    collection_id: str = ""
+    new_name: str = ""
+
+
+class CollectionPickerDialog(QDialog):
+    """Pick a collection by typing: recently used first, then alphabetical, and
+    "New collection" (named from the search text) at the bottom.
+
+    ``entries`` are ``(collection_id, name, item_count)`` in display order."""
+
+    NEW_ROLE = "__new__"
+
+    def __init__(
+        self,
+        entries: list[tuple[str, str, int]],
+        *,
+        title: str,
+        default_id: str = "",
+        recent_ids: tuple[str, ...] = (),
+        allow_new: bool = True,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("collectionPickerDialog")
+        self._allow_new = allow_new
+        self.setWindowTitle(title)
+        self.resize(380, 420)
+        self._entries = list(entries)
+        self._recent_ids = set(recent_ids)
+        self._choice = CollectionPickerChoice()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
+        self.search_field = QLineEdit(self)
+        self.search_field.setObjectName("collectionPickerSearch")
+        self.search_field.setPlaceholderText("Type to find or name a new collection")
+        self.search_field.setClearButtonEnabled(True)
+        self.list_widget = QListWidget(self)
+        self.list_widget.setObjectName("collectionPickerList")
+        layout.addWidget(self.search_field)
+        layout.addWidget(self.list_widget, 1)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QPushButton("Cancel", self)
+        self.primary_button = QPushButton("Choose", self)
+        self.primary_button.setDefault(True)
+        buttons.addWidget(cancel)
+        buttons.addWidget(self.primary_button)
+        layout.addLayout(buttons)
+
+        cancel.clicked.connect(self.reject)
+        self.primary_button.clicked.connect(self._accept_current)
+        self.list_widget.itemActivated.connect(lambda _item: self._accept_current())
+        self.list_widget.itemDoubleClicked.connect(lambda _item: self._accept_current())
+        self.search_field.textChanged.connect(self._populate)
+        self.search_field.returnPressed.connect(self._accept_current)
+        self.search_field.installEventFilter(self)
+        self._populate()
+        self._select_id(default_id)
+        self.search_field.setFocus()
+
+    def choice(self) -> CollectionPickerChoice:
+        return self._choice
+
+    def _populate(self, *_args) -> None:
+        text = " ".join(self.search_field.text().split())
+        needle = text.casefold()
+        previous = self._current_id()
+        self.list_widget.clear()
+        exact = False
+        for collection_id, name, count in self._entries:
+            if needle and needle not in name.casefold():
+                continue
+            exact = exact or name.casefold() == needle
+            label = f"{name}  ({count})"
+            if collection_id in self._recent_ids:
+                label += "  · recent"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, collection_id)
+            self.list_widget.addItem(item)
+        if self._allow_new:
+            new_label = f'New collection "{text}"' if text and not exact else "New collection..."
+            new_item = QListWidgetItem(new_label)
+            new_item.setData(Qt.ItemDataRole.UserRole, self.NEW_ROLE)
+            self.list_widget.addItem(new_item)
+        if not self._select_id(previous):
+            self.list_widget.setCurrentRow(0)
+
+    def _select_id(self, collection_id: str) -> bool:
+        if not collection_id:
+            return False
+        for row in range(self.list_widget.count()):
+            if self.list_widget.item(row).data(Qt.ItemDataRole.UserRole) == collection_id:
+                self.list_widget.setCurrentRow(row)
+                return True
+        return False
+
+    def _current_id(self) -> str:
+        item = self.list_widget.currentItem()
+        return str(item.data(Qt.ItemDataRole.UserRole) or "") if item is not None else ""
+
+    def _accept_current(self) -> None:
+        current = self._current_id()
+        if not current:
+            return
+        if current == self.NEW_ROLE:
+            self._choice = CollectionPickerChoice(new_name=" ".join(self.search_field.text().split()))
+        else:
+            self._choice = CollectionPickerChoice(collection_id=current)
+        self.accept()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        # Up/Down in the search box move through the list, so the keyboard never leaves the field.
+        if watched is self.search_field and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                row = self.list_widget.currentRow() + (1 if event.key() == Qt.Key.Key_Down else -1)
+                if 0 <= row < self.list_widget.count():
+                    self.list_widget.setCurrentRow(row)
+                return True
+        return super().eventFilter(watched, event)

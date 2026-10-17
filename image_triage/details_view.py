@@ -261,6 +261,7 @@ class DetailsTableView(QTableView):
     keep_requested = Signal(int)
     move_requested = Signal(int)
     tag_requested = Signal(int)
+    collect_requested = Signal(int)
     winner_requested = Signal(int)
     reject_requested = Signal(int)
     filename_prefix_requested = Signal(str)
@@ -275,6 +276,7 @@ class DetailsTableView(QTableView):
             "keep_at_cursor": QKeySequence("K"),
             "move_at_cursor": QKeySequence("M"),
             "tag_at_cursor": QKeySequence("T"),
+            "collect_at_cursor": QKeySequence("B"),
         }
 
     def set_review_action_shortcuts(self, winner: QKeySequence | str, reject: QKeySequence | str) -> None:
@@ -320,6 +322,9 @@ class DetailsTableView(QTableView):
             return
         if matches_shortcut(event, self._review_key_shortcuts["tag_at_cursor"]):
             self.tag_requested.emit(row)
+            return
+        if matches_shortcut(event, self._review_key_shortcuts["collect_at_cursor"]):
+            self.collect_requested.emit(row)
             return
         if matches_shortcut(event, self._winner_shortcut):
             self.winner_requested.emit(row)
@@ -435,6 +440,7 @@ class PhotoDetailsView(QWidget):
     keep_requested = Signal(int)
     move_requested = Signal(int)
     tag_requested = Signal(int)
+    collect_requested = Signal(int)
     winner_requested = Signal(int)
     reject_requested = Signal(int)
 
@@ -495,6 +501,7 @@ class PhotoDetailsView(QWidget):
         self.table.keep_requested.connect(lambda row: self._emit_row_signal(self.keep_requested, row))
         self.table.move_requested.connect(lambda row: self._emit_row_signal(self.move_requested, row))
         self.table.tag_requested.connect(lambda row: self._emit_row_signal(self.tag_requested, row))
+        self.table.collect_requested.connect(lambda row: self._emit_row_signal(self.collect_requested, row))
         self.table.winner_requested.connect(lambda row: self._emit_row_signal(self.winner_requested, row))
         self.table.reject_requested.connect(lambda row: self._emit_row_signal(self.reject_requested, row))
 

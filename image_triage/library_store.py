@@ -169,6 +169,35 @@ class LibraryStore:
             updated_at=str(row["updated_at"] or ""),
         )
 
+    def load_collection_header(self, collection_id: str) -> VirtualCollection | None:
+        """One collection's name and count without its item paths (cheap enough for every keypress)."""
+        normalized_id = (collection_id or "").strip()
+        if not normalized_id:
+            return None
+        with self._connect() as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                """
+                SELECT
+                    c.id, c.name, c.description, c.kind, c.created_at, c.updated_at,
+                    (SELECT COUNT(*) FROM collection_items i WHERE i.collection_id = c.id) AS item_count
+                FROM virtual_collections c
+                WHERE c.id = ?
+                """,
+                (normalized_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return VirtualCollection(
+            id=str(row["id"] or ""),
+            name=str(row["name"] or ""),
+            description=str(row["description"] or ""),
+            kind=str(row["kind"] or "Custom"),
+            item_count=int(row["item_count"] or 0),
+            created_at=str(row["created_at"] or ""),
+            updated_at=str(row["updated_at"] or ""),
+        )
+
     def find_collection_by_name(self, name: str) -> VirtualCollection | None:
         """Find a collection by case-insensitive display name."""
         normalized_name = " ".join((name or "").split())
@@ -270,6 +299,57 @@ class LibraryStore:
             connection.commit()
         return self.load_collection(normalized_id)
 
+    def paths_missing_from_collection(self, collection_id: str, item_paths: tuple[str, ...] | list[str]) -> list[str]:
+        """The given paths (normalized, de-duplicated, in order) that the collection does not hold yet."""
+        normalized_id = (collection_id or "").strip()
+        normalized_paths = _unique_paths(item_paths)
+        if not normalized_id or not normalized_paths:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT item_path FROM collection_items WHERE collection_id = ?",
+                (normalized_id,),
+            ).fetchall()
+        existing = {normalized_path_key(str(row[0] or "")) for row in rows}
+        return [path for path in normalized_paths if normalized_path_key(path) not in existing]
+
+    def collection_ids_by_path(self) -> dict[str, tuple[str, ...]]:
+        """Every collection each stored path belongs to, keyed by normalized path (one query)."""
+        with self._connect() as connection:
+            rows = connection.execute("SELECT item_path, collection_id FROM collection_items").fetchall()
+        memberships: dict[str, list[str]] = {}
+        for item_path, collection_id in rows:
+            if item_path and collection_id:
+                memberships.setdefault(normalized_path_key(str(item_path)), []).append(str(collection_id))
+        return {key: tuple(ids) for key, ids in memberships.items()}
+
+    def collection_positions(self, collection_id: str, item_paths: tuple[str, ...] | list[str]) -> list[tuple[str, int]]:
+        """(stored path, index) for each given path the collection holds, in collection order."""
+        collection = self.load_collection(collection_id)
+        if collection is None:
+            return []
+        wanted = {normalized_path_key(path) for path in _unique_paths(item_paths)}
+        return [(path, index) for index, path in enumerate(collection.item_paths) if normalized_path_key(path) in wanted]
+
+    def insert_paths_at(
+        self,
+        collection_id: str,
+        item_paths: tuple[str, ...] | list[str],
+        positions: tuple[int, ...] | list[int],
+    ) -> VirtualCollection | None:
+        """Put paths back at the indexes they were removed from (undo of a removal)."""
+        collection = self.load_collection(collection_id)
+        if collection is None:
+            return None
+        present = {normalized_path_key(path) for path in collection.item_paths}
+        ordered = list(collection.item_paths)
+        for path, position in sorted(zip(item_paths, positions), key=lambda pair: pair[1]):
+            if normalized_path_key(path) in present:
+                continue
+            ordered.insert(max(0, min(int(position), len(ordered))), path)
+            present.add(normalized_path_key(path))
+        return self.replace_collection_paths(collection_id, ordered)
+
     def add_paths_to_collection(self, collection_id: str, item_paths: tuple[str, ...] | list[str]) -> VirtualCollection | None:
         """Append new paths to a collection while preserving existing order."""
         normalized_id = (collection_id or "").strip()
@@ -286,15 +366,14 @@ class LibraryStore:
                 (normalized_id,),
             ).fetchone()
             start_order = int(row[0] or -1) + 1
-            for offset, path in enumerate(normalized_paths):
-                connection.execute(
-                    """
-                    INSERT INTO collection_items (collection_id, item_path, sort_order)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(collection_id, item_path) DO NOTHING
-                    """,
-                    (normalized_id, path, start_order + offset),
-                )
+            connection.executemany(
+                """
+                INSERT INTO collection_items (collection_id, item_path, sort_order)
+                VALUES (?, ?, ?)
+                ON CONFLICT(collection_id, item_path) DO NOTHING
+                """,
+                [(normalized_id, path, start_order + offset) for offset, path in enumerate(normalized_paths)],
+            )
             connection.execute(
                 """
                 UPDATE virtual_collections

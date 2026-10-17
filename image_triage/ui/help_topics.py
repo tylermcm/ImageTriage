@@ -305,6 +305,24 @@ def collection_help_pages() -> tuple[HelpPage, ...]:
             Choose **Create Collection** to enter collection mode. Check images as you search, sort, filter, and browse folders. Checked images stay in the set even when they are no longer visible. Double-click an image away from its checkbox to inspect it in the popout viewer.
 
             Choose **Save Collection** to name the set, or **Cancel** to discard the picks. To change an existing set, choose **Edit Collection Items**; its current images start checked, and saving applies your changes.
+
+            Images you selected before choosing **Create Collection** start checked. **Check All Visible** checks everything the current filter or search shows; **Uncheck Visible** clears just those.
+            """,
+        ),
+        HelpPage(
+            "Fill Collections Fast",
+            """
+            # Fill a collection without checking images one by one
+
+            - **Add All Visible to Collection** adds everything the current filter, regex or semantic search shows. Filter to winners, then add them all in one step.
+            - **Add Selection to Collection** adds the selected images.
+            - **Drag** images from the grid onto a collection in the sidebar to add them. Files never move.
+            - **Right-click** an image (or a selection) and open **Collections**: every collection is listed with a tick where the photo already is; pick one to add or remove.
+            - In the popout, the **collections chip** in the top bar shows which collections the photo is in ("● Portfolio", "● 2 collections", or "+ Collection"). Click it to change them.
+            - **Set Active Collection**, then press **B** to add the photo at the cursor (or the selection) to it, in the grid or the popout. Press **B** again to take it back out. Photos in the active collection carry its name on their tile and in the popout caption, and the active collection has a dot in the sidebar.
+            - Turn on **Winners Also Go to Active Collection** and every new winner, including the Winner Ladder's pick, is added as you cull. Un-marking or rejecting one of those winners takes it back out; images you added yourself stay.
+
+            The collection picker lists recently used collections first; type to filter, or type a new name to create one. Each add or removal is one step for **Undo** (Ctrl+Z), and undoing a removal puts images back where they were. Undoing a winner that was auto-added also takes it back out of the collection. Adding writes only the list of references, so even thousands of images add instantly.
             """,
         ),
         HelpPage(

@@ -680,6 +680,8 @@ class FullScreenPreview(QDialog):
     delete_requested = Signal(str)
     move_requested = Signal(str)
     tag_requested = Signal(str)
+    collect_requested = Signal(str)
+    collections_menu_requested = Signal(str, QPoint)
     rating_requested = Signal(str, int)
     winner_ladder_choice_requested = Signal(str)
     winner_ladder_skip_requested = Signal()
@@ -723,10 +725,14 @@ class FullScreenPreview(QDialog):
         self._reject_shortcut = QKeySequence("X")
         # Mirrors grid.py's review-key registry (WI-3.2); brackets and the
         # 1-5 adapter labels are grid-only, so they're not needed here.
+        # Members of the active collection; their captions say so (set_active_collection_members).
+        self._active_collection_keys: frozenset[str] = frozenset()
+        self._active_collection_label = ""
         self._review_key_shortcuts: dict[str, QKeySequence] = {
             "keep_at_cursor": QKeySequence("K"),
             "move_at_cursor": QKeySequence("M"),
             "tag_at_cursor": QKeySequence("T"),
+            "collect_at_cursor": QKeySequence("B"),
         }
         self._settings = user_settings()
         self._manual_zoom = False
@@ -1370,6 +1376,15 @@ class FullScreenPreview(QDialog):
         self._mockup_breadcrumb = QLabel("Preview")
         self._mockup_breadcrumb.setObjectName("mockupBreadcrumb")
         layout.addWidget(self._mockup_breadcrumb, 1)
+        # Which collections the photo is in; click to change. Text comes from the owner (set_collection_chip_provider).
+        collections_button = QToolButton(toolbar)
+        collections_button.setObjectName("mockupWindowButton")
+        collections_button.setText("+ Collection")
+        collections_button.setToolTip("Collections this photo is in")
+        collections_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        collections_button.clicked.connect(self._request_collections_menu)
+        self._mockup_collections_button = collections_button
+        layout.addWidget(collections_button)
         layout.addWidget(self._build_studio_nav_pill())
         settings_menu = QMenu(toolbar)
         settings_menu.addAction("Open commands", self.command_palette_requested.emit)
@@ -1733,6 +1748,7 @@ class FullScreenPreview(QDialog):
         current: int,
         thumb_provider=None,
         tag_provider=None,
+        marked_provider=None,
     ) -> None:
         """Give the filmstrip and nav pill their place in the full image list.
 
@@ -1754,6 +1770,7 @@ class FullScreenPreview(QDialog):
                 )
             return
         self._filmstrip.set_source(total, current, thumb_provider, tag_provider)
+        self._filmstrip.set_marked_provider(marked_provider)
         self._studio_nav_count.setText(f"{current + 1} / {total}" if total > 0 else "—")
         if logger.enabled:
             logger.duration(
@@ -2854,6 +2871,12 @@ class FullScreenPreview(QDialog):
                 self.tag_requested.emit(path)
                 event.accept()
                 return
+        if matches_shortcut(event, self._review_key_shortcuts["collect_at_cursor"]):
+            path = self._focused_path()
+            if path:
+                self.collect_requested.emit(path)
+                event.accept()
+                return
         if key == Qt.Key.Key_C and review_shortcut_allowed:
             self.compare_mode_changed.emit(not self._compare_mode)
             event.accept()
@@ -3680,14 +3703,7 @@ class FullScreenPreview(QDialog):
         entry = self._entries[slot]
         display_image = self._display_image_for_slot(slot)
         metadata = self._current_metadata[slot] if slot < len(self._current_metadata) else EMPTY_METADATA
-        if entry.label:
-            caption_text = f"{entry.label} | {Path(entry.source_path).name}"
-        else:
-            caption_text = entry.record.name
-        if entry.ai_result is not None and entry.ai_result.is_top_pick:
-            caption_text = f"{caption_text} | AI Top Pick"
-        pane.caption_label.setText(caption_text)
-        pane.caption_label.setToolTip(caption_text)
+        self._update_pane_caption(slot)
 
         metadata_lines: list[str] = []
         if metadata.display_text:
@@ -4663,6 +4679,63 @@ class FullScreenPreview(QDialog):
     def toggle_focus_assist_background_command(self) -> None:
         self.set_focus_assist_dim_background(not self._focus_assist_dim_background)
 
+    def _pane_caption_text(self, entry) -> str:
+        if entry.label:
+            caption_text = f"{entry.label} | {Path(entry.source_path).name}"
+        else:
+            caption_text = entry.record.name
+        if entry.ai_result is not None and entry.ai_result.is_top_pick:
+            caption_text = f"{caption_text} | AI Top Pick"
+        if self._active_collection_label and os.path.normpath(entry.record.path).casefold() in self._active_collection_keys:
+            caption_text = f"{caption_text} | \u25CF In {self._active_collection_label}"
+        return caption_text
+
+    def _update_pane_caption(self, slot: int) -> None:
+        if not (0 <= slot < len(self._entries) and slot < len(self._panes)):
+            return
+        caption_text = self._pane_caption_text(self._entries[slot])
+        pane = self._panes[slot]
+        pane.caption_label.setText(caption_text)
+        pane.caption_label.setToolTip(caption_text)
+
+    def set_collection_chip_provider(self, provider) -> None:
+        """``provider(path) -> (text, tooltip)``; must be cheap, it runs on every step."""
+        self._collection_chip_provider = provider
+        self.refresh_collection_chip()
+
+    def refresh_collection_chip(self) -> None:
+        button = getattr(self, "_mockup_collections_button", None)
+        provider = getattr(self, "_collection_chip_provider", None)
+        if button is None or provider is None:
+            return
+        path = self._focused_path()
+        try:
+            text, tooltip = provider(path) if path else ("+ Collection", "")
+        except Exception:
+            return
+        button.setText(text)
+        button.setToolTip(tooltip)
+
+    def _request_collections_menu(self) -> None:
+        path = self._focused_path()
+        button = getattr(self, "_mockup_collections_button", None)
+        if path and button is not None:
+            self.collections_menu_requested.emit(path, button.mapToGlobal(QPoint(0, button.height())))
+
+    def set_active_collection_members(self, paths, label: str) -> None:
+        """Captions only: no re-render, so B in the popout costs nothing on the picture."""
+        keys = frozenset(os.path.normpath(path).casefold() for path in paths) if label else frozenset()
+        if keys == self._active_collection_keys and label == self._active_collection_label:
+            return
+        self._active_collection_keys = keys
+        self._active_collection_label = label
+        for slot in range(len(self._entries)):
+            self._update_pane_caption(slot)
+        filmstrip = getattr(self, "_filmstrip", None)
+        provider = getattr(filmstrip, "_marked_provider", None) if filmstrip is not None else None
+        if provider is not None:
+            filmstrip.set_marked_provider(provider)  # repaint the bars on screen
+
     def set_annotation_state(self, path: str, winner: bool, reject: bool, rating: int | None = None) -> None:
         updated = False
         for collection_name in ("_source_entries", "_entries"):
@@ -4789,6 +4862,7 @@ class FullScreenPreview(QDialog):
         path = Path(entry.source_path)
         trail = [part for part in path.parts[-4:] if part not in ("\\", "/")]
         self._mockup_breadcrumb.setText("  ›  ".join(trail))
+        self.refresh_collection_chip()
         self._mockup_filename.setText(entry.record.name)
         metadata = (self._current_metadata[slot] if slot < len(self._current_metadata) else None) or EMPTY_METADATA
         capture = " · ".join(part for part in (
