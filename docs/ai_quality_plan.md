@@ -96,18 +96,25 @@ ranking against the same folder without corrections. Decide whether to keep it f
 
 ### A. Replace TOPIQ with a permissive quality signal (decided: find a permissive IQA model)
 
-What I found, with verification level:
+Search result (17 October 2026, second pass): **no commercially usable pretrained quality model was found.** The blocker is
+the training data rather than the code:
 
-- **No pretrained quality model has a confirmed commercial-friendly licence for its weights.** None were verified.
-- **MUSIQ** (Google): the repo page shows no licence and no LICENSE file. Checkpoints are trained on AVA, KonIQ, PaQ-2-PiQ and
-  SPAQ, whose terms are unconfirmed. Not usable until Google's licence and each dataset's terms are clear.
-- **CLIP-IQA** (IceClear): NTU S-Lab License 1.0. Its terms were not read; the same family of licence appears alongside
-  PolyForm Noncommercial in pyiqa. Treat as non-commercial until read.
-- **LAION improved aesthetic predictor:** repo licence is Apache-2.0, but its `.pth` weights are trained on AVA, SAC and
-  LAION-Logos with no stated weight licence. The weights sit on CLIP ViT-L/14 embeddings.
-- **NIMA:** pyiqa retrains it itself because there are no official weights; any retrained weights inherit AVA's terms.
+- **KonIQ-10k, KADID-10k, SPAQ:** each site or repo says the data is "freely available to the research community" or gives no
+  licence at all. None grants commercial training rights. AVA and TID2013 (used by NIMA) were not found with terms either.
+  So any weights trained on these datasets carry unresolved dataset terms, whatever the code licence says.
+- **TOPIQ ONNX copies:** `nocturna/topiq-nr-koniq-onnx` is CC BY-NC-SA 4.0 per the search summary. The TOPIQ model itself is
+  PolyForm Noncommercial. Same status as the file we ship now.
+- **idealo NIMA (MobileNet):** code Apache-2.0, weights trained on AVA and TID2013, no stated weight licence, repo archived
+  since December 2024.
+- **`ZhengyuZhao/koniq-PyTorch`:** MIT code only; no weights, and KonIQ's terms apply to anything trained on it.
+- **`matthewyuan/image-quality-fusion`:** MIT per the search summary, trained on SPAQ (terms unconfirmed); no ONNX export.
+- **MUSIQ:** no licence file; checkpoints trained on AVA, KonIQ, PaQ-2-PiQ and SPAQ.
+- **CLIP-IQA:** NTU S-Lab License 1.0 (not read). **LAION aesthetic predictors** (`improved-aesthetic-predictor`,
+  `shunk031/aesthetics-predictor-*`): code Apache-2.0 or no licence field, weights trained on AVA, SAC and LAION data with no
+  weight licence stated.
+- Not retrievable: `discord/aesthetic-predictor-v2-5` returned 401.
 
-Because a licensed pretrained model may not exist, the realistic options are:
+Given that, the realistic options are:
 
 1. **Zero-shot prompt scoring on our own embedding** (the CLIP-IQA idea: "good photo" against "bad photo", sharp against blurry).
    The idea is not code; implement it ourselves on the chosen embedding's text encoder. The earlier CLIP aesthetic axis scored
