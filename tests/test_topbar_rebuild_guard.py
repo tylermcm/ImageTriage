@@ -64,7 +64,6 @@ def window(main_window):
     saved = {
         "_theme": main_window._theme,
         "_display_profile": main_window._display_profile,
-        "_toolbar_placement": main_window._toolbar_placement,
     }
     main_window._toolbar.rebuild_topbar_action_stack(force=True)
     _turn()
@@ -148,13 +147,6 @@ def test_a_changed_display_profile_rebuilds(window) -> None:
     assert not any(a is b for a, b in zip(before, _all_widgets(window)))
 
 
-def test_a_changed_toolbar_placement_rebuilds(window) -> None:
-    before = _all_widgets(window)
-    window._toolbar_placement = "docked" if window._toolbar_placement == "floating" else "floating"
-    window._toolbar.rebuild_topbar_action_stack()
-    assert not any(a is b for a, b in zip(before, _all_widgets(window)))
-
-
 def test_a_changed_visible_slot_count_rebuilds_synchronously(window, monkeypatch) -> None:
     """The overflow path must stay synchronous (a deferred layout on resize drew
     a visible jump on every launch), so no event-loop turn is allowed here."""
@@ -193,11 +185,11 @@ def test_theme_refresh_always_rebuilds_even_for_an_equal_theme(window) -> None:
     assert not any(a is b for a, b in zip(before, _all_widgets(window)))
 
 
-def test_placement_change_rebuilds_through_its_setter(window) -> None:
-    before = _all_widgets(window)
-    target = "docked" if window._toolbar_placement == "floating" else "floating"
-    window._toolbar.set_toolbar_placement(target)
-    assert not any(a is b for a, b in zip(before, _all_widgets(window)))
+def test_the_toolbar_only_ever_floats(window) -> None:
+    # There is no docked toolbar any more, and no placement to change.
+    assert not hasattr(window, "_toolbar_placement")
+    assert not hasattr(window._toolbar, "set_toolbar_placement")
+    assert window._toolbar.toolbar_strip.property("toolbarPlacement") == "floating"
 
 
 # ---------------------------------------------------------------- stale checkable buttons

@@ -72,6 +72,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .drag_reorder import DragReorder
+
 # (icon id, selected) -> icon. Supplied by the window so icons follow its theme.
 IconFactory = Callable[[str, bool], QIcon]
 
@@ -91,13 +93,13 @@ BUTTON_W_RATIO = 64 / DESIGN_RAIL_PX        # 94px  pill width. Capped by the
                                             #       rail: the leftover becomes
                                             #       the side margin, so this
                                             #       cannot exceed rail_width.
-BUTTON_H_RATIO = 40 / DESIGN_RAIL_PX        # 86px  pill height. Also sets how
+BUTTON_H_RATIO = 54 / DESIGN_RAIL_PX        # 86px  pill height. Also sets how
                                             #       far apart the icons sit,
                                             #       more than BUTTON_GAP does.
 BUTTON_RADIUS_RATIO = 10 / DESIGN_RAIL_PX   # 15px  pill corner rounding
 BUTTON_GAP_RATIO = 6 / DESIGN_RAIL_PX      # 24px  space between pills only;
                                             #       pinned tools use TOOL_GAP
-ICON_RATIO = 22 / DESIGN_RAIL_PX            # 37px  icon size. Icon + label must
+ICON_RATIO = 26 / DESIGN_RAIL_PX            # 37px  icon size. Icon + label must
                                             #       fit BUTTON_H or the label
                                             #       gets squeezed.
 ICON_TEXT_GAP_RATIO = 5 / DESIGN_RAIL_PX    # 12px  clear space from the icon to
@@ -128,8 +130,8 @@ ADD_ICON_RATIO = 24 / DESIGN_RAIL_PX        # 35px  the "+" mark itself
 # so lowering them is usually not what you want.
 
 MIN_RAIL_PX = 48
-MIN_BUTTON_H_PX = 38
-MIN_ICON_PX = 18
+MIN_BUTTON_H_PX = 30
+MIN_ICON_PX = 14
 MIN_LABEL_PX = 9
 MIN_TOOL_PX = 24
 
@@ -319,6 +321,8 @@ class NavRail(QWidget):
     """Exclusive icon-only destination buttons that report the chosen key."""
 
     current_changed = Signal(str)
+    # The destinations were dragged into a new order (the keys, top to bottom). The owner saves it.
+    order_changed = Signal(list)
 
     # Text under each icon. Off: the pinned tools below have none either, and "Collections" / "PocketDrop"
     # never fit the rail at a readable size. The name is in the tooltip and the accessible name.
@@ -349,6 +353,9 @@ class NavRail(QWidget):
         self._icon_factory: IconFactory | None = None
         self._label_colors: tuple[QColor, QColor] | None = None
         self._current = ""
+        # Destinations can be dragged into a new order among themselves; the pinned tools below are a separate group.
+        self._reorder = DragReorder(Qt.Orientation.Vertical, self)
+        self._reorder.order_committed.connect(self._destinations_reordered)
 
     # -- building the column ---------------------------------------------------
 
@@ -375,11 +382,30 @@ class NavRail(QWidget):
         self._style_button(button)
         # Destinations stack from the top, ahead of any added sections.
         self._layout.insertWidget(len(self._buttons) - 1, button, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._reorder.set_items(list(self._buttons.items()))
         if not self._current:
             self.set_current(key, emit=False)
         else:
             self._refresh_icon(key)
         return button
+
+    def set_order(self, keys: list[str]) -> None:
+        """Put the destinations in ``keys`` order (unknown keys ignored, missing ones keep their place at the end)."""
+        wanted = [key for key in keys if key in self._buttons]
+        wanted += [key for key in self._buttons if key not in wanted]
+        if wanted == list(self._buttons):
+            return
+        self._buttons = {key: self._buttons[key] for key in wanted}
+        for index, key in enumerate(wanted):
+            button = self._buttons[key]
+            self._layout.removeWidget(button)
+            self._layout.insertWidget(index, button, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._reorder.set_items(list(self._buttons.items()))
+        self._layout.activate()
+
+    def _destinations_reordered(self, keys: list[str]) -> None:
+        self.set_order(keys)
+        self.order_changed.emit(list(self._buttons))
 
     def add_section(self, widget: QWidget) -> None:
         """Add a block (such as pinned tools) below the destinations."""
