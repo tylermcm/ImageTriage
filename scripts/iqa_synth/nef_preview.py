@@ -9,6 +9,7 @@ import struct
 TYPE_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8}
 TAG_SUBIFDS, TAG_JPEG_OFFSET, TAG_JPEG_LENGTH, TAG_EXIF_IFD = 0x014A, 0x0201, 0x0202, 0x8769
 TAG_MAKE, TAG_MODEL, TAG_ISO, TAG_EXPOSURE, TAG_FNUMBER = 0x010F, 0x0110, 0x8827, 0x829A, 0x829D
+TAG_DATETIME_ORIGINAL, TAG_SUBSEC_ORIGINAL, TAG_FOCAL_LENGTH, TAG_EXPOSURE_BIAS, TAG_EXPOSURE_MODE = 0x9003, 0x9291, 0x920A, 0x9204, 0xA402
 
 
 def _read_ifd(handle, offset: int, endian: str) -> dict[int, tuple[int, int, bytes]]:
@@ -65,14 +66,15 @@ def read_nef(path: str, want_jpeg: bool = True) -> dict | None:
         ifd0 = _read_ifd(handle, ifd0_offset, endian)
         info = {"make": _text(handle, ifd0[TAG_MAKE], endian) if TAG_MAKE in ifd0 else "",
                 "model": _text(handle, ifd0[TAG_MODEL], endian) if TAG_MODEL in ifd0 else "",
-                "iso": None, "exposure_s": None, "fnumber": None}
+                "iso": None, "exposure_s": None, "fnumber": None,
+                "focal_length": None, "exposure_bias": None, "exposure_mode": None, "datetime": "", "subsec": ""}
         if TAG_EXIF_IFD in ifd0:
             (exif_offset,) = _values(handle, ifd0[TAG_EXIF_IFD], endian)[:1]
             exif = _read_ifd(handle, exif_offset, endian)
             if TAG_ISO in exif:
                 values = _values(handle, exif[TAG_ISO], endian)
                 info["iso"] = values[0] if values else None
-            for tag, key in ((TAG_EXPOSURE, "exposure_s"), (TAG_FNUMBER, "fnumber")):
+            for tag, key in ((TAG_EXPOSURE, "exposure_s"), (TAG_FNUMBER, "fnumber"), (TAG_FOCAL_LENGTH, "focal_length")):
                 if tag in exif and exif[tag][0] == 5:
                     (offset,) = struct.unpack(endian + "I", exif[tag][2])
                     here = handle.tell()
@@ -80,6 +82,18 @@ def read_nef(path: str, want_jpeg: bool = True) -> dict | None:
                     num, den = struct.unpack(endian + "II", handle.read(8))
                     handle.seek(here)
                     info[key] = num / den if den else None
+            if TAG_EXPOSURE_BIAS in exif and exif[TAG_EXPOSURE_BIAS][0] == 10:
+                (offset,) = struct.unpack(endian + "I", exif[TAG_EXPOSURE_BIAS][2])
+                here = handle.tell()
+                handle.seek(offset)
+                num, den = struct.unpack(endian + "ii", handle.read(8))
+                handle.seek(here)
+                info["exposure_bias"] = num / den if den else None
+            if TAG_EXPOSURE_MODE in exif:
+                values = _values(handle, exif[TAG_EXPOSURE_MODE], endian)
+                info["exposure_mode"] = values[0] if values else None  # 0 auto, 1 manual, 2 auto bracket
+            info["datetime"] = _text(handle, exif[TAG_DATETIME_ORIGINAL], endian) if TAG_DATETIME_ORIGINAL in exif else ""
+            info["subsec"] = _text(handle, exif[TAG_SUBSEC_ORIGINAL], endian) if TAG_SUBSEC_ORIGINAL in exif else ""
         candidates = []
         ifds = [ifd0]
         if TAG_SUBIFDS in ifd0:
