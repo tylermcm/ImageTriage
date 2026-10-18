@@ -2467,3 +2467,60 @@ Versioned measured regions now total1062 with overlaps/repeated controls.
 References7(Preferences),13(Masking),14(Crop) and15(Remove) still lack individual
 matching-view audits. All19 remain in the complete every-element goal, including
 unimplemented output behavior and every remaining shared/native element.
+
+
+## Preferences General source checkpoint — 2026-10-17 (unpromoted)
+
+Native source commit66c5b156 adds the measured Preferences General modal to the
+existing gear popup. Both repositories remain on codex/image-triage-integration.
+This continues the same integration session; no new upstream merge or fetch is
+claimed here. The previously recorded fetched/merged upstream efa1edd079b259b0b1f77b835151ee904437a231
+and merge3b89ae1e remain the integration baseline. No conflict resolution occurs
+in this source checkpoint. No push or release build occurred.
+
+Supported settings use existing native view behavior: Single/Multiple edit
+panels, filmstrip filenames and50/100/200% default image click zoom. A typed
+serialized draft uses OK to persist and Cancel/Escape to discard. Startup
+validates stored profiles; malformed values report an error and do not apply.
+Unset preferences retain the JSON filmstrip flags. Preferences are independent
+of photo pixels/recipe/history. Unsupported pages/options stay visibly disabled,
+including ratings+color labels, orientation, theme, rich tooltips, Lightroom-style
+zoom/pan, compact layout and legacy undo/TAT. The title does not impersonate
+Adobe's version number. Existing scope gear entries remain usable. Dialogs are
+mutually exclusive; parent close clears transient drafts. Corrected optional
+filmstrip rating-star/tooltip-separator encoding. Label lookup coverage is checked
+in all20 language catalogs, without claiming all localized layouts are audited.
+
+Private auditor layout/tokens merge preferences-design.json/preferences-tokens.json;
+main live layout/tokens and the PS1 default acr-settings-menu remain unchanged.
+Final evidence in this chat's acr-filmstrip/preferences-v2/preferences-audit.json
+and overlay/comparison.png:53 regions, complete candidate coverage, one full-dialog
+registration. Source[0,0,2004,1530], candidate[438,635,2442,2165], scale2 at1440x1400.
+Both captures preserve photo/document/recipe identity and original fixture hash.
+Final PNG inspected; type, glyph, disabled capability and dynamic title differences
+remain visible. No every-element parity pass is claimed.
+
+Snapshot SHA25655d537f8a8ed38568529c84f968f58ab63245963699d66c6895face8d9f2c326.
+Private layout0b31d384e0b18a1779493b43295295f3a677d613d971f54d7df240fe4650c0f3.
+Private tokens7f0ca6148704869c2c76932acc517479ca3327530c1e0f3787ef83a46de41853.
+The shared auditor also rechecked Save Options in preferences-save-regression.
+
+Final checks:3122 library tests/13ignored,58 Camera Raw integrations,6 auditor tests,
+all-target ui+desktop clippy,layers30,wasm24 pass. Four new integration tests cover
+actual pointer controls/OK/Cancel, persisted startup settings and malformed profiles,
+click-zoom behavior, atomic invalid patches and Escape ownership. Initial scanner
+empty-label and test lint issues were fixed before final checks. No visible window
+was launched. Secondary-monitor/no-activation focus preservation remains unverified;
+it is mandatory for any future agent-driven visible run. Native+hosted behavior
+validation remains required before promoting a new desktop executable.
+
+Rechecked protected hashes:target/debug/photocraft.exe
+b7447438bd9459ff61c3e0be89d1bacf65dec911fdd60dbf67d2d4cfcf6f3b53;
+selected target/acr-settings-menu/debug/photocraft.exe
+38112b97bd45d648edf0a9af7a03376381fd0cf416f20364f31e328232ab5d6f;
+release ea42e1b82f1346091e18c210bd821194ad99cc446cb2fb9425108443049030c5.
+All unchanged. Original Qt filmstrip remains retained/detached.
+
+Versioned measured regions total1115, including overlapping/repeated controls.
+Matching-view individual audits still absent for13(Masking),14(Crop),15(Remove).
+Every element across all19 and unavailable behaviors remain in the active goal.
