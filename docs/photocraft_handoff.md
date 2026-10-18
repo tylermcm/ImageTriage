@@ -2524,3 +2524,56 @@ All unchanged. Original Qt filmstrip remains retained/detached.
 Versioned measured regions total1115, including overlapping/repeated controls.
 Matching-view individual audits still absent for13(Masking),14(Crop),15(Remove).
 Every element across all19 and unavailable behaviors remain in the active goal.
+
+
+## Crop & Expand source checkpoint — 2026-10-17 (unpromoted)
+
+Native commitc3938d48 adds the measured Crop & Expand panel and native rail entry.
+Both branches remain codex/image-triage-integration. This continues the same
+integration session; no new fetch/merge is claimed. Previously recorded upstream
+efa1edd079b259b0b1f77b835151ee904437a231 and merge3b89ae1e remain the baseline.
+No merge conflicts or resolutions occur in this checkpoint. Shared workspace,
+control validation and rail changes were reviewed; existing scope/settings/
+presets/preferences/save/zoom integrations pass. Host code is unchanged.
+
+crop-design.json contains measured geometry for preset, angle, rotation/flip,
+Generative Expand, Trim, Geometry/Upright and Anamorphic. Workspace tab "crop"
+and cropGroups (default["Geometry"]) are serialized pure view state. Pointer and
+Space/Enter operate disclosures. Invalid/duplicate groups reject mixed requests
+atomically before any photo edit. Geometry collapse moves lower sections up;
+unsupported expanded sections explicitly show Not available. Processing controls
+have disabled accessibility state and unavailable hints. Camera Raw's current
+recipe/preview/commit has no crop/geometry transforms; no transform is simulated.
+Original vector marks use native shapes, with no copied source assets/fonts.
+Label lookup coverage spans20 catalogs; localized layouts are not all certified.
+
+Final evidence: this chat's acr-filmstrip/crop-v3/crop-audit.json and
+ overlay/comparison.png.81 named regions have complete candidate coverage at one
+fixed dock registration: source[98,432,638,1892],candidate[2260,374,2800,1834],
+1440x1000/scale2. The auditor checks the exact loaded JSON descriptor, pinned
+reference hash, unchanged renderer/original fixture and identical photo/document/
+recipe identity between Edit and Crop captures. Final PNG inspected. Two stale
+spec entries (absent Trim eye and duplicate Expand options) were removed after
+reference inspection. Remaining font, icon and capability differences are visible.
+Mean region RGB error15.042 versus initial14.831; no numerical improvement or
+pixel-parity pass is claimed. Geometry background extent and semantic glyphs were
+corrected while retaining the measured differences.
+
+Renderer SHA256b1d54c6c7a7cd317919c3c473d70c37c78e83c1ae27ebf728772b66406061a43.
+Private layout1b55cb63e522a7538af762cf927b65c6b65513fbd14e8eb3d84481ba68e30a55.
+Private tokensd94d6de0cb20d7f0b00be2d2317af93b76f07a2498a841d7090fb1e8e917e896.
+3123 library tests/13ignored,60 Camera Raw integrations,6 auditor tests,
+all-target native ui+desktop clippy,layers30,wasm24 pass. An initial rail-label
+translation lookup failure was corrected before final gates. No GUI window,
+new desktop executable/promotion, release or push. Selected PS1 editor remains
+acr-settings-menu. Protected debug/selected/release executable hashes rechecked
+and unchanged from the Preferences checkpoint. The old Qt strip remains retained
+and detached. Live secondary-monitor/no-activation behavior remains unverified;
+any future agent-driven visible launch must enforce it. Hosted behavior validation
+is still required before selecting a new editor build.
+
+Inventory correction: summing all21 region-spec files gives1280 regions, including
+overlap/repeated controls and unaudited Masking/Remove specs. Earlier1062/1115
+numbers were partial counts, not full totals or parity evidence. Matching-view
+individual audits remain absent for13(Masking) and15(Remove). Every element across
+all19, unavailable processing and complete hosted validation remain in scope.
