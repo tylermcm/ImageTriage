@@ -58,7 +58,8 @@ def main() -> None:
         tile, whole = score_image(model, np.asarray(images[item["index"]]), device)
         rows.append({"index": item["index"], "source": item["source"], "folder": item["folder"],
                      "tile_quality": tile, "whole_quality": whole,
-                     "sharpness": item["sharpness"], "noise": item["noise"]})
+                     "sharpness": item["sharpness"], "noise": item["noise"], "iso": item.get("iso"),
+                     "exposure_s": item.get("exposure_s"), "lowlight": item.get("lowlight"), "kind": item.get("kind")})
     tile_q = [r["tile_quality"] for r in rows]
     log_sharp = [float(np.log1p(r["sharpness"])) for r in rows]
     noise = [r["noise"] for r in rows]
@@ -71,6 +72,19 @@ def main() -> None:
         "quality_min_max_mean": [float(np.min(tile_q)), float(np.max(tile_q)), float(np.mean(tile_q))],
         "last_history": history[-3:],
     }
+    def mean_quality(selector) -> dict:
+        chosen = [r["tile_quality"] for r in rows if selector(r)]
+        return {"n": len(chosen), "mean_quality": float(np.mean(chosen)) if chosen else None}
+
+    summary["by_condition"] = {
+        "iso_le_400": mean_quality(lambda r: r["iso"] is not None and r["iso"] <= 400),
+        "iso_401_3200": mean_quality(lambda r: r["iso"] is not None and 400 < r["iso"] < 3200),
+        "iso_ge_3200": mean_quality(lambda r: r["iso"] is not None and r["iso"] >= 3200),
+        "exposure_ge_1_15s": mean_quality(lambda r: r["exposure_s"] is not None and r["exposure_s"] >= 1 / 15),
+        "lowlight_any": mean_quality(lambda r: bool(r["lowlight"])),
+        "kind_edited": mean_quality(lambda r: r["kind"] == "edited"),
+    }
+    summary["by_folder"] = {f: mean_quality(lambda r, f=f: r["folder"] == f) for f in sorted({r["folder"] for r in rows})}
     json.dump(summary, open(os.path.join(args.out, "summary.json"), "w", encoding="utf-8"), indent=1)
     json.dump(rows, open(os.path.join(args.out, "scores.json"), "w", encoding="utf-8"))
 

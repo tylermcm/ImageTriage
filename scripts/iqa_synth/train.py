@@ -132,7 +132,7 @@ class Pairs(Dataset):
             base = base[:, ::-1]
         h, w = base.shape[:2]
         y, x = int(rng.integers(0, h - VIEW + 1)), int(rng.integers(0, w - VIEW + 1))
-        region = np.ascontiguousarray(base[y : y + VIEW, x : x + VIEW])
+        region = np.ascontiguousarray(np.rot90(base[y : y + VIEW, x : x + VIEW], int(rng.integers(0, 4))))  # lossless
         crops, levels_out, sev_out = [], [], []
         for _ in range(2):
             view, levels = distort(region, rng)
