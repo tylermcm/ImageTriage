@@ -250,7 +250,7 @@ from .ui import (
 )
 from .ui.ai_bucket_bar import AIBucketBar
 from .ui.busy_overlay import BusyOverlay
-from .ui.display_metrics import DisplayProfile, normalize_display_profile_preference
+from .ui.display_metrics import TOPBAR_BUTTON_EXTRA_PX, DisplayProfile, normalize_display_profile_preference
 from .ui.backdrop import paint_backdrop
 from .pocketdrop import PocketDropPanel
 from .ui import layout_ratios
@@ -304,8 +304,6 @@ class MainWindow(QMainWindow):
     APPEARANCE_KEY = "window/appearance"
     # One-shot switch of existing installs onto the Slate default.
     APPEARANCE_SLATE_MIGRATION_KEY = "window/appearance_slate_default"
-    TOOLBAR_PLACEMENT_KEY = "ui/toolbar_placement"
-    TOOLBAR_PLACEMENTS = ("floating", "docked")
     # The floating bar's bottom margin, inner padding, row gap and fade are
     # FLOATING_TOOLBAR_*_H in layout_ratios.py. This one stays: it only caps the
     # bar's width against a narrow grid and never moves it (the bar is centred).
@@ -458,6 +456,8 @@ class MainWindow(QMainWindow):
     AI_EMBED_BATCH_SIZE_GPU_AUTO = 8
     AI_EMBED_BATCH_SIZE_CPU_AUTO = 4
     LEFT_NAV_PAGE_KEY = "ui/left_nav_page"
+    LEFT_NAV_ORDER_KEY = "ui/left_nav_order"
+    TOPBAR_NAV_ORDER_KEY = "ui/topbar_nav_order"
     PINNED_TOOLS_KEY = "ui/pinned_tools"
     DEFAULT_PINNED_TOOLS = ("command_palette", "open_in_photoshop", "compare", "keyboard_shortcuts")
     # Share of its box each rail painter actually inks, measured off the drawn
@@ -553,8 +553,8 @@ class MainWindow(QMainWindow):
     # the live top-bar width; anything beyond that count goes into More.
     TOPBAR_SLOT_COUNT = 35
     TOPBAR_SLOT_CELL_MIN = 36
-    TOPBAR_SLOT_BUTTON_WIDTH = 34
-    TOPBAR_SLOT_SPACING = WORKSPACE_METRICS.space_4
+    TOPBAR_SLOT_BUTTON_WIDTH = 34 + TOPBAR_BUTTON_EXTRA_PX
+    TOPBAR_SLOT_SPACING = max(1, WORKSPACE_METRICS.space_4 - TOPBAR_BUTTON_EXTRA_PX)
     TOPBAR_INITIAL_VISIBLE_SLOTS = 8
     # Items that may appear more than once and are exempt from de-duplication
     # (a visual divider is inert and you can drop as many as you like).
@@ -927,9 +927,6 @@ class MainWindow(QMainWindow):
             self._settings.setValue(self.APPEARANCE_SLATE_MIGRATION_KEY, True)
         self._appearance_mode = parse_appearance_mode(
             self._settings.value(self.APPEARANCE_KEY, AppearanceMode.SLATE.value, str)
-        )
-        self._toolbar_placement = self._toolbar.normalize_toolbar_placement(
-            self._settings.value(self.TOOLBAR_PLACEMENT_KEY, "floating", str)
         )
         self._ui_gamma = normalize_ui_gamma(self._settings.value(self.UI_GAMMA_KEY, 1.0, float))
         self._interface_size = normalize_display_profile_preference(
@@ -1577,6 +1574,8 @@ class MainWindow(QMainWindow):
             self.left_nav_rail.add_destination(key, label, glyph, tooltip=tooltip)
         self.left_nav_rail.set_icon_factory(self._appearance.left_nav_icon)
         self._appearance.apply_left_rail_label_colors()
+        self.left_nav_rail.set_order(self._toolbar.saved_left_nav_order())
+        self.left_nav_rail.order_changed.connect(self._toolbar.save_left_nav_order)
         self.left_nav_rail.current_changed.connect(self._appearance.show_left_nav_page)
         saved_page = str(self._settings.value(self.LEFT_NAV_PAGE_KEY, "folders") or "folders")
         self._appearance.show_left_nav_page(saved_page if saved_page in self._left_nav_page_widgets else "folders")
@@ -2050,7 +2049,7 @@ class MainWindow(QMainWindow):
         status.addPermanentWidget(self.cache_pipeline_label)
         status.addPermanentWidget(self.filter_summary_label)
         status.addPermanentWidget(self.clear_filters_button)
-        self._toolbar.apply_toolbar_placement()
+        self._toolbar.attach_floating_toolbar()
         self._scan.refresh_catalog_status_indicator()
         self._aiculler.refresh_adapter_status_indicator()
         self._records_view.refresh_filter_toolbar_menu()

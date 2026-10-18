@@ -6,7 +6,7 @@ import os
 import time
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, QTimer, Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QPixmap
+from PySide6.QtGui import QAction, QColor, QFont, QFontInfo, QFontMetrics, QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel, QMenu, QSizePolicy, QSlider, QSpacerItem, QStackedWidget, QToolButton, QVBoxLayout, QWidget
 from collections.abc import Callable
 from dataclasses import replace
@@ -16,6 +16,7 @@ from .ui import WORKSPACE_METRICS, default_theme
 from .ui import layout_ratios
 from .ui.breadcrumb import BreadcrumbBar
 from .ui.display_metrics import DisplayProfile, STANDARD_DISPLAY
+from .ui.drag_reorder import DragReorder
 from .ui.topbar_sync import _TopbarActionSync
 
 from typing import TYPE_CHECKING
@@ -33,6 +34,35 @@ def topbar_button_rows(profile: DisplayProfile, caption: QLabel) -> tuple[int, i
     return caption_height, max(profile.topbar_button_height, profile.topbar_glyph_size + caption_height)
 
 
+MIN_CAPTION_PX = 8
+
+
+def fit_caption_font(caption: QLabel, available: int) -> None:
+    """Keep the whole caption inside ``available`` px: the theme's size when it fits, else the largest smaller size that does
+    (down to ``MIN_CAPTION_PX``). The size goes through the label's own stylesheet, which beats the application one, and is
+    dropped again when the caption fits at the theme's size (a wider button, another font, a shorter caption)."""
+    if caption.property("captionFitted"):
+        caption.setStyleSheet("")
+        caption.style().unpolish(caption)
+        caption.style().polish(caption)
+        caption.setProperty("captionFitted", False)
+    text = caption.text()
+    base = caption.font()
+    base_px = QFontInfo(base).pixelSize()
+    if base_px <= 0:  # no resolved font (a headless platform): work it out from the point size
+        base_px = base.pixelSize() if base.pixelSize() > 0 else round(base.pointSizeF() * 96 / 72)
+    if not text or base_px <= 0 or available <= 0:
+        return
+    for px in range(base_px, MIN_CAPTION_PX - 1, -1):
+        font = QFont(base)
+        font.setPixelSize(px)
+        if QFontMetrics(font).horizontalAdvance(text) <= available or px == MIN_CAPTION_PX:
+            if px != base_px:
+                caption.setStyleSheet(f"font-size: {px}px;")
+                caption.setProperty("captionFitted", True)
+            return
+
+
 def resize_topbar_button(button: QToolButton, profile: DisplayProfile) -> None:
     """Size a composite top-bar button (see ToolbarController.apply_topbar_button_style) for ``profile``."""
     caption = button.findChild(QLabel, "appTopBarButtonCaption")
@@ -42,15 +72,19 @@ def resize_topbar_button(button: QToolButton, profile: DisplayProfile) -> None:
     )
     margin = profile.topbar_hover_margin
     button.setFixedSize(profile.topbar_slot_button_width + 2 * margin, content_height + 2 * margin)
+    # The content spans the whole button, hover margin included: the caption is the widest thing in it, and a word
+    # such as "Refresh" or "Winner" is as wide as the slot, so it gets the margin's room instead of being cut off.
+    content_width = profile.topbar_slot_button_width + 2 * margin
     content = button.findChild(QWidget, "appTopBarButtonContent")
     if content is not None:
-        content.setGeometry(margin, margin, profile.topbar_slot_button_width, content_height)
+        content.setGeometry(0, margin, content_width, content_height)
     glyph = button.findChild(QToolButton, "appTopBarGlyph")
     if glyph is not None:
         glyph.setIconSize(QSize(profile.topbar_glyph_size, profile.topbar_glyph_size))
         glyph.setFixedSize(profile.topbar_slot_button_width, profile.topbar_glyph_size)
     if caption is not None:
-        caption.setFixedSize(profile.topbar_slot_button_width, caption_height)
+        caption.setFixedSize(content_width, caption_height)
+        fit_caption_font(caption, content_width - 2)
 
 
 class ToolbarController(QObject):
@@ -178,6 +212,11 @@ class ToolbarController(QObject):
             lambda target=undo_button, action=self._window.actions.undo: target.setToolTip(action.toolTip())
         )
 
+        # Open, Back, Fwd, Up, Refresh and Undo can be dragged into a new order among themselves.
+        self._nav_reorder = DragReorder(Qt.Orientation.Horizontal, self, enabled=self.reorder_enabled)
+        self._nav_reorder.order_committed.connect(self.nav_cluster_reordered)
+        self.apply_nav_cluster_order(self.saved_nav_cluster_order())
+
         self.topbar_search_field = self._window._projects.build_search_field()
         self.topbar_search_field.setMinimumWidth(180)
         self.topbar_search_field.setMaximumWidth(16777215)
@@ -260,8 +299,7 @@ class ToolbarController(QObject):
         self._window.topbar_action_stack = self.build_topbar_action_stack()
         self.toolbar_strip = self.build_toolbar_strip(nav_cluster, self._window.topbar_action_stack)
 
-        # Zoom and the panel toggles travel together: into the status bar when
-        # the toolbar floats, onto the end of the docked toolbar otherwise.
+        # Zoom and the panel toggles travel together, in the status bar.
         self.view_controls = QWidget()
         self.view_controls.setObjectName("viewControls")
         self.view_controls.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -354,10 +392,10 @@ class ToolbarController(QObject):
             self._window.showMaximized()
 
     def toolbar_profile(self) -> DisplayProfile:
-        """Button metrics for the customizable bar. Floating, the buttons grow
-        to fill the dock's proportional height while still fitting its width."""
+        """Button metrics for the customizable bar: the buttons grow to fill the dock's
+        proportional height while still fitting its width."""
         profile = getattr(self._window, "_display_profile", None) or STANDARD_DISPLAY
-        if getattr(self._window, "_toolbar_placement", "docked") != "floating" or self._window.height() <= 0:
+        if self._window.height() <= 0:
             return profile
         margins = getattr(self, "_toolbar_strip_layout", None)
         vertical = (margins.contentsMargins().top() + margins.contentsMargins().bottom()) if margins else 8
@@ -397,33 +435,23 @@ class ToolbarController(QObject):
             line_edit.selectAll()
 
     def size_view_controls(self) -> None:
-        """Compact zoom + panel toggles for the status bar; full size on the
-        docked toolbar."""
+        """Size the zoom slider and panel toggles that live in the status bar."""
         controls = getattr(self, "view_controls", None)
         if controls is None:
             return
-        compact = self._window._toolbar_placement == "floating"
-        profile = getattr(self._window, "_display_profile", None) or STANDARD_DISPLAY
-        # Status-bar sizes come from layout_ratios (STATUS_*, ZOOM_*); docked on
-        # the toolbar, the controls take the toolbar's own button metrics.
+        # Status-bar sizes come from layout_ratios (STATUS_*, ZOOM_*).
         px = layout_ratios.ratio_px
         height = max(1, self._window.height())
         floor = layout_ratios.MIN_GLYPH_PX
         toggle_box = px(layout_ratios.STATUS_TOGGLE_BOX_H, height, minimum=16)
         toggle_icon = px(layout_ratios.STATUS_TOGGLE_ICON_H, height, minimum=floor)
         for button in getattr(self, "_topbar_pane_buttons", {}).values():
-            if compact:
-                button.setFixedSize(toggle_box, toggle_box)
-                button.setIconSize(QSize(toggle_icon, toggle_icon))
-            else:
-                hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
-                hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
-                button.setFixedSize(hover_width, hover_height)
-                button.setIconSize(QSize(profile.topbar_glyph_size + 2, profile.topbar_glyph_size + 2))
+            button.setFixedSize(toggle_box, toggle_box)
+            button.setIconSize(QSize(toggle_icon, toggle_icon))
         slider = getattr(self, "topbar_zoom_slider", None)
         if slider is not None:
             slider_width = px(layout_ratios.ZOOM_SLIDER_W, max(1, self._window.width()), minimum=48)
-            slider.setFixedWidth(slider_width if compact else profile.topbar_zoom_width)
+            slider.setFixedWidth(slider_width)
 
         # The slider's line and handle, and the magnifiers either side of it.
         track = px(layout_ratios.ZOOM_TRACK_H, height, minimum=1)
@@ -473,12 +501,13 @@ class ToolbarController(QObject):
         """The customizable button bar as one movable unit.
 
         It shares the ``appTopBar`` object name so the top-bar button rules
-        style it; ``toolbarPlacement`` picks the docked row or floating dock
-        surface. ``_apply_toolbar_placement`` parents and positions it.
+        style it; ``toolbarPlacement`` marks it as the floating dock surface (the main
+        top bar shares the object name). ``attach_floating_toolbar`` parents and
+        positions it.
         """
         strip = QFrame()
         strip.setObjectName("appTopBar")
-        strip.setProperty("toolbarPlacement", self._window._toolbar_placement)
+        strip.setProperty("toolbarPlacement", "floating")
         strip.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         strip_layout = QHBoxLayout(strip)
         strip_layout.setContentsMargins(8, 4, 8, 4)
@@ -494,65 +523,29 @@ class ToolbarController(QObject):
         self._toolbar_strip_layout = strip_layout
         return strip
 
-    def normalize_toolbar_placement(self, value: object) -> str:
-        text = str(value or "").strip().lower()
-        return text if text in self._window.TOOLBAR_PLACEMENTS else "floating"
-
-    def set_toolbar_placement(self, placement: str) -> None:
-        normalized = self.normalize_toolbar_placement(placement)
-        if normalized == self._window._toolbar_placement:
-            return
-        self._window._toolbar_placement = normalized
-        self._window._settings.setValue(self._window.TOOLBAR_PLACEMENT_KEY, normalized)
-        self.apply_toolbar_placement()
-        # Forced: a rare, user-initiated change that just reparented the strip
-        # and swapped its surface, so fresh buttons are worth the few ms.
-        self.rebuild_topbar_action_stack(force=True)
-        profile = self.toolbar_profile()
-        for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
-            self._window._resize_topbar_button(button, profile)
-        self._window._appearance.schedule_layout_ratio_update()
-        self._window._inspector.update_action_states()
-
-    def apply_toolbar_placement(self) -> None:
+    def attach_floating_toolbar(self) -> None:
+        """Parent the toolbar strip over the grid's bottom edge and the status bar's zoom controls, once at startup."""
         strip = getattr(self, "toolbar_strip", None)
         center_layout = getattr(self._window, "workspace_center_layout", None)
         browser_stack = getattr(self._window, "browser_stack", None)
         if strip is None or center_layout is None or browser_stack is None:
             return
-        floating = self._window._toolbar_placement == "floating"
-        strip.setProperty("toolbarPlacement", self._window._toolbar_placement)
         center_layout.removeWidget(strip)
         controls = getattr(self, "view_controls", None)
         status = self._window.statusBar() if controls is not None else None
         if controls is not None and status is not None:
             status.removeWidget(controls)
-            self._toolbar_strip_layout.removeWidget(controls)
-            if floating:
-                status.insertPermanentWidget(0, controls, 0)
-            else:
-                self._toolbar_strip_layout.addWidget(controls, 0, Qt.AlignmentFlag.AlignVCenter)
+            status.insertPermanentWidget(0, controls, 0)
             controls.show()
             self.size_view_controls()
-        if floating:
-            strip.setParent(browser_stack.parentWidget())
-            shadow = QGraphicsDropShadowEffect(strip)
-            shadow.setBlurRadius(36)
-            shadow.setOffset(0, 12)
-            shadow.setColor(QColor(0, 0, 0, 150))
-            strip.setGraphicsEffect(shadow)
-            strip.show()
-            self.position_floating_toolbar()
-        else:
-            strip.setGraphicsEffect(None)
-            strip.setMinimumWidth(0)
-            strip.setMaximumWidth(16777215)
-            strip.setMinimumHeight(0)
-            strip.setMaximumHeight(16777215)
-            center_layout.insertWidget(0, strip)
-            strip.show()
-            self._window.grid.set_bottom_overlay(0, 0)
-            self._window.details_view.set_bottom_overlay_reserve(0)
+        strip.setParent(browser_stack.parentWidget())
+        shadow = QGraphicsDropShadowEffect(strip)
+        shadow.setBlurRadius(36)
+        shadow.setOffset(0, 12)
+        shadow.setColor(QColor(0, 0, 0, 150))
+        strip.setGraphicsEffect(shadow)
+        strip.show()
+        self.position_floating_toolbar()
         strip.style().unpolish(strip)
         strip.style().polish(strip)
         strip.update()
@@ -567,7 +560,7 @@ class ToolbarController(QObject):
     def position_floating_toolbar(self, *, expanded: bool = False) -> None:
         strip = getattr(self, "toolbar_strip", None)
         browser_stack = getattr(self._window, "browser_stack", None)
-        if strip is None or browser_stack is None or self._window._toolbar_placement != "floating":
+        if strip is None or browser_stack is None:
             return
         area = browser_stack.geometry()
         px = layout_ratios.ratio_px
@@ -839,10 +832,9 @@ class ToolbarController(QObject):
         cell = max(profile.topbar_slot_cell_min, hover_width)
         spacing = max(0, profile.topbar_slot_spacing)
         count = (available + spacing) // (cell + spacing)
-        if getattr(self._window, "_toolbar_placement", "docked") == "floating":
-            # The dock is a fixed share of the window: spread the buttons in
-            # use across it instead of leaving empty cells at the end.
-            count = min(count, max(1, self.used_toolbar_slot_count()))
+        # The dock is a fixed share of the window: spread the buttons in
+        # use across it instead of leaving empty cells at the end.
+        count = min(count, max(1, self.used_toolbar_slot_count()))
         return max(1, min(self._window.TOPBAR_SLOT_COUNT, int(count)))
 
     def configure_topbar_grid_columns(self, grid: QGridLayout, visible_slots: int) -> None:
@@ -867,11 +859,10 @@ class ToolbarController(QObject):
             visible_slots,
             tuple(slots.get("manual") or ()),
             tuple(slots.get("ai") or ()),
-            # Every button metric (and, floating, the scale derived from the window size).
+            # Every button metric (and the scale derived from the window size).
             self.toolbar_profile(),
             # Icon colours.
             getattr(self._window, "_theme", None),
-            getattr(self._window, "_toolbar_placement", "docked"),
         )
 
     def topbar_stack_intact(self) -> bool:
@@ -966,9 +957,10 @@ class ToolbarController(QObject):
             self._topbar_action_items[target] = items
             self._topbar_slot_widgets[target] = slot_widgets
         self._topbar_rebuild_key = rebuild_key
+        self.sync_topbar_reorders()
         if logger.enabled:
             logger.duration("toolbar.rebuild_stack", (time.perf_counter() - start) * 1000.0, widgets=built)
-        if getattr(self._window, "_toolbar_placement", "docked") == "floating" and getattr(self, "toolbar_strip", None) is not None:
+        if getattr(self, "toolbar_strip", None) is not None:
             QTimer.singleShot(0, self.position_floating_toolbar)
 
     def normalize_topbar_slot_button(self, widget: QWidget) -> None:
@@ -1202,10 +1194,115 @@ class ToolbarController(QObject):
             )
             layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
         self.left_rail_pinned.setVisible(bool(pinned))
+        self.sync_pinned_reorder()
         self.left_rail_add_button.setIcon(
             self.fluent_toolbar_icon("E710", color=self._window._appearance.chrome_icon_color())
         )
         self._window._appearance.apply_left_rail_metrics()
+
+    # -- Dragging buttons into a new order -------------------------------------
+    # Three separate groups, each reordered only within itself: the rail's destinations (NavRail), the rail's pinned tools,
+    # and the top bar's buttons.
+
+    def reorder_enabled(self) -> bool:
+        return not getattr(self._window, "_collection_mode", False)
+
+    def saved_left_nav_order(self) -> list[str]:
+        raw = self._window._settings.value(self._window.LEFT_NAV_ORDER_KEY, None)
+        try:
+            values = json.loads(raw) if isinstance(raw, str) else list(raw or [])
+        except (TypeError, ValueError):
+            return []
+        return [str(value) for value in values if isinstance(value, str)]
+
+    def save_left_nav_order(self, keys: list[str]) -> None:
+        self._window._settings.setValue(self._window.LEFT_NAV_ORDER_KEY, json.dumps(list(keys)))
+
+    def saved_nav_cluster_order(self) -> list[str]:
+        raw = self._window._settings.value(self._window.TOPBAR_NAV_ORDER_KEY, None)
+        try:
+            values = json.loads(raw) if isinstance(raw, str) else list(raw or [])
+        except (TypeError, ValueError):
+            return []
+        return [str(value) for value in values if isinstance(value, str)]
+
+    def apply_nav_cluster_order(self, order: list[str]) -> None:
+        """Lay the cluster's buttons out in ``order`` (unknown ids ignored, missing ones keep their default place)."""
+        buttons = {item_id: button for button, item_id in self._topbar_labeled_nav_buttons}
+        wanted = [item_id for item_id in order if item_id in buttons]
+        wanted += [item_id for item_id in buttons if item_id not in wanted]
+        layout = self._topbar_nav_layout
+        for index, item_id in enumerate(wanted):
+            layout.removeWidget(buttons[item_id])
+            layout.insertWidget(index, buttons[item_id], 0, Qt.AlignmentFlag.AlignVCenter)
+        self._nav_reorder.set_items([(item_id, buttons[item_id]) for item_id in wanted])
+        layout.activate()
+
+    def nav_cluster_reordered(self, order: list[str]) -> None:
+        self.apply_nav_cluster_order(order)
+        self._window._settings.setValue(self._window.TOPBAR_NAV_ORDER_KEY, json.dumps(list(order)))
+
+    def sync_pinned_reorder(self) -> None:
+        reorder = getattr(self, "_pinned_reorder", None)
+        if reorder is None:
+            reorder = self._pinned_reorder = DragReorder(Qt.Orientation.Vertical, self, enabled=self.reorder_enabled)
+            reorder.order_committed.connect(self.pinned_tools_reordered)
+        reorder.set_items([(item_id, button) for button, item_id in getattr(self, "_left_rail_tool_buttons", ())])
+
+    def pinned_tools_reordered(self, order: list[str]) -> None:
+        # Pins that have no button right now (their action is unavailable) keep their place at the end.
+        unbuilt = [item_id for item_id in self.pinned_tool_ids() if item_id not in order]
+        self.set_pinned_tool_ids(list(order) + unbuilt)
+
+    def sync_topbar_reorders(self) -> None:
+        """Make the top bar's visible buttons draggable, one group per page of the shared bar."""
+        reorders = getattr(self, "_topbar_reorders", None)
+        if reorders is None:
+            reorders = self._topbar_reorders = {}
+        for target in ("manual", "ai"):
+            reorder = reorders.get(target)
+            if reorder is None:
+                reorder = reorders[target] = DragReorder(Qt.Orientation.Horizontal, self, enabled=self.reorder_enabled)
+                reorder.order_committed.connect(lambda order, name=target: self.topbar_buttons_reordered(name, order))
+            built = (getattr(self, "_topbar_action_items", None) or {}).get(target) or []
+            reorder.set_items(
+                [
+                    (item_id, widget)
+                    for item_id, widget in built
+                    if item_id not in ("more", "divider") and isinstance(widget, QToolButton)
+                ]
+            )
+
+    def topbar_buttons_reordered(self, target: str, order: list[str]) -> None:
+        """Hand the buttons' new left-to-right order to the slots they were occupying, then save and rebuild.
+
+        Only the draggable buttons trade places. Dividers, gaps and the buttons folded into More stay where they were."""
+        slots = list(getattr(self._window, "_topbar_slots", {}).get(target) or [])
+        slot_widgets = (getattr(self, "_topbar_slot_widgets", None) or {}).get(target) or []
+        built = dict((getattr(self, "_topbar_action_items", None) or {}).get(target) or [])
+        occupied = sorted(slot_widgets.index(built[item_id]) for item_id in order if item_id in built and built[item_id] in slot_widgets)
+        if len(occupied) != len(order):
+            return
+        slots += [None] * (max(occupied, default=-1) + 1 - len(slots))
+        for slot_index, item_id in zip(occupied, order):
+            slots[slot_index] = item_id
+        for mode in list(self._window._topbar_slots):
+            self._window._topbar_slots[mode] = list(slots)
+            self.sync_items_from_slots(mode, slots_override=slots)
+        self.save_topbar_slots()
+        self.rebuild_topbar_action_stack(force=True)
+
+    def save_topbar_slots(self) -> None:
+        """Write the shared slot layout back to the setting ``load_topbar_slots`` reads."""
+        raw = self._window._settings.value(self._window.WORKSPACE_TOOLBAR_LAYOUT_KEY, "", str)
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) and raw else {}
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload["slots"] = {mode: list(slots) for mode, slots in self._window._topbar_slots.items()}
+        self._window._settings.setValue(self._window.WORKSPACE_TOOLBAR_LAYOUT_KEY, json.dumps(payload))
 
     def show_pinned_tool_context_menu(self, item_id: str, anchor: QWidget) -> None:
         if self._window._collection_mode:

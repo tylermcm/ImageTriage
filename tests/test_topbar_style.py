@@ -54,9 +54,9 @@ class TopbarStyleTests(unittest.TestCase):
 
         self.assertEqual(Qt.ToolButtonStyle.ToolButtonIconOnly, button.toolButtonStyle())
         self.assertEqual("appTopBarIconButton", button.objectName())
-        self.assertEqual(38, button.width())
+        self.assertEqual(41, button.width())
         self.assertEqual(36, MainWindow.TOPBAR_SLOT_CELL_MIN)
-        self.assertEqual(4, MainWindow.TOPBAR_SLOT_SPACING)
+        self.assertEqual(1, MainWindow.TOPBAR_SLOT_SPACING)
 
         content = button.findChild(QWidget, "appTopBarButtonContent")
         glyph = button.findChild(QToolButton, "appTopBarGlyph")
@@ -64,9 +64,12 @@ class TopbarStyleTests(unittest.TestCase):
         self.assertIsNotNone(content)
         self.assertIsNotNone(glyph)
         self.assertIsNotNone(caption)
-        self.assertEqual(2, content.x())
+        # The content spans the whole button, hover margin included, so a caption as wide as the slot is not cut off.
+        self.assertEqual(0, content.x())
         self.assertEqual(2, content.y())
-        self.assertEqual(34, content.width())
+        self.assertEqual(41, content.width())
+        self.assertEqual(37, glyph.width())
+        self.assertEqual(41, caption.width())
         self.assertEqual(22, glyph.height())
         self.assertEqual(22, glyph.iconSize().height())
         # The caption row holds a full line of its font, so p, g and y keep their descenders.
