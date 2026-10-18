@@ -2633,3 +2633,60 @@ agent-driven visible launch. Complete native+hosted gates remain required before
 selecting a new editor executable. Remove15 is now the only view without a matching
 individual screenshot audit; every element across all19, processing bindings and
 hosted validation remain in the active goal.
+
+
+## Remove source checkpoint — 2026-10-17 (unpromoted)
+
+Native source advances074f8864 to4d022559 on codex/image-triage-integration;
+host branch is unchanged. This continues the same integration session with no
+new fetch/merge claimed. Previously recorded upstream efa1edd079b259b0b1f77b835151ee904437a231
+and merge3b89ae1e remain the baseline. No conflicts/resolutions occur here.
+Shared workspace/rail, control validation, keyboard gating and close/reopen
+changes were reviewed. No host code changes, release, push or promotion.
+
+Remove now renders the observed modes, settings/feedback/overlay/spots rows and
+Reflections/People/Blemishes/Dust sections from remove-design.json. Original
+native glyphs use existing Tokens; source assets/fonts were not copied. Serialized
+removeGroups/removeHelp support pointer/Space/Enter header disclosure, correct
+lower-row displacement and native availability help. Escape/Y cannot reach the
+photo behind help; parent close clears it. Invalid/duplicate group requests and
+malformed help flags reject mixed requests atomically.
+
+Current Camera Raw cannot store/replay Remove/Heal/Clone or automatic distraction
+operations. Processing, reset/preview, size/detection/overlay/spots settings and
+feedback submission remain disabled. Checked Generative AI and Size7 are readonly
+observed presentation, not active processing or editable brush settings. No remote
+operation, feedback message or successful retouch/detection is simulated. Full
+processing behavior remains unfinished. Descriptor/help labels have lookup coverage
+in20 catalogs; localized layouts are not all certified.
+
+Final evidence: this chat's acr-filmstrip/remove-v2/remove-audit.json and
+ overlay/comparison.png.49 named regions have complete candidate coverage at one
+fixed dock registration: source[88,432,628,1522],candidate[2260,374,2800,1464],
+1440x1000/scale2. Auditor checks pinned source hash, exact loaded JSON descriptor,
+stable renderer/original and identical photo/document/recipe identity between
+Edit/Remove captures. Initial overlay exposed oversized selection/icon plates;
+blue-frame bounds and icon-plate bounds/colors were remeasured from reference
+pixels. Glyph ROIs now include complete backplates. No independent alignment or
+capability masking. Final PNG inspected. Mean region RGB difference15.995 to13.947
+using identical final ROIs; initial capture was re-audited in
+remove-v1/overlay-final-regions. Font/glyph/capability differences remain; no pass.
+
+Renderer SHA2566d8410b809036c6f7364e8a233407cf380cb20a0d6f715994a76c243de13bfda.
+Private layout2c43d2a4804893da80d014b3a45524c3a2cda34b5d74d2dc229f75ebb4c1926d.
+Private tokensd94d6de0cb20d7f0b00be2d2317af93b76f07a2498a841d7090fb1e8e917e896.
+3125 library tests/13ignored,64 Camera Raw integrations,6 auditors,all-target
+ui+desktop clippy,layers30,wasm24 pass. Two new integrations cover disabled
+processing/feedback, actual header/Space disclosures and lower-row displacement,
+atomic invalid requests, help Escape/Y ownership and close/reopen cleanup.
+All work offscreen; no visible app launch or focus interaction. Main live layout/
+tokens, selected PS1 acr-settings-menu editor and protected debug/selected/release
+hashes were rechecked and remain unchanged. Live secondary-monitor/no-activation
+behavior remains unverified and mandatory for any future agent-driven visible run.
+Native+hosted gates remain required before selecting a new editor executable.
+
+All19 supplied views now have recorded matching-view captures at some source
+revision. This is not a current-build or every-element pass: revised Red Eye,
+fresh all19 source matrix, incomplete element/shared-chrome coverage, remaining
+visual differences, processing and full hosted validation remain in the goal.
+The accepted settings-menu comparison is not reopened for cosmetic refinement.
