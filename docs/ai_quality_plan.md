@@ -221,6 +221,35 @@ Next steps under consideration: retrain with night and low-light photos and text
 sources, balance sources by brightness, and test on burst pairs; use the score relative to similar frames, not absolutely;
 and wait for the owner's own keep/reject labels to calibrate.
 
+### Version 2 results (18 October 2026)
+
+Same method and network, trained on a broader, balanced set: 12,149 photos from the whole Photography library (11,000 train,
+1,149 held out from Japan 4-24, Iceland 10-24 and Steamboat '20), built from embedded NEF previews, folder quotas by
+square root of size, at least 25% low-light picks per folder (ISO 3200+ or 1/15 s+), 90 edited exports, 90-degree rotation
+augmentation, 100 epochs, 53 minutes.
+
+| Check on held-out photos | v1 | v2 |
+|---|---|---|
+| Predicted vs true damage level on synthetic damage, Spearman | 0.74 | 0.88 |
+| Per type (blur, motion, JPEG, downscale) | 92 to 98% | 100% |
+| Per type (noise, oversharpen, exposure, contrast, saturation) | 75 to 97% | 93 to 98% |
+| Real photos: mean quality, ISO 400 or lower | n/a | 0.82 |
+| Real photos: mean quality, ISO 3200 or higher | lowest scores 0.12 to 0.32 | 0.70 |
+| Real photos: mean quality, exposure 1/15 s or longer | n/a | 0.74 |
+| Real photos: quality vs measured sharpness / noise, Spearman | 0.52 / +0.44 | 0.42 / +0.40 |
+| Mean quality by trip: Japan 4-24 / Steamboat '20 / Iceland 10-24 | n/a | 0.83 / 0.79 / 0.76 |
+
+Reading: night and low-light photos no longer sit at the bottom (v1 scored them 0.12 to 0.32 against 0.93 for daylight),
+but low-light is still about 0.1 lower on average, partly legitimate since real high-ISO noise is a defect. The lowest
+scores on the contact sheet are now mostly blown-out, overexposed frames (a real technical flaw) and two dense-texture
+subjects (a berry close-up and a pebble beach), so a residual texture bias remains. The highest scores are calm, evenly
+lit scenes, including many near-identical frames of one lake scene, all at 0.93. Embedded previews of portrait shots came out
+rotated 90 degrees (the NEF orientation tag was not applied); harmless here because rotation is an augmentation, but to fix
+before any use that depends on orientation.
+
+Still untested: whether the score ranks frames of the same scene (bursts) the way the owner would. That needs labelled
+bursts. ONNX export is pending the `onnx` package (not installed on the server; the checkpoint is saved).
+
 ## 4. Phases and exit criteria
 
 | Phase | Work | Exit criterion |
