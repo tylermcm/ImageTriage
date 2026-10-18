@@ -144,7 +144,7 @@ RECIPE_SCALARS = frozenset((*RECIPE_ACTIVE_FIELDS, "gradeBlending", "gradeBalanc
 RECIPE_ARRAYS = {"curveSplits": 3, "hslHue": 8, "hslSat": 8, "hslLum": 8}
 RECIPE_CURVES = ("pointCurve", "pointCurveRed", "pointCurveGreen", "pointCurveBlue")
 RECIPE_WHEELS = ("gradeShadows", "gradeMidtones", "gradeHighlights", "gradeGlobal")
-RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle"}
+RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle", "glow", "pointColors"}
 
 
 def _recipe_value_ok(value) -> bool:
@@ -153,6 +153,14 @@ def _recipe_value_ok(value) -> bool:
     if isinstance(value, (int, float)):
         return value == value and abs(value) <= 3.4028234663852886e38
     return False
+
+
+def require_finishing_support(camera_raw, supported: bool) -> None:
+    """Refuse an older editor before it can silently discard new saved adjustments."""
+    recipe = camera_raw.get("recipe") if isinstance(camera_raw, dict) else None
+    settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
+    if isinstance(settings, dict) and ("glow" in settings or "pointColors" in settings) and not supported:
+        raise PhotoCraftCompatibilityError("This photo uses Glow or Point Color. Select the main-adjustments PhotoCraft test build to preserve those edits.")
 
 
 def classify_recipe(recipe) -> tuple[str, str]:
@@ -167,6 +175,19 @@ def classify_recipe(recipe) -> tuple[str, str]:
             return RECIPE_INVALID, f"the recipe's {name} is not a supported setting"
         if name == "vignetteStyle":
             valid = value in ("highlightPriority", "colorPriority", "paintOverlay") if isinstance(value, str) else False
+        elif name == "glow":
+            ranges = {"amount": (0, 100), "range": (0, 100), "spread": (0, 100), "warmth": (-100, 100)}
+            valid = isinstance(value, dict) and all(
+                (k == "style" and isinstance(v, str) and v in ("diffusion", "bloom", "halation"))
+                or (k in ranges and _recipe_value_ok(v) and ranges[k][0] <= v <= ranges[k][1])
+                for k, v in value.items())
+        elif name == "pointColors":
+            valid = isinstance(value, list) and len(value) <= 8 and all(
+                isinstance(sample, dict) and all(
+                    (k == "color" and isinstance(v, list) and len(v) == 3 and all(_recipe_value_ok(c) and 0 <= c <= 1 for c in v))
+                    or (k in ("hue", "saturation", "luminance", "variance") and _recipe_value_ok(v) and -100 <= v <= 100)
+                    or (k == "range" and _recipe_value_ok(v) and 0 <= v <= 100)
+                    for k, v in sample.items()) for sample in value)
         elif name == "seed":
             valid = type(value) is int and 0 <= value <= 0xFFFFFFFF
         elif name in RECIPE_CURVES:
@@ -190,6 +211,9 @@ def classify_recipe(recipe) -> tuple[str, str]:
     # Match CameraRaw::is_identity, including controls that are inert on their
     # own. The serialized flag is advisory; a stale flag cannot hide adjustments.
     identity = all(settings.get(name, 0) == 0 for name in RECIPE_ACTIVE_FIELDS)
+    identity = identity and settings.get("glow", {}).get("amount", 0) == 0
+    identity = identity and all(all(sample.get(k, 0) == 0 for k in ("hue", "saturation", "luminance", "variance"))
+                                for sample in settings.get("pointColors", []))
     identity = identity and all(all(v == 0 for v in settings.get(name, [])) for name in ("hslHue", "hslSat", "hslLum"))
     identity = identity and all(all(settings.get(name, {}).get(k, 0) == 0 for k in ("sat", "lum"))
                                 for name in ("gradeShadows", "gradeMidtones", "gradeHighlights", "gradeGlobal"))
@@ -648,6 +672,7 @@ class PhotoCraftControl:
         return reply.get("result") or {}
 
     def app_open(self, path: str, *, replace: bool = False, should_continue=None, camera_raw: dict | None = None) -> dict:
+        require_finishing_support(camera_raw, bool(getattr(self, "camera_raw_finishing_supported", False)))
         params = {"path": _automation_path(path)}
         if replace:
             params["replace"] = True
@@ -682,6 +707,8 @@ class PhotoCraftControl:
         self.camera_raw_supported = capabilities.get("cameraRaw", 0) >= 1
         self.camera_raw_prefetch_supported = capabilities.get("cameraRawPrefetch", 0) >= 1
         self.camera_raw_switch_supported = capabilities.get("cameraRawSwitch", 0) >= 1
+        self.camera_raw_finishing_supported = capabilities.get("cameraRawFinishing", 0) >= 1
+        self.filmstrip_supported = capabilities.get("filmstrip", 0) >= 1
         # ``app.stash`` can save the project and the display JPEG without the full-size PNG (``preview`` left out).
         self.stash_without_preview_supported = capabilities.get("stashWithoutPreview", 0) >= 1
         # Saves and recipe renders write generation-named pictures and a render manifest (``render_manifest_path``).

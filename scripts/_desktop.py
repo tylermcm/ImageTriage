@@ -1,9 +1,12 @@
-"""Keep a live check's windows on one Windows virtual desktop.
+"""Keep live checks behind other apps, optionally on a secondary physical monitor.
 
 A new window opens on whichever virtual desktop is active at that moment, so a check started while its owner is working on
 another desktop lands on top of that work. With ``IMAGE_TRIAGE_CHECK_DESKTOP_OF`` set to a process name (``claude.exe``),
 the desktop holding that program's window is the checks' home: ``wait_for_home_desktop`` holds a check back until that
-desktop is the active one, and ``pin`` moves a window of this process there. Without the variable both do nothing.
+desktop is the active one, and ``pin`` moves a window of this process there.
+``IMAGE_TRIAGE_CHECK_MONITOR=secondary`` selects a non-primary physical screen and fails
+before showing a window if none exists. A screen name can also be specified. Protected
+windows cannot accept focus; this helper never restores focus by activating another app.
 """
 from __future__ import annotations
 
@@ -14,6 +17,37 @@ import sys
 import time
 
 MARKER_ENV = "IMAGE_TRIAGE_CHECK_DESKTOP_OF"
+MONITOR_ENV = "IMAGE_TRIAGE_CHECK_MONITOR"
+
+
+def _check_screen(app):
+    """Resolve the opt-in physical monitor before creating a native window; fail closed."""
+    requested = os.environ.get(MONITOR_ENV, "").strip()
+    if not requested:
+        return None
+    screens = app.screens()
+    if requested == "secondary":
+        choices = [screen for screen in screens if screen != app.primaryScreen()]
+    else:
+        choices = [screen for screen in screens if screen.name() == requested]
+    if not choices:
+        raise RuntimeError(f"Check monitor {requested!r} is unavailable; no test window was opened")
+    return choices[0]
+
+
+def _prevent_activation(hwnd: int) -> None:
+    """Apply WS_EX_NOACTIVATE before first show, including after HWND recreation."""
+    user32 = ctypes.windll.user32
+    get_style = user32.GetWindowLongW
+    set_style = user32.SetWindowLongW
+    get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+    get_style.restype = wintypes.LONG
+    set_style.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+    set_style.restype = wintypes.LONG
+    style = get_style(hwnd, -20)  # GWL_EXSTYLE
+    set_style(hwnd, -20, style | 0x08000000)  # WS_EX_NOACTIVATE
+    if not get_style(hwnd, -20) & 0x08000000:
+        raise OSError("Cannot prevent test window activation")
 
 
 class _Guid(ctypes.Structure):
@@ -140,21 +174,27 @@ def _send_to_back(hwnd: int) -> None:
 
 
 def place(widget) -> None:
-    """For a check's top-level window, before it is shown: it goes to the home desktop, never takes the keyboard, and stays
-    under every other window, so it runs without getting in front of whatever its owner is doing. Does nothing without a home."""
-    if _home() is None:
+    """Place a hidden test window before showing it. No-op without a desktop or monitor request."""
+    from PySide6.QtWidgets import QApplication
+
+    screen = _check_screen(QApplication.instance())
+    if _home() is None and screen is None:
         return
     from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 
-    user32 = ctypes.windll.user32
-    user32.GetForegroundWindow.restype = wintypes.HWND
     widget.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+    widget.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
+    if screen is not None:
+        widget.setScreen(screen)
+        available = screen.availableGeometry()
+        widget.resize(min(widget.width(), available.width()), min(widget.height(), available.height()))
+        widget.move(available.center() - widget.rect().center())
     pin(widget)
+    _prevent_activation(int(widget.winId()))
 
     class _Behind(QObject):
         def __init__(self, parent):
             super().__init__(parent)
-            self.before = user32.GetForegroundWindow()
             self.pending = False
 
         def settle(self):
@@ -164,15 +204,12 @@ def place(widget) -> None:
             except RuntimeError:  # the window is gone
                 return
             pin(widget)  # a window re-created by a state change (full screen) starts on the active desktop again
+            _prevent_activation(hwnd)
             _send_to_back(hwnd)
-            if user32.GetForegroundWindow() == hwnd and self.before and self.before != hwnd:
-                user32.SetForegroundWindow(wintypes.HWND(self.before))
 
         def eventFilter(self, watched, event):
             # Nothing here may ask the window for its handle: that creates it, which sends the events this filter listens for.
             if event.type() in (QEvent.Type.Show, QEvent.Type.WindowActivate, QEvent.Type.WindowStateChange, QEvent.Type.WinIdChange):
-                if event.type() == QEvent.Type.Show:
-                    self.before = user32.GetForegroundWindow() or self.before
                 if not self.pending:
                     self.pending = True
                     QTimer.singleShot(0, self.settle)
