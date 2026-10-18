@@ -223,3 +223,21 @@ first; compare against trivial baselines (random, sharpest frame, latest frame).
   held-out real defects).
 - Whether any learned IQA is ever shipped, given that no clean pretrained model was found.
 - Group size policy: with the owner's broad idea of "same moment", how many frames pass 2 keeps per group (one winner, or the top few when compositions differ).
+
+## Zero-shot VLM burst-pick spike (2026-10-18)
+
+Qwen3-VL-4B and 2B (Apache-2.0, fp16, 768 px) asked to pick the owner's kept frame from 60 bursts (bursts over 9 frames dropped;
+next-token readout). Pre-registered rule: top-1 >= 0.45 and bootstrap interval of the gain over the best simple baseline above 0,
+and pairwise accuracy interval above 0.5.
+
+| model / task | top-1 | gain over least-clipped baseline | pair accuracy |
+|---|---|---|---|
+| 4B listwise | 0.400 | +0.067 [-0.100, +0.233] | 0.551 [0.445, 0.655] |
+| 4B pairwise | 0.383 | +0.050 [-0.117, +0.217] | 0.579 [0.473, 0.682] |
+| 4B rating | 0.333 | +0.000 | 0.547 |
+| 2B (all tasks) | 0.20 to 0.28 | negative | 0.37 to 0.55 |
+
+Verdict: the rule is not met by any model or task. 4B is slightly above chance (random is about 0.31) but not distinguishable
+from the simple baselines; 2B is at or below chance. Accuracy falls as bursts grow (4B pairwise: 0.71 on 2-frame bursts, about
+0.2 on 4+). The owner's pick is weak ground truth, so a ceiling is unknown, but a zero-shot VLM is not a pass-3 solution as is.
+Scripts: scripts/ai_v5/vlm_burst_spike.py, vlm_burst_analyze.py.
