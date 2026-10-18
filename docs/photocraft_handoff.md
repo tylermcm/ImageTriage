@@ -2690,3 +2690,60 @@ revision. This is not a current-build or every-element pass: revised Red Eye,
 fresh all19 source matrix, incomplete element/shared-chrome coverage, remaining
 visual differences, processing and full hosted validation remain in the goal.
 The accepted settings-menu comparison is not reopened for cosmetic refinement.
+
+
+## Common 19-reference matrix — 2026-10-17 (unpromoted)
+
+Native audit/tooling commitdcda93d8 builds on runtime4d022559; no Rust UI/runtime
+change. Both branches remain codex/image-triage-integration. Same integration
+session; no new fetch/merge is claimed. Previously recorded upstream
+efa1edd079b259b0b1f77b835151ee904437a231 and merge3b89ae1e remain the baseline.
+No conflicts/resolutions or host code changes in this checkpoint.
+
+Added scripts/audit_camera_raw_matrix.py and six verifier tests. The matrix merges
+six design fragments and three token fragments into private copies, preserving
+the accepted menu geometry. All19 views use one renderer and common base profile.
+It pins renderer/design/reference/checker inputs, verifies actual loaded fragments,
+workspace/panel ordering, scope/navigation/filmstrip and output sizes, and checks
+photo/document/recipe identity. A real setup commit creates Previous Settings;
+its menu-open capture is compared against an equally committed closed-menu baseline.
+Every section in one reference shares one scale/translation; the extra filmstrip
+crop derives directly from the same full-client transform.
+
+The first attempt verified1–18, then its stricter navigation check stopped on19:
+command zoom "fit" serializes as native null. This was a checker representation
+issue, not a render failure. Added strict fit/numeric-zoom tests and reran the
+complete matrix. Final matrix-v2/matrix-audit.json verifies all19 captures,21
+versioned specifications and1280 overlapping/repeated named regions. Six matrix
+and six existing comparator tests pass. Runtime native checks from the preceding
+checkpoint remain applicable; no Rust or production layout/token files changed.
+
+Renderer SHA2566d8410b809036c6f7364e8a233407cf380cb20a0d6f715994a76c243de13bfda.
+Merged base layout47ddc3d1fafc86f20ce360320a6075b6ca53aab571f3195a5d397db5756cb450.
+Merged tokensb4aace2dc4d44f3976d06eed7590ba9bde8bbc20363bddb491e7f7aca2db8d30.
+All21 source/native pairs inspected through four contact sheets; Curve/Mixer and
+lower panels also inspected individually. Current Red Eye is now recaptured.
+
+This is not a parity pass. Visual review found concrete structural gaps:
+- Color Mixer lacks Mixer/Point Color row, Adjust caption and ninth swatch;
+  its selector/gradients differ and missing rows shift later sections upward.
+- sidebar-ref02-diagnostic/comparison.png aligns the fixed histogram/metadata;
+  native Edit/Profile bars remain visible where ACR has scrolled them away.
+  Rotated panel order and section-only crops conceal the whole-sidebar mismatch.
+  Panel captures also use taller viewports than the source client.
+- Curve target control/Adjust spacing, wheel adornments, lower-panel spacing,
+  glyphs/disabled styles, context-dependent values and unavailable operations
+  remain different. Partial crops leave surrounding chrome/footer areas unreviewed.
+
+See design/camera-raw/matrix-followup.json for specific next work. Compared source
+crop fractions are recorded but are not element-completeness estimates; missing
+UI can still have complete candidate pixel coverage. No difference masking,
+independent element alignment or full-reference/every-element completion claim.
+The accepted settings-menu comparison is not reopened for cosmetic refinement.
+
+Everything remained offscreen. No desktop executable, release, push, visible launch
+or promotion. Selected PS1 acr-settings-menu editor and main live JSON remain
+unchanged. Live secondary-monitor/no-activation behavior is still unverified and
+mandatory for future agent-driven visible runs. Structural fixes, fresh matrix
+and full native+hosted gates remain required before selecting a new editor build.
+The every-element/all19 goal remains active.
