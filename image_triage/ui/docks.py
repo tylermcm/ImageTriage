@@ -44,6 +44,7 @@ from ..review_tools import EMPTY_INSPECTION_STATS, InspectionStats, histogram_sy
 from ..quality.poi import focus_poi, should_use_smart_focus_crop
 from .sections import SectionHeader
 from .display_metrics import DisplayProfile, STANDARD_DISPLAY
+from .ai_analyze_card import AIAnalyzeCard
 from .theme import ThemePalette, default_theme
 
 if TYPE_CHECKING:
@@ -2003,7 +2004,7 @@ class InspectorPanel(QWidget):
         "histogram": 152,
         "culling": 118,
         "capture": 142,
-        "ai_analysis": 218,
+        "ai_analysis": 258,
     }
     AI_DIMENSIONS = ("Focus", "Exposure", "Noise", "Detail", "Composition", "Group rank")
     AI_ROWS = ("Suggestion", "Confidence", "Reason", "Subject", "Focus", "Exposure", "Noise", "Group rank", "Wow rank", "Disagreement")
@@ -2011,6 +2012,8 @@ class InspectorPanel(QWidget):
     previous_requested = Signal()
     next_requested = Signal()
     analyze_requested = Signal()
+    cancel_analysis_requested = Signal()
+    clear_filter_requested = Signal()
     reject_requested = Signal()
     compare_requested = Signal()
     popout_requested = Signal()
@@ -2176,6 +2179,7 @@ class InspectorPanel(QWidget):
     def apply_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
         self.histogram_widget.apply_theme(theme)
+        self.analyze_card.apply_theme(theme)
 
     def save_ui_state(self) -> dict[str, Any]:
         sections = {key: section.is_expanded() for key, section in self._sections.items()}
@@ -2284,11 +2288,6 @@ class InspectorPanel(QWidget):
             chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
             chips.addWidget(chip, position // 3, position % 3)
         placeholder_layout.addLayout(chips)
-        self.analyze_button = QPushButton("Analyze folder", placeholder)
-        self.analyze_button.setObjectName("inspectorAnalyzeButton")
-        self.analyze_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.analyze_button.clicked.connect(lambda _checked=False: self.analyze_requested.emit())
-        placeholder_layout.addWidget(self.analyze_button, 0, Qt.AlignmentFlag.AlignLeft)
         placeholder_layout.addStretch(1)
         self.ai_stack.addWidget(placeholder)
 
@@ -2304,6 +2303,13 @@ class InspectorPanel(QWidget):
         rows_layout.addStretch(1)
         self.ai_stack.addWidget(rows_page)
         body_layout.addWidget(self.ai_stack)
+        # The Analyze control sits below the readout so it stays reachable after results exist (it always runs again).
+        self.analyze_card = AIAnalyzeCard(body)
+        self.analyze_card.analyze_requested.connect(self.analyze_requested.emit)
+        self.analyze_card.cancel_requested.connect(self.cancel_analysis_requested.emit)
+        self.analyze_card.clear_filter_requested.connect(self.clear_filter_requested.emit)
+        self.analyze_button = self.analyze_card.button
+        body_layout.addWidget(self.analyze_card)
 
         section = InspectorSection("ai_analysis", "AI analysis", body, aside="Not analyzed", parent=self)
         section.setProperty("lastInspectorSection", True)
@@ -2319,8 +2325,20 @@ class InspectorPanel(QWidget):
             body_layout.setAlignment(self.ai_stack, Qt.AlignmentFlag.AlignHCenter)
         self._fit_ai_box()
         header = self.ai_section.header.height() or INSPECTOR_SECTION_HEADER_HEIGHT
-        self._section_height_overrides["ai_analysis"] = header + max(80, height) + 16
+        self._section_height_overrides["ai_analysis"] = header + max(80, height) + 16 + self.analyze_card.sizeHint().height()
         self._sync_section_heights()
+
+    def show_analysis_idle(self, *, has_results: bool, summary: str = "") -> None:
+        self.analyze_card.set_idle(has_results=has_results, summary=summary)
+        QTimer.singleShot(0, self._sync_section_heights)
+
+    def show_analysis_running(self, *, stage: str, current: int, total: int, eta: str, stopping: bool = False) -> None:
+        self.analyze_card.set_running(stage=stage, current=current, total=total, eta=eta, stopping=stopping)
+        QTimer.singleShot(0, self._sync_section_heights)
+
+    def show_analysis_blocked(self, text: str, *, can_clear_filter: bool) -> None:
+        self.analyze_card.set_blocked(text, can_clear_filter=can_clear_filter)
+        QTimer.singleShot(0, self._sync_section_heights)
 
     def _fit_ai_box(self) -> None:
         """Target size, narrowed to the pane's room so the card never widens
