@@ -90,16 +90,49 @@ Before shipping commercially, have a lawyer confirm the red and amber items.
   weights in the installer. If models are ever bundled, the notices above must ship with them.
 - Ship a third-party notices page listing each model, its source and licence.
 
+## UniFace: a newer face library with a per-weight licence table
+
+UniFace (`yakhyo/uniface`, MIT code, PyPI first release 1.0.0 on 9 November 2025, 4.1.0 on 17 October 2026, Python 3.10 to 3.14,
+ONNX Runtime) wraps many face models: detection, recognition, landmarks, face quality, attributes, parsing, matting. Its README
+says "some pretrained weights are not [MIT], so check licences before shipping commercially", and its weights page
+(`huggingface.co/yakhyo/uniface-weights`) lists each upstream and licence. Read 17 October 2026:
+
+| Role | Weight family | Upstream licence per that page |
+|---|---|---|
+| Detection | RetinaFace (mnet, r18 to r50), CenterFace | MIT |
+| Detection / landmarks | BlazeFace, Face Mesh (MediaPipe) | Apache-2.0 |
+| Landmarks | PIPNet | MIT |
+| Face quality | eDifFIQA (T, S, M, L) | MIT |
+| Recognition | AdaFace (MIT), EdgeFace (BSD-3-Clause) | permissive |
+| Recognition | ArcFace | **non-commercial research only** (InsightFace) |
+| Detection | SCRFD | **non-commercial research only** (InsightFace) |
+| Landmarks | 2d_106 | **non-commercial research only** (InsightFace) |
+| Attributes | Age/Gender | **non-commercial research only** (InsightFace) |
+| Detection / segmentation | YOLOv5-Face, XSeg | GPL-3.0 |
+| Detection, emotion, FairFace | YOLOv8-Face, DDAMFN, FairFace | unresolved, no licence file |
+| Recognition | SphereFace, MobileFace | MIT repo, but trained on MS1M-V2, flagged non-commercial |
+
+Two things follow:
+
+- **It supports the AuraFace finding.** Our bundle's `scrfd_10g_bnkps`, `2d106det` and `genderage` match the names of
+  InsightFace weights that UniFace's own table marks non-commercial research only. That is still circumstantial (no hash
+  comparison), but it moves the three files from "suspicious" to "treat as non-commercial".
+- **Permissive options exist for every role we need.** Detection (RetinaFace or CenterFace), landmarks for eye points and
+  blink (MediaPipe Face Mesh or PIPNet), face quality (eDifFIQA) and recognition (EdgeFace, or keep AuraFace `glintr100`).
+  Caveat: the page records upstream code and weight licences, not the licences of the training datasets (for example WIDER
+  FACE for detectors), and says it is provenance, not legal advice. The same training-data risk discussion as above applies.
+
 ## Permissive alternatives
 
 These are options to evaluate, not drop-in answers. Licences marked "confirmed" were read today; the rest need checking.
 
 | Need | Option | Licence status |
 |---|---|---|
-| Face detection | YuNet (OpenCV Zoo) | MIT, confirmed for the files in that directory |
+| Face detection | YuNet (OpenCV Zoo), or RetinaFace / CenterFace via UniFace | MIT, confirmed (YuNet files; UniFace table for the others) |
 | Face recognition | SFace (OpenCV Zoo) | Apache-2.0, confirmed for the files; training data not stated |
 | Face recognition | Keep AuraFace `glintr100` | Apache-2.0 (above) |
-| Eye points and blink | MediaPipe Face Landmarker | Not checked |
+| Eye points and blink | MediaPipe Face Mesh or PIPNet via UniFace | Apache-2.0 / MIT per the UniFace table |
+| Face quality | eDifFIQA via UniFace | MIT per the UniFace table |
 | Age and gender | Remove the feature | n/a |
 | Embeddings | A LAION OpenCLIP model, e.g. `laion/CLIP-ViT-B-32-laion2B-s34B-b79K` | MIT metadata, confirmed; no LICENSE file and no ONNX export in that repo |
 | Image quality | Replace TOPIQ with locally computed technical scores plus a quality head trained on the user's own ratings over permissive embeddings | No third-party licence; needs the evaluation below |
