@@ -13,6 +13,18 @@ below was re-measured today**. Every number is quoted from the earlier docs and 
 | Evaluation data | **Own labelled folders plus public data**, after licences are checked. |
 | Dispute chord (D then 1 to 5) | Left disconnected until its effect on later culling is measured (see Evaluation). |
 
+## Data found on this machine (17 October 2026, read-only)
+
+The XQD card is the NIKON Z 7_2 volume (E:). `DCIM@NZ7_2` holds 2,054 JPG and 2,016 NEF files (about 138 GB);
+`DCIMGNZ7_2` holds 16 of each. The card's own AI database (`E:\.image_triage_ai`) is empty (0 images, 0 ratings,
+0 embeddings), no XMP ratings exist for these shots, and the app's decision store on this machine holds 7 decisions in total.
+So the card is **an unlabelled corpus, not yet a benchmark**. The app's catalog has already grouped it into 389 review
+groups (1,607 members), which gives burst structure to label against.
+
+It can be used for: speed and size timing of candidate embedding and quality models on real RAW and JPG pairs, and as the
+folder you cull to create labels. It cannot yet produce a Spearman or winners-in-top-N figure. The earlier evaluation folders
+(Banff, Canada, China) are not on this machine.
+
 ## 1. What the current pipeline gets wrong
 
 Evidence is from the earlier docs unless stated.
@@ -162,6 +174,6 @@ was not checked. Blink stays deferred, as before.
 
 ## 5. Open questions for you
 
-1. Which folders can go into the benchmark, and are any of them private such that they must stay on your machine?
+1. The card gives about 2,050 shots to label. How many bursts are you willing to cull on it (the 389 groups already exist), and do the earlier Banff, Canada and China folders exist anywhere reachable?
 2. Do you accept a measurable quality drop from losing TOPIQ if the replacement is licence-clean?
 3. For the embedding, is slower indexing acceptable if it improves culling, given that search shares the index?
