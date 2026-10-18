@@ -391,6 +391,24 @@ def test_closing_the_popout_hides_it_and_moves_nothing(controller, tmp_path, mon
     preview.hide()
 
 
+def test_native_filmstrip_editor_is_parked_before_restoring_its_fullscreen_container(controller, tmp_path, monkeypatch):
+    proc = process(tmp_path, revision=1)
+    proc.attached_parent = 555
+    controller._photocraft = proc
+    preview = FullScreenPreview()
+    controller._window = SimpleNamespace(_preview=preview)
+    preview.photocraft_close_guard = controller.prepare_photocraft_preview_close
+    order = []
+    monkeypatch.setattr(bridge, "embed_in_widget", lambda hwnd, parent: order.append(("parked", preview._native_filmstrip_active)))
+    preview._photocraft_edit_active = True
+    preview.set_native_filmstrip(True)
+    preview.closed.connect(lambda: order.append(("closed", preview._native_filmstrip_active)))
+    preview.showFullScreen()
+    preview.close()
+    assert order == [("parked", True), ("closed", False)]
+    proc.control.quit.assert_not_called()
+
+
 def test_the_editor_is_moved_out_before_a_popout_that_closes_for_real(controller, tmp_path, monkeypatch):
     """The fallback (``hide_on_close`` off). Qt destroys the popout's native window on close, and the editor's window with it if
     it is still inside: the editor is parked first, and not quit."""

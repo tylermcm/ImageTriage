@@ -1538,6 +1538,7 @@ class FullScreenPreview(QDialog):
         self.info_label.hide()
 
         self._filmstrip_current = 0
+        self._native_filmstrip_active = False
         self._filmstrip = studio.Filmstrip(focus="middle")
         self._filmstrip.mockup_chrome = True
         saved_thumb_ratio = self._settings.value(self.FILMSTRIP_THUMB_RATIO_KEY, None, float)
@@ -2410,7 +2411,7 @@ class FullScreenPreview(QDialog):
             self._photocraft_loading_label.raise_()
         elif not loading:
             self._photocraft_loading_label.hide()
-            self._filmstrip.show()
+            self._filmstrip.setVisible(not self._native_filmstrip_active)
 
     def show_photocraft_error(self, message: str) -> None:
         self._photocraft_loading_label.setText(f"PhotoCraft could not open this photo.\n\n{message}")
@@ -2480,7 +2481,8 @@ class FullScreenPreview(QDialog):
         self._editor_engaged = False
         self.hide_photocraft_host()
         self._render_pane(0)
-        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        if not self.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus:
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
         self.photocraft_close_requested.emit()
 
     def photocraft_host_hwnd(self) -> int:
@@ -2493,7 +2495,7 @@ class FullScreenPreview(QDialog):
 
     def show_photocraft_host(self) -> None:
         self._photocraft_edit_active = True
-        self._filmstrip.show()
+        self._filmstrip.setVisible(not self._native_filmstrip_active)
         self._update_photocraft_host_geometry()
         self._photocraft_host.show()
         self._photocraft_host.raise_()
@@ -2507,6 +2509,7 @@ class FullScreenPreview(QDialog):
         self._sync_native_layer_geometry()
 
     def hide_photocraft_host(self) -> None:
+        self.set_native_filmstrip(False)
         self._photocraft_edit_active = False
         self._hide_native_layer()
         self._photocraft_host.hide()
@@ -2514,6 +2517,22 @@ class FullScreenPreview(QDialog):
         self._filmstrip.show()
         with QSignalBlocker(self.photocraft_button):
             self.photocraft_button.setChecked(False)
+
+    def set_native_filmstrip(self, active: bool) -> None:
+        """Detach the retained Qt strip only after native capability/data confirmation."""
+        active = bool(active and self._photocraft_edit_active)
+        if active == self._native_filmstrip_active:
+            return
+        self._native_filmstrip_active = active
+        strip_layout = self._filmstrip.parentWidget().layout()
+        if active:
+            strip_layout.removeWidget(self._filmstrip)
+            self._filmstrip.hide()
+        else:
+            strip_layout.addWidget(self._filmstrip)
+            self._filmstrip.show()
+        strip_layout.activate()
+        self._update_photocraft_host_geometry()
 
     def _handle_photocraft_button_toggled(self, checked: bool) -> None:
         if self._collection_browse_mode or self._compare_mode:
@@ -2568,13 +2587,15 @@ class FullScreenPreview(QDialog):
         window_activated = False
         if not was_visible:
             self.showFullScreen()
-            self.raise_()
-            self.activateWindow()
-            window_activated = True
+            if not self.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus:
+                self.raise_()
+                self.activateWindow()
+                window_activated = True
         elif self.isMinimized() or not self.isFullScreen():
             self.showFullScreen()
             fullscreen_reapplied = True
-        self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        if not self.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus:
+            self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         self._refresh_timer.start()
         QTimer.singleShot(0, self._request_preview_loads)
         started_editor = False

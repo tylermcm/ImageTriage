@@ -17,6 +17,7 @@ from image_triage.app_data_migration import migrate_legacy_app_data_once
 from image_triage.app_identity import migrate_legacy_settings_once
 from image_triage.app_logging import configure_app_logging
 from image_triage.formats import is_image_file_candidate
+from image_triage.qt_logging import install_qt_message_filter
 from image_triage.updater import current_app_version
 
 
@@ -54,6 +55,7 @@ def is_quick_view_launch_target(target: str) -> bool:
 
 
 def main() -> int:
+    install_qt_message_filter()
     configure_app_logging()
     _configure_windows_app_identity()
     # QSettings lives under one identity, HKCU\Software\Image Triage (see

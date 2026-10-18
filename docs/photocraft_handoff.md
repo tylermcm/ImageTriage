@@ -1,5 +1,140 @@
 # PhotoCraft handoff
 
+## Local Image Triage testing — 2026-10-17
+
+Owner requested the new Camera Raw UI inside Image Triage for local testing,
+explicitly without a release build. Both repositories remain on
+`codex/image-triage-integration`; companion fetches succeeded again and upstream
+and fork tips remain `5f65579e` and `00c154c4`, already accounted for below.
+The existing dev executable `target/acr18/debug/photocraft.exe` is unchanged.
+
+Added `scripts/test_camera_raw.ps1`. It launches this host checkout from source
+using the development executable through a process-local override, loads live
+`design/camera-raw/layout.json` and `tokens.json`, and gives the editor a separate
+`target/acr18/image-triage-test/editor-profile`. Logs are in that test root's
+`logs` folder. It restores the invoking PowerShell's environment after launch.
+Optional `-OpenPath` accepts a photo or folder; `-PhotoCraftRoot` selects another
+companion checkout. The launcher reports the selected editor and live JSON paths.
+PowerShell parsing, path quoting, exact editor selection and environment
+restoration were verified. No global discovery, installed editor or release
+packaging changes.
+
+Live checks passed against this exact dev executable with live JSON enabled:
+
+- `check_photocraft_handoff.py`, both 1 MP and 24 MP: hidden startup, native
+  parent, fullscreen, persistent filmstrip/navigation with zero host hides,
+  stash/restore, native Save, grid propagation, closed-tab reopening, five
+  themes with verified native/desktop captures, shutdown and token/process cleanup.
+- `check_camera_raw_first.py`: adjustment persistence when navigating, return
+  restoration, Open into the full editor, and Camera Raw return after tab close.
+- `check_camera_raw_recipe.py`, pinned public Nikon D3 and Z6 samples: failed
+  recipe writes keep drafts, recipe-only exports match live full-size results,
+  first-poll edits persist, Open continuation and native Save both work.
+
+Inspected the native Camera Raw capture from the hosted test. Evidence is under
+the session artifact directory's `hosted-dev` folder. These are local development
+handoff results; full native/wasm/release gates remain unclaimed.
+
+An owner's screenshot then exposed a separate stale app: `ImageTriage-main` on
+`main` was still running with an explicit old `target/release/photocraft.exe`
+override. That binary treated `--raw-workspace` as a filename. Requested a normal
+window close (no force termination), confirmed the stale app/editor exited, and
+relaunched this checkout's test app on the synthetic fixture. Verified the running
+test process's checkout, exact development-editor override, live layout and
+private editor profile. Created Desktop shortcut **Image Triage - Camera Raw Test**
+pointing at the new launcher so normal shortcuts don't reintroduce that old
+override. Press E in the popout to enter Camera Raw. The known-good release
+executable retains SHA256 `EA42E1B82F1346091E18C210BD821194AD99CC446CB2FB9425108443049030C5`.
+No push, release build or promotion.
+
+## Camera Raw JSON preview rebuild — 2026-10-17 (preview open)
+
+Owner clarified that this request is to compile/launch the PS1 Camera Raw preview
+and see the live JSON mockup. Stopped only this session's release-build, native
+UI-test and full-host-test process trees; no full-suite/native result is claimed.
+The source integration below was already complete. Hosted promotion and live
+handoff checks are outside the clarified scope. Reusing the normal debug cache
+for compilation, copying the result to `target/acr18/debug/photocraft.exe`, then
+restoring the original ordinary debug executable and timestamp before launching
+`scripts/preview_camera_raw.ps1`. This keeps the preview out of host discovery.
+
+Both checkouts are on `codex/image-triage-integration`. Host fast-forwarded
+`d2d0f08` to fetched `27b8bb3` (handoff documentation only); pre-existing
+`main.py`, Qt logging, strategy/plan and screenshot changes are preserved.
+Companion is `C:/Users/user0/Documents/photocraft`; the literal `../photocraft`
+beside this OneDrive host checkout does not exist. Its remote names differ from
+the protocol examples: `upstream` is storytold, `origin` is tylermcm's fork.
+
+Initial fetches failed with `getaddrinfo() thread failed to start`. Restoring
+missing Windows system/profile environment variables fixed networking; fetches
+then succeeded for all three remotes. Fork integration matched local
+`00c154c46d4b8bc859aa07548224138d0e9a7c42` with no fork-only incoming work.
+Upstream advanced 71 commits from
+`b630d7cb9aeb2a79ab5224ebf6e8266f1d858873` to
+`5f65579ecb44047c2a619036c18ff273202e1389`, merged as
+`91270cce2acea35ec6a51e026eb2b08a7752ef3c`. Pre-merge source is retained on
+`codex/pre-host-build-20261017`. No push.
+
+Conflicts reviewed and resolved individually:
+
+- `apps/photocraft/src/main.rs`: keep hosted/raw-workspace flags and hidden
+  native-window behavior; adopt upstream single-instance support. Both host
+  flags count as process-specific options so they never forward to a standalone
+  editor; control launches also retain upstream's own-process exemption.
+- `crates/ui-egui/src/gpu_canvas.rs`: adopt upstream adapter VRAM and shared
+  canvas-budget fields, while retaining the hosted off-thread compositor warmup
+  and CPU fallback. Upstream does not supply that warmup behavior.
+- `crates/ui-egui/src/widgets.rs`: retain Camera Raw fixed-decimal and left
+  alignment controls; apply upstream's numeric-input length guard before parsing.
+- All 20 `crates/ui-egui/src/i18n/*.tsv` catalogs: keep independent Camera Raw
+  and upstream GPU/Save translations. Checked each block's keys for overlap;
+  none collide. No whole-file ours/theirs selection.
+
+Reviewed automatic merges in desktop services/startup, control/files, jobs,
+menus, state, theme/window integration and automation authorization. Adopted
+upstream recovery-directory policy, Save disk-change prompts, GPU budgets and
+token-file checks. Bound hosted Save still routes through `save_bound` before
+ordinary standalone Save prompting; scoped host I/O, stash/restore and host
+theme hooks remain. The previous fork pixels fix already matches upstream, with
+no remaining `pixels.rs` delta. The companion's private `../craftrules` is absent.
+
+The release compile caught a semantic automatic-merge issue in the independent
+preset-set loader: its new `Persisted` initializer omitted the fork's export
+presets. Restored that field and extended the damaged-set preservation test
+(`77914c86`); formatted merged GPU initialization in `516b6d2b`. These tests
+await execution. Final source is `516b6d2b4e42f12b449040589e54a14f2e207290`.
+
+Validation so far: final rustfmt and Git whitespace checks pass; focused host
+regressions **188 passed, 1 skipped**. The initial release build exposed a missing
+MSVC linker environment, repaired using the installed VS 2022 Preview toolchain.
+Installed the missing wasm target, but no wasm result is claimed. The release
+retry and broader tests were stopped at the owner's clarification. The active
+preview build is `cargo build -p photocraft -j 6`, using the existing debug cache.
+No hosted candidate has been promoted.
+
+Known-good `target/release/photocraft.exe` SHA256:
+`EA42E1B82F1346091E18C210BD821194AD99CC446CB2FB9425108443049030C5`.
+Owner's `%APPDATA%/Photocraft/preferences.json` starting SHA256:
+`C9BD660D82FA1772B6881A02AEBD145792EF57F141A02395BDD6C11E5AFEF46E`.
+Logs/scripts are under
+`C:/Users/user0/.codex/visualizations/2026/10/17/01a14901-444b-7781-b5e6-48730a8f5183`.
+
+Preview build passed in **5m10s**. Launched via the companion PS1 using the
+synthetic color fixture and separate preview profile; running PID **18464**.
+Isolated executable: `target/acr18/debug/photocraft.exe`, SHA256
+`E5464F3DD48B2AD95A96FAD6630511DDC8DEFACECA1B2684D00BCE5C54B40930`.
+Authenticated control inspection confirms Camera Raw is open and every supplied
+layout value, including the live preview preset, matches `layout.json`.
+Inspected `target/acr18/preview.png`: native mockup is visible with the current
+Light/Color/Effects layout. This is preview verification, not ACR parity or
+hosted-handoff certification. Leave this window open for live JSON work.
+
+The ordinary debug executable was restored byte-for-byte, including its original
+timestamp (SHA256 `B7447438BD9459FF61C3E0BE89D1BACF65DEC911FDD60DBF67D2D4CFCF6F3B53`).
+The ordinary release executable remains byte-identical to the starting hash.
+Normal `scripts/preview_camera_raw.ps1` now opens the isolated preview without
+compiling. No design JSON was modified in this build session, and nothing pushed.
+
 ## Keep visual iteration in JSON — 2026-10-15
 
 Owner clarified that this design pass should use live JSON and the PS1 launcher,
@@ -547,7 +682,8 @@ variable `IMAGE_TRIAGE_PHOTOCRAFT_EXE`, `PATH`, or `C:\Program Files\PhotoCraft\
 after it are later commits.
 
 **Mistake of mine, tonight.** My test scripts cleaned up with `taskkill /IM photocraft.exe`, which kills every editor, including the one of the
-owner's running Image Triage (that was how I found out: the owner's app kept its editor running from `targetelease`, a build could not replace the
+owner's running Image Triage (that was how I found out: the owner's app kept its editor running from `target
+elease`, a build could not replace the
 locked `photocraft.exe`, and a script of mine then ended that process). They no longer do that
 (the checks end the editor they started; it is tied to its parent by a job object). The two "PhotoCraft handoff failed" entries of
 2026-10-11 (17:29 and 17:44) may owe something to the same kills, besides the 30 s idle drop that was found and fixed.
@@ -1999,3 +2135,698 @@ https://github.com/tylermcm/photocraft.git. Current Python auditor tests: 6 pass
 staged diff whitespace check passed. Native Curve batch validation remains pending
 as recorded above; this is a source checkpoint, with no hosted editor promotion
 or full handoff/parity validation claim. Known-good hosted executable preserved.
+
+## 2026-10-17 - Native ACR filmstrip work in progress
+
+Both checkouts remain on `codex/image-triage-integration`. Actual companion is
+`C:/Users/user0/Documents/photocraft`; its configured `upstream` is storytold and
+`origin` is tylermcm. Both fetches succeeded. Previously fetched upstream
+`5f65579ecb44047c2a619036c18ff273202e1389` advanced to
+`efa1edd079b259b0b1f77b835151ee904437a231`. The earlier deferred upstream base
+was integrated by `91270cce`; the new two-commit update is merged in
+`3b89ae1eaf3933f2d49ad92178017806724461f9`. Fork integration remains `00c154c4`,
+already an ancestor; no additional fork-only work was pending.
+
+The two-commit update had no textual conflicts. Reviewed both automatic merges:
+upstream's export-presets initializer matches our build repair; its version is
+retained alongside the existing regression test. The other change only gates
+algorithm test helpers with cfg(test). No new upstream startup, control, jobs,
+menus, theme, native-window or authorization changes occur in those two commits.
+Nothing was pushed.
+
+New native module `camera_raw_filmstrip_ui.rs` owns drawing, hit targets, collapse,
+scrolling and keyboard requests. `ui.filmstrip` exchanges a bounded metadata window
+and at most one 384px RGBA display thumbnail per request. Stable identities,
+browse generations and acknowledged serials protect against reordered/late
+responses. Image Triage retains browse order/filter/sort, annotations, undo,
+navigation, stash/restore and Save. New `photocraft_filmstrip.py` connects those
+existing paths. The old Qt strip is removed from its layout and retained intact;
+capability/data negotiation precedes detachment, then the native tray is enabled.
+A lost reply keeps the last presentation and retries so both strips cannot appear.
+Process exit restores the same Qt widget.
+
+135 focused host regressions pass. Hosted synthetic check v2 passes native clicks,
+grid selection, persistent PID, folder exclusion, host/native ratings, reject,
+collapsed keyboard navigation, collapse/expand, host resize, unchanged originals
+and process cleanup. Public RAW fixture testing also observed restored +1 exposure;
+one earlier occluded-window run logged a control dispatch timeout during teardown,
+so complete RAW/shutdown acceptance still needs a clean final run. Native full
+suite caught and prompted corrections for loading-shell geometry and test texture
+cleanup; final native gates and current-source overlays are still in progress.
+
+Candidate builds stay in `target/acr-filmstrip/debug/photocraft.exe`. Ordinary
+debug executable bytes and timestamp are restored after each cached build;
+release and the existing `target/acr18` hosted build are preserved. No default
+launcher promotion or release packaging has occurred. This is not a 1:1 parity pass.
+
+All 19 resupplied screenshots remain in the private attachment directory.
+Companion `design/camera-raw/reference-inventory.json` now resolves their current
+numbers by SHA256, and the auditor resolves registrations by hash. Reference 19
+has 24 explicit filmstrip/navigation regions. Artifacts, original screenshot pixels,
+native captures, inspection JSON, raw 50% overlays and element differences remain
+outside Git under the chat's `acr-filmstrip` visualization directory. The full
+every-element/every-reference goal remains active, including shared chrome,
+dialogs and unsupported tool behavior.
+
+### Validated filmstrip development checkpoint
+
+PhotoCraft source is committed locally as
+`2c2526820f045265cdf7ca7f73ba18c453f33633`. Isolated executable SHA256:
+`7285F75BDC2E95C56C46B77539D24DF2B58AC5F7CC6FBE6E2B5354B3497A0D92`.
+Both PS1 development launchers now select this candidate; `-EditorBuild acr18`
+selects the preserved preceding build. Ordinary installed-editor discovery is
+unchanged. No release build, packaging or push.
+
+Final checks: 137 host regressions; 3113 native library tests (13 ignored);
+146 desktop tests; 15 Camera Raw/workspace integrations; six overlay-auditor
+tests. All-target clippy, layers (30 crates) and wasm (24 checks) pass. Older
+Camera Raw catalog omissions were translated in all applicable catalogs to make
+the full native suite green, rather than exempting its translation test.
+
+MainWindow synthetic final13 and Nikon RAW final12 pass native clicks, retained
+Qt detachment, grid selection, annotations, collapsed arrow/Home navigation,
+split comparison, resize/fullscreen, private live-theme reload and clean draft
+saves/shutdown. The synthetic check also verifies different original/adjusted
+pixels across the comparison split. Two-camera recipe flow passes Nikon D3/Z6
+recipe/export equivalence, edit-before-first-poll persistence, document continuation
+and native Save. Separate full-editor handoff passes native Save, four grid save
+notifications, closed-tab reopen, hidden startup, five themes and zero navigation
+hides. Native rendered screenshots were reviewed; desktop-composite screenshots
+were not certified on the inactive virtual desktop.
+
+Live validation exposed two host issues and their regressions are covered:
+rescans briefly clear `_records`, so the adapter retains the committed browse
+window and defers actions until scanning finishes; fullscreen close can destroy
+the embedded window while the old Qt layout is restored, so the close guard parks
+the editor before that transition. Final checks explicitly reject close-save errors.
+
+Cargo desktop integration tests regenerated the ordinary debug executable too;
+after all Cargo commands it was restored to hash
+`B7447438BD9459FF61C3E0BE89D1BACF65DEC911FDD60DBF67D2D4CFCF6F3B53`
+and original UTC timestamp `2026-10-09T03:15:19.5133667Z`. Release remains
+`EA42E1B82F1346091E18C210BD821194AD99CC446CB2FB9425108443049030C5`.
+
+Current evidence has 14 verified native view captures, 447 body-region comparisons
+and 24 filmstrip/navigation comparisons (471 total). Frame edges and tray/nav
+background average about 0.3 RGB levels from the dithered reference; this limited
+measurement is not a complete parity pass. Glyphs, type, remaining chrome and
+photo-dependent Fit/thumbnail geometry remain under review. References
+6, 7, 10, 11, 13, 14, 15, 16, 17 and 18 still lack individual matching-view audits.
+The broader all-19/every-element goal remains active.
+
+
+### Shared chrome and full-window development checkpoint (2026-10-17)
+
+Companion source commit: `ba7a6316620d7f13bda7675bebe3ba8c6b61fa47`.
+
+Both checkouts remain on `codex/image-triage-integration`. The upstream merge
+record above remains the integration base: upstream through
+`efa1edd079b259b0b1f77b835151ee904437a231`; no further merge/conflicts in this
+continuous session. Actual remotes are `upstream` (storytold) and `origin`
+(tylermcm); both fetches succeeded during this session. No push.
+
+The isolated `target/acr-glyphs/debug/photocraft.exe` contains measured filmstrip
+glyph corrections, fractional zoom labels, the 39-point header, a filename/camera
+heading centered over the preview, Grid and Color Sampler bars, and an ACR workspace
+footer using existing Cancel/Done/Open transactions. Sampler Reset/New Sample/Close
+and grid density/opacity modify view state. Open Object is disabled pending RAW
+object continuation. Workflow output settings remain absent; no fabricated output
+profile/bit-depth/ppi label. The Qt fallback detaches only after native readiness.
+
+Both PS1 test launchers now select `acr-glyphs`. `-EditorBuild acr-filmstrip` and
+`-EditorBuild acr18` select preserved earlier builds. Existing user processes were
+not stopped or overwritten. Re-run the launcher to use the new binary. SHA256:
+`7B32C91A72A25865E513BD7807114AA1A42326712490B2C3C59CC5EF934EB841`.
+Ordinary debug remains B7447438... with UTC timestamp
+`2026-10-09T03:15:19.5133667Z`; release remains EA42E1B8... . No release packaging.
+
+Checks pass: 3116 native library tests (13 ignored), 41 Camera Raw integrations,
+146 desktop tests, 137 host regressions, six overlay-auditor tests; all-target
+clippy, layers30 and wasm24. Localization assertions inspect the separate
+white-balance label/value and three named wheel luminance controls. Alt-drag's
+ownership test now keeps the Curve controls inside its viewport; it previously
+aimed below the visible area. Native Save, four grid notifications, closed-tab
+reopen, hidden startup, five themes, fullscreen, live theme reload, stash/restore,
+cleanup and unchanged originals passed live. D3/Z6 recipe exports match live and
+persist through document continuation and Save. One refined timing exceeded the
+ceiling; timing is diagnostic, not certified. Final synthetic lifecycle and all
+18 captures were repeated after reverting only the unsuccessful star trial;
+RAW and full-editor checks preceded that visual-only revert.
+
+Current evidence: 447 panel regions, 358 full-client regions and 24 filmstrip
+regions, totaling829 with overlaps/repeated controls. Fixed client crops use one
+scale/translation, prohibiting individual-control realignment. Native inventory
+records exact hashes. Private evidence: this chat's `acr-filmstrip` directory,
+`full-windows-final2`, `all-views-shared-ui-final2`,
+`all-reference-audit-shared-ui-final2`, `glyph-overlay-final2`, and
+`combined-reference-audit-shared-ui-final2.json`. Synthetic gray geometry and its
+thumbnail are explicit; photo, metadata and output text differences remain.
+
+Mean RGB differences improve for toggle7.552 to2.556, filter4.485 to2.258,
+reject6.817 to3.479 and comparison5.550 to1.659. Thicker stars increased error and
+were discarded; final first-star error returns to1.428. No full parity pass.
+Refs6,7,10,11,13,14,15 still lack matching individual audits. Full rail, workflow,
+grid rendering/settings, fonts/glyphs/spacing, Save Options, Preferences, Presets,
+settings menu, Masking, Crop/Expand, Remove, Open Object and every remaining element
+across all19 stay in the active goal.
+
+
+### Accepted settings-menu development checkpoint (2026-10-17)
+
+Companion source commit: `28153cbb`.
+
+The native Camera Raw settings menu now renders all 22 observed rows in 12
+sections. The user accepted the displayed reference-11 comparison as practically
+identical and requested no further refinement. Its fixed registration measures
+41 regions with one scale/translation, including the complete frame, labels,
+shortcuts, separators and submenu arrow. Evidence: this chat's private
+`acr-filmstrip/settings-menu/accepted-capture/settings-menu-audit.json` and
+`overlay/element-audit.json`. It preserves the underlying recipe/document identity.
+870 measured regions now include overlaps/repeated controls; this is not a full
+parity pass. References6,7,10,13,14,15 still need matching-view audits.
+
+Implemented operations use the existing Camera Raw transactions: reset, committed
+previous settings, named dialog snapshots, recipe JSON clipboard copy/paste,
+supported XMP/JSON loading and saving. Paste validates before applying atomically,
+preserves destination encoding/proxy fields, has a bounded input and a timeout,
+and supports undo. Keyboard navigation skips disabled rows. Menu Escape and
+focus cannot edit the image behind it. Closing/reopening clears transient popup
+state while retaining clipboard availability and previous committed parameters.
+Unavailable preset, selected-settings, AI, DNG, export and defaults operations
+remain disabled. First external clipboard paste uses the shortcut; the menu is
+not enabled until a known copy/valid paste. OS clipboard roundtrip is not certified.
+
+The development launchers now default to `acr-settings-menu`. Executable SHA256:
+`38112b97bd45d648edf0a9af7a03376381fd0cf416f20364f31e328232ab5d6f`.
+The offscreen snapshot renderer is `d66b09bd92f9523f1914842e4ed3815f282685545ce0260a77c58d3e75bbf3c9`.
+Earlier acr-glyphs/acr-filmstrip builds use frozen validated JSON, so newer design
+fields cannot break rollback launches. Their executables, acr18, normal debug
+(B7447438...; timestamp2026-10-09T03:15:19.5133667Z) and release remain preserved.
+No release build or push. Both branches remain codex/image-triage-integration;
+upstream/fork fetch and merge records earlier in this continuous session apply.
+
+Checks:3117 native library tests/13ignored, eight menu interactions,41 standard
+Camera Raw regressions,146 desktop tests,137 host regressions; all-target clippy,
+layers30 and wasm24. Live synthetic and Nikon RAW MainWindow checks passed native
+filmstrip detach/restore, navigation, ratings/reject, theme/resize/fullscreen and
+cleanup. Full editor handoff passed Save, four grid notifications, closed-tab
+reopen, hidden startup and five themes. D3/Z6 recipes matched exports and survived
+continuation/Save, although that lightweight harness lacks a thumbnail stub and
+logged errors; real MainWindow filmstrip tests independently passed. Timing
+ceilings were exceeded and remain diagnostic. Desktop screenshot capture was
+not verified by the handoff runner; native/offscreen and hosted screenshots are
+separate evidence, not a claim about focus-safe execution.
+
+The user is playing a game: all further agent-driven GUI launches must stay on
+secondary monitor without activation. Previous GUI pipeline completed and its
+candidate processes exited. No new visible launches have occurred since that
+instruction. Test helper now accepts IMAGE_TRIAGE_CHECK_MONITOR=secondary (or an
+exact screen name), fails before native-window creation if unavailable, sets
+Qt no-focus/no-activation flags and WS_EX_NOACTIVATE before showing, and no longer
+calls SetForegroundWindow as reactive recovery. Preview respects the no-focus
+flag instead of explicitly activating on open/close. Five offscreen regression
+checks cover selection/failure-before-create, placement without a virtual desktop
+marker, and absent preview activation calls. Live foreground preservation remains
+unverified: continue offscreen until a properly guarded secondary-monitor run.
+This is a test helper option, not a change to normal interactive user launches.
+
+
+### Presets source and offscreen overlay checkpoint (2026-10-17)
+
+Companion source commit: `c5d76df4`, on codex/image-triage-integration. This is
+unpromoted UI source; the PS1 launchers continue selecting the validated
+acr-settings-menu executable. No desktop executable was rebuilt/promoted for this
+step, no visible window opened, no release build or push. Normal debug B744...,
+validated editor38112... and releaseEA42... were hash-verified unchanged.
+Earlier upstream/fork fetch and merge records apply to this continuous session.
+
+The native tool rail now reaches a Presets category browser with38 observed
+category titles. Serialized workspace fields tab=presets and presetGroups control
+which groups are expanded. Pointer/keyboard disclosures change only view state;
+unknown/duplicate names and mixed invalid requests are rejected atomically.
+Preset recipes are absent. Expanding a group explicitly says Not available;
+creation, amount and preset management remain disabled. The header management
+button does not impersonate the global Camera Raw menu; the existing rail menu
+remains usable while the tab is open. Catalog titles are retained verbatim;
+their localization is not certified. Other labels use existing translations.
+
+Native Rust Design accepts the measured presets-design.json fragment, and Tokens
+supplies scrollbar colors/radii (presets-tokens.json). The auditor merges these
+into private layout/token copies, keeping the validated launcher's older JSON
+schema usable. The scrollbar has a consistent native width rather than the
+generic thin overlay style; its scoped styling does not alter other tabs.
+
+Final evidence: this chat's acr-filmstrip/presets-v4/presets-audit.json and
+presets-v4/overlay/comparison.png. Reference10 SHA b7cb9423... is pinned. All88
+specified regions have full candidate crop coverage at one fixed registration:
+source[26,432,566,2532], candidate[2260,374,2800,2474], 540x2100 pixels at scale2
+with viewport1440x1297. Edit/Presets captures retain identical document/photo/
+recipe identity, and the synthetic source hash is unchanged. No source photo,
+font or proprietary preset assets entered the product. Final PNG was inspected.
+
+Snapshot SHA256:
+`69c9aacc8c908da1b08c787889f86bcddb6021dffaf758d71d68655d5bd174bb`.
+Private merged layout:
+`4ce0258e8ffbef43e600f237116110bf4bc1eba731f2b06b31535febfd98c00c`.
+Private merged tokens:
+`1459093c9f1170620613602abc82be66a865d29dc55153f1ddeb3d1147d45e56`.
+The mean of the88 region RGB means improves13.792 to5.973; scrollbar35.853
+to14.286. These are diagnostics, not parity certification. Font/glyph differences,
+scrollbar extent, disabled capabilities and shared rail/chrome remain explicit.
+
+Final source passes3118 library tests/13ignored,51 Camera Raw integrations
+(including two new view tests), six overlay-auditor tests, all-target clippy,
+layers30 and wasm24. Clippy/wasm began after the last Rust source change. Full
+native/hosted validation is still required before any new development editor is
+selected. No claim is made about live focus preservation: secondary-monitor-only,
+nonactivating launches remain mandatory, and this step was entirely offscreen.
+
+The versioned evidence now includes958 regions with overlap/repeated controls.
+References6(Save Options),7(Preferences),13(Masking),14(Crop) and15(Remove)
+still lack matching-view individual audits. All19 remain in the every-element
+goal; no full-reference or complete behavior parity pass is claimed.
+
+
+### Save Options native source checkpoint (2026-10-17)
+
+Companion source commit: ad960e14, codex/image-triage-integration. No desktop
+binary was rebuilt or promoted. The PS1 default remains the validated
+acr-settings-menu build38112...; ordinary debugB744... and releaseEA42... were
+hash-verified unchanged. Both checkouts stay on the integration branch, and the
+upstream/fork fetch/merge records from this continuous session still apply.
+No visible GUI launch, release or push occurred.
+
+Save Image in the native settings menu now opens Save Options. It is a real egui
+modal driven by72 JSON widget definitions, with typed draft settings in UiState.
+Naming choices, extension case and three DNG checkbox drafts support pointer/
+keyboard interactions; invalid mixed input is atomic. Cancel/Escape roll back
+only the export draft; parent close/reopen clears transient state. The modal has
+an explicit height and foreground parent relationship. Its720x900 test verifies
+actual wheel scrolling, not merely a visible scroll area. Paste/Y/Escape do not
+edit or cancel the photo behind it.
+
+No DNG writer is available in the existing export path. Save remains disabled,
+as do unsupported folder/provider actions. Format/compatibility/preview values
+are observed readonly choices; other output sections are disabled in DNG view.
+No differently encoded file is written with a DNG extension, and no success or
+compatibility is simulated. Complete export bindings remain unfinished. Dynamic
+filename/folder information comes from the actual document; no reference path,
+file stem or Adobe account identity was copied into the product. Default dialog
+labels and code labels have contextual/plain lookup coverage in all20 catalogs;
+this is not certification of all localized rendered layouts.
+
+The auditor merges save-options-design.json and save-options-tokens.json into
+private root layout/token copies, retaining the older validated launch schema.
+Final evidence: this chat's acr-filmstrip/save-options-v2/save-options-audit.json
+and overlay/comparison.png. All104 specified regions have complete candidate
+coverage. The full dialog uses one scale/translation: source[0,0,1574,2256],
+candidate[653, 272, 2227, 2528], scale2 at1440x1400. No individual row realignment or
+context-value masking. Closed/open captures retain identical document/photo/
+recipe identity and the synthetic original. Final PNG was inspected.
+
+Snapshot SHA256:
+c05abcf666e2545f316e6321bfd8983b2996c6cc9f19e4f99bef2f59fca944f5.
+Private merged layout:
+6fae93b6914663bc46e0dd2b61175a86e25ab4dc14f7477a16c0a1cd1d9b944f.
+Private merged tokens:
+5f7aca24cf6fc78a963b4521d45c480340ef7949271bc03e6d45985cfb022f3e.
+Region-mean RGB error improves11.798 to8.856. Source font/glyph/border differences,
+capability differences and dynamic context values remain visible; no parity pass.
+
+Checks:3120 library tests/13ignored,54 Camera Raw integrations, six overlay-auditor
+tests, final all-target clippy, layers30 and wasm24 pass. Three new integrations
+cover menu access, real draft controls/extension selection/Space, Cancel rollback,
+atomic validation, protected clipboard/Y/Escape and actual small-viewport scroll.
+Geometry validation covers finite/bounded coordinates, duplicate/mandatory IDs,
+and a design's inability to enable an output action. All checks were offscreen.
+Live secondary-monitor/no-activation preservation remains unverified and remains
+mandatory for any future agent-driven launch. Hosted validation is still required
+before selecting a new editor executable.
+
+Versioned measured regions now total1062 with overlaps/repeated controls.
+References7(Preferences),13(Masking),14(Crop) and15(Remove) still lack individual
+matching-view audits. All19 remain in the complete every-element goal, including
+unimplemented output behavior and every remaining shared/native element.
+
+
+## Preferences General source checkpoint — 2026-10-17 (unpromoted)
+
+Native source commit66c5b156 adds the measured Preferences General modal to the
+existing gear popup. Both repositories remain on codex/image-triage-integration.
+This continues the same integration session; no new upstream merge or fetch is
+claimed here. The previously recorded fetched/merged upstream efa1edd079b259b0b1f77b835151ee904437a231
+and merge3b89ae1e remain the integration baseline. No conflict resolution occurs
+in this source checkpoint. No push or release build occurred.
+
+Supported settings use existing native view behavior: Single/Multiple edit
+panels, filmstrip filenames and50/100/200% default image click zoom. A typed
+serialized draft uses OK to persist and Cancel/Escape to discard. Startup
+validates stored profiles; malformed values report an error and do not apply.
+Unset preferences retain the JSON filmstrip flags. Preferences are independent
+of photo pixels/recipe/history. Unsupported pages/options stay visibly disabled,
+including ratings+color labels, orientation, theme, rich tooltips, Lightroom-style
+zoom/pan, compact layout and legacy undo/TAT. The title does not impersonate
+Adobe's version number. Existing scope gear entries remain usable. Dialogs are
+mutually exclusive; parent close clears transient drafts. Corrected optional
+filmstrip rating-star/tooltip-separator encoding. Label lookup coverage is checked
+in all20 language catalogs, without claiming all localized layouts are audited.
+
+Private auditor layout/tokens merge preferences-design.json/preferences-tokens.json;
+main live layout/tokens and the PS1 default acr-settings-menu remain unchanged.
+Final evidence in this chat's acr-filmstrip/preferences-v2/preferences-audit.json
+and overlay/comparison.png:53 regions, complete candidate coverage, one full-dialog
+registration. Source[0,0,2004,1530], candidate[438,635,2442,2165], scale2 at1440x1400.
+Both captures preserve photo/document/recipe identity and original fixture hash.
+Final PNG inspected; type, glyph, disabled capability and dynamic title differences
+remain visible. No every-element parity pass is claimed.
+
+Snapshot SHA25655d537f8a8ed38568529c84f968f58ab63245963699d66c6895face8d9f2c326.
+Private layout0b31d384e0b18a1779493b43295295f3a677d613d971f54d7df240fe4650c0f3.
+Private tokens7f0ca6148704869c2c76932acc517479ca3327530c1e0f3787ef83a46de41853.
+The shared auditor also rechecked Save Options in preferences-save-regression.
+
+Final checks:3122 library tests/13ignored,58 Camera Raw integrations,6 auditor tests,
+all-target ui+desktop clippy,layers30,wasm24 pass. Four new integration tests cover
+actual pointer controls/OK/Cancel, persisted startup settings and malformed profiles,
+click-zoom behavior, atomic invalid patches and Escape ownership. Initial scanner
+empty-label and test lint issues were fixed before final checks. No visible window
+was launched. Secondary-monitor/no-activation focus preservation remains unverified;
+it is mandatory for any future agent-driven visible run. Native+hosted behavior
+validation remains required before promoting a new desktop executable.
+
+Rechecked protected hashes:target/debug/photocraft.exe
+b7447438bd9459ff61c3e0be89d1bacf65dec911fdd60dbf67d2d4cfcf6f3b53;
+selected target/acr-settings-menu/debug/photocraft.exe
+38112b97bd45d648edf0a9af7a03376381fd0cf416f20364f31e328232ab5d6f;
+release ea42e1b82f1346091e18c210bd821194ad99cc446cb2fb9425108443049030c5.
+All unchanged. Original Qt filmstrip remains retained/detached.
+
+Versioned measured regions total1115, including overlapping/repeated controls.
+Matching-view individual audits still absent for13(Masking),14(Crop),15(Remove).
+Every element across all19 and unavailable behaviors remain in the active goal.
+
+
+## Crop & Expand source checkpoint — 2026-10-17 (unpromoted)
+
+Native commitc3938d48 adds the measured Crop & Expand panel and native rail entry.
+Both branches remain codex/image-triage-integration. This continues the same
+integration session; no new fetch/merge is claimed. Previously recorded upstream
+efa1edd079b259b0b1f77b835151ee904437a231 and merge3b89ae1e remain the baseline.
+No merge conflicts or resolutions occur in this checkpoint. Shared workspace,
+control validation and rail changes were reviewed; existing scope/settings/
+presets/preferences/save/zoom integrations pass. Host code is unchanged.
+
+crop-design.json contains measured geometry for preset, angle, rotation/flip,
+Generative Expand, Trim, Geometry/Upright and Anamorphic. Workspace tab "crop"
+and cropGroups (default["Geometry"]) are serialized pure view state. Pointer and
+Space/Enter operate disclosures. Invalid/duplicate groups reject mixed requests
+atomically before any photo edit. Geometry collapse moves lower sections up;
+unsupported expanded sections explicitly show Not available. Processing controls
+have disabled accessibility state and unavailable hints. Camera Raw's current
+recipe/preview/commit has no crop/geometry transforms; no transform is simulated.
+Original vector marks use native shapes, with no copied source assets/fonts.
+Label lookup coverage spans20 catalogs; localized layouts are not all certified.
+
+Final evidence: this chat's acr-filmstrip/crop-v3/crop-audit.json and
+ overlay/comparison.png.81 named regions have complete candidate coverage at one
+fixed dock registration: source[98,432,638,1892],candidate[2260,374,2800,1834],
+1440x1000/scale2. The auditor checks the exact loaded JSON descriptor, pinned
+reference hash, unchanged renderer/original fixture and identical photo/document/
+recipe identity between Edit and Crop captures. Final PNG inspected. Two stale
+spec entries (absent Trim eye and duplicate Expand options) were removed after
+reference inspection. Remaining font, icon and capability differences are visible.
+Mean region RGB error15.042 versus initial14.831; no numerical improvement or
+pixel-parity pass is claimed. Geometry background extent and semantic glyphs were
+corrected while retaining the measured differences.
+
+Renderer SHA256b1d54c6c7a7cd317919c3c473d70c37c78e83c1ae27ebf728772b66406061a43.
+Private layout1b55cb63e522a7538af762cf927b65c6b65513fbd14e8eb3d84481ba68e30a55.
+Private tokensd94d6de0cb20d7f0b00be2d2317af93b76f07a2498a841d7090fb1e8e917e896.
+3123 library tests/13ignored,60 Camera Raw integrations,6 auditor tests,
+all-target native ui+desktop clippy,layers30,wasm24 pass. An initial rail-label
+translation lookup failure was corrected before final gates. No GUI window,
+new desktop executable/promotion, release or push. Selected PS1 editor remains
+acr-settings-menu. Protected debug/selected/release executable hashes rechecked
+and unchanged from the Preferences checkpoint. The old Qt strip remains retained
+and detached. Live secondary-monitor/no-activation behavior remains unverified;
+any future agent-driven visible launch must enforce it. Hosted behavior validation
+is still required before selecting a new editor build.
+
+Inventory correction: summing all21 region-spec files gives1280 regions, including
+overlap/repeated controls and unaudited Masking/Remove specs. Earlier1062/1115
+numbers were partial counts, not full totals or parity evidence. Matching-view
+individual audits remain absent for13(Masking) and15(Remove). Every element across
+all19, unavailable processing and complete hosted validation remain in scope.
+
+
+## Masking creation source checkpoint — 2026-10-17 (unpromoted)
+
+Native source advances c3938d48 to074f8864 on codex/image-triage-integration;
+host branch is unchanged. This continues the same integration session, with no
+new fetch/merge claimed. Previously recorded upstream efa1edd079b259b0b1f77b835151ee904437a231
+and merge3b89ae1e remain the baseline. No merge conflicts/resolutions occur here.
+Shared workspace, rail, keyboard gating and close/reopen changes were reviewed.
+No host code, release build, push or editor promotion.
+
+Masking now has measured native creation cards, tool rows/keycaps, People status
+and help. Geometry comes from masking-design.json, colors/radii from existing
+Tokens, glyphs from original native vectors/existing licensed icons. No reference
+assets/fonts copied. Serialized view flags maskingPeople and maskingHelp support
+actual pointer/Space/Enter disclosure and native availability help. Escape/Y do
+not reach the photo while help is open; closing Camera Raw clears transient help.
+
+Local mask creation cannot preview/replay in Camera Raw's current recipe/commit.
+Whole-filter selection/filter-mask coverage is a different existing capability.
+Subject/Sky/Background/Landscape/Objects/Brush/Linear Gradient/Radial Gradient/Range
+creation controls remain disabled. People text reports actual unavailability rather
+than fabricating person detection on the synthetic image. Help is local guidance,
+not the external Adobe documentation workflow. These capabilities and text differences
+remain unfinished parity work. Label lookups are covered in all20 catalogs;
+localized layouts are not all certified.
+
+Final evidence: this chat's acr-filmstrip/masking-v2/masking-audit.json and
+ overlay/comparison.png.35 named regions have complete candidate coverage at one
+fixed dock registration: source[34,432,574,1492],candidate[2260,374,2800,1434],
+1440x1000/scale2. Auditor checks pinned source hash, exact loaded JSON descriptor,
+stable renderer/original fixture and identical photo/document/recipe identity
+between Edit/Masking captures. Card bounds were remeasured from border pixels,
+dark fills added, and Range indicator corrected after the initial render. Final
+PNG inspected; mean region RGB difference19.873 to17.231. Font, glyph, People text
+and unsupported processing differences remain; no parity pass or masking of them.
+
+Renderer SHA2562d3d6d44a2923e13f03315eb1fb18169fae538f37ac57fb427b8fe0930b165b7.
+Private layoutea4059c724858cca5276fabedb5df67faef4f7d023e2b7d25186e9ba413cf280.
+Private tokensd94d6de0cb20d7f0b00be2d2317af93b76f07a2498a841d7090fb1e8e917e896.
+3124 library tests/13ignored,62 Camera Raw integrations,6 auditors,final all-target
+ui+desktop clippy,layers30,wasm24 pass. Two new native integrations cover disabled
+cards/tool rows, People pointer/Space, inactive K/G/J photo actions, help Escape/Y
+ownership, parent-close/reopen cleanup and atomic malformed requests. Initial
+Background-label query ambiguity and one test-only initializer lint were fixed;
+the affected unit was rerun after the lint fix. No runtime behavior change in that
+lint repair.
+
+Main live JSON/tokens and PS1 selected acr-settings-menu editor remain unchanged.
+Protected debug/selected/release hashes rechecked and unchanged from the previous
+checkpoint. All work ran offscreen; no game focus interaction. Live secondary-
+monitor/no-activation behavior remains unverified and mandatory for a future
+agent-driven visible launch. Complete native+hosted gates remain required before
+selecting a new editor executable. Remove15 is now the only view without a matching
+individual screenshot audit; every element across all19, processing bindings and
+hosted validation remain in the active goal.
+
+
+## Remove source checkpoint — 2026-10-17 (unpromoted)
+
+Native source advances074f8864 to4d022559 on codex/image-triage-integration;
+host branch is unchanged. This continues the same integration session with no
+new fetch/merge claimed. Previously recorded upstream efa1edd079b259b0b1f77b835151ee904437a231
+and merge3b89ae1e remain the baseline. No conflicts/resolutions occur here.
+Shared workspace/rail, control validation, keyboard gating and close/reopen
+changes were reviewed. No host code changes, release, push or promotion.
+
+Remove now renders the observed modes, settings/feedback/overlay/spots rows and
+Reflections/People/Blemishes/Dust sections from remove-design.json. Original
+native glyphs use existing Tokens; source assets/fonts were not copied. Serialized
+removeGroups/removeHelp support pointer/Space/Enter header disclosure, correct
+lower-row displacement and native availability help. Escape/Y cannot reach the
+photo behind help; parent close clears it. Invalid/duplicate group requests and
+malformed help flags reject mixed requests atomically.
+
+Current Camera Raw cannot store/replay Remove/Heal/Clone or automatic distraction
+operations. Processing, reset/preview, size/detection/overlay/spots settings and
+feedback submission remain disabled. Checked Generative AI and Size7 are readonly
+observed presentation, not active processing or editable brush settings. No remote
+operation, feedback message or successful retouch/detection is simulated. Full
+processing behavior remains unfinished. Descriptor/help labels have lookup coverage
+in20 catalogs; localized layouts are not all certified.
+
+Final evidence: this chat's acr-filmstrip/remove-v2/remove-audit.json and
+ overlay/comparison.png.49 named regions have complete candidate coverage at one
+fixed dock registration: source[88,432,628,1522],candidate[2260,374,2800,1464],
+1440x1000/scale2. Auditor checks pinned source hash, exact loaded JSON descriptor,
+stable renderer/original and identical photo/document/recipe identity between
+Edit/Remove captures. Initial overlay exposed oversized selection/icon plates;
+blue-frame bounds and icon-plate bounds/colors were remeasured from reference
+pixels. Glyph ROIs now include complete backplates. No independent alignment or
+capability masking. Final PNG inspected. Mean region RGB difference15.995 to13.947
+using identical final ROIs; initial capture was re-audited in
+remove-v1/overlay-final-regions. Font/glyph/capability differences remain; no pass.
+
+Renderer SHA2566d8410b809036c6f7364e8a233407cf380cb20a0d6f715994a76c243de13bfda.
+Private layout2c43d2a4804893da80d014b3a45524c3a2cda34b5d74d2dc229f75ebb4c1926d.
+Private tokensd94d6de0cb20d7f0b00be2d2317af93b76f07a2498a841d7090fb1e8e917e896.
+3125 library tests/13ignored,64 Camera Raw integrations,6 auditors,all-target
+ui+desktop clippy,layers30,wasm24 pass. Two new integrations cover disabled
+processing/feedback, actual header/Space disclosures and lower-row displacement,
+atomic invalid requests, help Escape/Y ownership and close/reopen cleanup.
+All work offscreen; no visible app launch or focus interaction. Main live layout/
+tokens, selected PS1 acr-settings-menu editor and protected debug/selected/release
+hashes were rechecked and remain unchanged. Live secondary-monitor/no-activation
+behavior remains unverified and mandatory for any future agent-driven visible run.
+Native+hosted gates remain required before selecting a new editor executable.
+
+All19 supplied views now have recorded matching-view captures at some source
+revision. This is not a current-build or every-element pass: revised Red Eye,
+fresh all19 source matrix, incomplete element/shared-chrome coverage, remaining
+visual differences, processing and full hosted validation remain in the goal.
+The accepted settings-menu comparison is not reopened for cosmetic refinement.
+
+
+## Common 19-reference matrix — 2026-10-17 (unpromoted)
+
+Native audit/tooling commitdcda93d8 builds on runtime4d022559; no Rust UI/runtime
+change. Both branches remain codex/image-triage-integration. Same integration
+session; no new fetch/merge is claimed. Previously recorded upstream
+efa1edd079b259b0b1f77b835151ee904437a231 and merge3b89ae1e remain the baseline.
+No conflicts/resolutions or host code changes in this checkpoint.
+
+Added scripts/audit_camera_raw_matrix.py and six verifier tests. The matrix merges
+six design fragments and three token fragments into private copies, preserving
+the accepted menu geometry. All19 views use one renderer and common base profile.
+It pins renderer/design/reference/checker inputs, verifies actual loaded fragments,
+workspace/panel ordering, scope/navigation/filmstrip and output sizes, and checks
+photo/document/recipe identity. A real setup commit creates Previous Settings;
+its menu-open capture is compared against an equally committed closed-menu baseline.
+Every section in one reference shares one scale/translation; the extra filmstrip
+crop derives directly from the same full-client transform.
+
+The first attempt verified1–18, then its stricter navigation check stopped on19:
+command zoom "fit" serializes as native null. This was a checker representation
+issue, not a render failure. Added strict fit/numeric-zoom tests and reran the
+complete matrix. Final matrix-v2/matrix-audit.json verifies all19 captures,21
+versioned specifications and1280 overlapping/repeated named regions. Six matrix
+and six existing comparator tests pass. Runtime native checks from the preceding
+checkpoint remain applicable; no Rust or production layout/token files changed.
+
+Renderer SHA2566d8410b809036c6f7364e8a233407cf380cb20a0d6f715994a76c243de13bfda.
+Merged base layout47ddc3d1fafc86f20ce360320a6075b6ca53aab571f3195a5d397db5756cb450.
+Merged tokensb4aace2dc4d44f3976d06eed7590ba9bde8bbc20363bddb491e7f7aca2db8d30.
+All21 source/native pairs inspected through four contact sheets; Curve/Mixer and
+lower panels also inspected individually. Current Red Eye is now recaptured.
+
+This is not a parity pass. Visual review found concrete structural gaps:
+- Color Mixer lacks Mixer/Point Color row, Adjust caption and ninth swatch;
+  its selector/gradients differ and missing rows shift later sections upward.
+- sidebar-ref02-diagnostic/comparison.png aligns the fixed histogram/metadata;
+  native Edit/Profile bars remain visible where ACR has scrolled them away.
+  Rotated panel order and section-only crops conceal the whole-sidebar mismatch.
+  Panel captures also use taller viewports than the source client.
+- Curve target control/Adjust spacing, wheel adornments, lower-panel spacing,
+  glyphs/disabled styles, context-dependent values and unavailable operations
+  remain different. Partial crops leave surrounding chrome/footer areas unreviewed.
+
+See design/camera-raw/matrix-followup.json for specific next work. Compared source
+crop fractions are recorded but are not element-completeness estimates; missing
+UI can still have complete candidate pixel coverage. No difference masking,
+independent element alignment or full-reference/every-element completion claim.
+The accepted settings-menu comparison is not reopened for cosmetic refinement.
+
+Everything remained offscreen. No desktop executable, release, push, visible launch
+or promotion. Selected PS1 acr-settings-menu editor and main live JSON remain
+unchanged. Live secondary-monitor/no-activation behavior is still unverified and
+mandatory for future agent-driven visible runs. Structural fixes, fresh matrix
+and full native+hosted gates remain required before selecting a new editor build.
+The every-element/all19 goal remains active.
+
+
+## 2026-10-18: visual acceptance and functionality priority
+
+The user accepted the remaining all19-gallery appearance, with two explicit exceptions:
+excess gap below Saturation and missing Glow row. Further discretionary cosmetic
+refinement is deferred; prioritize tool functionality. This is owner acceptance,
+not a new claim of pixel-identical/every-element measured parity.
+
+Implemented a separate Color bottom padding of12pt instead of the shared23pt,
+and restored the35pt Glow slider/disclosure row. Glow remains disabled at zero:
+there is no CameraRaw Glow operation, and no invented recipe key is written.
+All20 catalogs include its label. Kept the previous uncommitted Mixer work.
+No backend/tool implementation is claimed in this visual correction.
+
+Fresh offscreen source/native comparison:
+`acr-filmstrip/effects-fix-capture/effects-comparison.png` in the task visualization
+directory. Effects and Curve dividers now line up with the source in the fixed
+registration. The other visual differences are left alone per user instruction.
+
+Next functional milestone: Red Eye. Existing `paint.redEye`/`algo::redeye` can
+supply correction, but `paint.redEye` directly edits document pixels. Do not call
+it on the real photo from inside an uncommitted Camera Raw dialog. Add durable
+per-photo correction operations and preview/replay integration first, with Cancel,
+undo/redo, navigation/reopen and saved-display consistency tests. The current v1
+recipe serializes only CameraRaw settings and has no red-eye operation list.
+
+Both remotes fetched successfully during the PR investigation: upstream main
+advanced from efa1edd079b259b0b1f77b835151ee904437a231 to5c89f16b.
+That new tip was inspected but not merged into this divergent integration while
+preparing visual-only contribution options; no conflicts were resolved or merge
+validation claimed. No PR or push was made. Existing host user edits preserved.
+
+No desktop launch, release or editor promotion. PS1-selected known-good settings-
+menu executable remains unchanged. New source appearance requires a new validated
+candidate before promotion; hosted handoff checks remain outstanding.
+
+Validation: initial library run3125 passed/13ignored with one new tooltip-context translation failure; corrected to the existing cameraRaw translation context and that test passed on rerun. Camera Raw workspace/Mixer/localization integration checks passed (including disabled Glow/no recipe or history mutation); all-target UI clippy, layers and wasm passed. Fresh source/native PNG inspected. No further cosmetic work or hosted promotion performed.
+
+2026-10-18 follow-up: added muted-spectrum Vibrance/Saturation tracks from the supplied ACR reference, via a shared theme token palette. Existing slider ranges, bindings, recipe semantics and spacing unchanged. Workspace tests11/11, all-target UI clippy, layers and wasm passed; fresh offscreen comparison inspected at acr-filmstrip/color-gradients-capture/comparison.png. No visible launch or editor promotion; launcher remains on preserved older build.
+
+
+## 2026-10-18: usable main-adjustments development candidate
+
+Implemented the three requested features: Glow processing (Diffusion/Bloom/Halation,
+Range/Spread/Warmth), Color Mixer All Colors with all eight HSL bands, and Point
+Color (eight samples, picker, H/S/L/Variance/Range and view-only range visualization).
+Shared CameraRaw serialization preserves controls through per-photo recipes and
+native project history; private PhotoCraft XMP extensions round-trip the new
+settings. Unsupported PSD adjustments fail explicitly. Older hosted editors and
+RAW-recipe renderers are rejected when these new settings would otherwise be lost.
+Processing is independently implemented; Adobe pixel-output parity is not claimed.
+
+Candidate: C:/Users/user0/Documents/photocraft/target/acr-main-adjustments/debug/photocraft.exe
+SHA256: cac833711778b15699ccac589a30e1cb1ad2fbf3ad88ac0933b261b0fc0f1097
+Test launch (user initiated):
+`& "C:/Users/user0/OneDrive/Documents/Playground/scripts/test_camera_raw.ps1" -EditorBuild acr-main-adjustments`
+Open a photo in the popout and press E. Launcher default remains acr-settings-menu.
+No desktop launch, release build, push, PR or default promotion was performed.
+Both checkouts remain on codex/image-triage-integration; existing edits preserved.
+Upstream remains the previously recorded fetched-but-unmerged 5c89f16b tip.
+
+Validation: host focused suite111 passed/2 skipped; UI library3127 passed/13 ignored
+before final narrow fixes; latest focused workspace/settings/localization/Mixer26
+passed; final Mixer6 passed; algorithm finishing5 passed; engine finishing2 and
+noise3 passed; adversarial command test passed; I/O13 passed/1 ignored.
+Final native development app and snapshot renderer built; affected-crate all-target
+clippy, layers and wasm checks passed. Temporary external opt-level0 overrides for
+algorithm/engine avoid local optimized compiler stalls; repository profiles unchanged.
+Full real-file corpus attempt blocked by missing local photocraft-corpus checkout.
+
+Offscreen native processing proof and metadata:
+C:/Users/user0/.codex/visualizations/2026/10/17/01a14901-444b-7781-b5e6-48730a8f5183/acr-filmstrip/main-adjustments-proof
+Captures precede the final small SDR picker-selection clamp fix (covered by regression).
+Known-good target/debug and acr-settings-menu executables retained and hash verified.
+Live hosted navigation, stash/restore, native Save/grid propagation, closed-tab reopen,
+hidden startup, theme/resize/fullscreen, shutdown and process-cleanup gates remain
+pending user testing. Do not promote this candidate before these checks pass.
+Other disabled controls remain in Optics, Lens Blur, Calibration and AI Detail;
+completion applies to the three features requested here, not the entire window.
+
+
+2026-10-18 push checkpoint: see CLAUDE_HANDOFF.md. Fresh fetch succeeded; upstream advanced5c89f16b ->56dbc89a. Merge deferred for this user-requested tested-state handoff; no conflict resolution or merge validation claimed. Both integration branches pushed only to user forks.

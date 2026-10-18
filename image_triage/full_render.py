@@ -226,6 +226,7 @@ class FullRenderService:
                 if source is None:
                     return failed("the photo is outside the editor's folder")
                 params["source"] = source
+                bridge.require_finishing_support({"recipe": what["recipe"]}, getattr(proc.control, "camera_raw_finishing_supported", False) is True)
                 params["recipe"] = what["recipe"]
             reply = self._run_job(proc.render_lane(), params)
             if reply.get("out") not in (out + ".png", out + ".tif", out + ".tiff"):
