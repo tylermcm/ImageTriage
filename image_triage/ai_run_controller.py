@@ -51,6 +51,7 @@ class AiRunController(QObject):
         self._ai_status_terminal_notice_key = ""
         self._hidden_ai_results_token = 0
         self._bucket_counts_cache: tuple[AIBundle, dict[AICullBucket, int]] | None = None
+        self._inline_analysis_run = False
 
     def confirm_cpu_clip_run(self, runtime) -> bool:
         if runtime.device != "cpu":
@@ -808,6 +809,7 @@ class AiRunController(QObject):
         self.update_ai_toolbar_state()
         step_start = log_step("ai_state.refresh.toolbar", step_start)
         self.refresh_ai_bucket_bar()
+        self.refresh_inspector_analysis()
         self._window._inspector.update_status()
         step_start = log_step("ai_state.refresh.status", step_start)
         self._window._inspector.update_inspector_context()
@@ -899,6 +901,7 @@ class AiRunController(QObject):
         self._ai_probe_generation += 1
 
     def update_ai_toolbar_state(self) -> None:
+        self.refresh_inspector_analysis()
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         step_start = start
@@ -1415,10 +1418,89 @@ class AiRunController(QObject):
             self._ai_review_progress_dialog = dialog
         return dialog
 
+    # ---- inspector "Analyze folder" control -------------------------------------------------------------------------
+    def analysis_block_reason(self) -> str:
+        """Why the Analyze button is hidden right now ("" when it may run).
+
+        Analysis always covers the whole folder, so a filter that narrows the view hides the button instead of
+        offering a run that would not match what is on screen."""
+        window = self._window
+        if getattr(window, "_folder_session", None) is not None and window._folder_session.scope_kind != "folder":
+            return "scope"
+        if window._filter_query.has_active_filters:
+            return "filter"
+        return ""
+
+    def analyze_current_folder(self) -> None:
+        """Run AI analysis on the whole open folder, every time, without asking first.
+
+        If the AI runtime or models are not installed, open the AI Workflow Center on its setup step instead of failing."""
+        window = self._window
+        if self.analysis_block_reason():
+            window.statusBar().showMessage("Clear the filter to analyze the whole folder")
+            self.refresh_inspector_analysis()
+            return
+        if window._active_ai_task is not None:
+            self.refresh_inspector_analysis()
+            return
+        try:
+            window._ai_setup.refresh_ai_runtime_preferences()
+            runtime = window._settings_ctl.configured_aiculler_runtime(workers=window._settings_ctl.configured_ai_embed_batch_size())
+            runtime.validate()
+        except Exception:
+            window.statusBar().showMessage("AI is not set up yet; opening setup")
+            window._handoff.open_ai_workflow_center()
+            return
+        self._inline_analysis_run = True
+        self.run_ai_pipeline()
+        self.refresh_inspector_analysis()
+
+    def request_stop_inline_analysis(self) -> None:
+        self.request_stop_ai_review()
+        self.refresh_inspector_analysis()
+
+    def refresh_inspector_analysis(self) -> None:
+        """Show the right control in the inspector: running progress, a hint while filtered, or the button."""
+        panel = getattr(self._window, "inspector_panel", None)
+        if panel is None or not hasattr(panel, "show_analysis_idle"):
+            return
+        window = self._window
+        if window._active_ai_task is not None:
+            stopping = window._ai_stage_message == "Stopping AI review"
+            panel.show_analysis_running(
+                stage=window._ai_stage_message,
+                current=window._ai_progress_current,
+                total=window._ai_progress_total,
+                eta=window._ai_progress_eta_text,
+                stopping=stopping,
+            )
+            return
+        self._inline_analysis_run = False
+        reason = self.analysis_block_reason()
+        if reason == "filter":
+            panel.show_analysis_blocked("Analysis covers the whole folder. Clear the filter to run it.", can_clear_filter=True)
+            return
+        if reason == "scope":
+            panel.show_analysis_blocked("Open a folder to analyze it.", can_clear_filter=False)
+            return
+        bundle = window._ai_bundle
+        summary = ""
+        if bundle is not None:
+            counts = self.ai_review_bucket_counts(bundle)
+            total = sum(counts.values())
+            if total:
+                summary = (
+                    f"{total:,} analyzed · {counts.get(AICullBucket.AI_PICK, 0):,} winners"
+                    f" · {counts.get(AICullBucket.REJECT, 0):,} rejects"
+                )
+        panel.show_analysis_idle(has_results=bundle is not None, summary=summary)
+
     def show_ai_review_progress_dialog(self, *, folder: str, reset: bool = False) -> None:
         dialog = self.ensure_ai_review_progress_dialog()
         if reset:
             dialog.start_run(folder=folder, stage_total=self._window._ai_stage_total)
+        if getattr(self, "_inline_analysis_run", False):
+            return  # progress is shown in the inspector; the dialog still collects the log
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -1968,6 +2050,7 @@ class AiRunController(QObject):
             self.set_ai_status_visible(False)
 
     def refresh_ai_progress_bar(self) -> None:
+        self.refresh_inspector_analysis()
         if self._window._active_ai_task is not None:
             if self._window._ai_progress_total > 0:
                 total = max(1, self._window._ai_progress_total)
