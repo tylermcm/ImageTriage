@@ -173,6 +173,26 @@ weights table lists as permissive: RetinaFace or CenterFace (MIT) for detection,
 (MIT) for eye landmarks, and eDifFIQA (MIT) as a face-quality score. Drop age and gender. UniFace can be used as the library
 or only as the source of the ONNX files; decide when implementing. Blink stays deferred, as before.
 
+### Measured training speed (server, 17 October 2026)
+
+`scripts/bench_iqa_training.py`, generated images only, run on the home server (2x Xeon E5-2698 v3, 64 threads, 251 GB RAM,
+Tesla V100-SXM2 16 GB, PyTorch 2.6 / CUDA 12.4). Each training item is 4 degraded 224 px crops (two damaged versions of a
+512 px region, two crops each); six degradation types at five severity levels, one to three stacked.
+
+| Measurement | Result |
+|---|---|
+| CPU loader, 32 workers | about 3,900 degraded crops per second |
+| GPU only, ResNet-50, mixed precision, 128-crop batches | about 1,130 crops per second, 6.2 GB peak |
+| GPU only, MobileNetV3-large | about 2,250 crops per second, 3.0 GB peak |
+| End to end, ResNet-50 (32 photos per batch) | about 1,050 crops per second, GPU-bound |
+| End to end, MobileNetV3-large | about 1,830 crops per second |
+
+For 10,000 photos (40,000 crops per epoch): ResNet-50 about 38 s per epoch, so about 1 hour for 100 epochs and 2 hours for
+200; MobileNetV3 about 22 s per epoch, so about 35 minutes for 100 epochs. The CPU is not the limit, the GPU is. Caveats:
+synthetic base images are simpler than photos (real photos would be pre-resized and cached, with the same per-pixel
+degradation cost), the loss in the benchmark is a simple contrastive loss, and two other services share the GPU (about 2 GB).
+The earlier estimate of 1.5 to 3 hours for 100 epochs was too pessimistic on the CPU side.
+
 ## 4. Phases and exit criteria
 
 | Phase | Work | Exit criterion |
