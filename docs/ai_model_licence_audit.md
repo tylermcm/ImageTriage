@@ -24,7 +24,7 @@ Before shipping commercially, have a lawyer confirm the red and amber items.
 |---|---|---|---|---|---|
 | TOPIQ (`topiq_nr.onnx`) | Base quality score in AI culling | `Skulleton12/TOPIQ` (a personal ONNX conversion) | Repo says `unknown`; upstream IQA-PyTorch is PolyForm Noncommercial 1.0.0 | **No** (upstream); unknown for the conversion | **Red** |
 | AuraFace bundle, files `scrfd_10g_bnkps`, `2d106det`, `genderage` | Face detection, eye points, age and gender | `fal/AuraFace-v1` | Repo is Apache-2.0, but these three files look like InsightFace model-zoo files, which are non-commercial | **Probably no** for these three | **Red** (provenance unverified) |
-| AuraFace `glintr100` | Face recognition embeddings (people tagging) | `fal/AuraFace-v1` | Apache-2.0; card says trained on "commercially and publicly available" data | Yes, per the card | Green |
+| AuraFace `glintr100` | Face recognition embeddings (people tagging) | `fal/AuraFace-v1` | Apache-2.0; card says trained on "commercially and publicly available" data | Yes, per the card; provenance unconfirmed by fal (see below) | Green to amber |
 | TinyCLIP ViT-8M/16 | Semantic index and text scoring | `onnx-community/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M-ONNX` from `wkcn/TinyCLIP-...` | MIT | Yes (licence); training-data terms unclear | Amber |
 | OpenAI CLIP ViT-B/32 | Optional "semantic sidecar" | `openai/clip-vit-base-patch32` | Code MIT; model card has no licence field | Licence yes; **card says deployed use is out of scope** | Amber |
 | OneFormer ADE20K Swin-T | Scene segmentation for masks | `shi-labs/oneformer_ade20k_swin_tiny` | MIT | Licence yes; training images are non-commercial research | Amber |
@@ -79,8 +79,13 @@ Before shipping commercially, have a lawyer confirm the red and amber items.
 - **SAM 2.1 Hiera-Tiny:** Meta states the checkpoints and code are Apache-2.0. The SA-V dataset terms were not retrieved.
 - **Depth Anything V2 Small:** Apache-2.0. The project states that **Base and Large are CC-BY-NC-4.0**, so never swap a larger
   size into the `depth` bundle without a new review.
-- **AuraFace glintr100:** Apache-2.0, but the training data is not named, so "commercially and publicly available" is the
-  maker's claim and cannot be independently checked.
+- **AuraFace glintr100:** Apache-2.0 on the repo and LICENSE.md. The training data is not named, so "commercially and
+  publicly available" is the maker's claim. Hugging Face discussions #8, #9, #11 and #15 on `fal/AuraFace-v1` (read
+  17 October 2026) show at least five companies, from September 2025 to this month, asking fal whether the weights are original
+  or derived from InsightFace's antelopev2 `glintr100`, and what the training data and its terms are. No reply from fal is
+  visible in them, and nobody has confirmed provenance. Our use is permitted by the label; the open question is whether the
+  label is right. Rated green to amber: reasonable to keep, worth asking fal in writing and recording the answer.
+  An unrelated project (`archledger/irlume`) also uses only this file plus YuNet and records the same open item.
 
 ## Obligations that apply even to the green and amber items
 
