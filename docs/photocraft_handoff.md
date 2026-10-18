@@ -2577,3 +2577,59 @@ overlap/repeated controls and unaudited Masking/Remove specs. Earlier1062/1115
 numbers were partial counts, not full totals or parity evidence. Matching-view
 individual audits remain absent for13(Masking) and15(Remove). Every element across
 all19, unavailable processing and complete hosted validation remain in scope.
+
+
+## Masking creation source checkpoint — 2026-10-17 (unpromoted)
+
+Native source advances c3938d48 to074f8864 on codex/image-triage-integration;
+host branch is unchanged. This continues the same integration session, with no
+new fetch/merge claimed. Previously recorded upstream efa1edd079b259b0b1f77b835151ee904437a231
+and merge3b89ae1e remain the baseline. No merge conflicts/resolutions occur here.
+Shared workspace, rail, keyboard gating and close/reopen changes were reviewed.
+No host code, release build, push or editor promotion.
+
+Masking now has measured native creation cards, tool rows/keycaps, People status
+and help. Geometry comes from masking-design.json, colors/radii from existing
+Tokens, glyphs from original native vectors/existing licensed icons. No reference
+assets/fonts copied. Serialized view flags maskingPeople and maskingHelp support
+actual pointer/Space/Enter disclosure and native availability help. Escape/Y do
+not reach the photo while help is open; closing Camera Raw clears transient help.
+
+Local mask creation cannot preview/replay in Camera Raw's current recipe/commit.
+Whole-filter selection/filter-mask coverage is a different existing capability.
+Subject/Sky/Background/Landscape/Objects/Brush/Linear Gradient/Radial Gradient/Range
+creation controls remain disabled. People text reports actual unavailability rather
+than fabricating person detection on the synthetic image. Help is local guidance,
+not the external Adobe documentation workflow. These capabilities and text differences
+remain unfinished parity work. Label lookups are covered in all20 catalogs;
+localized layouts are not all certified.
+
+Final evidence: this chat's acr-filmstrip/masking-v2/masking-audit.json and
+ overlay/comparison.png.35 named regions have complete candidate coverage at one
+fixed dock registration: source[34,432,574,1492],candidate[2260,374,2800,1434],
+1440x1000/scale2. Auditor checks pinned source hash, exact loaded JSON descriptor,
+stable renderer/original fixture and identical photo/document/recipe identity
+between Edit/Masking captures. Card bounds were remeasured from border pixels,
+dark fills added, and Range indicator corrected after the initial render. Final
+PNG inspected; mean region RGB difference19.873 to17.231. Font, glyph, People text
+and unsupported processing differences remain; no parity pass or masking of them.
+
+Renderer SHA2562d3d6d44a2923e13f03315eb1fb18169fae538f37ac57fb427b8fe0930b165b7.
+Private layoutea4059c724858cca5276fabedb5df67faef4f7d023e2b7d25186e9ba413cf280.
+Private tokensd94d6de0cb20d7f0b00be2d2317af93b76f07a2498a841d7090fb1e8e917e896.
+3124 library tests/13ignored,62 Camera Raw integrations,6 auditors,final all-target
+ui+desktop clippy,layers30,wasm24 pass. Two new native integrations cover disabled
+cards/tool rows, People pointer/Space, inactive K/G/J photo actions, help Escape/Y
+ownership, parent-close/reopen cleanup and atomic malformed requests. Initial
+Background-label query ambiguity and one test-only initializer lint were fixed;
+the affected unit was rerun after the lint fix. No runtime behavior change in that
+lint repair.
+
+Main live JSON/tokens and PS1 selected acr-settings-menu editor remain unchanged.
+Protected debug/selected/release hashes rechecked and unchanged from the previous
+checkpoint. All work ran offscreen; no game focus interaction. Live secondary-
+monitor/no-activation behavior remains unverified and mandatory for a future
+agent-driven visible launch. Complete native+hosted gates remain required before
+selecting a new editor executable. Remove15 is now the only view without a matching
+individual screenshot audit; every element across all19, processing bindings and
+hosted validation remain in the active goal.
