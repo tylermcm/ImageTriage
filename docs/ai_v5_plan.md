@@ -1,5 +1,10 @@
 # AI v5: a three-pass culling pipeline
 
+**Decision (18 October 2026, the owner): DINO is out permanently.** No DINO or DINOv2 embeddings anywhere in v5: not for ranking
+(tested in v1, no better than random), not for burst grouping (round 2 spike: no reliable gain over the strong classical
+set) and not for scene stacking (it beat the classical systems narrowly in the scene spike, but the owner is not using it).
+Grouping uses time, EXIF and the classical feature set; scene stacking is dropped.
+
 Planned 18 October 2026, after a ChatGPT deep-research report (pasted into the session) and our own checks. v5 starts over
 on the problem definition: culling is three different problems, each measured on its own. No learned taste model on
 DINO embeddings (that route was built and tested in v1 and was no better than random).
@@ -10,8 +15,9 @@ DINO embeddings (that route was built and tested in v1 and was no better than ra
    motion blur, noise, clipping, subject-region sharpness and exposure. Only catastrophic, high-confidence rules reject;
    everything ambiguous stays a feature and a reason code. Tuned for keeper recall (target 99.5% or better on known keepers),
    not accuracy.
-2. **Pass 2, best of a burst.** Candidate pairs from an EXIF time window (start 1.5 to 3 s) plus appearance (DINOv2
-   similarity and a perceptual hash), clustered with a medoid-consistency check so frames do not chain across scenes.
+2. **Pass 2, best of a burst.** Candidate pairs from an EXIF time window plus classical appearance features (pHash, dHash,
+   low-resolution SSIM, colour histogram, ORB geometric match, shooting settings), combined by a small logistic model tuned on
+   the owner's labels and clustered with a medoid-consistency check so frames do not chain across scenes. No embedding model.
    Within a burst, features are made relative (robust z-scores against siblings); pick a winner and optionally a materially
    different second frame.
 3. **Pass 3, final ranking.** A gradient-boosted ranker (LightGBM LambdaRank) and a calibrated keeper classifier over
@@ -140,7 +146,7 @@ Other findings:
 - **Cost:** DINOv2 ViT-B on CPU alone 130 to 330 ms per photo (older Xeons); all the classical features are cheap.
 
 Conclusion: group with time, EXIF and the strong classical feature set (time gap, pHash, dHash, SSIM, colour histogram, ORB,
-shooting settings). DINOv2 is not part of v1; revisit it only as a gated refinement of ambiguous pairs.
+shooting settings). DINOv2 is not part of v1 or any later version of v5 (owner's decision).
 
 ### Scene-stacking spike: a job that favours DINOv2 (18 October 2026)
 
