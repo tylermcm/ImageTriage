@@ -60,3 +60,20 @@ photos we own plus synthetic degradations, and to use our already-cleared embedd
    defect, global sharpness misses wrong-subject focus, and composition is not a distortion.
 
 Where this changes the plan: `docs/ai_quality_plan.md` section 3A now recommends the self-trained route first.
+
+## Public photo pools for the clean-source set (read 18 October 2026)
+
+No public dataset offers quality labels meant for commercial use: every image-quality dataset we found is research-only or has no
+licence. Public photo collections are useful only as extra clean sources for synthetic damage.
+
+| Pool | Licence read at source | Commercial training | Caveats |
+|---|---|---|---|
+| PD12M (Spawning, Hugging Face) | Dataset CDLA-Permissive-2.0; images "entirely public domain and CC0" | Not stated explicitly, but the licence is permissive | Mostly museum, archive and iNaturalist images, not camera-style photos; sizes range from 256 px to very large; no opt-out status recorded; takedowns go through Source.Plus |
+| CommonCatalog CC-BY (Common Canvas) | Dataset card says CC BY 4.0, per-image rows say CC BY 2.0 (inconsistent) | Not stated | Flickr photos about 1000 to 4000 px; per-photo attribution fields; keep a rights record |
+| Open Images V7 | Annotations CC BY 4.0; images "listed as having a CC BY 2.0 license" | Not addressed | Google "make no representations or warranties regarding the license status of each image" |
+| Megalith-10M (madebyollin) | Card tagged MIT (metadata); photos described as CC0 on Flickr | Not stated; one company asserts ML use is fine | Links to Flickr; image size not stated; a similar Flickr set (MegaFace) found 69% of images prohibited commercial use despite CC licences, so per-image checks matter |
+| Unsplash Lite | TERMS.md: training allowed "for your internal business purposes"; Full dataset is non-commercial only | Internal business use only | Unclear whether shipping trained weights to customers counts as internal; no redistribution; needs Unsplash's written permission or counsel |
+
+Recommendation: the owner's own photos stay the primary source (the failure seen was a lack of night, low-light and
+texture-heavy clean examples, not a licensing one). Add a modest set of CC0 or public-domain photos, filtered to high
+resolution and low compression, only to widen variety, each with a rights record.
