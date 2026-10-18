@@ -142,6 +142,46 @@ Other findings:
 Conclusion: group with time, EXIF and the strong classical feature set (time gap, pHash, dHash, SSIM, colour histogram, ORB,
 shooting settings). DINOv2 is not part of v1; revisit it only as a gated refinement of ambiguous pairs.
 
+### Scene-stacking spike: a job that favours DINOv2 (18 October 2026)
+
+Round 2 left DINOv2 out of burst grouping. This spike tests a different culling aid where pixel methods fail by design:
+finding the other photos of the same scene taken at another time ("scene stacks"), so a shoot could be browsed one stack per
+scene and keepers checked for redundancy across bursts. 80 query photos (16 each from Alaska Aug '21 by the owner and by
+Lamont, Banff 8-25, China '26, Engagement Trip). For each, three systems ranked every other photo in the album, excluding the
+query's own burst (same stream within 60 s): DINOv2 patch-mean cosine; ORB feature matching with a homography check
+(exhaustive over the album); and a fusion of colour histogram, tiny-image correlation and pHash. The top 4 of each were pooled
+and shown blind; the owner ticked the ones that are the same place **and the same subject** (a different bear at the same
+river did not count). Files in `docs/ai_v5_spike/scene/`; scripts `scene_spike_*.py`.
+
+| System | precision@4 | found at least one in its top 4 |
+|---|---|---|
+| DINOv2 | 0.484 | 0.575 |
+| ORB geometry | 0.378 | 0.450 |
+| colour/tiny-image/pHash | 0.281 | 0.438 |
+| On the 53 queries that had any same-scene photo in the pool: DINOv2 | 0.731 | 0.868 |
+| Same 53 queries: ORB | 0.571 | 0.679 |
+
+Pre-registered rule (DINOv2 adds value only if precision@4 beats the better classical system by at least +0.10 with the
+interval above zero): **met, narrowly**: +0.106, 95% interval [+0.009, +0.206].
+
+Robustness: without Lamont's photos the gain is +0.062 [-0.047, +0.176], which is not reliable; on Lamont's photos alone it is
++0.281 [+0.109, +0.469]. Per album and photographer, DINOv2 was ahead in four of five cells (Alaska/Lamont 0.88 against ORB 0.59;
+Alaska/owner 0.36 against 0.19; China '26 0.28 against 0.17), level on Engagement Trip (0.34 each) and slightly behind on
+Banff (0.56 against 0.59). Combining DINOv2 and ORB by rank fusion did not beat DINOv2 alone (0.438 against 0.484, interval
+[-0.106, +0.013]), though each system also found photos the others missed (DINOv2 89, ORB 69, colour/pHash 47). 27 of the 80
+queries had no same-scene photo at all, including the last four (q76 to q79), which may have been rushed; leaving those four
+out changes little (+0.112 [+0.007, +0.217]).
+
+Cost: exhaustive ORB matching took about 4 ms per pair (216,000 pairs in about 34 s on 24 processes), which grows with the
+square of the album size: roughly 12.5 million pairs for a 5,000-photo album, about 34 minutes on 24 cores or hours on a
+4-core machine, unless a prefilter is added. DINOv2 needs one embedding per photo (130 to 330 ms on CPU, about 14 minutes for
+5,000 photos on 8 threads) and then a cheap vector search.
+
+Reading: DINOv2 is a better fit than the classical systems for finding the same scene at another time, strongest where the
+subject and setting are distinctive (wildlife) and no better where geometry or composition carries it (landscape,
+portraits). The advantage is modest in absolute terms (about half of top results correct) and depends partly on one
+subset. Whether scene stacks are a feature worth building is a separate, undecided product question.
+
 ## Experiments, in order
 
 1. **Pass-1 features plus keeper-recall check.** Build the technical feature extractor (OpenCV: luminance percentiles,
