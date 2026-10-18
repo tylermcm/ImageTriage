@@ -164,9 +164,10 @@ Confirm first whether dimensions are persisted during indexing today.
 
 ### F. Faces
 
-Keep AuraFace `glintr100` for recognition. Until the other three files' provenance is confirmed, plan around YuNet (MIT, files
-confirmed) for detection and drop age and gender. Eye-sharpness and blink need landmark replacements; MediaPipe's landmarker
-was not checked. Blink stays deferred, as before.
+Keep AuraFace `glintr100` for recognition. Replace the three InsightFace-looking files using models whose licences UniFace's
+weights table lists as permissive: RetinaFace or CenterFace (MIT) for detection, MediaPipe Face Mesh (Apache-2.0) or PIPNet
+(MIT) for eye landmarks, and eDifFIQA (MIT) as a face-quality score. Drop age and gender. UniFace can be used as the library
+or only as the source of the ONNX files; decide when implementing. Blink stays deferred, as before.
 
 ## 4. Phases and exit criteria
 
