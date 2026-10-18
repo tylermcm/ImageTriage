@@ -124,7 +124,11 @@ Given that, the realistic options are:
 3. **A small quality head trained on permissively-licensed data**, if suitable data is found and its licence confirmed.
 4. **A commercial licence** for TOPIQ's source weights, as a fallback only.
 
-Recommended path: do 2 and 1 now, measure against TOPIQ on your folders, and keep 3 as an open research item.
+Recommended path (updated 18 October 2026 after an outside research report, see
+`docs/topiq_replacement_research_findings.md`): train our own technical-quality model on synthetic degradations of photos we
+own (route 3, now first), use zero-shot prompts on the shipped embedding for the aesthetic side (route 1), keep the classical
+dimensions (route 2) as the interpretable baseline, and put our own burst-pick labels at the centre of calibration. Open
+choice: what initialises our network (random, our TinyCLIP embedding, or a backbone whose licence we have checked).
 **Decision needed later:** accept a small drop in base-score quality in return for a clean licence, once measured.
 
 ### B. One embedding model for search and culling
