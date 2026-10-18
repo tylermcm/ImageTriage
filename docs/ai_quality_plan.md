@@ -193,6 +193,34 @@ synthetic base images are simpler than photos (real photos would be pre-resized 
 degradation cost), the loss in the benchmark is a simple contrastive loss, and two other services share the GPU (about 2 GB).
 The earlier estimate of 1.5 to 3 hours for 100 epochs was too pessimistic on the CPU side.
 
+### First trained model: results and limits (18 October 2026)
+
+`scripts/iqa_synth/`: MobileNetV3-large, random initial weights, trained 150 epochs (46 minutes on the V100) on 5,396
+camera JPEGs from 15 of the owner's trips. Damage types: blur, motion blur, noise, JPEG, downscale, exposure, contrast,
+saturation, oversharpen, at five levels, one to four stacked. 852 photos from two held-out trips (Iceland 10-24,
+Japan 4-24) were never trained on.
+
+| Check on held-out photos | Result |
+|---|---|
+| Predicted vs true damage level on synthetic damage, Spearman | 0.74 |
+| Stronger damage scored worse, per type (60 crops each) | blur 98%, motion 98%, noise 97%, JPEG 100%, downscale 92%, contrast 88%, oversharpen 80%, exposure 75%, saturation 75% |
+| Real photos: quality score vs measured sharpness / measured noise, Spearman | 0.52 / +0.44 |
+| Six-tile average vs whole-image score, Spearman | 0.85 |
+
+What it shows: the model clearly learned the direction of each defect. On real photos, though, the contact sheet exposes a
+content bias. The lowest scores (0.12 to 0.32) are dark aurora and night shots, an ice scene and a very detailed
+vegetation close-up. The highest (0.92 to 0.94) are bright daylight street and temple scenes. Dark and highly textured
+scenes are being read as damaged, because the training sources had few night or low-light photos (the weakest-sharpness
+images were also dropped and astro folders excluded), so those looks never appeared as clean examples. The positive
+correlation with the noise measure fits this: the measure itself counts fine texture as noise.
+
+So this version is **not usable as an absolute quality score across different scenes**. Whether it ranks frames of the
+same scene correctly (the burst case that culling needs) is untested; it needs bursts with known picks.
+
+Next steps under consideration: retrain with night and low-light photos and texture-heavy scenes included as clean
+sources, balance sources by brightness, and test on burst pairs; use the score relative to similar frames, not absolutely;
+and wait for the owner's own keep/reject labels to calibrate.
+
 ## 4. Phases and exit criteria
 
 | Phase | Work | Exit criterion |
