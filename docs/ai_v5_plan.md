@@ -88,6 +88,60 @@ token only.
 Conclusion for v5: group with time, EXIF and pHash (the app already has most of it). DINOv2 has not earned its CPU cost for
 grouping. Revisit only with a larger set that targets hard "different" pairs.
 
+### Grouping spike, round 2 (18 October 2026)
+
+Wider and harder: 8,745 photos from Alaska Aug '21 (the owner's and Lamont's photos, two photographers), Banff 8-25, China '26
+and Engagement Trip; 508 judged pairs (247 hard pairs chosen where two models disagreed or were unsure, 261 steps through
+29 ten-frame sequences), 71 hard-pair and 17 step "different" answers; 20 repeated round 1 pairs to measure the judge. The
+classical side got a stronger feature set (dHash, brightness-normalised pHash, low-resolution SSIM, colour histogram, ORB
+geometric match, shutter and orientation change) and DINOv2 got five variants. All models are scored leave-one-album-out.
+Files in `docs/ai_v5_spike/round2/`; scripts `grouping_spike2_*.py` and `spike_common.py`.
+
+| Leave-one-album-out AUROC | pooled | hard pairs | sequence steps | Lamont only |
+|---|---|---|---|---|
+| classical, basic (round 1 set) | 0.859 | 0.717 | 0.961 | 0.776 |
+| classical, strong (logistic) | 0.928 | 0.868 | 0.965 | 0.919 |
+| classical, strong (boosted trees) | 0.914 | 0.836 | 0.950 | 0.917 |
+| DINOv2 CLS | 0.913 | 0.864 | 0.952 | 0.827 |
+| DINOv2 patch-mean | 0.919 | 0.861 | 0.969 | 0.822 |
+| strong classical + DINOv2 CLS | 0.941 | 0.911 | 0.967 | 0.925 |
+
+Paired bootstrap (95% interval): strong classical against basic classical +0.069 [+0.042, +0.099] pooled and +0.151
+[+0.091, +0.211] on hard pairs, so the extra cheap features mattered a great deal. DINOv2 CLS against strong classical -0.015
+[-0.042, +0.012] pooled: no reliable difference (against the boosted-tree version, -0.001 [-0.030, +0.029]). Strong classical
+plus DINOv2 against strong classical alone: +0.013 [-0.003, +0.029] pooled; +0.043 [+0.009, +0.080] on hard pairs; +0.002
+[-0.009, +0.016] on ordinary sequence steps.
+
+**Pre-registered decision rule** (adopt DINOv2 only if the gain is at least +0.02 with the interval above zero on both hard
+pairs and sequence steps): met on hard pairs, not met on sequence steps, so **DINOv2 is not adopted**. On ordinary
+consecutive frames both approaches are near the judge's ceiling (about 0.965) and the interval excludes any gain above
++0.016.
+
+Sequence grouping (all 1,305 frame pairs in the 29 strips, 290 of them different-moment; average linkage; false merges at a
+matched share of same-moment pairs kept together, lower is better; pairs inside a strip are not independent, so no
+intervals):
+
+| Keep at least this share of same-moment pairs | 0.99 | 0.95 | 0.90 | 0.80 |
+|---|---|---|---|---|
+| strong classical | 190 | 137 | 125 | 62 |
+| DINOv2 CLS alone | 172 | 156 | 150 | 125 |
+| strong classical + DINOv2 | 169 | 145 | 121 | 43 |
+
+Other findings:
+
+- **Judge consistency:** 18 of 20 repeated round 1 pairs got the same answer (90%); the two changes were "different" to
+  "same". That caps what any method can show.
+- **Single scores, AUROC on all judged pairs:** DINOv2 patch-mean cosine 0.935, CLS 0.919, ORB match 0.884, SSIM 0.870, colour
+  histogram 0.852, pHash 0.830, time gap 0.794. On hard pairs the best classical single score (ORB, 0.794) trails DINOv2 (0.88 to 0.89).
+- **Second photographer:** on Lamont's photos strong classical (0.919) was well ahead of DINOv2 CLS (0.827); small sample.
+- **Gated use:** running DINOv2 only where the classical model is unsure (probability between 0.3 and 0.7: 18% of the judged pairs,
+  only 8% of ordinary consecutive-frame pairs in the 0.2 to 0.8 band) lifts hard-pair AUROC from 0.868 to 0.900 (full
+  combination: 0.911) and pooled from 0.928 to 0.934 (full: 0.941). A possible cheap refinement later; not needed now.
+- **Cost:** DINOv2 ViT-B on CPU alone 130 to 330 ms per photo (older Xeons); all the classical features are cheap.
+
+Conclusion: group with time, EXIF and the strong classical feature set (time gap, pHash, dHash, SSIM, colour histogram, ORB,
+shooting settings). DINOv2 is not part of v1; revisit it only as a gated refinement of ambiguous pairs.
+
 ## Experiments, in order
 
 1. **Pass-1 features plus keeper-recall check.** Build the technical feature extractor (OpenCV: luminance percentiles,
