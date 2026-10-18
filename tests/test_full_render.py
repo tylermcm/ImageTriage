@@ -331,3 +331,15 @@ def test_failed_edited_photo_is_reported_and_batch_continues(tmp_path, monkeypat
     assert result.failed == ((str(paths[0]), "editor render failed"),)
     assert "bad.png" in result.report()
     assert not Path(plan.executable_items[0].target_path).exists()
+
+
+@pytest.mark.parametrize("settings", [{"glow": {"amount": 40}}, {"pointColors": [{"color": [0.9, 0.1, 0.1], "hue": 25}]}])
+def test_old_renderer_cannot_export_new_recipe_without_its_adjustments(photo, settings):
+    recipe(photo, settings)
+    original=bridge.recipe_path(photo).read_bytes()
+    proc=editor(photo)
+    proc.control.camera_raw_finishing_supported=False
+    result=render.FullRenderService(lambda: proc).request(photo)
+    assert result.outcome==render.FAILED
+    assert not proc.requests
+    assert bridge.recipe_path(photo).read_bytes()==original

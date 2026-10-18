@@ -2747,3 +2747,86 @@ unchanged. Live secondary-monitor/no-activation behavior is still unverified and
 mandatory for future agent-driven visible runs. Structural fixes, fresh matrix
 and full native+hosted gates remain required before selecting a new editor build.
 The every-element/all19 goal remains active.
+
+
+## 2026-10-18: visual acceptance and functionality priority
+
+The user accepted the remaining all19-gallery appearance, with two explicit exceptions:
+excess gap below Saturation and missing Glow row. Further discretionary cosmetic
+refinement is deferred; prioritize tool functionality. This is owner acceptance,
+not a new claim of pixel-identical/every-element measured parity.
+
+Implemented a separate Color bottom padding of12pt instead of the shared23pt,
+and restored the35pt Glow slider/disclosure row. Glow remains disabled at zero:
+there is no CameraRaw Glow operation, and no invented recipe key is written.
+All20 catalogs include its label. Kept the previous uncommitted Mixer work.
+No backend/tool implementation is claimed in this visual correction.
+
+Fresh offscreen source/native comparison:
+`acr-filmstrip/effects-fix-capture/effects-comparison.png` in the task visualization
+directory. Effects and Curve dividers now line up with the source in the fixed
+registration. The other visual differences are left alone per user instruction.
+
+Next functional milestone: Red Eye. Existing `paint.redEye`/`algo::redeye` can
+supply correction, but `paint.redEye` directly edits document pixels. Do not call
+it on the real photo from inside an uncommitted Camera Raw dialog. Add durable
+per-photo correction operations and preview/replay integration first, with Cancel,
+undo/redo, navigation/reopen and saved-display consistency tests. The current v1
+recipe serializes only CameraRaw settings and has no red-eye operation list.
+
+Both remotes fetched successfully during the PR investigation: upstream main
+advanced from efa1edd079b259b0b1f77b835151ee904437a231 to5c89f16b.
+That new tip was inspected but not merged into this divergent integration while
+preparing visual-only contribution options; no conflicts were resolved or merge
+validation claimed. No PR or push was made. Existing host user edits preserved.
+
+No desktop launch, release or editor promotion. PS1-selected known-good settings-
+menu executable remains unchanged. New source appearance requires a new validated
+candidate before promotion; hosted handoff checks remain outstanding.
+
+Validation: initial library run3125 passed/13ignored with one new tooltip-context translation failure; corrected to the existing cameraRaw translation context and that test passed on rerun. Camera Raw workspace/Mixer/localization integration checks passed (including disabled Glow/no recipe or history mutation); all-target UI clippy, layers and wasm passed. Fresh source/native PNG inspected. No further cosmetic work or hosted promotion performed.
+
+2026-10-18 follow-up: added muted-spectrum Vibrance/Saturation tracks from the supplied ACR reference, via a shared theme token palette. Existing slider ranges, bindings, recipe semantics and spacing unchanged. Workspace tests11/11, all-target UI clippy, layers and wasm passed; fresh offscreen comparison inspected at acr-filmstrip/color-gradients-capture/comparison.png. No visible launch or editor promotion; launcher remains on preserved older build.
+
+
+## 2026-10-18: usable main-adjustments development candidate
+
+Implemented the three requested features: Glow processing (Diffusion/Bloom/Halation,
+Range/Spread/Warmth), Color Mixer All Colors with all eight HSL bands, and Point
+Color (eight samples, picker, H/S/L/Variance/Range and view-only range visualization).
+Shared CameraRaw serialization preserves controls through per-photo recipes and
+native project history; private PhotoCraft XMP extensions round-trip the new
+settings. Unsupported PSD adjustments fail explicitly. Older hosted editors and
+RAW-recipe renderers are rejected when these new settings would otherwise be lost.
+Processing is independently implemented; Adobe pixel-output parity is not claimed.
+
+Candidate: C:/Users/user0/Documents/photocraft/target/acr-main-adjustments/debug/photocraft.exe
+SHA256: cac833711778b15699ccac589a30e1cb1ad2fbf3ad88ac0933b261b0fc0f1097
+Test launch (user initiated):
+`& "C:/Users/user0/OneDrive/Documents/Playground/scripts/test_camera_raw.ps1" -EditorBuild acr-main-adjustments`
+Open a photo in the popout and press E. Launcher default remains acr-settings-menu.
+No desktop launch, release build, push, PR or default promotion was performed.
+Both checkouts remain on codex/image-triage-integration; existing edits preserved.
+Upstream remains the previously recorded fetched-but-unmerged 5c89f16b tip.
+
+Validation: host focused suite111 passed/2 skipped; UI library3127 passed/13 ignored
+before final narrow fixes; latest focused workspace/settings/localization/Mixer26
+passed; final Mixer6 passed; algorithm finishing5 passed; engine finishing2 and
+noise3 passed; adversarial command test passed; I/O13 passed/1 ignored.
+Final native development app and snapshot renderer built; affected-crate all-target
+clippy, layers and wasm checks passed. Temporary external opt-level0 overrides for
+algorithm/engine avoid local optimized compiler stalls; repository profiles unchanged.
+Full real-file corpus attempt blocked by missing local photocraft-corpus checkout.
+
+Offscreen native processing proof and metadata:
+C:/Users/user0/.codex/visualizations/2026/10/17/01a14901-444b-7781-b5e6-48730a8f5183/acr-filmstrip/main-adjustments-proof
+Captures precede the final small SDR picker-selection clamp fix (covered by regression).
+Known-good target/debug and acr-settings-menu executables retained and hash verified.
+Live hosted navigation, stash/restore, native Save/grid propagation, closed-tab reopen,
+hidden startup, theme/resize/fullscreen, shutdown and process-cleanup gates remain
+pending user testing. Do not promote this candidate before these checks pass.
+Other disabled controls remain in Optics, Lens Blur, Calibration and AI Detail;
+completion applies to the three features requested here, not the entire window.
+
+
+2026-10-18 push checkpoint: see CLAUDE_HANDOFF.md. Fresh fetch succeeded; upstream advanced5c89f16b ->56dbc89a. Merge deferred for this user-requested tested-state handoff; no conflict resolution or merge validation claimed. Both integration branches pushed only to user forks.

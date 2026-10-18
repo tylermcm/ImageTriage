@@ -5,7 +5,7 @@ Example: ./scripts/test_camera_raw.ps1 -OpenPath 'C:\Pictures\Test photos'
 param(
     [string]$OpenPath,
     [string]$PhotoCraftRoot,
-    [ValidateSet('acr18', 'acr-filmstrip', 'acr-glyphs', 'acr-settings-menu')]
+    [ValidateSet('acr18', 'acr-filmstrip', 'acr-glyphs', 'acr-settings-menu', 'acr-main-adjustments')]
     [string]$EditorBuild = 'acr-settings-menu'
 )
 $ErrorActionPreference = 'Stop'
