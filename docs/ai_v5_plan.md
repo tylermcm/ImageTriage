@@ -188,6 +188,19 @@ subject and setting are distinctive (wildlife) and no better where geometry or c
 portraits). The advantage is modest in absolute terms (about half of top results correct) and depends partly on one
 subset. Whether scene stacks are a feature worth building is a separate, undecided product question.
 
+### Burst-pick baselines from the owner's own keeper marks (18 October 2026)
+
+To test a pass-2 picker without a labelling session, the owner's keeper marks (winner copies, "Accepted" XMP labels, edited
+exports) were matched to bursts (consecutive frames at most 5 s apart with pHash distance at most 20, 2 to 10 frames, in
+China '26 and China 8-26). 63 bursts contain exactly one known keeper (mean 4.1 frames); that frame is the "pick". Weak ground
+truth: an unpicked frame is not necessarily bad. Script `scripts/ai_v5/burst_pick_dataset.py`.
+
+Top-1 pick rate, 95% bootstrap interval: random 0.313 [0.280, 0.347]; first frame 0.238; last frame 0.254; sharpest by global
+Laplacian 0.317 [0.206, 0.429]; sharpest by centre Laplacian 0.254; sharpest by Tenengrad 0.317; least clipped highlights
+0.349 [0.238, 0.476]. Every simple measurement rule is indistinguishable from chance on these bursts. So within a burst the
+owner's pick is not explained by sharpness or clipping alone, which supports looking for a model that sees expression, eyes,
+subject and moment.
+
 ## Experiments, in order
 
 1. **Pass-1 features plus keeper-recall check.** Build the technical feature extractor (OpenCV: luminance percentiles,
