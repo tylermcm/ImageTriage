@@ -1,0 +1,22 @@
+{
+ "classical_only": {
+  "population": 64,
+  "sampled": 64
+ },
+ "dino_only": {
+  "population": 524,
+  "sampled": 80
+ },
+ "both_same": {
+  "population": 1644,
+  "sampled": 50
+ },
+ "both_different": {
+  "population": 675,
+  "sampled": 50
+ },
+ "far": {
+  "population": 492,
+  "sampled": 12
+ }
+}
