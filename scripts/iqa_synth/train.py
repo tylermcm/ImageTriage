@@ -168,9 +168,7 @@ class QualityNet(nn.Module):
         self.register_buffer("std", torch.tensor([0.225, 0.224, 0.229]).view(1, 3, 1, 1))
 
     def forward(self, bgr_uint8_or_float: torch.Tensor):
-        x = bgr_uint8_or_float.float()
-        if x.max() > 1.5:
-            x = x / 255.0
+        x = bgr_uint8_or_float.float() / 255.0  # input is BGR with values 0..255 (uint8 or float)
         feat = self.backbone((x - self.mean) / self.std)
         out = self.quality(feat)
         return self.project(feat), torch.sigmoid(out[:, 0]), torch.sigmoid(out[:, 1:])
