@@ -84,13 +84,14 @@ def unregister(service: "FullRenderService") -> None:
             _service = None
 
 
-def request_full_render(image_path: str) -> RenderResult:
-    """See the module docs. Blocks while the editor renders: call it from a worker (or wait for it with the event loop running)."""
+def request_full_render(image_path: str, *, progress=None, cancel: threading.Event | None = None) -> RenderResult:
+    """See the module docs. Blocks while the editor renders: call it from a worker (or wait for it with the event loop running).
+    ``progress`` receives ``upscale_service.UpscaleProgress`` while Super Resolution is applied; setting ``cancel`` stops it."""
     with _service_lock:
         service = _service
     if service is not None:
-        return service.request(image_path)
-    return FullRenderService(lambda: None).request(image_path)
+        return service.request(image_path, progress=progress, cancel=cancel)
+    return FullRenderService(lambda: None).request(image_path, progress=progress, cancel=cancel)
 
 
 def _described(path: Path, reply: dict, *, temporary: bool) -> RenderResult:
@@ -102,6 +103,14 @@ def _described(path: Path, reply: dict, *, temporary: bool) -> RenderResult:
         RENDERED, path=path, format=str(reply.get("format", "")), width=int(reply.get("width", 0)), height=int(reply.get("height", 0)),
         depth=int(reply.get("depth", 0)), icc=bool(reply.get("icc", False)), temporary=temporary,
     )
+
+
+def _without_host_settings(recipe: dict) -> dict:
+    """The recipe as the editor should see it: settings the host carries out itself (Super Resolution) are not sent."""
+    settings = recipe.get("cameraRaw") if isinstance(recipe, dict) else None
+    if not isinstance(settings, dict) or "superResolution" not in settings:
+        return recipe
+    return {**recipe, "cameraRaw": {k: v for k, v in settings.items() if k != "superResolution"}}
 
 
 class FullRenderService:
@@ -119,6 +128,7 @@ class FullRenderService:
         save_open_photo: Callable[["bridge.PhotoCraftProcess", str], None] | None = None,
         launch: Callable[[str], "bridge.PhotoCraftProcess"] | None = None,
         source_key: Callable[[str], str] | None = None,
+        super_resolution: Callable[[RenderResult, threading.Event], RenderResult] | None = None,
     ) -> None:
         self._editor = editor
         self._save_open_photo = save_open_photo
@@ -127,26 +137,29 @@ class FullRenderService:
         self._one_at_a_time = threading.Lock()
         self._state = threading.Lock()
         self._closing = False
+        self._cancel = threading.Event()  # set on shutdown: stops a Super Resolution upsize in progress
+        self._active_cancels: set[threading.Event] = set()  # the events callers gave their requests: shutdown sets them too
+        self._super_resolution = super_resolution
         self._running: tuple[object, int] | None = None  # (render lane, job) of the render in progress
         self._temporary: dict[int, object] = {}
 
     # --- what is rendered -------------------------------------------------------------------------------------------------
 
-    def request(self, image_path: str) -> RenderResult:
+    def request(self, image_path: str, *, progress=None, cancel: threading.Event | None = None) -> RenderResult:
         if self._closing:
             return failed("Image Triage is closing")
         try:
             with self._one_at_a_time:
                 if self._closing:
                     return failed("Image Triage is closing")
-                return self._request(image_path)
+                return self._request(image_path, progress, cancel)
         except RenderCancelled:
             return failed("the render was cancelled")
         except Exception as error:  # an editor that broke, a file that went away: a failure for this photo, never the original
             logging.getLogger(__name__).warning("Full-size render of %s failed: %s", image_path, error)
             return failed(str(error) or error.__class__.__name__)
 
-    def _request(self, image_path: str) -> RenderResult:
+    def _request(self, image_path: str, progress=None, cancel: threading.Event | None = None) -> RenderResult:
         proc = self._editor()
         live = proc if proc is not None and proc.is_running() and proc.current_source == self._source_key(image_path) else None
         if live is not None:
@@ -154,7 +167,9 @@ class FullRenderService:
             if dialog is not None:
                 state, reason = bridge.classify_recipe(dialog)
                 if state in (bridge.RECIPE_EDITED, bridge.RECIPE_IDENTITY):
-                    return self._render(image_path, {"recipe": dialog}, proc=live)
+                    return self._with_super_resolution(
+                        image_path, dialog, lambda: self._render(image_path, {"recipe": dialog}, proc=live), progress, cancel
+                    )
                 if state == bridge.RECIPE_INVALID:
                     return failed(reason)
             elif self._save_open_photo is not None:
@@ -173,8 +188,38 @@ class FullRenderService:
         if state == bridge.RECIPE_INVALID:
             return failed(reason)
         if state == bridge.RECIPE_EDITED:
-            return self._render(image_path, {"recipe": recipe}, proc=proc)
+            return self._with_super_resolution(
+                image_path, recipe, lambda: self._render(image_path, {"recipe": recipe}, proc=proc), progress, cancel
+            )
         return NO_EDITS
+
+    def _with_super_resolution(self, image_path: str, recipe: dict, render, progress, cancel: threading.Event | None) -> RenderResult:
+        """Detail > Super Resolution: the editor only records the setting; the host upsizes the finished render, after the editor is done
+        with it, and never exports the un-upsized picture in its place. A photo already made for exactly these settings is not made again,
+        and a new one is kept for the next output."""
+        from . import camera_raw_super_resolution as sr  # imported late: these modules import this one
+        from . import super_resolution_cache as cache
+
+        if not sr.wants_super_resolution(recipe):
+            return render()
+        kept = cache.lookup(image_path, recipe)
+        if kept is not None:
+            return kept
+        result = render()
+        if result.outcome != RENDERED:
+            return result
+        event = cancel or self._cancel
+        with self._state:
+            self._active_cancels.add(event)
+        try:
+            if self._super_resolution is not None:
+                upsized = self._super_resolution(result, event)
+            else:
+                upsized = sr.apply_super_resolution(result, cancel_event=event, progress=progress)
+        finally:
+            with self._state:
+                self._active_cancels.discard(event)
+        return cache.store(image_path, recipe, upsized) if upsized.outcome == RENDERED else upsized
 
     def _open_dialog_recipe(self, proc, image_path: str) -> dict | None:
         """The settings of a Camera Raw dialog open on the editor's photo, read without changing it; None when none is open."""
@@ -227,7 +272,8 @@ class FullRenderService:
                     return failed("the photo is outside the editor's folder")
                 params["source"] = source
                 bridge.require_finishing_support({"recipe": what["recipe"]}, getattr(proc.control, "camera_raw_finishing_supported", False) is True)
-                params["recipe"] = what["recipe"]
+                bridge.require_calibration_support({"recipe": what["recipe"]}, getattr(proc.control, "camera_raw_calibration_supported", False) is True)
+                params["recipe"] = _without_host_settings(what["recipe"])
             reply = self._run_job(proc.render_lane(), params)
             if reply.get("out") not in (out + ".png", out + ".tif", out + ".tiff"):
                 raise bridge.PhotoCraftError("the editor returned an unexpected render path")
@@ -280,9 +326,12 @@ class FullRenderService:
     def shutdown(self) -> None:
         """Cancels the render in progress (through its own connection) and quits the hidden editors started for renders. Requests
         after this fail."""
+        self._cancel.set()
         with self._state:
             self._closing = True
             running = self._running
+            for event in self._active_cancels:
+                event.set()
         unregister(self)
         if running is not None:
             lane, job = running

@@ -217,6 +217,8 @@ def test_filmstrip_theme_survives_refresh_resize_and_collapse():
     strip = preview._filmstrip
     colors = {"panel": "#fcfcfd", "dock": "#f0f0f3", "accent": "#6c5ce7", "text": "#18181c"}
     preview.set_photocraft_palette(colors)
+    assert strip._editor_palette["panel"] == preview._theme.panel_bg.qcolor().name()
+    preview.show_photocraft_host()
     strip.set_source(4, 0)
     strip.set_mockup_metrics(1440, 900)
     strip.drag_resize(strip.MIN_THUMB_H + 20)
@@ -250,6 +252,11 @@ def test_filmstrip_theme_survives_refresh_resize_and_collapse():
     assert strip.height() == 6
     strip.toggle_collapsed()
     assert strip.height() > 6
+    preview.hide_photocraft_host()
+    assert strip._editor_palette["panel"] == preview._theme.panel_bg.qcolor().name()
+    assert strip._editor_palette["accent"] == preview._theme.accent.qcolor().name()
+    preview.show_photocraft_host()
+    assert strip._editor_palette == colors
     preview.close()
 
 

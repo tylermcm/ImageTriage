@@ -102,3 +102,44 @@ then remaining tools. No more pixel polishing or upstream-contribution preparati
 unless requested. Do not create new goals or schedule background work.
 
 PhotoCraft source checkpoint commit: 20028186 (user fork integration branch).
+
+## Correction, 2026-10-18 (evening): the opt-level 0 workaround is no longer needed
+
+The note above says the optimized compiler stalled and an external config forces `opt-level = 0` for `photocraft-algo` and `photocraft-engine`. That config is what made the sliders
+slow (Codex measured 154 ms for Exposure and 1.4 s for Shadows, with a 130 ms histogram on the UI thread). Building with the repo's own dev profile (no `--config`, `opt-level = 1`,
+dependencies at 2) completed in under 4 minutes with `RUST_MIN_STACK=33554432` and `-j 2`, no stall. Use `CARGO_TARGET_DIR=target/acr-calibration-sr cargo build -p photocraft -j 2`.
+Measured on Codex's fixture (offscreen `snapshot` example, 900x600 proxy; before -> after): neutral 142 -> 12 ms, Exposure 154 -> 13, Saturation 143 -> 11, Clarity 173 -> 21, Glow 299 -> 62,
+Shadows 1438 -> 335, histogram 131 -> 7. Also: the preview is now made on a thread (`camera_raw_preview_worker.rs`, newest settings only), and full-resolution detail develops are not started
+while a setting is being dragged. The old override file (`docs/handoff/2026-10-18-main-adjustments/debug-profile.toml`) is still used for the unit-test builds in `target/calibration`.
+
+### Shadows / Highlights speed (2026-10-18, later)
+
+Why Shadows was the slowest slider: it is a fast local Laplacian filter with up to 96 reference tones (an eighth of a stop apart), each needing its own pyramid of the image; ~91 pyramids per preview.
+* **Upstream fix taken:** `storytold/photocraft` commit `4b660fcf` (PR #7141, "Shadows/Highlights 1.5x faster, bit for bit the same") was not in our fork; applied as a patch to `local_tone.rs` (not committed).
+* **Parallel across references:** the references are independent but ran one after another, each parallelised only inside its small images (single-thread CPU cost was 464 ms; with 32 threads still 167 ms).
+  `llf` now runs each reference serially in a parallel task (`par_map`) and returns a sparse list of what it adds; the lists are merged in reference order, so every pixel's sum is built exactly as before.
+  Verified **bit for bit identical** to the previous output (FNV hash of every output sample, 5 settings x 4 sizes incl. 2400x1600 through the downscale path: `cargo run -p photocraft-algo --example shadows_bench -- --hash`).
+* Measured (900x600 proxy, repo dev profile): Shadows ~225 -> ~64 ms, Highlights ~230 -> ~66 ms; through the offscreen dialog harness Shadows 335 -> 69 ms. Optimization level above 1 barely matters (level 2 ~1.25x, level 3 none).
+* The two `photocraft-algo` unit tests that fail in my unoptimized test build (`stack::...bit_identical...`, `gallery::tilt_shift...`) do not touch Camera Raw.
+
+## 2026-10-18: combined host main checkpoint
+
+Combined Claude's AI upscaling / Calibration / Super Resolution host commits
+(d2ca5f0, f93a901) with the inspector and filmstrip UI checkpoint (c54d9d8),
+via integration merge1ff70b8. No textual conflicts. Inspector includes quality
+findings, compact AI invitation, contained Analyze button and narrow-pane wrapping;
+redundant File section was removed. Browsing filmstrip uses the active host theme;
+PhotoCraft docking retains its own palette and restores the host palette on exit.
+
+Merged host validation: 401 passed, 2 skipped, 11 subtests across inspector,
+filmstrip/native browsing, editor handoff, upscale core/service/worker, RAW host
+jobs/Super Resolution, recipe classification/rendering, prefetch/manifests,
+packaging scripts and editor logging; super-resolution cache6 additional tests
+passed. All UI checks offscreen. No visible app launch or build promotion.
+
+Both host worktrees can now use the same merged source after main is fast-forwarded.
+PhotoCraft is separate: its committed editor checkpoint is1f485729, but more active
+Claude edits appeared during the push operation. Those edits were not staged,
+stashed or overwritten. Upstream remains deferred (freshly fetched d95fdf31),
+not silently merged into this checkpoint. See the existing test launcher build
+selection for local editor binaries; source merges do not promote a binary.

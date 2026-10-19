@@ -1,6 +1,7 @@
 """The inspector's Analyze folder control: AI styling, whole-folder runs, hiding under a filter, progress, reduced motion."""
 from __future__ import annotations
 
+import os
 import pytest
 from PySide6.QtWidgets import QApplication
 
@@ -62,6 +63,8 @@ def test_only_the_visible_page_sizes_the_card(card) -> None:
 
 
 def test_animation_runs_and_stops_with_the_motion_setting(monkeypatch, card) -> None:
+    # Exercise the toggle independently of the desktop's current motion setting.
+    monkeypatch.setattr("image_triage.ui.ai_analyze_card.animations_enabled", lambda: os.environ.get("IMAGE_TRIAGE_REDUCE_MOTION") != "1")
     monkeypatch.delenv("IMAGE_TRIAGE_REDUCE_MOTION", raising=False)
     card.refresh_motion_setting()
     assert card.button.is_animating()
@@ -72,6 +75,7 @@ def test_animation_runs_and_stops_with_the_motion_setting(monkeypatch, card) -> 
 
 
 def test_animation_pauses_when_hidden(monkeypatch, card) -> None:
+    monkeypatch.setattr("image_triage.ui.ai_analyze_card.animations_enabled", lambda: os.environ.get("IMAGE_TRIAGE_REDUCE_MOTION") != "1")
     monkeypatch.delenv("IMAGE_TRIAGE_REDUCE_MOTION", raising=False)
     card.refresh_motion_setting()
     assert card.button.is_animating()

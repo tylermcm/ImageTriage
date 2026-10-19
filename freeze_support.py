@@ -110,6 +110,8 @@ class FreezeAssetLayout:
             ),
             *_pocketdrop_include_files(),
             (str(CLI_CULLER_PACKAGE_ROOT), "aiculler"),
+            (str(ROOT / "image_triage" / "upscale_worker.py"), "ai_workers/upscale_worker.py"),
+            (str(ROOT / "image_triage" / "upscale_core.py"), "ai_workers/upscale_core.py"),
             (str(self.ai_stdlib_stage_root), "ai_stdlib"),
             (str(self.ai_binary_modules_stage_root), "lib"),
         ]

@@ -13,7 +13,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QWidget
 from pathlib import Path
 
-from . import edit_storage, full_render, photocraft_bridge, photocraft_preview
+from . import camera_raw_host_jobs, edit_storage, full_render, photocraft_bridge, photocraft_preview
 from .brackets import BracketDetector
 from .formats import RAW_SUFFIXES
 from .models import ImageRecord, SessionAnnotation
@@ -92,6 +92,8 @@ class PreviewController(QObject):
             source_key=normalized_path_key,
         )
         full_render.register(self._full_render)
+        # Super Resolution applied for the editor's Camera Raw dialog when Done is pressed, polled on the autosave tick.
+        self._host_jobs = camera_raw_host_jobs.HostJobRunner()
         self._photocraft_closing = False
         # Previews use their own worker and PhotoCraft connection so they never queue
         # behind a RAW load.
@@ -1097,6 +1099,7 @@ class PreviewController(QObject):
             try:
                 self._sync_photocraft_theme(proc)
                 self._poll_photocraft_stashes(proc)
+                self._host_jobs.poll(proc)
                 self._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False, lean=True)
                 key = str(proc.current_sidecar)
                 if (

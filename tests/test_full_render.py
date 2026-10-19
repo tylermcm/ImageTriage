@@ -343,3 +343,150 @@ def test_old_renderer_cannot_export_new_recipe_without_its_adjustments(photo, se
     assert result.outcome==render.FAILED
     assert not proc.requests
     assert bridge.recipe_path(photo).read_bytes()==original
+
+
+@pytest.mark.parametrize("settings", [{"calibShadowTint": 25}, {"calibHue": [20, 0, 0]}, {"calibSat": [0, -20, 0]}])
+@pytest.mark.parametrize("supported", [False, True])
+def test_calibration_render_requires_independent_capability(photo, settings, supported):
+    recipe(photo, settings, identity=True)
+    original = bridge.recipe_path(photo).read_bytes()
+    proc = editor(photo)
+    proc.control.camera_raw_finishing_supported = True
+    proc.control.camera_raw_calibration_supported = supported
+    result = render.FullRenderService(lambda: proc).request(photo)
+    assert result.outcome == (render.RENDERED if supported else render.FAILED)
+    assert bool(proc.requests) is supported
+    if supported:
+        assert proc.requests[0]["recipe"]["cameraRaw"] == settings
+        result.release()
+    assert bridge.recipe_path(photo).read_bytes() == original
+
+
+# --- Detail > Super Resolution: the editor records it, the host upsizes the finished render ---------------------------------------
+
+
+def test_super_resolution_only_recipe_is_an_edit_not_no_edits(photo):
+    state, reason = bridge.classify_recipe({"version": 1, "cameraRaw": {"superResolution": True}})
+    assert (state, reason) == (bridge.RECIPE_EDITED, "")
+    assert bridge.classify_recipe({"version": 1, "cameraRaw": {"superResolution": False}})[0] == bridge.RECIPE_IDENTITY
+
+
+@pytest.mark.parametrize("value", [1, "yes", None, [True]])
+def test_super_resolution_must_be_a_real_boolean(value):
+    assert bridge.classify_recipe({"version": 1, "cameraRaw": {"superResolution": value}})[0] == bridge.RECIPE_INVALID
+
+
+def test_super_resolution_runs_after_the_render_and_is_not_sent_to_the_editor(photo):
+    recipe(photo, {"exposure": 1.0, "superResolution": True})
+    proc = editor(photo)
+    seen = []
+
+    def upsize(result, cancel):
+        seen.append((result, cancel))
+        return render.RenderResult(render.RENDERED, path=result.path, format="png", width=240, height=160, depth=8, temporary=True)
+
+    result = render.FullRenderService(lambda: proc, super_resolution=upsize).request(photo)
+    assert result.outcome == render.RENDERED and (result.width, result.height) == (240, 160)
+    assert len(seen) == 1 and isinstance(seen[0][1], threading.Event)
+    assert "superResolution" not in proc.requests[0]["recipe"]["cameraRaw"] and proc.requests[0]["recipe"]["cameraRaw"]["exposure"] == 1.0
+    result.release()
+
+
+def test_super_resolution_only_recipe_still_renders_and_upsizes(photo):
+    recipe(photo, {"superResolution": True})
+    proc = editor(photo)
+    calls = []
+    result = render.FullRenderService(
+        lambda: proc, super_resolution=lambda r, c: calls.append(r) or render.failed("no backend here")
+    ).request(photo)
+    assert len(calls) == 1 and proc.requests and result.outcome == render.FAILED and result.reason == "no backend here"
+
+
+def test_recipe_without_super_resolution_never_touches_it(photo):
+    recipe(photo, {"exposure": 1.0})
+    proc = editor(photo)
+
+    def never(result, cancel):
+        raise AssertionError("not asked for")
+
+    result = render.FullRenderService(lambda: proc, super_resolution=never).request(photo)
+    assert result.outcome == render.RENDERED
+    result.release()
+
+
+def test_super_resolution_that_cannot_run_fails_the_photo_instead_of_exporting_it_without(photo):
+    from image_triage import camera_raw_super_resolution as sr
+    from image_triage import upscale_service as svc
+
+    recipe(photo, {"exposure": 1.0, "superResolution": True})
+    proc = editor(photo)  # this test editor renders 16-bit
+    unavailable = lambda: svc.UpscaleAvailability(False, "The AI runtime is not installed.", {})
+    service = render.FullRenderService(
+        lambda: proc, super_resolution=lambda result, cancel: sr.apply_super_resolution(result, cancel_event=cancel, availability=unavailable)
+    )
+    result = service.request(photo)
+    assert result.outcome == render.FAILED and "not installed" in result.reason
+    assert not any(Path(photo).parent.rglob("*.photocraft.export-*"))  # the un-upsized render is not left behind
+
+
+def test_shutdown_cancels_a_super_resolution_in_progress(photo):
+    service = render.FullRenderService(lambda: None)
+    given = threading.Event()
+    service._active_cancels.add(given)  # an event a caller gave a request that is running
+    assert not service._cancel.is_set() and not given.is_set()
+    service.shutdown()
+    assert service._cancel.is_set() and given.is_set()
+
+
+def test_a_super_resolution_render_is_kept_and_the_next_output_does_not_make_it_again(photo):
+    recipe(photo, {"exposure": 1.0, "superResolution": True})
+    proc = editor(photo)
+    made = []
+
+    def upsize(result, cancel):
+        made.append(result)
+        out = result.path.with_name("upsized.png")
+        out.write_bytes(b"2x pixels")
+        result.release()
+        return render.RenderResult(render.RENDERED, path=out, format="png", width=240, height=160, depth=8, icc=False, temporary=True)
+
+    service = render.FullRenderService(lambda: proc, super_resolution=upsize)
+    first = service.request(photo)
+    second = service.request(photo)
+    assert len(made) == 1 and len(proc.requests) == 1  # the second output neither rendered nor upsized anything
+    assert first.path == second.path and (second.width, second.height) == (240, 160) and not second.temporary
+    second.release()
+    assert second.path.exists()
+    recipe(photo, {"exposure": 2.0, "superResolution": True})  # different settings: made again
+    service.request(photo)
+    assert len(made) == 2
+
+
+def test_progress_and_cancel_given_to_a_request_reach_the_upsize(photo, monkeypatch):
+    from image_triage import camera_raw_super_resolution as sr
+
+    recipe(photo, {"exposure": 1.0, "superResolution": True})
+    proc = editor(photo)
+    got = {}
+
+    def fake_apply(result, *, cancel_event=None, progress=None, **kwargs):
+        got["cancel"], got["progress"] = cancel_event, progress
+        result.release()
+        return render.failed("stop here")
+
+    monkeypatch.setattr(sr, "apply_super_resolution", fake_apply)
+    event, seen = threading.Event(), (lambda progress: None)
+    render.FullRenderService(lambda: proc).request(photo, progress=seen, cancel=event)
+    assert got["cancel"] is event and got["progress"] is seen
+
+
+@pytest.mark.parametrize("supported", [False, True])
+def test_opening_a_super_resolution_recipe_needs_an_editor_that_knows_it(supported):
+    camera_raw = {"recipe": {"cameraRaw": {"superResolution": True}}}
+    if supported:
+        bridge.require_super_resolution_support(camera_raw, True)
+    else:
+        with pytest.raises(bridge.PhotoCraftCompatibilityError):
+            bridge.require_super_resolution_support(camera_raw, False)
+    bridge.require_super_resolution_support({"recipe": {"cameraRaw": {"superResolution": False}}}, False)
+    bridge.require_super_resolution_support(None, False)
