@@ -24,6 +24,10 @@ class BracketDetector:
     def __init__(self) -> None:
         self._cache: dict[str, CaptureMetadata] = {}
 
+    def remember(self, metadata: CaptureMetadata) -> None:
+        """Seed the cache with metadata a caller already read, so a folder scan reads each file's EXIF once."""
+        self._cache[metadata.path] = metadata
+
     def group_for(self, records: list[ImageRecord], index: int) -> BracketGroup | None:
         if not 0 <= index < len(records):
             return None

@@ -135,12 +135,7 @@ def test_analyze_does_not_run_while_a_filter_narrows_the_view(main_window, tmp_p
         main_window._records_view.apply_filter_query_change()
 
 
-def test_unconfigured_ai_opens_setup_instead_of_failing(main_window, tmp_path, monkeypatch) -> None:
-    make_jpegs(tmp_path, ["a.jpg"])
-    open_folder(main_window, tmp_path, 1)
-    opened: list[str] = []
-    ran: list[int] = []
-
+def _broken_runtime(main_window, monkeypatch, opened: list[str], ran: list[int]) -> None:
     class Broken:
         def validate(self):
             raise RuntimeError("models missing")
@@ -149,6 +144,26 @@ def test_unconfigured_ai_opens_setup_instead_of_failing(main_window, tmp_path, m
     monkeypatch.setattr(main_window._ai_setup, "refresh_ai_runtime_preferences", lambda: None)
     monkeypatch.setattr(main_window._handoff, "open_ai_workflow_center", lambda: opened.append("setup"))
     monkeypatch.setattr(main_window._ai_run, "run_ai_pipeline", lambda: ran.append(1))
+
+
+def test_the_default_cleanup_runs_without_the_ai_runtime(main_window, tmp_path, monkeypatch) -> None:
+    # The cascade's cheap passes need no AI runtime, so Analyze must not send the person to setup first.
+    make_jpegs(tmp_path, ["a.jpg"])
+    open_folder(main_window, tmp_path, 1)
+    opened: list[str] = []
+    ran: list[int] = []
+    _broken_runtime(main_window, monkeypatch, opened, ran)
+    main_window._ai_run.analyze_current_folder()
+    assert opened == [] and ran == [1]
+
+
+def test_unconfigured_ai_opens_setup_for_the_legacy_culler(main_window, tmp_path, monkeypatch) -> None:
+    make_jpegs(tmp_path, ["a.jpg"])
+    open_folder(main_window, tmp_path, 1)
+    opened: list[str] = []
+    ran: list[int] = []
+    _broken_runtime(main_window, monkeypatch, opened, ran)
+    monkeypatch.setattr(main_window._ai_run, "use_legacy_culler", lambda: True)
     main_window._ai_run.analyze_current_folder()
     assert opened == ["setup"] and ran == []
 

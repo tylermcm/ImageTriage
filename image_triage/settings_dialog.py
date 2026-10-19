@@ -83,6 +83,7 @@ class WorkflowSettingsResult:
     apply_edits_to_pocketdrop: bool = False
     ai_embed_batch_size: int = 0
     ai_review_detail_progress_enabled: bool = False
+    ai_cascade_rank_on_cpu: bool = False
     ai_dispute_weight: int = 3
     ai_keep_top_percent: int = 10       # % of folder to mark as Keeper
     ai_review_band_percent: int = 10    # % below Keeper cutoff to mark as Review
@@ -328,6 +329,7 @@ class WorkflowSettingsDialog(QDialog):
         apply_edits_to_pocketdrop: bool = False,
         ai_embed_batch_size: int = 0,
         ai_review_detail_progress_enabled: bool = False,
+        ai_cascade_rank_on_cpu: bool = False,
         ai_dispute_weight: int = 3,
         ai_keep_top_percent: int = 10,
         ai_review_band_percent: int = 10,
@@ -830,6 +832,14 @@ class WorkflowSettingsDialog(QDialog):
             "Shows model loading, library loading, and per-stage technical activity in the AI Review progress window."
         ))
 
+        self.ai_cascade_rank_on_cpu_checkbox = QCheckBox("Rank survivors on the CPU when there is no GPU")
+        self.ai_cascade_rank_on_cpu_checkbox.setChecked(ai_cascade_rank_on_cpu)
+        self.ai_cascade_rank_on_cpu_checkbox.setToolTip(_settings_tooltip(
+            "Off by default. Analyze always runs the quick cleanup (grouping bursts, flagging blinks, soft and blown-out frames, "
+            "collapsing near-duplicates). Ranking the frames that remain uses two small AI models: automatic on a GPU, but "
+            "roughly 3 to 4 seconds per frame scored on a CPU, so it is opt-in there."
+        ))
+
         self.ai_dispute_weight_spin = QSpinBox()
         self.ai_dispute_weight_spin.setRange(2, 5)
         self.ai_dispute_weight_spin.setSingleStep(1)
@@ -907,6 +917,7 @@ class WorkflowSettingsDialog(QDialog):
         self._add_category_heading(ai_layout, "Processing")
         self._add_form_row(ai_layout, "AI batch size", self.ai_embed_batch_size_spin)
         self._add_checkbox_row(ai_layout, "Detailed progress log", self.ai_review_detail_progress_checkbox)
+        self._add_checkbox_row(ai_layout, "Ranking on the CPU", self.ai_cascade_rank_on_cpu_checkbox)
         self._add_category_heading(ai_layout, "Result ranges")
         self._add_form_row(ai_layout, "Likely winners", self.ai_keep_top_spin)
         self._add_form_row(ai_layout, "Review band", self.ai_review_band_spin)
@@ -1520,6 +1531,7 @@ class WorkflowSettingsDialog(QDialog):
             apply_edits_to_pocketdrop=self.apply_edits_to_pocketdrop_checkbox.isChecked(),
             ai_embed_batch_size=max(0, int(self.ai_embed_batch_size_spin.value())),
             ai_review_detail_progress_enabled=self.ai_review_detail_progress_checkbox.isChecked(),
+            ai_cascade_rank_on_cpu=self.ai_cascade_rank_on_cpu_checkbox.isChecked(),
             ai_dispute_weight=max(2, min(5, int(self.ai_dispute_weight_spin.value()))),
             ai_keep_top_percent=max(1, min(50, int(self.ai_keep_top_spin.value()))),
             ai_review_band_percent=max(0, min(30, int(self.ai_review_band_spin.value()))),

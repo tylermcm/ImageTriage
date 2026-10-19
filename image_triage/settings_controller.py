@@ -379,6 +379,12 @@ class SettingsController(QObject):
             return str(self._window._ai_embed_batch_size_setting)
         return f"Auto ({self.configured_ai_embed_batch_size()})"
 
+    def _cascade_rank_on_cpu(self) -> bool:
+        try:
+            return bool(self._window._settings.value(self._window._ai_run.CASCADE_CPU_RANKING_KEY, False, type=bool))
+        except Exception:
+            return False
+
     def configured_aiculler_runtime(self, *, workers: int | None = None):
         return default_aiculler_runtime(
             workers=workers,
@@ -801,6 +807,7 @@ class SettingsController(QObject):
             apply_edits_to_pocketdrop=self._window._apply_edits_to_pocketdrop,
             ai_embed_batch_size=self._window._ai_embed_batch_size_setting,
             ai_review_detail_progress_enabled=self._window._ai_review_detail_progress_enabled,
+            ai_cascade_rank_on_cpu=self._cascade_rank_on_cpu(),
             ai_dispute_weight=self._window._ai_dispute_weight_setting,
             ai_keep_top_percent=self._window._ai_keep_top_percent_setting,
             ai_review_band_percent=self._window._ai_review_band_percent_setting,
@@ -949,6 +956,7 @@ class SettingsController(QObject):
         self._window._settings.setValue(self._window.AI_BASE_SCORE_WEIGHT_PERCENT_KEY, self._window._ai_base_score_weight_percent_setting)
         self.save_phash_prefilter_settings(self._window._phash_prefilter_settings)
         self._window._settings.setValue(self._window.AI_REVIEW_DETAIL_PROGRESS_KEY, self._window._ai_review_detail_progress_enabled)
+        self._window._settings.setValue(self._window._ai_run.CASCADE_CPU_RANKING_KEY, bool(result.ai_cascade_rank_on_cpu))
         self._window._decision_store.touch_session(self._window._session_id)
         self._window.summary_session.setText(f"Profile: {self._window._session_id}")
         preview = self._window._preview_ctl.preview_if_built()
