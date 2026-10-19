@@ -432,6 +432,21 @@ CAPABILITIES: dict[str, Capability] = {
         requires_onnx=True,
         probe_kind="insightface",
     ),
+    # Not in BASE_CAPABILITIES / DEFAULT_CAPABILITY_ORDER on purpose: Set Up AI must not
+    # try to install it. It has no ``model_bundles`` entry until the Real-ESRGAN ONNX files
+    # are hosted at an immutable revision and their licence is settled
+    # (docs/ai_upscale_plan.md, 5.4); until then ``upscale_service.check_availability``
+    # reports the model files itself.
+    "upscale": Capability(
+        key="upscale",
+        name="AI upscaling (Real-ESRGAN)",
+        summary="Upscales a rendered photo 2x or 4x with an ONNX super-resolution model.",
+        modules=("numpy", "onnxruntime", "PIL"),
+        requires_onnx=True,
+        worker_module="image_triage.upscale_worker",
+        probe_kind="onnx_providers",
+        remediation="Open Settings and run Set Up AI to install the base AI runtime.",
+    ),
     "semantic_search": Capability(
         key="semantic_search",
         name="Semantic search",

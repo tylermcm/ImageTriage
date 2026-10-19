@@ -67,6 +67,21 @@ class PackagingScriptTests(unittest.TestCase):
         self.assertIn("pip._internal", constants)
         self.assertNotIn("pip", _dict_list_literals(tree, "build_exe_options", "excludes"))
 
+    def test_upscale_worker_and_its_core_are_packaged_as_external_ai_scripts(self) -> None:
+        # The worker imports upscale_core as a sibling, so both must sit in ai_workers/.
+        constants = _string_constants(_read_tree("freeze_support.py"))
+
+        self.assertIn("upscale_worker.py", constants)
+        self.assertIn("ai_workers/upscale_worker.py", constants)
+        self.assertIn("upscale_core.py", constants)
+        self.assertIn("ai_workers/upscale_core.py", constants)
+
+    def test_upscale_service_modules_are_named_explicitly_for_cx_freeze(self) -> None:
+        constants = _string_constants(_read_tree("setup_msi.py"))
+
+        self.assertIn("image_triage.upscale_core", constants)
+        self.assertIn("image_triage.upscale_service", constants)
+
     def test_vendored_editor_engine_is_named_explicitly_for_cx_freeze(self) -> None:
         # image_triage.photo_terminal (the vendored former cli_editor package)
         # is reached via a lazy import inside editor_render.py, so it must be
