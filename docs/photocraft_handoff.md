@@ -2858,3 +2858,7 @@ completion applies to the three features requested here, not the entire window.
 * Not done: clippy, `cargo xtask layers|wasm`, a rebuilt hosted executable, and the live Image Triage handoff gates (persistent
   filmstrip navigation, stash/restore, native Save and grid propagation, closed-tab reopen, hidden startup, theme/resize,
   fullscreen, shutdown/process cleanup). Keep the known-good hosted executable until those pass.
+* Candidate build of merge `99cdc8b4`: `C:/Users/user00/Documents/photocraft/target/merge-d95fdf31/release/photocraft.exe`
+  (`cargo build --release -p photocraft -j 4`, own target dir, 15m56s). PE subsystem = GUI (2), so no console window (the
+  `windows_subsystem` attribute in `main.rs` only applies without debug assertions; dev builds show a console).
+  SHA256 f89342ebc8735edff6ae0403348ded82e9a2513cc9280527ef2e7f604bc90000. Not promoted; known-good executables untouched.
