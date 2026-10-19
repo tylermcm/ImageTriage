@@ -262,3 +262,10 @@ Facet's burst blend (0.4 aggregate + 0.25 aesthetic + 0.2 sharpness + 0.15 no-bl
 | eyes open, no blink | 0.238 | -0.111 |
 
 Verdict: fails the pre-registered rule; indistinguishable from chance. Scripts: scripts/ai_v5/facet_burst_analyze.py.
+
+## MANIQA (IIGROUP/MANIQA, Apache-2.0 code) as a burst picker (2026-10-18)
+
+KonIQ-10k checkpoint (543 MB), 20 fixed-seed 224 px crops per 1280 px frame, 257 frames, 0.61 s per frame on a V100.
+Top-1 on the owner's picks 0.349 [0.238, 0.476] (random 0.313, least clipped 0.349); gain over best baseline +0.000 [-0.159, +0.159];
+pair accuracy 0.542 [0.445, 0.640]. Fails the pre-registered rule, so the weights/training-data licence check was not pursued.
+Pattern across everything tried (VLM judges, Facet's blend, Q-ReAlign, MANIQA): generic quality scores do not predict the owner's picks.
