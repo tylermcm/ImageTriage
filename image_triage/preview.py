@@ -1577,7 +1577,8 @@ class FullScreenPreview(QDialog):
         body_layout.addWidget(left_column, 1)
         self._mockup_status_bar = self._build_mockup_status_bar()
         self._mockup_status_bar.hide()
-        self._filmstrip.set_editor_palette({"panel": "#323232", "dock": "#1e1e1e", "accent": "#378ef0", "text": "#dedede"})
+        self._photocraft_strip_palette = {"panel": "#323232", "dock": "#1e1e1e", "accent": "#378ef0", "text": "#dedede"}
+        self._sync_filmstrip_palette()
         # Debounce for async thumbnail arrivals so a burst of thumbnail_ready
         # signals repopulates the strip once, not once per thumb.
         self._filmstrip_refresh_timer = QTimer(self)
@@ -1828,12 +1829,25 @@ class FullScreenPreview(QDialog):
             self.photocraft_edit_requested.emit(self._source_entries[0].record.path)
 
     def set_photocraft_palette(self, colors: dict) -> None:
-        self._filmstrip.set_editor_palette(colors)
+        palette = {key: colors.get(key) for key in ("panel", "accent", "text")}
+        if "dock" in colors:
+            palette["dock"] = colors["dock"]
+        if all(isinstance(value, str) and QColor(value).isValid() for value in palette.values()):
+            self._photocraft_strip_palette = palette
+            self._sync_filmstrip_palette()
         # The picture's bars take the editor's canvas colour, so the hand-over to Camera Raw (or to the editor's canvas)
         # does not flash a different one.
         canvas = QColor(str(colors.get("canvas") or ""))
         if canvas.isValid():
             self._native_layer.set_background(canvas)
+
+    def _sync_filmstrip_palette(self) -> None:
+        if getattr(self, "_photocraft_edit_active", False):
+            colors = self._photocraft_strip_palette
+        else:
+            colors = {"panel": self._theme.panel_bg.qcolor().name(), "dock": self._theme.window_bg.qcolor().name(),
+                      "accent": self._theme.accent.qcolor().name(), "text": self._theme.text_primary.qcolor().name()}
+        self._filmstrip.set_editor_palette(colors)
 
     def _build_header_tool_button(self, text: str) -> QToolButton:
         button = QToolButton()
@@ -2140,6 +2154,8 @@ class FullScreenPreview(QDialog):
 
     def apply_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
+        if hasattr(self, "_filmstrip"):
+            self._sync_filmstrip_palette()
         if getattr(self, "_studio_layout_active", False):
             # Qt does not short-circuit an identical stylesheet, and restyling
             # this dialog's whole widget tree costs ~230 ms. At startup the
@@ -2495,6 +2511,7 @@ class FullScreenPreview(QDialog):
 
     def show_photocraft_host(self) -> None:
         self._photocraft_edit_active = True
+        self._sync_filmstrip_palette()
         self._filmstrip.setVisible(not self._native_filmstrip_active)
         self._update_photocraft_host_geometry()
         self._photocraft_host.show()
@@ -2511,6 +2528,7 @@ class FullScreenPreview(QDialog):
     def hide_photocraft_host(self) -> None:
         self.set_native_filmstrip(False)
         self._photocraft_edit_active = False
+        self._sync_filmstrip_palette()
         self._hide_native_layer()
         self._photocraft_host.hide()
         self._photocraft_loading_label.hide()

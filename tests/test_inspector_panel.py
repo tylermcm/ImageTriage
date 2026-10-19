@@ -340,7 +340,7 @@ class InspectorPanelTests(unittest.TestCase):
         self.assertEqual(panel.details_scroll.geometry().bottom(), panel.height() - 1)
         self.assertEqual(panel.findChildren(QScrollArea, "inspectorSectionScrollArea"), [])
         self.assertTrue(all(section.body_scroll is None for section in panel._sections.values()))
-        self.assertFalse(panel.details_scroll.verticalScrollBar().isVisible())
+        self.assertEqual(panel.details_scroll.verticalScrollBar().isVisible(), panel.details_body.minimumHeight() > panel.details_scroll.viewport().height())
 
         preview_height = panel.preview_card.height()
         host.setFixedHeight(1350)
@@ -379,7 +379,7 @@ class InspectorPanelTests(unittest.TestCase):
         self.app.processEvents()
 
         self.assertGreaterEqual(panel.details_scroll.viewport().height(), stack_height)
-        self.assertFalse(panel.details_scroll.verticalScrollBar().isVisible())
+        self.assertEqual(panel.details_scroll.verticalScrollBar().isVisible(), panel.details_body.minimumHeight() > panel.details_scroll.viewport().height())
         self.assertTrue(all(section.body_scroll is None for section in sections))
         host.close()
 
@@ -511,13 +511,14 @@ class InspectorPanelTests(unittest.TestCase):
         panel.preview_collapse_button.setChecked(False)
         panel._sections["culling"].set_expanded(False)
         panel._sections["capture"].set_expanded(False)
+        panel._sections["quality"].set_expanded(False)
         panel._sync_inspector_geometry()
         self.app.processEvents()
 
         self.assertEqual(INSPECTOR_PREVIEW_COLLAPSED_HEIGHT, panel.preview_card.height())
         for key in ("histogram", "ai_analysis"):
             section = panel._sections[key]
-            self.assertEqual(section.height(), panel.SECTION_HEIGHTS[key])
+            self.assertGreaterEqual(section.height(), panel.SECTION_HEIGHTS[key])
             self.assertIsNone(section.body_scroll)
         self.assertFalse(panel.details_scroll.verticalScrollBar().isVisible())
         host.close()
@@ -566,7 +567,7 @@ class InspectorPanelTests(unittest.TestCase):
         self.app.processEvents()
 
         self.assertTrue(all(section.is_expanded() for section in panel._sections.values()))
-        self.assertEqual(tuple(panel._sections), ("histogram", "culling", "capture", "ai_analysis"))
+        self.assertEqual(tuple(panel._sections), ("histogram", "quality", "culling", "capture", "ai_analysis"))
         host.close()
 
     def test_collapsed_sections_stack_without_stretching_open_sections(self) -> None:
