@@ -1,5 +1,7 @@
 # Models to host for the AI v5 cascade
 
+**Status (19 October 2026): both files are hosted and pinned** (`Skulleton12/maniqa-koniq10k` at `18bbbb8a87d06d7066de3fb0412139520fd6ff91`, `Skulleton12/mediapipe-face-landmarker` at `e8098a34013a130b8d8c88de0772f162b450dfad`; both public, sizes and SHA-256 match the tables below). The repos still hold a placeholder README, and a new upload needs a new pin in `bundles.py`.
+
 The cascade downloads its models on demand through the app's model store, which checks every file against a pinned size and SHA-256. Two of the
 three have no upstream address we can pin, so they are meant to be hosted on the owner's Hugging Face account. Hosting is safe from a correctness point
 of view: a file that does not match the digest below is refused, so any host works.

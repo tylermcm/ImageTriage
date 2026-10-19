@@ -84,7 +84,7 @@ Run them with `IMAGE_TRIAGE_RUN_RANKER_TESTS=1 pytest tests/test_cascade_rankers
 **Needs the parent session / owner**
 1. **Manifest.** `bundles.register_bundles()` adds `maniqa` and `qrealign` to `ai_manifest.MODEL_BUNDLES` at runtime because this work package may not edit the manifest; move both entries
    (and `MODEL_FILE_DIGESTS`) into `ai_manifest.py` and add capabilities when integrating (package 4). Q-ReAlign is pinned to revision `fe1f45a7` with SHA-256 for every file (captured from Hugging Face).
-2. **MANIQA checkpoint has no pinned source or SHA-256.** Official weights are on Google Drive/Baidu only. Until `ckpt_koniq10k.pt` is hosted somewhere pinned (set `bundles.MANIQA_DIGEST` and the bundle repo/revision,
+2. **MANIQA checkpoint: hosted and pinned (19 October 2026).** `ckpt_koniq10k.pt` is at `Skulleton12/maniqa-koniq10k` (revision `18bbbb8a`, SHA-256 in `bundles.MANIQA_DIGEST`); the face landmarker is at `Skulleton12/mediapipe-face-landmarker` (revision `e8098a34`). Both bundles are pinned in `bundles.py`. Still to do: a real download-and-install run through the app, and the weights-licence decision (`docs/ai_v5_model_hosting.md`).
    or the env vars `IMAGE_TRIAGE_MANIQA_MODEL_REPO_ID`/`_REVISION`), installation fails with a message telling the user to place the file in the bundle directory (`IMAGE_TRIAGE_MANIQA_MODEL_DIR`, default `<AI root>/models/Rankers/MANIQA`).
 3. **Runtime packages.** `timm` and `einops` are already in the managed runtime's requirements; confirm `transformers==5.14.1` knows `qwen3_5` (loads via `AutoModelForImageTextToText`).
 4. **Frozen builds.** The launcher prefers `ai_python_runner` next to the executable, then `AICULLING_PYTHON`, then `sys.executable`; confirm the runner accepts `-m image_triage.cascade.rankers.worker` in a packaged build.
@@ -154,7 +154,7 @@ the existing AI suites, updated where they encoded the old behaviour (Analyze us
 
 **Open items found while building**
 1. **Blink:** built on MediaPipe Face Landmarker and validated on real frames (see the Blink section); needs `mediapipe` added to the managed runtime requirements before a shipped build runs it.
-2. **Rankers:** validated on real frames through the worker code (see the section above); still never run inside the full app window, and the MANIQA checkpoint still needs hosting (`docs/ai_v5_model_hosting.md`).
+2. **Rankers:** validated on real frames through the worker code (see the section above); still never run inside the full app window, and the MANIQA checkpoint is hosted and pinned but its download/install has not been run in the app yet (`docs/ai_v5_model_hosting.md`).
 3. **Apply AI Decisions** can still move flagged (Reject-bucket) frames to the program recycle bin, after its confirmation dialog and with undo. The dialog does
    not show the reason; it should before hard hiding or auto-applying anything.
 4. **Loupe card style** does not dim flagged frames (only the grid card paints the dim).
