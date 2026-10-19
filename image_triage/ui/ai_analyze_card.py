@@ -142,6 +142,7 @@ class AuroraButton(QPushButton):
         self._compact = compact
         self._theme = default_theme()
         self._hover = False
+        self._keyboard_focus = False
         self._angle = 0.0
         self._motion_allowed = animations_enabled()
         self._animation = QVariantAnimation(self)
@@ -217,6 +218,21 @@ class AuroraButton(QPushButton):
         self.update()
         super().leaveEvent(event)
 
+    def focusInEvent(self, event) -> None:  # type: ignore[override]
+        self._keyboard_focus = event.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason, Qt.FocusReason.ShortcutFocusReason)
+        super().focusInEvent(event)
+        self.update()
+
+    def focusOutEvent(self, event) -> None:  # type: ignore[override]
+        self._keyboard_focus = False
+        super().focusOutEvent(event)
+        self.update()
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        self._keyboard_focus = False
+        super().mousePressEvent(event)
+        self.update()
+
     def paintEvent(self, event) -> None:  # type: ignore[override]
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -249,10 +265,10 @@ class AuroraButton(QPushButton):
         painter.setPen(self._theme.text_primary.qcolor())
         text_rect = rect.adjusted(12 + icon_size + 10, 0, -10, 0)
         painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), self.text())
-        if self.hasFocus():
-            painter.setPen(QPen(self._theme.accent_hover.qcolor(), 1.5, Qt.PenStyle.DashLine))
+        if self.hasFocus() and self._keyboard_focus:
+            painter.setPen(QPen(self._theme.accent_hover.qcolor(), 1.5))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(rect.adjusted(-1, -1, 1, 1), radius + 1, radius + 1)
+            painter.drawRoundedRect(rect.adjusted(3, 3, -3, -3), radius - 2, radius - 2)
 
 
 class GradientBar(_Animated):
