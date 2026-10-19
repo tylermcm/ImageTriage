@@ -162,8 +162,8 @@ the existing AI suites, updated where they encoded the old behaviour (Analyze us
 5. **Progress text** still says "AI review" and the old stage count in a few places; the cascade has four stages.
 6. **Thresholds** (stack split 18, soft 0.4, clipped floor 10%, blown out 40%) come from two reviewed albums; expose them and review on other genres.
 7. **Keeper-recall check** across the library (package 5) is still needed before any frame is hidden.
-8. **One unexplained access violation.** The first full-suite run died once (Windows fatal exception, access violation) inside `raw_embedded_jpeg._scan_jpeg_markers`
-   while the cascade extractor was scanning a RAW file in a worker thread; a second full run did not reproduce it. That function memory-maps the whole file
-   (up to 512 MB) as a fallback when the TIFF walk finds no preview, and a mapped file that shrinks or changes underneath it crashes the process instead of raising.
-   It is shared code (thumbnails use it too), but the cascade now scans every RAW in a folder in the background, so it deserves hardening (read in chunks, or skip
-   the fallback during a run) and a test that changes a file mid-scan.
+8. **Fixed: a crash in the shared RAW marker scan.** The full test suite died twice (Windows access violation) in `raw_embedded_jpeg._scan_jpeg_markers`.
+   Cause, reproduced in isolation: `mmap.find` reads past the end of a mapping whose size is an exact multiple of the 4096-byte page, and the process dies instead of
+   raising (files of 4096, 8192 and 102400 bytes crashed; 4095, 4097 and 100000 did not). Roughly one RAW in 4,096 has such a size, and the cascade scans every RAW in
+   the background, so it would have been seen in the field. Such files are now read normally; regression tests cover the crash (in a subprocess) and that the embedded
+   JPEG is still found at page-multiple and ordinary sizes.
