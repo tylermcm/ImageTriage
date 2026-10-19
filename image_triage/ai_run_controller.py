@@ -1145,6 +1145,10 @@ class AiRunController(QObject):
                 logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, folder=self._window._current_folder, reason="already_running")
             return
 
+        if not self.use_legacy_culler():
+            self._run_cascade_pipeline(start, logger)
+            return
+
         try:
             self._window._ai_setup.refresh_ai_runtime_preferences()
             runtime = self._window._settings_ctl.configured_aiculler_runtime(workers=self._window._settings_ctl.configured_ai_embed_batch_size())
@@ -1180,6 +1184,10 @@ class AiRunController(QObject):
             QMessageBox.warning(self._window, "AI Review", f"Could not prepare the AI run.\n\n{exc}")
             return
 
+        self._start_ai_task(task, start, logger, backend="cli-culler")
+
+    def _start_ai_task(self, task, start: float, logger, *, backend: str, stage_total: int = 5) -> None:
+        """Wire a run task (either the legacy culler or the cascade) to the progress UI and queue it."""
         task.signals.started.connect(self.handle_ai_run_started, Qt.ConnectionType.QueuedConnection)
         task.signals.stage.connect(self.handle_ai_run_stage, Qt.ConnectionType.QueuedConnection)
         task.signals.progress.connect(self.handle_ai_run_progress, Qt.ConnectionType.QueuedConnection)
@@ -1195,7 +1203,7 @@ class AiRunController(QObject):
         self._window._active_ai_report_cache_key = ""
         self._window._active_ai_semantic_cache_key = ""
         self._window._ai_stage_index = 0
-        self._window._ai_stage_total = 5
+        self._window._ai_stage_total = stage_total
         self._window._ai_stage_message = "Queued AI review"
         self._window._ai_progress_current = 0
         self._window._ai_progress_total = 0
@@ -1216,8 +1224,69 @@ class AiRunController(QObject):
                 (time.perf_counter() - start) * 1000.0,
                 folder=self._window._current_folder,
                 records=len(self._window._all_records),
-                backend="cli-culler",
+                backend=backend,
             )
+
+    CASCADE_LEGACY_KEY = "ai/use_legacy_culler"
+    CASCADE_CPU_RANKING_KEY = "ai/cascade_rank_on_cpu"
+
+    def use_legacy_culler(self) -> bool:
+        """The older TOPIQ-based culler stays reachable behind this hidden setting; the stack-first cascade is the default."""
+        try:
+            return bool(self._window._settings.value(self.CASCADE_LEGACY_KEY, False, type=bool))
+        except Exception:
+            return False
+
+    def cascade_ranking_decision(self):
+        """Whether the two rankers run this time. They need the managed AI runtime; on a GPU they run automatically, on a CPU only when switched on."""
+        from .cascade.launch import decide_ranking
+
+        runtime_device = None
+        try:
+            self._window._ai_setup.refresh_ai_runtime_preferences()
+            runtime = self._window._settings_ctl.configured_aiculler_runtime(workers=self._window._settings_ctl.configured_ai_embed_batch_size())
+            runtime.validate()
+            runtime_device = str(runtime.device or "")
+        except Exception:
+            runtime_device = None
+        try:
+            rank_on_cpu = bool(self._window._settings.value(self.CASCADE_CPU_RANKING_KEY, False, type=bool))
+        except Exception:
+            rank_on_cpu = False
+        return decide_ranking(runtime_device, rank_on_cpu)
+
+    def _run_cascade_pipeline(self, start: float, logger) -> None:
+        from .cascade.launch import default_scorer_factory
+        from .cascade.task import CascadeRunTask
+
+        decision = self.cascade_ranking_decision()
+        if decision.ask_cpu_confirmation:
+            choice = QMessageBox.question(
+                self._window,
+                "Rank on the CPU?",
+                decision.confirmation_text,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.No,
+            )
+            if choice == QMessageBox.StandardButton.Cancel:
+                return
+            if choice == QMessageBox.StandardButton.No:
+                decision = decision.without_ranking("Ranking skipped: you chose not to rank on the CPU.")
+        try:
+            task = CascadeRunTask(
+                folder=Path(self._window._current_folder),
+                records=tuple(record for record in self._window._all_records if not record.is_folder),
+                paths=build_aiculler_workflow_paths(self._window._current_folder),
+                scorer_factory=default_scorer_factory(decision.device) if decision.use_rankers else None,
+                protected_paths=self.manual_ai_protected_paths(),
+                ranking_note=decision.note,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self._window, "AI Review", f"Could not prepare the cleanup run.\n\n{exc}")
+            return
+        self._start_ai_task(task, start, logger, backend="cascade", stage_total=4)
+        if decision.note:
+            self._window.statusBar().showMessage(decision.note)
 
     def rerank_ai_pipeline(self) -> None:
         if not self._window._current_folder:
@@ -1443,14 +1512,15 @@ class AiRunController(QObject):
         if window._active_ai_task is not None:
             self.refresh_inspector_analysis()
             return
-        try:
-            window._ai_setup.refresh_ai_runtime_preferences()
-            runtime = window._settings_ctl.configured_aiculler_runtime(workers=window._settings_ctl.configured_ai_embed_batch_size())
-            runtime.validate()
-        except Exception:
-            window.statusBar().showMessage("AI is not set up yet; opening setup")
-            window._handoff.open_ai_workflow_center()
-            return
+        if self.use_legacy_culler():
+            try:
+                window._ai_setup.refresh_ai_runtime_preferences()
+                runtime = window._settings_ctl.configured_aiculler_runtime(workers=window._settings_ctl.configured_ai_embed_batch_size())
+                runtime.validate()
+            except Exception:
+                window.statusBar().showMessage("AI is not set up yet; opening setup")
+                window._handoff.open_ai_workflow_center()
+                return
         self._inline_analysis_run = True
         self.run_ai_pipeline()
         self.refresh_inspector_analysis()

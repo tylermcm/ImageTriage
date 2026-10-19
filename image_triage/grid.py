@@ -2256,6 +2256,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                     Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
                     failure_text,
                 )
+            self._paint_ai_flag_dim(painter, rect, ai_result)
             self._paint_ai_verdict_dot(painter, rect, ai_result)
         else:
             if not use_loupe_card:
@@ -2728,6 +2729,21 @@ class ThumbnailGridView(QAbstractScrollArea):
             AICullBucket.NEEDS_REVIEW: QColor("#e0b04a"),
             AICullBucket.REJECT: QColor("#e5635b"),
         }.get(bucket)
+
+    @staticmethod
+    def _ai_flag_dim_alpha(ai_result: AIImageResult | None) -> int:
+        """Alpha of the dim laid over a frame the cleanup flagged (pass 1); 0 for everything else. Flagged frames are dimmed, never hidden."""
+        return 120 if ai_result is not None and ai_result.cascade_role == "rejected" else 0
+
+    def _paint_ai_flag_dim(self, painter: QPainter, rect: QRect, ai_result: AIImageResult | None) -> None:
+        alpha = self._ai_flag_dim_alpha(ai_result)
+        if not alpha or not self._show_ai_annotations:
+            return
+        painter.save()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, alpha))
+        painter.drawRoundedRect(QRectF(rect), 6.0, 6.0)
+        painter.restore()
 
     def _paint_ai_verdict_dot(self, painter: QPainter, rect: QRect, ai_result: AIImageResult | None) -> None:
         color = self._ai_verdict_dot_color(ai_result)

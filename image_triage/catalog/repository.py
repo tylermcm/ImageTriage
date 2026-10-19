@@ -923,7 +923,10 @@ class CatalogRepository:
                         score_gap_to_next,
                         score_gap_to_top,
                         confidence_bucket,
-                        confidence_summary
+                        confidence_summary,
+                        cascade_role,
+                        cascade_summary,
+                        triggered_tags
                     FROM catalog_ai_results
                     WHERE folder_key = ?
                     ORDER BY group_id, rank_in_group, file_name, file_path
@@ -967,6 +970,9 @@ class CatalogRepository:
                     score_gap_to_top=_optional_float(row["score_gap_to_top"]),
                     confidence_bucket=confidence_bucket,
                     confidence_summary=str(row["confidence_summary"] or ""),
+                    cascade_role=str(row["cascade_role"] or ""),
+                    cascade_summary=str(row["cascade_summary"] or ""),
+                    triggered_tags=str(row["triggered_tags"] or ""),
                 )
             )
 
@@ -1214,9 +1220,12 @@ class CatalogRepository:
                                 score_gap_to_next,
                                 score_gap_to_top,
                                 confidence_bucket,
-                                confidence_summary
+                                confidence_summary,
+                                cascade_role,
+                                cascade_summary,
+                                triggered_tags
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 folder_key,
@@ -1235,6 +1244,9 @@ class CatalogRepository:
                                 result.score_gap_to_top,
                                 result.confidence_bucket.value if hasattr(result.confidence_bucket, "value") else str(result.confidence_bucket),
                                 result.confidence_summary,
+                                result.cascade_role,
+                                result.cascade_summary,
+                                result.triggered_tags,
                             ),
                         )
         except sqlite3.DatabaseError as exc:

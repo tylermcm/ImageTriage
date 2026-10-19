@@ -126,3 +126,44 @@ machine, so real-frame checks used 40 aurora NEFs and 2 other NEFs):
   which is why the cascade extractor does not use it.
 - Consecutive aurora frames measure 0 to 16 bits apart (typical 2 to 10), all below the split jump of 18, so `split_jump` 18 and `duplicate_distance` 8
   keep the same meaning; a drift of at most 2 bits moves a pair across a threshold only when it already sits within 2 bits of it.
+
+## Work package 4 status: app integration (done in code, 18 October 2026)
+
+Analyze now runs the stack-first cascade by default and feeds the existing results model, so the Analyze card, bucket bar, grid dots, inspector
+and AI filters work on it unchanged. The older TOPIQ-based culler is still reachable behind a hidden setting (`ai/use_legacy_culler`).
+
+**What was built**
+- `cascade/folder.py`: splits a folder into bursts (consecutive frames at most 5 s apart with a picture difference of at most 20, both needed; a
+  frame with no capture time is never joined; exposure brackets and unreadable frames end a burst), runs the core per burst, keeps exposure
+  brackets together and uncompared, and writes each outcome in plain words ("Flagged: eyes closed ... Dimmed, not removed.").
+- `cascade/export.py`: writes the ranked-export CSV, summary JSON and an HTML report in the layout `ai_results.load_ai_bundle` already reads, with
+  two new columns (`cascade_role`, `cascade_summary`) and the reason codes in `triggered_tags`.
+- `cascade/task.py`: `CascadeRunTask`, a `QRunnable` with the same signals as the old task. Stages: capture times and brackets, previews, deciding, writing.
+  Cached features, cancel, progress with an estimate, and a ranker that cannot start is skipped with a note instead of failing the run.
+- `cascade/launch.py`: the ranking decision (GPU: automatic; CPU: only with the new setting, after a prompt that gives the per-frame time; no AI runtime:
+  skipped with a note) and the worker rankers.
+- `ai_run_controller`: `run_ai_pipeline` picks the engine, shared `_start_ai_task`, Analyze no longer demands the AI runtime (the cheap passes need none).
+- `ai_results`: `AIImageResult.cascade_role` and `cascade_summary` decide the bucket directly: `pick` = Winners, `final` = Keepers, `rejected` = Rejects
+  (flagged), everything else = Needs review. A pick is offered only when a ranker ordered a stack.
+- Catalog migration 9 adds `cascade_role`, `cascade_summary` and `triggered_tags` to the cached results so a cached reload keeps the same buckets and reasons.
+- Grid: flagged frames are dimmed (never hidden) and the dim follows the "AI tags in grid" setting. Settings: "Ranking on the CPU" (off by default).
+- Frames the person already marked as winners are never flagged, collapsed or cut.
+
+**Tests** (offscreen): `test_cascade_folder`, `test_cascade_run`, `test_cascade_integration` (Analyze on the real MainWindow), `test_cascade_launch`, plus
+the existing AI suites, updated where they encoded the old behaviour (Analyze used to open AI setup when the runtime was missing).
+
+**Open items found while building**
+1. **Blink is inert.** The face index does not produce a blink flag yet (`quality/face.py` returns `None` pending EAR calibration), so the extractor is
+   given no blink lookup and "eyes closed" never fires. Needs a blink source (MediaPipe landmarks, or the permissive face stack) before the blink rule counts.
+2. **Real rankers never ran inside the app.** The worker rankers are tested with fakes only; the MANIQA checkpoint has no pinned, hosted source.
+3. **Apply AI Decisions** can still move flagged (Reject-bucket) frames to the program recycle bin, after its confirmation dialog and with undo. The dialog does
+   not show the reason; it should before hard hiding or auto-applying anything.
+4. **Loupe card style** does not dim flagged frames (only the grid card paints the dim).
+5. **Progress text** still says "AI review" and the old stage count in a few places; the cascade has four stages.
+6. **Thresholds** (stack split 18, soft 0.4, clipped floor 10%, blown out 40%) come from two reviewed albums; expose them and review on other genres.
+7. **Keeper-recall check** across the library (package 5) is still needed before any frame is hidden.
+8. **One unexplained access violation.** The first full-suite run died once (Windows fatal exception, access violation) inside `raw_embedded_jpeg._scan_jpeg_markers`
+   while the cascade extractor was scanning a RAW file in a worker thread; a second full run did not reproduce it. That function memory-maps the whole file
+   (up to 512 MB) as a fallback when the TIFF walk finds no preview, and a mapped file that shrinks or changes underneath it crashes the process instead of raising.
+   It is shared code (thumbnails use it too), but the cascade now scans every RAW in a folder in the background, so it deserves hardening (read in chunks, or skip
+   the fallback during a run) and a test that changes a file mid-scan.
