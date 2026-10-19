@@ -285,25 +285,34 @@ def _read_jpeg_payload(stream, file_size: int, offset: int, byte_count: int) -> 
 def _scan_jpeg_markers(path: str, file_size: int) -> _Candidate | None:
     if file_size <= 0 or file_size > _MAX_MARKER_SCAN_BYTES:
         return None
-    candidates: list[_Candidate] = []
     try:
         with open(path, "rb") as stream:
+            if file_size % mmap.PAGESIZE == 0:
+                # mmap.find reads past the end of a mapping whose size is an exact multiple of the page size, and on Windows the process dies with an
+                # access violation (reproduced with files of 4096, 8192 and 102400 bytes, not 4095, 4097 or 100000). Such a file is read normally.
+                return _best_marker_candidate(stream.read(file_size))
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
-                search_from = 0
-                while len(candidates) < _MAX_MARKER_SCAN_CANDIDATES:
-                    start = mapped.find(b"\xff\xd8\xff", search_from)
-                    if start < 0:
-                        break
-                    end = mapped.find(b"\xff\xd9", start + 4)
-                    if end < 0:
-                        break
-                    end += 2
-                    byte_count = end - start
-                    if _MIN_JPEG_BYTES <= byte_count <= _MAX_EMBEDDED_JPEG_BYTES:
-                        candidates.append(_Candidate(offset=start, byte_count=byte_count, source="jpeg_marker_scan"))
-                    search_from = end
+                return _best_marker_candidate(mapped)
     except (OSError, ValueError):
         return None
+
+
+def _best_marker_candidate(buffer) -> _Candidate | None:
+    """The largest plausible JPEG (start marker to end marker) in ``buffer``, which is bytes or an mmap."""
+    candidates: list[_Candidate] = []
+    search_from = 0
+    while len(candidates) < _MAX_MARKER_SCAN_CANDIDATES:
+        start = buffer.find(b"\xff\xd8\xff", search_from)
+        if start < 0:
+            break
+        end = buffer.find(b"\xff\xd9", start + 4)
+        if end < 0:
+            break
+        end += 2
+        byte_count = end - start
+        if _MIN_JPEG_BYTES <= byte_count <= _MAX_EMBEDDED_JPEG_BYTES:
+            candidates.append(_Candidate(offset=start, byte_count=byte_count, source="jpeg_marker_scan"))
+        search_from = end
     if not candidates:
         return None
     return max(candidates, key=lambda candidate: candidate.byte_count)
