@@ -121,3 +121,25 @@ Why Shadows was the slowest slider: it is a fast local Laplacian filter with up 
   Verified **bit for bit identical** to the previous output (FNV hash of every output sample, 5 settings x 4 sizes incl. 2400x1600 through the downscale path: `cargo run -p photocraft-algo --example shadows_bench -- --hash`).
 * Measured (900x600 proxy, repo dev profile): Shadows ~225 -> ~64 ms, Highlights ~230 -> ~66 ms; through the offscreen dialog harness Shadows 335 -> 69 ms. Optimization level above 1 barely matters (level 2 ~1.25x, level 3 none).
 * The two `photocraft-algo` unit tests that fail in my unoptimized test build (`stack::...bit_identical...`, `gallery::tilt_shift...`) do not touch Camera Raw.
+
+## 2026-10-18: combined host main checkpoint
+
+Combined Claude's AI upscaling / Calibration / Super Resolution host commits
+(d2ca5f0, f93a901) with the inspector and filmstrip UI checkpoint (c54d9d8),
+via integration merge1ff70b8. No textual conflicts. Inspector includes quality
+findings, compact AI invitation, contained Analyze button and narrow-pane wrapping;
+redundant File section was removed. Browsing filmstrip uses the active host theme;
+PhotoCraft docking retains its own palette and restores the host palette on exit.
+
+Merged host validation: 401 passed, 2 skipped, 11 subtests across inspector,
+filmstrip/native browsing, editor handoff, upscale core/service/worker, RAW host
+jobs/Super Resolution, recipe classification/rendering, prefetch/manifests,
+packaging scripts and editor logging; super-resolution cache6 additional tests
+passed. All UI checks offscreen. No visible app launch or build promotion.
+
+Both host worktrees can now use the same merged source after main is fast-forwarded.
+PhotoCraft is separate: its committed editor checkpoint is1f485729, but more active
+Claude edits appeared during the push operation. Those edits were not staged,
+stashed or overwritten. Upstream remains deferred (freshly fetched d95fdf31),
+not silently merged into this checkpoint. See the existing test launcher build
+selection for local editor binaries; source merges do not promote a binary.
