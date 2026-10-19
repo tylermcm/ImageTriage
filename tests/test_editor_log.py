@@ -155,3 +155,28 @@ def test_the_exit_note_says_where_the_output_is_and_whether_the_editor_has_gone(
     assert "exited with code -1073741819" in proc.exit_note()
     proc.log_path = None
     assert "its own output" not in proc.exit_note()
+
+
+def test_the_editor_is_launched_without_a_console_window(logs, tmp_path, monkeypatch):
+    # A debug or test build of the editor is a console program; without CREATE_NO_WINDOW a terminal opens beside Image Triage.
+    seen = {}
+
+    class FakeProcess:
+        pid = 7
+
+        def __init__(self, args, **kwargs):
+            seen.update(kwargs)
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(bridge.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(bridge, "_connect_with_retry", lambda port, token, process: Mock())
+    monkeypatch.setattr(bridge, "_find_window_for_pid", lambda pid: 99)
+    monkeypatch.setattr(bridge.ctypes.windll.user32, "ShowWindow", Mock(), raising=False)
+    proc = bridge._launch_photocraft_binary(None, read_root=str(tmp_path), write_root=str(tmp_path), executable="photocraft.exe", idle=True)
+    try:
+        assert seen["creationflags"] & subprocess.CREATE_NO_WINDOW
+        assert seen["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+    finally:
+        proc.token_file.unlink(missing_ok=True)

@@ -136,15 +136,16 @@ RECIPE_EXPOSURE_LIMIT = 10.0
 RECIPE_ACTIVE_FIELDS = (
     "temperature", "tint", "exposure", "contrast", "highlights", "shadows", "whites", "blacks", "texture", "clarity", "dehaze",
     "vibrance", "saturation", "curveHighlights", "curveLights", "curveDarks", "curveShadows", "sharpenAmount", "noiseLuminance",
-    "noiseColor", "grainAmount", "vignetteAmount",
+    "noiseColor", "grainAmount", "vignetteAmount", "calibShadowTint",
 )
 RECIPE_SCALARS = frozenset((*RECIPE_ACTIVE_FIELDS, "gradeBlending", "gradeBalance", "sharpenRadius", "sharpenDetail", "sharpenMasking",
                           "noiseLuminanceDetail", "noiseColorDetail", "grainSize", "grainRoughness", "vignetteMidpoint",
                           "vignetteRoundness", "vignetteFeather", "vignetteHighlights", "pixelScale", "encodingGamma"))
-RECIPE_ARRAYS = {"curveSplits": 3, "hslHue": 8, "hslSat": 8, "hslLum": 8}
+RECIPE_ARRAYS = {"curveSplits": 3, "hslHue": 8, "hslSat": 8, "hslLum": 8, "calibHue": 3, "calibSat": 3}
+RECIPE_CALIBRATION_FIELDS = frozenset(("calibShadowTint", "calibHue", "calibSat"))
 RECIPE_CURVES = ("pointCurve", "pointCurveRed", "pointCurveGreen", "pointCurveBlue")
 RECIPE_WHEELS = ("gradeShadows", "gradeMidtones", "gradeHighlights", "gradeGlobal")
-RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle", "glow", "pointColors"}
+RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle", "glow", "pointColors", "superResolution"}
 
 
 def _recipe_value_ok(value) -> bool:
@@ -163,6 +164,22 @@ def require_finishing_support(camera_raw, supported: bool) -> None:
         raise PhotoCraftCompatibilityError("This photo uses Glow or Point Color. Select the main-adjustments PhotoCraft test build to preserve those edits.")
 
 
+def require_calibration_support(camera_raw, supported: bool) -> None:
+    """Keep older editors from discarding serialized Calibration settings."""
+    recipe = camera_raw.get("recipe") if isinstance(camera_raw, dict) else None
+    settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
+    if isinstance(settings, dict) and RECIPE_CALIBRATION_FIELDS.intersection(settings) and not supported:
+        raise PhotoCraftCompatibilityError("This photo uses Calibration settings. Select a PhotoCraft build with Calibration support to preserve those edits.")
+
+
+def require_super_resolution_support(camera_raw, supported: bool) -> None:
+    """Keep an editor that does not know Super Resolution from discarding the setting when it saves the recipe back."""
+    recipe = camera_raw.get("recipe") if isinstance(camera_raw, dict) else None
+    settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
+    if isinstance(settings, dict) and settings.get("superResolution") is True and not supported:
+        raise PhotoCraftCompatibilityError("This photo uses Super Resolution. Select a PhotoCraft build with Super Resolution support to preserve that setting.")
+
+
 def classify_recipe(recipe) -> tuple[str, str]:
     """``(state, reason)`` for a recipe's content (a parsed recipe file, or the open dialog's settings in the same form)."""
     if not isinstance(recipe, dict) or type(recipe.get("version")) is not int or recipe.get("version") != RECIPE_VERSION:
@@ -175,6 +192,13 @@ def classify_recipe(recipe) -> tuple[str, str]:
             return RECIPE_INVALID, f"the recipe's {name} is not a supported setting"
         if name == "vignetteStyle":
             valid = value in ("highlightPriority", "colorPriority", "paintOverlay") if isinstance(value, str) else False
+        elif name in RECIPE_CALIBRATION_FIELDS:
+            values = [value] if name == "calibShadowTint" else value
+            valid = (isinstance(values, list)
+                     and len(values) == (1 if name == "calibShadowTint" else 3)
+                     and all(_recipe_value_ok(v) and -100 <= v <= 100 for v in values))
+        elif name == "superResolution":
+            valid = isinstance(value, bool)
         elif name == "glow":
             ranges = {"amount": (0, 100), "range": (0, 100), "spread": (0, 100), "warmth": (-100, 100)}
             valid = isinstance(value, dict) and all(
@@ -212,9 +236,10 @@ def classify_recipe(recipe) -> tuple[str, str]:
     # own. The serialized flag is advisory; a stale flag cannot hide adjustments.
     identity = all(settings.get(name, 0) == 0 for name in RECIPE_ACTIVE_FIELDS)
     identity = identity and settings.get("glow", {}).get("amount", 0) == 0
+    identity = identity and settings.get("superResolution") is not True
     identity = identity and all(all(sample.get(k, 0) == 0 for k in ("hue", "saturation", "luminance", "variance"))
                                 for sample in settings.get("pointColors", []))
-    identity = identity and all(all(v == 0 for v in settings.get(name, [])) for name in ("hslHue", "hslSat", "hslLum"))
+    identity = identity and all(all(v == 0 for v in settings.get(name, [])) for name in ("hslHue", "hslSat", "hslLum", "calibHue", "calibSat"))
     identity = identity and all(all(settings.get(name, {}).get(k, 0) == 0 for k in ("sat", "lum"))
                                 for name in ("gradeShadows", "gradeMidtones", "gradeHighlights", "gradeGlobal"))
     identity = identity and all(len(settings.get(name, [])) < 2 or all(abs(x - y) < 1e-3 for x, y in settings[name])
@@ -673,6 +698,8 @@ class PhotoCraftControl:
 
     def app_open(self, path: str, *, replace: bool = False, should_continue=None, camera_raw: dict | None = None) -> dict:
         require_finishing_support(camera_raw, bool(getattr(self, "camera_raw_finishing_supported", False)))
+        require_calibration_support(camera_raw, getattr(self, "camera_raw_calibration_supported", False) is True)
+        require_super_resolution_support(camera_raw, getattr(self, "camera_raw_super_resolution_supported", False) is True)
         params = {"path": _automation_path(path)}
         if replace:
             params["replace"] = True
@@ -708,6 +735,9 @@ class PhotoCraftControl:
         self.camera_raw_prefetch_supported = capabilities.get("cameraRawPrefetch", 0) >= 1
         self.camera_raw_switch_supported = capabilities.get("cameraRawSwitch", 0) >= 1
         self.camera_raw_finishing_supported = capabilities.get("cameraRawFinishing", 0) >= 1
+        self.camera_raw_calibration_supported = capabilities.get("cameraRawCalibration", 0) >= 1
+        self.camera_raw_super_resolution_supported = capabilities.get("cameraRawSuperResolution", 0) >= 1
+        self.camera_raw_host_job_supported = capabilities.get("cameraRawHostJob", 0) >= 1
         self.filmstrip_supported = capabilities.get("filmstrip", 0) >= 1
         # ``app.stash`` can save the project and the display JPEG without the full-size PNG (``preview`` left out).
         self.stash_without_preview_supported = capabilities.get("stashWithoutPreview", 0) >= 1
@@ -1114,12 +1144,13 @@ def _launch_photocraft_binary(
     log_file, log_path = _open_editor_log()
     try:
         try:
+            # CREATE_NO_WINDOW: a debug or test build of the editor is a console program and would otherwise open a terminal window.
             process = subprocess.Popen(
                 args,
                 stdout=log_file,
                 stderr=subprocess.STDOUT if log_path is not None else subprocess.DEVNULL,
                 env=env,
-                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | (_BELOW_NORMAL_PRIORITY_CLASS if idle else 0)) if os.name == "nt" else 0,
+                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW | (_BELOW_NORMAL_PRIORITY_CLASS if idle else 0)) if os.name == "nt" else 0,
             )
         finally:
             if log_path is not None:
