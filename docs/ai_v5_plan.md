@@ -320,3 +320,18 @@ on the 46 bursts with 3 or more frames.
 Result: full cascade keep 2 -> kept frame survives 0.478 [0.348, 0.630], 64% removed. Fails. Keep 1 -> 0.261.
 Pass 1 alone: 0.870 [0.761, 0.957] survive, 17% removed. Pass 1+2: 0.587. Pass 3 only (keep 2): 0.565.
 Reading: pass 1 is a safe-ish rejecter; the pHash collapse and the pass-3 scorer destroy the kept frame because the tie-break score is at chance.
+
+## Cascade round 2: pHash clusters, even-exposure representative, cluster-level survival (2026-10-18)
+
+The owner said they had no preference between most frames in these bursts, would usually pick the most evenly exposed, and that pHash should
+already have merged them. Measured: in 29 of 63 bursts every frame is within pHash distance 8 (35 within 12), so the marked frame is often one of
+several interchangeable ones. "Even exposure" as a rule (fewest pixels at either extreme) scored top-1 0.365 [0.254, 0.492], no better than
+least-clipped-highlights (0.349). Round 2 (scripts/ai_v5/cascade_burst_spike2.py, rules fixed first): complete-linkage pHash clusters at T = 8 or 12,
+representative = most even exposure, then top 2 clusters by z(MANIQA) + z(Facet aesthetic); rule: the pick's cluster survives >= 85% and >= 40% of frames removed.
+
+Results, on bursts that still have >= 3 clusters (12 of 63 at T = 8, 9 of 63 at T = 12, so very small):
+- pHash clustering alone (keep every cluster's representative): 49 to 52% of frames removed, every distinct cluster kept by construction.
+  With pass 1 first: 55 to 57% removed, pick's cluster survives 0.833 [0.583, 1.0] (T = 8) and 0.889 [0.667, 1.0] (T = 12).
+- Full cascade with the pass-3 top-2 cut: pick's cluster survives 0.417 [0.167, 0.667] (T = 8) and 0.667 [0.333, 1.0] (T = 12). Fails; intervals are wide.
+Reading: a strict pHash pass removes about half of the frames without losing a distinct moment, which is the useful and safe part. Choosing between
+the few genuinely different clusters is still unproven, and there are too few such bursts (9 to 12) to say more than that.
