@@ -9,7 +9,47 @@ Planned 18 October 2026, after a ChatGPT deep-research report (pasted into the s
 on the problem definition: culling is three different problems, each measured on its own. No learned taste model on
 DINO embeddings (that route was built and tested in v1 and was no better than random).
 
-## The pipeline
+## Decision (18 October 2026, the owner): v5 is reject-only, with no automatic winner
+
+**Status: provisional. The pass-1 rules in this design have not been validated yet (keeper-recall check pending); treat the rule list as a hypothesis, not a spec.**
+
+Everything we tried to choose the kept frame of a burst scored at chance on the owner's own picks (63 bursts, one known keeper
+each, about 4 frames per burst): zero-shot Qwen3-VL 4B and 2B, Facet's burst blend (permissive models only), the Q-ReAlign
+aesthetic score, MANIQA, sharpness and clipping measures, and the full three-pass cascade (the kept frame survived a top-2 cut
+only 48% of the time). Sections below hold the numbers. The owner will not train another model. So v5 does not pretend to pick
+the best frame. It removes what is clearly bad, explains why, groups what is alike, and leaves the choice to the person.
+
+**Pass 1, reject with a reason (the only automatic decision).**
+- Rules: catastrophic exposure (black or blown), strong defocus or motion blur relative to the burst, blinks on the main face,
+  heavy clipping relative to siblings. Each rejection carries a reason code shown in the UI.
+- Conservative by design. Measured on the burst set the rules kept the owner's frame 87% of the time while removing only 17% of
+  frames, so 13% of kept frames hit a rule today. That is not good enough to reject silently. First release: **flag, do not
+  hide**; a frame is only dimmed or tagged with its reason, one click to restore. Hard reject only after the keeper-recall check
+  (experiment 1 below) shows 99.5% or better on known keepers, per rule, and the rules that cost keepers are loosened.
+- Genre loosening (night, astro, long exposure) stays an open decision.
+
+**Pass 2, grouping for display (no scoring).**
+- Burst and scene groups from EXIF time and the classical features (pHash, dHash, SSIM, colour histogram, ORB, settings), with
+  the thresholds from the owner's labels. No embedding model.
+- Groups are shown as stacks in the grid, ordered by capture time, with the pass-1 flags visible on each member. **Nothing in a
+  group is auto-selected.** pHash collapsing of near duplicates is removed: with a chance-level tie-break it threw the kept frame
+  away (survival fell from 87% to 59%).
+
+**Pass 3 is retired as an automatic ranker.** No MANIQA, no Facet blend, no VLM judge, no learned taste model in the default
+flow. The specialised signals still have value as visible evidence for the person choosing, not as a score: eyes open (MediaPipe
+landmarks), subject sharpness (BiRefNet mask, shared with the editor's masking), clipping, and the existing compare and survey
+views. Any aesthetic or quality score that is ever added is shown as information, never used to reject or auto-pick.
+
+**Why this is still useful.** It removes the frames nobody would keep, shortens the pile to look through, keeps the rest in
+context, and makes every automatic action explainable and reversible. It also keeps every component permissively licensed and
+fast on CPU.
+
+**Follow-ups.** (1) Run the pass-1 keeper-recall check on the full library and see which rule drops the 13%. (2) Face and
+subject-sharpness signals on the grid. (3) Replace the three InsightFace-looking face files (YuNet and SFace are MIT/Apache).
+(4) Facet's grouping settings (0.4 s rapid burst, 0.8 min scene, sequence gap 3 s and hamming 10) and bracket/panorama protection
+are worth adopting as defaults. (5) MANIQA weights and training-data licences remain unchecked and are no longer needed.
+
+## The pipeline (original plan, superseded by the decision above)
 
 1. **Pass 1, junk gate.** Cheap measurements on a normalised preview: black or catastrophically blown frames, defocus and
    motion blur, noise, clipping, subject-region sharpness and exposure. Only catastrophic, high-confidence rules reject;
@@ -188,6 +228,19 @@ subject and setting are distinctive (wildlife) and no better where geometry or c
 portraits). The advantage is modest in absolute terms (about half of top results correct) and depends partly on one
 subset. Whether scene stacks are a feature worth building is a separate, undecided product question.
 
+### Burst-pick baselines from the owner's own keeper marks (18 October 2026)
+
+To test a pass-2 picker without a labelling session, the owner's keeper marks (winner copies, "Accepted" XMP labels, edited
+exports) were matched to bursts (consecutive frames at most 5 s apart with pHash distance at most 20, 2 to 10 frames, in
+China '26 and China 8-26). 63 bursts contain exactly one known keeper (mean 4.1 frames); that frame is the "pick". Weak ground
+truth: an unpicked frame is not necessarily bad. Script `scripts/ai_v5/burst_pick_dataset.py`.
+
+Top-1 pick rate, 95% bootstrap interval: random 0.313 [0.280, 0.347]; first frame 0.238; last frame 0.254; sharpest by global
+Laplacian 0.317 [0.206, 0.429]; sharpest by centre Laplacian 0.254; sharpest by Tenengrad 0.317; least clipped highlights
+0.349 [0.238, 0.476]. Every simple measurement rule is indistinguishable from chance on these bursts. So within a burst the
+owner's pick is not explained by sharpness or clipping alone, which supports looking for a model that sees expression, eyes,
+subject and moment.
+
 ## Experiments, in order
 
 1. **Pass-1 features plus keeper-recall check.** Build the technical feature extractor (OpenCV: luminance percentiles,
@@ -210,3 +263,100 @@ first; compare against trivial baselines (random, sharpest frame, latest frame).
   held-out real defects).
 - Whether any learned IQA is ever shipped, given that no clean pretrained model was found.
 - Group size policy: with the owner's broad idea of "same moment", how many frames pass 2 keeps per group (one winner, or the top few when compositions differ).
+
+## Zero-shot VLM burst-pick spike (2026-10-18)
+
+Qwen3-VL-4B and 2B (Apache-2.0, fp16, 768 px) asked to pick the owner's kept frame from 60 bursts (bursts over 9 frames dropped;
+next-token readout). Pre-registered rule: top-1 >= 0.45 and bootstrap interval of the gain over the best simple baseline above 0,
+and pairwise accuracy interval above 0.5.
+
+| model / task | top-1 | gain over least-clipped baseline | pair accuracy |
+|---|---|---|---|
+| 4B listwise | 0.400 | +0.067 [-0.100, +0.233] | 0.551 [0.445, 0.655] |
+| 4B pairwise | 0.383 | +0.050 [-0.117, +0.217] | 0.579 [0.473, 0.682] |
+| 4B rating | 0.333 | +0.000 | 0.547 |
+| 2B (all tasks) | 0.20 to 0.28 | negative | 0.37 to 0.55 |
+
+Verdict: the rule is not met by any model or task. 4B is slightly above chance (random is about 0.31) but not distinguishable
+from the simple baselines; 2B is at or below chance. Accuracy falls as bursts grow (4B pairwise: 0.71 on 2-frame bursts, about
+0.2 on 4+). The owner's pick is weak ground truth, so a ceiling is unknown, but a zero-shot VLM is not a pass-3 solution as is.
+Scripts: scripts/ai_v5/vlm_burst_spike.py, vlm_burst_analyze.py.
+
+## Facet burst logic, run as intended (2026-10-18)
+
+Facet (github.com/ncoevoet/facet, MIT) installed in its own venv on the server, commercial licensing mode (permissive models only:
+Q-ReAlign Mini aesthetic, SigLIP 2, MediaPipe face landmarks, YuNet/SFace, BiRefNet), scanning the 257 NEFs of the 63 test bursts.
+Needed one fix on a V100: Q-ReAlign loaded in bf16 ("auto"), which Volta cannot run, so it hung; forcing fp16 fixed it.
+Cost: about 5.6 s per photo including model loading on a V100 (24 min for 257).
+
+Facet's burst blend (0.4 aggregate + 0.25 aesthetic + 0.2 sharpness + 0.15 no-blink), top-1 on the owner's picks:
+
+| method | top-1 | gain over least-clipped baseline |
+|---|---|---|
+| random | 0.313 | |
+| least clipped highlights | 0.349 | |
+| Facet blend (defaults) | 0.286 [0.175, 0.397] | -0.063 [-0.238, +0.111] |
+| aesthetic only | 0.381 | +0.032 [-0.127, +0.190] |
+| aggregate only | 0.365 | +0.016 |
+| tech_sharpness only | 0.206 | -0.143 |
+| eyes open, no blink | 0.238 | -0.111 |
+
+Verdict: fails the pre-registered rule; indistinguishable from chance. Scripts: scripts/ai_v5/facet_burst_analyze.py.
+
+## MANIQA (IIGROUP/MANIQA, Apache-2.0 code) as a burst picker (2026-10-18)
+
+KonIQ-10k checkpoint (543 MB), 20 fixed-seed 224 px crops per 1280 px frame, 257 frames, 0.61 s per frame on a V100.
+Top-1 on the owner's picks 0.349 [0.238, 0.476] (random 0.313, least clipped 0.349); gain over best baseline +0.000 [-0.159, +0.159];
+pair accuracy 0.542 [0.445, 0.640]. Fails the pre-registered rule, so the weights/training-data licence check was not pursued.
+Pattern across everything tried (VLM judges, Facet's blend, Q-ReAlign, MANIQA): generic quality scores do not predict the owner's picks.
+
+## Full three-pass cascade on the burst-pick set (2026-10-18)
+
+Rules fixed before the run (scripts/ai_v5/cascade_burst_spike.py): pass 1 drops blinks, frames under 0.4x the burst's best centre sharpness, and
+frames with over 2x the lowest clipped fraction (and over 2%); pass 2 collapses pHash-near-identical frames (distance <= 4) to the better pass-3
+score; pass 3 keeps the top 2 by z(MANIQA) + z(Facet aesthetic). Rule: kept frame survives >= 85% (lower bound > 70%) and >= 40% of frames removed,
+on the 46 bursts with 3 or more frames.
+
+Result: full cascade keep 2 -> kept frame survives 0.478 [0.348, 0.630], 64% removed. Fails. Keep 1 -> 0.261.
+Pass 1 alone: 0.870 [0.761, 0.957] survive, 17% removed. Pass 1+2: 0.587. Pass 3 only (keep 2): 0.565.
+Reading: pass 1 is a safe-ish rejecter; the pHash collapse and the pass-3 scorer destroy the kept frame because the tie-break score is at chance.
+
+## Cascade round 2: pHash clusters, even-exposure representative, cluster-level survival (2026-10-18)
+
+The owner said they had no preference between most frames in these bursts, would usually pick the most evenly exposed, and that pHash should
+already have merged them. Measured: in 29 of 63 bursts every frame is within pHash distance 8 (35 within 12), so the marked frame is often one of
+several interchangeable ones. "Even exposure" as a rule (fewest pixels at either extreme) scored top-1 0.365 [0.254, 0.492], no better than
+least-clipped-highlights (0.349). Round 2 (scripts/ai_v5/cascade_burst_spike2.py, rules fixed first): complete-linkage pHash clusters at T = 8 or 12,
+representative = most even exposure, then top 2 clusters by z(MANIQA) + z(Facet aesthetic); rule: the pick's cluster survives >= 85% and >= 40% of frames removed.
+
+Results, on bursts that still have >= 3 clusters (12 of 63 at T = 8, 9 of 63 at T = 12, so very small):
+- pHash clustering alone (keep every cluster's representative): 49 to 52% of frames removed, every distinct cluster kept by construction.
+  With pass 1 first: 55 to 57% removed, pick's cluster survives 0.833 [0.583, 1.0] (T = 8) and 0.889 [0.667, 1.0] (T = 12).
+- Full cascade with the pass-3 top-2 cut: pick's cluster survives 0.417 [0.167, 0.667] (T = 8) and 0.667 [0.333, 1.0] (T = 12). Fails; intervals are wide.
+Reading: a strict pHash pass removes about half of the frames without losing a distinct moment, which is the useful and safe part. Choosing between
+the few genuinely different clusters is still unproven, and there are too few such bursts (9 to 12) to say more than that.
+
+## Stack-first cascade, reviewed by the owner (2026-10-18)
+
+Order now: split each burst into stacks at a consecutive pHash distance of 18 or more (a different pose or framing), then within each stack
+pass 1 (blink; soft and clipped relative to the stack, with a 10% clipped floor; blown out at 40% of pixels at maximum, and a stack where every
+frame is blown out gets no pick), pHash duplicate collapse (distance 8, most evenly exposed frame kept), MANIQA keeps the top 3, Q-ReAlign
+aesthetic ranks them last and keeps 2. Scripts: cascade_stack_sheet.py (review data and survival summary), bench_cascade_passes.py (timings),
+unrated_burst_set.py (bursts from an album with no marks).
+
+Owner review of 45 sampled bursts from Engagement Trip (no marks): agreed with 44; the cascade's one disagreement was u2 (the fountain set,
+frames split into two exposure halves by a 2.2 s gap); caveats were that u44 should be two stacks (fixed by the stack split) and that all-blown-out
+stacks (u7, u42) should get no pick (added). On the owner's marked China set (63 bursts) the pick's group survives 56% (pHash 8, 9 bursts with
+3+ groups) and 75% (pHash 12, 4 bursts): the pre-registered 85% rule is not met, but the samples are too small to conclude; sequential
+MANIQA-then-Q-ReAlign gives the same result as the blended ranking because few stacks keep more than 3 groups. 61% of frames removed.
+
+Cost per frame on the V100/Xeon server: preview extraction 370 ms (the app's own extract_embedded_jpeg should be cheaper, untimed), pass 1 36 ms,
+pHash 4 ms, blink 75 ms, MANIQA 540 ms GPU or 3.6 s CPU (8 threads), Q-ReAlign 590 ms GPU or 3.4 s CPU. Facet's full scan was 5 s per photo,
+dominated by full RAW decode (3.5 s) and about ten models.
+
+Acceptance criterion (owner, 2026-10-18): the owner's own review of the cascade's output is the test; the 85% survival rule was a proxy built from
+marks the owner says were arbitrary between near-duplicates. What review cannot see (frames removed in stacks never opened) is covered by the keeper-recall check.
+
+Open: (1) both rankers have unverified training-data licences (Q-ReAlign: KonIQ, SPAQ, KADID, AGIQA-20K, AVA, LSVQ; MANIQA: KonIQ, KADID, PIPAL),
+so the cheap passes are shippable and the rankers are not yet; (2) run the same order on the unrated set; (3) time the app's embedded-JPEG extractor;
+(4) the pass-1 keeper-recall check across the library; (5) u2: ask which frame the owner would pick.

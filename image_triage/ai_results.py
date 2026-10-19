@@ -136,6 +136,10 @@ class AIImageResult:
     score_gap_to_top: float | None = None
     confidence_bucket: AIConfidenceBucket = AIConfidenceBucket.NEEDS_REVIEW
     confidence_summary: str = ""
+    # Set by the stack-first cascade (image_triage/cascade): the decision it made for this frame ("final", "rejected", "duplicate", ...). When
+    # present it decides the bucket and the explanation directly instead of the folder percentile.
+    cascade_role: str = ""
+    cascade_summary: str = ""
 
     @property
     def is_rank_leader(self) -> bool:
@@ -145,6 +149,9 @@ class AIImageResult:
     def is_top_pick(self) -> bool:
         # Cluster rank doesn't drive classification anymore — any card whose
         # bucket is keeper / obvious winner qualifies for the "AI Pick" badge.
+        if self.cascade_role:
+            # The cascade only offers a pick when a ranker ordered a stack; other surviving frames are keepers.
+            return self.cascade_role == "pick"
         return self.confidence_bucket in {
             AIConfidenceBucket.OBVIOUS_WINNER,
             AIConfidenceBucket.LIKELY_KEEPER,
@@ -620,6 +627,8 @@ def _row_to_result(row: dict[str, str]) -> AIImageResult | None:
         primary_category=(row.get("primary_category") or "").strip(),
         cluster_reason=(row.get("cluster_reason") or row.get("group_reason") or "").strip(),
         capture_timestamp=(row.get("capture_timestamp") or row.get("timestamp") or "").strip(),
+        cascade_role=(row.get("cascade_role") or "").strip(),
+        cascade_summary=(row.get("cascade_summary") or "").strip(),
     )
 
 
@@ -748,12 +757,28 @@ def _confidence_context_for_result(
     bundled as one."
     """
 
+    if result.cascade_role:
+        return _cascade_confidence(result)
     percentile = folder_percentile if folder_percentile is not None else 50.0
     if percentile >= _SINGLETON_KEEPER_PERCENTILE_THRESHOLD:
         return AIConfidenceBucket.LIKELY_KEEPER, "High score compared with the rest of the folder."
     if percentile <= _SINGLETON_REJECT_PERCENTILE_THRESHOLD:
         return AIConfidenceBucket.LIKELY_REJECT, "Score lands near the bottom of the folder."
     return AIConfidenceBucket.NEEDS_REVIEW, "Mid-folder score — needs a human pass."
+
+
+def _cascade_confidence(result: AIImageResult) -> tuple[AIConfidenceBucket, str]:
+    """The cascade states its decision outright (image_triage/cascade/folder.py): "pick" is the best of a ranked stack, "final" a frame that survived
+    every pass, "rejected" a pass-1 flag (flagged and dimmed, never hidden); duplicates, cuts, brackets and no-pick stacks need a human look."""
+    role = result.cascade_role
+    summary = result.cascade_summary or result.cluster_reason
+    if role == "pick":
+        return AIConfidenceBucket.OBVIOUS_WINNER, summary
+    if role == "final":
+        return AIConfidenceBucket.LIKELY_KEEPER, summary
+    if role == "rejected":
+        return AIConfidenceBucket.LIKELY_REJECT, summary
+    return AIConfidenceBucket.NEEDS_REVIEW, summary
 
 
 def confidence_bucket_label(bucket: AIConfidenceBucket | str) -> str:
