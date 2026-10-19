@@ -269,3 +269,14 @@ KonIQ-10k checkpoint (543 MB), 20 fixed-seed 224 px crops per 1280 px frame, 257
 Top-1 on the owner's picks 0.349 [0.238, 0.476] (random 0.313, least clipped 0.349); gain over best baseline +0.000 [-0.159, +0.159];
 pair accuracy 0.542 [0.445, 0.640]. Fails the pre-registered rule, so the weights/training-data licence check was not pursued.
 Pattern across everything tried (VLM judges, Facet's blend, Q-ReAlign, MANIQA): generic quality scores do not predict the owner's picks.
+
+## Full three-pass cascade on the burst-pick set (2026-10-18)
+
+Rules fixed before the run (scripts/ai_v5/cascade_burst_spike.py): pass 1 drops blinks, frames under 0.4x the burst's best centre sharpness, and
+frames with over 2x the lowest clipped fraction (and over 2%); pass 2 collapses pHash-near-identical frames (distance <= 4) to the better pass-3
+score; pass 3 keeps the top 2 by z(MANIQA) + z(Facet aesthetic). Rule: kept frame survives >= 85% (lower bound > 70%) and >= 40% of frames removed,
+on the 46 bursts with 3 or more frames.
+
+Result: full cascade keep 2 -> kept frame survives 0.478 [0.348, 0.630], 64% removed. Fails. Keep 1 -> 0.261.
+Pass 1 alone: 0.870 [0.761, 0.957] survive, 17% removed. Pass 1+2: 0.587. Pass 3 only (keep 2): 0.565.
+Reading: pass 1 is a safe-ish rejecter; the pHash collapse and the pass-3 scorer destroy the kept frame because the tie-break score is at chance.
