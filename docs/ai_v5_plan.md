@@ -11,6 +11,8 @@ DINO embeddings (that route was built and tested in v1 and was no better than ra
 
 ## Decision (18 October 2026, the owner): v5 is reject-only, with no automatic winner
 
+**Status: provisional. The pass-1 rules in this design have not been validated yet (keeper-recall check pending); treat the rule list as a hypothesis, not a spec.**
+
 Everything we tried to choose the kept frame of a burst scored at chance on the owner's own picks (63 bursts, one known keeper
 each, about 4 frames per burst): zero-shot Qwen3-VL 4B and 2B, Facet's burst blend (permissive models only), the Q-ReAlign
 aesthetic score, MANIQA, sharpness and clipping measures, and the full three-pass cascade (the kept frame survived a top-2 cut
