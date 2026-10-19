@@ -117,6 +117,7 @@ def write_export(
     *,
     ranked_with: Sequence[str] = (),
     note: str = "",
+    blink_checked: bool = False,
 ) -> dict[str, Path]:
     """Write the CSV, summary JSON and HTML report into ``report_dir`` (created if needed) and return their paths."""
     folder = Path(report_dir)
@@ -133,6 +134,7 @@ def write_export(
         "unreadable": result.unreadable,
         "roles": result.counts(),
         "ranked_with": list(ranked_with),
+        "blink_checked": bool(blink_checked),
         "scored_by_maniqa": result.scored_by_maniqa,
         "scored_by_aesthetic": result.scored_by_aesthetic,
         "note": note,

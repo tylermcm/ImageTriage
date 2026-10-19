@@ -1,4 +1,4 @@
-"""Ranker worker subprocess: ``python -m image_triage.cascade.rankers.worker --kind maniqa|qrealign --model-dir DIR --device DEVICE``.
+"""Ranker worker subprocess: ``python -m image_triage.cascade.rankers.worker --kind maniqa|qrealign|blink --model-dir DIR --device DEVICE``.
 
 Runs inside the managed AI runtime (torch, timm, transformers live there; the app process never imports them). Speaks the line protocol in
 ``protocol.py`` on stdin/stdout. Everything heavy is imported inside functions, so importing this module is cheap and torch-free.
@@ -45,16 +45,48 @@ def pick_device(torch, requested: str) -> str:
 
 
 def load_image(path: str, long_edge: int):
-    """RGB PIL image, EXIF-rotated, bounded to ``long_edge`` on the long side (never enlarged)."""
+    """RGB PIL image, upright, bounded to ``long_edge`` on the long side (never enlarged).
+
+    A RAW file is read through its embedded JPEG preview with the app's own extractor and the container's orientation, never decoded (a RAW decode
+    is seconds per frame and PIL cannot open most of them). Anything else is opened directly and rotated by its EXIF tag."""
+    import io
+
     from PIL import Image, ImageOps
 
-    with Image.open(path) as handle:
-        image = ImageOps.exif_transpose(handle).convert("RGB")
+    from ...formats import RAW_SUFFIXES, suffix_for_path
+
+    if suffix_for_path(path) in RAW_SUFFIXES:
+        from ...raw_embedded_jpeg import extract_embedded_jpeg
+
+        embedded = extract_embedded_jpeg(path)
+        if embedded is None:
+            raise OSError(f"no embedded preview in {path}")
+        with Image.open(io.BytesIO(embedded.payload)) as handle:
+            handle.draft("RGB", (long_edge, long_edge))  # reduced-size JPEG decode (1/4 scale for a 7000 px preview): never decode more than needed
+            image = _transpose(handle.convert("RGB"), embedded.orientation)
+    else:
+        with Image.open(path) as handle:
+            image = ImageOps.exif_transpose(handle).convert("RGB")
     biggest = max(image.size)
     if biggest > long_edge:
         scale = long_edge / biggest
         image = image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))), Image.Resampling.LANCZOS)
     return image
+
+
+def _transpose(image, orientation: int):
+    from PIL import Image
+
+    method = {
+        2: Image.Transpose.FLIP_LEFT_RIGHT,
+        3: Image.Transpose.ROTATE_180,
+        4: Image.Transpose.FLIP_TOP_BOTTOM,
+        5: Image.Transpose.TRANSPOSE,
+        6: Image.Transpose.ROTATE_270,
+        7: Image.Transpose.TRANSVERSE,
+        8: Image.Transpose.ROTATE_90,
+    }.get(int(orientation or 1))
+    return image.transpose(method) if method is not None else image
 
 
 # -- MANIQA ---------------------------------------------------------------------------------------------------------------
@@ -148,7 +180,58 @@ class QRealignEngine:
         return float((probabilities * self.weights).sum())
 
 
-ENGINES: dict[str, Callable[[Path, str], object]] = {"maniqa": ManiqaEngine, "qrealign": QRealignEngine}
+# -- Blink (MediaPipe Face Landmarker, CPU) ------------------------------------------------------------------------------
+
+
+BLINK_LONG_EDGE = 1280
+BLINK_MAX_FACES = 8
+
+
+class BlinkEngine:
+    """Scores a frame by how closed the eyes are on its most closed prominent face (0 open .. 1 closed); no face scores 0. CPU only, no torch."""
+
+    def __init__(self, model_dir: Path, device: str) -> None:
+        import numpy as np
+        import mediapipe as mp
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision
+
+        from .bundles import BLINK_MODEL_FILE
+
+        model = model_dir / BLINK_MODEL_FILE
+        if not model.is_file():
+            raise WorkerFatal("weights_missing", f"{BLINK_MODEL_FILE} not found in {model_dir}")
+        self.np, self.mp = np, mp
+        self.device = "cpu"
+        self.half = False
+        options = vision.FaceLandmarkerOptions(
+            base_options=mp_python.BaseOptions(model_asset_path=str(model)),
+            running_mode=vision.RunningMode.IMAGE,
+            num_faces=BLINK_MAX_FACES,
+            output_face_blendshapes=True,
+        )
+        self.landmarker = vision.FaceLandmarker.create_from_options(options)
+
+    def close(self) -> None:
+        """Release the landmarker explicitly; leaving it to interpreter shutdown prints a harmless but noisy MediaPipe traceback."""
+        landmarker, self.landmarker = getattr(self, "landmarker", None), None
+        if landmarker is not None:
+            landmarker.close()
+
+    def score(self, path: str) -> float:
+        from ..blink import face_area, frame_blink_score
+
+        image = load_image(path, BLINK_LONG_EDGE)
+        pixels = self.np.ascontiguousarray(self.np.asarray(image))
+        result = self.landmarker.detect(self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=pixels))
+        faces = []
+        for index, landmarks in enumerate(result.face_landmarks or []):
+            shapes = {c.category_name: float(c.score) for c in (result.face_blendshapes[index] if result.face_blendshapes else [])}
+            faces.append((face_area((p.x, p.y) for p in landmarks), shapes))
+        return frame_blink_score(faces)
+
+
+ENGINES: dict[str, Callable[[Path, str], object]] = {"maniqa": ManiqaEngine, "qrealign": QRealignEngine, "blink": BlinkEngine}
 
 
 # -- protocol loop --------------------------------------------------------------------------------------------------------
@@ -211,6 +294,10 @@ def main(argv: list[str] | None = None) -> int:
         traceback.print_exc()
         emit({"event": "error", "category": "worker_failed", "message": f"{type(exc).__name__}: {exc}"})
         return 3
+    finally:
+        close = getattr(engine, "close", None)
+        if close is not None:
+            close()
     return 0
 
 

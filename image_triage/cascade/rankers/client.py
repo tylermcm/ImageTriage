@@ -19,7 +19,7 @@ from typing import Callable, Mapping, Sequence
 from . import protocol
 from .bundles import ensure_weights
 from .errors import RankerCancelled, RankerError, RankerUnavailable, RankerWeightsMissing, RankerWorkerError
-from .spec import MANIQA, QREALIGN, RankerSpec
+from .spec import BLINK, MANIQA, QREALIGN, RankerSpec
 
 CancelCheck = Callable[[], bool]
 PathResolver = Callable[[str], Path]
@@ -349,3 +349,8 @@ def maniqa_ranker(**kwargs: object) -> WorkerRanker:
 
 def qrealign_ranker(**kwargs: object) -> WorkerRanker:
     return WorkerRanker(QREALIGN, **kwargs)  # type: ignore[arg-type]
+
+
+def blink_ranker(**kwargs: object) -> WorkerRanker:
+    """Scores how closed the eyes are per frame (0 open .. 1 closed); see ../blink.py. Same worker machinery, CPU only."""
+    return WorkerRanker(BLINK, **kwargs)  # type: ignore[arg-type]

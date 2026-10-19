@@ -17,12 +17,12 @@ from tests.test_cascade_run import save, scene
 def test_a_gpu_runs_the_rankers_without_asking():
     for device in ("cuda", "cuda:1", "gpu"):
         decision = decide_ranking(device, False)
-        assert decision.use_rankers and decision.device == "gpu" and not decision.ask_cpu_confirmation and decision.note == ""
+        assert decision.use_rankers and decision.use_blink and decision.device == "gpu" and not decision.ask_cpu_confirmation and decision.note == ""
 
 
 def test_a_cpu_skips_ranking_unless_it_was_switched_on():
     off = decide_ranking("cpu", False)
-    assert not off.use_rankers and "no usable GPU" in off.note
+    assert not off.use_rankers and off.use_blink and "no usable GPU" in off.note
     on = decide_ranking("cpu", True)
     assert on.use_rankers and on.device == "cpu" and on.ask_cpu_confirmation
     assert f"{CPU_SECONDS_PER_FRAME:.1f} seconds per frame" in on.confirmation_text
@@ -30,7 +30,7 @@ def test_a_cpu_skips_ranking_unless_it_was_switched_on():
 
 def test_no_runtime_skips_ranking_with_a_note_that_says_why():
     decision = decide_ranking(None, True)
-    assert not decision.use_rankers and "not installed" in decision.note
+    assert not decision.use_rankers and not decision.use_blink and "not installed" in decision.note
 
 
 def test_declining_the_cpu_prompt_drops_ranking_but_keeps_the_cleanup():
@@ -119,6 +119,10 @@ def test_declining_the_cpu_prompt_runs_the_cleanup_without_rankers(main_window, 
     asked: list[str] = []
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: asked.append(a[1]) or QMessageBox.StandardButton.No))
     started: list[dict] = []
+    built: list[dict] = []
+    import image_triage.cascade.launch as launch_module
+
+    monkeypatch.setattr(launch_module, "default_scorer_factory", lambda device, **kw: built.append({"device": device, **kw}) or (lambda *a: None))
     monkeypatch.setattr(ctl, "_start_ai_task", lambda task, start, logger, **kw: started.append({"factory": task.scorer_factory, "note": task.ranking_note, **kw}))
     open_folder(main_window, one_scene_folder, 1)
     try:
@@ -126,7 +130,8 @@ def test_declining_the_cpu_prompt_runs_the_cleanup_without_rankers(main_window, 
     finally:
         main_window._settings.remove(ctl.CASCADE_CPU_RANKING_KEY)
     assert asked == ["Rank on the CPU?"]
-    assert started and started[0]["factory"] is None and "chose not" in started[0]["note"] and started[0]["backend"] == "cascade"
+    assert started and "chose not" in started[0]["note"] and started[0]["backend"] == "cascade"
+    assert built == [{"device": "cpu", "rankers": False, "blink": True}]  # ranking declined, but the cheap eyes-closed check still runs
 
 
 def test_cancelling_the_cpu_prompt_starts_nothing(main_window, one_scene_folder, monkeypatch):

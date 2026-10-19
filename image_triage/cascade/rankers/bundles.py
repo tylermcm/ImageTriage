@@ -13,11 +13,20 @@ from typing import Callable
 
 from ...ai_manifest import MODEL_BUNDLES, MODEL_FILE_DIGESTS, FileDigest, ModelBundle
 from .errors import RankerWeightsMissing
-from .spec import MANIQA, QREALIGN, RankerSpec
+from .spec import BLINK, MANIQA, QREALIGN, RankerSpec
+
+# Where the two files that have no upstream home we can pin are hosted. Upload the exact files listed in docs/ai_v5_model_hosting.md to these Hugging Face
+# repositories (or change the names here); the digests below make any host safe, because a file that does not match is refused.
+MANIQA_REPO = "Skulleton12/maniqa-koniq10k"
+BLINK_REPO = "Skulleton12/mediapipe-face-landmarker"
 
 MANIQA_CHECKPOINT = "ckpt_koniq10k.pt"
-# Fill in once the checkpoint is hosted somewhere pinned: (size in bytes, sha256). Empty means "present and non-empty" is all we can check.
-MANIQA_DIGEST: tuple[int, str] | None = None
+# The KonIQ-10k checkpoint from the MANIQA GitHub release (https://github.com/IIGROUP/MANIQA/releases/download/Koniq10k/ckpt_koniq10k.pt).
+MANIQA_DIGEST: tuple[int, str] | None = (543335435, "a207f8ab57322e6be38ff5c8d019301dc032b454bef21c3c9f9dbf7974eebff6")
+
+BLINK_MODEL_FILE = "face_landmarker.task"
+# Google's MediaPipe Face Landmarker bundle (float16), https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task
+BLINK_DIGEST: tuple[int, str] = (3758596, "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff")
 
 QREALIGN_REPO = "q-future/Q-ReAlign-Mini-0.8B"
 QREALIGN_REVISION = "fe1f45a7574c9e9d908875af9f7e90cb946aa19f"
@@ -40,9 +49,8 @@ def register_bundles() -> None:
         ModelBundle(
             key=MANIQA.bundle_key,
             name="MANIQA image quality ranker",
-            # No pinned source yet; set these env vars to a Hugging Face repo and commit that hold ckpt_koniq10k.pt.
-            repo_id="",
-            revision="",
+            repo_id=MANIQA_REPO,
+            revision="main",
             filenames=(MANIQA_CHECKPOINT,),
             install_parts=("Rankers", "MANIQA"),
             approx_mb=543,
@@ -67,6 +75,23 @@ def register_bundles() -> None:
             revision_env="IMAGE_TRIAGE_QREALIGN_MODEL_REVISION",
         ),
     )
+    MODEL_BUNDLES.setdefault(
+        BLINK.bundle_key,
+        ModelBundle(
+            key=BLINK.bundle_key,
+            name="Face landmarks for the blink detector",
+            repo_id=BLINK_REPO,
+            revision="main",
+            filenames=(BLINK_MODEL_FILE,),
+            install_parts=("Rankers", "Face landmarker"),
+            approx_mb=4,
+            pinned_revision=False,
+            dir_env="IMAGE_TRIAGE_BLINK_MODEL_DIR",
+            repo_env="IMAGE_TRIAGE_BLINK_MODEL_REPO_ID",
+            revision_env="IMAGE_TRIAGE_BLINK_MODEL_REVISION",
+        ),
+    )
+    MODEL_FILE_DIGESTS.setdefault(BLINK.bundle_key, {BLINK_MODEL_FILE: FileDigest(*BLINK_DIGEST)})
     MODEL_FILE_DIGESTS.setdefault(QREALIGN.bundle_key, dict(_QREALIGN_DIGESTS))
     if MANIQA_DIGEST is not None:
         MODEL_FILE_DIGESTS.setdefault(MANIQA.bundle_key, {MANIQA_CHECKPOINT: FileDigest(*MANIQA_DIGEST)})
@@ -98,10 +123,7 @@ def ensure_weights(
     if not ai_model_store.bundle_repo_id(spec.bundle_key):
         raise RankerWeightsMissing(
             f"{spec.name} has no download source configured and is not installed ({status.describe()}).",
-            remediation=(
-                f"Copy {MANIQA_CHECKPOINT} into {status.install_dir}, or set "
-                "IMAGE_TRIAGE_MANIQA_MODEL_REPO_ID and IMAGE_TRIAGE_MANIQA_MODEL_REVISION to a repository that hosts it."
-            ),
+            remediation=f"Copy the model file into {status.install_dir}, or set the IMAGE_TRIAGE_*_MODEL_REPO_ID environment variable for it.",
         )
     try:
         installed = ai_model_store.install_bundle(
