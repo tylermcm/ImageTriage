@@ -248,6 +248,16 @@ CATALOG_MIGRATIONS: tuple[tuple[int, str], ...] = (
         ADD COLUMN dir_mtime_ns INTEGER;
         """,
     ),
+    (
+        9,
+        """
+        -- The stack-first cascade's decision for a frame (pick, final, rejected, duplicate, ...), its plain-words
+        -- summary and its reason codes, so a cached reload of a run shows the same buckets and explanations.
+        ALTER TABLE catalog_ai_results ADD COLUMN cascade_role TEXT NOT NULL DEFAULT '';
+        ALTER TABLE catalog_ai_results ADD COLUMN cascade_summary TEXT NOT NULL DEFAULT '';
+        ALTER TABLE catalog_ai_results ADD COLUMN triggered_tags TEXT NOT NULL DEFAULT '';
+        """,
+    ),
 )
 
 LATEST_CATALOG_SCHEMA_VERSION = CATALOG_MIGRATIONS[-1][0]

@@ -50,10 +50,10 @@ def _bump_folder_mtime(folder: Path, seconds: int = 5) -> int:
 
 
 # --------------------------------------------------------------------------- catalog column
-def test_schema_has_the_folder_mtime_migration_last() -> None:
-    assert LATEST_CATALOG_SCHEMA_VERSION == 8
-    version, sql = CATALOG_MIGRATIONS[-1]
-    assert version == 8 and "dir_mtime_ns" in sql and "ADD COLUMN" in sql  # additive, never a rebuild
+def test_schema_has_the_folder_mtime_migration() -> None:
+    assert LATEST_CATALOG_SCHEMA_VERSION >= 8
+    sql = dict(CATALOG_MIGRATIONS)[8]
+    assert "dir_mtime_ns" in sql and "ADD COLUMN" in sql  # additive, never a rebuild
 
 
 def test_a_catalog_from_before_the_column_migrates_in_place_and_keeps_its_listings() -> None:
@@ -82,7 +82,7 @@ def test_a_catalog_from_before_the_column_migrates_in_place_and_keeps_its_listin
 
         connection = sqlite3.connect(db_path)
         assert "dir_mtime_ns" in [row[1] for row in connection.execute("PRAGMA table_info(catalog_folders)")]
-        assert sorted(row[0] for row in connection.execute("SELECT version FROM schema_migrations")) == list(range(1, 9))
+        assert sorted(row[0] for row in connection.execute("SELECT version FROM schema_migrations")) == list(range(1, LATEST_CATALOG_SCHEMA_VERSION + 1))
         connection.close()
 
 
