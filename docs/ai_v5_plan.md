@@ -354,6 +354,9 @@ Cost per frame on the V100/Xeon server: preview extraction 370 ms (the app's own
 pHash 4 ms, blink 75 ms, MANIQA 540 ms GPU or 3.6 s CPU (8 threads), Q-ReAlign 590 ms GPU or 3.4 s CPU. Facet's full scan was 5 s per photo,
 dominated by full RAW decode (3.5 s) and about ten models.
 
+Acceptance criterion (owner, 2026-10-18): the owner's own review of the cascade's output is the test; the 85% survival rule was a proxy built from
+marks the owner says were arbitrary between near-duplicates. What review cannot see (frames removed in stacks never opened) is covered by the keeper-recall check.
+
 Open: (1) both rankers have unverified training-data licences (Q-ReAlign: KonIQ, SPAQ, KADID, AGIQA-20K, AVA, LSVQ; MANIQA: KonIQ, KADID, PIPAL),
 so the cheap passes are shippable and the rankers are not yet; (2) run the same order on the unrated set; (3) time the app's embedded-JPEG extractor;
 (4) the pass-1 keeper-recall check across the library; (5) u2: ask which frame the owner would pick.
