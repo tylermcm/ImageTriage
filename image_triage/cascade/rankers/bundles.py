@@ -3,7 +3,7 @@
 ``ai_manifest`` is the app's one list of model bundles. Until these two entries move into it, ``register_bundles`` adds them to its
 registries at runtime (idempotent) so the model store's install, status and repair paths work unchanged.
 
-Open items (see docs/ai_v5_implementation.md): the MANIQA KonIQ checkpoint has no pinned download source and no recorded SHA-256 yet.
+Both files are hosted on the owner's Hugging Face account and pinned to the commits below; a new upload means a new pin (and a new digest here).
 """
 
 from __future__ import annotations
@@ -18,7 +18,9 @@ from .spec import BLINK, MANIQA, QREALIGN, RankerSpec
 # Where the two files that have no upstream home we can pin are hosted. Upload the exact files listed in docs/ai_v5_model_hosting.md to these Hugging Face
 # repositories (or change the names here); the digests below make any host safe, because a file that does not match is refused.
 MANIQA_REPO = "Skulleton12/maniqa-koniq10k"
+MANIQA_REVISION = "18bbbb8a87d06d7066de3fb0412139520fd6ff91"
 BLINK_REPO = "Skulleton12/mediapipe-face-landmarker"
+BLINK_REVISION = "e8098a34013a130b8d8c88de0772f162b450dfad"
 
 MANIQA_CHECKPOINT = "ckpt_koniq10k.pt"
 # The KonIQ-10k checkpoint from the MANIQA GitHub release (https://github.com/IIGROUP/MANIQA/releases/download/Koniq10k/ckpt_koniq10k.pt).
@@ -50,11 +52,11 @@ def register_bundles() -> None:
             key=MANIQA.bundle_key,
             name="MANIQA image quality ranker",
             repo_id=MANIQA_REPO,
-            revision="main",
+            revision=MANIQA_REVISION,
             filenames=(MANIQA_CHECKPOINT,),
             install_parts=("Rankers", "MANIQA"),
             approx_mb=543,
-            pinned_revision=False,
+            pinned_revision=True,
             dir_env="IMAGE_TRIAGE_MANIQA_MODEL_DIR",
             repo_env="IMAGE_TRIAGE_MANIQA_MODEL_REPO_ID",
             revision_env="IMAGE_TRIAGE_MANIQA_MODEL_REVISION",
@@ -81,11 +83,11 @@ def register_bundles() -> None:
             key=BLINK.bundle_key,
             name="Face landmarks for the blink detector",
             repo_id=BLINK_REPO,
-            revision="main",
+            revision=BLINK_REVISION,
             filenames=(BLINK_MODEL_FILE,),
             install_parts=("Rankers", "Face landmarker"),
             approx_mb=4,
-            pinned_revision=False,
+            pinned_revision=True,
             dir_env="IMAGE_TRIAGE_BLINK_MODEL_DIR",
             repo_env="IMAGE_TRIAGE_BLINK_MODEL_REPO_ID",
             revision_env="IMAGE_TRIAGE_BLINK_MODEL_REVISION",
