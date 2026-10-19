@@ -56,3 +56,73 @@ Order: 1 first (everything else depends on it and it is testable alone), then 2 
 - Relative flags misfire when a stack has little contrast between frames (seen once: a 0% clipped baseline); the floors exist for that.
 - Night, astro and long-exposure shooting will trip the blown-out and extremes measures; genre loosening is still an open decision.
 - The review pages were built on a V100 server; MANIQA and Q-ReAlign on a typical desktop CPU are about 7x slower per frame than on that GPU.
+
+## Work package 3 note: ranker workers (`image_triage/cascade/rankers/`)
+
+Built and tested offscreen with fake workers; **the real models have not been run from this package** (no torch runtime on the build machine).
+Run them with `IMAGE_TRIAGE_RUN_RANKER_TESTS=1 pytest tests/test_cascade_rankers.py` on a machine with the AI runtime and weights.
+
+- **Interface.** `WorkerRanker(spec, ...)` is a `Scorer` (`keys -> {key: score}`, higher is better); `maniqa_ranker()` / `qrealign_ranker()` build the two.
+  A ranker is a `RankerSpec` (`spec.py`) plus a worker `--kind`; swapping one means a new spec, an engine class in `worker.py` and a bundle.
+  Options: `device`, `resolve_path` (frame key to file, default the key), `cancel_check`, `progress(done, total)`, `batch_size`, `download`.
+  Call `close()` (or use `with`) to stop the worker; the worker stays loaded between calls.
+- **Process model.** `worker.py` is started with `-m image_triage.cascade.rankers.worker` in the managed runtime (`ai_env.select_runtime(require_torch=True)` +
+  `build_worker_env`), JSON lines over stdin/stdout with a `RANKER ` prefix (`protocol.py`). Nothing in the package imports torch/timm/transformers at import time
+  (tested in a subprocess). fp16 on CUDA, fp32 on CPU; device chosen like `birefnet_worker`.
+- **Cancellation.** `cancel_check` is polled every 50 ms and between batches; on cancel the worker is killed (a forward pass cannot be interrupted) and
+  `RankerCancelled` is raised. The next call starts a fresh worker. Any error also kills the worker so no half-finished request survives.
+- **Errors** (all `RankerError`, each with `.remediation`): `RankerUnavailable` (no runtime, torch/timm/transformers missing), `RankerWeightsMissing`,
+  `RankerWorkerError` (crash with stderr tail, timeout), `RankerCancelled`. An unreadable image does not fail the batch: it scores `-inf` (ranked last) and is listed in `ranker.failures`.
+- **Cost.** `costs.estimate_cost(maniqa_frames, aesthetic_frames, "gpu"|"cpu", measured=...)` and `estimate_cascade_cost(survivors_per_stack, maniqa_keep)`
+  (mirrors which frames `run_cascade` would score). Reference timings are the V100 / 8-thread numbers; pass `ranker.seconds_per_frame` as `measured` once a run has timed this machine.
+- **MANIQA.** `_maniqa_net.py` is the IIGROUP/MANIQA network (Apache-2.0, attributed in the file), adapted: no `pretrained=True` download, no `.cuda()`, batched scoring.
+  Score = mean of 20 crops of 224 px, rng seed 20, from the frame bounded to 1280 px (never enlarged; frames under 225 px are enlarged just enough to crop), `(x-0.5)/0.5`.
+- **Q-ReAlign Mini.** Qwen3.5 VL via transformers; chat template with `enable_thinking=False`, question + answer stem appended, softmax over the first token of
+  ` excellent/good/fair/poor/bad`, weights 1/.75/.5/.25/0; image bounded to 1024 px. The level-word token choice and `AutoModelForImageTextToText` loading are written from the
+  model's files and the task description, not yet run: check the first real scores are in [0, 1] and spread sensibly before trusting them.
+
+**Needs the parent session / owner**
+1. **Manifest.** `bundles.register_bundles()` adds `maniqa` and `qrealign` to `ai_manifest.MODEL_BUNDLES` at runtime because this work package may not edit the manifest; move both entries
+   (and `MODEL_FILE_DIGESTS`) into `ai_manifest.py` and add capabilities when integrating (package 4). Q-ReAlign is pinned to revision `fe1f45a7` with SHA-256 for every file (captured from Hugging Face).
+2. **MANIQA checkpoint has no pinned source or SHA-256.** Official weights are on Google Drive/Baidu only. Until `ckpt_koniq10k.pt` is hosted somewhere pinned (set `bundles.MANIQA_DIGEST` and the bundle repo/revision,
+   or the env vars `IMAGE_TRIAGE_MANIQA_MODEL_REPO_ID`/`_REVISION`), installation fails with a message telling the user to place the file in the bundle directory (`IMAGE_TRIAGE_MANIQA_MODEL_DIR`, default `<AI root>/models/Rankers/MANIQA`).
+3. **Runtime packages.** `timm` and `einops` are already in the managed runtime's requirements; confirm `transformers==5.14.1` knows `qwen3_5` (loads via `AutoModelForImageTextToText`).
+4. **Frozen builds.** The launcher prefers `ai_python_runner` next to the executable, then `AICULLING_PYTHON`, then `sys.executable`; confirm the runner accepts `-m image_triage.cascade.rankers.worker` in a packaged build.
+
+## Work package 2 status: cheap-pass extractor (`image_triage/cascade/extract.py`)
+
+Built and tested (`tests/test_cascade_extract.py`, synthetic images: sharpness, centre-only sharpness, clipped/extremes, orientation for plain JPEG and
+for the RAW container tag, cache hit and signature change, blink lookup, cancel, progress). Pixels come from `extract_embedded_jpeg` (or the file itself
+for non-RAW), JPEG draft decode, then a box reduce to 1280 px on the long edge; no RAW decode anywhere. `blink` is `False` unless a `blink_lookup` is
+passed: the face index does not produce blink yet (`quality/face.py` returns `None` pending EAR calibration).
+
+**Timing, measured in the app's code on this machine** (18 Oct 2026, 42 NEF at 7360x4912 with a 1.8 MB full-size embedded preview, 3 JPEG; warm
+OS file cache; Pillow 12.3, numpy 2.4):
+
+| | per frame |
+|---|---|
+| embedded-JPEG extraction (IFD walk and read) | about 3 ms |
+| draft decode (7360 px preview to 1840 px) | about 90 ms |
+| measures at 1280 px (hash, Laplacian, clipped, extremes) | about 86 ms |
+| 1 worker, wall | 197 ms |
+| 2 workers, wall | 106 ms |
+| 4 workers, wall (default) | 74 ms |
+| cache hit | about 0.5 ms |
+
+A 1,000-frame folder is therefore about 75 s cold with 4 workers and well under a second from cache, against 3.5 s per frame for a RAW decode. A first
+read from a cold disk adds the file read (about 1.8 MB per NEF, the IFD walk only seeks to the preview) and was not measured. Worker scaling is
+sub-linear because decode and numpy share the GIL between C calls; the cost is dominated by the two numpy passes, so a small saving is possible by
+measuring at 960 px if this ever matters.
+
+**Hash drift** (the scratch `phash_hex` used OpenCV INTER_AREA on the full-size frame; OpenCV is not installed here, so the reference is the same
+operation done with a full-size Pillow box resize, which is an exact area average; the 433 reviewed NEFs of `cascade_golden.json` are not on this
+machine, so real-frame checks used 40 aurora NEFs and 2 other NEFs):
+
+- Photos: our hash differs from the full-size area hash by 0 bits on 34 of 42 NEFs and by 2 bits on the other 8 (max 2); `1292769.jpg` and
+  `badlands-moon.jpg` are 0.
+- One degenerate image, `jigsaw.jpg` (almost pure white, luma 246 to 255, std 1.5), drifts 20 bits: with no structure the median split is noise.
+  Such frames have no usable hash in either implementation; they would also be flagged clipped.
+- Against `perceptual_hash.compute_phash` (Lanczos from a draft) the mean distance is 1.2 bits but individual frames reach 26 on the degenerate image,
+  which is why the cascade extractor does not use it.
+- Consecutive aurora frames measure 0 to 16 bits apart (typical 2 to 10), all below the split jump of 18, so `split_jump` 18 and `duplicate_distance` 8
+  keep the same meaning; a drift of at most 2 bits moves a pair across a threshold only when it already sits within 2 bits of it.
