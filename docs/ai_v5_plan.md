@@ -335,3 +335,25 @@ Results, on bursts that still have >= 3 clusters (12 of 63 at T = 8, 9 of 63 at 
 - Full cascade with the pass-3 top-2 cut: pick's cluster survives 0.417 [0.167, 0.667] (T = 8) and 0.667 [0.333, 1.0] (T = 12). Fails; intervals are wide.
 Reading: a strict pHash pass removes about half of the frames without losing a distinct moment, which is the useful and safe part. Choosing between
 the few genuinely different clusters is still unproven, and there are too few such bursts (9 to 12) to say more than that.
+
+## Stack-first cascade, reviewed by the owner (2026-10-18)
+
+Order now: split each burst into stacks at a consecutive pHash distance of 18 or more (a different pose or framing), then within each stack
+pass 1 (blink; soft and clipped relative to the stack, with a 10% clipped floor; blown out at 40% of pixels at maximum, and a stack where every
+frame is blown out gets no pick), pHash duplicate collapse (distance 8, most evenly exposed frame kept), MANIQA keeps the top 3, Q-ReAlign
+aesthetic ranks them last and keeps 2. Scripts: cascade_stack_sheet.py (review data and survival summary), bench_cascade_passes.py (timings),
+unrated_burst_set.py (bursts from an album with no marks).
+
+Owner review of 45 sampled bursts from Engagement Trip (no marks): agreed with 44; the cascade's one disagreement was u2 (the fountain set,
+frames split into two exposure halves by a 2.2 s gap); caveats were that u44 should be two stacks (fixed by the stack split) and that all-blown-out
+stacks (u7, u42) should get no pick (added). On the owner's marked China set (63 bursts) the pick's group survives 56% (pHash 8, 9 bursts with
+3+ groups) and 75% (pHash 12, 4 bursts): the pre-registered 85% rule is not met, but the samples are too small to conclude; sequential
+MANIQA-then-Q-ReAlign gives the same result as the blended ranking because few stacks keep more than 3 groups. 61% of frames removed.
+
+Cost per frame on the V100/Xeon server: preview extraction 370 ms (the app's own extract_embedded_jpeg should be cheaper, untimed), pass 1 36 ms,
+pHash 4 ms, blink 75 ms, MANIQA 540 ms GPU or 3.6 s CPU (8 threads), Q-ReAlign 590 ms GPU or 3.4 s CPU. Facet's full scan was 5 s per photo,
+dominated by full RAW decode (3.5 s) and about ten models.
+
+Open: (1) both rankers have unverified training-data licences (Q-ReAlign: KonIQ, SPAQ, KADID, AGIQA-20K, AVA, LSVQ; MANIQA: KonIQ, KADID, PIPAL),
+so the cheap passes are shippable and the rankers are not yet; (2) run the same order on the unrated set; (3) time the app's embedded-JPEG extractor;
+(4) the pass-1 keeper-recall check across the library; (5) u2: ask which frame the owner would pick.
