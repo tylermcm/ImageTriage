@@ -241,3 +241,24 @@ Verdict: the rule is not met by any model or task. 4B is slightly above chance (
 from the simple baselines; 2B is at or below chance. Accuracy falls as bursts grow (4B pairwise: 0.71 on 2-frame bursts, about
 0.2 on 4+). The owner's pick is weak ground truth, so a ceiling is unknown, but a zero-shot VLM is not a pass-3 solution as is.
 Scripts: scripts/ai_v5/vlm_burst_spike.py, vlm_burst_analyze.py.
+
+## Facet burst logic, run as intended (2026-10-18)
+
+Facet (github.com/ncoevoet/facet, MIT) installed in its own venv on the server, commercial licensing mode (permissive models only:
+Q-ReAlign Mini aesthetic, SigLIP 2, MediaPipe face landmarks, YuNet/SFace, BiRefNet), scanning the 257 NEFs of the 63 test bursts.
+Needed one fix on a V100: Q-ReAlign loaded in bf16 ("auto"), which Volta cannot run, so it hung; forcing fp16 fixed it.
+Cost: about 5.6 s per photo including model loading on a V100 (24 min for 257).
+
+Facet's burst blend (0.4 aggregate + 0.25 aesthetic + 0.2 sharpness + 0.15 no-blink), top-1 on the owner's picks:
+
+| method | top-1 | gain over least-clipped baseline |
+|---|---|---|
+| random | 0.313 | |
+| least clipped highlights | 0.349 | |
+| Facet blend (defaults) | 0.286 [0.175, 0.397] | -0.063 [-0.238, +0.111] |
+| aesthetic only | 0.381 | +0.032 [-0.127, +0.190] |
+| aggregate only | 0.365 | +0.016 |
+| tech_sharpness only | 0.206 | -0.143 |
+| eyes open, no blink | 0.238 | -0.111 |
+
+Verdict: fails the pre-registered rule; indistinguishable from chance. Scripts: scripts/ai_v5/facet_burst_analyze.py.
