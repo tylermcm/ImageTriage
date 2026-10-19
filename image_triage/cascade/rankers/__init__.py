@@ -6,12 +6,13 @@ Importing this package never imports torch; the models run only inside ``worker.
 from __future__ import annotations
 
 from .bundles import ensure_weights, register_bundles
-from .client import WorkerLaunch, WorkerRanker, default_launcher, maniqa_ranker, qrealign_ranker
+from .client import WorkerLaunch, WorkerRanker, blink_ranker, default_launcher, maniqa_ranker, qrealign_ranker
 from .costs import RankingCostEstimate, estimate_cascade_cost, estimate_cost
 from .errors import RankerCancelled, RankerError, RankerUnavailable, RankerWeightsMissing, RankerWorkerError
-from .spec import MANIQA, QREALIGN, SPECS, RankerSpec
+from .spec import BLINK, MANIQA, QREALIGN, SPECS, RankerSpec
 
 __all__ = [
+    "BLINK",
     "MANIQA",
     "QREALIGN",
     "SPECS",
@@ -24,6 +25,7 @@ __all__ = [
     "RankingCostEstimate",
     "WorkerLaunch",
     "WorkerRanker",
+    "blink_ranker",
     "default_launcher",
     "ensure_weights",
     "estimate_cascade_cost",

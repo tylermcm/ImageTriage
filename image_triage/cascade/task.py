@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -20,6 +20,7 @@ from ..ai_workflow import AIWorkflowPaths
 from ..brackets import BracketDetector
 from ..metadata import load_capture_metadata
 from ..models import ImageRecord
+from .blink import BlinkScoreCache, is_blink
 from .export import build_rows, write_export
 from .extract import FeatureCache, extract_features
 from .folder import ROLE_FINAL, FolderFrame, FolderResult, FrameOutcome, run_folder
@@ -28,6 +29,8 @@ from .pipeline import Scorer
 
 STAGES = ("Reading capture times", "Reading previews", "Grouping and cleaning up", "Writing results")
 FEATURE_CACHE_FILENAME = "cascade_features.json"
+BLINK_CACHE_FILENAME = "cascade_blink.json"
+BLINK_MODEL_ID = "mediapipe-face-landmarker-float16"  # change when the face model or how its score is computed changes
 
 
 class CascadeRunSignals(QObject):
@@ -46,6 +49,7 @@ class Scorers:
 
     maniqa: Scorer | None = None
     aesthetic: Scorer | None = None
+    blink: Scorer | None = None  # how closed the eyes are per frame (0 open .. 1 closed); thresholded by blink.is_blink
     names: tuple[str, ...] = ()
     close: Callable[[], None] = lambda: None
 
@@ -88,6 +92,7 @@ class CascadeRunTask(QRunnable):
         self.setAutoDelete(True)
         self._cancel_requested = False
         self.result: FolderResult | None = None
+        self.blink_checked = False
 
     def cancel(self) -> None:
         self._cancel_requested = True
@@ -105,7 +110,7 @@ class CascadeRunTask(QRunnable):
             self._check_cancelled()
             self.signals.stage.emit(folder_text, 3, len(STAGES), STAGES[3])
             rows = build_rows(result.outcomes, [r.path for r in self.records], _capture_strings(frames))
-            written = write_export(self.paths.report_dir, rows, result, ranked_with=scorers.names, note=" ".join(notes))
+            written = write_export(self.paths.report_dir, rows, result, ranked_with=scorers.names, note=" ".join(notes), blink_checked=self.blink_checked)
             self.result = result
             self.signals.finished.emit(folder_text, str(self.paths.report_dir), str(written["html"]))
         except _Cancelled:
@@ -207,6 +212,7 @@ class CascadeRunTask(QRunnable):
         def progress(done: int, total: int) -> None:
             self._progress(folder, STAGES[2], done, total, started)
 
+        frames = self._check_blinks(folder, frames, scorers, notes)
         try:
             result = self._run(frames, scorers, progress)
         except _Cancelled:
@@ -225,6 +231,41 @@ class CascadeRunTask(QRunnable):
             raise _Cancelled()
         self._apply_protection(result)
         return result, scorers, notes
+
+    def _check_blinks(self, folder: str, frames: list[FolderFrame], scorers: Scorers, notes: list[str]) -> list[FolderFrame]:
+        """Set each readable frame's blink flag from the eyes-closed scorer. A scorer that cannot run is skipped with a note, not fatal."""
+        if scorers.blink is None:
+            return frames
+        keys = [f.path for f in frames if f.features is not None and f.bracket_id is None]
+        if not keys:
+            return frames
+        cache = BlinkScoreCache(self.paths.artifacts_dir / BLINK_CACHE_FILENAME, BLINK_MODEL_ID)
+        scores = {key: cached for key in keys if (cached := cache.get(key)) is not None}
+        missing = [key for key in keys if key not in scores]
+        if missing:
+            try:
+                fresh = scorers.blink(missing)
+            except Exception as error:  # noqa: BLE001
+                if type(error).__name__ == "RankerCancelled":
+                    raise _Cancelled() from error
+                notes.append(f"Eyes-closed check skipped: {error}")
+                self.signals.detail.emit(folder, notes[-1])
+                scorers.blink = None
+                return frames
+            for key, value in fresh.items():
+                cache.put(key, value)
+            scores.update(fresh)
+            try:
+                cache.save()
+            except OSError:
+                pass
+        self.blink_checked = True
+        return [
+            replace(f, features=replace(f.features, blink=is_blink(scores.get(f.path, 0.0))))
+            if f.features is not None and f.bracket_id is None
+            else f
+            for f in frames
+        ]
 
     def _run(self, frames: list[FolderFrame], scorers: Scorers, progress: Callable[[int, int], None]) -> FolderResult:
         return run_folder(

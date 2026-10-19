@@ -153,9 +153,8 @@ and AI filters work on it unchanged. The older TOPIQ-based culler is still reach
 the existing AI suites, updated where they encoded the old behaviour (Analyze used to open AI setup when the runtime was missing).
 
 **Open items found while building**
-1. **Blink is inert.** The face index does not produce a blink flag yet (`quality/face.py` returns `None` pending EAR calibration), so the extractor is
-   given no blink lookup and "eyes closed" never fires. Needs a blink source (MediaPipe landmarks, or the permissive face stack) before the blink rule counts.
-2. **Real rankers never ran inside the app.** The worker rankers are tested with fakes only; the MANIQA checkpoint has no pinned, hosted source.
+1. **Blink:** built on MediaPipe Face Landmarker and validated on real frames (see the Blink section); needs `mediapipe` added to the managed runtime requirements before a shipped build runs it.
+2. **Rankers:** validated on real frames through the worker code (see the section above); still never run inside the full app window, and the MANIQA checkpoint still needs hosting (`docs/ai_v5_model_hosting.md`).
 3. **Apply AI Decisions** can still move flagged (Reject-bucket) frames to the program recycle bin, after its confirmation dialog and with undo. The dialog does
    not show the reason; it should before hard hiding or auto-applying anything.
 4. **Loupe card style** does not dim flagged frames (only the grid card paints the dim).
@@ -167,3 +166,39 @@ the existing AI suites, updated where they encoded the old behaviour (Analyze us
    raising (files of 4096, 8192 and 102400 bytes crashed; 4095, 4097 and 100000 did not). Roughly one RAW in 4,096 has such a size, and the cascade scans every RAW in
    the background, so it would have been seen in the field. Such files are now read normally; regression tests cover the crash (in a subprocess) and that the embedded
    JPEG is still found at page-multiple and ordinary sizes.
+
+
+## Blink signal (19 October 2026)
+
+The "eyes closed" rule was inert because the app has no blink source (its face code defers blink and uses the AuraFace pack the licence audit flagged). It now comes from
+**MediaPipe Face Landmarker** (Apache-2.0 code and model cards), run as a third worker in the same machinery as the two rankers:
+
+- `cascade/blink.py`: the decision (pure). A face counts when it covers at least 1% of the frame; its score is the mean of the `eyeBlinkLeft` and `eyeBlinkRight` blendshapes; a frame scores
+  the most closed prominent face (a blinker in a group counts); no face scores 0. Blink = score at or above **0.6**. A per-file score cache (`cascade_blink.json`) means re-analysing a folder
+  does not rerun the model.
+- `rankers/worker.py`: `--kind blink` (CPU only, no torch). The worker now also opens **RAW files through their embedded preview** (it used PIL only, which cannot open most RAW files, so the
+  two rankers would have scored every RAW frame minus infinity), with the container orientation and a reduced-size JPEG decode.
+- `task.py`: after features are extracted, every readable non-bracket frame is scored for blink before the cleanup runs; a failing or missing blink worker is skipped with a note, never fatal.
+- `launch.py`: the blink check runs whenever the AI runtime is installed (it is cheap and CPU-only); the rankers still need a GPU or the CPU opt-in.
+
+**Validated on real frames** (the server, real MediaPipe 0.10.35, 433 frames from the two reviewed sets): 35 ms per frame on a 1,280 px JPEG, about 207 ms per frame through the RAW path (7360 px
+embedded preview) on that server; 68 frames (16%) contain a prominent face; 2 frames score at or above 0.6, 5 at or above 0.5. Looked at by eye: 0.82 was a real blink, 0.65 a squint in strong sun,
+0.59 a woman laughing with her eyes shut (missed by a hair), and 0.55 to 0.49 were a man grinning with narrowed but open eyes plus a bald man's relaxed heavy-lidded face (scoring 0.42 to 0.49 in
+five frames). Smiles and naturally narrow eyes push the score to about 0.5, so 0.6 is conservative: it catches clear blinks and flags nothing wrongly in this set, at the cost of missing laughing-eyes-shut.
+
+**Not done:** `mediapipe` is not in the managed AI runtime's requirements (`ai_runtime_packages`), so a shipped build skips the blink check with a note until it is added (and the hash-pinned locks
+in `packaging/ai_runtime_locks` are regenerated; check Windows Python 3.13 wheel availability first, and use the 0.10.x line with its dependencies pinned, not the newest release, which pulls in
+`opencv-contrib-python` and clashes with the runtime's headless OpenCV). The thresholds come from one set of photos of two albums; review them on other genres.
+
+Model files to host: see `docs/ai_v5_model_hosting.md`. The MANIQA checkpoint digest is now pinned in `bundles.py`.
+
+## The real rankers, run through the app's worker code (19 October 2026)
+
+Run on the server's V100 with the real models (`scripts/ai_v5/ranker_parity.py`, `qrealign_same_input.py`), 40 frames spread over the 63 marked bursts:
+
+- **MANIQA worker** (fp16 on CUDA): Spearman **1.000** and mean absolute difference 0.0001 against the fp32 scores validated earlier (range 0.172 to 0.573 in both), no NaNs, **156 ms per frame**
+  (the earlier 540 ms used 20 crops one at a time in fp32). So running it in half precision is safe.
+- **Q-ReAlign worker** (fp16 on CUDA): runs, **647 ms per frame**. On exactly the same 1,280 px JPEGs it matches Facet's own scorer at Spearman **1.000** (mean difference 0.0004, worst 0.0047). Against
+  the aesthetic scores Facet stored from its own scan the correlation is only 0.59, because Facet decoded the RAW files itself and the aesthetic score depends on how the picture is rendered
+  (full RAW decode versus the camera's embedded preview). The cascade always uses the embedded preview, so it is consistent with itself; do not mix the two renderings when comparing scores.
+- The level-word token handling in the Q-ReAlign worker, flagged earlier as never run, is therefore correct for the Mini model.

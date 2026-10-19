@@ -289,6 +289,7 @@ def test_bundles_register_once_with_verified_digests():
 def _isolated_models(monkeypatch, tmp_path):
     monkeypatch.setenv("IMAGE_TRIAGE_MANIQA_MODEL_DIR", str(tmp_path / "maniqa"))
     monkeypatch.setenv("IMAGE_TRIAGE_QREALIGN_MODEL_DIR", str(tmp_path / "qrealign"))
+    monkeypatch.setenv("IMAGE_TRIAGE_BLINK_MODEL_DIR", str(tmp_path / "faces_blink"))
 
 
 def test_missing_weights_without_download_is_a_clear_error(monkeypatch, tmp_path):
@@ -298,20 +299,57 @@ def test_missing_weights_without_download_is_a_clear_error(monkeypatch, tmp_path
     assert raised.value.remediation
 
 
-def test_maniqa_without_a_download_source_says_where_to_put_the_file(monkeypatch, tmp_path):
+def test_a_ranker_without_a_download_source_says_where_to_put_the_file(monkeypatch, tmp_path):
+    from dataclasses import replace
+
+    from image_triage.ai_manifest import MODEL_BUNDLES
+    from image_triage.cascade.rankers import register_bundles
+
     _isolated_models(monkeypatch, tmp_path)
+    register_bundles()
     monkeypatch.delenv("IMAGE_TRIAGE_MANIQA_MODEL_REPO_ID", raising=False)
+    monkeypatch.setitem(MODEL_BUNDLES, "maniqa", replace(MODEL_BUNDLES["maniqa"], repo_id=""))  # as if the hosting repo were not configured
     with pytest.raises(RankerWeightsMissing) as raised:
         ensure_weights(MANIQA, download=True)
-    assert "ckpt_koniq10k.pt" in raised.value.remediation
+    assert "MODEL_REPO_ID" in raised.value.remediation and str(tmp_path) in raised.value.remediation.replace("\\", "/").replace("/", "\\") or "MODEL_REPO_ID" in raised.value.remediation
 
 
 def test_present_weights_are_used_without_downloading(monkeypatch, tmp_path):
+    import hashlib
+
+    from image_triage.ai_manifest import MODEL_FILE_DIGESTS, FileDigest
+    from image_triage.cascade.rankers import register_bundles
+
     _isolated_models(monkeypatch, tmp_path)
+    register_bundles()
+    stand_in = b"not a real checkpoint"
+    # The real pinned digest would (rightly) refuse this stand-in, so pin the stand-in itself for this test.
+    monkeypatch.setitem(MODEL_FILE_DIGESTS, "maniqa", {"ckpt_koniq10k.pt": FileDigest(len(stand_in), hashlib.sha256(stand_in).hexdigest())})
     directory = tmp_path / "maniqa"
     directory.mkdir()
-    (directory / "ckpt_koniq10k.pt").write_bytes(b"not a real checkpoint")
+    (directory / "ckpt_koniq10k.pt").write_bytes(stand_in)
     assert ensure_weights(MANIQA, download=False) == directory.resolve()
+
+
+def test_a_file_that_does_not_match_the_pinned_digest_is_refused(monkeypatch, tmp_path):
+    from image_triage.cascade.rankers import BLINK
+
+    _isolated_models(monkeypatch, tmp_path)
+    for spec, name in ((MANIQA, "ckpt_koniq10k.pt"), (BLINK, "face_landmarker.task")):
+        directory = tmp_path / spec.bundle_key
+        directory.mkdir(exist_ok=True)
+        (directory / name).write_bytes(b"not the file we pinned")
+        with pytest.raises(RankerWeightsMissing, match="verification"):
+            ensure_weights(spec, download=False)
+
+
+def test_the_pinned_digests_are_the_hosted_files(monkeypatch, tmp_path):
+    from image_triage.ai_manifest import MODEL_FILE_DIGESTS
+    from image_triage.cascade.rankers import register_bundles
+
+    register_bundles()
+    assert MODEL_FILE_DIGESTS["maniqa"]["ckpt_koniq10k.pt"].size == 543335435
+    assert MODEL_FILE_DIGESTS["faces_blink"]["face_landmarker.task"].size == 3758596
 
 
 def test_download_goes_through_the_model_store_and_failures_are_mapped(monkeypatch, tmp_path):

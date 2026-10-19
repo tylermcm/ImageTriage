@@ -18,4 +18,7 @@ class RankerSpec:
 MANIQA = RankerSpec("maniqa", "MANIQA", "maniqa", batch_size=8, seconds_per_frame_gpu=0.54, seconds_per_frame_cpu=3.6)
 QREALIGN = RankerSpec("qrealign", "Q-ReAlign", "qrealign", batch_size=4, seconds_per_frame_gpu=0.59, seconds_per_frame_cpu=3.4)
 
-SPECS = {spec.kind: spec for spec in (MANIQA, QREALIGN)}
+# Not a ranker but the same worker machinery: scores how closed the eyes are (see ../blink.py). CPU only; timing is measured, see docs/ai_v5_implementation.md.
+BLINK = RankerSpec("blink", "Blink detector", "faces_blink", batch_size=16, seconds_per_frame_gpu=0.1, seconds_per_frame_cpu=0.1)
+
+SPECS = {spec.kind: spec for spec in (MANIQA, QREALIGN, BLINK)}

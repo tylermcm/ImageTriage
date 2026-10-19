@@ -1277,7 +1277,11 @@ class AiRunController(QObject):
                 folder=Path(self._window._current_folder),
                 records=tuple(record for record in self._window._all_records if not record.is_folder),
                 paths=build_aiculler_workflow_paths(self._window._current_folder),
-                scorer_factory=default_scorer_factory(decision.device) if decision.use_rankers else None,
+                scorer_factory=(
+                    default_scorer_factory(decision.device or "cpu", rankers=decision.use_rankers, blink=decision.use_blink)
+                    if decision.use_rankers or decision.use_blink
+                    else None
+                ),
                 protected_paths=self.manual_ai_protected_paths(),
                 ranking_note=decision.note,
             )
