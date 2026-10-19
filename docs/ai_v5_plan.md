@@ -9,7 +9,45 @@ Planned 18 October 2026, after a ChatGPT deep-research report (pasted into the s
 on the problem definition: culling is three different problems, each measured on its own. No learned taste model on
 DINO embeddings (that route was built and tested in v1 and was no better than random).
 
-## The pipeline
+## Decision (18 October 2026, the owner): v5 is reject-only, with no automatic winner
+
+Everything we tried to choose the kept frame of a burst scored at chance on the owner's own picks (63 bursts, one known keeper
+each, about 4 frames per burst): zero-shot Qwen3-VL 4B and 2B, Facet's burst blend (permissive models only), the Q-ReAlign
+aesthetic score, MANIQA, sharpness and clipping measures, and the full three-pass cascade (the kept frame survived a top-2 cut
+only 48% of the time). Sections below hold the numbers. The owner will not train another model. So v5 does not pretend to pick
+the best frame. It removes what is clearly bad, explains why, groups what is alike, and leaves the choice to the person.
+
+**Pass 1, reject with a reason (the only automatic decision).**
+- Rules: catastrophic exposure (black or blown), strong defocus or motion blur relative to the burst, blinks on the main face,
+  heavy clipping relative to siblings. Each rejection carries a reason code shown in the UI.
+- Conservative by design. Measured on the burst set the rules kept the owner's frame 87% of the time while removing only 17% of
+  frames, so 13% of kept frames hit a rule today. That is not good enough to reject silently. First release: **flag, do not
+  hide**; a frame is only dimmed or tagged with its reason, one click to restore. Hard reject only after the keeper-recall check
+  (experiment 1 below) shows 99.5% or better on known keepers, per rule, and the rules that cost keepers are loosened.
+- Genre loosening (night, astro, long exposure) stays an open decision.
+
+**Pass 2, grouping for display (no scoring).**
+- Burst and scene groups from EXIF time and the classical features (pHash, dHash, SSIM, colour histogram, ORB, settings), with
+  the thresholds from the owner's labels. No embedding model.
+- Groups are shown as stacks in the grid, ordered by capture time, with the pass-1 flags visible on each member. **Nothing in a
+  group is auto-selected.** pHash collapsing of near duplicates is removed: with a chance-level tie-break it threw the kept frame
+  away (survival fell from 87% to 59%).
+
+**Pass 3 is retired as an automatic ranker.** No MANIQA, no Facet blend, no VLM judge, no learned taste model in the default
+flow. The specialised signals still have value as visible evidence for the person choosing, not as a score: eyes open (MediaPipe
+landmarks), subject sharpness (BiRefNet mask, shared with the editor's masking), clipping, and the existing compare and survey
+views. Any aesthetic or quality score that is ever added is shown as information, never used to reject or auto-pick.
+
+**Why this is still useful.** It removes the frames nobody would keep, shortens the pile to look through, keeps the rest in
+context, and makes every automatic action explainable and reversible. It also keeps every component permissively licensed and
+fast on CPU.
+
+**Follow-ups.** (1) Run the pass-1 keeper-recall check on the full library and see which rule drops the 13%. (2) Face and
+subject-sharpness signals on the grid. (3) Replace the three InsightFace-looking face files (YuNet and SFace are MIT/Apache).
+(4) Facet's grouping settings (0.4 s rapid burst, 0.8 min scene, sequence gap 3 s and hamming 10) and bracket/panorama protection
+are worth adopting as defaults. (5) MANIQA weights and training-data licences remain unchecked and are no longer needed.
+
+## The pipeline (original plan, superseded by the decision above)
 
 1. **Pass 1, junk gate.** Cheap measurements on a normalised preview: black or catastrophically blown frames, defocus and
    motion blur, noise, clipping, subject-region sharpness and exposure. Only catastrophic, high-confidence rules reject;
