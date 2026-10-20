@@ -161,6 +161,15 @@ class FaceQualityAnalyzer:
             app.prepare(ctx_id=ctx_id, det_size=(det_size, det_size))
             self._app = app
             self.available = True
+        except ImportError as exc:
+            # The managed AI runtime no longer installs insightface (its model files are
+            # non-commercial and people grouping uses MediaPipe + AdaFace), so this is the
+            # normal state: say so plainly instead of surfacing a module-not-found error.
+            self.initialization_error = (
+                "The legacy face-quality pass needs the insightface package, which is not part of "
+                f"the Image Triage AI runtime ({exc}). Face quality is skipped."
+            )
+            self.available = False
         except Exception as exc:
             self.initialization_error = f"{type(exc).__name__}: {exc}"
             self.available = False

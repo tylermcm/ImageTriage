@@ -23,7 +23,7 @@
 ## Not built (next)
 1. **Done 20 October 2026 (see the section below).** The Set Up AI dialog redesign from `docs/ai_setup_mockup.html`: hardware-based default, component list with sizes, side summary, step-by-step progress and verification view. Today the old two-card dialog still shows (its model line now reads CLIP, Faces and people, MANIQA and Q-ReAlign).
 2. **Done 20 October 2026.** The status chip and the first-run prompt on the first Analyze without setup.
-3. Remove `insightface` from the runtime requirements and locks once the legacy culler is gone (still installed; needs a lock refresh).
+3. Done: `insightface` is removed from the runtime requirements and the four locks (with the packages only it pulled in: requests, urllib3, charset-normalizer, scikit-image, imageio, tifffile, lazy-loader, plus idna and networkx in the base locks). The legacy culler (`ai/use_legacy_culler`, capability `legacy_faces`) now reports that the face-quality pass needs the missing package and skips it; the locks were edited by hand because `scripts/refresh_ai_runtime_lock.py` fails on this machine (see git log).
 4. Real-library checks: people grouping on a larger set, timing of the cascade people step, the rescan and name carry-over on a real catalog.
 5. The face landmarker bundle lives on the owner's Hugging Face; AdaFace is pinned to yakhyo/uniface-weights and can be re-hosted by changing `FACES_IDENTITY_REPO`/`REVISION` in `cascade/rankers/bundles.py`.
 6. Age and gender are no longer estimated (the old files were non-commercial); check nothing in the UI expects them.
@@ -73,5 +73,5 @@ The first Analyze with no AI setup shows a card hanging from the chip (arrow up)
 
 **Pending (owner, evening of 20 October 2026):** run the pass-1 audit on the server, then bring back `report.md` and `labels.json`: `docs/pass1_audit_runbook.md`. The blink and face-area score files it can use are not produced by any script yet.
 
-**Not built / next.** (1) Tell the editor which mask buttons to grey out in advance (see above). (2) Real-library checks listed above. (3) Remove `insightface` from the runtime requirements. (4) Run the dialog and a real install on a machine with an NVIDIA GPU
+**Not built / next.** (1) Tell the editor which mask buttons to grey out in advance (see above). (2) Real-library checks listed above. (3) `insightface` is already removed from the runtime requirements. (4) Run the dialog and a real install on a machine with an NVIDIA GPU
 (this PC has no `nvidia-smi`, so only the CPU defaults were seen live, and the percent was only tested with recorded installer output).
