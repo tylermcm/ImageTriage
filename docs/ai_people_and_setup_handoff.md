@@ -56,8 +56,20 @@ The first Analyze with no AI setup shows a card hanging from the chip (arrow up)
 `test_ai_filters_and_menu` (3, a deleted QMenu in the AI menu walk, fails on the commit before this work too) and `test_ai_runtime_packages` lock-hash count (known).
 
 **Differences from the mockup.** "AI ready" sits among the right-hand status items (before "Load: ..."), not right after the photo counts: the counts are the status bar's temporary message, and a normal widget would be hidden by it.
-Install progress is still the existing in-window overlay and the chip's "Installing AI" with its message; the three-step progress view inside the dialog is not built. There is no percent on the chip (the setup reports text only).
 
-**Not built / next.** (1) The three-step progress view and a percent. (2) A real source for the Update state (a pinned model changing in a release); today Update means "a model this version needs is not installed". (3) Editor tools: SAM, Depth and OneFormer
-have bundles and capabilities but their Image Triage consumers (scene/people mask jobs, `mask_warmup`) live on the other machine's checkout; gate each tool on its own capability when they land. (4) Real-library checks listed above.
-(5) Remove `insightface` from the runtime requirements. (6) Run the dialog on a machine with an NVIDIA GPU (this PC has no `nvidia-smi`, so only the CPU defaults were seen live).
+**Leftovers finished (20 October 2026).**
+1. *Progress.* `ai_setup_progress.SetupProgress` (pure) turns the runtime installer's lines (pip's "Downloading X (N MB)", "Installing collected packages") and the model downloads' messages into one percent and three steps
+   (Downloading, Installing, Checking that it works), each part weighted by its download size; the last 4% is the final check; the ETA follows the pace once it is past 3%. `ui/ai_setup_progress_dialog.py` is the non-modal view
+   (bar, three steps, time left, Cancel, then "AI is ready" or what went wrong; a failure always comes to the front). `AiSetupController` begins a run in `start_ai_setup_selection`, feeds it from every progress handler, and ends it on the
+   readiness result. The chip shows "Installing AI 42%" and its card has the bar, "Show details" (reopens the view) and "Cancel" (`cancel_setup`: the installer subprocess is terminated through the new `AIRuntimeInstallTask.cancel`,
+   bundle tasks are cancelled, the next step never starts, nothing pops up). Not covered: a model download task (`AIModelDownloadTask`) has no cancel of its own, so it finishes its current file first.
+2. *Update.* The source is the model store's own `stale` state (installed from a different pinned revision) plus bundles a selected capability needs that are missing. The chip says "AI update 547 MB", the card lists the models, and
+   **Update** runs `update_ai_models()`: just those bundles, with the progress view.
+3. *Editor tools.* `editor_tools.py` maps each editor tool (`subjectMasks` BiRefNet, `sceneMasks` OneFormer, `peopleMasks` OneFormer + SAM + BiRefNet, `clickSelect` SAM, `depthMap` Depth) to the models it needs; a tool is available exactly
+   when it has all of them, so any subset of models works. `camera_raw_host_jobs.HostJobRunner` now has a gate: a pending job of one of those kinds whose models are missing is claimed and finished at once with
+   "People masks need Scene regions and Subject masks (621 MB). Open the AI chip, choose Set up AI and turn on Editor tools.", and the window shows the same line in the status bar. The Ready card has an Editor tools row.
+   The mask jobs themselves (scene/people/subject host jobs, `mask_warmup`) are still on the other checkout; when they land they only need to run after the gate, which is already in front of every kind.
+   Not done: telling the editor *in advance* which mask buttons to grey out. That needs a field in the `ui.hostJob` poll and a PhotoCraft change; `editor_tools.available_kinds()` is the value to send.
+
+**Not built / next.** (1) Tell the editor which mask buttons to grey out in advance (see above). (2) Real-library checks listed above. (3) Remove `insightface` from the runtime requirements. (4) Run the dialog and a real install on a machine with an NVIDIA GPU
+(this PC has no `nvidia-smi`, so only the CPU defaults were seen live, and the percent was only tested with recorded installer output).
