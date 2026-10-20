@@ -18,6 +18,18 @@ python scripts/ai_v5/pass1_audit.py --folders D:\Photos\trip1 D:\Photos\trip2 --
 
 It reads each image once (RAW through the embedded preview, as the app does) and writes into `run1/`: `frozen.json` (every frame's hash, measures, capture time, focal length; this is what later evaluations read, so keep it), `report.md` and `report.json` (flag rates, stack diagnostics, coverage; no recall yet), `pick/index.html` with the contact sheets, and `review.html` with blind stack pairs.
 
+## Optional but recommended: write the score files
+
+Without these the blink rule's recall and the face-size stack split are not measured. This runs the Face Landmarker over the same folders (same previews, same decision code as the app's blink worker) and reads only the images, so do it once, any time before the evaluation:
+
+```
+python scripts/ai_v5/write_scores.py --folders D:\Photos	rip1 D:\Photos	rip2 --out run1
+```
+
+It writes `run1link_scores.json`, `run1aces.json` and `run1\scores_report.json` (counts and the failures with reasons). Use the same `--folders` (and `--recursive` if used) as the audit run. `--mode auto` runs in this Python when `mediapipe` imports and otherwise through the app's worker (`--mode inprocess` / `--mode worker` force one). `--model-dir` is the folder holding `face_landmarker.task` (default: the app's managed bundle, or `IMAGE_TRIAGE_BLINK_MODEL_DIR`). `--limit 50` is a quick trial; `--resume` continues an interrupted run (files are rewritten every 100 frames). A frame with no prominent face (under 1% of the frame) scores 0.0 for blink and is absent from `faces.json`; the audit reads absent as "no face". Unreadable files are in neither file and are listed in `scores_report.json`.
+
+In worker mode the face sizes come from the face worker, which also needs the AdaFace model; if it is missing, blink scores are still written and the report notes that face sizes are absent.
+
 ## By eye
 
 4. Open `run1\pick\index.html`. On each page click the frames you would keep (capture order, nothing from the run is shown) and press "download keepers". Each page downloads `keepers_NN_NN.json` (a list of paths). Choosing is saved in the browser, so a page can be left and resumed.
@@ -26,8 +38,10 @@ It reads each image once (RAW through the embedded preview, as the app does) and
 ## Evaluate (reads no images)
 
 ```
-python scripts/ai_v5/pass1_audit.py --from-frozen run1\frozen.json --keepers keepers_01_01.json keepers_01_02.json --out run1_eval --sweep-json sweep.json
+python scripts/ai_v5/pass1_audit.py --from-frozen run1\frozen.json --keepers keepers_01_01.json keepers_01_02.json --out run1_eval --sweep-json sweep.json --blink-scores run1link_scores.json --faces-json run1aces.json
 ```
+
+(The last two options are only there if the score files were written.)
 
 `sweep.json` is optional, one setting at a time unless `--full-grid` is added. Suggested first sweep:
 `{"soft_ratio": [0.3, 0.4, 0.5], "clip_floor": [0.05, 0.10, 0.15], "blown_out": [0.3, 0.4, 0.5], "duplicate_distance": [6, 8, 10], "split_jump": [14, 18, 22], "linkage": ["first_fit", "closest"], "max_stack_span": [null, 18, 24], "split_focal_ratio": [null, 1.1, 1.25], "all_flagged_skips_collapse": [false, true]}`.
@@ -40,7 +54,7 @@ Because the evaluation reads no images it can be re-run as often as wanted with 
 ## Limits to keep in mind when reading the report
 
 - About 200 independent keepers can show where rules fail; they cannot prove 99.5% recall (that needs at least 598 with zero misses; the report prints this). Keepers from one burst or event are not independent, so the lower bound is optimistic.
-- **Blink is not measured** unless `--blink-scores` is given, and nothing in the repo writes that file yet. The same goes for `--faces-json` (needed for `split_face_ratio`). A small script that runs the blink and face workers over the folders and writes both JSON files still has to be written (the workers are `image_triage/cascade/rankers/worker.py`, `--kind blink` and `--kind faces`). Until then the blink rule's recall is unknown.
+- **Blink is measured only if `--blink-scores` is given** (and `split_face_ratio` needs `--faces-json`): write both with `scripts/ai_v5/write_scores.py` (see above). Not yet run on real photos: until it has, the blink rule's recall is unknown. A blink score is the landmarker's, so its own misses (profile, sunglasses, small faces under 1% of the frame) are not seen.
 - `split_focal_ratio` uses the plain EXIF focal length (the metadata reader has no 35 mm equivalent), so it only compares frames from one lens/body family.
 - Not yet tried on real RAW folders. A RAW and its same-named JPEG in one folder are treated as one frame (the RAW), as in the app.
 - The run uses the cascade's current defaults; sweeps change one setting at a time. The first run is for finding failures, not for proving a result.
