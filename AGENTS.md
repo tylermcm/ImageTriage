@@ -8,9 +8,17 @@ upstream (`origin`, storytold/photocraft) and user fork (`fork`, tylermcm/photoc
 and compare their commits with our integration branch. A failed fetch must be
 reported; do not describe an offline checkout as current.
 
+Merge upstream on a release, not on every session. Merging each upstream push
+turned out to be a constant uphill battle; one merge per release is easier. Between
+releases only fetch, report what moved, and dry-run the merge (`git merge-tree
+--write-tree --name-only HEAD origin/main`) to gauge the conflicts; do not start
+the merge. Merge sooner only when upstream has not tagged a release but the
+conflicts are major, or the user asks. When upstream cuts a release (a new
+version tag), merge that release's tip, not a later `main`.
+
 Keep host changes on `codex/image-triage-integration`. Preserve user edits and
-existing commits before integrating updates. Merge the fetched upstream tip;
-also examine any fork-only work and integrate it when it belongs to this branch.
+existing commits before integrating updates. Also examine any fork-only work and
+integrate it when it belongs to this branch.
 Do not force-push, push to storytold, or create an upstream pull request. Pushes
 to the user's fork require the user's request. The user normally pushes manually.
 
