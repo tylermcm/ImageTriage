@@ -35,6 +35,8 @@ class FrameFeatures:
     clipped: float  # fraction of pixels with any channel at 250 or above
     extremes: float  # fraction of luma pixels at or below 5 or at or above 250
     blink: bool = False
+    focal_mm: float | None = None  # EXIF focal length; only used when CascadeSettings.split_focal_ratio is set
+    face_area: float | None = None  # fraction (0..1) of the frame covered by the largest prominent face; only used with split_face_ratio
 
 
 @dataclass(slots=True, frozen=True)
@@ -47,6 +49,12 @@ class CascadeSettings:
     duplicate_distance: int = 8  # complete-linkage pHash distance for collapsing near-duplicates
     maniqa_keep: int = 3  # the first ranker keeps this many representatives
     final_keep: int = 2  # the last ranker keeps this many
+    # Optional behaviours; the defaults reproduce the original cascade exactly.
+    linkage: str = "first_fit"  # "first_fit" (first mergeable pair in index order) or "closest" (closest-pair complete linkage)
+    max_stack_span: int | None = None  # also start a new stack if any pair inside the stack would be at or above this distance
+    split_focal_ratio: float | None = None  # start a new stack if consecutive focal lengths differ by more than this ratio
+    split_face_ratio: float | None = None  # the same for the largest-face area (both present and >= 0.01)
+    all_flagged_skips_collapse: bool = False  # when every frame of a stack is rejecting-flagged, skip near-duplicate collapse
 
 
 @dataclass(slots=True, frozen=True)
