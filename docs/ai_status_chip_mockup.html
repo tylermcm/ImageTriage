@@ -25,6 +25,9 @@ h1{font-size:19px;margin:0 0 4px}p{margin:0;color:var(--mut)}
 .stage>img{display:block;width:1920px;height:1032px}
 .chip{position:absolute;display:inline-flex;align-items:center;gap:7px;height:22px;padding:0 10px 0 8px;border-radius:999px;background:#fff;border:1px solid var(--line);font:12px/1 "Segoe UI",sans-serif;color:var(--ink);cursor:pointer;white-space:nowrap;box-shadow:0 1px 2px rgba(20,25,40,.08)}
 .chip:hover{border-color:#b9c0cc}
+.chip.flat{background:transparent;border-color:transparent;box-shadow:none;height:20px;padding:0 2px 0 0;gap:6px;color:#4b5563}
+.chip.flat:hover{border-color:transparent;color:var(--ink)}
+.chip.flat .mg{border:1px solid var(--line);background:#fff;border-radius:6px;padding:2px 7px;font-size:11px;color:var(--ink)}
 .chip .dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
 .chip.need .dot{background:var(--warn)}.chip.upd .dot{background:var(--a4)}.chip.rep .dot{background:var(--bad)}
 .chip small{color:var(--mut);font-size:11.5px}
@@ -86,6 +89,7 @@ h1{font-size:19px;margin:0 0 4px}p{margin:0;color:var(--mut)}
   <div><b>Why the top bar.</b> It is always in view, sits beside Search (the other AI-powered feature), and has free room left of it, so nothing else moves. The first-run card hangs from it with an arrow, so the prompt is clearly about this chip.</div>
   <div><b>One click, one place.</b> The chip opens a small summary; its primary button opens the full Set up AI page (<a href="ai_setup_mockup.html" target="_blank">ai_setup_mockup.html</a>). The AI menu, the command palette and the first Analyze open the same page.</div>
   <div><b>First run never blocks.</b> Analyze works without setup, so the prompt offers both choices. Asked once; <i>Analyze without it</i> is remembered until the chip changes state.</div>
+  <div><b>Only what needs you goes up top.</b> Needs setup, Installing, Update and Repair are chips beside Search. Ready is just quiet text with a Manage button in the status bar, because there is nothing to do about it.</div>
   <div><b>One number.</b> The chip shows what the default install is on this PC: 3.2 GB on a laptop (the core), 10.4 GB with a graphics card (core, Culling and Editor tools). Everything else lives on the setup page.</div>
 </div>
 
@@ -112,19 +116,20 @@ const STATES={
 };
 let st="ready",mode="chip",popOpen=false;
 const POS={x:1226,y:8}; // top bar, left of the search field
+const POS_READY={x:252,y:1007}; // status bar: Ready only; every state that needs attention stays up top
 function draw(){
-  const s=mode==="first"?STATES.need:STATES[st],p=POS;
-  const c=$("chip");c.className=s.cls;c.innerHTML=`<span class="dot"></span><span>${s.label}</span>${s.small?`<small>${s.small}</small>`:""}`;
+  const s=mode==="first"?STATES.need:STATES[st],ready=mode==="chip"&&st==="ready",p=ready?POS_READY:POS;
+  const c=$("chip");c.className=ready?"chip flat":s.cls;c.innerHTML=ready?`<span class="dot"></span><span>${s.label}</span><span class="mg">Manage</span>`:`<span class="dot"></span><span>${s.label}</span>${s.small?`<small>${s.small}</small>`:""}`;
   c.style.left=p.x+"px";c.style.top=p.y+"px";c.style.display="inline-flex";
   const w=c.offsetWidth||150,mid=p.x+w/2,hl=$("hl"),tag=$("tag");
   hl.style.display=tag.style.display="block";
-  hl.style.left=(p.x-6)+"px";hl.style.top=(p.y-5)+"px";hl.style.width=(w+12)+"px";hl.style.height="32px";
+  hl.style.left=(p.x-6)+"px";hl.style.top=(p.y-5)+"px";hl.style.width=(w+12)+"px";hl.style.height=ready?"30px":"32px";
   tag.textContent="AI status chip";tag.style.left=(p.x-6)+"px";tag.style.top=(p.y+90)+"px";tag.style.display="none";
   const pop=$("pop");
-  pop.innerHTML=`<div class="bar"></div><div class="in">${s.body()}</div><div class="arrow up"></div>`;
+  pop.innerHTML=`<div class="bar"></div><div class="in">${s.body()}</div><div class="arrow ${ready?"down":"up"}"></div>`;
   pop.classList.remove("hidden");
   const left=Math.min(p.x-6,1900-340);
-  pop.style.left=left+"px";pop.style.top=(p.y+34)+"px";
+  pop.style.left=left+"px";pop.style.top=(ready?p.y-pop.offsetHeight-14:p.y+34)+"px";
   pop.querySelector(".arrow").style.left=(mid-left-6)+"px";
   pop.classList.toggle("hidden",!(popOpen&&mode==="chip"));
   const f=$("first");
