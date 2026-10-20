@@ -27,3 +27,37 @@
 4. Real-library checks: people grouping on a larger set, timing of the cascade people step, the rescan and name carry-over on a real catalog.
 5. The face landmarker bundle lives on the owner's Hugging Face; AdaFace is pinned to yakhyo/uniface-weights and can be re-hosted by changing `FACES_IDENTITY_REPO`/`REVISION` in `cascade/rankers/bundles.py`.
 6. Age and gender are no longer estimated (the old files were non-commercial); check nothing in the UI expects them.
+
+
+## Set Up AI redesign, status chip and first-run prompt: built (20 October 2026)
+
+Mockups (the design that was approved): `docs/ai_setup_mockup.html`, `docs/ai_status_chip_mockup.html` (open from `docs/`; the second embeds a real window capture).
+
+**Decisions (owner).** PyTorch is part of the AI runtime and never listed. TinyCLIP and the face models are core. Two optional pills, **Culling** (MANIQA 543 MB, Q-ReAlign 2.1 GB) and **Editor tools**
+(BiRefNet 425, SAM 150, Depth 100, OneFormer 196 = 871 MB), each one switch that opens to single models. Defaults: a PC with an NVIDIA GPU has both on, one without has both off. The CPU slowness warning
+appears only after the person turns Culling on or opens it. One download number, one Install button, "More" is a floating menu, and the dialog never changes size (the list scrolls).
+Needs setup / Installing / Update / Repair are a chip in the top bar left of Search with a slow conic-gradient ring; Ready is quiet clickable text ("AI ready") in the status bar.
+The first Analyze with no AI setup shows a card hanging from the chip (arrow up) with "Set up AI (size)" and "Analyze without it"; it is asked once (`ai/first_run_prompt_answered`).
+
+**Real sizes** (from the manifest, not the mockup's first guess): core is 2.9 GB without a GPU (runtime with PyTorch 2.6 GB + faces 170 MB + TinyCLIP 98 MB) and 6.9 GB with one; everything on is 6.4 GB / 10.4 GB.
+
+**Code.**
+- `ai_setup_plan.py` (pure): core vs optional models, groups, sizes, defaults by GPU, per-model capabilities, the saved choice (`ai/setup_models`).
+- `ai_manifest.py`: one capability per optional model (`rank_quality`, `rank_aesthetic`, `editor_subject`, `editor_select`, `editor_depth`, `editor_scene`); `setup_capabilities(include_torch, optional=...)`.
+  The old pair `cascade_rankers` is still there for a caller that asks for no choice.
+- `ui/ai_setup_dialog.py`: the dialog. `ai_setup_controller.show_ai_setup_dialog` uses it; it reports what was pressed (install, remove, check, or a menu action), saves the choice, and removes unticked installed models.
+  `selected_ai_capabilities()` is now the saved choice plus whatever is installed, so verification never demands a model nobody downloaded.
+- `ai_platform.nvidia_gpu_name()`: GPU detection through `nvidia-smi` (there was none; the old dialog defaulted to GPU). Cached.
+- `ai_status.py` (pure state), `ui/ai_status_widgets.py` (chip, status text, popover card), `ai_status_controller.py` (refresh every 20 s and after every setup event, the card, the first-run prompt).
+  `window.py` builds the controller, `toolbar_controller` puts the chip before the search box, `_init_status_bar` adds the text as a *permanent* status widget (a normal one is hidden whenever a message shows).
+- `cascade/launch.py` and `ai_run_controller`: either ranker can run alone; ranking is skipped, with a note, when neither is installed. The launch-time setup modal is gone (the chip says it instead).
+
+**Tests.** `test_ai_setup_plan`, `test_ai_setup_dialog`, `test_ai_status`, `test_ai_status_controller` (real window), `test_cascade_launch` (per-ranker). The AI/cascade/window groups pass except failures that predate this work:
+`test_ai_filters_and_menu` (3, a deleted QMenu in the AI menu walk, fails on the commit before this work too) and `test_ai_runtime_packages` lock-hash count (known).
+
+**Differences from the mockup.** "AI ready" sits among the right-hand status items (before "Load: ..."), not right after the photo counts: the counts are the status bar's temporary message, and a normal widget would be hidden by it.
+Install progress is still the existing in-window overlay and the chip's "Installing AI" with its message; the three-step progress view inside the dialog is not built. There is no percent on the chip (the setup reports text only).
+
+**Not built / next.** (1) The three-step progress view and a percent. (2) A real source for the Update state (a pinned model changing in a release); today Update means "a model this version needs is not installed". (3) Editor tools: SAM, Depth and OneFormer
+have bundles and capabilities but their Image Triage consumers (scene/people mask jobs, `mask_warmup`) live on the other machine's checkout; gate each tool on its own capability when they land. (4) Real-library checks listed above.
+(5) Remove `insightface` from the runtime requirements. (6) Run the dialog on a machine with an NVIDIA GPU (this PC has no `nvidia-smi`, so only the CPU defaults were seen live).
