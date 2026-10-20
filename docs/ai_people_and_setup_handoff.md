@@ -21,8 +21,8 @@
 - Tests: `test_cascade_faces.py`, `test_face_stack.py`; related suites pass. Known unrelated failures: `test_ai_runtime_packages` lock-hash count (pre-existing).
 
 ## Not built (next)
-1. The Set Up AI dialog redesign from `docs/ai_setup_mockup.html`: hardware-based default, component list with sizes, side summary, step-by-step progress and verification view. Today the old two-card dialog still shows (its model line now reads CLIP, Faces and people, MANIQA and Q-ReAlign).
-2. The status chip and the first-run prompt on the first Analyze without setup.
+1. **Done 20 October 2026 (see the section below).** The Set Up AI dialog redesign from `docs/ai_setup_mockup.html`: hardware-based default, component list with sizes, side summary, step-by-step progress and verification view. Today the old two-card dialog still shows (its model line now reads CLIP, Faces and people, MANIQA and Q-ReAlign).
+2. **Done 20 October 2026.** The status chip and the first-run prompt on the first Analyze without setup.
 3. Remove `insightface` from the runtime requirements and locks once the legacy culler is gone (still installed; needs a lock refresh).
 4. Real-library checks: people grouping on a larger set, timing of the cascade people step, the rescan and name carry-over on a real catalog.
 5. The face landmarker bundle lives on the owner's Hugging Face; AdaFace is pinned to yakhyo/uniface-weights and can be re-hosted by changing `FACES_IDENTITY_REPO`/`REVISION` in `cascade/rankers/bundles.py`.
