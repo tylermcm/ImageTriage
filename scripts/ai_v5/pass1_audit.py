@@ -30,7 +30,7 @@ from image_triage.cascade.blink import is_blink  # noqa: E402
 from image_triage.cascade.extract import FeatureCache, _load_preview, extract_features  # noqa: E402
 from image_triage.cascade.folder import FolderFrame, run_folder  # noqa: E402
 from image_triage.cascade.model import CascadeSettings, FrameFeatures  # noqa: E402
-from image_triage.formats import IMAGE_SUFFIXES, MODEL_SUFFIXES, suffix_for_path  # noqa: E402
+from image_triage.formats import IMAGE_SUFFIXES, MODEL_SUFFIXES, RAW_SUFFIXES, suffix_for_path  # noqa: E402
 from image_triage.metadata import load_capture_metadata  # noqa: E402
 from image_triage.models import ImageRecord  # noqa: E402
 
@@ -67,6 +67,24 @@ def scan_folders(folders: Sequence[str], recursive: bool) -> dict[str, list[str]
     return result
 
 
+def merge_companions(scanned: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """A RAW and a JPEG with the same name in the same folder are one frame in the app (the RAW is the primary and the JPEG its companion, see ``scanner.py``). Do the same
+    here, so a pair is not counted as two frames and a keeper listed by its JPEG still matches. Returns the folders with the companions removed, and companion -> primary."""
+    merged: dict[str, list[str]] = {}
+    companion_of: dict[str, str] = {}
+    for folder, paths in scanned.items():
+        raws = {os.path.splitext(os.path.basename(p))[0].casefold(): p for p in paths if suffix_for_path(p) in RAW_SUFFIXES}
+        kept: list[str] = []
+        for path in paths:
+            stem = os.path.splitext(os.path.basename(path))[0].casefold()
+            if suffix_for_path(path) not in RAW_SUFFIXES and stem in raws:
+                companion_of[norm(path)] = raws[stem]
+            else:
+                kept.append(path)
+        merged[folder] = kept
+    return merged, companion_of
+
+
 def read_keepers(path: str, root: str) -> list[str]:
     text = Path(path).read_text(encoding="utf-8-sig")
     if path.lower().endswith(".json"):
@@ -101,6 +119,7 @@ class Dataset:
         self.bracket_keys: list[str] = []
         self.focal: dict[str, float] = {}
         self.features: dict[str, FrameFeatures] = {}
+        self.companion_of: dict[str, str] = {}  # a JPEG companion (normalised path) -> its RAW primary
 
     @property
     def all_paths(self) -> list[str]:
@@ -206,6 +225,8 @@ def pct(value: float | None, digits: int = 2) -> str:
 def build_report(args: argparse.Namespace, data: Dataset, settings: CascadeSettings, notes: list[str]) -> tuple[dict[str, Any], list[audit.FrameRow]]:
     keeper_paths = read_keepers(args.keepers, args.root) if args.keepers else []
     scanned_norm = {norm(p): p for p in data.all_paths}
+    for companion, primary in data.companion_of.items():
+        scanned_norm.setdefault(companion, primary)  # a keeper named by its JPEG companion is the RAW frame
     matched: dict[str, str] = {}
     unmatched: list[str] = []
     for path in keeper_paths:
@@ -515,12 +536,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = replace(settings, **known)
         if unknown:
             notes.append(f"Settings fields not present in this CascadeSettings were ignored: {', '.join(unknown)}")
-    scanned = scan_folders(args.folders, args.recursive)
+    scanned, companion_of = merge_companions(scan_folders(args.folders, args.recursive))
     if not scanned:
         print("No images found in the given folders.", file=sys.stderr)
     blink_scores = load_json_map(args.blink_scores)
     faces = load_json_map(args.faces_json)
     data = build_dataset(scanned, args.cache, faces, blink_scores)
+    data.companion_of = companion_of
     report, _rows = build_report(args, data, settings, notes)
     (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     (out / "report.md").write_text(render_markdown(report), encoding="utf-8")

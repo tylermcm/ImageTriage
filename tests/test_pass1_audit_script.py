@@ -142,3 +142,15 @@ def test_help_runs():
 
     result = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True, cwd=str(SCRIPT.parents[2]))
     assert result.returncode == 0 and "--review-pairs" in result.stdout
+
+
+def test_a_raw_and_its_jpeg_companion_are_one_frame_and_a_keeper_named_by_the_jpeg_matches_the_raw(audit_script, tmp_path) -> None:
+    folder = str(tmp_path)
+    scanned = {folder: [str(tmp_path / n) for n in ("a.JPG", "a.NEF", "b.jpg", "c.NEF")]}
+    merged, companion_of = audit_script.merge_companions(scanned)
+    assert [Path(p).name for p in merged[folder]] == ["a.NEF", "b.jpg", "c.NEF"]  # the lone JPEG and the lone RAW stay
+    assert companion_of == {audit_script.norm(str(tmp_path / "a.JPG")): str(tmp_path / "a.NEF")}
+    # Different folders never pair: the same stem in another folder is another photo.
+    other = {str(tmp_path / "x"): [str(tmp_path / "x" / "a.NEF")], str(tmp_path / "y"): [str(tmp_path / "y" / "a.jpg")]}
+    merged_other, companions_other = audit_script.merge_companions(other)
+    assert not companions_other and sum(len(v) for v in merged_other.values()) == 2
