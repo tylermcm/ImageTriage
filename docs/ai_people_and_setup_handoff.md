@@ -71,5 +71,7 @@ The first Analyze with no AI setup shows a card hanging from the chip (arrow up)
    The mask jobs themselves (scene/people/subject host jobs, `mask_warmup`) are still on the other checkout; when they land they only need to run after the gate, which is already in front of every kind.
    Not done: telling the editor *in advance* which mask buttons to grey out. That needs a field in the `ui.hostJob` poll and a PhotoCraft change; `editor_tools.available_kinds()` is the value to send.
 
+**Pending (owner, evening of 20 October 2026):** run the pass-1 audit on the server, then bring back `report.md` and `labels.json`: `docs/pass1_audit_runbook.md`. The blink and face-area score files it can use are not produced by any script yet.
+
 **Not built / next.** (1) Tell the editor which mask buttons to grey out in advance (see above). (2) Real-library checks listed above. (3) Remove `insightface` from the runtime requirements. (4) Run the dialog and a real install on a machine with an NVIDIA GPU
 (this PC has no `nvidia-smi`, so only the CPU defaults were seen live, and the percent was only tested with recorded installer output).

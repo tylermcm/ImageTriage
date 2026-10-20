@@ -168,6 +168,8 @@ the existing AI suites, updated where they encoded the old behaviour (Analyze us
    JPEG is still found at page-multiple and ordinary sizes.
 
 
+**Next step, pending the owner's server run (20 October 2026): the pass-1 audit.** Steps, commands, what to bring back and what we decide afterwards: `docs/pass1_audit_runbook.md`.
+
 ## Blink signal (19 October 2026)
 
 The "eyes closed" rule was inert because the app has no blink source (its face code defers blink and uses the AuraFace pack the licence audit flagged). It now comes from
