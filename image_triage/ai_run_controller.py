@@ -1398,6 +1398,19 @@ class AiRunController(QObject):
             self._window.grid.set_current_index(index)
         self._window.statusBar().showMessage(f"{len(existing_paths)} Winner or Needs Review image(s) remain for manual review.")
 
+    def apply_decision_reasons(self, records) -> dict[str, str]:
+        """Why each frame is a Reject, in a few words: the cascade's flags when it made the call, otherwise the AI's own sentence."""
+        from .ai_why import flag_labels
+
+        reasons: dict[str, str] = {}
+        for record in records:
+            result = self.ai_result_for_record(record)
+            if result is None:
+                continue
+            flags = ", ".join(flag_labels(getattr(result, "triggered_tags", "")))
+            reasons[record.path] = flags or (result.confidence_summary or "").strip()
+        return reasons
+
     def apply_ai_culling(self) -> None:
         if not self._window._current_folder:
             self._window.statusBar().showMessage("Open a source folder before applying AI decisions.")
@@ -1428,6 +1441,7 @@ class AiRunController(QObject):
             keeper_count=len(keeper_records),
             review_count=len(review_records),
             thumbnail_manager=self._window.thumbnail_manager,
+            reasons=self.apply_decision_reasons(reject_records),
             parent=self._window,
         )
         if self._window._exec_dialog_with_geometry(dialog, "apply_ai_decisions") != dialog.DialogCode.Accepted:

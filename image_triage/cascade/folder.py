@@ -18,6 +18,7 @@ from .model import (
     FrameFeatures,
     FrameRole,
 )
+from .flags import is_rejecting
 from .pipeline import Scorer, run_cascade
 from .stacking import hamming
 
@@ -25,6 +26,7 @@ from .stacking import hamming
 ROLE_PICK = "pick"  # ranked first among several survivors
 ROLE_FINAL = "final"  # survived every pass (unranked, runner-up, or alone)
 ROLE_REJECTED = "rejected"  # flagged by pass 1 (dimmed, never hidden)
+ROLE_FLAGGED = "flagged"  # flagged by pass 1 but kept, because every frame of its stack has the same problem (or it is alone): needs a human look
 ROLE_DUPLICATE = "duplicate"
 ROLE_CUT = "cut"  # ranked below the kept frames in its stack
 ROLE_NO_PICK = "no_pick"
@@ -187,7 +189,13 @@ def _outcome(
 ) -> FrameOutcome:
     role = decision.role
     name = decision.duplicate_of.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if decision.duplicate_of else ""
-    if role is FrameRole.FINAL:
+    if role is FrameRole.FINAL and is_rejecting(decision.flags):
+        why = _flag_text([f for f in decision.flags if f != FLAG_BLOWN_OUT])
+        if stack_size == 1:
+            kind, text = ROLE_FLAGGED, f"Flagged: {why}. It is the only frame, so it is kept for you to decide."
+        else:
+            kind, text = ROLE_FLAGGED, f"Flagged: {why}. Kept because every frame in this stack has the same problem."
+    elif role is FrameRole.FINAL:
         if decision.rank == 1 and stack_size > 1:
             kind, text = ROLE_PICK, f"Best of this stack of {stack_size} after the cleanup and ranking passes."
         elif decision.rank is not None:

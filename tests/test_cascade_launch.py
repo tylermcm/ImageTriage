@@ -7,7 +7,7 @@ import sys
 import pytest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from image_triage.cascade.launch import CPU_SECONDS_PER_FRAME, decide_ranking, default_scorer_factory
+from image_triage.cascade.launch import CPU_SECONDS_PER_FRAME_FAST, CPU_SECONDS_PER_FRAME_LAPTOP, decide_ranking, default_scorer_factory
 from image_triage.models import DeleteMode, WinnerMode
 from image_triage.settings_dialog import WorkflowSettingsDialog
 from tests.harness import open_folder
@@ -25,7 +25,9 @@ def test_a_cpu_skips_ranking_unless_it_was_switched_on():
     assert not off.use_rankers and off.use_blink and "no usable GPU" in off.note
     on = decide_ranking("cpu", True)
     assert on.use_rankers and on.device == "cpu" and on.ask_cpu_confirmation
-    assert f"{CPU_SECONDS_PER_FRAME:.1f} seconds per frame" in on.confirmation_text
+    # The prompt gives the measured range (fast workstation to laptop), never one optimistic number.
+    assert f"{CPU_SECONDS_PER_FRAME_FAST} seconds per frame" in on.confirmation_text and f"{CPU_SECONDS_PER_FRAME_LAPTOP} seconds" in on.confirmation_text
+    assert "minute" in on.confirmation_text and "hours" in on.confirmation_text
 
 
 def test_no_runtime_skips_ranking_with_a_note_that_says_why():

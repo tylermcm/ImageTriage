@@ -202,3 +202,31 @@ Run on the server's V100 with the real models (`scripts/ai_v5/ranker_parity.py`,
   the aesthetic scores Facet stored from its own scan the correlation is only 0.59, because Facet decoded the RAW files itself and the aesthetic score depends on how the picture is rendered
   (full RAW decode versus the camera's embedded preview). The cascade always uses the embedded preview, so it is consistent with itself; do not mix the two renderings when comparing scores.
 - The level-word token handling in the Q-ReAlign worker, flagged earlier as never run, is therefore correct for the Mini model.
+
+
+## AI runtime hookup, verified on this Windows machine (20 October 2026)
+
+**Packaging.** `mediapipe==0.10.35` is now in the compact (base) runtime: `AI_RUNTIME_BASE_PIP_REQUIREMENTS`, `AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES`, and the four py313 Windows locks (10 new hash-pinned
+distributions: mediapipe, absl-py, contourpy, cycler, fonttools, kiwisolver, matplotlib, pyparsing, python-dateutil, six; the rest of its closure was already locked). MediaPipe asks for
+`opencv-contrib-python` and `sounddevice`; neither is needed by what the app imports and the contrib wheel shares the `cv2` tree with the headless one, so `AI_RUNTIME_LOCK_EXCLUDED_DISTRIBUTIONS`
+keeps them out and `refresh_ai_runtime_lock.py` honours it. The new locks were written by taking wheel hashes from PyPI (the refresh script needs Python 3.13 on the target); pip downloaded every
+wheel of the compact lock with `--require-hashes` for cp313/win_amd64 and accepted all of them. Rerun the refresh script on Python 3.13 when convenient to confirm it reproduces them.
+Existing installs now report `mediapipe` as missing until the person runs Repair AI.
+
+**The blink worker runs in the compact runtime.** `RankerSpec.needs_torch` (False for blink): it no longer demands the 2.6 GB PyTorch profile.
+
+**Real end-to-end runs, Windows 11, Python 3.13 managed runtime installed by the app's own installer from the locks** (compact base: 55 s; with PyTorch: 138 s; nothing missing in either):
+- **Blink:** the app's launcher picked the runtime, downloaded and verified `face_landmarker.task` from the owner's Hugging Face repo, MediaPipe scored real frames: 0.822 and 0.648 on the two real
+  blinks (server: 0.823, 0.648), 39 ms per frame once warm. The whole cascade ran through `CascadeRunTask` with the real worker: four stages, "Checking for closed eyes" progress, `blink_checked: true`.
+- **Rankers (CPU):** both downloaded from their hosts and verified, both scored real frames, no failures. Speed on a 4-core i5-8265U laptop: **MANIQA 56 s per frame, Q-ReAlign 25 s per frame**
+  (the server CPU measured 3.6 s and 3.4 s). CPU ranking is therefore impractical on a laptop; the opt-in prompt now states the measured range (about 7 s per frame on a fast workstation, over a minute on a laptop)
+  instead of one optimistic number. GPU ranking is unaffected (0.16 s and 0.65 s per frame on the V100).
+
+**Finding: an old Visual C++ runtime breaks the AI runtime on Windows.** This PC has the Microsoft Visual C++ Redistributable 14.36 (2023). With it, importing `onnxruntime` (the app's own runtime
+validation) and `torch` (`c10.dll`) fails with "WinError 1114: A dynamic link library (DLL) initialization routine failed", so Set Up AI rolls back with no useful message. Copying the 14.44 runtime DLLs
+next to torch's own made the MANIQA and Q-ReAlign workers start (verified; MediaPipe did not need it). `image_triage/ai_platform.py` now reads the installed version from the registry and, on a DLL
+failure, tells the person to install the latest x64 Redistributable (https://aka.ms/vs/17/release/vc_redist.x64.exe) with the version it found; it is wired into the runtime-install validation message and
+into ranker worker failures. **This PC still needs that Redistributable installed** before the managed AI runtime will validate.
+
+**Also changed.** A frame that pass 1 flags but that is kept anyway (alone, or because every frame in its stack has the same problem) is now `flagged` in **Needs review** with the reason, not a Keeper
+(the real run showed two lone blinking frames listed as keepers). Apply AI Decisions shows the reason under each frame it would recycle (plain labels for the cascade flags via `ai_why.FLAG_LABELS`).

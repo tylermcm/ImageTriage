@@ -40,6 +40,7 @@ from image_triage.ai_paths import runtime_tag  # noqa: E402
 from image_triage.ai_runtime_packages import (  # noqa: E402
     AI_RUNTIME_VARIANTS,
     LOCK_DIRECTORY,
+    AI_RUNTIME_LOCK_EXCLUDED_DISTRIBUTIONS,
     _ai_runtime_pip_requirements_for_variant,
     _torch_index_url_for_variant,
     lock_path_for,
@@ -102,11 +103,13 @@ def _render(entries: list[dict], variant: str, include_torch: bool) -> str:
             # in transitively, so drop it from the GPU closure.
             print("  dropping transitive onnxruntime from the GPU lock", file=sys.stderr)
             continue
-        if canonical == "opencv-python":
+        if canonical in AI_RUNTIME_LOCK_EXCLUDED_DISTRIBUTIONS:
             # The application declares the headless wheel. Some dependencies
-            # pull the GUI wheel too, but both distributions own the same cv2
-            # package tree and cannot safely coexist in one target directory.
-            print("  dropping transitive opencv-python from the lock", file=sys.stderr)
+            # pull a GUI or contrib wheel too (mediapipe asks for
+            # opencv-contrib-python and sounddevice), but those distributions own
+            # the same cv2 package tree and cannot safely coexist in one target
+            # directory, and nothing the app imports needs them.
+            print(f"  dropping transitive {canonical} from the lock", file=sys.stderr)
             continue
         metadata = entry.get("metadata") or {}
         name = str(metadata.get("name") or "").strip()

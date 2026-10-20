@@ -46,7 +46,7 @@ def default_launcher(launch: WorkerLaunch) -> "subprocess.Popen[str]":
     from ...ai_env import AIRuntimeUnavailable, build_worker_env, select_runtime
 
     try:
-        selection = select_runtime(launch.device, require_torch=True)
+        selection = select_runtime(launch.device, require_torch=launch.spec.needs_torch)
     except AIRuntimeUnavailable as exc:
         raise RankerUnavailable(str(exc), remediation=exc.remediation) from exc
     package_root = str(Path(__file__).resolve().parents[3])
@@ -299,7 +299,10 @@ def _worker_failure(spec: RankerSpec, event: dict[str, object]) -> RankerError:
         return RankerUnavailable(f"{spec.name} cannot run: {message}", remediation="Open Settings, run Set Up AI, then Repair AI.")
     if category == "weights_missing":
         return RankerWeightsMissing(f"{spec.name}: {message}", remediation="Re-download the model.")
-    return RankerWorkerError(f"{spec.name} failed: {message}")
+    from ...ai_platform import dll_failure_hint
+
+    hint = dll_failure_hint(message)
+    return RankerWorkerError(f"{spec.name} failed: {message}" + (f" {hint}" if hint else ""), remediation=hint)
 
 
 def _pump_stdout(process: "subprocess.Popen[str]", session: _Session) -> None:
