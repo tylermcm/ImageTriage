@@ -228,5 +228,5 @@ next to torch's own made the MANIQA and Q-ReAlign workers start (verified; Media
 failure, tells the person to install the latest x64 Redistributable (https://aka.ms/vs/17/release/vc_redist.x64.exe) with the version it found; it is wired into the runtime-install validation message and
 into ranker worker failures. **This PC still needs that Redistributable installed** before the managed AI runtime will validate.
 
-**Also changed.** A frame that pass 1 flags but that is kept anyway (alone, or because every frame in its stack has the same problem) is now `flagged` in **Needs review** with the reason, not a Keeper
+**Also changed.** A frame that pass 1 flags but that is kept anyway (alone, or because every frame in its stack was flagged) is now `flagged` in **Needs review** with the reason, not a Keeper
 (the real run showed two lone blinking frames listed as keepers). Apply AI Decisions shows the reason under each frame it would recycle (plain labels for the cascade flags via `ai_why.FLAG_LABELS`).
