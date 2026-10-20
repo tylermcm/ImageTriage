@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from . import full_render
+from . import editor_tools, full_render
 from . import upscale_service as service
 
 KIND_SUPER_RESOLUTION = "superResolution"
@@ -29,7 +29,12 @@ class HostJobRunner:
         render: Callable[..., full_render.RenderResult] = full_render.request_full_render,
         clock: Callable[[], float] = time.monotonic,
         spawn_thread: Callable[[Callable[[], None]], Any] | None = None,
+        gate: Callable[[str], str] = editor_tools.block_reason,
+        on_blocked: Callable[[str, str], None] | None = None,
     ) -> None:
+        """``gate(kind)`` says why an editor-tool job cannot run (a model it needs is not installed), or "" when it can; ``on_blocked(kind, why)`` lets the window tell the person."""
+        self._gate = gate
+        self._on_blocked = on_blocked
         self._render = render
         self._clock = clock
         self._spawn = spawn_thread or self._start_daemon
@@ -65,7 +70,12 @@ class HostJobRunner:
         if self._busy:
             return False
         pending = state.get("pending")
-        if not isinstance(pending, dict) or pending.get("kind") != KIND_SUPER_RESOLUTION or not isinstance(pending.get("id"), int):
+        if not isinstance(pending, dict) or not isinstance(pending.get("id"), int):
+            return False
+        kind = pending.get("kind")
+        if isinstance(kind, str) and self._blocked(lane, int(pending["id"]), kind):
+            return False
+        if kind != KIND_SUPER_RESOLUTION:
             return False
         job_id = int(pending["id"])
         lane.call("ui.hostJob", {"claim": job_id})
@@ -76,6 +86,20 @@ class HostJobRunner:
         with self._lock:
             self._busy = True
         self._spawn(lambda: self._run(lane, job_id, source))
+        return True
+
+    def _blocked(self, lane, job_id: int, kind: str) -> bool:
+        """An editor-tool job whose models are not installed is answered at once, with what to turn on, instead of leaving the editor waiting."""
+        why = self._gate(kind)
+        if not why:
+            return False
+        lane.call("ui.hostJob", {"claim": job_id})
+        self._finish(lane, job_id, False, why)
+        if self._on_blocked is not None:
+            try:
+                self._on_blocked(kind, why)
+            except Exception:
+                log.debug("The blocked-job notice failed", exc_info=True)
         return True
 
     # --- the job ---------------------------------------------------------------------------------------------------------------

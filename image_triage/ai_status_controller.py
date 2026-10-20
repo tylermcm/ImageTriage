@@ -148,6 +148,9 @@ class AiStatusController(QObject):
         if status.state is AIState.READY:
             installed = self._window._ai_setup.installed_optional_models()
             ranking = bool(installed & {m.key for m in plan.models_in(plan.GROUP_CULL)})
+            editor_keys = {m.key for m in plan.models_in(plan.GROUP_EDIT)}
+            editor_have = len(installed & editor_keys)
+            editor = "Not installed (optional)" if editor_have == 0 else "Ready" if editor_have == len(editor_keys) else f"{editor_have} of {len(editor_keys)} models"
             return build_card(
                 "AI is ready",
                 "Everything installed and verified.",
@@ -155,6 +158,7 @@ class AiStatusController(QObject):
                     ("Faces, eyes-closed, People", "Ready"),
                     ("Cleanup (stacks, duplicates, blown-out, soft)", "Ready"),
                     ("Ranking (quality, appeal)", "Ready" if ranking else "Not installed (optional)"),
+                    ("Editor tools (masks, selection)", editor),
                 ],
                 buttons=[("Open AI setup", True, self._open_setup), ("Check installation", False, self._check)],
             )

@@ -81,6 +81,11 @@ class AIRuntimeInstallTaskTests(unittest.TestCase):
         calls: list[tuple[tuple, dict]] = []
 
         class _SetupStub:
+            _progress = None
+
+            def begin_setup_progress(self, **kwargs) -> None:
+                pass
+
             def start_ai_runtime_install(self, *args, **kwargs) -> None:
                 calls.append((args, kwargs))
 
@@ -112,6 +117,8 @@ class AIRuntimeInstallTaskTests(unittest.TestCase):
         messages: list[str | None] = []
 
         class _ProgressStub:
+            _progress = None
+
             def set_ai_setup_busy(self, message: str | None) -> None:
                 messages.append(message)
 
@@ -126,6 +133,8 @@ class AIRuntimeInstallTaskTests(unittest.TestCase):
         messages: list[str | None] = []
 
         class _ProgressStub:
+            _progress = None
+
             def set_ai_setup_busy(self, message: str | None) -> None:
                 messages.append(message)
 
