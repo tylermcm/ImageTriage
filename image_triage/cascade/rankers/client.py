@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from . import protocol
-from .bundles import ensure_weights
+from .bundles import ensure_aux_weights, ensure_weights
 from .errors import RankerCancelled, RankerError, RankerUnavailable, RankerWeightsMissing, RankerWorkerError
-from .spec import BLINK, MANIQA, QREALIGN, RankerSpec
+from .spec import BLINK, FACES, MANIQA, QREALIGN, RankerSpec
 
 CancelCheck = Callable[[], bool]
 PathResolver = Callable[[str], Path]
@@ -35,6 +35,7 @@ class WorkerLaunch:
     spec: RankerSpec
     model_dir: Path
     device: str  # "auto", "cpu", "cuda" or "cuda:N"
+    aux_dir: Path | None = None  # the second bundle's directory, for a spec that has one
 
 
 # A launcher turns a WorkerLaunch into a running process with text pipes (subprocess.Popen shaped). Tests substitute their own.
@@ -58,6 +59,8 @@ def default_launcher(launch: WorkerLaunch) -> "subprocess.Popen[str]":
         _python_executable(), "-m", WORKER_MODULE,
         "--kind", launch.spec.kind, "--model-dir", str(launch.model_dir), "--device", selection.device,
     ]
+    if launch.aux_dir is not None:
+        command += ["--aux-dir", str(launch.aux_dir)]
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     return subprocess.Popen(
         command, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -122,6 +125,7 @@ class WorkerRanker:
         self._session: _Session | None = None
         self._request_id = 0
         self.failures: dict[str, str] = {}
+        self.details: dict[str, dict] = {}  # what an engine reported beyond the number (the face finder's faces), by key; cleared at the start of each call
         self.frames_scored = 0
         self.seconds_scoring = 0.0
 
@@ -139,6 +143,7 @@ class WorkerRanker:
         if len(set(keys)) != len(keys):
             raise ValueError("frame keys must be unique within a call")
         scores: dict[str, float] = {}
+        self.details = {}
         if not keys:
             return scores
         self._raise_if_cancelled()
@@ -201,8 +206,19 @@ class WorkerRanker:
                 )
             except ModelInstallCancelled as exc:
                 raise RankerCancelled(str(exc)) from exc
+        aux_dir: Path | None = None
+        if self.spec.aux_bundle_key and self._model_dir is None:
+            from ...ai_model_store import ModelInstallCancelled
+
+            try:
+                aux_dir = ensure_aux_weights(
+                    self.spec, download=self._download,
+                    progress_callback=self._download_progress, cancel_check=self._cancel_check,
+                )
+            except ModelInstallCancelled as exc:
+                raise RankerCancelled(str(exc)) from exc
         try:
-            process = self._launcher(WorkerLaunch(self.spec, Path(model_dir), self.device))
+            process = self._launcher(WorkerLaunch(self.spec, Path(model_dir), self.device, aux_dir))
         except RankerError:
             raise
         except OSError as exc:
@@ -244,6 +260,8 @@ class WorkerRanker:
             key = str(event.get("key", ""))
             if kind == "score" and key in pending:
                 scores[key] = float(event["value"])  # type: ignore[arg-type]
+                if isinstance(event.get("detail"), dict):
+                    self.details[key] = event["detail"]  # type: ignore[assignment]
                 pending.discard(key)
                 self.failures.pop(key, None)
                 if self._progress is not None:
@@ -357,3 +375,8 @@ def qrealign_ranker(**kwargs: object) -> WorkerRanker:
 def blink_ranker(**kwargs: object) -> WorkerRanker:
     """Scores how closed the eyes are per frame (0 open .. 1 closed); see ../blink.py. Same worker machinery, CPU only."""
     return WorkerRanker(BLINK, **kwargs)  # type: ignore[arg-type]
+
+
+def faces_ranker(**kwargs: object) -> WorkerRanker:
+    """Finds and embeds the prominent faces per frame (the score is the face count; ``details[key]`` holds the faces); see ../faces.py. CPU only."""
+    return WorkerRanker(FACES, **kwargs)  # type: ignore[arg-type]

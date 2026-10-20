@@ -21,6 +21,8 @@ MANIQA_CROPS = 20
 MANIQA_CROP_SIZE = 224
 MANIQA_LONG_EDGE = 1280
 MANIQA_CROP_SEED = 20
+FACES_LONG_EDGE = 1280  # the blink check's size: the face finder sees the same pixels
+FACES_MAX = 10
 QREALIGN_LONG_EDGE = 1024
 QREALIGN_QUESTION = "Can you rate the aesthetics of this picture?"
 QREALIGN_ANSWER_STEM = "The aesthetics of the image is"
@@ -231,7 +233,80 @@ class BlinkEngine:
         return frame_blink_score(faces)
 
 
-ENGINES: dict[str, Callable[[Path, str], object]] = {"maniqa": ManiqaEngine, "qrealign": QRealignEngine, "blink": BlinkEngine}
+class FacesEngine:
+    """Finds the prominent faces in a frame (landmarker) and embeds each (AdaFace). ``score`` is the face count; ``detail`` is what the People index stores.
+
+    ``model_dir`` holds the landmarker, ``aux_dir`` the recognizer. Boxes are fractions of the frame, so the caller can place them on any copy of the image."""
+
+    def __init__(self, model_dir: Path, device: str, aux_dir: Path | None = None) -> None:
+        import numpy as np
+        import mediapipe as mp
+        import onnxruntime
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision
+
+        from .bundles import BLINK_MODEL_FILE, FACES_IDENTITY_FILE
+
+        model = model_dir / BLINK_MODEL_FILE
+        if not model.is_file():
+            raise WorkerFatal("weights_missing", f"{BLINK_MODEL_FILE} not found in {model_dir}")
+        recognizer = (aux_dir or model_dir) / FACES_IDENTITY_FILE
+        if not recognizer.is_file():
+            raise WorkerFatal("weights_missing", f"{FACES_IDENTITY_FILE} not found in {recognizer.parent}")
+        self.np, self.mp = np, mp
+        self.device = "cpu"
+        self.half = False
+        options = vision.FaceLandmarkerOptions(
+            base_options=mp_python.BaseOptions(model_asset_path=str(model)),
+            running_mode=vision.RunningMode.IMAGE,
+            num_faces=FACES_MAX,
+            output_face_blendshapes=True,
+        )
+        self.landmarker = vision.FaceLandmarker.create_from_options(options)
+        self.recognizer = onnxruntime.InferenceSession(str(recognizer), providers=["CPUExecutionProvider"])
+        self.input_name = self.recognizer.get_inputs()[0].name
+
+    def close(self) -> None:
+        landmarker, self.landmarker = getattr(self, "landmarker", None), None
+        if landmarker is not None:
+            landmarker.close()
+
+    def detail(self, path: str) -> dict:
+        from ..blink import MIN_FACE_AREA, eyes_closed, face_area
+        from ..faces import align_crop, five_points, landmark_box, preprocess
+
+        image = load_image(path, FACES_LONG_EDGE)
+        pixels = self.np.ascontiguousarray(self.np.asarray(image))
+        result = self.landmarker.detect(self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=pixels))
+        width, height = image.size
+        faces = []
+        for index, landmarks in enumerate(result.face_landmarks or []):
+            points = [(p.x, p.y) for p in landmarks]
+            area = face_area(points)
+            if area < MIN_FACE_AREA:  # a smaller face is a background person: skipped here exactly as for the blink check
+                continue
+            shapes = {c.category_name: float(c.score) for c in (result.face_blendshapes[index] if result.face_blendshapes else [])}
+            try:
+                crop = align_crop(image, five_points(points, width, height))
+            except ValueError:  # degenerate landmarks: no usable face here
+                continue
+            vector = self.recognizer.run(None, {self.input_name: preprocess(crop)})[0][0]
+            norm = float(self.np.linalg.norm(vector))
+            vector = vector / norm if norm > 0 else vector
+            closed = eyes_closed(shapes)
+            faces.append({
+                "box": [round(v, 5) for v in landmark_box(points)],
+                "area": round(area, 5),
+                "embedding": [round(float(v), 6) for v in vector],
+                "eyes_closed": None if closed is None else round(closed, 4),
+            })
+        return {"faces": faces, "width": width, "height": height}
+
+    def score(self, path: str) -> float:
+        return float(len(self.detail(path)["faces"]))
+
+
+ENGINES: dict[str, Callable[..., object]] = {"maniqa": ManiqaEngine, "qrealign": QRealignEngine, "blink": BlinkEngine, "faces": FacesEngine}
 
 
 # -- protocol loop --------------------------------------------------------------------------------------------------------
@@ -253,7 +328,11 @@ def serve(engine, stdin, emit: Callable[[dict], None]) -> None:
         for item in request.get("items", []):
             key = item["key"]
             try:
-                emit({"event": "score", "id": request_id, "key": key, "value": engine.score(item["path"])})
+                if hasattr(engine, "detail"):  # an engine with more to say than a number (the face finder)
+                    detail = engine.detail(item["path"])
+                    emit({"event": "score", "id": request_id, "key": key, "value": float(len(detail.get("faces", ()))), "detail": detail})
+                else:
+                    emit({"event": "score", "id": request_id, "key": key, "value": engine.score(item["path"])})
             except (OSError, ValueError) as exc:  # unreadable or corrupt image: this frame only
                 emit({"event": "frame_error", "id": request_id, "key": key, "message": f"{type(exc).__name__}: {exc}"})
         emit({"event": "done", "id": request_id})
@@ -264,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--kind", required=True, choices=sorted(ENGINES))
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--aux-dir", default="", help="a second model directory, for engines that need two bundles (the face finder)")
     args = parser.parse_args(argv)
 
     out = sys.stdout
@@ -275,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
 
     started = time.perf_counter()
     try:
-        engine = ENGINES[args.kind](Path(args.model_dir), args.device)
+        engine = ENGINES[args.kind](Path(args.model_dir), args.device, Path(args.aux_dir)) if args.aux_dir else ENGINES[args.kind](Path(args.model_dir), args.device)
     except WorkerFatal as exc:
         emit({"event": "error", "category": exc.category, "message": str(exc)})
         return 2

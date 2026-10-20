@@ -1055,7 +1055,7 @@ class AiRunController(QObject):
             f"Embedding batch size: {self._window._settings_ctl.ai_embed_batch_size_label()}",
             f"CLI-Culler CLIP model: {self.ai_clip_model_variant_label()}",
             f"TOPIQ model installed: {self._window._ai_setup.aiculler_topiq_model_available()}",
-            f"InsightFace models installed: {self._window._ai_setup.aiculler_face_model_available()}",
+            f"Face models (landmarker and AdaFace) installed: {self._window._ai_setup.aiculler_face_model_available()}",
         ]
         runtime_status = self._window._ai_setup.managed_ai_runtime_status()
         runtime_lines.append(f"Runtime cache: {runtime_status.directories.root}")
@@ -1069,9 +1069,10 @@ class AiRunController(QObject):
         runtime_lines.append(
             f"TOPIQ model dir: {self._window._ai_setup.managed_aiculler_topiq_model_installation().install_dir}"
         )
-        runtime_lines.append(
-            f"InsightFace model dir: {self._window._ai_setup.managed_aiculler_face_model_installation().install_dir}"
-        )
+        from .ai_model_store import bundle_install_dir
+
+        for bundle_key, label in (("faces_blink", "Face landmarker"), ("faces_identity", "Face recognizer"), ("maniqa", "MANIQA"), ("qrealign", "Q-ReAlign")):
+            runtime_lines.append(f"{label} model dir: {bundle_install_dir(bundle_key)}")
         runtime_lines.append(f"Managed semantic model dir: {self._window._ai_setup.managed_semantic_model_installation().install_dir}")
         if ai_paths is not None:
             runtime_lines.append(f"Hidden cache: {ai_paths.hidden_root}")

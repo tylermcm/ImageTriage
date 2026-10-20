@@ -48,14 +48,16 @@ def decide_ranking(runtime_device: str | None, rank_on_cpu: bool) -> RankingDeci
     return RankingDecision(False, use_blink=True, note="Ranking skipped: no usable GPU. Turn on ranking on the CPU in settings to include it (slow).")
 
 
-def default_scorer_factory(device: str, *, rankers: bool = True, blink: bool = True) -> ScorerFactory:
-    """Build the worker scorers for one run: the two rankers (when ``rankers``) and the eyes-closed check (when ``blink``)."""
+def default_scorer_factory(device: str, *, rankers: bool = True, blink: bool = True, faces: bool | None = None) -> ScorerFactory:
+    """Build the worker scorers for one run: the two rankers (when ``rankers``), the eyes-closed check (when ``blink``) and the face finder that feeds the People
+    window (when ``faces``; by default whenever the eyes-closed check runs, since both need only the compact runtime)."""
+    with_faces = blink if faces is None else faces
 
     def factory(cancel: Callable[[], bool], progress: Callable[[int, int, str], None]) -> Scorers:
-        from .rankers import blink_ranker, maniqa_ranker, qrealign_ranker
+        from .rankers import blink_ranker, faces_ranker, maniqa_ranker, qrealign_ranker
 
         made: list = []
-        maniqa = aesthetic = eyes = None
+        maniqa = aesthetic = eyes = people = None
         names: list[str] = []
         if rankers:
             maniqa = maniqa_ranker(device=device, cancel_check=cancel, progress=lambda done, total: progress(done, total, "Ranking (quality)"))
@@ -65,11 +67,14 @@ def default_scorer_factory(device: str, *, rankers: bool = True, blink: bool = T
         if blink:
             eyes = blink_ranker(device="cpu", cancel_check=cancel, progress=lambda done, total: progress(done, total, "Checking for closed eyes"))
             made.append(eyes)
+        if with_faces:
+            people = faces_ranker(device="cpu", cancel_check=cancel, progress=lambda done, total: progress(done, total, "Finding people"))
+            made.append(people)
 
         def close() -> None:
             for worker in made:
                 worker.close()
 
-        return Scorers(maniqa=maniqa, aesthetic=aesthetic, blink=eyes, names=tuple(names), close=close)
+        return Scorers(maniqa=maniqa, aesthetic=aesthetic, blink=eyes, faces=people, names=tuple(names), close=close)
 
     return factory

@@ -127,6 +127,10 @@ def _run_capability_probe(args: argparse.Namespace) -> int:
             model_dir = model_dirs.get(bundle_key)
             if model_dir is not None:
                 break
+    aux_model_dir: Path | None = None
+    if capability.probe_kind == "face_stack":  # the landmarker bundle first, the recognizer bundle second
+        model_dir = model_dirs.get(capability.model_bundles[0])
+        aux_model_dir = model_dirs.get(capability.model_bundles[1])
 
     result = run_probe(
         capability_key=capability.key,
@@ -142,6 +146,7 @@ def _run_capability_probe(args: argparse.Namespace) -> int:
         expected_embedding_dim=capability.expected_embedding_dim,
         prepare_hook=detail.get("prepare", ""),
         probe_level=args.level,
+        aux_model_dir=aux_model_dir,
     )
     print(result.to_json())
     return 0 if result.ok else 1

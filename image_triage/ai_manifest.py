@@ -423,10 +423,29 @@ CAPABILITIES: dict[str, Capability] = {
         },
         expected_outputs=("quality_score",),
     ),
+    # The landmarker bundle first, the recognizer second: the probe and the face worker rely on that order.
     "faces": Capability(
         key="faces",
         name="Faces and people",
-        summary="Face detection, face quality and named-person grouping.",
+        summary="Finds faces, flags closed eyes and groups photos by person.",
+        modules=("numpy", "onnxruntime", "PIL", "mediapipe"),
+        model_bundles=("faces_blink", "faces_identity"),
+        requires_onnx=True,
+        probe_kind="face_stack",
+    ),
+    "cascade_rankers": Capability(
+        key="cascade_rankers",
+        name="Ranking (MANIQA and Q-ReAlign)",
+        summary="Picks the best frame of each stack. Needs the PyTorch runtime; fast on a GPU, slow on a CPU.",
+        modules=("numpy", "PIL", "torch", "timm", "transformers", "safetensors"),
+        model_bundles=("maniqa", "qrealign"),
+        requires_torch=True,
+        optional=True,
+    ),
+    "legacy_faces": Capability(
+        key="legacy_faces",
+        name="Legacy face quality (AuraFace)",
+        summary="The old culler's face-quality pass. Not part of setup.",
         modules=("numpy", "onnxruntime", "cv2", "insightface"),
         model_bundles=("faces",),
         requires_onnx=True,
@@ -466,13 +485,11 @@ CAPABILITIES: dict[str, Capability] = {
 BASE_CAPABILITIES: tuple[str, ...] = (
     "culling",
     "text_scoring",
-    "quality_topiq",
     "faces",
     "semantic_search",
 )
-# The PyTorch runtime no longer adds any capability: the only features that
-# used it (the built-in manual editor's mask/depth tools) were removed.
-TORCH_CAPABILITIES: tuple[str, ...] = ()
+# The PyTorch runtime adds the two rankers of the stack-first cascade (MANIQA and Q-ReAlign); the built-in editor's mask/depth tools that used it were removed.
+TORCH_CAPABILITIES: tuple[str, ...] = ("cascade_rankers",)
 
 
 def setup_capabilities(*, include_torch: bool) -> tuple[str, ...]:
@@ -484,9 +501,9 @@ def setup_capabilities(*, include_torch: bool) -> tuple[str, ...]:
 DEFAULT_CAPABILITY_ORDER: tuple[str, ...] = (
     "culling",
     "text_scoring",
-    "quality_topiq",
     "faces",
     "semantic_search",
+    "cascade_rankers",
 )
 
 
@@ -515,3 +532,16 @@ __all__ = [
     "unpinned_bundles",
     "unverified_bundles",
 ]
+
+
+# The cascade's model bundles (MANIQA, Q-ReAlign, the face landmarker and the face recognizer) live with the code that uses them; register them here so every
+# consumer of this module (the model store, the health check, Set Up AI) sees one complete list. Idempotent.
+def _register_cascade_bundles() -> None:
+    try:
+        from .cascade.rankers.bundles import register_bundles
+    except ImportError:  # the bundles module is what imported this one and is still loading: it registers itself when it finishes
+        return
+    register_bundles()
+
+
+_register_cascade_bundles()
