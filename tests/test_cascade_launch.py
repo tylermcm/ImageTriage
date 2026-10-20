@@ -40,6 +40,42 @@ def test_declining_the_cpu_prompt_drops_ranking_but_keeps_the_cleanup():
     assert not declined.use_rankers and not declined.ask_cpu_confirmation and "chose not" in declined.note
 
 
+def test_either_ranker_can_be_left_out():
+    both = decide_ranking("cuda", False)
+    assert both.use_quality and both.use_appeal
+    quality_only = decide_ranking("cuda", False, quality_installed=True, appeal_installed=False)
+    assert quality_only.use_rankers and quality_only.use_quality and not quality_only.use_appeal
+    appeal_only = decide_ranking("cuda", False, quality_installed=False, appeal_installed=True)
+    assert appeal_only.use_rankers and appeal_only.use_appeal and not appeal_only.use_quality
+    neither = decide_ranking("cuda", False, quality_installed=False, appeal_installed=False)
+    assert not neither.use_rankers and neither.use_blink and "not installed" in neither.note
+    # The CPU prompt only appears when there is something to run.
+    assert not decide_ranking("cpu", True, quality_installed=False, appeal_installed=False).ask_cpu_confirmation
+
+
+def test_the_factory_builds_only_the_rankers_asked_for():
+    for quality, appeal, names in ((True, False, {"maniqa"}), (False, True, {"q-realign aesthetic"}), (False, False, set())):
+        scorers = default_scorer_factory("gpu", quality=quality, appeal=appeal)(lambda: False, lambda *_: None)
+        try:
+            assert set(scorers.names) == names
+            assert (scorers.maniqa is not None) is quality and (scorers.aesthetic is not None) is appeal
+        finally:
+            scorers.close()
+
+
+def test_the_controller_passes_on_which_rankers_are_installed(main_window, monkeypatch):
+    ctl = main_window._ai_run
+    fake_runtime(main_window, monkeypatch, "cuda")
+    decision = ctl.cascade_ranking_decision()
+    assert decision.use_quality and decision.use_appeal
+    mark_rankers_installed(monkeypatch, "qrealign")
+    decision = ctl.cascade_ranking_decision()
+    assert decision.use_rankers and decision.use_appeal and not decision.use_quality
+    mark_rankers_installed(monkeypatch, "nothing")  # neither ranker has its files
+    decision = ctl.cascade_ranking_decision()
+    assert not decision.use_rankers and "Culling models are not installed" in decision.note
+
+
 def test_building_the_rankers_never_imports_torch():
     before = {name for name in sys.modules if name.split(".")[0] in {"torch", "transformers", "timm"}}
     scorers = default_scorer_factory("gpu")(lambda: False, lambda *_: None)
@@ -85,6 +121,11 @@ def one_scene_folder(tmp_path):
     return tmp_path
 
 
+import image_triage.ai_model_store as _model_store
+
+_REAL_BUNDLE_STATUS = _model_store.bundle_status
+
+
 def fake_runtime(main_window, monkeypatch, device: str | None):
     class Runtime:
         def __init__(self, device):
@@ -96,6 +137,20 @@ def fake_runtime(main_window, monkeypatch, device: str | None):
 
     monkeypatch.setattr(main_window._settings_ctl, "configured_aiculler_runtime", lambda **_k: Runtime(device))
     monkeypatch.setattr(main_window._ai_setup, "refresh_ai_runtime_preferences", lambda: None)
+    mark_rankers_installed(monkeypatch)
+
+
+def mark_rankers_installed(monkeypatch, *keys: str) -> None:
+    """The two rankers have their files (all of them by default); everything else asks the real model store."""
+    import image_triage.ai_model_store as store
+
+    ready = keys or ("maniqa", "qrealign")
+    real = _REAL_BUNDLE_STATUS
+
+    class _Ready:
+        is_ready = True
+
+    monkeypatch.setattr(store, "bundle_status", lambda key: _Ready() if key in ready else real(key))
 
 
 def test_the_controller_reads_the_runtime_device_and_the_setting(main_window, monkeypatch):
@@ -133,7 +188,7 @@ def test_declining_the_cpu_prompt_runs_the_cleanup_without_rankers(main_window, 
         main_window._settings.remove(ctl.CASCADE_CPU_RANKING_KEY)
     assert asked == ["Rank on the CPU?"]
     assert started and "chose not" in started[0]["note"] and started[0]["backend"] == "cascade"
-    assert built == [{"device": "cpu", "rankers": False, "blink": True}]  # ranking declined, but the cheap eyes-closed check still runs
+    assert built == [{"device": "cpu", "rankers": False, "blink": True, "quality": True, "appeal": True}]  # ranking declined, but the cheap eyes-closed check still runs
 
 
 def test_cancelling_the_cpu_prompt_starts_nothing(main_window, one_scene_folder, monkeypatch):
