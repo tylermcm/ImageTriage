@@ -47,3 +47,21 @@ def test_an_install_shows_its_percent() -> None:
     status = compute_status(core_installed=True, installing=True, percent=42)
     assert status.small == "42%" and status.percent == 42
     assert compute_status(core_installed=True, installing=True).small == ""
+
+
+def test_update_says_whether_models_changed_or_are_simply_missing() -> None:
+    changed = compute_status(core_installed=True, changed=(("Face landmarker", 4), ("MANIQA image quality ranker", 543)))
+    assert changed.state is AIState.UPDATE and changed.small == "547 MB"
+    assert changed.detail == "2 AI models changed in this version and need downloading again."
+    assert changed.items == (("Face landmarker", "4 MB"), ("MANIQA image quality ranker", "543 MB"))
+    one = compute_status(core_installed=True, changed=(("Face landmarker", 4),))
+    assert one.detail == "1 AI model changed in this version and needs downloading again."
+    absent = compute_status(core_installed=True, absent=(("Depth Anything V2 (small)", 100),))
+    assert absent.detail == "1 model this version uses is not installed yet." and absent.small == "100 MB"
+    both = compute_status(core_installed=True, changed=(("A", 10),), absent=(("B", 20),))
+    assert both.small == "30 MB" and both.detail.startswith("1 AI model changed")
+    assert len(both.items) == 2
+
+
+def test_nothing_pending_is_ready() -> None:
+    assert compute_status(core_installed=True, changed=(), absent=()).state is AIState.READY

@@ -121,3 +121,41 @@ def test_no_prompt_when_ai_is_already_set_up(shown, monkeypatch) -> None:
     monkeypatch.setattr(shown._ai_run, "analysis_block_reason", lambda: "")
     shown._ai_run.analyze_current_folder()
     assert ran == ["pipeline"] and shown._ai_status._popover is None
+
+
+def test_a_model_pinned_to_a_new_revision_shows_as_an_update_with_its_models(shown, monkeypatch) -> None:
+    import image_triage.ai_status_controller as module
+    from image_triage.ai_model_store import STATE_MISSING, STATE_STALE
+
+    set_ready(shown, monkeypatch, True)
+    monkeypatch.setattr(shown._ai_setup, "missing_capability_bundles", lambda: ("faces_blink", "maniqa"))
+    states = {"faces_blink": STATE_STALE, "maniqa": STATE_MISSING}
+    monkeypatch.setattr(module, "bundle_status", lambda key: type("S", (), {"state": states[key]})())
+    shown._ai_status.refresh()
+    status = shown._ai_status.status()
+    assert status.state is AIState.UPDATE
+    assert status.detail.startswith("1 AI model changed")  # only the one that was installed from an older revision counts as changed
+    assert [name for name, _size in status.items] == ["Face landmarks for the blink detector", "MANIQA image quality ranker"]
+    assert shown.ai_status_chip.isVisible() and shown.ai_status_chip.status().label == "AI update"
+    shown.ai_status_chip.click()
+    popover = shown._ai_status._popover
+    assert any(label.startswith("Update (") for label in button_labels(popover)) and "Later" in button_labels(popover)
+
+
+def test_the_update_button_downloads_just_those_models_with_the_progress_view(shown, monkeypatch) -> None:
+    set_ready(shown, monkeypatch, True)
+    started: list[str] = []
+    monkeypatch.setattr(shown._ai_setup, "missing_capability_bundles", lambda: ("maniqa",))
+    monkeypatch.setattr(shown._ai_setup, "start_ai_capability_bundles", lambda **k: started.append(k["title"]))
+    try:
+        shown._ai_setup.update_ai_models()
+        assert started == ["AI update"]
+        dialog = shown._ai_setup._progress_dialog
+        assert dialog is not None and dialog.isVisible()
+        assert shown._ai_setup._progress is not None
+        shown._ai_setup.update_ai_models()  # a second press while it runs only brings the view back
+        assert started == ["AI update"]
+    finally:
+        shown._ai_setup._progress = None
+        if shown._ai_setup._progress_dialog is not None:
+            shown._ai_setup._progress_dialog.close()
