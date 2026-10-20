@@ -13,7 +13,7 @@ from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QMimeData, QPoint, 
 from PySide6.QtGui import QAction, QBrush, QColor, QContextMenuEvent, QCursor, QDrag, QFont, QFontMetrics, QImage, QKeyEvent, QKeySequence, QLinearGradient, QMouseEvent, QPainter, QPaintEvent, QPainterPath, QPalette, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QComboBox, QMenu, QToolButton, QWidget
 
-from .ai_results import AICullBucket, AIConfidenceBucket, AIImageResult, ai_cull_bucket_for_result, refine_ai_result_with_review_insight
+from .ai_results import AICullBucket, AIConfidenceBucket, AIImageResult, ai_flag_dim_alpha, ai_cull_bucket_for_result, refine_ai_result_with_review_insight
 from .ai_why import AIWhy, ai_why_tooltip_html, build_ai_why
 from .cache import ThumbnailKey
 from .metadata import CaptureMetadata, MetadataKey, MetadataManager
@@ -2322,6 +2322,11 @@ class ThumbnailGridView(QAbstractScrollArea):
                     painter.drawPixmap(draw_rect, zoom_source, source_rect)
                 else:
                     painter.drawPixmap(draw_rect, pixmap)
+                if self._show_ai_annotations:
+                    # The loupe/boxed card dims a flagged photo exactly as the grid card does (shared rule: ai_flag_dim_alpha).
+                    flag_alpha = ai_flag_dim_alpha(ai_result)
+                    if flag_alpha:
+                        painter.fillRect(draw_rect if use_loupe_card else image_rect, QColor(0, 0, 0, flag_alpha))
                 painter.restore()
             elif record.is_folder:
                 self._paint_folder_thumbnail(painter, image_rect)
@@ -2733,7 +2738,7 @@ class ThumbnailGridView(QAbstractScrollArea):
     @staticmethod
     def _ai_flag_dim_alpha(ai_result: AIImageResult | None) -> int:
         """Alpha of the dim laid over a frame the cleanup flagged (pass 1); 0 for everything else. Flagged frames are dimmed, never hidden."""
-        return 120 if ai_result is not None and ai_result.cascade_role == "rejected" else 0
+        return ai_flag_dim_alpha(ai_result)
 
     def _paint_ai_flag_dim(self, painter: QPainter, rect: QRect, ai_result: AIImageResult | None) -> None:
         alpha = self._ai_flag_dim_alpha(ai_result)

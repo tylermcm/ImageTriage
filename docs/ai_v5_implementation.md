@@ -160,8 +160,8 @@ the existing AI suites, updated where they encoded the old behaviour (Analyze us
 2. **Rankers:** validated on real frames through the worker code (see the section above); still never run inside the full app window, and the MANIQA checkpoint is hosted and pinned but its download/install has not been run in the app yet (`docs/ai_v5_model_hosting.md`).
 3. **Apply AI Decisions** can still move flagged (Reject-bucket) frames to the program recycle bin, after its confirmation dialog and with undo. The dialog does
    not show the reason; it should before hard hiding or auto-applying anything.
-4. **Loupe card style** does not dim flagged frames (only the grid card paints the dim).
-5. **Progress text** still says "AI review" and the old stage count in a few places; the cascade has four stages.
+4. **Fixed: the classic (legacy-painter) card now dims flagged frames** with the same shared rule (`ai_results.ai_flag_dim_alpha`) and the same "AI tags in grid" setting as the grid card. There is no one-click restore for a dimmed frame in either card yet (the plan's "one click to restore" is not built).
+5. **Fixed: Analyze progress text** is plain ("Stage 2 of 4: Reading previews", "Analysis complete") for the cascade; the legacy culler keeps its "AI review" wording.
 6. **Thresholds** (stack split 18, soft 0.4, clipped floor 10%, blown out 40%) come from two reviewed albums; expose them and review on other genres.
 7. **Keeper-recall check** across the library (package 5) is still needed before any frame is hidden.
 8. **Fixed: a crash in the shared RAW marker scan.** The full test suite died twice (Windows access violation) in `raw_embedded_jpeg._scan_jpeg_markers`.
