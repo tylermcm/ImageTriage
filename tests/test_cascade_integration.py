@@ -26,17 +26,17 @@ def cascade_folder(tmp_path):
     return tmp_path
 
 
-def run_analyze(main_window, monkeypatch, folder: Path, decision=None) -> None:
+def run_analyze(main_window, monkeypatch, folder: Path, decision=None, count: int = 5) -> None:
     dialogs: list[str] = []
     monkeypatch.setattr(main_window, "_exec_dialog_with_geometry", lambda dialog, key: dialogs.append(key))
     monkeypatch.setattr(main_window._ai_run, "cascade_ranking_decision", lambda: decision or decide_ranking(None, False))
-    open_folder(main_window, folder, 5)
+    open_folder(main_window, folder, count)
     main_window._ai_run.analyze_current_folder()
     assert main_window._active_ai_task is not None
     assert pump_until(lambda: main_window._active_ai_task is None and main_window._ai_bundle is not None, timeout=30.0)
     assert dialogs == ["ai_review_complete"]
     # Writing the results folder makes the window rescan; wait for the grid to settle before looking at it.
-    assert pump_until(lambda: len(main_window._records) == 5, timeout=15.0)
+    assert pump_until(lambda: len(main_window._records) == count, timeout=15.0)
 
 
 def test_analyze_runs_the_cascade_and_loads_its_results(main_window, cascade_folder, monkeypatch) -> None:

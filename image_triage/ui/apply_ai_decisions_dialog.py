@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Mapping
+
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QFontMetrics, QPixmap
 from PySide6.QtWidgets import (
@@ -48,6 +50,7 @@ class ApplyAIDecisionsDialog(QDialog):
         keeper_count: int,
         review_count: int,
         thumbnail_manager: ThumbnailManager,
+        reasons: Mapping[str, str] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -59,6 +62,8 @@ class ApplyAIDecisionsDialog(QDialog):
         self.reject_records = list(reject_records)
         self.keeper_count = int(keeper_count)
         self.review_count = int(review_count)
+        # record path -> short reason shown under the file name, so a frame is never moved to the recycle bin without saying why
+        self.reasons = dict(reasons or {})
 
         self._thumbnail_manager = thumbnail_manager
         self._pending_labels: dict[object, list[QLabel]] = {}
@@ -148,6 +153,16 @@ class ApplyAIDecisionsDialog(QDialog):
         name_label.setToolTip(record.name)
         name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cell_layout.addWidget(name_label)
+
+        reason = self.reasons.get(record.path, "").strip()
+        if reason:
+            reason_label = QLabel(cell)
+            reason_label.setText(QFontMetrics(reason_label.font()).elidedText(reason, Qt.TextElideMode.ElideRight, THUMBNAIL_SIZE.width()))
+            reason_label.setToolTip(reason)
+            reason_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            reason_label.setObjectName("applyDecisionReason")
+            reason_label.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+            cell_layout.addWidget(reason_label)
 
         self._load_thumbnail(record, thumb_label)
         return cell

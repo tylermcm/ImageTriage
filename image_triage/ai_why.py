@@ -39,6 +39,11 @@ FLAG_LABELS = {
     "lowcontrast": "Low contrast",
     "outoffocus": "Out of focus",
     "motionblur": "Motion blur",
+    # The stack-first cascade's pass-1 reasons (image_triage/cascade/flags.py).
+    "blink": "Eyes closed",
+    "soft": "Softer than its siblings",
+    "clipped": "More blown highlights than its siblings",
+    "blown_out": "Highlights blown out",
 }
 
 # The subject categories (aiculler/resources/categories.csv), named as in the Inspector's Subject row.

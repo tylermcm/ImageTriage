@@ -7,7 +7,10 @@ from typing import Callable
 
 from .task import ScorerFactory, Scorers
 
-CPU_SECONDS_PER_FRAME = 3.5  # MANIQA 3.6 s and Q-ReAlign 3.4 s per frame on 8 CPU threads (reference machine; this machine will differ)
+# Seconds per frame for both rankers together, measured. A 64-thread server CPU: MANIQA 3.6 s + Q-ReAlign 3.4 s. A 4-core i5 laptop (Core i5-8265U): MANIQA 56 s
+# + Q-ReAlign 25 s. The spread is why the prompt gives a range and never a single number.
+CPU_SECONDS_PER_FRAME_FAST = 7
+CPU_SECONDS_PER_FRAME_LAPTOP = 80
 
 
 @dataclass(slots=True, frozen=True)
@@ -36,8 +39,9 @@ def decide_ranking(runtime_device: str | None, rank_on_cpu: bool) -> RankingDeci
             use_blink=True,
             ask_cpu_confirmation=True,
             confirmation_text=(
-                "Ranking runs two small AI models. Without a usable GPU they take roughly "
-                f"{CPU_SECONDS_PER_FRAME:.1f} seconds per frame they score, which is usually a quarter to a half of the folder.\n\n"
+                "Ranking runs two AI models. Without a usable GPU they are slow: measured at about "
+                f"{CPU_SECONDS_PER_FRAME_FAST} seconds per frame on a fast workstation and over a minute per frame ({CPU_SECONDS_PER_FRAME_LAPTOP} seconds) on a laptop. "
+                "They score a quarter to a half of the folder, so a large folder can take hours.\n\n"
                 "Rank on the CPU? Choose No to run the quick cleanup without ranking."
             ),
         )

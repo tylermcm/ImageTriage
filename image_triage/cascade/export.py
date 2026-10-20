@@ -17,6 +17,7 @@ from .folder import (
     ROLE_CUT,
     ROLE_DUPLICATE,
     ROLE_FINAL,
+    ROLE_FLAGGED,
     ROLE_NO_PICK,
     ROLE_PICK,
     ROLE_REJECTED,
@@ -45,7 +46,7 @@ CSV_COLUMNS = (
 )
 
 # Folder-wide ordering for "AI Rank" sorting: picks first, flagged frames last.
-_ROLE_SCORE = {ROLE_PICK: 1.0, ROLE_FINAL: 0.8, ROLE_DUPLICATE: 0.5, ROLE_BRACKET: 0.5, ROLE_CUT: 0.4, ROLE_NO_PICK: 0.3, ROLE_REJECTED: 0.1}
+_ROLE_SCORE = {ROLE_PICK: 1.0, ROLE_FINAL: 0.8, ROLE_DUPLICATE: 0.5, ROLE_BRACKET: 0.5, ROLE_FLAGGED: 0.45, ROLE_CUT: 0.4, ROLE_NO_PICK: 0.3, ROLE_REJECTED: 0.1}
 _ROLE_LABEL = {
     ROLE_PICK: "Winner",
     ROLE_FINAL: "Kept",
@@ -54,6 +55,7 @@ _ROLE_LABEL = {
     ROLE_CUT: "Cut",
     ROLE_NO_PICK: "No pick",
     ROLE_REJECTED: "Flagged",
+    ROLE_FLAGGED: "Flagged (kept)",
 }
 
 

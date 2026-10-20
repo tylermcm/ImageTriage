@@ -59,7 +59,14 @@ AI_RUNTIME_BASE_PIP_REQUIREMENTS = (
     # Face-quality pass (detection + landmarks + gender/age via the AuraFace ONNX pack).
     # Recognition/face-sort is a separate, opt-in path and not pulled here.
     "insightface==1.0.1",
+    # The eyes-closed check of the stack-first cascade (image_triage/cascade/blink.py): MediaPipe Face Landmarker, CPU only, no torch.
+    # In a locked install (--no-deps) only the packages in the lock arrive. Resolving it unlocked also pulls opencv-contrib-python and
+    # sounddevice, which the lock generator drops (see AI_RUNTIME_LOCK_EXCLUDED_DISTRIBUTIONS); an unlocked dev install tolerates them.
+    "mediapipe==0.10.35",
 )
+# Distributions pip resolves transitively that must never enter a lock: they are not needed by what the app imports, and opencv-contrib-python
+# owns the same cv2 package tree as the opencv-python-headless wheel the runtime declares.
+AI_RUNTIME_LOCK_EXCLUDED_DISTRIBUTIONS = frozenset({"opencv-contrib-python", "opencv-python", "sounddevice"})
 AI_RUNTIME_TORCH_PIP_REQUIREMENTS = (
     "torch",
     "torchvision",
@@ -84,6 +91,7 @@ AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES = (
     "yaml",
     "tqdm",
     "insightface",
+    "mediapipe",
 )
 AI_RUNTIME_TORCH_REQUIRED_MODULE_NAMES = (
     "torch",
@@ -1030,9 +1038,13 @@ def _validate_profile_in_subprocess(
         return
     detail = (process.stderr or process.stdout or "unknown import error").strip().splitlines()
     tail = " | ".join(detail[-4:])
+    from .ai_platform import dll_failure_hint
+
+    hint = dll_failure_hint(tail)
     raise RuntimeError(
         f"AI runtime import validation failed for {ai_runtime_variant_label(variant)}: {tail}. "
-        "The existing runtime was not changed."
+        + (f"{hint} " if hint else "")
+        + "The existing runtime was not changed."
     )
 
 
