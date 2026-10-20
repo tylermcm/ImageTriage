@@ -63,6 +63,10 @@ class AiStatusController(QObject):
                 setup._active_ai_repair_task,
             )
         )
+        if installing:  # nothing else is worth working out while a setup run is going
+            summary = setup.setup_progress_summary()
+            percent, line = summary if summary is not None else (None, "")
+            return compute_status(core_installed=True, installing=True, install_message=line or self._install_message, percent=percent)
         core = setup.core_installed()
         problems = sum(1 for health in setup._last_ai_readiness_results.values() if not getattr(health, "ready", True))
         missing_mb = 0
@@ -119,11 +123,13 @@ class AiStatusController(QObject):
     def _not_now(self) -> None:
         self.close_card()
 
+    def _show_details(self) -> None:
+        self.close_card()
+        self._window._ai_setup.show_progress_dialog()
+
     def _cancel_install(self) -> None:
         self.close_card()
-        cancel = getattr(self._window, "cancel_active_ai_install", None)
-        if callable(cancel):
-            cancel()
+        self._window._ai_setup.cancel_setup()
 
     def card_for(self, status: AIStatus):
         """The card content for a status: (widget, buttons by label)."""
@@ -151,7 +157,8 @@ class AiStatusController(QObject):
             return build_card(
                 "Installing AI",
                 status.detail,
-                buttons=[("Show details", False, self._open_setup), ("Cancel", False, self._cancel_install)],
+                progress=status.percent,
+                buttons=[("Show details", False, self._show_details), ("Cancel", False, self._cancel_install)],
             )
         if status.state is AIState.UPDATE:
             return build_card(

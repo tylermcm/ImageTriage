@@ -322,7 +322,19 @@ class AIRuntimeInstallTask(QRunnable):
         self.install_root = install_root
         self.variant_choice = variant_choice
         self.signals = AIRuntimeInstallSignals()
+        self._process: subprocess.Popen | None = None
+        self._cancelled = False
         self.setAutoDelete(True)
+
+    def cancel(self) -> None:
+        """Stop the installer. The task then reports a failure ("cancelled") instead of a result."""
+        self._cancelled = True
+        process = self._process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
 
     def run(self) -> None:
         logger = perf_logger()
@@ -353,6 +365,9 @@ class AIRuntimeInstallTask(QRunnable):
             self.signals.failed.emit(str(exc))
             return
 
+        self._process = process
+        if self._cancelled:  # asked to stop before the process existed
+            self.cancel()
         assert process.stdout is not None
         with process.stdout:
             for line in process.stdout:
@@ -362,6 +377,9 @@ class AIRuntimeInstallTask(QRunnable):
                 output_lines.append(text)
                 self.signals.progress.emit(text)
         return_code = process.wait()
+        if self._cancelled:
+            self.signals.failed.emit("Setup was cancelled.")
+            return
         if return_code != 0:
             if logger.enabled:
                 logger.duration(

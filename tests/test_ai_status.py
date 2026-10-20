@@ -41,3 +41,9 @@ def test_an_install_message_becomes_the_detail() -> None:
     status = compute_status(core_installed=True, installing=True, install_message="Downloading the AI runtime")
     assert status.detail == "Downloading the AI runtime"
     assert compute_status(core_installed=True, installing=True).detail
+
+
+def test_an_install_shows_its_percent() -> None:
+    status = compute_status(core_installed=True, installing=True, percent=42)
+    assert status.small == "42%" and status.percent == 42
+    assert compute_status(core_installed=True, installing=True).small == ""
