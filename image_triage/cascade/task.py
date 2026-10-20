@@ -28,7 +28,8 @@ from .folder import ROLE_BRACKET, ROLE_DUPLICATE, ROLE_FINAL, ROLE_PICK, FolderF
 from .model import CascadeSettings
 from .pipeline import Scorer
 
-STAGES = ("Reading capture times", "Reading previews", "Grouping and cleaning up", "Writing results")
+# The four stages of an Analyze run, in order. The run controller shows them as "Stage 2 of 4: Reading previews".
+STAGES = ("Reading capture times and brackets", "Reading previews", "Deciding what to flag", "Writing results")
 FEATURE_CACHE_FILENAME = "cascade_features.json"
 BLINK_CACHE_FILENAME = "cascade_blink.json"
 BLINK_MODEL_ID = "mediapipe-face-landmarker-float16"  # change when the face model or how its score is computed changes

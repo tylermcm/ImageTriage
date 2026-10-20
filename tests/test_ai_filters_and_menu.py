@@ -122,7 +122,12 @@ def test_disagreements_filter_needs_ai_results_and_labels_the_menu_state(main_wi
 
 # ---- the AI menu ----------------------------------------------------------------------------------------------------
 def _ai_menu_actions(window) -> dict[str, object]:
-    menu = next(a.menu() for a in window.menuBar().actions() if a.text().replace("&", "") == "AI")
+    # Keep the QAction wrappers alive while walking: PySide ties a QMenu wrapper returned by QAction.menu() to the wrapper of that action, and
+    # invalidates the menu wrapper ("C++ object already deleted") as soon as the action wrapper is garbage collected, although the menu itself is
+    # untouched in C++. A throwaway ``next(a.menu() for a in ...)`` dropped the action at once, so the failure depended on when the collector ran.
+    top_level_actions = window.menuBar().actions()
+    menu_action = next(a for a in top_level_actions if a.text().replace("&", "") == "AI")
+    menu = menu_action.menu()
     found = {}
 
     def walk(m):

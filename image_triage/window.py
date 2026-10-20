@@ -1172,7 +1172,7 @@ class MainWindow(QMainWindow):
         self._hidden_ai_results_timer.timeout.connect(self._ai_run.start_hidden_ai_results_load)
         self._ai_stage_index = 0
         self._ai_stage_total = 3
-        self._ai_stage_message = "Ready to run AI review"
+        self._ai_stage_message = "Ready to analyze"
         self._ai_progress_current = 0
         self._ai_progress_total = 0
         self._ai_progress_eta_text = ""
