@@ -289,54 +289,17 @@ class AiSetupController(QObject):
         )
 
     def maybe_prompt_for_ai_setup(self) -> None:
+        """Once the window is up: adopt older model folders and let the AI status chip say whether anything needs setting up. No dialog opens by itself; the chip
+        is there, and the first Analyze offers setup (``AiStatusController.show_first_run_prompt``)."""
         if not getattr(sys, "frozen", False):
             return
-        # Wait for the window to be on screen and the splash gone. This used to
-        # run while main.py pumped events behind the splash, which stays on top:
-        # the modal dialog opened hidden underneath it and the first launch sat
-        # on the splash forever, waiting for an answer nobody could see.
+        # Wait for the window to be on screen and the splash gone.
         if not self._window.isVisible() or self.startup_splash_visible():
             QTimer.singleShot(250, self.maybe_prompt_for_ai_setup)
             return
-        # Adopt a previous release's model and cache directories before asking
-        # the user to download anything. This is the one deliberate migration
-        # point; resolving a managed path never moves files by itself.
+        # Adopt a previous release's model and cache directories. This is the one deliberate migration point; resolving a managed path never moves files by itself.
         self.migrate_managed_ai_assets()
-        runtime_missing = not self.ai_runtime_available()
-        aiculler_clip_missing = not self.aiculler_clip_model_available()
-        aiculler_topiq_missing = False  # retired
-        aiculler_face_missing = False  # the new face bundles arrive with the capability step
-        if not runtime_missing and not aiculler_clip_missing and not self.missing_capability_bundles():
-            return
-        if self._window._active_ai_runtime_task is not None or self._window._active_ai_model_task is not None:
-            return
-        if self._window._settings.value(self._window.AI_SETUP_PROMPTED_KEY, False, bool):
-            return
-        self._window._settings.setValue(self._window.AI_SETUP_PROMPTED_KEY, True)
-        selection = self.show_ai_setup_dialog(
-            automatic=True,
-            title="Set Up AI",
-            prompt_text=(
-                "AI features use optional downloads so the core installer stays smaller. "
-                "Choose which AI components to install now."
-            ),
-            allow_runtime=runtime_missing,
-            allow_model=(
-                aiculler_clip_missing
-                or aiculler_topiq_missing
-                or aiculler_face_missing
-            ),
-            default_install_runtime=runtime_missing,
-            default_include_torch_runtime=True,
-            default_download_aiculler_clip_model=aiculler_clip_missing,
-            default_download_aiculler_topiq_model=aiculler_topiq_missing,
-            default_download_aiculler_face_model=aiculler_face_missing,
-            default_download_semantic_model=False,
-        )
-        if selection is None:
-            self._window.statusBar().showMessage("AI setup skipped for now.")
-            return
-        self.start_ai_setup_selection(selection, force_runtime=False)
+        self._notify_status()
 
     def start_ai_setup_selection(
         self,
@@ -380,11 +343,21 @@ class AiSetupController(QObject):
             wanted.extend(bundle for bundle in CAPABILITIES[key].model_bundles if bundle not in wanted)
         return tuple(key for key in wanted if not bundle_status(key).is_ready)
 
+    def _notify_status(self, message: str | None = None) -> None:
+        """Let the AI status chip catch up once the handler that called this has finished."""
+        status = getattr(self._window, "_ai_status", None)
+        if status is None:
+            return
+        if message is not None:
+            status._install_message = message
+        QTimer.singleShot(0, status.refresh)
+
     def set_ai_setup_busy(self, message: str | None) -> None:
         """Show AI setup state inside the main window instead of a dialog."""
         overlay = getattr(self._window, "_ai_setup_overlay", None)
         if overlay is not None:
             overlay.set_message(message)
+        self._notify_status(message or "")
 
     def prompt_for_ai_model_install(self, *, automatic: bool) -> None:
         aiculler_clip_missing = not self.aiculler_clip_model_available()
@@ -499,6 +472,7 @@ class AiSetupController(QObject):
         self.set_ai_setup_busy("Installing AI runtime...")
 
     def handle_ai_runtime_install_finished(self, install_root: str, variant_choice: str) -> None:
+        self._notify_status()
         self._window._active_ai_runtime_task = None
         self.invalidate_ai_runtime_status_cache()
         self.refresh_ai_runtime_preferences()
@@ -546,6 +520,7 @@ class AiSetupController(QObject):
         )
 
     def handle_ai_runtime_install_failed(self, message: str) -> None:
+        self._notify_status()
         self._window._active_ai_runtime_task = None
         self._pending_ai_aiculler_clip_download_after_runtime = False
         self._pending_ai_aiculler_topiq_download_after_runtime = False
@@ -689,11 +664,13 @@ class AiSetupController(QObject):
         self._window._ai_model_pool.start(task)
 
     def handle_ai_bundle_install_finished(self, title: str, context: str) -> None:
+        self._notify_status()
         self._active_ai_bundle_task = None
         self.invalidate_ai_runtime_status_cache()
         self.verify_ai_setup(title=title, context=context)
 
     def handle_ai_bundle_install_failed(self, message: str, title: str, context: str) -> None:
+        self._notify_status()
         self._active_ai_bundle_task = None
         # A download failure still leaves whatever succeeded, so report the
         # real per-capability state rather than a bare error.
@@ -711,6 +688,7 @@ class AiSetupController(QObject):
         title: str,
         context: str,
     ) -> None:
+        self._notify_status()
         from .ui.ai_readiness import AIReadinessDialog, summarize
 
         self._active_ai_readiness_task = None
@@ -729,6 +707,7 @@ class AiSetupController(QObject):
         AIReadinessDialog(results, parent=self._window, title=title).exec()
 
     def handle_ai_readiness_failed(self, message: str) -> None:
+        self._notify_status()
         self._active_ai_readiness_task = None
         self.set_ai_setup_busy(None)
         self._window._inspector.update_action_states()
@@ -789,6 +768,7 @@ class AiSetupController(QObject):
         self._window._ai_model_pool.start(task)
 
     def handle_ai_repair_finished(self, results: dict, runtime_required: bool) -> None:
+        self._notify_status()
         self._active_ai_repair_task = None
         if runtime_required:
             # Model repair cannot rebuild damaged packages; offer the operation
@@ -815,6 +795,7 @@ class AiSetupController(QObject):
         self.handle_ai_readiness_finished(results, "Repair AI", "Repair finished.")
 
     def handle_ai_repair_failed(self, message: str) -> None:
+        self._notify_status()
         self._active_ai_repair_task = None
         self.set_ai_setup_busy(None)
         self._window._inspector.update_action_states()
@@ -1050,6 +1031,7 @@ class AiSetupController(QObject):
         self.set_ai_setup_busy("Downloading AI culling models...")
 
     def handle_ai_model_download_finished(self, install_dir: str) -> None:
+        self._notify_status()
         self._window._active_ai_model_task = None
         self.invalidate_ai_runtime_status_cache()
         self.set_ai_setup_busy(None)
@@ -1062,6 +1044,7 @@ class AiSetupController(QObject):
         )
 
     def handle_ai_model_download_failed(self, message: str) -> None:
+        self._notify_status()
         self._window._active_ai_model_task = None
         self.set_ai_setup_busy(None)
         self.refresh_ai_runtime_preferences()

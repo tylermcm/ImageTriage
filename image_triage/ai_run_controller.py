@@ -1254,7 +1254,13 @@ class AiRunController(QObject):
             rank_on_cpu = bool(self._window._settings.value(self.CASCADE_CPU_RANKING_KEY, False, type=bool))
         except Exception:
             rank_on_cpu = False
-        return decide_ranking(runtime_device, rank_on_cpu)
+        from .ai_model_store import bundle_status
+
+        try:
+            quality, appeal = bundle_status("maniqa").is_ready, bundle_status("qrealign").is_ready
+        except Exception:
+            quality = appeal = False
+        return decide_ranking(runtime_device, rank_on_cpu, quality_installed=quality, appeal_installed=appeal)
 
     def _run_cascade_pipeline(self, start: float, logger) -> None:
         from .cascade.launch import default_scorer_factory
@@ -1279,7 +1285,13 @@ class AiRunController(QObject):
                 records=tuple(record for record in self._window._all_records if not record.is_folder),
                 paths=build_aiculler_workflow_paths(self._window._current_folder),
                 scorer_factory=(
-                    default_scorer_factory(decision.device or "cpu", rankers=decision.use_rankers, blink=decision.use_blink)
+                    default_scorer_factory(
+                        decision.device or "cpu",
+                        rankers=decision.use_rankers,
+                        blink=decision.use_blink,
+                        quality=decision.use_quality,
+                        appeal=decision.use_appeal,
+                    )
                     if decision.use_rankers or decision.use_blink
                     else None
                 ),
@@ -1539,6 +1551,16 @@ class AiRunController(QObject):
             except Exception:
                 window.statusBar().showMessage("AI is not set up yet; opening setup")
                 window._handoff.open_ai_workflow_center()
+                return
+        status = getattr(window, "_ai_status", None)
+        if status is not None and not self.use_legacy_culler() and status.first_run_prompt_needed():
+
+            def analyze_without_setup() -> None:
+                self._inline_analysis_run = True
+                self.run_ai_pipeline()
+                self.refresh_inspector_analysis()
+
+            if status.show_first_run_prompt(analyze_without_setup):
                 return
         self._inline_analysis_run = True
         self.run_ai_pipeline()
