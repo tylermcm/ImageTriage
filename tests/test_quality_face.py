@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 
@@ -126,6 +127,44 @@ class GracefulDegradeTests(unittest.TestCase):
         self.assertIsNone(result["eye_sharpness"])
         self.assertIsNone(result["blink"])
         self.assertEqual(result["faces"], [])
+
+    def test_missing_insightface_gives_a_plain_message(self) -> None:
+        import sys
+        from unittest import mock
+
+        # A None entry makes `import insightface...` raise ImportError, as in the managed runtime.
+        with mock.patch.dict(sys.modules, {"insightface": None, "insightface.app": None}):
+            analyzer = FaceQualityAnalyzer()
+        self.assertFalse(analyzer.available)
+        self.assertIn("insightface package", analyzer.initialization_error)
+        self.assertNotIn("Traceback", analyzer.initialization_error)
+        self.assertFalse(analyzer.initialization_error.startswith("ModuleNotFoundError"))
+        self.assertEqual(analyzer.analyze(_gradient())["face_count"], 0)
+
+    def test_legacy_faces_is_not_part_of_set_up_ai(self) -> None:
+        from image_triage import ai_manifest
+
+        self.assertNotIn("legacy_faces", ai_manifest.BASE_CAPABILITIES)
+        self.assertNotIn("legacy_faces", ai_manifest.DEFAULT_CAPABILITY_ORDER)
+
+    def test_probe_reports_missing_insightface_as_package_missing(self) -> None:
+        import sys
+        import tempfile
+        from unittest import mock
+
+        from image_triage import ai_probe
+
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(sys.modules, {"insightface": None}):
+            result = ai_probe.run_probe(
+                capability_key="legacy_faces",
+                modules=("insightface",),
+                site_packages=Path(temp),
+                probe_kind="insightface",
+                model_dir=Path(temp),
+            )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.category, "package_missing")
+        self.assertIn("insightface", result.message)
 
 
 if __name__ == "__main__":

@@ -154,7 +154,9 @@ class AIRuntimePackageTests(unittest.TestCase):
         self.assertIn("torch==2.9.0", cpu)
         self.assertIn("torchvision==0.24.0", cpu)
         self.assertIn("onnxruntime==1.27.0", cpu)
-        self.assertIn("insightface==1.0.1", cpu)
+        self.assertIn("mediapipe==0.10.35", cpu)
+        # AuraFace/InsightFace is retired from the managed runtime (non-commercial model files).
+        self.assertFalse([r for r in cpu + gpu if isinstance(r, str) and "insightface" in r.lower()])
         self.assertNotIn("onnxruntime-gpu==1.26.0", cpu)
 
         self.assertIn("torch==2.9.0+cu128", gpu)
@@ -258,19 +260,31 @@ class AIRuntimePackageTests(unittest.TestCase):
                 if lock is None:
                     continue
                 with self.subTest(variant=variant, include_torch=include_torch):
-                    lines = [
-                        line.strip()
-                        for line in lock.read_text(encoding="utf-8").splitlines()
-                        if line.strip() and not line.strip().startswith("#")
-                    ]
-                    pins = [line for line in lines if "==" in line]
-                    hashes = [line for line in lines if line.startswith("--hash=sha256:")]
-                    self.assertTrue(pins, msg=f"{lock.name} pins nothing")
-                    self.assertEqual(
-                        len(pins),
-                        len(hashes),
-                        msg=f"{lock.name} has {len(pins)} pins but {len(hashes)} hashes",
-                    )
+                    # A pin may legitimately carry several hashes (one per acceptable wheel,
+                    # e.g. fonttools ships a cp313 wheel and a pure-Python py3-none-any wheel),
+                    # so count hashes per pin rather than comparing two totals.
+                    hashes_by_pin: dict[str, list[str]] = {}
+                    current = ""
+                    for raw in lock.read_text(encoding="utf-8").splitlines():
+                        line = raw.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if line.startswith("--hash=sha256:"):
+                            self.assertTrue(current, msg=f"{lock.name}: hash before any pin")
+                            digest = line.removeprefix("--hash=sha256:").rstrip(" \\")
+                            self.assertRegex(digest, r"^[0-9a-f]{64}$", msg=f"{lock.name}: bad hash on {current}")
+                            hashes_by_pin[current].append(digest)
+                        else:
+                            self.assertIn("==", line, msg=f"{lock.name}: unexpected line {line!r}")
+                            current = line.rstrip(" \\")
+                            self.assertNotIn(current, hashes_by_pin, msg=f"{lock.name}: {current} pinned twice")
+                            hashes_by_pin[current] = []
+                    self.assertTrue(hashes_by_pin, msg=f"{lock.name} pins nothing")
+                    unhashed = [pin for pin, digests in hashes_by_pin.items() if not digests]
+                    self.assertEqual(unhashed, [], msg=f"{lock.name} pins without a hash")
+                    for pin, digests in hashes_by_pin.items():
+                        self.assertEqual(len(digests), len(set(digests)), msg=f"{pin} repeats a hash")
+                    self.assertNotIn("insightface", "".join(hashes_by_pin).lower())
 
     def test_runtime_install_can_skip_optional_torch_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
