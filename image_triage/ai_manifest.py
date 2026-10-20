@@ -442,6 +442,61 @@ CAPABILITIES: dict[str, Capability] = {
         requires_torch=True,
         optional=True,
     ),
+    # One capability per optional model, so Set Up AI can install and verify any subset of them. "cascade_rankers" above stays as the pair.
+    "rank_quality": Capability(
+        key="rank_quality",
+        name="Quality ranking (MANIQA)",
+        summary="Scores the technical quality of each frame. Needs the PyTorch runtime.",
+        modules=("numpy", "PIL", "torch", "timm"),
+        model_bundles=("maniqa",),
+        requires_torch=True,
+        optional=True,
+    ),
+    "rank_aesthetic": Capability(
+        key="rank_aesthetic",
+        name="Appeal ranking (Q-ReAlign)",
+        summary="Orders the finalists by overall appeal. Needs the PyTorch runtime.",
+        modules=("numpy", "PIL", "torch", "transformers", "safetensors"),
+        model_bundles=("qrealign",),
+        requires_torch=True,
+        optional=True,
+    ),
+    "editor_subject": Capability(
+        key="editor_subject",
+        name="Subject masks (BiRefNet)",
+        summary="Subject and background masks for the editor and Camera Raw.",
+        modules=("numpy", "PIL", "torch", "transformers"),
+        model_bundles=("birefnet",),
+        requires_torch=True,
+        optional=True,
+    ),
+    "editor_select": Capability(
+        key="editor_select",
+        name="Click selection (SAM 2.1)",
+        summary="Click an object to select it.",
+        modules=("numpy", "PIL", "torch", "transformers"),
+        model_bundles=("sam",),
+        requires_torch=True,
+        optional=True,
+    ),
+    "editor_depth": Capability(
+        key="editor_depth",
+        name="Depth maps (Depth Anything V2)",
+        summary="Depth maps for depth-aware edits.",
+        modules=("numpy", "PIL", "torch", "transformers"),
+        model_bundles=("depth",),
+        requires_torch=True,
+        optional=True,
+    ),
+    "editor_scene": Capability(
+        key="editor_scene",
+        name="Scene regions (OneFormer)",
+        summary="Sky, water, mountains, people and other regions as masks.",
+        modules=("numpy", "PIL", "torch", "transformers"),
+        model_bundles=("oneformer",),
+        requires_torch=True,
+        optional=True,
+    ),
     "legacy_faces": Capability(
         key="legacy_faces",
         name="Legacy face quality (AuraFace)",
@@ -492,9 +547,14 @@ BASE_CAPABILITIES: tuple[str, ...] = (
 TORCH_CAPABILITIES: tuple[str, ...] = ("cascade_rankers",)
 
 
-def setup_capabilities(*, include_torch: bool) -> tuple[str, ...]:
-    """Exactly what Set Up AI installs, and therefore what it verifies."""
-    return BASE_CAPABILITIES + (TORCH_CAPABILITIES if include_torch else ())
+def setup_capabilities(*, include_torch: bool, optional: tuple[str, ...] | None = None) -> tuple[str, ...]:
+    """Exactly what Set Up AI installs, and therefore what it verifies.
+
+    ``optional`` names the optional-model capabilities the person chose (see ``ai_setup_plan``); without it the PyTorch runtime adds the ranker pair, as before.
+    """
+    if not include_torch:
+        return BASE_CAPABILITIES
+    return BASE_CAPABILITIES + (TORCH_CAPABILITIES if optional is None else tuple(optional))
 
 
 # Capabilities the "AI setup" flow installs by default, in report order.
