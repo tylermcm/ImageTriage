@@ -17,7 +17,7 @@ import io
 import json
 import os
 import sys
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
@@ -223,7 +223,7 @@ def pct(value: float | None, digits: int = 2) -> str:
 
 
 def build_report(args: argparse.Namespace, data: Dataset, settings: CascadeSettings, notes: list[str]) -> tuple[dict[str, Any], list[audit.FrameRow]]:
-    keeper_paths = read_keepers(args.keepers, args.root) if args.keepers else []
+    keeper_paths = [p for source in (args.keepers or []) for p in read_keepers(source, args.root)]
     scanned_norm = {norm(p): p for p in data.all_paths}
     for companion, primary in data.companion_of.items():
         scanned_norm.setdefault(companion, primary)  # a keeper named by its JPEG companion is the RAW frame
@@ -504,14 +504,160 @@ if(PAIRS.length)show();else document.getElementById("count").textContent="no pai
 """
 
 
+# -- the run, saved ---------------------------------------------------------------------------------------------------------------------------------
+
+FROZEN_SCHEMA = 1
+
+
+def dataset_to_snapshot(data: Dataset) -> dict[str, Any]:
+    """Everything an evaluation needs, so the keepers can be chosen AFTER the run and the same frames re-judged under other settings with no image read."""
+    names = [f.name for f in fields(FrameFeatures)]
+    folders = []
+    for folder, frames in data.groups.items():
+        rows = []
+        for frame in frames:
+            feature = None
+            if frame.features is not None:
+                feature = {name: getattr(frame.features, name) for name in names}
+                feature["phash"] = format(int(frame.features.phash), "x")
+            rows.append({"path": frame.path, "features": feature, "captured": frame.captured, "bracket_id": frame.bracket_id})
+        folders.append({"folder": folder, "frames": rows})
+    return {
+        "schema": FROZEN_SCHEMA,
+        "folders": folders,
+        "focal": data.focal,
+        "metadata_errors": data.metadata_errors,
+        "companion_of": data.companion_of,
+    }
+
+
+def dataset_from_snapshot(snapshot: dict[str, Any]) -> Dataset:
+    if snapshot.get("schema") != FROZEN_SCHEMA:
+        raise SystemExit(f"frozen.json has schema {snapshot.get('schema')!r}; this script reads schema {FROZEN_SCHEMA}")
+    known = {f.name for f in fields(FrameFeatures)}
+    data = Dataset()
+    for entry in snapshot["folders"]:
+        frames: list[FolderFrame] = []
+        for row in entry["frames"]:
+            feature = None
+            if row["features"] is not None:
+                values = {k: v for k, v in row["features"].items() if k in known}
+                values["phash"] = int(values["phash"], 16)
+                feature = FrameFeatures(**values)
+                data.features[row["path"]] = feature
+            frame = FolderFrame(row["path"], feature, row["captured"], row["bracket_id"])
+            frames.append(frame)
+            if feature is None:
+                data.unreadable.append(frame.path)
+            else:
+                if frame.captured is None:
+                    data.missing_time.append(frame.path)
+                if frame.bracket_id is not None:
+                    data.bracket_keys.append(frame.path)
+        data.groups[entry["folder"]] = frames
+        data.scanned[entry["folder"]] = [f.path for f in frames]
+    data.focal = {k: float(v) for k, v in snapshot.get("focal", {}).items()}
+    data.metadata_errors = list(snapshot.get("metadata_errors", []))
+    data.companion_of = dict(snapshot.get("companion_of", {}))
+    return data
+
+
+def apply_overrides(data: Dataset, faces: dict[str, float] | None, blink: dict[str, float] | None) -> None:
+    """Blink scores and face areas can be supplied after the images were read; set them on the frames."""
+    known = {f.name for f in fields(FrameFeatures)}
+    for folder, frames in data.groups.items():
+        updated = []
+        for frame in frames:
+            feature = frame.features
+            if feature is not None:
+                extra: dict[str, Any] = {}
+                if blink is not None:
+                    extra["blink"] = is_blink(blink.get(norm(frame.path), 0.0))
+                if faces and "face_area" in known and norm(frame.path) in faces:
+                    extra["face_area"] = faces[norm(frame.path)]
+                if extra:
+                    feature = replace(feature, **extra)
+                    data.features[frame.path] = feature
+            updated.append(FolderFrame(frame.path, feature, frame.captured, frame.bracket_id))
+        data.groups[folder] = updated
+
+
+PICK_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pick keepers __TITLE__</title>
+<style>
+  :root{--bg:#0e0f11;--tx:#e7e9ec;--mute:#8a909a;--ok:#3fb97a}
+  body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.4 system-ui,Segoe UI,sans-serif}
+  header{position:sticky;top:0;background:#141517;border-bottom:1px solid #26282c;padding:10px 16px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;z-index:2}
+  .mute{color:var(--mute);font-size:13px}
+  button{background:#1d1f23;color:var(--tx);border:1px solid #33363b;border-radius:8px;padding:7px 12px;font:inherit;cursor:pointer}
+  main{display:grid;grid-template-columns:repeat(auto-fill,minmax(__CELL__px,1fr));gap:8px;padding:12px 16px}
+  label{position:relative;display:block;border:3px solid transparent;border-radius:8px;cursor:pointer;background:#16171a;overflow:hidden}
+  label img{display:block;width:100%;height:auto}
+  label input{position:absolute;opacity:0;pointer-events:none}
+  label.picked{border-color:var(--ok)}
+  label.picked::after{content:"\\2713";position:absolute;top:6px;right:8px;background:var(--ok);color:#06210f;border-radius:50%;width:22px;height:22px;text-align:center;font-weight:700}
+  label span{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);padding:2px 6px;font-size:11px;color:#cfd3d9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style></head><body>
+<header><b>__TITLE__</b><span class="mute" id="count"></span><button id="dl">download keepers</button>
+<span class="mute">Frames are in capture order. Click the ones you would keep. Nothing here comes from the culling run. Your picks are kept in this browser; "download keepers" saves a list of file paths.</span></header>
+<main id="grid"></main>
+<script>
+const FRAMES=__FRAMES__;const store="pass1_picks_"+"__KEY__";let picked={};
+try{picked=JSON.parse(localStorage.getItem(store)||"{}")}catch(e){}
+const grid=document.getElementById("grid");
+FRAMES.forEach((f,i)=>{const l=document.createElement("label");const img=document.createElement("img");img.src=f.t;img.loading="lazy";const s=document.createElement("span");s.textContent=f.n;
+ l.appendChild(img);l.appendChild(s);if(picked[f.p])l.classList.add("picked");
+ l.onclick=ev=>{ev.preventDefault();if(picked[f.p]){delete picked[f.p];l.classList.remove("picked")}else{picked[f.p]=1;l.classList.add("picked")}
+  try{localStorage.setItem(store,JSON.stringify(picked))}catch(e){}count()};grid.appendChild(l)});
+function count(){document.getElementById("count").textContent=Object.keys(picked).length+" picked of "+FRAMES.length}
+count();
+document.getElementById("dl").onclick=()=>{const blob=new Blob([JSON.stringify(Object.keys(picked),null,1)],{type:"application/json"});
+ const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="keepers___KEY__.json";a.click()};
+</script></body></html>
+"""
+
+
+# -- pick sheets (choose keepers after the run, blind to it) ----------------------------------------------------------------------------------------
+
+
+def write_pick_sheets(data: Dataset, out: Path, page_size: int, cell: int = 220) -> list[dict[str, Any]]:
+    """Contact sheets of every readable frame in capture order, with nothing from the run on them: no flags, no stacks, no dimming. Choosing keepers here, after the run, keeps the
+    picks independent of what the run flagged."""
+    pages: list[dict[str, Any]] = []
+    target = out / "pick"
+    target.mkdir(parents=True, exist_ok=True)
+    for number, (folder, frames) in enumerate(data.groups.items(), start=1):
+        readable = [f for f in frames if f.features is not None]
+        ordered = sorted(readable, key=lambda f: (f.captured is None, f.captured or 0.0, os.path.basename(f.path).casefold()))
+        for part, start in enumerate(range(0, len(ordered), max(1, page_size)), start=1):
+            chunk = ordered[start : start + page_size]
+            payload = [{"p": f.path, "n": os.path.basename(f.path), "t": thumbnail_data_uri(f.path, edge=cell)} for f in chunk]
+            key = f"{number:02d}_{part:02d}"
+            title = f"{os.path.basename(folder.rstrip(os.sep)) or folder} ({start + 1} to {start + len(chunk)} of {len(ordered)})"
+            html = PICK_PAGE.replace("__FRAMES__", json.dumps(payload).replace("</", "<\\/")).replace("__TITLE__", title).replace("__KEY__", key).replace("__CELL__", str(cell))
+            name = f"pick_{key}.html"
+            (target / name).write_text(html, encoding="utf-8")
+            pages.append({"file": name, "title": title, "frames": len(chunk)})
+    items = "".join(f'<li><a href="{p["file"]}">{p["title"]}</a> &middot; {p["frames"]} frames</li>' for p in pages)
+    (target / "index.html").write_text(
+        "<!doctype html><meta charset='utf-8'><title>Pick keepers</title><body style='font:15px system-ui;margin:24px;max-width:760px'>"
+        "<h1>Pick keepers</h1><p>Open each page, click the frames you would keep, and press \"download keepers\". "
+        "Then run the audit again with <code>--from-frozen frozen.json --keepers keepers_*.json</code>.</p>"
+        f"<ol>{items}</ol></body>",
+        encoding="utf-8",
+    )
+    return pages
+
+
 # -- main -----------------------------------------------------------------------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Measure pass 1 keeper recall and stack diagnostics on real folders.")
-    p.add_argument("--folders", nargs="+", required=True, help="one or more image folders (non-recursive unless --recursive)")
+    p.add_argument("--folders", nargs="+", help="one or more image folders (non-recursive unless --recursive); not needed with --from-frozen")
     p.add_argument("--recursive", action="store_true")
-    p.add_argument("--keepers", help="text file, one original image path per line, or a JSON list; relative paths resolve against --root")
+    p.add_argument("--keepers", nargs="+", help="one or more files, each a text file with one original image path per line or a JSON list (the pick sheet downloads these); relative paths resolve against --root")
     p.add_argument("--root", default=".", help="base for relative keeper paths")
     p.add_argument("--out", required=True, help="output directory")
     p.add_argument("--settings-json", help="JSON object of CascadeSettings overrides")
@@ -521,6 +667,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--faces-json", help="JSON path -> largest prominent face area fraction")
     p.add_argument("--cache", help="feature cache file (reuse between runs)")
     p.add_argument("--review-pairs", type=int, default=0, help="write review.html with this many blind pairs")
+    p.add_argument("--from-frozen", help="frozen.json written by an earlier run: evaluate it again (new keepers, settings, sweeps) without reading any image")
+    p.add_argument("--pick-sheet", action="store_true", help="write pick/ with flag-free contact sheets to choose keepers from, after the run, blind to its results")
+    p.add_argument("--pick-page-size", type=int, default=240, help="frames per pick-sheet page")
     return p
 
 
@@ -536,13 +685,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = replace(settings, **known)
         if unknown:
             notes.append(f"Settings fields not present in this CascadeSettings were ignored: {', '.join(unknown)}")
-    scanned, companion_of = merge_companions(scan_folders(args.folders, args.recursive))
-    if not scanned:
-        print("No images found in the given folders.", file=sys.stderr)
     blink_scores = load_json_map(args.blink_scores)
     faces = load_json_map(args.faces_json)
-    data = build_dataset(scanned, args.cache, faces, blink_scores)
-    data.companion_of = companion_of
+    if args.from_frozen:
+        data = dataset_from_snapshot(json.loads(Path(args.from_frozen).read_text(encoding="utf-8")))
+        apply_overrides(data, faces, blink_scores)
+        notes.append(f"Evaluated from the saved run {args.from_frozen}: no image was read, and the frames, hashes and measures are those of the original run.")
+    else:
+        if not args.folders:
+            print("Give --folders, or --from-frozen with the frozen.json of an earlier run.", file=sys.stderr)
+            return 2
+        scanned, companion_of = merge_companions(scan_folders(args.folders, args.recursive))
+        if not scanned:
+            print("No images found in the given folders.", file=sys.stderr)
+        data = build_dataset(scanned, args.cache, faces, blink_scores)
+        data.companion_of = companion_of
+        (out / "frozen.json").write_text(json.dumps(dataset_to_snapshot(data)), encoding="utf-8")
+    if args.pick_sheet:
+        pages = write_pick_sheets(data, out, args.pick_page_size)
+        notes.append(f"{len(pages)} pick-sheet page(s) written to pick/index.html: flag-free, in capture order. Choose keepers there, then evaluate with --from-frozen.")
     report, _rows = build_report(args, data, settings, notes)
     (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     (out / "report.md").write_text(render_markdown(report), encoding="utf-8")
