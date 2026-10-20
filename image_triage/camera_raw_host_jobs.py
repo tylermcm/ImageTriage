@@ -14,10 +14,15 @@ import threading
 import time
 from typing import Any, Callable
 
+import os
+from pathlib import Path
+
 from . import full_render
+from . import subject_mask_service
 from . import upscale_service as service
 
 KIND_SUPER_RESOLUTION = "superResolution"
+KIND_SUBJECT_MASK = "subjectMask"
 REPORT_EVERY_S = 0.4
 log = logging.getLogger(__name__)
 
@@ -27,10 +32,12 @@ class HostJobRunner:
         self,
         *,
         render: Callable[..., full_render.RenderResult] = full_render.request_full_render,
+        subject_mask: Callable[..., Any] = subject_mask_service.run_subject_mask,
         clock: Callable[[], float] = time.monotonic,
         spawn_thread: Callable[[Callable[[], None]], Any] | None = None,
     ) -> None:
         self._render = render
+        self._subject_mask = subject_mask
         self._clock = clock
         self._spawn = spawn_thread or self._start_daemon
         self._lock = threading.Lock()
@@ -65,10 +72,12 @@ class HostJobRunner:
         if self._busy:
             return False
         pending = state.get("pending")
-        if not isinstance(pending, dict) or pending.get("kind") != KIND_SUPER_RESOLUTION or not isinstance(pending.get("id"), int):
+        if not isinstance(pending, dict) or pending.get("kind") not in (KIND_SUPER_RESOLUTION, KIND_SUBJECT_MASK) or not isinstance(pending.get("id"), int):
             return False
         job_id = int(pending["id"])
         lane.call("ui.hostJob", {"claim": job_id})
+        if pending["kind"] == KIND_SUBJECT_MASK:
+            return self._start_subject_mask(lane, job_id, pending)
         source = proc.source_path
         if not source:
             self._finish(lane, job_id, False, "Image Triage does not know which photo is open.")
@@ -77,6 +86,59 @@ class HostJobRunner:
             self._busy = True
         self._spawn(lambda: self._run(lane, job_id, source))
         return True
+
+    # --- the subject mask ------------------------------------------------------------------------------------------------------
+
+    def _start_subject_mask(self, lane, job_id: int, pending: dict) -> bool:
+        source, output = pending.get("input"), pending.get("output")
+        if not isinstance(source, str) or not isinstance(output, str) or not os.path.isfile(source) or not os.path.isdir(os.path.dirname(output) or "."):
+            self._finish(lane, job_id, False, "The editor did not give Image Triage a picture to find the subject in.")
+            return False
+        with self._lock:
+            self._busy = True
+        self._spawn(lambda: self._run_subject_mask(lane, job_id, Path(source), Path(output)))
+        return True
+
+    def _run_subject_mask(self, lane, job_id: int, source: Path, output: Path) -> None:
+        cancel = threading.Event()
+        started = self._clock()
+        last_report = [started]
+
+        def report(fraction: float, message: str, *, force: bool = False) -> None:
+            now = self._clock()
+            if not force and now - last_report[0] < REPORT_EVERY_S:
+                return
+            last_report[0] = now
+            try:
+                reply = lane.call("ui.hostJob", {"progress": {"id": job_id, "fraction": min(1.0, max(0.0, fraction)), "message": message}})
+            except Exception:
+                cancel.set()
+                return
+            if reply.get("cancel") is True:
+                cancel.set()
+
+        # BiRefNet reports phases, not a percentage: the bar moves one step at each.
+        steps = {"Loading": 0.15, "Preparing": 0.5, "Finding": 0.65}
+
+        def on_progress(text: str) -> None:
+            fraction = next((value for key, value in steps.items() if text.startswith(key)), 0.3)
+            report(fraction, text)
+
+        try:
+            report(0.05, "Starting the subject model…", force=True)
+            self._subject_mask(source, output, on_progress, cancel)
+            if cancel.is_set():
+                self._finish(lane, job_id, False, "Cancelled")
+            else:
+                self._finish(lane, job_id, True, "Subject found.")
+        except subject_mask_service.SubjectMaskError as error:
+            self._finish(lane, job_id, False, "Cancelled" if error.category == "cancelled" else f"{error} {error.remediation}".strip())
+        except Exception as error:  # a job that broke is reported in the popup, never swallowed
+            log.exception("Subject mask of %s failed", source)
+            self._finish(lane, job_id, False, f"{error.__class__.__name__}: {error}")
+        finally:
+            with self._lock:
+                self._busy = False
 
     # --- the job ---------------------------------------------------------------------------------------------------------------
 

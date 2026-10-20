@@ -202,6 +202,13 @@ def _mask_shape_ok(shape) -> bool:
         return (set(rest) == {"w", "h", "data"}
                 and all(type(rest[k]) is int and 1 <= rest[k] <= MASK_RASTER_SIDE for k in ("w", "h"))
                 and isinstance(data, str) and 0 < len(data) <= MASK_RASTER_TEXT and len(data) % 4 == 0)
+    if kind == "colorRange":
+        color = rest.get("color")
+        return (set(rest) == {"color", "range", "smooth"} and isinstance(color, list) and len(color) == 3 and all(_number(v, -0.5, 2) for v in color)
+                and _number(rest["range"], 0, 100) and _number(rest["smooth"], 0, 100))
+    if kind == "luminanceRange":
+        return (set(rest) == {"low", "high", "smooth"} and _number(rest["low"], 0, 1) and _number(rest["high"], 0, 1)
+                and rest["low"] <= rest["high"] and _number(rest["smooth"], 0, 100))
     return False
 
 
