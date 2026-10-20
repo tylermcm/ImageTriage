@@ -145,3 +145,57 @@ def test_a_broken_editor_never_raises_from_poll():
             raise OSError("connection closed")
 
     assert runner(lambda *a, **k: kept()).poll(proc(Broken())) is False
+
+
+# --- subject masks (BiRefNet) ----------------------------------------------------------------------------------------------------
+
+def mask_pending(tmp_path, job_id=9, make_input=True):
+    source = tmp_path / "in.png"
+    if make_input:
+        source.write_bytes(b"png")
+    return {"id": job_id, "kind": hj.KIND_SUBJECT_MASK, "input": str(source), "output": str(tmp_path / "out.png")}
+
+
+def test_a_subject_mask_request_is_claimed_run_and_finished(tmp_path):
+    lane = Lane(mask_pending(tmp_path))
+    seen = {}
+
+    def fake(source, output, on_progress, cancel):
+        seen.update(source=source, output=output)
+        on_progress("Loading subject model...")
+        on_progress("Finding subject...")
+
+    assert runner(lambda *a, **k: kept(), subject_mask=fake).poll(proc(lane)) is True
+    assert lane.of("claim") == [9]
+    assert str(seen["source"]) == str(tmp_path / "in.png") and str(seen["output"]) == str(tmp_path / "out.png")
+    assert lane.of("progress")[-1]["id"] == 9
+    assert lane.of("finish") == [{"id": 9, "ok": True, "message": "Subject found."}]
+
+
+def test_a_subject_mask_without_a_picture_fails_in_the_popup_and_runs_nothing(tmp_path):
+    lane = Lane(mask_pending(tmp_path, make_input=False))
+
+    def never(*a, **k):
+        raise AssertionError("must not run")
+
+    assert runner(lambda *a, **k: kept(), subject_mask=never).poll(proc(lane)) is False
+    (finish,) = lane.of("finish")
+    assert finish["ok"] is False and "picture" in finish["message"]
+
+
+def test_a_failed_subject_mask_says_why_and_a_cancel_is_quiet(tmp_path):
+    from image_triage import subject_mask_service as sm
+
+    def broken(*a, **k):
+        raise sm.SubjectMaskError("model_missing", "The subject model is not installed.", "Run Set Up AI.")
+
+    lane = Lane(mask_pending(tmp_path))
+    runner(lambda *a, **k: kept(), subject_mask=broken).poll(proc(lane))
+    assert lane.of("finish") == [{"id": 9, "ok": False, "message": "The subject model is not installed. Run Set Up AI."}]
+
+    def cancelled(*a, **k):
+        raise sm.SubjectMaskError("cancelled", "Cancelled")
+
+    lane = Lane(mask_pending(tmp_path))
+    runner(lambda *a, **k: kept(), subject_mask=cancelled).poll(proc(lane))
+    assert lane.of("finish")[0]["message"] == "Cancelled"

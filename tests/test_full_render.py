@@ -547,3 +547,17 @@ def test_opening_a_recipe_with_masks_needs_an_editor_that_knows_them():
         bridge.require_masks_support(camera_raw, False)
     bridge.require_masks_support({"recipe": {"cameraRaw": {"masks": []}}}, False)  # none: nothing to lose
     bridge.require_masks_support(None, False)
+
+
+def test_range_masks_are_accepted_and_bad_ones_are_not():
+    from image_triage import photocraft_bridge as pb
+
+    good = [{"shape": {"type": "colorRange", "color": [0.2, 0.3, 0.4], "range": 40, "smooth": 20}, "adjust": {"exposure": 1.0}},
+            {"shape": {"type": "luminanceRange", "low": 0.1, "high": 0.6, "smooth": 10}, "adjust": {"exposure": -1.0}}]
+    assert pb._masks_valid(good)
+    for shape in ({"type": "colorRange", "color": [0.2, 0.3], "range": 40, "smooth": 20},
+                  {"type": "colorRange", "color": [0.2, 0.3, 9], "range": 40, "smooth": 20},
+                  {"type": "luminanceRange", "low": 0.7, "high": 0.6, "smooth": 10},
+                  {"type": "luminanceRange", "low": 0.1, "high": 0.6},
+                  {"type": "blob"}):
+        assert not pb._masks_valid([{"shape": shape}]), shape
