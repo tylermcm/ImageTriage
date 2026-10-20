@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QButtonGroup, QCheckBox, QDialog, QD
 from dataclasses import replace
 from pathlib import Path
 
+from . import ai_setup_plan as plan
 from .ai_manifest import MODEL_BUNDLES
 from .ai_model_store import bundle_status
 from .ai_model import AIModelInstallation, DEFAULT_AICULLER_CLIP_SIZE_MB, DEFAULT_AICULLER_FACE_SIZE_MB, DEFAULT_AICULLER_TOPIQ_SIZE_MB, resolve_aiculler_clip_model_installation, resolve_aiculler_face_model_installation, resolve_aiculler_topiq_model_installation, resolve_semantic_model_installation
@@ -133,6 +134,47 @@ class AiSetupController(QObject):
         register_bundles()
         return all(bundle_status(key).is_ready for key in ("faces_blink", "faces_identity"))
 
+    def ai_setup_hardware(self) -> tuple[bool, str]:
+        """(this PC can use a graphics card, the runtime variant to install). An installed runtime decides; otherwise an NVIDIA card does."""
+        from .ai_platform import nvidia_gpu_name
+
+        status = self.managed_ai_runtime_status()
+        if AI_RUNTIME_GPU_VARIANT in status.installed_variants:
+            return True, AI_RUNTIME_GPU_VARIANT
+        if status.installed_variants == (AI_RUNTIME_CPU_VARIANT,):
+            return False, AI_RUNTIME_CPU_VARIANT
+        gpu = nvidia_gpu_name() is not None
+        return gpu, AI_RUNTIME_GPU_VARIANT if gpu else AI_RUNTIME_CPU_VARIANT
+
+    def installed_optional_models(self) -> frozenset[str]:
+        """Optional models (see ``ai_setup_plan``) whose files are in place and verified."""
+        return frozenset(item.key for item in plan.OPTIONAL_MODELS if bundle_status(item.bundle).is_ready)
+
+    def chosen_optional_models(self) -> frozenset[str]:
+        """What the person chose in Set Up AI, plus whatever is installed. Without a choice, only what is installed: never demand a model nobody downloaded."""
+        saved = plan.load_selection(self._window._settings)
+        return (saved or frozenset()) | self.installed_optional_models()
+
+    def core_installed(self) -> bool:
+        status = self.managed_ai_runtime_status()
+        runtime_ready = bool(set(status.installed_variants) & set(status.torch_installed_variants))
+        return runtime_ready and self.aiculler_clip_model_available() and self.face_models_ready()
+
+    def remove_optional_models(self, keys: frozenset[str]) -> None:
+        """Delete the files of the given optional models. They download again when selected."""
+        import shutil
+
+        from .ai_model_store import bundle_install_dir
+
+        for key in sorted(keys):
+            try:
+                shutil.rmtree(bundle_install_dir(plan.model(key).bundle), ignore_errors=False)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                self._window.statusBar().showMessage(f"Could not remove {plan.model(key).label}: {exc}")
+        self.invalidate_ai_runtime_status_cache()
+
     def show_ai_setup_dialog(
         self,
         *,
@@ -148,8 +190,9 @@ class AiSetupController(QObject):
         default_download_aiculler_face_model: bool,
         default_download_semantic_model: bool,
     ) -> AISetupSelection | None:
-        """One compact setup flow for the runtime and current culling model set."""
+        """The Set Up AI dialog. Returns what to install, or None when nothing is to be installed (cancelled, removal only, a check, or a menu action that already ran)."""
         del (
+            automatic,
             title,
             prompt_text,
             allow_runtime,
@@ -161,187 +204,61 @@ class AiSetupController(QObject):
             default_download_aiculler_face_model,
             default_download_semantic_model,
         )
+        from shutil import disk_usage
+
+        from .ui.ai_setup_dialog import OUTCOME_CHECK, OUTCOME_INSTALL, OUTCOME_REMOVE, AISetupDialog, SetupDialogInput
 
         runtime_status = self.managed_ai_runtime_status()
-        clip_missing = not self.aiculler_clip_model_available()
-        # TOPIQ and the AuraFace pack are retired: the face landmarker, the AdaFace recognizer and (with the PyTorch runtime) MANIQA and Q-ReAlign are
-        # model bundles of the capabilities setup installs, downloaded and verified by the capability step that follows the runtime install.
-        topiq_missing = False
-        face_missing = False
-        faces_size_mb = sum(MODEL_BUNDLES[key].approx_mb for key in ("faces_blink", "faces_identity"))
-        ranker_size_mb = sum(MODEL_BUNDLES[key].approx_mb for key in ("maniqa", "qrealign"))
-        model_specs = [
-            ("CLIP", DEFAULT_AICULLER_CLIP_SIZE_MB, clip_missing),
-            ("Faces and people", faces_size_mb, not self.face_models_ready()),
-            ("MANIQA and Q-ReAlign ranking", ranker_size_mb, not all(bundle_status(k).is_ready for k in ("maniqa", "qrealign"))),
-        ]
-        missing_model_mb = sum(size for _name, size, missing in model_specs if missing)
-
-        dialog = QDialog(self._window)
-        dialog.setObjectName("aiSetupDialog")
-        dialog.setWindowTitle("Set Up AI")
-        dialog.setModal(True)
-        dialog.setMinimumWidth(680)
-        dialog.resize(720, 500)
-        dialog.setStyleSheet(
-            """
-            QDialog#aiSetupDialog { background: palette(window); }
-            QFrame#aiSetupHero, QFrame#aiSetupModelCard, QFrame#aiSetupProfileCard {
-                background: palette(base);
-                border: 1px solid palette(mid);
-                border-radius: 12px;
-            }
-            QLabel#aiSetupTitle { font-size: 22px; font-weight: 700; }
-            QLabel#aiSetupSectionTitle { font-size: 14px; font-weight: 650; }
-            QLabel#aiSetupProfileTitle { font-size: 15px; font-weight: 650; }
-            QLabel#aiSetupMuted { color: palette(mid); }
-            QRadioButton { spacing: 8px; }
-            QRadioButton::indicator { width: 18px; height: 18px; }
-            """
+        gpu, variant = self.ai_setup_hardware()
+        installed = self.installed_optional_models()
+        saved = plan.load_selection(self._window._settings)
+        selection = (saved | installed) if saved is not None else plan.default_selection(gpu=gpu, installed=installed)
+        try:
+            free_gb = disk_usage(str(Path.home())).free / 1e9
+        except OSError:
+            free_gb = None
+        dialog = AISetupDialog(
+            SetupDialogInput(
+                gpu=gpu,
+                variant=variant,
+                core_installed=self.core_installed(),
+                installed=installed,
+                selection=selection,
+                free_gb=free_gb,
+            ),
+            self._window,
+            on_check=self.check_ai_readiness,
+            on_repair=self.repair_ai_components,
+            on_remove_everything=self.uninstall_ai_components,
         )
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(22, 22, 22, 18)
-        layout.setSpacing(14)
-
-        hero = QFrame(dialog)
-        hero.setObjectName("aiSetupHero")
-        hero_layout = QVBoxLayout(hero)
-        hero_layout.setContentsMargins(18, 16, 18, 16)
-        hero_layout.setSpacing(5)
-        heading = QLabel("Set up AI", hero)
-        heading.setObjectName("aiSetupTitle")
-        hero_layout.addWidget(heading)
-        subheading = QLabel(
-            "Choose a runtime. Image Triage installs the matching packages, editor masking support, "
-            "and AI culling models together.",
-            hero,
-        )
-        subheading.setWordWrap(True)
-        subheading.setObjectName("aiSetupMuted")
-        hero_layout.addWidget(subheading)
-        layout.addWidget(hero)
-
-        profile_heading = QLabel("Runtime", dialog)
-        profile_heading.setObjectName("aiSetupSectionTitle")
-        layout.addWidget(profile_heading)
-
-        profile_row = QHBoxLayout()
-        profile_row.setSpacing(12)
-
-        def build_profile_card(
-            variant: str,
-            label: str,
-            detail: str,
-        ) -> tuple[QFrame, QRadioButton]:
-            card = QFrame(dialog)
-            card.setObjectName("aiSetupProfileCard")
-            card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(16, 14, 16, 14)
-            card_layout.setSpacing(5)
-            radio = QRadioButton(label, card)
-            radio.setObjectName(f"aiSetupProfile_{variant}")
-            card_layout.addWidget(radio)
-            detail_label = QLabel(detail, card)
-            detail_label.setObjectName("aiSetupMuted")
-            detail_label.setWordWrap(True)
-            card_layout.addWidget(detail_label)
-            download_mb = estimate_ai_runtime_download_size_mb(variant, include_torch=True)
-            installed_mb = estimate_ai_runtime_installed_size_mb(variant, include_torch=True)
-            sizes = QLabel(
-                f"{download_mb / 1024:.1f} GB download  ·  {installed_mb / 1024:.1f} GB on disk",
-                card,
-            )
-            sizes.setObjectName("aiSetupProfileTitle")
-            card_layout.addWidget(sizes)
-            if variant in runtime_status.torch_installed_variants:
-                installed = QLabel("Installed", card)
-                installed.setObjectName("aiSetupMuted")
-                card_layout.addWidget(installed)
-            elif variant in runtime_status.installed_variants:
-                installed = QLabel("Core installed; masking support will be added", card)
-                installed.setObjectName("aiSetupMuted")
-                card_layout.addWidget(installed)
-            card_layout.addStretch(1)
-            return card, radio
-
-        gpu_card, gpu_radio = build_profile_card(
-            AI_RUNTIME_GPU_VARIANT,
-            "GPU acceleration",
-            "For NVIDIA graphics cards.",
-        )
-        cpu_card, cpu_radio = build_profile_card(
-            AI_RUNTIME_CPU_VARIANT,
-            "CPU",
-            "Works on any supported computer.",
-        )
-        profile_row.addWidget(gpu_card, 1)
-        profile_row.addWidget(cpu_card, 1)
-        layout.addLayout(profile_row)
-
-        profile_group = QButtonGroup(dialog)
-        profile_group.setExclusive(True)
-        profile_group.addButton(gpu_radio)
-        profile_group.addButton(cpu_radio)
-
-        preferred_variant = runtime_status.preferred_variant
-        if preferred_variant == AI_RUNTIME_CPU_VARIANT:
-            cpu_radio.setChecked(True)
-        else:
-            gpu_radio.setChecked(True)
-
-        model_card = QFrame(dialog)
-        model_card.setObjectName("aiSetupModelCard")
-        model_layout = QVBoxLayout(model_card)
-        model_layout.setContentsMargins(16, 13, 16, 13)
-        model_layout.setSpacing(5)
-        model_title = QLabel("AI culling models", model_card)
-        model_title.setObjectName("aiSetupSectionTitle")
-        model_layout.addWidget(model_title)
-        model_names = QLabel("  ·  ".join(name for name, _size, _missing in model_specs), model_card)
-        model_names.setWordWrap(True)
-        model_layout.addWidget(model_names)
-        if missing_model_mb:
-            model_size = QLabel(
-                f"Included automatically  ·  {missing_model_mb / 1024:.1f} GB remaining download",
-                model_card,
-            )
-        else:
-            model_size = QLabel("All culling models are installed", model_card)
-        model_size.setObjectName("aiSetupMuted")
-        model_layout.addWidget(model_size)
-        layout.addWidget(model_card)
-        layout.addStretch(1)
-
-        button_box = QDialogButtonBox(dialog)
-        start_button = button_box.addButton(
-            "Continue" if automatic else "Install AI",
-            QDialogButtonBox.ButtonRole.AcceptRole,
-        )
-        start_button.setObjectName("editorPrimaryButton")
-        button_box.addButton(
-            "Later" if automatic else "Cancel",
-            QDialogButtonBox.ButtonRole.RejectRole,
-        )
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box)
-
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        dialog.exec()
+        action = dialog.pending_menu_action()
+        if action is not None:
+            QTimer.singleShot(0, action)
             return None
-
-        runtime_variant = (
-            AI_RUNTIME_CPU_VARIANT if cpu_radio.isChecked() else AI_RUNTIME_GPU_VARIANT
-        )
-        # The compact ONNX profile is sufficient for culling, but the editor's
-        # mask engines also require the shared PyTorch/Transformers bundle.
-        runtime_ready = runtime_variant in runtime_status.torch_installed_variants
+        outcome = dialog.outcome
+        if outcome is None:
+            return None
+        chosen = dialog.selection()
+        plan.save_selection(self._window._settings, chosen)
+        removed = dialog.to_remove()
+        if removed:
+            self.remove_optional_models(removed)
+        if outcome == OUTCOME_REMOVE:
+            self._window.statusBar().showMessage(f"Removed {len(removed)} AI model(s).")
+            return None
+        if outcome == OUTCOME_CHECK:
+            self.check_ai_readiness()
+            return None
+        # The runtime always carries PyTorch; the face models and TinyCLIP are part of the core and arrive with the capability step.
+        runtime_ready = variant in runtime_status.torch_installed_variants
         return AISetupSelection(
             install_runtime=not runtime_ready,
-            runtime_variant=runtime_variant,
+            runtime_variant=variant,
             include_torch_runtime=True,
-            download_aiculler_clip_model=clip_missing,
-            download_aiculler_topiq_model=topiq_missing,
-            download_aiculler_face_model=face_missing,
+            download_aiculler_clip_model=not self.aiculler_clip_model_available(),
+            download_aiculler_topiq_model=False,
+            download_aiculler_face_model=False,
             download_semantic_model=False,
         )
 
@@ -709,7 +626,7 @@ class AiSetupController(QObject):
 
         status = self.managed_ai_runtime_status()
         has_torch = bool(set(status.installed_variants) & set(status.torch_installed_variants))
-        return setup_capabilities(include_torch=has_torch)
+        return setup_capabilities(include_torch=has_torch, optional=plan.capabilities_for(self.chosen_optional_models()))
 
     def start_ai_readiness_check(
         self,
