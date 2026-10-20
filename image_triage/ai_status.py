@@ -24,6 +24,7 @@ class AIStatus:
     label: str
     small: str = ""  # the muted text after the label: a size, a count of problems
     detail: str = ""  # one line for the popover
+    percent: int | None = None  # while installing
 
     @property
     def needs_attention(self) -> bool:
@@ -39,10 +40,17 @@ def compute_status(
     default_download_mb: int = 0,
     missing_mb: int = 0,
     problems: int = 0,
+    percent: int | None = None,
 ) -> AIStatus:
     """The one status to show. An install in progress wins, then a failed check, then a missing core, then models that arrived with an update."""
     if installing:
-        return AIStatus(AIState.INSTALLING, "Installing AI", detail=install_message or "Working on it. You can keep using Image Triage.")
+        return AIStatus(
+            AIState.INSTALLING,
+            "Installing AI",
+            f"{percent}%" if percent is not None else "",
+            install_message or "Working on it. You can keep using Image Triage.",
+            percent,
+        )
     if problems > 0:
         word = "problem" if problems == 1 else "problems"
         return AIStatus(AIState.REPAIR, "AI needs repair", f"{problems} {word}", "The last check found something to fix.")

@@ -14,6 +14,7 @@ from . import ai_setup_plan as plan
 from .ai_manifest import MODEL_BUNDLES
 from .ai_model_store import bundle_status
 from .ai_model import AIModelInstallation, DEFAULT_AICULLER_CLIP_SIZE_MB, DEFAULT_AICULLER_FACE_SIZE_MB, DEFAULT_AICULLER_TOPIQ_SIZE_MB, resolve_aiculler_clip_model_installation, resolve_aiculler_face_model_installation, resolve_aiculler_topiq_model_installation, resolve_semantic_model_installation
+from .ai_setup_progress import SetupProgress
 from .ai_runtime_packages import AI_RUNTIME_CPU_VARIANT, AI_RUNTIME_GPU_VARIANT, AIRuntimeInstallationStatus, ai_runtime_variant_label, directory_size_bytes, estimate_ai_runtime_download_size_mb, estimate_ai_runtime_installed_size_mb, load_ai_runtime_installation_status
 from .ai_workflow import ai_device_environment_override
 from .job_controller import JobSpec
@@ -53,6 +54,9 @@ class AiSetupController(QObject):
         self._pending_ai_aiculler_topiq_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
         self._semantic_model_installation = resolve_semantic_model_installation()
+        self._progress: SetupProgress | None = None  # the run in progress, while there is one
+        self._progress_dialog = None
+        self._setup_cancelled = False
 
     def managed_semantic_model_installation(self) -> AIModelInstallation:
         return self._semantic_model_installation
@@ -308,6 +312,8 @@ class AiSetupController(QObject):
         force_runtime: bool,
     ) -> bool:
         """Run the combined setup as one runtime-then-model sequence."""
+        if self._progress is None and (selection.install_runtime or selection.download_model or self.missing_capability_bundles()):
+            self.begin_setup_progress(variant=selection.runtime_variant, runtime_missing=selection.install_runtime)
         if selection.install_runtime:
             self.start_ai_runtime_install(
                 selection.runtime_variant,
@@ -343,6 +349,74 @@ class AiSetupController(QObject):
             wanted.extend(bundle for bundle in CAPABILITIES[key].model_bundles if bundle not in wanted)
         return tuple(key for key in wanted if not bundle_status(key).is_ready)
 
+    # ------------------------------------------------------------------ progress of a setup run
+
+    def begin_setup_progress(self, *, variant: str, runtime_missing: bool) -> None:
+        """Start tracking one setup run (the percent, the three steps) and show its progress view."""
+        runtime_mb = estimate_ai_runtime_download_size_mb(variant, include_torch=True) if runtime_missing else 0
+        bundles = {MODEL_BUNDLES[key].name: MODEL_BUNDLES[key].approx_mb for key in self.missing_capability_bundles() if key in MODEL_BUNDLES}
+        self._progress = SetupProgress(runtime_mb=runtime_mb, bundles=bundles)
+        self._setup_cancelled = False
+        self.show_progress_dialog()
+
+    def setup_progress_summary(self) -> tuple[int, str] | None:
+        """(percent, a line for the status card) while a setup run is going, else None."""
+        progress = self._progress
+        return None if progress is None else (progress.percent(), progress.message())
+
+    def show_progress_dialog(self) -> None:
+        if self._progress is None:
+            return
+        from .ui.ai_setup_progress_dialog import AISetupProgressDialog
+
+        if self._progress_dialog is None:
+            dialog = AISetupProgressDialog(self._window)
+            dialog.cancel_requested.connect(self.cancel_setup)
+            self._progress_dialog = dialog
+        self._publish_progress()
+        self._progress_dialog.show()
+        self._progress_dialog.raise_()
+
+    def _publish_progress(self) -> None:
+        progress, dialog = self._progress, self._progress_dialog
+        if progress is None:
+            return
+        if dialog is not None and not dialog.showing_end() and not self._setup_cancelled:
+            dialog.show_progress(progress.step, progress.percent(), progress.eta_text())
+        self._notify_status()
+
+    def _end_progress(self, *, ok: bool, note: str) -> None:
+        """The run is over: the progress view says AI is ready (when it was left open) or says what went wrong (always shown)."""
+        self._progress = None
+        self._setup_cancelled = False
+        dialog = self._progress_dialog
+        if dialog is not None:
+            if ok:
+                dialog.show_ready(note)
+            else:
+                dialog.show_failed(note)
+                dialog.show()
+                dialog.raise_()
+        self._notify_status()
+
+    def _abort_setup(self) -> None:
+        self.set_ai_setup_busy(None)
+        self._window.statusBar().showMessage("AI setup was cancelled. What was already downloaded is kept.")
+        self._end_progress(ok=False, note="Setup was cancelled. What was already downloaded is kept; start it again to finish.")
+
+    def cancel_setup(self) -> None:
+        """Stop the run in progress: the installer and the downloads are told to stop, and the next step never starts."""
+        if self._progress is None:
+            return
+        self._setup_cancelled = True
+        if self._progress_dialog is not None:
+            self._progress_dialog.show_stopping()
+        for task in (self._window._active_ai_runtime_task, self._window._active_ai_model_task, self._active_ai_bundle_task, self._active_ai_repair_task):
+            cancel = getattr(task, "cancel", None)
+            if callable(cancel):
+                cancel()
+        self._notify_status()
+
     def _notify_status(self, message: str | None = None) -> None:
         """Let the AI status chip catch up once the handler that called this has finished."""
         status = getattr(self._window, "_ai_status", None)
@@ -357,6 +431,9 @@ class AiSetupController(QObject):
         overlay = getattr(self._window, "_ai_setup_overlay", None)
         if overlay is not None:
             overlay.set_message(message)
+        if message and self._progress is not None:
+            self._progress.bundle_message(message)
+            self._publish_progress()
         self._notify_status(message or "")
 
     def prompt_for_ai_model_install(self, *, automatic: bool) -> None:
@@ -468,7 +545,9 @@ class AiSetupController(QObject):
         self._window.statusBar().showMessage("Installing AI runtime...")
 
     def handle_ai_runtime_install_progress(self, message: str) -> None:
-        del message
+        if self._progress is not None:
+            self._progress.runtime_line(message)
+            self._publish_progress()
         self.set_ai_setup_busy("Installing AI runtime...")
 
     def handle_ai_runtime_install_finished(self, install_root: str, variant_choice: str) -> None:
@@ -479,6 +558,12 @@ class AiSetupController(QObject):
         self._window._inspector.update_action_states()
         self._window._ai_run.update_ai_toolbar_state()
         self._window.statusBar().showMessage("AI runtime installed.")
+        if self._progress is not None:
+            self._progress.runtime_done()
+            self._publish_progress()
+        if self._setup_cancelled:
+            self._abort_setup()
+            return
         download_aiculler_clip = (
             self._pending_ai_aiculler_clip_download_after_runtime
             and not self.aiculler_clip_model_available()
@@ -529,6 +614,14 @@ class AiSetupController(QObject):
         self.set_ai_setup_busy(None)
         self._window._inspector.update_action_states()
         self._window._ai_run.update_ai_toolbar_state()
+        if self._progress is not None:
+            cancelled = self._setup_cancelled
+            self._window.statusBar().showMessage("AI setup was cancelled." if cancelled else "AI runtime install failed.")
+            first_line = message.splitlines()[0] if message else "The AI runtime did not install."
+            self._end_progress(ok=False, note="Setup was cancelled. Start it again to finish." if cancelled else first_line)
+            if not cancelled:
+                QMessageBox.warning(self._window, "AI Runtime Install", message)
+            return
         QMessageBox.warning(self._window, "AI Runtime Install", message)
         self._window.statusBar().showMessage("AI runtime install failed.")
 
@@ -667,6 +760,12 @@ class AiSetupController(QObject):
         self._notify_status()
         self._active_ai_bundle_task = None
         self.invalidate_ai_runtime_status_cache()
+        if self._progress is not None:
+            self._progress.all_downloads_done()
+            self._publish_progress()
+        if self._setup_cancelled:
+            self._abort_setup()
+            return
         self.verify_ai_setup(title=title, context=context)
 
     def handle_ai_bundle_install_failed(self, message: str, title: str, context: str) -> None:
@@ -678,6 +777,9 @@ class AiSetupController(QObject):
         self.verify_ai_setup(title=title, context=context)
 
     def verify_ai_setup(self, *, title: str, context: str = "") -> None:
+        if self._progress is not None:
+            self._progress.start_check()
+            self._publish_progress()
         self.start_ai_readiness_check(
             busy_message="Verifying AI setup...", title=title, context=context
         )
@@ -701,6 +803,13 @@ class AiSetupController(QObject):
         self._last_ai_readiness_results = dict(results)
         summary = summarize(results)
         self._window.statusBar().showMessage(summary)
+        all_ready = bool(results) and all(health.ready for health in results.values())
+        if self._progress is not None:
+            if all_ready:
+                self._progress.finish()
+            self._end_progress(ok=all_ready, note=(context or "Everything installed and verified.") if all_ready else summary)
+            if all_ready:
+                return
         if results and all(health.ready for health in results.values()) and context:
             QMessageBox.information(self._window, title, f"{context}\n\n{summary}")
             return
@@ -1027,7 +1136,10 @@ class AiSetupController(QObject):
         self._window.statusBar().showMessage("Downloading AI culling models...")
 
     def handle_ai_model_download_progress(self, filename: str, current: int, total: int) -> None:
-        del filename, current, total
+        del filename
+        if self._progress is not None and total > 0:
+            self._progress.bundle_fraction(MODEL_BUNDLES["tinyclip"].name, current / total)
+            self._publish_progress()
         self.set_ai_setup_busy("Downloading AI culling models...")
 
     def handle_ai_model_download_finished(self, install_dir: str) -> None:
@@ -1038,6 +1150,12 @@ class AiSetupController(QObject):
         self.refresh_ai_runtime_preferences()
         self._window._inspector.update_action_states()
         self._window._ai_run.update_ai_toolbar_state()
+        if self._progress is not None:
+            self._progress.bundle_done(MODEL_BUNDLES["tinyclip"].name)
+            self._publish_progress()
+        if self._setup_cancelled:
+            self._abort_setup()
+            return
         self.start_ai_capability_bundles(
             title="AI Setup",
             context="The AI runtime and culling models were installed.",
@@ -1050,5 +1168,10 @@ class AiSetupController(QObject):
         self.refresh_ai_runtime_preferences()
         self._window._inspector.update_action_states()
         self._window._ai_run.update_ai_toolbar_state()
+        if self._progress is not None:
+            self._window.statusBar().showMessage("AI model download failed.")
+            first_line = message.splitlines()[0] if message else ""
+            self._end_progress(ok=False, note=f"Could not download the AI model. {first_line}".strip())
+            return
         QMessageBox.warning(self._window, "AI Model Download", f"Could not download the AI model.\n\n{message}")
         self._window.statusBar().showMessage("AI model download failed.")
