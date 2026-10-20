@@ -154,7 +154,7 @@ details{margin-top:6px}summary{cursor:pointer;color:var(--mut);font-size:13px}
     <div><b>Real numbers.</b> Download size, disk space, free space and time before you press Install.</div>
     <div><b>Live progress.</b> Steps, per-file progress and time left, instead of "Installing AI runtime..." in the status bar.</div>
     <div><b>Verified at the end.</b> The app's own health check runs and shows a result per feature, with a fix if one fails (including the Visual C++ prompt).</div>
-    <div><b>Old models are optional.</b> TOPIQ and CLIP are gone; TinyCLIP, people and faces, and the editor tools are add-ons you tick.</div>
+    <div><b>One face finder, included.</b> Eyes-closed and People share MediaPipe plus AdaFace, so they are part of the core install. TOPIQ and AuraFace are retired; TinyCLIP and the editor tools are add-ons you tick.</div>
     <div><b>Reachable from anywhere.</b> The chip, the AI menu, the command palette and the first Analyze all open this page.</div>
   </div>
 </div>
@@ -165,22 +165,21 @@ const GB=1024, fmt=mb=>mb>=1000?(mb/1000).toFixed(1)+" GB":Math.round(mb)+" MB";
 const C={
   rtCpu:{name:"AI runtime, compact",why:"Python packages for the eyes-closed check and the cleanup. No PyTorch.",dl:350,disk:1050,group:"core",lock:true},
   rtGpu:{name:"AI runtime with CUDA and PyTorch",why:"Python packages plus PyTorch for the NVIDIA GPU. Needed for ranking and the editor tools.",dl:6600,disk:9300,group:"core",lock:true},
-  blink:{name:"Eyes-closed check",why:"Finds closed eyes in every photo, quickly, on any PC. MediaPipe Face Landmarker, Apache-2.0.",dl:4,disk:4,group:"cull",lock:true,tags:["ok|Included"]},
+  faces:{name:"Faces: eyes-closed check and People",why:"Finds faces, flags closed eyes and groups photos by person, quickly, on any PC. MediaPipe Face Landmarker (4 MB) and AdaFace (166 MB).",dl:170,disk:170,group:"core",lock:true,tags:["ok|Included"]},
   maniqa:{name:"Quality ranking (MANIQA)",why:"Scores technical quality so the best frame of each stack can be suggested.",dl:543,disk:543,group:"cull",needsTorch:true},
   qreal:{name:"Aesthetic ranking (Q-ReAlign)",why:"Orders the finalists by overall appeal. Runs after the quality ranking.",dl:2130,disk:2130,group:"cull",needsTorch:true},
   torchCpu:{name:"PyTorch for the CPU",why:"Required to run the two ranking models without a GPU.",dl:2600,disk:3300,group:"cull",needsTorch:false},
-  faces:{name:"People and faces",why:"Face detection and named-person grouping for the People view.",dl:285,disk:285,group:"more",tags:["lic|Licence under review"]},
   tiny:{name:"Semantic search (TinyCLIP)",why:"Search your photos by describing them. Also tells people from animals.",dl:98,disk:98,group:"more"},
   birefnet:{name:"Subject masks (BiRefNet)",why:"One-click subject and person masks in the editor, and subject sharpness.",dl:425,disk:425,group:"edit",needsTorch:true},
   sam:{name:"Click selection (SAM 2.1)",why:"Click an object to select it in the editor.",dl:150,disk:150,group:"edit",needsTorch:true},
   depth:{name:"Depth effects (Depth Anything V2)",why:"Depth maps for blur and depth-aware edits.",dl:100,disk:100,group:"edit",needsTorch:true},
   oneformer:{name:"Scene regions (OneFormer)",why:"Sky, people, water and other regions as masks.",dl:196,disk:196,group:"edit",needsTorch:true}
 };
-const GROUPS={core:["Core","The engine everything else runs on."],cull:["Culling","What Analyze uses."],more:["Optional add-ons","Off unless you want them."],edit:["Editor tools","Needs PyTorch. Off unless you want them."]};
+const GROUPS={core:["Core","The engine and the face finder; always installed."],cull:["Culling","What Analyze uses."],more:["Optional add-ons","Off unless you want them."],edit:["Editor tools","Needs PyTorch. Off unless you want them."]};
 const SC={
-  cpu:{hw:"<b>Intel Core i5-8265U</b> &middot; no compatible GPU found",lede:"Recommended for this PC: the small install. Ranking is optional here because it is slow without a GPU.",rt:"rtCpu",on:["rtCpu","blink"],have:[],rtName:"Compact, CPU"},
-  gpu:{hw:"<b>NVIDIA GeForce RTX 3060</b> &middot; 12 GB &middot; CUDA ready",lede:"Recommended for this PC: everything for culling, using the GPU. Add-ons are optional.",rt:"rtGpu",on:["rtGpu","blink","maniqa","qreal"],have:[],rtName:"CUDA 12.8 with PyTorch"},
-  done:{hw:"<b>NVIDIA GeForce RTX 3060</b> &middot; 12 GB &middot; CUDA ready",lede:"AI is set up and verified. You can add or remove components here.",rt:"rtGpu",on:["rtGpu","blink","maniqa","qreal"],have:["rtGpu","blink","maniqa","qreal"],rtName:"CUDA 12.8 with PyTorch"}
+  cpu:{hw:"<b>Intel Core i5-8265U</b> &middot; no compatible GPU found",lede:"Recommended for this PC: the small install, with faces, eyes-closed and People included. Ranking is optional here because it is slow without a GPU.",rt:"rtCpu",on:["rtCpu","faces"],have:[],rtName:"Compact, CPU"},
+  gpu:{hw:"<b>NVIDIA GeForce RTX 3060</b> &middot; 12 GB &middot; CUDA ready",lede:"Recommended for this PC: everything for culling, using the GPU. Add-ons are optional.",rt:"rtGpu",on:["rtGpu","faces","maniqa","qreal"],have:[],rtName:"CUDA 12.8 with PyTorch"},
+  done:{hw:"<b>NVIDIA GeForce RTX 3060</b> &middot; 12 GB &middot; CUDA ready",lede:"AI is set up and verified. You can add or remove components here.",rt:"rtGpu",on:["rtGpu","faces","maniqa","qreal"],have:["rtGpu","faces","maniqa","qreal"],rtName:"CUDA 12.8 with PyTorch"}
 };
 let scen="cpu", sel=new Set(), timer=null;
 const $=id=>document.getElementById(id);
@@ -193,7 +192,7 @@ function render(){
   if(scen==="cpu"){ if(torchNeeded()) sel.add("torchCpu"); else sel.delete("torchCpu"); }
   let html="";
   for(const g of Object.keys(GROUPS)){
-    const keys=Object.keys(C).filter(k=>C[k].group===g && !(g==="core" && k!==s.rt) && !(k==="torchCpu" && !(scen==="cpu" && sel.has("torchCpu"))));
+    const keys=Object.keys(C).filter(k=>C[k].group===g && !(g==="core" && !(k===s.rt||k==="faces")) && !(k==="torchCpu" && !(scen==="cpu" && sel.has("torchCpu"))));
     if(!keys.length)continue;
     html+=`<div class="group"><div class="group-title"><h4>${GROUPS[g][0]}</h4><span class="note">${GROUPS[g][1]}</span></div>`;
     for(const k of keys){
@@ -244,7 +243,7 @@ function finish(){
   const s=SC[scen];show("viewDone");
   const rows=[["Eyes-closed check","Ready"],["Cleanup (stacks, duplicates, blown-out, soft)","Ready"]];
   if(sel.has("maniqa"))rows.push(["Ranking (quality and aesthetic)",scen==="gpu"||scen==="done"?"Ready, on the GPU":"Ready, on the CPU (slow)"]);
-  if(sel.has("faces"))rows.push(["People and faces","Ready"]);if(sel.has("tiny"))rows.push(["Semantic search","Ready"]);
+  rows.push(["People (faces and names)","Ready"]);if(sel.has("tiny"))rows.push(["Semantic search","Ready"]);
   ["birefnet","sam","depth","oneformer"].filter(k=>sel.has(k)).forEach(k=>rows.push([C[k].name,"Ready"]));
   $("verify").innerHTML=rows.map(r=>`<div class="vrow"><span>${r[0]}</span><span>${r[1]}</span></div>`).join("");
   $("doneNote").textContent=scen==="cpu"?"Ranking can be added any time from the status chip.":"Reopen this page any time from the status chip.";

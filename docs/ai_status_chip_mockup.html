@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI status chip and first-run prompt, on the real window</title>
+<style>
+:root{
+  --bg:#eef0f4;--panel:#fff;--line:#dde1e8;--ink:#171a21;--mut:#667085;--soft:#8a93a3;--chip:#eef0f5;
+  --a1:#ff9a5a;--a2:#ff5e8a;--a3:#b25cff;--a4:#5a8cff;--ok:#1f9d63;--warn:#c27c0e;--bad:#d1423f;
+  --grad:linear-gradient(100deg,var(--a1),var(--a2) 35%,var(--a3) 68%,var(--a4));
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI",system-ui,sans-serif}
+.top{max-width:1180px;margin:0 auto;padding:18px 16px 6px}
+h1{font-size:19px;margin:0 0 4px}p{margin:0;color:var(--mut)}
+.ctl{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:14px 0 6px}
+.ctl label{font-size:12px;color:var(--soft);text-transform:uppercase;letter-spacing:.06em;margin-right:6px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel)}
+.seg button{border:0;background:transparent;color:var(--ink);padding:7px 12px;cursor:pointer;font:inherit}
+.seg button.on{background:var(--ink);color:#fff}
+.hint{font-size:12.5px;color:var(--soft)}
+.fit{margin:10px auto 0;max-width:1920px;position:relative;overflow:hidden;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:#fff}
+.stage{position:absolute;left:0;top:0;width:1920px;height:1032px;transform-origin:0 0}
+.stage>img{display:block;width:1920px;height:1032px}
+.chip{position:absolute;display:inline-flex;align-items:center;gap:7px;height:22px;padding:0 10px 0 8px;border-radius:999px;background:#fff;border:1px solid var(--line);font:12px/1 "Segoe UI",sans-serif;color:var(--ink);cursor:pointer;white-space:nowrap;box-shadow:0 1px 2px rgba(20,25,40,.08)}
+.chip:hover{border-color:#b9c0cc}
+.chip .dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+.chip.need .dot{background:var(--warn)}.chip.upd .dot{background:var(--a4)}.chip.rep .dot{background:var(--bad)}
+.chip small{color:var(--mut);font-size:11.5px}
+.chip.busy{border:1.5px solid transparent;background:linear-gradient(#fff,#fff) padding-box,var(--grad) border-box}
+.chip.busy .dot{background:conic-gradient(var(--a1),var(--a2),var(--a3),var(--a4),var(--a1));animation:spin 1.1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.chip.busy .dot{animation:none}}
+.pop{position:absolute;width:340px;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 40px rgba(20,25,40,.22);font:13px/1.45 "Segoe UI",sans-serif;color:var(--ink)}
+.pop .bar{height:3px;background:var(--grad);border-radius:12px 12px 0 0}
+.pop .in{padding:14px 16px 14px}
+.pop h3{margin:0 0 4px;font-size:15px}
+.pop p{font-size:12.5px;color:var(--mut)}
+.pop .arrow{position:absolute;width:12px;height:12px;background:#fff;border:1px solid var(--line);transform:rotate(45deg)}
+.pop .arrow.down{bottom:-7px;border-top:0;border-left:0}
+.pop .arrow.up{top:-7px;border-bottom:0;border-right:0}
+.rows{margin:10px 0 2px;display:grid;gap:6px}
+.r{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:6px 9px;background:#f6f7fa;border-radius:8px}
+.r b{font-weight:600}.r .ok{color:var(--ok)}.r .no{color:var(--soft)}
+.btns{display:flex;gap:8px;margin-top:12px}
+.btn{border:0;border-radius:9px;padding:8px 13px;font:inherit;font-weight:600;cursor:pointer;color:#fff;background:var(--grad)}
+.btn.sec{background:#fff;color:var(--ink);border:1px solid var(--line);font-weight:500}
+.pb{height:6px;border-radius:99px;background:var(--chip);overflow:hidden;margin:10px 0 6px}.pb i{display:block;height:100%;background:var(--grad)}
+.warnbox{margin-top:9px;padding:8px 10px;border-radius:8px;background:rgba(209,66,63,.09);color:var(--bad);font-size:12.5px}
+.hidden{display:none!important}
+.hl{position:absolute;border:2px dashed var(--a3);border-radius:8px;pointer-events:none}
+.tag{position:absolute;background:var(--a3);color:#fff;font:600 11px/1 "Segoe UI",sans-serif;padding:4px 7px;border-radius:5px;pointer-events:none;white-space:nowrap}
+.veil{position:fixed;inset:0;background:rgba(15,18,25,.55);display:none;align-items:center;justify-content:center;z-index:20;padding:20px}
+.veil.on{display:flex}
+.veil .m{background:#fff;border-radius:14px;width:min(1100px,100%);height:min(780px,92vh);display:flex;flex-direction:column;overflow:hidden}
+.veil header{display:flex;justify-content:space-between;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);font-size:13px}
+.veil iframe{flex:1;border:0;width:100%}
+.notes{max-width:1180px;margin:18px auto 50px;padding:0 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
+.notes div{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 13px;font-size:12.5px;color:var(--mut)}
+.notes b{color:var(--ink)}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>AI status chip and first-run prompt, in place</h1>
+  <p>Mockup, not the real app. The window is a real Image Triage capture (24 generated photos, 1920 x 1032). Everything coloured is the proposal. Click the chip, or click <b>AI Sort</b> in the toolbar.</p>
+  <div class="ctl">
+    <span><label>Chip state</label><span class="seg" id="state"></span></span>
+    <span><label>Where</label><span class="seg" id="where"><button data-v="status" class="on">Status bar (recommended)</button><button data-v="top">Top bar</button></span></span>
+    <span><label>Show</label><span class="seg" id="mode"><button data-v="chip" class="on">Chip</button><button data-v="first">First-run prompt</button></span></span>
+  </div>
+  <div class="hint" id="hint"></div>
+</div>
+
+<div class="fit" id="fit">
+  <div class="stage" id="stage">
+    <img src="ai_status_chip_screenshot.png" alt="Image Triage main window">
+    <div class="hl" id="hl"></div><div class="tag" id="tag"></div>
+    <div class="chip" id="chip"></div>
+    <div class="pop hidden" id="pop"></div>
+    <div class="pop hidden" id="first" style="width:392px"></div>
+  </div>
+</div>
+
+<div class="notes">
+  <div><b>Why the status bar.</b> It already holds app state (counts, Load, Review, Workflow, Filters) and has free room on the left, so the chip adds nothing to the toolbar or the title row. The AI actions it relates to sit directly above it. The top bar is shown as the alternative.</div>
+  <div><b>One click, one place.</b> The chip opens a small summary; its primary button opens the full Set up AI page (<a href="ai_setup_mockup.html" target="_blank">ai_setup_mockup.html</a>). The AI menu, the command palette and the first Analyze open the same page.</div>
+  <div><b>First run never blocks.</b> Analyze works without setup (stacks, duplicates, blown-out and soft frames), so the prompt offers both choices. Asked once; <i>Analyze without it</i> is remembered until the chip changes state.</div>
+  <div><b>Real numbers.</b> 520 MB is the compact install for a laptop without a GPU: runtime 350 MB plus faces 170 MB. A GPU PC would read 7.1 GB. Ranking stays an opt-in on the setup page.</div>
+</div>
+
+<div class="veil" id="veil"><div class="m"><header><b>Set up AI (the page from ai_setup_mockup.html)</b><button class="btn sec" id="vclose">Close</button></header><iframe id="vframe" title="Set up AI"></iframe></div></div>
+
+<script>
+const $=id=>document.getElementById(id);
+const STATES={
+  ready:{cls:"chip",label:"AI ready",small:"",title:"Ready",body:()=>`<h3>AI is ready</h3><p>Everything installed and verified.</p>
+    <div class="rows"><div class="r"><span>Faces, eyes-closed, People</span><b class="ok">Ready</b></div><div class="r"><span>Cleanup (stacks, duplicates, blown-out, soft)</span><b class="ok">Ready</b></div><div class="r"><span>Ranking (quality, aesthetic)</span><b class="no">Not installed (optional)</b></div></div>
+    <div class="btns"><button class="btn" data-open>Open AI setup</button><button class="btn sec">Check installation</button></div>`},
+  need:{cls:"chip need",label:"Set up AI",small:"520 MB",title:"Needs setup",body:()=>`<h3>AI is not set up</h3><p>Analyze already finds stacks, duplicates, blown-out and soft frames. Setup adds eyes-closed detection, People and optional ranking.</p>
+    <div class="rows"><div class="r"><span>Recommended for this PC</span><b>Compact, 520 MB</b></div><div class="r"><span>Free on this drive</span><b>212 GB</b></div></div>
+    <div class="btns"><button class="btn" data-open>Set up AI...</button><button class="btn sec" data-close>Not now</button></div>`},
+  busy:{cls:"chip busy",label:"Installing AI",small:"42%",title:"Installing",body:()=>`<h3>Installing AI</h3><p>Step 2 of 4: AI runtime, 350 MB, hash-checked.</p>
+    <div class="pb"><i style="width:42%"></i></div><div class="r"><span>42%</span><b>about 3 min left</b></div>
+    <p style="margin-top:8px">You can keep using Image Triage. Analyze uses the cleanup passes until this finishes.</p>
+    <div class="btns"><button class="btn sec" data-open>Show details</button><button class="btn sec" data-close>Cancel</button></div>`},
+  upd:{cls:"chip upd",label:"AI update",small:"2 models",title:"Update",body:()=>`<h3>2 model updates</h3><p>Pinned versions changed in this release.</p>
+    <div class="rows"><div class="r"><span>Face landmarker</span><b>4 MB</b></div><div class="r"><span>Quality ranking</span><b>543 MB</b></div></div>
+    <div class="btns"><button class="btn" data-open>Update 547 MB</button><button class="btn sec" data-close>Later</button></div>`},
+  rep:{cls:"chip rep",label:"AI needs repair",small:"1 problem",title:"Repair",body:()=>`<h3>AI needs repair</h3><p>The check found one problem.</p>
+    <div class="warnbox">Visual C++ Redistributable 14.36 is too old. Install the latest x64 version, then repair.</div>
+    <div class="btns"><button class="btn" data-open>Open AI setup</button><button class="btn sec">Get Visual C++</button></div>`}
+};
+let st="ready",where="status",mode="chip",popOpen=false;
+const POS={status:{x:252,y:1006},top:{x:1480,y:7}};
+function draw(){
+  const s=STATES[st],p=POS[where];
+  const c=$("chip");c.className=s.cls;c.innerHTML=`<span class="dot"></span><span>${s.label}</span>${s.small?`<small>${s.small}</small>`:""}`;
+  c.style.left=p.x+"px";c.style.top=p.y+"px";c.style.display=mode==="chip"?"inline-flex":"none";
+  const w=c.offsetWidth||150,hl=$("hl"),tag=$("tag");
+  if(mode==="chip"){
+    hl.style.display=tag.style.display="block";
+    hl.style.left=(p.x-6)+"px";hl.style.top=(p.y-5)+"px";hl.style.width=(w+12)+"px";hl.style.height="32px";
+    tag.textContent=where==="status"?"AI status chip":"AI status chip (alternative)";
+    tag.style.left=(p.x-6)+"px";tag.style.top=(where==="top"?p.y+34:p.y-27)+"px";
+  }else{
+    hl.style.display=tag.style.display="block";
+    hl.style.left="1186px";hl.style.top="938px";hl.style.width="48px";hl.style.height="42px";
+    tag.textContent="Analyze / AI Sort";tag.style.left="1160px";tag.style.top="984px";
+  }
+  const pop=$("pop");
+  pop.innerHTML=`<div class="bar"></div><div class="in">${s.body()}</div><div class="arrow ${where==="top"?"up":"down"}"></div>`;
+  pop.classList.remove("hidden");
+  const left=where==="top"?1920-356:Math.max(8,p.x-6);
+  pop.style.left=left+"px";
+  pop.style.top=(where==="top"?p.y+34:p.y-pop.offsetHeight-12)+"px";
+  pop.querySelector(".arrow").style.left=Math.max(14,Math.min(p.x+w/2-left-6,320))+"px";
+  pop.classList.toggle("hidden",!(popOpen&&mode==="chip"));
+  const f=$("first");
+  f.innerHTML=`<div class="bar"></div><div class="in"><h3>Set up AI for this folder?</h3>
+    <p>Analyze works right now: it groups bursts and flags duplicates, blown-out and soft frames. A one-time download adds eyes-closed detection and People, and ranking can be switched on later.</p>
+    <div class="rows"><div class="r"><span>Recommended for this PC</span><b>Compact, 520 MB</b></div></div>
+    <div class="btns"><button class="btn" data-open>Set up AI...</button><button class="btn sec" data-close>Analyze without it</button></div></div>
+    <div class="arrow down"></div>`;
+  f.classList.remove("hidden");
+  f.style.left="1013px";f.style.top=(928-f.offsetHeight)+"px";
+  f.querySelector(".arrow").style.left="190px";
+  f.classList.toggle("hidden",mode!=="first");
+  $("hint").textContent=mode==="first"?"First Analyze on a PC with no AI setup: a card anchored to the button, never a modal. Both choices keep going.":(popOpen?"Click the chip again to close.":"Click the chip to open its summary.");
+  document.querySelectorAll("[data-open]").forEach(b=>b.onclick=e=>{e.stopPropagation();$("vframe").src="ai_setup_mockup.html";$("veil").classList.add("on")});
+  document.querySelectorAll("[data-close]").forEach(b=>b.onclick=e=>{e.stopPropagation();popOpen=false;if(mode==="first")setMode("chip");draw()});
+}
+function setMode(m){mode=m;[...$("mode").children].forEach(x=>x.classList.toggle("on",x.dataset.v===m))}
+$("state").innerHTML=Object.entries(STATES).map(([k,v])=>`<button data-v="${k}" class="${k===st?"on":""}">${v.title}</button>`).join("");
+$("state").onclick=e=>{const b=e.target.closest("button");if(!b)return;st=b.dataset.v;[...$("state").children].forEach(x=>x.classList.toggle("on",x===b));popOpen=false;if(mode==="first")setMode("chip");draw()};
+$("where").onclick=e=>{const b=e.target.closest("button");if(!b)return;where=b.dataset.v;[...$("where").children].forEach(x=>x.classList.toggle("on",x===b));popOpen=false;draw()};
+$("mode").onclick=e=>{const b=e.target.closest("button");if(!b)return;setMode(b.dataset.v);popOpen=false;draw()};
+$("chip").onclick=()=>{popOpen=!popOpen;draw()};
+$("vclose").onclick=()=>$("veil").classList.remove("on");
+$("stage").addEventListener("click",e=>{
+  const r=$("stage").getBoundingClientRect(),k=1920/r.width,x=(e.clientX-r.left)*k,y=(e.clientY-r.top)*k;
+  if(x>1180&&x<1240&&y>935&&y<985){setMode("first");popOpen=false;draw()}
+});
+function fit(){const w=Math.min($("fit").parentElement.clientWidth,1920),k=w/1920;$("stage").style.transform=`scale(${k})`;$("fit").style.width=w+"px";$("fit").style.height=(1032*k)+"px"}
+addEventListener("resize",()=>{fit()});
+fit();draw();
+</script>
+</body>
+</html>
