@@ -281,13 +281,48 @@ def _handle_forked_child_process() -> int | None:
     return 0
 
 
+def _find_module_file(module_name: str) -> Path | None:
+    """Locate ``module_name``'s source on ``sys.path`` without importing it (importing would run package code before the
+    managed runtime is configured). Used only to anchor ``_configure_runtime_environment`` like a script path would."""
+    parts = module_name.split(".")
+    for entry in sys.path:
+        base = Path(entry or ".").joinpath(*parts)
+        for candidate in (base.with_suffix(".py"), base / "__main__.py", base / "__init__.py"):
+            if candidate.is_file():
+                return candidate.resolve()
+    return None
+
+
+def _run_module(argv: list[str]) -> int:
+    """``ai_python_runner -m <module> [args...]``, with ``python -m`` semantics."""
+    if len(argv) < 2 or not argv[1]:
+        print("Usage: ai_python_runner -m <module> [args...]", file=sys.stderr)
+        return 2
+    module_name = argv[1]
+    module_file = _find_module_file(module_name)
+    try:
+        _configure_runtime_environment(module_file)
+    except ManagedRuntimeError:
+        return 3
+    # The module may only have become findable once the package roots were added.
+    module_file = module_file or _find_module_file(module_name)
+    if os.environ.get("IMAGE_TRIAGE_AI_TRACE_PATH") == "1":
+        for index, entry in enumerate(sys.path[:8]):
+            print(f"AI runner sys.path[{index}] = {entry}", file=sys.stderr, flush=True)
+    sys.argv = [str(module_file or module_name), *argv[2:]]
+    runpy.run_module(module_name, run_name="__main__", alter_sys=True)
+    return 0
+
+
 def main() -> int:
     fork_result = _handle_forked_child_process()
     if fork_result is not None:
         return fork_result
     if len(sys.argv) < 2:
-        print("Usage: ai_python_runner <script.py> [args...]", file=sys.stderr)
+        print("Usage: ai_python_runner <script.py> | -m <module> [args...]", file=sys.stderr)
         return 2
+    if sys.argv[1] == "-m":
+        return _run_module(sys.argv[1:])
 
     script_argument = sys.argv[1]
     script_path = Path(script_argument).expanduser()
