@@ -86,8 +86,8 @@ h1{font-size:19px;margin:0 0 4px}p{margin:0;color:var(--mut)}
 <div class="notes">
   <div><b>Why the status bar.</b> It already holds app state (counts, Load, Review, Workflow, Filters) and has free room on the left, so the chip adds nothing to the toolbar or the title row. The AI actions it relates to sit directly above it. The top bar is shown as the alternative.</div>
   <div><b>One click, one place.</b> The chip opens a small summary; its primary button opens the full Set up AI page (<a href="ai_setup_mockup.html" target="_blank">ai_setup_mockup.html</a>). The AI menu, the command palette and the first Analyze open the same page.</div>
-  <div><b>First run never blocks.</b> Analyze works without setup (stacks, duplicates, blown-out and soft frames), so the prompt offers both choices. Asked once; <i>Analyze without it</i> is remembered until the chip changes state.</div>
-  <div><b>Real numbers.</b> Everything on, no GPU: 6.8 GB (core 618 MB, Culling 2.7 GB, Editor tools 871 MB, PyTorch for the CPU 2.6 GB). A GPU PC reads 10.4 GB. Open the setup page to untick a pill or a single model.</div>
+  <div><b>First run never blocks.</b> Analyze works without setup, so the prompt offers both choices. Asked once; <i>Analyze without it</i> is remembered until the chip changes state.</div>
+  <div><b>One number.</b> The chip shows what the default install is on this PC: 3.2 GB on a laptop (the core), 10.4 GB with a graphics card (core, Culling and Editor tools). Everything else lives on the setup page.</div>
 </div>
 
 <div class="veil" id="veil"><div class="m"><header><b>Set up AI (the page from ai_setup_mockup.html)</b><button class="btn sec" id="vclose">Close</button></header><iframe id="vframe" title="Set up AI"></iframe></div></div>
@@ -98,9 +98,8 @@ const STATES={
   ready:{cls:"chip",label:"AI ready",small:"",title:"Ready",body:()=>`<h3>AI is ready</h3><p>Everything installed and verified.</p>
     <div class="rows"><div class="r"><span>Faces, eyes-closed, People</span><b class="ok">Ready</b></div><div class="r"><span>Cleanup (stacks, duplicates, blown-out, soft)</span><b class="ok">Ready</b></div><div class="r"><span>Ranking (quality, aesthetic)</span><b class="no">Not installed (optional)</b></div></div>
     <div class="btns"><button class="btn" data-open>Open AI setup</button><button class="btn sec">Check installation</button></div>`},
-  need:{cls:"chip need",label:"Set up AI",small:"6.8 GB",title:"Needs setup",body:()=>`<h3>AI is not set up</h3><p>Analyze already finds stacks, duplicates, blown-out and soft frames. Setup adds eyes-closed detection, People and search, plus ranking and the editor tools.</p>
-    <div class="rows"><div class="r"><span>Everything (default)</span><b>6.8 GB</b></div><div class="r"><span>Core only</span><b>618 MB</b></div><div class="r"><span>Free on this drive</span><b>212 GB</b></div></div>
-    <div class="btns"><button class="btn" data-open>Set up AI...</button><button class="btn sec" data-close>Not now</button></div>`},
+  need:{cls:"chip need",label:"Set up AI",small:"3.2 GB",title:"Needs setup",body:()=>`<h3>AI is not set up</h3><p>A one-time download adds eyes-closed detection, People and search.</p>
+    <div class="btns"><button class="btn" data-open>Set up AI (3.2 GB)</button><button class="btn sec" data-close>Not now</button></div>`},
   busy:{cls:"chip busy",label:"Installing AI",small:"42%",title:"Installing",body:()=>`<h3>Installing AI</h3><p>Step 2 of 4: AI runtime, 350 MB, hash-checked.</p>
     <div class="pb"><i style="width:42%"></i></div><div class="r"><span>42%</span><b>about 3 min left</b></div>
     <p style="margin-top:8px">You can keep using Image Triage. Analyze uses the cleanup passes until this finishes.</p>
@@ -138,10 +137,9 @@ function draw(){
   pop.querySelector(".arrow").style.left=Math.max(14,Math.min(p.x+w/2-left-6,320))+"px";
   pop.classList.toggle("hidden",!(popOpen&&mode==="chip"));
   const f=$("first");
-  f.innerHTML=`<div class="bar"></div><div class="in"><h3>Set up AI for this folder?</h3>
-    <p>Analyze works right now: it groups bursts and flags duplicates, blown-out and soft frames. A one-time download adds eyes-closed detection, People and search, and the ranking and editor models.</p>
-    <div class="rows"><div class="r"><span>Everything (default)</span><b>6.8 GB</b></div><div class="r"><span>Core only</span><b>618 MB</b></div></div>
-    <div class="btns"><button class="btn" data-open>Set up AI...</button><button class="btn sec" data-close>Analyze without it</button></div></div>
+  f.innerHTML=`<div class="bar"></div><div class="in"><h3>Set up AI?</h3>
+    <p>Analyze works now. A one-time download adds eyes-closed detection and People.</p>
+    <div class="btns"><button class="btn" data-open>Set up AI (3.2 GB)</button><button class="btn sec" data-close>Analyze without it</button></div></div>
     <div class="arrow down"></div>`;
   f.classList.remove("hidden");
   f.style.left="1013px";f.style.top=(928-f.offsetHeight)+"px";
