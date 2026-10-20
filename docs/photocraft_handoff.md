@@ -2885,3 +2885,7 @@ Decision: defer merging until a new release under the repository policy. No
 resolutions, rebuild, live handoff validation, promotion or push in this session;
 known-good hosted executables preserved. The session's work is the read-only
 cascade logic/evidence audit recorded in `docs/cascade_logic_audit.md`.
+
+## 2026-10-20 evening: editor mask buttons follow the host's models
+
+PhotoCraft `codex/image-triage-integration` fast-forwarded from `74dc3290` to `0988078e` (one commit): `ui.hostJob` accepts `tools` (a list of host-job kinds the host can run; `[]` = none; not sent = nothing greyed), capability `cameraRawHostTools: 1` in `app.handoff`; the Subject and Background cards, the Landscape link and the People link are disabled with "Needs Editor tools in Image Triage (Set Up AI)." when their kind is missing. Image Triage sends the list only to editors that advertise the capability (`HostJobRunner.poll`, `photocraft_bridge.camera_raw_host_tools_supported`). PhotoCraft checks run: `cargo check -p photocraft-ui-egui`, the `host_job` and `host` unit tests (17 and 48 passed). `cargo clippy -D warnings` fails on warnings that were already there (`photocraft-algo` `calibration.rs:74`, `masks.rs:401`, three collapsible-ifs in `camera_raw_mask_edit_ui.rs`), none in the new lines. Not run: the Image Triage handoff checks against a rebuilt hosted editor. **The hosted executable must be rebuilt before the behaviour appears**; keep the known-good build until those checks pass. Pushed to the fork: `codex/image-triage-integration` at `0988078e`.
