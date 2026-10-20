@@ -9,12 +9,14 @@ and compare their commits with our integration branch. A failed fetch must be
 reported; do not describe an offline checkout as current.
 
 Merge upstream on a release, not on every session. Merging each upstream push
-turned out to be a constant uphill battle; one merge per release is easier. Between
-releases only fetch, report what moved, and dry-run the merge (`git merge-tree
---write-tree --name-only HEAD origin/main`) to gauge the conflicts; do not start
-the merge. Merge sooner only when upstream has not tagged a release but the
-conflicts are major, or the user asks. When upstream cuts a release (a new
-version tag), do the merge then.
+turned out to be a constant uphill battle; one merge per release is easier. Unless
+the user says otherwise, merge only when upstream cuts a release (a new version tag).
+
+Every session still checks, so a large conflict is seen before the release: dry-run
+the merge without starting it (`git merge-tree --write-tree --name-only HEAD
+origin/main`), and report how far upstream has moved, which files would conflict
+(Camera Raw ones in particular) and whether the conflicts look large. If they are
+large, say so and ask whether to merge early; do not merge early on your own.
 
 Keep host changes on `codex/image-triage-integration`. Preserve user edits and
 existing commits before integrating updates. Also examine any fork-only work and
