@@ -154,3 +154,72 @@ def test_a_raw_and_its_jpeg_companion_are_one_frame_and_a_keeper_named_by_the_jp
     other = {str(tmp_path / "x"): [str(tmp_path / "x" / "a.NEF")], str(tmp_path / "y"): [str(tmp_path / "y" / "a.jpg")]}
     merged_other, companions_other = audit_script.merge_companions(other)
     assert not companions_other and sum(len(v) for v in merged_other.values()) == 2
+
+
+def test_run_first_pick_keepers_blind_afterwards_and_evaluate_without_reading_images(audit_script, folder, monkeypatch):
+    root, shoot, paths = folder
+    first = root / "run"
+    code = audit_script.main(["--folders", str(shoot), "--out", str(first), "--cache", str(root / "cache.json"), "--pick-sheet", "--pick-page-size", "4"])
+    assert code == 0
+    assert (first / "frozen.json").exists()
+    report = json.loads((first / "report.json").read_text(encoding="utf-8"))
+    assert report["coverage"]["keepers_listed"] == 0  # nothing was supplied yet: the run does not depend on any keeper
+
+    # The pick sheet: every readable frame, in capture order, and nothing from the run (no flag names, no stack numbers, no decisions).
+    index = (first / "pick" / "index.html").read_text(encoding="utf-8")
+    pages = sorted((first / "pick").glob("pick_*.html"))
+    assert len(pages) == 2 and "pick_01_01.html" in index and "--from-frozen" in index  # 8 readable frames, 4 per page
+    shown: list[str] = []
+    for page in pages:
+        html = page.read_text(encoding="utf-8")
+        assert "data:image/jpeg;base64," in html and "download keepers" in html
+        for word in ("blink", "soft", "clipped", "blown", "flag", "stack", "duplicate", "reject", "dimmed", "role"):
+            assert word not in html.replace("b3_soft", "").replace("b4_hot", "").lower(), (page.name, word)
+        shown += [name for name in ("b1.jpg", "b2.jpg", "b3_soft.jpg", "b4_hot.jpg", "b5.jpg", "other0.jpg", "other1.jpg", "other2.jpg") if name in html]
+    assert sorted(shown) == sorted(["b1.jpg", "b2.jpg", "b3_soft.jpg", "b4_hot.jpg", "b5.jpg", "other0.jpg", "other1.jpg", "other2.jpg"])
+    assert "broken.jpg" not in "".join(p.read_text(encoding="utf-8") for p in pages)
+
+    # Keepers are picked afterwards (the page downloads a JSON list of paths); the evaluation reads no image at all.
+    picks_a = root / "keepers_01_01.json"
+    picks_b = root / "keepers_01_02.json"
+    picks_a.write_text(json.dumps([paths["b1"], paths["soft"]]), encoding="utf-8")
+    picks_b.write_text(json.dumps([paths["other0"]]), encoding="utf-8")
+    import image_triage.cascade.extract as extract_module
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("an image was read during a from-frozen evaluation")
+
+    monkeypatch.setattr(extract_module, "extract_features", forbidden)
+    monkeypatch.setattr(audit_script, "extract_features", forbidden)
+    monkeypatch.setattr(audit_script, "thumbnail_data_uri", lambda *a, **k: "")
+    second = root / "eval"
+    (root / "sweep.json").write_text(json.dumps({"soft_ratio": [0.2, 0.6]}), encoding="utf-8")
+    code = audit_script.main(
+        ["--from-frozen", str(first / "frozen.json"), "--keepers", str(picks_a), str(picks_b), "--out", str(second), "--sweep-json", str(root / "sweep.json")]
+    )
+    assert code == 0
+    evaluated = json.loads((second / "report.json").read_text(encoding="utf-8"))
+    assert evaluated["coverage"]["keepers_listed"] == 3 and evaluated["coverage"]["keepers_eligible"] == 3
+    assert evaluated["per_rule"]["soft"]["flagged"] == 1 and evaluated["per_rule"]["soft"]["misses"] == [paths["soft"]]
+    assert "Evaluated from the saved run" in (second / "report.md").read_text(encoding="utf-8")
+
+    # Same answer as scanning and judging in one go.
+    direct = root / "direct"
+    keepers = root / "k.json"
+    keepers.write_text(json.dumps([paths["b1"], paths["soft"], paths["other0"]]), encoding="utf-8")
+    monkeypatch.undo()
+    audit_script.main(["--folders", str(shoot), "--keepers", str(keepers), "--out", str(direct), "--cache", str(root / "cache.json")])
+    direct_report = json.loads((direct / "report.json").read_text(encoding="utf-8"))
+    for key in ("per_rule", "keeper_outcome", "roles_all_frames"):
+        assert direct_report[key] == evaluated[key], key
+
+
+def test_the_frozen_run_round_trips_features_and_times(audit_script, folder, tmp_path):
+    root, shoot, _ = folder
+    scanned, companions = audit_script.merge_companions(audit_script.scan_folders([str(shoot)], False))
+    data = audit_script.build_dataset(scanned, str(root / "c.json"), None, None)
+    data.companion_of = companions
+    again = audit_script.dataset_from_snapshot(json.loads(json.dumps(audit_script.dataset_to_snapshot(data))))
+    for folder_key, frames in data.groups.items():
+        assert [(f.path, f.captured, f.bracket_id, f.features) for f in frames] == [(f.path, f.captured, f.bracket_id, f.features) for f in again.groups[folder_key]]
+    assert again.unreadable == data.unreadable and again.missing_time == data.missing_time
