@@ -7,8 +7,11 @@ which says nothing about the cause. ``dll_failure_hint`` turns that into an inst
 
 from __future__ import annotations
 
+import functools
 import os
 import re
+import shutil
+import subprocess
 
 RECOMMENDED_VC_RUNTIME = (14, 40, 0)  # PyTorch and ONNX Runtime wheels need the 14.4x C++ runtime; 14.36 failed to load both (verified)
 VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
@@ -54,3 +57,23 @@ def dll_failure_hint(message: str) -> str:
         "A Windows library the AI runtime needs failed to start. Installing or repairing the latest Microsoft Visual C++ Redistributable "
         f"(x64, {VC_REDIST_URL}) usually fixes this."
     )
+
+
+@functools.lru_cache(maxsize=1)
+def nvidia_gpu_name() -> str | None:
+    """The first NVIDIA graphics card's name, or None when there is none (or the driver tool is missing). Asked once per run: it starts a process."""
+    exe = shutil.which("nvidia-smi")
+    if exe is None and is_windows():
+        candidate = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvidia-smi.exe")
+        exe = candidate if os.path.exists(candidate) else None
+    if exe is None:
+        return None
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        done = subprocess.run([exe, "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True, timeout=6, creationflags=flags, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    names = [line.strip() for line in done.stdout.splitlines() if line.strip()]
+    return names[0] if names else None
