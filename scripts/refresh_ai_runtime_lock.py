@@ -99,7 +99,7 @@ def _render(entries: list[dict], variant: str, include_torch: bool) -> str:
         if variant == "gpu" and canonical == "onnxruntime":
             # onnxruntime and onnxruntime-gpu install the same package
             # directory; keeping both leaves the provider set decided by
-            # whichever wheel was unpacked last. insightface pulls the CPU one
+            # whichever wheel was unpacked last. Some dependencies pull the CPU one
             # in transitively, so drop it from the GPU closure.
             print("  dropping transitive onnxruntime from the GPU lock", file=sys.stderr)
             continue

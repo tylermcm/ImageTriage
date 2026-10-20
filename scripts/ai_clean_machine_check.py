@@ -68,7 +68,7 @@ VALIDATION_MODULES = (
     "PIL",
     "yaml",
     "tqdm",
-    "insightface",
+    "mediapipe",
     "torchvision",
     "timm",
     "safetensors",
