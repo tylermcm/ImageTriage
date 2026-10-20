@@ -2862,3 +2862,26 @@ completion applies to the three features requested here, not the entire window.
   (`cargo build --release -p photocraft -j 4`, own target dir, 15m56s). PE subsystem = GUI (2), so no console window (the
   `windows_subsystem` attribute in `main.rs` only applies without debug assertions; dev builds show a console).
   SHA256 f89342ebc8735edff6ae0403348ded82e9a2513cc9280527ef2e7f604bc90000. Not promoted; known-good executables untouched.
+
+## 2026-10-20: cascade audit session status check (no integration)
+
+Both `origin` and `fork` fetched successfully. The cached upstream main advanced
+`46e538b3` -> `9b9643764f3fb77d9f0e48d7510983ae50621e11`.
+Local `codex/image-triage-integration` and its fork tracking branch both point to
+`74dc329068732f419c43f1548827c434977fb657`; clean checkout, no fork-only commits.
+HEAD versus origin/main is 78 / 119 exclusive commits. Latest version tag remains
+v0.10.0, already integrated; newly fetched older tags do not call for a merge.
+
+`git merge-tree --write-tree --name-only HEAD origin/main` reports 21 conflicts:
+`crates/ui-egui/src/widgets.rs` and `crates/ui-egui/src/i18n/` tables
+cs, de, el, es, fr, hu, id, it, ja, ko, nl, pl, pt-br, ru, sr, tr, uk, vi,
+zh-hans and zh-hant. No textual Camera Raw conflict. The widget conflict is one
+small FieldOpts destructuring hunk; each translation has two hunks (larger in de/it).
+The textual conflict surface does not look like a large Camera Raw integration
+conflict. Automatic merges include Camera Raw, services, menus and state and would
+still require individual compatibility review on integration.
+
+Decision: defer merging until a new release under the repository policy. No
+resolutions, rebuild, live handoff validation, promotion or push in this session;
+known-good hosted executables preserved. The session's work is the read-only
+cascade logic/evidence audit recorded in `docs/cascade_logic_audit.md`.
