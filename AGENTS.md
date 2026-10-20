@@ -14,7 +14,7 @@ releases only fetch, report what moved, and dry-run the merge (`git merge-tree
 --write-tree --name-only HEAD origin/main`) to gauge the conflicts; do not start
 the merge. Merge sooner only when upstream has not tagged a release but the
 conflicts are major, or the user asks. When upstream cuts a release (a new
-version tag), merge that release's tip, not a later `main`.
+version tag), do the merge then.
 
 Keep host changes on `codex/image-triage-integration`. Preserve user edits and
 existing commits before integrating updates. Also examine any fork-only work and
