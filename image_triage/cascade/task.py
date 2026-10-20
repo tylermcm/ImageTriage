@@ -149,12 +149,15 @@ class CascadeRunTask(QRunnable):
         started = time.perf_counter()
         detector = BracketDetector()
         captured: dict[str, float | None] = {}
+        focal: dict[str, float | None] = {}
         for index, record in enumerate(records):
             self._check_cancelled()
             metadata = load_capture_metadata(record.path)
             detector.remember(metadata)
             value = metadata.captured_at_value
             captured[record.path] = value.timestamp() if value is not None else None
+            focal_value = getattr(metadata, "focal_length_value", None)
+            focal[record.path] = float(focal_value) if focal_value else None
             if index % 25 == 0 or index == total - 1:
                 self._progress(folder, STAGES[0], index + 1, total, started)
 
@@ -189,7 +192,12 @@ class CascadeRunTask(QRunnable):
             self.signals.detail.emit(folder, f"{extracted.stats.failed} frames could not be read and were left unrated.")
 
         frames = [
-            FolderFrame(record.path, feature, captured.get(record.path), bracket_of.get(record.path))
+            FolderFrame(
+                record.path,
+                replace(feature, focal_mm=focal.get(record.path)) if feature is not None else None,
+                captured.get(record.path),
+                bracket_of.get(record.path),
+            )
             for record, feature in zip(records, extracted.features)
         ]
         # Burst detection needs capture order, not display order.
