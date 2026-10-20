@@ -178,6 +178,7 @@ MASK_ADJUSTMENTS = {
     "texture": 100, "clarity": 100, "dehaze": 100, "saturation": 100,
 }
 MASK_MAX = 16
+MASK_PARTS_MAX = 8
 MASK_RASTER_SIDE = 1536
 MASK_RASTER_TEXT = 6 * 1024 * 1024
 
@@ -212,11 +213,28 @@ def _mask_shape_ok(shape) -> bool:
     return False
 
 
+def _mask_parts_ok(parts) -> bool:
+    if not isinstance(parts, list) or len(parts) > MASK_PARTS_MAX:
+        return False
+    for part in parts:
+        if not isinstance(part, dict) or not set(part) <= {"op", "shape", "invert"}:
+            return False
+        if "op" in part and part["op"] not in ("add", "subtract", "intersect"):
+            return False
+        if "invert" in part and not isinstance(part["invert"], bool):
+            return False
+        if "shape" in part and not _mask_shape_ok(part["shape"]):
+            return False
+    return True
+
+
 def _masks_valid(masks) -> bool:
     if not isinstance(masks, list) or len(masks) > MASK_MAX:
         return False
     for mask in masks:
-        if not isinstance(mask, dict) or not set(mask) <= {"name", "enabled", "shape", "invert", "amount", "adjust"}:
+        if not isinstance(mask, dict) or not set(mask) <= {"name", "enabled", "shape", "invert", "parts", "amount", "adjust"}:
+            return False
+        if "parts" in mask and not _mask_parts_ok(mask["parts"]):
             return False
         if "name" in mask and not (isinstance(mask["name"], str) and len(mask["name"]) <= 64):
             return False

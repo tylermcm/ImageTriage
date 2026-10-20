@@ -561,3 +561,13 @@ def test_range_masks_are_accepted_and_bad_ones_are_not():
                   {"type": "luminanceRange", "low": 0.1, "high": 0.6},
                   {"type": "blob"}):
         assert not pb._masks_valid([{"shape": shape}]), shape
+
+
+def test_combined_mask_parts_are_validated():
+    from image_triage import photocraft_bridge as pb
+
+    base = {"type": "luminanceRange", "low": 0.1, "high": 0.6, "smooth": 10}
+    ok = [{"shape": base, "adjust": {"exposure": 1.0}, "parts": [{"op": "subtract", "shape": {"type": "linear", "x0": 0.5, "y0": 0.2, "x1": 0.5, "y1": 0.8}, "invert": True}]}]
+    assert pb._masks_valid(ok)
+    for parts in ([{"op": "xor", "shape": base}], [{"shape": {"type": "blob"}}], [{"op": "add", "extra": 1}], "nope", [{}] * 9):
+        assert not pb._masks_valid([{"shape": base, "parts": parts}]), parts
