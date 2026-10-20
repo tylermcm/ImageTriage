@@ -64,10 +64,9 @@ h1{font-size:19px;margin:0 0 4px}p{margin:0;color:var(--mut)}
 <body>
 <div class="top">
   <h1>AI status chip and first-run prompt, in place</h1>
-  <p>Mockup, not the real app. The window is a real Image Triage capture (24 generated photos, 1920 x 1032). Everything coloured is the proposal. Click the chip, or click <b>AI Sort</b> in the toolbar.</p>
+  <p>Mockup, not the real app. The window is a real Image Triage capture (24 generated photos, 1920 x 1032). Everything coloured is the proposal. Click the chip, or click <b>AI Sort</b> in the toolbar to see the first-run prompt.</p>
   <div class="ctl">
     <span><label>Chip state</label><span class="seg" id="state"></span></span>
-    <span><label>Where</label><span class="seg" id="where"><button data-v="status" class="on">Status bar (recommended)</button><button data-v="top">Top bar</button></span></span>
     <span><label>Show</label><span class="seg" id="mode"><button data-v="chip" class="on">Chip</button><button data-v="first">First-run prompt</button></span></span>
   </div>
   <div class="hint" id="hint"></div>
@@ -84,7 +83,7 @@ h1{font-size:19px;margin:0 0 4px}p{margin:0;color:var(--mut)}
 </div>
 
 <div class="notes">
-  <div><b>Why the status bar.</b> It already holds app state (counts, Load, Review, Workflow, Filters) and has free room on the left, so the chip adds nothing to the toolbar or the title row. The AI actions it relates to sit directly above it. The top bar is shown as the alternative.</div>
+  <div><b>Why the top bar.</b> It is always in view, sits beside Search (the other AI-powered feature), and has free room left of it, so nothing else moves. The first-run card hangs from it with an arrow, so the prompt is clearly about this chip.</div>
   <div><b>One click, one place.</b> The chip opens a small summary; its primary button opens the full Set up AI page (<a href="ai_setup_mockup.html" target="_blank">ai_setup_mockup.html</a>). The AI menu, the command palette and the first Analyze open the same page.</div>
   <div><b>First run never blocks.</b> Analyze works without setup, so the prompt offers both choices. Asked once; <i>Analyze without it</i> is remembered until the chip changes state.</div>
   <div><b>One number.</b> The chip shows what the default install is on this PC: 3.2 GB on a laptop (the core), 10.4 GB with a graphics card (core, Culling and Editor tools). Everything else lives on the setup page.</div>
@@ -111,48 +110,40 @@ const STATES={
     <div class="warnbox">Visual C++ Redistributable 14.36 is too old. Install the latest x64 version, then repair.</div>
     <div class="btns"><button class="btn" data-open>Open AI setup</button><button class="btn sec">Get Visual C++</button></div>`}
 };
-let st="ready",where="status",mode="chip",popOpen=false;
-const POS={status:{x:252,y:1006},top:{x:1480,y:7}};
+let st="ready",mode="chip",popOpen=false;
+const POS={x:1226,y:8}; // top bar, left of the search field
 function draw(){
-  const s=STATES[st],p=POS[where];
+  const s=mode==="first"?STATES.need:STATES[st],p=POS;
   const c=$("chip");c.className=s.cls;c.innerHTML=`<span class="dot"></span><span>${s.label}</span>${s.small?`<small>${s.small}</small>`:""}`;
-  c.style.left=p.x+"px";c.style.top=p.y+"px";c.style.display=mode==="chip"?"inline-flex":"none";
-  const w=c.offsetWidth||150,hl=$("hl"),tag=$("tag");
-  if(mode==="chip"){
-    hl.style.display=tag.style.display="block";
-    hl.style.left=(p.x-6)+"px";hl.style.top=(p.y-5)+"px";hl.style.width=(w+12)+"px";hl.style.height="32px";
-    tag.textContent=where==="status"?"AI status chip":"AI status chip (alternative)";
-    tag.style.left=(p.x-6)+"px";tag.style.top=(where==="top"?p.y+34:p.y-27)+"px";
-  }else{
-    hl.style.display=tag.style.display="block";
-    hl.style.left="1186px";hl.style.top="938px";hl.style.width="48px";hl.style.height="42px";
-    tag.textContent="Analyze / AI Sort";tag.style.left="1160px";tag.style.top="984px";
-  }
+  c.style.left=p.x+"px";c.style.top=p.y+"px";c.style.display="inline-flex";
+  const w=c.offsetWidth||150,mid=p.x+w/2,hl=$("hl"),tag=$("tag");
+  hl.style.display=tag.style.display="block";
+  hl.style.left=(p.x-6)+"px";hl.style.top=(p.y-5)+"px";hl.style.width=(w+12)+"px";hl.style.height="32px";
+  tag.textContent="AI status chip";tag.style.left=(p.x-6)+"px";tag.style.top=(p.y+90)+"px";tag.style.display="none";
   const pop=$("pop");
-  pop.innerHTML=`<div class="bar"></div><div class="in">${s.body()}</div><div class="arrow ${where==="top"?"up":"down"}"></div>`;
+  pop.innerHTML=`<div class="bar"></div><div class="in">${s.body()}</div><div class="arrow up"></div>`;
   pop.classList.remove("hidden");
-  const left=where==="top"?1920-356:Math.max(8,p.x-6);
-  pop.style.left=left+"px";
-  pop.style.top=(where==="top"?p.y+34:p.y-pop.offsetHeight-12)+"px";
-  pop.querySelector(".arrow").style.left=Math.max(14,Math.min(p.x+w/2-left-6,320))+"px";
+  const left=Math.min(p.x-6,1900-340);
+  pop.style.left=left+"px";pop.style.top=(p.y+34)+"px";
+  pop.querySelector(".arrow").style.left=(mid-left-6)+"px";
   pop.classList.toggle("hidden",!(popOpen&&mode==="chip"));
   const f=$("first");
   f.innerHTML=`<div class="bar"></div><div class="in"><h3>Set up AI?</h3>
     <p>Analyze works now. A one-time download adds eyes-closed detection and People.</p>
     <div class="btns"><button class="btn" data-open>Set up AI (3.2 GB)</button><button class="btn sec" data-close>Analyze without it</button></div></div>
-    <div class="arrow down"></div>`;
+    <div class="arrow up"></div>`;
   f.classList.remove("hidden");
-  f.style.left="1013px";f.style.top=(928-f.offsetHeight)+"px";
-  f.querySelector(".arrow").style.left="190px";
+  const fl=Math.min(mid-150,1900-392);
+  f.style.left=fl+"px";f.style.top=(p.y+34)+"px";
+  f.querySelector(".arrow").style.left=(mid-fl-6)+"px";
   f.classList.toggle("hidden",mode!=="first");
-  $("hint").textContent=mode==="first"?"First Analyze on a PC with no AI setup: a card anchored to the button, never a modal. Both choices keep going.":(popOpen?"Click the chip again to close.":"Click the chip to open its summary.");
+  $("hint").textContent=mode==="first"?"First Analyze on a PC with no AI setup: a card hanging from the chip, never a modal. Both choices keep going.":(popOpen?"Click the chip again to close.":"Click the chip to open its summary.");
   document.querySelectorAll("[data-open]").forEach(b=>b.onclick=e=>{e.stopPropagation();$("vframe").src="ai_setup_mockup.html";$("veil").classList.add("on")});
   document.querySelectorAll("[data-close]").forEach(b=>b.onclick=e=>{e.stopPropagation();popOpen=false;if(mode==="first")setMode("chip");draw()});
 }
 function setMode(m){mode=m;[...$("mode").children].forEach(x=>x.classList.toggle("on",x.dataset.v===m))}
 $("state").innerHTML=Object.entries(STATES).map(([k,v])=>`<button data-v="${k}" class="${k===st?"on":""}">${v.title}</button>`).join("");
 $("state").onclick=e=>{const b=e.target.closest("button");if(!b)return;st=b.dataset.v;[...$("state").children].forEach(x=>x.classList.toggle("on",x===b));popOpen=false;if(mode==="first")setMode("chip");draw()};
-$("where").onclick=e=>{const b=e.target.closest("button");if(!b)return;where=b.dataset.v;[...$("where").children].forEach(x=>x.classList.toggle("on",x===b));popOpen=false;draw()};
 $("mode").onclick=e=>{const b=e.target.closest("button");if(!b)return;setMode(b.dataset.v);popOpen=false;draw()};
 $("chip").onclick=()=>{popOpen=!popOpen;draw()};
 $("vclose").onclick=()=>$("veil").classList.remove("on");
