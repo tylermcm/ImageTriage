@@ -56,9 +56,6 @@ AI_RUNTIME_BASE_PIP_REQUIREMENTS = (
     "scikit-learn==1.9.0",
     "tqdm==4.69.0",
     "PyYAML==6.0.3",
-    # Face-quality pass (detection + landmarks + gender/age via the AuraFace ONNX pack).
-    # Recognition/face-sort is a separate, opt-in path and not pulled here.
-    "insightface==1.0.1",
     # The eyes-closed check of the stack-first cascade (image_triage/cascade/blink.py): MediaPipe Face Landmarker, CPU only, no torch.
     # In a locked install (--no-deps) only the packages in the lock arrive. Resolving it unlocked also pulls opencv-contrib-python and
     # sounddevice, which the lock generator drops (see AI_RUNTIME_LOCK_EXCLUDED_DISTRIBUTIONS); an unlocked dev install tolerates them.
@@ -90,7 +87,6 @@ AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES = (
     "PIL",
     "yaml",
     "tqdm",
-    "insightface",
     "mediapipe",
 )
 AI_RUNTIME_TORCH_REQUIRED_MODULE_NAMES = (
@@ -104,9 +100,8 @@ AI_RUNTIME_TORCH_REQUIRED_MODULE_NAMES = (
     "einops",
     "kornia",
 )
-AI_RUNTIME_BASE_REQUIRED_FILES = (
-    (Path("insightface/model_zoo/model_store.py"), "insightface package files"),
-)
+# The compact runtime has no package whose files need a separate check beyond the module imports.
+AI_RUNTIME_BASE_REQUIRED_FILES: tuple[tuple[Path, str], ...] = ()
 AI_RUNTIME_TORCH_REQUIRED_FILES = (
     (
         Path("transformers/models/audio_spectrogram_transformer/configuration_audio_spectrogram_transformer.py"),
