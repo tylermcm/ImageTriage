@@ -18,6 +18,8 @@ class RankingDecision:
     use_rankers: bool
     device: str = ""  # "gpu" or "cpu" when rankers run
     use_blink: bool = False  # the eyes-closed check: CPU only and cheap, so it runs whenever the AI runtime is installed
+    use_quality: bool = True  # which of the two rankers are installed; either can be left out in Set Up AI
+    use_appeal: bool = True
     note: str = ""  # shown to the person when ranking is skipped
     ask_cpu_confirmation: bool = False
     confirmation_text: str = ""
@@ -26,8 +28,18 @@ class RankingDecision:
         return replace(self, use_rankers=False, device="", note=note, ask_cpu_confirmation=False, confirmation_text="")
 
 
-def decide_ranking(runtime_device: str | None, rank_on_cpu: bool) -> RankingDecision:
-    """``runtime_device`` is the managed AI runtime's device ("cuda", "cuda:1", "cpu"), or None when the runtime is not installed or not usable."""
+def decide_ranking(runtime_device: str | None, rank_on_cpu: bool, *, quality_installed: bool = True, appeal_installed: bool = True) -> RankingDecision:
+    """``runtime_device`` is the managed AI runtime's device ("cuda", "cuda:1", "cpu"), or None when the runtime is not installed or not usable.
+    ``quality_installed`` and ``appeal_installed`` say which rankers have their files; with neither, ranking is skipped and the cleanup still runs."""
+    decision = _decide_device(runtime_device, rank_on_cpu)
+    if not decision.use_rankers:
+        return decision
+    if not (quality_installed or appeal_installed):
+        return decision.without_ranking("Ranking skipped: the Culling models are not installed. Set up AI can add them.")
+    return replace(decision, use_quality=quality_installed, use_appeal=appeal_installed)
+
+
+def _decide_device(runtime_device: str | None, rank_on_cpu: bool) -> RankingDecision:
     if runtime_device is None:
         return RankingDecision(False, note="Ranking and the eyes-closed check skipped: the AI runtime is not installed. Cleanup ran without them; AI setup can add it.")
     if runtime_device.strip().lower().startswith(("cuda", "gpu")):
@@ -48,9 +60,11 @@ def decide_ranking(runtime_device: str | None, rank_on_cpu: bool) -> RankingDeci
     return RankingDecision(False, use_blink=True, note="Ranking skipped: no usable GPU. Turn on ranking on the CPU in settings to include it (slow).")
 
 
-def default_scorer_factory(device: str, *, rankers: bool = True, blink: bool = True, faces: bool | None = None) -> ScorerFactory:
-    """Build the worker scorers for one run: the two rankers (when ``rankers``), the eyes-closed check (when ``blink``) and the face finder that feeds the People
-    window (when ``faces``; by default whenever the eyes-closed check runs, since both need only the compact runtime)."""
+def default_scorer_factory(
+    device: str, *, rankers: bool = True, blink: bool = True, faces: bool | None = None, quality: bool = True, appeal: bool = True
+) -> ScorerFactory:
+    """Build the worker scorers for one run: the rankers (when ``rankers``; ``quality`` and ``appeal`` pick which of the two), the eyes-closed check (when ``blink``)
+    and the face finder that feeds the People window (when ``faces``; by default whenever the eyes-closed check runs, since both need only the compact runtime)."""
     with_faces = blink if faces is None else faces
 
     def factory(cancel: Callable[[], bool], progress: Callable[[int, int, str], None]) -> Scorers:
@@ -59,11 +73,14 @@ def default_scorer_factory(device: str, *, rankers: bool = True, blink: bool = T
         made: list = []
         maniqa = aesthetic = eyes = people = None
         names: list[str] = []
-        if rankers:
+        if rankers and quality:
             maniqa = maniqa_ranker(device=device, cancel_check=cancel, progress=lambda done, total: progress(done, total, "Ranking (quality)"))
+            made.append(maniqa)
+            names.append("maniqa")
+        if rankers and appeal:
             aesthetic = qrealign_ranker(device=device, cancel_check=cancel, progress=lambda done, total: progress(done, total, "Ranking (aesthetic)"))
-            made += [maniqa, aesthetic]
-            names += ["maniqa", "q-realign aesthetic"]
+            made.append(aesthetic)
+            names.append("q-realign aesthetic")
         if blink:
             eyes = blink_ranker(device="cpu", cancel_check=cancel, progress=lambda done, total: progress(done, total, "Checking for closed eyes"))
             made.append(eyes)

@@ -262,6 +262,11 @@ class ToolbarController(QObject):
         self.also_add_to_button.setMenu(also_add_to_menu)
         self.also_add_to_button.hide()
         search_layout.addWidget(self.also_add_to_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        from .ui.ai_status_widgets import AIStatusChip
+
+        self._window.ai_status_chip = AIStatusChip(bar)
+        self._window.ai_status_chip.hide()  # shown by the AI status controller when something needs the person
+        layout.addWidget(self._window.ai_status_chip, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self.app_search_box, 1)
         update_button = getattr(self._window, "update_download_button", None)
         if update_button is not None:
