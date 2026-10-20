@@ -85,3 +85,5 @@ Sample complete runs across held-out albums, with extra coverage near 8 and 18, 
   Keepers chosen from a folder that was already culled (winner copies, Accepted marks) still work as `--keepers` input but carry the selection bias described above.
   Not yet exercised on real RAW folders or real keeper lists. Blink recall is only measured when a `--blink-scores` file (path to score) is supplied.
 - **Still open from the audit:** the keeper-recall run on the library, the human-labelled false-merge check, and the decisions that depend on them (which of the options above become defaults; whether blown-out-only and equal-blur stacks need different rules).
+
+The server run, step by step, and what happens with its results: `docs/pass1_audit_runbook.md`.
