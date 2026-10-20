@@ -112,12 +112,73 @@ class FreezeAssetLayout:
             (str(CLI_CULLER_PACKAGE_ROOT), "aiculler"),
             (str(ROOT / "image_triage" / "upscale_worker.py"), "ai_workers/upscale_worker.py"),
             (str(ROOT / "image_triage" / "upscale_core.py"), "ai_workers/upscale_core.py"),
+            *cascade_worker_include_files(),
             (str(self.ai_stdlib_stage_root), "ai_stdlib"),
             (str(self.ai_binary_modules_stage_root), "lib"),
         ]
         if self.bundle_ai_site_packages:
             include_files.append((str(self.ai_site_packages_stage_root), "ai_site_packages"))
         return include_files
+
+
+CASCADE_WORKER_MODULE = "image_triage.cascade.rankers.worker"
+# Plain-file tree the managed runtime's interpreter imports the cascade workers from (frozen builds keep the package in library.zip).
+CASCADE_WORKER_TREE = "ai_workers/py"
+
+
+def _module_source(name: str, root: Path) -> tuple[Path | None, bool]:
+    base = root.joinpath(*name.split("."))
+    if base.is_dir():
+        init = base / "__init__.py"
+        return (init if init.is_file() else None), True
+    source = base.with_suffix(".py")
+    return (source if source.is_file() else None), False
+
+
+def worker_import_closure(start: str = CASCADE_WORKER_MODULE, root: Path | None = None) -> dict[str, Path]:
+    """Every ``image_triage`` module the worker can import (module name -> source file), lazy imports included.
+
+    Computed from the code (AST), so a new import in the worker is shipped without editing a list.
+    Parent package ``__init__`` files are part of it because importing a module runs them.
+    """
+    import ast
+
+    root = root or ROOT
+    found: dict[str, Path] = {}
+    pending = [start]
+    while pending:
+        name = pending.pop()
+        if name in found:
+            continue
+        source, is_package = _module_source(name, root)
+        if source is None:
+            continue
+        found[name] = source
+        parts = name.split(".")
+        pending.extend(".".join(parts[:i]) for i in range(1, len(parts)))
+        package = parts if is_package else parts[:-1]
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                pending.extend(a.name for a in node.names if a.name.split(".")[0] == "image_triage")
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    anchor = package[: len(package) - (node.level - 1)]
+                    module = ".".join([*anchor, *([node.module] if node.module else [])])
+                elif node.module and node.module.split(".")[0] == "image_triage":
+                    module = node.module
+                else:
+                    continue
+                pending.append(module)
+                pending.extend(f"{module}.{a.name}" for a in node.names)
+    return found
+
+
+def cascade_worker_include_files(root: Path | None = None) -> list[tuple[str, str]]:
+    root = root or ROOT
+    return [
+        (str(path), f"{CASCADE_WORKER_TREE}/{path.relative_to(root).as_posix()}")
+        for _name, path in sorted(worker_import_closure(root=root).items())
+    ]
 
 
 def _pocketdrop_include_files() -> list[tuple[str, str]]:
