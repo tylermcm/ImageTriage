@@ -404,6 +404,16 @@ class AiSetupController(QObject):
         self._window.statusBar().showMessage("AI setup was cancelled. What was already downloaded is kept.")
         self._end_progress(ok=False, note="Setup was cancelled. What was already downloaded is kept; start it again to finish.")
 
+    def update_ai_models(self) -> None:
+        """Download the models this version needs and does not have (new ones, and ones whose pinned revision changed), with the progress view."""
+        window = self._window
+        if self._progress is not None or window._active_ai_runtime_task is not None or window._active_ai_model_task is not None or self._active_ai_bundle_task is not None:
+            self.show_progress_dialog()
+            return
+        _gpu, variant = self.ai_setup_hardware()
+        self.begin_setup_progress(variant=variant, runtime_missing=False)
+        self.start_ai_capability_bundles(title="AI update", context="The AI models are up to date.")
+
     def cancel_setup(self) -> None:
         """Stop the run in progress: the installer and the downloads are told to stop, and the next step never starts."""
         if self._progress is None:

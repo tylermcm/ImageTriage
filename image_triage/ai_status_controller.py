@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, QTimer
 
 from . import ai_setup_plan as plan
 from .ai_manifest import MODEL_BUNDLES
+from .ai_model_store import STATE_STALE, bundle_status
 from .ai_status import AIState, AIStatus, compute_status
 from .ui.ai_status_widgets import AIStatusChip, AIStatusPopover, AIStatusText, build_card
 
@@ -69,12 +70,17 @@ class AiStatusController(QObject):
             return compute_status(core_installed=True, installing=True, install_message=line or self._install_message, percent=percent)
         core = setup.core_installed()
         problems = sum(1 for health in setup._last_ai_readiness_results.values() if not getattr(health, "ready", True))
-        missing_mb = 0
+        changed: list[tuple[str, int]] = []  # installed, but from an older pinned revision: this version needs them again
+        absent: list[tuple[str, int]] = []  # not installed at all
         if core:
             try:
-                missing_mb = sum(MODEL_BUNDLES[key].approx_mb for key in setup.missing_capability_bundles() if key in MODEL_BUNDLES)
+                for key in setup.missing_capability_bundles():
+                    if key not in MODEL_BUNDLES:
+                        continue
+                    entry = (MODEL_BUNDLES[key].name, MODEL_BUNDLES[key].approx_mb)
+                    (changed if bundle_status(key).state == STATE_STALE else absent).append(entry)
             except Exception:  # a broken bundle listing must not break the window's chip
-                missing_mb = 0
+                changed, absent = [], []
         default_mb = 0
         if not core:
             gpu, variant = setup.ai_setup_hardware()
@@ -87,7 +93,8 @@ class AiStatusController(QObject):
             installing=installing,
             install_message=self._install_message if installing else "",
             default_download_mb=default_mb,
-            missing_mb=missing_mb,
+            changed=tuple(changed),
+            absent=tuple(absent),
             problems=problems,
         )
 
@@ -111,6 +118,10 @@ class AiStatusController(QObject):
     def _open_setup(self) -> None:
         self.close_card()
         self._window._ai_setup.download_ai_model()
+
+    def _update_models(self) -> None:
+        self.close_card()
+        self._window._ai_setup.update_ai_models()
 
     def _check(self) -> None:
         self.close_card()
@@ -164,7 +175,8 @@ class AiStatusController(QObject):
             return build_card(
                 "AI update",
                 status.detail,
-                buttons=[(f"Update{size}", True, self._open_setup), ("Later", False, self._not_now)],
+                rows=status.items,
+                buttons=[(f"Update{size}", True, self._update_models), ("Later", False, self._not_now)],
             )
         return build_card(
             "AI needs repair",
