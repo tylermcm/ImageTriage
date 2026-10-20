@@ -48,13 +48,20 @@ def run_cascade(
                 decisions[i] = FrameDecision(keys[i], stack_index, FrameRole.NO_PICK, flags[i])
             continue
 
-        alive = [i for i in indices if not is_rejecting(flags[i])] or list(indices)
+        alive = [i for i in indices if not is_rejecting(flags[i])]
+        fell_back = not alive
+        if fell_back:
+            alive = list(indices)
         for i in indices:
             if i not in alive:
                 decisions[i] = FrameDecision(keys[i], stack_index, FrameRole.REJECTED, flags[i])
 
         reps: list[int] = []
-        for cluster in complete_linkage(alive, frames, settings.duplicate_distance):
+        if fell_back and settings.all_flagged_skips_collapse:
+            clusters = [[i] for i in alive]
+        else:
+            clusters = complete_linkage(alive, frames, settings.duplicate_distance, settings.linkage)
+        for cluster in clusters:
             rep = representative(cluster, frames)
             reps.append(rep)
             for i in cluster:
