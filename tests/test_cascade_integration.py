@@ -107,3 +107,84 @@ def test_turning_ai_marks_off_also_turns_the_dim_off(main_window, cascade_folder
     finally:
         main_window.grid._paint_ai_flag_dim = original
         main_window.grid.set_show_ai_annotations(True)
+
+
+def test_the_classic_card_dims_flagged_frames_with_the_same_rule_and_setting(main_window, cascade_folder, monkeypatch) -> None:
+    """The legacy painter (classic card) used to skip the dim. Pixel check: a flagged tile is darker with AI tags on than off."""
+    from image_triage.ai_results import ai_flag_dim_alpha
+
+    run_analyze(main_window, monkeypatch, cascade_folder)
+    grid = main_window.grid
+    by_name = {Path(path).name: result for path, result in main_window._ai_bundle.results_by_path.items()}
+    assert ai_flag_dim_alpha(by_name["a3_soft.jpg"]) == grid._ai_flag_dim_alpha(by_name["a3_soft.jpg"]) > 0
+    assert ai_flag_dim_alpha(by_name["a1.jpg"]) == 0
+
+    grid.set_loupe_card_style("classic")
+    index_of = {Path(r.path).name: i for i, r in enumerate(grid._items)}
+
+    def tile_brightness(name: str) -> int:
+        image = grid.viewport().grab().toImage()
+        image_rect = grid._image_rect(grid._item_rect(index_of[name]))
+        total = 0
+        for x in range(image_rect.left() + 4, image_rect.right() - 4, 3):
+            for y in range(image_rect.top() + 4, image_rect.bottom() - 4, 3):
+                color = image.pixelColor(x, y)
+                total += color.red() + color.green() + color.blue()
+        return total
+
+    try:
+        grid.set_show_ai_annotations(True)
+        on = tile_brightness("a3_soft.jpg")
+        grid.set_show_ai_annotations(False)
+        off = tile_brightness("a3_soft.jpg")
+    finally:
+        grid.set_show_ai_annotations(True)
+        grid.set_loupe_card_style("detailed")
+    assert on < off * 0.8
+
+
+def test_analyze_progress_text_is_plain_and_counts_four_stages(main_window, cascade_folder, monkeypatch) -> None:
+    seen_stage_text: list[str] = []
+    seen_dialog: list[tuple[str, str]] = []
+    controller = main_window._ai_run
+    original_stage = controller.handle_ai_run_stage
+
+    def spy(folder, stage_index, stage_total, message):
+        original_stage(folder, stage_index, stage_total, message)
+        seen_stage_text.append(main_window._ai_stage_message)
+        dialog = controller._ai_review_progress_dialog
+        seen_dialog.append((dialog.stage_progress.format(), dialog.windowTitle()))
+
+    monkeypatch.setattr(controller, "handle_ai_run_stage", spy)
+    run_analyze(main_window, monkeypatch, cascade_folder)
+
+    assert seen_stage_text == [
+        "Stage 1 of 4: Reading capture times and brackets",
+        "Stage 2 of 4: Reading previews",
+        "Stage 3 of 4: Deciding what to flag",
+        "Stage 4 of 4: Writing results",
+    ]
+    assert [fmt for fmt, _ in seen_dialog] == ["Stage 1 of 4", "Stage 2 of 4", "Stage 3 of 4", "Stage 4 of 4"]
+    assert main_window._ai_stage_message == "Analysis complete"
+    assert {title for _, title in seen_dialog} == {"Analyze"}
+    assert "AI review" not in main_window.statusBar().currentMessage()
+
+
+def test_the_legacy_culler_keeps_its_ai_review_wording(main_window) -> None:
+    controller = main_window._ai_run
+    controller._ai_plain = False
+    assert controller._words("Queued AI review") == "Queued AI review"
+    assert controller._words("AI review complete") == "AI review complete"
+    controller._ai_plain = True
+    try:
+        assert controller._words("Queued AI review") == "Queued analysis"
+        assert controller._words("AI review failed") == "Analysis failed"
+        assert controller._words("Stopping AI review") == "Stopping analysis"
+    finally:
+        controller._ai_plain = False
+    from image_triage.ui.ai_review_progress_dialog import AIReviewProgressDialog
+
+    dialog = AIReviewProgressDialog()
+    dialog.start_run(folder="x", stage_total=5)
+    dialog.set_stage(stage_index=2, stage_total=5, message="Embedding")
+    assert dialog.stage_progress.format() == "Stage 2/5" and dialog.windowTitle() == "AI Review"

@@ -781,6 +781,15 @@ def _cascade_confidence(result: AIImageResult) -> tuple[AIConfidenceBucket, str]
     return AIConfidenceBucket.NEEDS_REVIEW, summary
 
 
+AI_FLAG_DIM_ALPHA = 120
+
+
+def ai_flag_dim_alpha(result: AIImageResult | None) -> int:
+    """Alpha of the dim laid over a frame the cascade's first pass flagged ("rejected"); 0 for everything else. Shared by every card style that
+    paints the dim, so the grid card and the loupe card cannot disagree. The caller applies the "AI tags in grid" setting."""
+    return AI_FLAG_DIM_ALPHA if result is not None and result.cascade_role == "rejected" else 0
+
+
 def confidence_bucket_label(bucket: AIConfidenceBucket | str) -> str:
     resolved = AIConfidenceBucket(bucket) if isinstance(bucket, str) else bucket
     if resolved == AIConfidenceBucket.OBVIOUS_WINNER:

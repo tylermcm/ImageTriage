@@ -12,6 +12,11 @@ from PySide6.QtWidgets import (
 )
 
 
+def stage_text(stage: int, total: int) -> str:
+    """"Stage 2 of 4": the wording of an Analyze (cascade) run. ``stage`` is 1-based."""
+    return f"Stage {stage} of {total}"
+
+
 class AIReviewProgressDialog(QDialog):
     """Modeless progress window for the folder AI Review run."""
 
@@ -22,6 +27,7 @@ class AIReviewProgressDialog(QDialog):
         self._running = True
         self._stop_requested = False
         self._detailed = bool(detailed)
+        self._plain = False  # True while an Analyze (cascade) run is shown: plain wording, "Stage 2 of 4"
 
         self.setWindowTitle("AI Review")
         self.setModal(False)
@@ -32,9 +38,9 @@ class AIReviewProgressDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        title = QLabel("AI Review", self)
-        title.setObjectName("dialogTitle")
-        layout.addWidget(title)
+        self._title_label = QLabel("AI Review", self)
+        self._title_label.setObjectName("dialogTitle")
+        layout.addWidget(self._title_label)
 
         self.folder_label = QLabel("-", self)
         self.folder_label.setObjectName("mutedText")
@@ -89,27 +95,34 @@ class AIReviewProgressDialog(QDialog):
 
         layout.addLayout(button_row)
 
-    def start_run(self, *, folder: str, stage_total: int) -> None:
+    def start_run(self, *, folder: str, stage_total: int, plain: bool = False) -> None:
+        self._plain = bool(plain)
+        self.setWindowTitle("Analyze" if plain else "AI Review")
+        self._title_label.setText("Analyze" if plain else "AI Review")
         self._running = True
         self._stop_requested = False
         self.folder_label.setText(folder or "-")
         self.stage_progress.setRange(0, max(1, stage_total))
         self.stage_progress.setValue(0)
-        self.stage_progress.setFormat(f"Stage 0/{max(1, stage_total)}")
+        self.stage_progress.setFormat("Queued" if plain else f"Stage 0/{max(1, stage_total)}")
         self.item_progress.setRange(0, 0)
-        self.progress_label.setText("Starting AI Review")
+        self.progress_label.setText("Starting analysis" if plain else "Starting AI Review")
         self.stop_button.setEnabled(True)
         self.stop_button.setText("Stop")
         self.hide_button.setEnabled(True)
-        self.append_detail("AI Review queued.")
+        self.append_detail("Analysis queued." if plain else "AI Review queued.")
 
     def set_stage(self, *, stage_index: int, stage_total: int, message: str) -> None:
         total = max(1, int(stage_total))
         current = min(max(0, int(stage_index)), total)
-        self.stage_label.setText(message or "Running AI Review")
+        self.stage_label.setText(message or ("Analyzing" if self._plain else "Running AI Review"))
         self.stage_progress.setRange(0, total)
         self.stage_progress.setValue(current)
-        self.stage_progress.setFormat(f"Stage {current}/{total}")
+        if self._plain:
+            # The caller passes the stage that is running (1-based) for an Analyze run; 0 means still queued.
+            self.stage_progress.setFormat(stage_text(current, total) if current else "Queued")
+        else:
+            self.stage_progress.setFormat(f"Stage {current}/{total}")
         self.item_progress.setRange(0, 0)
         self.progress_label.setText("Preparing stage")
 
@@ -141,8 +154,8 @@ class AIReviewProgressDialog(QDialog):
         self._stop_requested = True
         self.stop_button.setEnabled(False)
         self.stop_button.setText("Stopping...")
-        self.stage_label.setText("Stopping AI Review")
-        self.progress_label.setText("Waiting for the current AI step to stop")
+        self.stage_label.setText("Stopping analysis" if self._plain else "Stopping AI Review")
+        self.progress_label.setText("Waiting for the current step to stop" if self._plain else "Waiting for the current AI step to stop")
         self.append_detail("Stop requested.")
 
     def mark_finished(self, message: str = "AI Review complete") -> None:
