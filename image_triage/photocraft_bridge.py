@@ -738,6 +738,7 @@ class PhotoCraftControl:
         self.camera_raw_calibration_supported = capabilities.get("cameraRawCalibration", 0) >= 1
         self.camera_raw_super_resolution_supported = capabilities.get("cameraRawSuperResolution", 0) >= 1
         self.camera_raw_host_job_supported = capabilities.get("cameraRawHostJob", 0) >= 1
+        self.camera_raw_host_tools_supported = capabilities.get("cameraRawHostTools", 0) >= 1  # ui.hostJob takes the list of kinds the host can run
         self.filmstrip_supported = capabilities.get("filmstrip", 0) >= 1
         # ``app.stash`` can save the project and the display JPEG without the full-size PNG (``preview`` left out).
         self.stash_without_preview_supported = capabilities.get("stashWithoutPreview", 0) >= 1

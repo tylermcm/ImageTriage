@@ -65,7 +65,7 @@ The first Analyze with no AI setup shows a card hanging from the chip (arrow up)
    bundle tasks are cancelled, the next step never starts, nothing pops up). Not covered: a model download task (`AIModelDownloadTask`) has no cancel of its own, so it finishes its current file first.
 2. *Update.* The source is the model store's own `stale` state (installed from a different pinned revision) plus bundles a selected capability needs that are missing. The chip says "AI update 547 MB", the card lists the models, and
    **Update** runs `update_ai_models()`: just those bundles, with the progress view.
-3. *Editor tools.* `editor_tools.py` maps each editor tool (`subjectMasks` BiRefNet, `sceneMasks` OneFormer, `peopleMasks` OneFormer + SAM + BiRefNet, `clickSelect` SAM, `depthMap` Depth) to the models it needs; a tool is available exactly
+3. *Editor tools.* `editor_tools.py` maps each editor tool (`subjectMask` BiRefNet, `sceneMasks` OneFormer, `peopleMasks` OneFormer + SAM + BiRefNet, `clickSelect` SAM, `depthMap` Depth) to the models it needs; a tool is available exactly
    when it has all of them, so any subset of models works. `camera_raw_host_jobs.HostJobRunner` now has a gate: a pending job of one of those kinds whose models are missing is claimed and finished at once with
    "People masks need Scene regions and Subject masks (621 MB). Open the AI chip, choose Set up AI and turn on Editor tools.", and the window shows the same line in the status bar. The Ready card has an Editor tools row.
    The mask jobs themselves (scene/people/subject host jobs, `mask_warmup`) are still on the other checkout; when they land they only need to run after the gate, which is already in front of every kind.

@@ -20,13 +20,14 @@ class EditorTool:
 
 
 TOOLS: tuple[EditorTool, ...] = (
-    EditorTool("subjectMasks", "Subject and background masks", ("birefnet",)),
+    EditorTool("subjectMask", "Subject and background masks", ("birefnet",)),
     EditorTool("sceneMasks", "Landscape masks", ("oneformer",)),
     EditorTool("peopleMasks", "People masks", ("oneformer", "sam", "birefnet")),
     EditorTool("clickSelect", "Click selection", ("sam",)),
     EditorTool("depthMap", "Depth maps", ("depth",)),
 )
 _BY_KIND = {tool.kind: tool for tool in TOOLS}
+EDITOR_KINDS: tuple[str, ...] = tuple(tool.kind for tool in TOOLS)  # every kind the host can gate, for the list it sends the editor
 
 
 def tool_for(kind: str) -> EditorTool | None:

@@ -31,9 +31,11 @@ class HostJobRunner:
         spawn_thread: Callable[[Callable[[], None]], Any] | None = None,
         gate: Callable[[str], str] = editor_tools.block_reason,
         on_blocked: Callable[[str, str], None] | None = None,
+        tools: Callable[[], list[str]] | None = None,
     ) -> None:
         """``gate(kind)`` says why an editor-tool job cannot run (a model it needs is not installed), or "" when it can; ``on_blocked(kind, why)`` lets the window tell the person."""
         self._gate = gate
+        self._tools = tools if tools is not None else (lambda: sorted(kind for kind in editor_tools.EDITOR_KINDS if not gate(kind)))
         self._on_blocked = on_blocked
         self._render = render
         self._clock = clock
@@ -66,7 +68,9 @@ class HostJobRunner:
 
     def _poll(self, proc) -> bool:
         lane = proc.fast_lane()
-        state = lane.call("ui.hostJob", {})
+        # An editor that understands it also gets the kinds this host can run right now (the editor keeps the last list): its mask buttons for the others are greyed out.
+        params: dict[str, Any] = {"tools": self._tools()} if getattr(proc.control, "camera_raw_host_tools_supported", False) is True else {}
+        state = lane.call("ui.hostJob", params)
         if self._busy:
             return False
         pending = state.get("pending")
