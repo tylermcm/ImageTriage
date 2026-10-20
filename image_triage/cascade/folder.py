@@ -26,7 +26,7 @@ from .stacking import hamming
 ROLE_PICK = "pick"  # ranked first among several survivors
 ROLE_FINAL = "final"  # survived every pass (unranked, runner-up, or alone)
 ROLE_REJECTED = "rejected"  # flagged by pass 1 (dimmed, never hidden)
-ROLE_FLAGGED = "flagged"  # flagged by pass 1 but kept, because every frame of its stack has the same problem (or it is alone): needs a human look
+ROLE_FLAGGED = "flagged"  # flagged by pass 1 but kept, because every frame of its stack was flagged (or it is alone): needs a human look
 ROLE_DUPLICATE = "duplicate"
 ROLE_CUT = "cut"  # ranked below the kept frames in its stack
 ROLE_NO_PICK = "no_pick"
@@ -194,7 +194,7 @@ def _outcome(
         if stack_size == 1:
             kind, text = ROLE_FLAGGED, f"Flagged: {why}. It is the only frame, so it is kept for you to decide."
         else:
-            kind, text = ROLE_FLAGGED, f"Flagged: {why}. Kept because every frame in this stack has the same problem."
+            kind, text = ROLE_FLAGGED, f"Flagged: {why}. Kept because every frame in this stack was flagged, so none could be set aside."
     elif role is FrameRole.FINAL:
         if decision.rank == 1 and stack_size > 1:
             kind, text = ROLE_PICK, f"Best of this stack of {stack_size} after the cleanup and ranking passes."
@@ -207,7 +207,7 @@ def _outcome(
     elif role is FrameRole.REJECTED:
         kind, text = ROLE_REJECTED, "Flagged: " + _flag_text(decision.flags) + ". Dimmed, not removed."
     elif role is FrameRole.DUPLICATE:
-        kind, text = ROLE_DUPLICATE, f"Near-duplicate of {name}, which is better exposed." if name else "Near-duplicate of a better-exposed frame."
+        kind, text = ROLE_DUPLICATE, f"Near-duplicate of {name}, the frame kept for this group." if name else "Near-duplicate of the frame kept for this group."
     elif role is FrameRole.NO_PICK:
         kind, text = ROLE_NO_PICK, "Every frame in this stack is blown out, so no pick is offered."
     else:

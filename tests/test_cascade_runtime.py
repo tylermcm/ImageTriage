@@ -97,7 +97,7 @@ def test_when_every_frame_in_a_stack_blinks_all_are_kept_flagged():
     frames = [FolderFrame("a", feature("a", blink=True), 0.0), FolderFrame("b", feature("b", blink=True, distance=9), 1.0)]
     outcomes = run_folder(frames).outcomes
     assert {o.role for o in outcomes.values()} == {ROLE_FLAGGED}
-    assert "every frame in this stack has the same problem" in outcomes["a"].summary
+    assert "every frame in this stack was flagged" in outcomes["a"].summary
 
 
 def test_a_blinker_with_a_good_sibling_is_still_rejected_and_the_sibling_is_kept():

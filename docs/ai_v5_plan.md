@@ -23,7 +23,10 @@ the best frame. It removes what is clearly bad, explains why, groups what is ali
 - Rules: catastrophic exposure (black or blown), strong defocus or motion blur relative to the burst, blinks on the main face,
   heavy clipping relative to siblings. Each rejection carries a reason code shown in the UI.
 - Conservative by design. Measured on the burst set the rules kept the owner's frame 87% of the time while removing only 17% of
-  frames, so 13% of kept frames hit a rule today. That is not good enough to reject silently. First release: **flag, do not
+  frames, so 13% of kept frames hit a rule today. (That is 40 of the 46 bursts that have three or more frames, out of the 63 marked; the 17
+  two-frame bursts are trivially kept and were left out. It used an older pipeline: a 2% clipping floor, burst-level comparisons, older blink
+  labels and distance-4 collapse. It is a warning about the approach, not the keeper recall of the current stack-first pass 1, which has not been
+  measured; see `docs/cascade_logic_audit.md`.) That is not good enough to reject silently. First release: **flag, do not
   hide**; a frame is only dimmed or tagged with its reason, one click to restore. Hard reject only after the keeper-recall check
   (experiment 1 below) shows 99.5% or better on known keepers, per rule, and the rules that cost keepers are loosened.
 - Genre loosening (night, astro, long exposure) stays an open decision.
@@ -33,7 +36,7 @@ the best frame. It removes what is clearly bad, explains why, groups what is ali
   the thresholds from the owner's labels. No embedding model.
 - Groups are shown as stacks in the grid, ordered by capture time, with the pass-1 flags visible on each member. **Nothing in a
   group is auto-selected.** pHash collapsing of near duplicates is removed: with a chance-level tie-break it threw the kept frame
-  away (survival fell from 87% to 59%).
+  away (survival fell from 87% to 59%: 40 to 27 of the same 46 bursts).
 
 **Pass 3 is retired as an automatic ranker.** No MANIQA, no Facet blend, no VLM judge, no learned taste model in the default
 flow. The specialised signals still have value as visible evidence for the person choosing, not as a score: eyes open (MediaPipe

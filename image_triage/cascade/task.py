@@ -24,7 +24,7 @@ from .blink import BlinkScoreCache, is_blink
 from .export import build_rows, write_export
 from .extract import FeatureCache, extract_features
 from .faces import FaceCache, FaceFinding
-from .folder import ROLE_BRACKET, ROLE_DUPLICATE, ROLE_FINAL, FolderFrame, FolderResult, FrameOutcome, run_folder
+from .folder import ROLE_BRACKET, ROLE_DUPLICATE, ROLE_FINAL, ROLE_PICK, FolderFrame, FolderResult, FrameOutcome, run_folder
 from .model import CascadeSettings
 from .pipeline import Scorer
 
@@ -324,15 +324,20 @@ class CascadeRunTask(QRunnable):
         )
 
     def _apply_protection(self, result: FolderResult) -> None:
-        """A frame the person already marked as a winner is never flagged, collapsed or cut."""
+        """A frame the person already marked as a winner is never flagged, collapsed or cut: its role is kept (or made Keeper) and its flags are cleared, so neither the
+        results nor the exported reasons mention a defect the person has already overruled."""
         if not self.protected:
             return
         for path, outcome in list(result.outcomes.items()):
-            if os.path.normcase(os.path.abspath(path)) in self.protected and outcome.role != ROLE_FINAL:
-                result.outcomes[path] = FrameOutcome(
-                    path, ROLE_FINAL, outcome.flags, "Kept: you already marked this frame as a winner.", outcome.burst_index, outcome.burst_size,
-                    outcome.stack_index, outcome.stack_count, outcome.stack_size, outcome.stack_rank, outcome.split_jump, None,
-                )
+            if os.path.normcase(os.path.abspath(path)) not in self.protected:
+                continue
+            kept_already = outcome.role in (ROLE_FINAL, ROLE_PICK)
+            if kept_already and not outcome.flags:
+                continue  # nothing adverse to undo
+            result.outcomes[path] = FrameOutcome(
+                path, outcome.role if kept_already else ROLE_FINAL, (), "Kept: you already marked this frame as a winner.", outcome.burst_index,
+                outcome.burst_size, outcome.stack_index, outcome.stack_count, outcome.stack_size, outcome.stack_rank, outcome.split_jump, None,
+            )
 
 
 def _capture_strings(frames: Sequence[FolderFrame]) -> dict[str, str]:
