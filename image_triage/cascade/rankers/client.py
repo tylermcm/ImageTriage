@@ -50,9 +50,10 @@ def default_launcher(launch: WorkerLaunch) -> "subprocess.Popen[str]":
         selection = select_runtime(launch.device, require_torch=launch.spec.needs_torch)
     except AIRuntimeUnavailable as exc:
         raise RankerUnavailable(str(exc), remediation=exc.remediation) from exc
-    package_root = str(Path(__file__).resolve().parents[3])
+    package_root = _worker_package_root()
     env = build_worker_env(selection)
-    # Managed site-packages first (build_worker_env did that), then the app's own source tree when running from a checkout.
+    # Managed site-packages first (build_worker_env did that), then the app's own source: the checkout, or in a frozen build the
+    # plain-file tree installed beside the executable (the package itself sits in library.zip, which the managed runtime cannot read).
     parts = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]
     env["PYTHONPATH"] = os.pathsep.join([*parts, package_root])
     command = [
@@ -66,6 +67,12 @@ def default_launcher(launch: WorkerLaunch) -> "subprocess.Popen[str]":
         command, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=flags,
     )
+
+
+def _worker_package_root() -> str:
+    if getattr(sys, "frozen", False):
+        return str(Path(sys.executable).resolve().parent / "ai_workers" / "py")
+    return str(Path(__file__).resolve().parents[3])
 
 
 def _python_executable() -> str:
