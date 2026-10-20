@@ -258,6 +258,15 @@ def build_card(
     card = QWidget()
     card.setObjectName("aiStatusCard")
     card.setFixedWidth(width)
+    card.setStyleSheet(
+        "QLabel { background: transparent; }"
+        "QFrame#aiStatusRow { background: palette(alternate-base); border-radius: 8px; }"
+        "QPushButton#aiStatusPrimary { border: none; border-radius: 8px; padding: 7px 14px; font-weight: 600; color: white;"
+        " background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #ff9a5a, stop:0.35 #ff5e8a, stop:0.68 #b25cff, stop:1 #5a8cff); }"
+        "QPushButton#aiStatusPrimary:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #ffab75, stop:0.35 #ff7ba1, stop:0.68 #c07bff, stop:1 #7aa2ff); }"
+        "QPushButton#aiStatusSecondary { border: 1px solid palette(midlight); border-radius: 8px; padding: 7px 14px; background: palette(base); }"
+        "QPushButton#aiStatusSecondary:hover { background: palette(alternate-base); }"
+    )
     layout = QVBoxLayout(card)
     layout.setContentsMargins(16, 14, 16, 14)
     layout.setSpacing(8)
@@ -269,7 +278,7 @@ def build_card(
         body = QLabel(text, card)
         body.setWordWrap(True)
         body.setObjectName("aiStatusCardText")
-        body.setStyleSheet("color: palette(mid);")
+        body.setStyleSheet("color: palette(placeholder-text);")
         layout.addWidget(body)
     if progress is not None:
         bar = QProgressBar(card)
@@ -280,7 +289,7 @@ def build_card(
         layout.addWidget(bar)
     for label, value in rows:
         row = QFrame(card)
-        row.setStyleSheet("QFrame { background: palette(alternate-base); border-radius: 8px; }")
+        row.setObjectName("aiStatusRow")
         line = QHBoxLayout(row)
         line.setContentsMargins(9, 6, 9, 6)
         left = QLabel(label, row)
@@ -295,8 +304,9 @@ def build_card(
         line.setSpacing(8)
         for label, primary, callback in buttons:
             button = QPushButton(label, card)
+            button.setObjectName("aiStatusPrimary" if primary else "aiStatusSecondary")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
             if primary:
-                button.setObjectName("editorPrimaryButton")
                 button.setDefault(True)
             button.clicked.connect(lambda _checked=False, cb=callback: cb())
             line.addWidget(button)

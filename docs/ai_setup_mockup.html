@@ -125,7 +125,7 @@ h1{font-size:19px;margin:0 0 4px}p{margin:0;color:var(--mut)}
 <script>
 const fmt=mb=>mb>=1000?(mb/1000).toFixed(1)+" GB":Math.round(mb)+" MB";
 // Download megabytes from the app's manifest and the measured runtime sizes. PyTorch is part of the AI engine, never listed.
-const CORE={cpu:{engine:350+2600},gpu:{engine:6600}}, CORE_EXTRA=170+98; // faces, search
+const CORE={cpu:{engine:2600},gpu:{engine:6600}}, CORE_EXTRA=170+98; // faces, search
 const KIDS={
   cull:[["maniqa","Quality",543],["qreal","Appeal",2130]],
   edit:[["birefnet","Subject masks",425],["sam","Click select",150],["depth","Depth",100],["oneformer","Scene regions",196]]
