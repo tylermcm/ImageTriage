@@ -30,6 +30,13 @@ BLINK_MODEL_FILE = "face_landmarker.task"
 # Google's MediaPipe Face Landmarker bundle (float16), https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task
 BLINK_DIGEST: tuple[int, str] = (3758596, "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff")
 
+# The face recognizer for the People index: AdaFace IR-50 (MIT code; the file is UniFace's ONNX export), from the UniFace weights repository at a pinned commit.
+FACES_IDENTITY_KEY = "faces_identity"
+FACES_IDENTITY_REPO = "yakhyo/uniface-weights"
+FACES_IDENTITY_REVISION = "bfcc7d48ea8412d55de406cecf96b65b3ca720b2"
+FACES_IDENTITY_FILE = "adaface_ir_50.onnx"
+FACES_IDENTITY_DIGEST: tuple[int, str] = (174396180, "9c0ae385d7362323c92d218de598d32e52a9130b78faac6a8a924091aca62c0b")
+
 QREALIGN_REPO = "q-future/Q-ReAlign-Mini-0.8B"
 QREALIGN_REVISION = "fe1f45a7574c9e9d908875af9f7e90cb946aa19f"
 
@@ -93,6 +100,23 @@ def register_bundles() -> None:
             revision_env="IMAGE_TRIAGE_BLINK_MODEL_REVISION",
         ),
     )
+    MODEL_BUNDLES.setdefault(
+        FACES_IDENTITY_KEY,
+        ModelBundle(
+            key=FACES_IDENTITY_KEY,
+            name="Face recognizer for people grouping (AdaFace)",
+            repo_id=FACES_IDENTITY_REPO,
+            revision=FACES_IDENTITY_REVISION,
+            filenames=(FACES_IDENTITY_FILE,),
+            install_parts=("Rankers", "AdaFace"),
+            approx_mb=166,
+            pinned_revision=True,
+            dir_env="IMAGE_TRIAGE_FACES_MODEL_DIR",
+            repo_env="IMAGE_TRIAGE_FACES_MODEL_REPO_ID",
+            revision_env="IMAGE_TRIAGE_FACES_MODEL_REVISION",
+        ),
+    )
+    MODEL_FILE_DIGESTS.setdefault(FACES_IDENTITY_KEY, {FACES_IDENTITY_FILE: FileDigest(*FACES_IDENTITY_DIGEST)})
     MODEL_FILE_DIGESTS.setdefault(BLINK.bundle_key, {BLINK_MODEL_FILE: FileDigest(*BLINK_DIGEST)})
     MODEL_FILE_DIGESTS.setdefault(QREALIGN.bundle_key, dict(_QREALIGN_DIGESTS))
     if MANIQA_DIGEST is not None:
@@ -111,29 +135,52 @@ def ensure_weights(
     Raises ``RankerWeightsMissing`` with a plain message when the weights are absent and cannot be fetched.
     Download cancellation raises ``ai_model_store.ModelInstallCancelled``; callers map it to ``RankerCancelled``.
     """
+    return _ensure_bundle(spec.name, spec.bundle_key, download, progress_callback, cancel_check)
+
+
+def ensure_aux_weights(
+    spec: RankerSpec,
+    *,
+    download: bool = True,
+    progress_callback: Callable[[str, int, int], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> Path | None:
+    """The install directory of ``spec``'s second bundle (see ``RankerSpec.aux_bundle_key``), or None when it has none."""
+    if not spec.aux_bundle_key:
+        return None
+    return _ensure_bundle(spec.name, spec.aux_bundle_key, download, progress_callback, cancel_check)
+
+
+def _ensure_bundle(
+    name: str,
+    bundle_key: str,
+    download: bool,
+    progress_callback: Callable[[str, int, int], None] | None,
+    cancel_check: Callable[[], bool] | None,
+) -> Path:
     from ... import ai_model_store
 
     register_bundles()
-    status = ai_model_store.bundle_status(spec.bundle_key)
+    status = ai_model_store.bundle_status(bundle_key)
     if status.is_ready:
         return status.install_dir
     if not download:
         raise RankerWeightsMissing(
-            f"{spec.name}: {status.describe()}",
-            remediation=f"Download the {spec.name} model, then run the analysis again.",
+            f"{name}: {status.describe()}",
+            remediation=f"Download the {name} model, then run the analysis again.",
         )
-    if not ai_model_store.bundle_repo_id(spec.bundle_key):
+    if not ai_model_store.bundle_repo_id(bundle_key):
         raise RankerWeightsMissing(
-            f"{spec.name} has no download source configured and is not installed ({status.describe()}).",
+            f"{name} has no download source configured and is not installed ({status.describe()}).",
             remediation=f"Copy the model file into {status.install_dir}, or set the IMAGE_TRIAGE_*_MODEL_REPO_ID environment variable for it.",
         )
     try:
         installed = ai_model_store.install_bundle(
-            spec.bundle_key, progress_callback=progress_callback, cancel_check=cancel_check
+            bundle_key, progress_callback=progress_callback, cancel_check=cancel_check
         )
     except ai_model_store.ModelInstallError as exc:
         raise RankerWeightsMissing(
-            f"{spec.name} could not be downloaded: {exc}",
+            f"{name} could not be downloaded: {exc}",
             remediation="Check the network connection and free disk space, then try again.",
         ) from exc
     return installed.install_dir
@@ -143,3 +190,4 @@ def maniqa_checkpoint_path(model_dir: Path) -> Path:
     return model_dir / MANIQA_CHECKPOINT
 
 
+register_bundles()  # whichever of this module and ai_manifest is imported first, the manifest ends up with every bundle

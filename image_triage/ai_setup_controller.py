@@ -10,6 +10,8 @@ from PySide6.QtWidgets import QApplication, QButtonGroup, QCheckBox, QDialog, QD
 from dataclasses import replace
 from pathlib import Path
 
+from .ai_manifest import MODEL_BUNDLES
+from .ai_model_store import bundle_status
 from .ai_model import AIModelInstallation, DEFAULT_AICULLER_CLIP_SIZE_MB, DEFAULT_AICULLER_FACE_SIZE_MB, DEFAULT_AICULLER_TOPIQ_SIZE_MB, resolve_aiculler_clip_model_installation, resolve_aiculler_face_model_installation, resolve_aiculler_topiq_model_installation, resolve_semantic_model_installation
 from .ai_runtime_packages import AI_RUNTIME_CPU_VARIANT, AI_RUNTIME_GPU_VARIANT, AIRuntimeInstallationStatus, ai_runtime_variant_label, directory_size_bytes, estimate_ai_runtime_download_size_mb, estimate_ai_runtime_installed_size_mb, load_ai_runtime_installation_status
 from .ai_workflow import ai_device_environment_override
@@ -121,7 +123,15 @@ class AiSetupController(QObject):
         return self.managed_aiculler_topiq_model_installation().is_installed
 
     def aiculler_face_model_available(self) -> bool:
-        return self.managed_aiculler_face_model_installation().is_installed
+        """The face landmarker and the AdaFace recognizer (the People index and the eyes-closed check) are installed. The old AuraFace pack no longer counts."""
+        return self.face_models_ready()
+
+    def face_models_ready(self) -> bool:
+        from .ai_model_store import bundle_status
+        from .cascade.rankers import register_bundles
+
+        register_bundles()
+        return all(bundle_status(key).is_ready for key in ("faces_blink", "faces_identity"))
 
     def show_ai_setup_dialog(
         self,
@@ -154,12 +164,16 @@ class AiSetupController(QObject):
 
         runtime_status = self.managed_ai_runtime_status()
         clip_missing = not self.aiculler_clip_model_available()
-        topiq_missing = not self.aiculler_topiq_model_available()
-        face_missing = not self.aiculler_face_model_available()
+        # TOPIQ and the AuraFace pack are retired: the face landmarker, the AdaFace recognizer and (with the PyTorch runtime) MANIQA and Q-ReAlign are
+        # model bundles of the capabilities setup installs, downloaded and verified by the capability step that follows the runtime install.
+        topiq_missing = False
+        face_missing = False
+        faces_size_mb = sum(MODEL_BUNDLES[key].approx_mb for key in ("faces_blink", "faces_identity"))
+        ranker_size_mb = sum(MODEL_BUNDLES[key].approx_mb for key in ("maniqa", "qrealign"))
         model_specs = [
             ("CLIP", DEFAULT_AICULLER_CLIP_SIZE_MB, clip_missing),
-            ("TOPIQ", DEFAULT_AICULLER_TOPIQ_SIZE_MB, topiq_missing),
-            ("InsightFace", DEFAULT_AICULLER_FACE_SIZE_MB, face_missing),
+            ("Faces and people", faces_size_mb, not self.face_models_ready()),
+            ("MANIQA and Q-ReAlign ranking", ranker_size_mb, not all(bundle_status(k).is_ready for k in ("maniqa", "qrealign"))),
         ]
         missing_model_mb = sum(size for _name, size, missing in model_specs if missing)
 
@@ -373,14 +387,9 @@ class AiSetupController(QObject):
         self.migrate_managed_ai_assets()
         runtime_missing = not self.ai_runtime_available()
         aiculler_clip_missing = not self.aiculler_clip_model_available()
-        aiculler_topiq_missing = not self.aiculler_topiq_model_available()
-        aiculler_face_missing = not self.aiculler_face_model_available()
-        if (
-            not runtime_missing
-            and not aiculler_clip_missing
-            and not aiculler_topiq_missing
-            and not aiculler_face_missing
-        ):
+        aiculler_topiq_missing = False  # retired
+        aiculler_face_missing = False  # the new face bundles arrive with the capability step
+        if not runtime_missing and not aiculler_clip_missing and not self.missing_capability_bundles():
             return
         if self._window._active_ai_runtime_task is not None or self._window._active_ai_model_task is not None:
             return
@@ -439,8 +448,20 @@ class AiSetupController(QObject):
                 force=False,
             )
             return True
+        if self.missing_capability_bundles():  # the runtime is in place; the cascade's models are not
+            self.start_ai_capability_bundles(title="AI Setup", context="The AI models were installed.")
+            return True
         self._window.statusBar().showMessage("AI is already set up for this profile.")
         return False
+
+    def missing_capability_bundles(self) -> tuple[str, ...]:
+        """Model bundles that the selected capabilities need and that are not installed yet."""
+        from .ai_manifest import CAPABILITIES
+
+        wanted: list[str] = []
+        for key in self.selected_ai_capabilities():
+            wanted.extend(bundle for bundle in CAPABILITIES[key].model_bundles if bundle not in wanted)
+        return tuple(key for key in wanted if not bundle_status(key).is_ready)
 
     def set_ai_setup_busy(self, message: str | None) -> None:
         """Show AI setup state inside the main window instead of a dialog."""
@@ -450,8 +471,8 @@ class AiSetupController(QObject):
 
     def prompt_for_ai_model_install(self, *, automatic: bool) -> None:
         aiculler_clip_missing = not self.aiculler_clip_model_available()
-        aiculler_topiq_missing = not self.aiculler_topiq_model_available()
-        aiculler_face_missing = not self.aiculler_face_model_available()
+        aiculler_topiq_missing = False  # retired
+        aiculler_face_missing = False  # arrives with the capability step
         selection = self.show_ai_setup_dialog(
             automatic=automatic,
             title="Set Up AI",
@@ -647,9 +668,10 @@ class AiSetupController(QObject):
                 "CLI-Culler CLIP model (all downloaded versions)",
                 self.managed_aiculler_clip_model_installation().install_dir,
             ),
-            ("TOPIQ technical quality model", self.managed_aiculler_topiq_model_installation().install_dir),
-            ("InsightFace quality models", self.managed_aiculler_face_model_installation().install_dir),
+            ("TOPIQ technical quality model (retired)", self.managed_aiculler_topiq_model_installation().install_dir),
+            ("InsightFace quality models (retired)", self.managed_aiculler_face_model_installation().install_dir),
             ("Semantic CLIP model", self.managed_semantic_model_installation().install_dir),
+            *self._cascade_model_directories(),
         )
         seen: set[Path] = {runtime_root}
         for label, install_dir in model_specs:
@@ -661,6 +683,20 @@ class AiSetupController(QObject):
                 components.append((label, resolved, size))
                 seen.add(resolved)
         return components
+
+    @staticmethod
+    def _cascade_model_directories() -> tuple[tuple[str, Path], ...]:
+        from .ai_model_store import bundle_install_dir
+        from .cascade.rankers import register_bundles
+
+        register_bundles()
+        labels = (
+            ("faces_blink", "Face landmarker (eyes-closed check and people)"),
+            ("faces_identity", "Face recognizer (people grouping)"),
+            ("maniqa", "MANIQA image quality model"),
+            ("qrealign", "Q-ReAlign aesthetic model"),
+        )
+        return tuple((label, Path(bundle_install_dir(key))) for key, label in labels)
 
     def selected_ai_capabilities(self) -> tuple[str, ...]:
         """Which capabilities this installation is expected to provide.

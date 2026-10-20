@@ -23,7 +23,8 @@ from ..models import ImageRecord
 from .blink import BlinkScoreCache, is_blink
 from .export import build_rows, write_export
 from .extract import FeatureCache, extract_features
-from .folder import ROLE_FINAL, FolderFrame, FolderResult, FrameOutcome, run_folder
+from .faces import FaceCache, FaceFinding
+from .folder import ROLE_BRACKET, ROLE_DUPLICATE, ROLE_FINAL, FolderFrame, FolderResult, FrameOutcome, run_folder
 from .model import CascadeSettings
 from .pipeline import Scorer
 
@@ -31,6 +32,8 @@ STAGES = ("Reading capture times", "Reading previews", "Grouping and cleaning up
 FEATURE_CACHE_FILENAME = "cascade_features.json"
 BLINK_CACHE_FILENAME = "cascade_blink.json"
 BLINK_MODEL_ID = "mediapipe-face-landmarker-float16"  # change when the face model or how its score is computed changes
+FACES_CACHE_FILENAME = "faces_cache.json"  # shared with the People index (face_stack.face_cache_path): a file analysed by either is not analysed again
+FACES_BATCH = 16
 
 
 class CascadeRunSignals(QObject):
@@ -50,6 +53,7 @@ class Scorers:
     maniqa: Scorer | None = None
     aesthetic: Scorer | None = None
     blink: Scorer | None = None  # how closed the eyes are per frame (0 open .. 1 closed); thresholded by blink.is_blink
+    faces: Scorer | None = None  # the face finder (see faces.py): a WorkerRanker, so ``faces.details[key]`` holds each frame's faces after a call
     names: tuple[str, ...] = ()
     close: Callable[[], None] = lambda: None
 
@@ -230,7 +234,49 @@ class CascadeRunTask(QRunnable):
         if result.cancelled:
             raise _Cancelled()
         self._apply_protection(result)
+        self._index_people(folder, result, scorers, notes)
         return result, scorers, notes
+
+    def _index_people(self, folder: str, result: FolderResult, scorers: Scorers, notes: list[str]) -> None:
+        """Find and embed the faces of every frame that survived the near-duplicate collapse, so the People window fills while the folder is being culled.
+
+        A frame collapsed into a near-identical neighbour (or kept in an exposure bracket) shows the same people as the frame it was folded into, so it is
+        skipped: that is most of the saving. Everything else is analysed once; the People index reads the shared cache. Never fatal: without the face models
+        the run simply does not update People."""
+        if scorers.faces is None:
+            return
+        keys = [path for path, outcome in result.outcomes.items() if outcome.role not in (ROLE_DUPLICATE, ROLE_BRACKET)]
+        cache = FaceCache(self.paths.artifacts_dir / FACES_CACHE_FILENAME)
+        missing = [key for key in keys if cache.get(key) is None]
+        if not missing:
+            return
+        started = time.perf_counter()
+        done = 0
+        try:
+            for start in range(0, len(missing), FACES_BATCH):
+                self._check_cancelled()
+                batch = missing[start:start + FACES_BATCH]
+                scorers.faces(batch)
+                failures = getattr(scorers.faces, "failures", {})
+                for key in batch:
+                    if key in failures:
+                        continue  # unreadable: retried next time
+                    detail = getattr(scorers.faces, "details", {}).get(key, {})
+                    cache.put(key, [FaceFinding.from_json(item) for item in detail.get("faces", [])])
+                done += len(batch)
+                self._progress(folder, "Finding people", done, len(missing), started)
+        except _Cancelled:
+            raise
+        except Exception as error:  # noqa: BLE001
+            if type(error).__name__ == "RankerCancelled":
+                raise _Cancelled() from error
+            notes.append(f"People were not updated: {error}")
+            self.signals.detail.emit(folder, notes[-1])
+        finally:
+            try:
+                cache.save()
+            except OSError:
+                pass
 
     def _check_blinks(self, folder: str, frames: list[FolderFrame], scorers: Scorers, notes: list[str]) -> list[FolderFrame]:
         """Set each readable frame's blink flag from the eyes-closed scorer. A scorer that cannot run is skipped with a note, not fatal."""

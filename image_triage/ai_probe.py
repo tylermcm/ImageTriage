@@ -482,6 +482,42 @@ def probe_insightface(result: ProbeResult, model_dir: Path, requested_device: st
         )
 
 
+def probe_face_stack(result: ProbeResult, landmarker_dir: Path, recognizer_dir: Path, requested_device: str) -> None:
+    """Load the face landmarker and the AdaFace recognizer and run both once.
+
+    Duplicates the two file names from ``cascade.rankers.bundles`` on purpose: this module runs inside the managed runtime and must not import the
+    application package.
+    """
+    landmarker_file = Path(landmarker_dir) / "face_landmarker.task"
+    recognizer_file = Path(recognizer_dir) / "adaface_ir_50.onnx"
+    for path, what in ((landmarker_file, "face landmarker"), (recognizer_file, "face recognizer")):
+        if not path.is_file():
+            raise ProbeFailure(STAGE_MODEL, "model_missing", f"The {what} model is missing.", str(path))
+    try:
+        import numpy as np  # noqa: PLC0415
+        import mediapipe as mp  # noqa: PLC0415
+        from mediapipe.tasks import python as mp_python  # noqa: PLC0415
+        from mediapipe.tasks.python import vision  # noqa: PLC0415
+
+        options = vision.FaceLandmarkerOptions(
+            base_options=mp_python.BaseOptions(model_asset_path=str(landmarker_file)),
+            running_mode=vision.RunningMode.IMAGE,
+            num_faces=1,
+        )
+        landmarker = vision.FaceLandmarker.create_from_options(options)
+        try:
+            landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.zeros((128, 128, 3), dtype=np.uint8)))
+        finally:
+            landmarker.close()
+    except ProbeFailure:
+        raise
+    except Exception as exc:
+        raise ProbeFailure(
+            STAGE_MODEL, "model_load_failed", "The face landmarker could not run.", _short_traceback(exc)
+        ) from exc
+    probe_onnx_model(result, recognizer_file, requested_device, run_inference=True, expected_embedding_dim=512)
+
+
 def prepare_model_for_probe(
     result: ProbeResult,
     model_path: Path,
@@ -540,6 +576,7 @@ def run_probe(
     expected_embedding_dim: int = 0,
     prepare_hook: str = "",
     probe_level: str = "quick",
+    aux_model_dir: Path | None = None,
 ) -> ProbeResult:
     """Run one capability probe and return its result, never raising.
 
@@ -590,6 +627,11 @@ def run_probe(
             if model_dir is None:
                 raise ProbeFailure(STAGE_MODEL, "manifest", "No model directory was supplied to the probe.")
             probe_insightface(result, Path(model_dir), requested_device)
+        elif probe_kind == "face_stack":
+            result.stage = STAGE_MODEL
+            if model_dir is None or aux_model_dir is None:
+                raise ProbeFailure(STAGE_MODEL, "manifest", "The face landmarker and recognizer directories were not both supplied to the probe.")
+            probe_face_stack(result, Path(model_dir), Path(aux_model_dir), requested_device)
         else:
             result.selected_device = "cpu" if requested_device == "cpu" else requested_device
 
@@ -620,6 +662,7 @@ __all__ = [
     "ProbeResult",
     "configure_runtime_path",
     "import_modules",
+    "probe_face_stack",
     "probe_insightface",
     "probe_onnx_model",
     "probe_onnx_providers",
