@@ -145,7 +145,7 @@ RECIPE_ARRAYS = {"curveSplits": 3, "hslHue": 8, "hslSat": 8, "hslLum": 8, "calib
 RECIPE_CALIBRATION_FIELDS = frozenset(("calibShadowTint", "calibHue", "calibSat"))
 RECIPE_CURVES = ("pointCurve", "pointCurveRed", "pointCurveGreen", "pointCurveBlue")
 RECIPE_WHEELS = ("gradeShadows", "gradeMidtones", "gradeHighlights", "gradeGlobal")
-RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle", "glow", "pointColors", "superResolution"}
+RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle", "glow", "pointColors", "superResolution", "masks"}
 
 
 def _recipe_value_ok(value) -> bool:
@@ -170,6 +170,75 @@ def require_calibration_support(camera_raw, supported: bool) -> None:
     settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
     if isinstance(settings, dict) and RECIPE_CALIBRATION_FIELDS.intersection(settings) and not supported:
         raise PhotoCraftCompatibilityError("This photo uses Calibration settings. Select a PhotoCraft build with Calibration support to preserve those edits.")
+
+
+# Local masks (Camera Raw Masking) as the editor writes them: strict, so a damaged recipe is "invalid", never "no edits".
+MASK_ADJUSTMENTS = {
+    "temperature": 100, "tint": 100, "exposure": 5, "contrast": 100, "highlights": 100, "shadows": 100, "whites": 100, "blacks": 100,
+    "texture": 100, "clarity": 100, "dehaze": 100, "saturation": 100,
+}
+MASK_MAX = 16
+MASK_RASTER_SIDE = 1536
+MASK_RASTER_TEXT = 6 * 1024 * 1024
+
+
+def _number(value, low: float, high: float) -> bool:
+    return _recipe_value_ok(value) and low <= value <= high
+
+
+def _mask_shape_ok(shape) -> bool:
+    if not isinstance(shape, dict):
+        return False
+    kind = shape.get("type")
+    rest = {k: v for k, v in shape.items() if k != "type"}
+    if kind == "linear":
+        return set(rest) == {"x0", "y0", "x1", "y1"} and all(_number(v, -2, 3) for v in rest.values())
+    if kind == "radial":
+        return (set(rest) == {"cx", "cy", "rx", "ry", "angle", "feather"}
+                and all(_number(rest[k], -2, 3) for k in ("cx", "cy")) and all(_number(rest[k], 0, 4) for k in ("rx", "ry"))
+                and _number(rest["angle"], -360, 360) and _number(rest["feather"], 0, 100))
+    if kind == "raster":
+        data = rest.get("data")
+        return (set(rest) == {"w", "h", "data"}
+                and all(type(rest[k]) is int and 1 <= rest[k] <= MASK_RASTER_SIDE for k in ("w", "h"))
+                and isinstance(data, str) and 0 < len(data) <= MASK_RASTER_TEXT and len(data) % 4 == 0)
+    return False
+
+
+def _masks_valid(masks) -> bool:
+    if not isinstance(masks, list) or len(masks) > MASK_MAX:
+        return False
+    for mask in masks:
+        if not isinstance(mask, dict) or not set(mask) <= {"name", "enabled", "shape", "invert", "amount", "adjust"}:
+            return False
+        if "name" in mask and not (isinstance(mask["name"], str) and len(mask["name"]) <= 64):
+            return False
+        if any(k in mask and not isinstance(mask[k], bool) for k in ("enabled", "invert")):
+            return False
+        if "amount" in mask and not _number(mask["amount"], 0, 100):
+            return False
+        adjust = mask.get("adjust", {})
+        if not isinstance(adjust, dict) or any(k not in MASK_ADJUSTMENTS or not _number(v, -MASK_ADJUSTMENTS[k], MASK_ADJUSTMENTS[k]) for k, v in adjust.items()):
+            return False
+        if "shape" in mask and not _mask_shape_ok(mask["shape"]):
+            return False
+    return True
+
+
+def _masks_change_something(masks) -> bool:
+    """A mask that is on, has some amount and adjusts something (as ``CameraRaw::is_identity`` counts them)."""
+    return any(
+        isinstance(m, dict) and m.get("enabled", True) is True and m.get("amount", 100) > 0 and any(v != 0 for v in (m.get("adjust") or {}).values())
+        for m in masks
+    )
+
+
+def require_masks_support(camera_raw, supported: bool) -> None:
+    """Refuse an editor that does not know local masks before it can silently discard them."""
+    recipe = camera_raw.get("recipe") if isinstance(camera_raw, dict) else None
+    settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
+    if isinstance(settings, dict) and settings.get("masks") and not supported:
+        raise PhotoCraftCompatibilityError("This photo uses local masks. Select a PhotoCraft build with Masking support to preserve them.")
 
 
 def require_super_resolution_support(camera_raw, supported: bool) -> None:
@@ -197,6 +266,8 @@ def classify_recipe(recipe) -> tuple[str, str]:
             valid = (isinstance(values, list)
                      and len(values) == (1 if name == "calibShadowTint" else 3)
                      and all(_recipe_value_ok(v) and -100 <= v <= 100 for v in values))
+        elif name == "masks":
+            valid = _masks_valid(value)
         elif name == "superResolution":
             valid = isinstance(value, bool)
         elif name == "glow":
@@ -237,6 +308,7 @@ def classify_recipe(recipe) -> tuple[str, str]:
     identity = all(settings.get(name, 0) == 0 for name in RECIPE_ACTIVE_FIELDS)
     identity = identity and settings.get("glow", {}).get("amount", 0) == 0
     identity = identity and settings.get("superResolution") is not True
+    identity = identity and not _masks_change_something(settings.get("masks", []))
     identity = identity and all(all(sample.get(k, 0) == 0 for k in ("hue", "saturation", "luminance", "variance"))
                                 for sample in settings.get("pointColors", []))
     identity = identity and all(all(v == 0 for v in settings.get(name, [])) for name in ("hslHue", "hslSat", "hslLum", "calibHue", "calibSat"))
@@ -700,6 +772,7 @@ class PhotoCraftControl:
         require_finishing_support(camera_raw, bool(getattr(self, "camera_raw_finishing_supported", False)))
         require_calibration_support(camera_raw, getattr(self, "camera_raw_calibration_supported", False) is True)
         require_super_resolution_support(camera_raw, getattr(self, "camera_raw_super_resolution_supported", False) is True)
+        require_masks_support(camera_raw, getattr(self, "camera_raw_masks_supported", False) is True)
         params = {"path": _automation_path(path)}
         if replace:
             params["replace"] = True
@@ -738,6 +811,7 @@ class PhotoCraftControl:
         self.camera_raw_calibration_supported = capabilities.get("cameraRawCalibration", 0) >= 1
         self.camera_raw_super_resolution_supported = capabilities.get("cameraRawSuperResolution", 0) >= 1
         self.camera_raw_host_job_supported = capabilities.get("cameraRawHostJob", 0) >= 1
+        self.camera_raw_masks_supported = capabilities.get("cameraRawMasks", 0) >= 1
         self.filmstrip_supported = capabilities.get("filmstrip", 0) >= 1
         # ``app.stash`` can save the project and the display JPEG without the full-size PNG (``preview`` left out).
         self.stash_without_preview_supported = capabilities.get("stashWithoutPreview", 0) >= 1
