@@ -29,6 +29,16 @@
 6. Age and gender are no longer estimated (the old files were non-commercial); check nothing in the UI expects them.
 
 
+## One-click restore for dimmed frames: built, NOT merged (20 October 2026, late)
+
+The code exists but is deliberately not in `main`, because the full test suite crashes natively when two window test files run in one process. It lives **only on the laptop it was built on**, in the local branch `worktree-agent-a3199f20f9c3464c5` (worktree `.claude/worktrees/agent-a3199f20f9c3464c5`, locked; commits `7b1542e` the feature, `b9c26a4` a status note `docs/restore_wip_status.md` that exists only on that branch). It has not been pushed to GitHub. Nothing about it has been looked at in a real window.
+
+What it does (as built): restoring a dimmed ("rejected") frame sets its role to `restored` (Needs review, not dimmed, never recycled by Apply AI Decisions; the low-detail and burst-demotion heuristics skip it), saved per folder in `<hidden root>/ai_restored.json` and laid over every bundle the window installs (`AiRunController._install_bundle`, three sites), so it survives reopening and re-running Analyze; undo restores the original result. Entry points: a "Restore" pill centred on dimmed grid cards (all five card styles, new signal `restore_requested(int)`), the inspector's AI section (Restore / Undo restore), the grid context menu (single and multi-selection), the AI > Review Tools menu and command palette ("Restore Flagged Frames", "Undo Restore"), and the shortcut Ctrl+Alt+R. New: `image_triage/ai_restore.py`, `tests/test_ai_restore.py` (11), `tests/test_ai_restore_window.py` (23). 168 related tests passed before the last commit.
+
+**Open problem.** `pytest tests/test_ai_culling_end_to_end.py tests/test_ai_restore_window.py` crashes with "Windows fatal exception: stack overflow" in the `flagged` fixture of the window test, at `main_window.show()` plus `processEvents`; the whole suite hits it at about 7%. Not yet known whether the recursion is in the new grid paint code or in window state `test_ai_culling_end_to_end.py` leaves behind. Next step: `QT_QPA_PLATFORM=offscreen python -m pytest tests/test_ai_culling_end_to_end.py tests/test_ai_restore_window.py -x -o faulthandler_timeout=60`, then see whether the crash survives with the restore paint call disabled. Also failing, but not from this work: `tests/test_add_all_bar.py::test_collections_menu_keeps_the_essentials` (fails the same on the parent commit).
+
+To keep the work safe off this laptop, push the branch (`git push origin worktree-agent-a3199f20f9c3464c5:wip/restore-flagged-frames`) once the owner says so; `AGENTS.md` only allows pushing `main` without asking.
+
 ## Set Up AI redesign, status chip and first-run prompt: built (20 October 2026)
 
 Mockups (the design that was approved): `docs/ai_setup_mockup.html`, `docs/ai_status_chip_mockup.html` (open from `docs/`; the second embeds a real window capture).
