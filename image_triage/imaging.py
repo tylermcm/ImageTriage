@@ -12,6 +12,7 @@ import numpy as np
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QSize, Qt
 from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPen, QPolygonF, QTransform
 
+from . import memtrace
 from .fits_support import (
     is_basic_displayable_fits_array,
     load_basic_fits_image,
@@ -69,6 +70,11 @@ _BUILTIN_DISPLAY_PROVIDERS_REGISTERED = False
 _JPEG_EXIF_MAX_SCAN_BYTES = 2 * 1024 * 1024
 _JPEG_EXIF_ORIENTATION = 0x0112
 _JPEG_EXIF_TYPE_SHORT = 3
+
+
+# Decode routes that build several full-size buffers (see memtrace; None unless IMAGE_TRIAGE_MEMTRACE is set).
+_TRACE_PILLOW_FALLBACK = memtrace.counter("decode.pillow_fallback")
+_TRACE_RAW_POSTPROCESS = memtrace.counter("decode.raw_postprocess")
 
 
 @dataclass(slots=True, frozen=True)
@@ -541,6 +547,9 @@ def _qimage_from_pillow_image(image, target_size: QSize, *, auto_transform: bool
         working = working.copy()
 
     working.load()
+    if _TRACE_PILLOW_FALLBACK is not None:
+        # Estimated: the source at full size, 4 bytes a pixel, held about three times at once (decoded, transposed, converted).
+        _TRACE_PILLOW_FALLBACK.add(working.width * working.height * 4 * 3)
     if working.mode != "RGBA":
         working = working.convert("RGBA")
     else:
@@ -1063,6 +1072,8 @@ def _postprocess_raw(raw, target_size: QSize, *, quality_mode: str) -> QImage:
         options["demosaic_algorithm"] = rawpy.DemosaicAlgorithm.LINEAR
 
     rgb = raw.postprocess(**options)
+    if _TRACE_RAW_POSTPROCESS is not None:
+        _TRACE_RAW_POSTPROCESS.add(int(rgb.nbytes))  # exact: the demosaiced array, before it is copied into a QImage
     image = _qimage_from_rgb_array(rgb)
     if image.isNull():
         return image

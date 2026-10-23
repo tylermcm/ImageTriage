@@ -12,6 +12,8 @@ from typing import Callable
 from PySide6.QtCore import QStandardPaths
 from PySide6.QtGui import QImage, QImageReader
 
+from . import memtrace
+
 
 THUMBNAIL_CACHE_VERSION = 5
 
@@ -78,6 +80,7 @@ class EditStateMemo:
         self._queue: SimpleQueue[str] = SimpleQueue()
         self._thread: Thread | None = None
         self._lock = Lock()
+        memtrace.gauge("edit_state_memo.entries", self, lambda memo: len(memo._known))
 
     def peek(self, path: str | Path) -> tuple[int, int]:
         key = str(path)
@@ -171,13 +174,21 @@ class MemoryThumbnailCache:
         self._current_bytes = 0
         self._entries: OrderedDict[ThumbnailKey, tuple[QImage, int]] = OrderedDict()
         self._lock = Lock()
+        # QImage.sizeInBytes() per entry, which is the pixel buffer itself: exact (see memtrace).
+        self._trace = memtrace.cache_with_gauge(
+            "thumbnail.memory_cache", "exact", self, lambda cache: (cache._current_bytes, len(cache._entries))
+        )
 
     def get(self, key: ThumbnailKey) -> QImage | None:
         with self._lock:
             entry = self._entries.get(key)
             if entry is None:
+                if self._trace is not None:
+                    self._trace.miss()
                 return None
             self._entries.move_to_end(key)
+            if self._trace is not None:
+                self._trace.hit()
             return entry[0]
 
     def put(self, key: ThumbnailKey, image: QImage) -> None:
@@ -198,12 +209,17 @@ class MemoryThumbnailCache:
             self._entries[key] = (image, cost)
             self._current_bytes += cost
             self._entries.move_to_end(key)
+            if self._trace is not None:
+                self._trace.put()
+                self._trace.observe(self._current_bytes, len(self._entries))  # the peak is before the trim
             self._trim()
 
     def _trim(self) -> None:
         while self._current_bytes > self._max_bytes and self._entries:
             _, (_, cost) = self._entries.popitem(last=False)
             self._current_bytes -= cost
+            if self._trace is not None:
+                self._trace.evicted()
 
 
 class DiskThumbnailCache:

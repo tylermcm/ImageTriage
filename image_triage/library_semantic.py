@@ -33,6 +33,7 @@ from typing import Iterable, Sequence
 
 import numpy as np
 
+from . import memtrace
 from .scanner import normalize_filesystem_path, normalized_path_key
 from .semantic_plan import (
     SEMANTIC_EMBEDDING_DIM,
@@ -480,11 +481,24 @@ class LibraryVectorIndex:
 
     def __post_init__(self) -> None:
         self._row_by_key = {search_key(path): row for row, path in enumerate(self.paths)}
+        if memtrace.ENABLED:
+            # ndarray.nbytes: exact for the matrix. The index is held weakly, so observing it never keeps it alive.
+            memtrace.cache_with_gauge(
+                "semantic.matrix", "exact", self, lambda index: (int(index.matrix.nbytes), int(index.matrix.shape[0]))
+            )
+            memtrace.cache_with_gauge(
+                "semantic.query_cache", "exact", self,
+                lambda index: (
+                    sum(int(r.rows.nbytes) + int(r.scores.nbytes) for r in tuple(index._cache.values())),
+                    len(index._cache),
+                ),
+            )
 
     @classmethod
     def load(cls, store: LibrarySemanticStore, *, model_identity: str, blas_threads: int = 1) -> "LibraryVectorIndex":
-        paths, matrix = store.load_matrix(model_identity=model_identity)
-        return cls(paths=paths, matrix=matrix, model_identity=model_identity, blas_threads=blas_threads)
+        with memtrace.measure("semantic.load_matrix", model_identity=model_identity):
+            paths, matrix = store.load_matrix(model_identity=model_identity)
+            return cls(paths=paths, matrix=matrix, model_identity=model_identity, blas_threads=blas_threads)
 
     def __len__(self) -> int:
         return len(self.paths)
