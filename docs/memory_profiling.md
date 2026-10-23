@@ -103,6 +103,18 @@ log. The standard library is all it needs.
 The `.html` and `.json` reports of **three** runs of workload A, plus (if you can) a Task Manager "Details" screenshot of
 `python.exe`, `photocraft.exe` and the AI worker rows at the end of the `idle` phase. A single run is an anecdote.
 
+### A2. A public corpus when you have no suitable folders
+
+```powershell
+python scripts\fetch_public_corpus.py --out "$HOME\corpus" --nef 24 --jpeg 60 --replicate 20
+python scripts\memtrace_workload.py --folder "$HOME\corpus\mixed_large" --folder "$HOME\corpus\jpeg_large"
+```
+
+Downloads real Nikon NEF samples (CC0, raw.pixls.us) and Wikimedia Commons landscape JPEGs (3840 px wide; licences recorded in
+`LICENSES.csv`; local profiling only). `--replicate 20` links every file under 20 distinct names so the folders have
+~1,000 photos: caches key on path, so each link is a separate photo, but the page cache is hotter than a real shoot and the
+mix is only a few distinct images. Real folders of your own are better evidence.
+
 ### C. The semantic matrix on its own
 
 ```powershell
