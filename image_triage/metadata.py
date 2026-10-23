@@ -8,6 +8,7 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
+from . import memtrace
 from .fits_support import load_basic_fits_header
 from .formats import FITS_SUFFIXES, suffix_for_path
 from .models import ImageRecord
@@ -299,6 +300,11 @@ class MetadataManager(QObject):
         self._cache: dict[MetadataKey, CaptureMetadata] = {}
         self._pending: set[MetadataKey] = set()
         self._result_queue: SimpleQueue = SimpleQueue()
+        # Never evicted by this class (see memtrace); the byte figure is a sampled sys.getsizeof estimate.
+        self._trace = memtrace.cache_with_gauge(
+            "metadata.manager_cache", "estimated", self,
+            lambda manager: (memtrace.estimate_object_bytes(tuple(manager._cache.values())), len(manager._cache)),
+        )
         self._drain_timer = QTimer(self)
         self._drain_timer.setInterval(20)
         self._drain_timer.timeout.connect(self._drain_results)
@@ -307,7 +313,13 @@ class MetadataManager(QObject):
         return MetadataKey(path=record.path, modified_ns=record.modified_ns, file_size=record.size)
 
     def get_cached(self, record: ImageRecord) -> CaptureMetadata | None:
-        return self._cache.get(self.make_key(record))
+        found = self._cache.get(self.make_key(record))
+        if self._trace is not None:
+            if found is None:
+                self._trace.miss()
+            else:
+                self._trace.hit()
+        return found
 
     def request_metadata(self, record: ImageRecord, priority: int = 0) -> MetadataKey:
         key = self.make_key(record)

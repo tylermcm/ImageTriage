@@ -24,6 +24,7 @@ from PySide6.QtCore import QObject, QRunnable, Signal
 
 from aiculler.features import SemanticEmbeddingExtractor
 from aiculler.storage import SQLiteFeatureStore
+from . import memtrace
 from .ai_runtime_packages import resolve_ai_runtime_site_packages
 from .perf import write_execution_log
 # The planner lives in a Qt-free module so the library indexing worker can share it; re-exported here.
@@ -169,6 +170,19 @@ class SemanticFolderIndexTask(QRunnable):
         )
 
     def run(self) -> None:
+        if not memtrace.ENABLED:
+            self._run()
+            return
+        # The extractor (and its ONNX session) is local to _run(), so "end" is read after it has been released:
+        # the gap between "start" and "end" is what the indexer left behind in this process.
+        memtrace.mark("semantic_index.start", folder=self.folder)
+        try:
+            with memtrace.measure("semantic_index.run", folder=self.folder):
+                self._run()
+        finally:
+            memtrace.mark("semantic_index.end", folder=self.folder)
+
+    def _run(self) -> None:
         if self._cancelled:
             return
         try:
@@ -206,7 +220,8 @@ class SemanticFolderIndexTask(QRunnable):
                     self.signals.finished.emit(self.folder, self.token, adopted, plan.ready_after)
                     return
 
-                extractor = self._build_extractor()
+                with memtrace.measure("semantic_index.build_extractor", folder=self.folder):
+                    extractor = self._build_extractor()
                 completed = 0
                 pending_commit = 0
                 for item in plan.to_embed:

@@ -10,6 +10,11 @@ import time
 from typing import Iterator
 
 
+# IMAGE_TRIAGE_MEMTRACE (see image_triage.memtrace) needs the whole log, whatever the Settings toggle or the focus filter say:
+# its memory samples are only useful next to the preview/thumbnail/navigation events they are compared with.
+_FORCED_BY_MEMTRACE = os.environ.get("IMAGE_TRIAGE_MEMTRACE", "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
 class PerformanceLogger:
     """Small JSONL performance logger kept off the hot path unless enabled."""
 
@@ -27,7 +32,7 @@ class PerformanceLogger:
         (empty restores logging everything). This mutes the app-wide
         instrumentation without touching it, so we can record only what we're
         actively profiling and keep the log file small."""
-        self._focus_prefixes = tuple(p for p in (prefixes or ()) if p)
+        self._focus_prefixes = () if _FORCED_BY_MEMTRACE else tuple(p for p in (prefixes or ()) if p)
 
     @property
     def focus_prefixes(self) -> tuple[str, ...]:
@@ -36,6 +41,10 @@ class PerformanceLogger:
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    def elapsed_ms_at(self, perf_counter_value: float) -> float:
+        """The log's ``elapsed_ms`` clock for a ``time.perf_counter()`` reading taken earlier."""
+        return round((perf_counter_value - self._session_started) * 1000.0, 3)
 
     @property
     def path(self) -> Path | None:
@@ -46,7 +55,7 @@ class PerformanceLogger:
         return self._enabled and self._handle is not None and self._path is not None
 
     def set_enabled(self, enabled: bool, *, reason: str = "") -> None:
-        normalized = bool(enabled)
+        normalized = bool(enabled) or _FORCED_BY_MEMTRACE
         if normalized and self.is_writing:
             return
         if normalized:

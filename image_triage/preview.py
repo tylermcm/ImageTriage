@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from .ai_results import AIImageResult, build_ai_explanation_lines
 from .app_identity import user_settings
 from .keyboard_mapping import matches_shortcut
+from . import memtrace
 from .cache import THUMBNAIL_CACHE_VERSION
 from .formats import FITS_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .imaging import FITS_STF_PRESETS, FitsDisplaySettings, load_image_for_display, sanitize_display_error
@@ -79,6 +80,32 @@ def _set_style_sheet(widget, css: str) -> None:
     children) even for an identical sheet, which cost ~20 ms of every navigation."""
     if widget.styleSheet() != css:
         widget.setStyleSheet(css)
+
+
+def _unique_image_bytes(cache) -> dict[str, int]:
+    """``{"unique_bytes", "unique_images"}`` for a cache of ``(QImage, cost)`` values: shared pixel data (same ``cacheKey``) once."""
+    distinct: dict[int, int] = {}
+    for entry in tuple(cache.values()):
+        try:
+            image = entry[0]
+            distinct.setdefault(int(image.cacheKey()), int(image.sizeInBytes()))
+        except Exception:
+            continue
+    return {"unique_bytes": sum(distinct.values()), "unique_images": len(distinct)}
+
+
+def _sum_image_bytes(images) -> tuple[int, int]:
+    """(bytes, entries) of the non-null images in ``images``: QImage.sizeInBytes(), the pixel buffers themselves."""
+    total = 0
+    count = 0
+    for image in images:
+        try:
+            if image is not None and not image.isNull():
+                total += int(image.sizeInBytes())
+                count += 1
+        except Exception:
+            continue
+    return total, count
 
 
 @dataclass(slots=True, frozen=True)
@@ -146,8 +173,24 @@ class PreviewTask(QRunnable):
         # navigated past is dropped instead of occupying a worker while the photo they are on waits.
         self.is_current = is_current
         self.setAutoDelete(True)
+        self._jobs = memtrace.jobs("preview.decode") if request.load_image else None
+        if self._jobs is not None:
+            self._jobs.queued()
 
     def run(self) -> None:
+        jobs = self._jobs
+        if jobs is None:
+            self._run()
+            return
+        # Estimated: the size asked for, 4 bytes a pixel. A JPEG decoded at a reduced scale builds less than that.
+        estimate = max(0, self.request.target_size.width()) * max(0, self.request.target_size.height()) * 4
+        jobs.started(estimate)
+        try:
+            self._run()
+        finally:
+            jobs.finished(estimate)
+
+    def _run(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         if self.is_current is not None and self.request.load_image and not self.is_current():
@@ -196,6 +239,8 @@ class PreviewTask(QRunnable):
                 return
             ready_at = time.perf_counter() if logger.enabled else 0.0
             image_ready_ms = (ready_at - start) * 1000.0 if logger.enabled else 0.0
+            if self._jobs is not None:
+                self._jobs.result(memtrace.image_bytes(image))
             self.result_queue.put(("ready", self.request, image, None, ready_at))
             if logger.enabled:
                 logger.duration(
@@ -778,6 +823,12 @@ class FullScreenPreview(QDialog):
         self._preview_cache: OrderedDict[tuple[object, ...], tuple[QImage, int]] = OrderedDict()
         self._preview_cache_bytes = 0
         self._preview_cache_limit = 320 * 1024 * 1024
+        # bytes is what the cache charges; unique_bytes counts each distinct pixel buffer once (the same QImage can be stored
+        # under a preload key and a signature key, and is charged for both).
+        self._preview_trace = memtrace.cache_with_gauge(
+            "preview.cache", "exact", self,
+            lambda pane: (pane._preview_cache_bytes, len(pane._preview_cache), _unique_image_bytes(pane._preview_cache)),
+        )
         self._pending_cache_keys: set[tuple[object, ...]] = set()
         self._preload_wanted: frozenset[str] = frozenset()  # the paths of the latest preload batch (see preload_paths)
         self._pending_metadata_requests: set[tuple[int, int, str, bool]] = set()
@@ -814,6 +865,27 @@ class FullScreenPreview(QDialog):
         self._watched_widgets: dict[object, int] = {}
         self._inspection_stats_cache: dict[tuple[object, ...], InspectionStats] = {}
         self._focus_assist_cache: dict[tuple[object, ...], QImage] = {}
+        if memtrace.ENABLED:
+            # Read from the sampler thread: a snapshot tuple first, so a dict that changes mid-read cannot raise.
+            memtrace.cache_with_gauge(
+                "preview.focus_assist_cache", "exact", self,
+                lambda pane: _sum_image_bytes(tuple(pane._focus_assist_cache.values())),
+            )
+            memtrace.cache_with_gauge(
+                "preview.current_images", "exact", self,
+                lambda pane: _sum_image_bytes(tuple(pane._current_images)), shared_with="preview.cache",
+            )
+            memtrace.cache_with_gauge(
+                "preview.inspection_stats_cache", "estimated", self,
+                lambda pane: (memtrace.estimate_object_bytes(tuple(pane._inspection_stats_cache.values())),
+                              len(pane._inspection_stats_cache)),
+            )
+            memtrace.cache_with_gauge(
+                "preview.metadata_cache", "estimated", self,
+                lambda pane: (memtrace.estimate_object_bytes(tuple(pane._metadata_cache.values())), len(pane._metadata_cache)),
+            )
+            memtrace.gauge("preview.pending_cache_keys", self, lambda pane: len(pane._pending_cache_keys))
+            memtrace.gauge("preview.result_queue_depth", self, lambda pane: pane._result_queue.qsize())
         self._theme = default_theme()
 
         self.setWindowTitle("Preview")
@@ -4212,8 +4284,12 @@ class FullScreenPreview(QDialog):
     ) -> QImage | None:
         cached = self._preview_cache.get(cache_key)
         if cached is None:
+            if self._preview_trace is not None:
+                self._preview_trace.miss()  # lookups, not requests: a fallback key is tried after the exact one
             return None
         self._preview_cache.move_to_end(cache_key)
+        if self._preview_trace is not None:
+            self._preview_trace.hit()
         return cached[0]
 
     def _cached_preview_image_with_fallback(
@@ -4261,15 +4337,22 @@ class FullScreenPreview(QDialog):
         self._preview_cache[cache_key] = (image, cost)
         self._preview_cache.move_to_end(cache_key)
         self._preview_cache_bytes += cost
+        if self._preview_trace is not None:
+            self._preview_trace.put()
+            self._preview_trace.observe(self._preview_cache_bytes, len(self._preview_cache))  # the peak is before the trim
         while self._preview_cache_bytes > self._preview_cache_limit and self._preview_cache:
             _, (_, removed_cost) = self._preview_cache.popitem(last=False)
             self._preview_cache_bytes -= removed_cost
+            if self._preview_trace is not None:
+                self._preview_trace.evicted()
 
     def _invalidate_preview_cache(self, path: str) -> None:
         matching_keys = [key for key in self._preview_cache if len(key) > 1 and key[1] == path]
         for key in matching_keys:
             _image, cost = self._preview_cache.pop(key)
             self._preview_cache_bytes -= cost
+            if self._preview_trace is not None:
+                self._preview_trace.invalidated()
 
     def _zoom_long_edge(self, slot: int) -> int:
         """The long edge, in pixels, of the photo in ``slot`` at full size: zoom percentages refer to it (100% is one screen
