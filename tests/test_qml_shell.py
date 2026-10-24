@@ -162,6 +162,7 @@ def test_a_thumbnail_nobody_wants_any_more_is_not_made(qapp, tmp_path):
 
 
 def test_main_qml_loads_and_the_grid_shows_the_model(qapp, tmp_path):
+    from image_triage.qml_shell.palette_model import PaletteModel
     from PySide6.QtQml import QQmlApplicationEngine
 
     theme = Theme(parent=qapp)
@@ -177,6 +178,7 @@ def test_main_qml_loads_and_the_grid_shows_the_model(qapp, tmp_path):
     context.setContextProperty("theme", theme)
     context.setContextProperty("photos", model)
     context.setContextProperty("settings", settings)
+    context.setContextProperty("cmdPalette", PaletteModel(memory=True, parent=qapp))
     context.setContextProperty("thumbs", thumbs)
     context.setContextProperty("startup", "")
     engine.addImportPath(str(shell_app.QML_DIR))

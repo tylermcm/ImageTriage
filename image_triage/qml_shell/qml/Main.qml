@@ -108,7 +108,27 @@ Window {
     }
 
     SettingsWindow { id: settingsWindow; sourceItem: appContent }
+    CommandPalette { id: commandPalette; sourceItem: appContent }
     Shortcut { sequence: "Ctrl+,"; onActivated: UiState.settingsOpen = !UiState.settingsOpen }
+    Shortcut { sequence: "Ctrl+K"; onActivated: { if (UiState.paletteOpen) UiState.paletteOpen = false; else UiState.openPalette("main") } }
+
+    // The commands the shell can carry out today; every other command in the palette is listed but does nothing yet (docs/qml_unwired.md).
+    Connections {
+        target: cmdPalette
+        function onExecuted(id) {
+            if (id === "file.workflow_settings") UiState.settingsOpen = true
+            else if (id.indexOf("appearance.") === 0) { settings.set("theme", id.slice(11)); settings.save() }
+            else if (id.indexOf("sort.") === 0) { UiState.sort = id.slice(5); photos.setSort(UiState.sort) }
+            else if (id === "search.clear_filters") { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters() }
+            else if (id === "review.compare_mode") UiState.compare = !UiState.compare
+            else if (id === "window.reset_layout") { UiState.tab = "lib"; UiState.insp = true }
+            else if (id === "review.accept_selection") photos.setDecision(grid.view.currentIndex, "win")
+            else if (id === "review.reject_selection") photos.setDecision(grid.view.currentIndex, "rej")
+            else if (id === "review.keep_selection") photos.setDecision(grid.view.currentIndex, "keep")
+        }
+    }
+    Connections { target: UiState; function onCompareChanged() { cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off") } }
+    Component.onCompleted: cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off")
 
     // Called once the window has its real size (the mockup's componentDidMount: both side sheets start closed when narrow), then the
     // test hook `--ui key=value;...` applies UiState settings so layouts can be checked headlessly.

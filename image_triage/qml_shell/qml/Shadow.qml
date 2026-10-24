@@ -12,6 +12,8 @@ Item {
     property real alphaA: 0.65
     property real offsetB: 3
     property real blurB: 8
+    property real multA: 0            // blurMultiplier of the first shadow: CSS blurs of 100px and more need more than the effect's 64px cap
+    property real insetB: 0            // negative spread of the second shadow
     property real alphaB: 0           // second shadow (0 = none)
     readonly property real pad: 160
     Item {
@@ -22,11 +24,11 @@ Item {
             x: sh.pad + sh.insetA; y: sh.pad + sh.insetA + sh.offsetA; width: sh.width - 2 * sh.insetA; height: sh.height - 2 * sh.insetA
             radius: Math.max(0, sh.radius - sh.insetA); color: "black"; opacity: sh.alphaA
             layer.enabled: true
-            layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: sh.blurA; autoPaddingEnabled: true }
+            layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: sh.blurA; blurMultiplier: sh.multA; autoPaddingEnabled: true }
         }
         Rectangle {
             visible: sh.alphaB > 0
-            x: sh.pad; y: sh.pad + sh.offsetB; width: sh.width; height: sh.height; radius: sh.radius; color: "black"; opacity: sh.alphaB
+            x: sh.pad + sh.insetB; y: sh.pad + sh.insetB + sh.offsetB; width: sh.width - 2 * sh.insetB; height: sh.height - 2 * sh.insetB; radius: Math.max(0, sh.radius - sh.insetB); color: "black"; opacity: sh.alphaB
             layer.enabled: true
             layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: sh.blurB; autoPaddingEnabled: true }
         }

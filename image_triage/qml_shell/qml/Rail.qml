@@ -154,7 +154,7 @@ Rectangle {
         RailButton { visible: UiState.pins.share; icon: "pocketdrop"; tip: "Share to phone" }
         RailButton { visible: UiState.pins.editor; icon: "editor"; tip: "Open in editor" }
         RailButton { visible: UiState.pins.newfolder; icon: "newfolder"; tip: "New folder" }
-        RailButton { visible: UiState.pins.palette; icon: "palette"; tip: "Command palette (Ctrl K)" }
+        RailButton { visible: UiState.pins.palette; icon: "palette"; tip: "Command palette (Ctrl K)"; onClicked: UiState.openPalette("main") }
         RailButton { visible: UiState.pins.shortcuts; icon: "keyboard"; tip: "Keyboard shortcuts" }
 
         Item { width: 1; height: 4 }   // the customise button sits 8px below the last pin, the pins 4px apart

@@ -37,6 +37,13 @@ Ctrl+, or the rail's gear opens the settings window.
 live; accent hue and text contrast are new shell-only keys. Save keeps the window open; Cancel discards unsaved edits and closes.
 Most saved settings are not yet applied by the shell: see `docs/qml_unwired.md`, which lists everything not hooked up, in both windows.
 
+## Command palette
+
+`CommandPalette.qml` is a card pinned to the top edge over the dimmed and blurred window (Ctrl K, the top bar's search field, the rail pin).
+`palette_model.py` supplies the commands (ids, titles, keywords of the Widgets palette), the Widgets ranking function, shortcuts from the
+shortcut registry and recents under `commands/recent`. Only a few commands run an action so far; see `docs/qml_unwired.md`.
+`scripts/qml_parity/palette.dc.html` is the mockup (`?pal=1&q=...&pi=N&ctx=preview&light=1` in `harness_palette.html`).
+
 ## Resolution and scaling
 
 Every size is in device-independent pixels. Qt multiplies by the screen's scale (Windows "Scale", Linux `QT_SCALE_FACTOR`/compositor scale), and
@@ -61,4 +68,4 @@ testing (everything above was verified headlessly with a software renderer), `to
 
 ## Tests
 
-`tests/test_qml_shell.py` and `tests/test_qml_shell_settings.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
+`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py` and `tests/test_qml_shell_palette.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
