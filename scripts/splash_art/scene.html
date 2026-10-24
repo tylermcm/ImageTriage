@@ -1,0 +1,170 @@
+<!doctype html><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Mrs+Saint+Delafield&family=Montserrat:wght@400;500;600&display=block" rel="stylesheet">
+<style>
+html,body{margin:0;background:#0a0b1c}
+#c{position:relative;width:1633px;height:963px;overflow:hidden;background:#0b0c1f;font-family:Montserrat,sans-serif}
+.abs{position:absolute;left:0;top:0}
+.fr{position:absolute;left:0;top:0;transform-origin:0 0}
+.fr img{display:block;width:100%;height:100%;object-fit:cover}
+.rf{box-shadow:0 0 0 1.5px rgba(150,235,255,.85),0 0 10px 2px rgba(90,200,255,.55),0 0 22px 4px rgba(150,90,255,.35)}
+.lf{border:2.5px solid #e9ecf6;box-sizing:border-box;box-shadow:0 6px 14px rgba(0,0,0,.6)}
+.lf img{filter:grayscale(1) contrast(1.05) brightness(.9)}
+.tx{position:absolute;white-space:nowrap}
+</style>
+<div id="c">
+<svg class="abs" width="1633" height="963" id="bg">
+ <defs>
+  <radialGradient id="g1" cx="50%" cy="38%" r="75%"><stop offset="0" stop-color="#171c3a"/><stop offset=".5" stop-color="#0d1126"/><stop offset="1" stop-color="#060716"/></radialGradient>
+  <radialGradient id="gp" cx="20%" cy="18%" r="40%"><stop offset="0" stop-color="#2e2457" stop-opacity=".5"/><stop offset="1" stop-color="#3a2a6a" stop-opacity="0"/></radialGradient>
+  <radialGradient id="gp2" cx="82%" cy="22%" r="38%"><stop offset="0" stop-color="#3b2877" stop-opacity=".45"/><stop offset="1" stop-color="#4a2f8a" stop-opacity="0"/></radialGradient>
+  <linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0c1230" stop-opacity="0"/><stop offset=".35" stop-color="#0b0f26" stop-opacity=".9"/><stop offset="1" stop-color="#090a1a"/></linearGradient>
+  <linearGradient id="lineR" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#5ad8ff" stop-opacity=".9"/><stop offset="1" stop-color="#6a5cff" stop-opacity=".1"/></linearGradient>
+  <linearGradient id="lineL" x1="1" y1="0" x2="0" y2="0"><stop offset="0" stop-color="#4fe0e0" stop-opacity=".9"/><stop offset="1" stop-color="#3a7aa8" stop-opacity=".05"/></linearGradient>
+  <filter id="b2" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2"/></filter>
+  <filter id="b6" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="6"/></filter>
+  <filter id="b14" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="14"/></filter>
+  <filter id="b40" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="40"/></filter>
+  <filter id="noise"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" seed="4"/><feColorMatrix values="0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .6  0 0 0 .09 0"/></filter>
+ </defs>
+ <rect width="1633" height="963" fill="url(#g1)"/>
+ <rect width="1633" height="963" fill="url(#gp)"/><rect width="1633" height="963" fill="url(#gp2)"/>
+ <!-- far bokeh blobs -->
+ <g filter="url(#b40)" opacity=".7">
+  <ellipse cx="330" cy="150" rx="150" ry="90" fill="#2a2150"/><ellipse cx="1300" cy="120" rx="170" ry="80" fill="#2b2160"/>
+  <ellipse cx="812" cy="80" rx="260" ry="60" fill="#1c2a55"/><ellipse cx="260" cy="780" rx="220" ry="90" fill="#1a1f3f"/><ellipse cx="1400" cy="800" rx="240" ry="90" fill="#1e1b44"/>
+ </g>
+ <polygon points="0,420 610,372 1010,368 1633,430 1633,963 0,963" fill="url(#floor)"/>
+ <!-- corridor edge light -->
+ <g>
+  <path d="M1010 366 L1633 452" stroke="url(#lineR)" stroke-width="9" fill="none" filter="url(#b6)"/>
+  <path d="M1010 366 L1633 452" stroke="url(#lineR)" stroke-width="2.2" fill="none"/>
+  <path d="M1010 378 L1633 480" stroke="#3a7cff" stroke-width="5" stroke-opacity=".35" fill="none" filter="url(#b6)"/>
+  <path d="M612 368 L0 484" stroke="url(#lineL)" stroke-width="9" fill="none" filter="url(#b6)"/>
+  <path d="M612 368 L0 484" stroke="url(#lineL)" stroke-width="2" fill="none"/>
+  <path d="M612 380 L0 520" stroke="#2a8ea8" stroke-width="5" stroke-opacity=".3" fill="none" filter="url(#b6)"/>
+ </g>
+</svg>
+<div id="far" class="abs" style="width:1633px;height:963px"></div>
+<div id="left" class="abs" style="width:1633px;height:963px"></div>
+<div id="right" class="abs" style="width:1633px;height:963px"></div>
+<svg class="abs" width="1633" height="963" id="ring" style="overflow:visible"></svg>
+<img id="center" class="abs" src="center.png" style="left:696px;top:176px;width:235px;height:234px;object-fit:cover">
+<svg class="abs" width="1633" height="963" id="ui" style="overflow:visible"></svg>
+<div class="tx" id="word" style="left:0;top:498px;width:1633px;text-align:center;color:#fff;font-weight:500;font-size:84px;line-height:1;text-shadow:0 0 18px rgba(150,170,255,.35),0 2px 3px rgba(0,0,0,.6)">IMAGE TRIAGE</div>
+<div class="tx" id="tag" style="left:0;top:606px;width:1633px;text-align:center;color:#c9cde6;font-weight:400;font-size:21px;line-height:1">A FASTER PATH TO YOUR BEST FRAMES</div>
+<div class="tx" id="nav" style="left:1092px;top:44px;color:#a79cf5;font-weight:500;font-size:15.5px;letter-spacing:.14em;line-height:1">CAPTURE</div>
+<div class="tx" style="left:80px;top:34px;font-family:'Mrs Saint Delafield';font-size:50px;line-height:.85;color:#6f78bd;transform:rotate(-12deg);transform-origin:0 0;opacity:.95">More<br><span style="margin-left:6px">of what</span><br><span style="margin-left:14px">matters</span></div>
+<div class="tx" style="left:1428px;top:618px;font-family:'Mrs Saint Delafield';font-size:56px;line-height:.82;color:#8b86da;transform:rotate(-14deg);transform-origin:0 0;opacity:.95">Good<br><span style="margin-left:10px">Photos</span><br><span style="margin-left:6px">Ahead</span></div>
+<svg class="abs" width="1633" height="963" id="ink" style="overflow:visible"></svg>
+<div class="tx" style="left:0;top:0;width:1633px;height:963px;pointer-events:none;filter:url(#noise);opacity:.55"></div>
+</div>
+<script>
+const $=id=>document.getElementById(id), NS='http://www.w3.org/2000/svg';
+function rnd(seed){let s=seed;return()=>{s=(s*1664525+1013904223)%4294967296;return s/4294967296}}
+// homography: unit rect (0,0,w,h) -> quad TL,TR,BR,BL
+function hom(w,h,q){
+  const src=[[0,0],[w,0],[w,h],[0,h]], A=[], B=[];
+  for(let i=0;i<4;i++){const[x,y]=src[i],[u,v]=q[i];
+    A.push([x,y,1,0,0,0,-u*x,-u*y]);B.push(u);A.push([0,0,0,x,y,1,-v*x,-v*y]);B.push(v)}
+  const n=8;for(let i=0;i<n;i++){let m=i;for(let r=i+1;r<n;r++)if(Math.abs(A[r][i])>Math.abs(A[m][i]))m=r;[A[i],A[m]]=[A[m],A[i]];[B[i],B[m]]=[B[m],B[i]];
+    for(let r=0;r<n;r++)if(r!==i){const f=A[r][i]/A[i][i];for(let c=i;c<n;c++)A[r][c]-=f*A[i][c];B[r]-=f*B[i]}}
+  const [a,b,c,d,e,f,g,hh]=B.map((v,i)=>v/A[i][i]);
+  return `matrix3d(${a},${d},0,${g},${b},${e},0,${hh},0,0,1,0,${c},${f},0,1)`;
+}
+function quadFrame(parent,img,w,h,q,cls,style=''){
+  const d=document.createElement('div');d.className='fr '+cls;d.style.cssText=`width:${w}px;height:${h}px;transform:${hom(w,h,q)};${style}`;
+  const i=document.createElement('img');i.src=img;d.appendChild(i);parent.appendChild(d);return d}
+const imgs=['portrait.png','mountain.png','dog.png','city.png','flower.png','center.png'];
+// ---- right corridor
+const R=$('right');
+function rq(x0,yt,w,h){return [[x0,yt],[x0+w,yt-.063*w],[x0+w,yt+h+.095*w-.063*w+.063*w-.063*w+0],[x0,yt+h]]}
+// hero frames measured from the original
+const hero=[[1071.5,252.5,95,111.5,0],[1180,251.5,100,136,1],[1295,261,104,143,2],[1416,256.5,113,163.5,3],[1549,261,84,191,4]];
+// back rows (blurred, dimmer), behind heroes
+const rr=rnd(7);
+const back=[];
+hero.forEach(([x,y,w,h,k],i)=>{
+  back.push({x:x+6,yt:y-h*.78-14,w:w*.92,h:h*.72,k:(k+2)%5,blur:5,op:.42});
+  back.push({x:x-4,yt:y+h+16,w:w*.9,h:h*.68,k:(k+3)%5,blur:6,op:.3});
+});
+// near-ring small frames
+[[1018,262,44,64,0,2.4,.55],[1030,326,40,48,1,3,.5],[1020,200,36,50,3,3,.5],[1060,170,52,62,4,3.4,.45],[1180,120,60,76,0,4,.4],[1310,150,70,90,2,4,.4],[1440,110,92,120,3,4.5,.4],[1420,590,70,86,2,4,.35],[1300,560,60,76,1,4.5,.35],[1180,530,52,66,0,4.5,.3]].forEach(([x,yt,w,h,k,blur,op])=>back.push({x,yt,w,h,k,blur,op}));
+back.forEach(b=>{const e=quadFrame(R,imgs[b.k],b.w,b.h,rq(b.x,b.yt,b.w,b.h),'rf',`filter:blur(${b.blur}px) saturate(.8);opacity:${b.op}`);});
+hero.forEach(([x,y,w,h,k])=>{const e=quadFrame(R,imgs[k],w,h,rq(x,y,w,h),'rf')});
+// ---- left clutter (grayscale, white borders)
+const L=$('left'), lr=rnd(21);
+const lf=[];
+// big near-edge frames then smaller toward center
+const lfr=[];
+for(let i=0;i<70;i++){
+  const t=i/69, d=1-Math.pow(1-t,1.35);               // 0 near edge .. 1 at ring
+  const x=-50+d*660+(lr()-.5)*30, w=Math.max(20,125*Math.pow(1-d,1.1)+16+(lr()-.5)*20), h=w*(.72+lr()*.12);
+  const spread=(250*Math.pow(1-d,.8)+40);
+  const u=((i*0.618034)%1)*2-1; const y=Math.max(150-d*40,330+u*spread*(u<0?.75:1.0)-d*30);
+  lfr.push([x,y,w,h,Math.floor(lr()*4),d]);
+}
+lfr.sort((a,b)=>b[5]-a[5]).forEach(([x,y,w,h,k,depth],i)=>{
+  const rot=(lr()-.5)*30;
+  const blur=depth<.12?0.5:0.8+depth*3.4, op=1-depth*.4;
+  const e=document.createElement('div');e.className='fr lf';
+  e.style.cssText=`width:${w}px;height:${h}px;left:${x}px;top:${y}px;transform:rotate(${rot}deg) skewY(${-depth*9}deg);filter:blur(${blur}px) brightness(${1-depth*.3});opacity:${op}`;
+  const im=document.createElement('img');im.src=imgs[k];e.appendChild(im);L.appendChild(e)});
+// dark gradient to fade left cluster into the corridor
+const lg=document.createElement('div');lg.className='abs';lg.style.cssText='width:1633px;height:963px;background:linear-gradient(90deg,rgba(8,9,24,0) 0,rgba(8,9,24,0) 25%,rgba(10,14,34,.55) 40%,rgba(10,14,34,.0) 60%)';L.appendChild(lg);
+// ---- ring
+const ring=$('ring');const cx=813,cy=285;
+ring.innerHTML=`<defs>
+<linearGradient id="rg" gradientUnits="userSpaceOnUse" x1="617" y1="400" x2="1009" y2="170"><stop offset="0" stop-color="#3fe6ff"/><stop offset=".45" stop-color="#4aa8ff"/><stop offset=".75" stop-color="#8a5cff"/><stop offset="1" stop-color="#b86cff"/></linearGradient>
+<filter id="rb" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="7"/></filter></defs>
+<circle cx="${cx}" cy="${cy}" r="190" fill="none" stroke="url(#rg)" stroke-width="16" opacity=".55" filter="url(#rb)"/>
+<circle cx="${cx}" cy="${cy}" r="197" fill="none" stroke="url(#rg)" stroke-width="3.6"/>
+<circle cx="${cx}" cy="${cy}" r="197" fill="none" stroke="#fff" stroke-opacity=".35" stroke-width="1"/>
+<g id="seg"></g>
+<circle cx="${cx}" cy="${cy}" r="167" fill="none" stroke="url(#rg)" stroke-width="1.6" opacity=".8" stroke-dasharray="2 5"/>
+`;
+// inner thick segmented ring: four arcs separated by tick gaps
+const seg=ring.querySelector('#seg');
+function arc(r,a0,a1){const p=a=>[cx+r*Math.cos(a*Math.PI/180),cy+r*Math.sin(a*Math.PI/180)];const[s,e]=[p(a0),p(a1)];return `M${s[0]} ${s[1]} A${r} ${r} 0 0 1 ${e[0]} ${e[1]}`}
+[[-80,-10],[10,80],[100,170],[190,260]].forEach(([a,b])=>{
+  const d=arc(178,a,b);
+  seg.insertAdjacentHTML('beforeend',`<path d="${d}" stroke="url(#rg)" stroke-width="16" fill="none" opacity=".45" filter="url(#rb)"/><path d="${d}" stroke="url(#rg)" stroke-width="9" fill="none"/><path d="${d}" stroke="#fff" stroke-opacity=".5" stroke-width="2" fill="none" transform="translate(0,0)"/>`)});
+// ticks
+[[0,-1],[0,1],[-1,0],[1,0]].forEach(([dx,dy])=>{const r0=148,r1=182;
+  const x0=cx+dx*r0,y0=cy+dy*r0,x1=cx+dx*r1,y1=cy+dy*r1;
+  ring.insertAdjacentHTML('beforeend',`<line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" stroke="#7ff3ff" stroke-width="9" opacity=".5" filter="url(#rb)"/><line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" stroke="#bff9ff" stroke-width="4.5" stroke-linecap="butt"/>`)});
+// center frame glow
+ring.insertAdjacentHTML('beforeend',`<rect x="694" y="174" width="238" height="237" fill="none" stroke="#6ae6ff" stroke-width="10" opacity=".55" filter="url(#rb)"/><rect x="694.5" y="174.5" width="237" height="236" fill="none" stroke="#c6f6ff" stroke-width="3"/>`);
+// ---- UI svg: icons, dividers, triangles
+const ui=$('ui');
+const glow='filter="drop-shadow(0 0 4px rgba(150,170,255,.55))"';
+ui.innerHTML=`
+<g transform="translate(597 694)" ${glow} fill="none" stroke="#f1f3ff" stroke-width="2.4" stroke-linejoin="round">
+ <g transform="rotate(-9) translate(-3 -2)"><rect x="-26" y="-16" width="46" height="34" rx="2.5"/></g>
+ <g transform="rotate(5) translate(2 0)"><rect x="-22" y="-17" width="46" height="34" rx="2.5" fill="#0d1026"/>
+  <path d="M-14 12 L-4 -2 L3 6 L9 -4 L18 12 Z" fill="#aab4ff" fill-opacity=".25"/><circle cx="12" cy="-8" r="3"/></g></g>
+<g transform="translate(814 694)" ${glow} fill="none" stroke="#f1f3ff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+ <path d="M-1 -26 C-8 -31 -19 -27 -19 -19 C-27 -17 -28 -6 -21 -3 C-27 3 -22 14 -14 14 C-12 22 -3 26 -1 22 Z"/>
+ <path d="M1 -26 C8 -31 19 -27 19 -19 C27 -17 28 -6 21 -3 C27 3 22 14 14 14 C12 22 3 26 1 22 Z"/>
+ <path d="M0 -26 V22 M-12 -14 C-8 -12 -8 -7 -12 -5 M-14 4 C-9 3 -7 8 -9 12 M12 -14 C8 -12 8 -7 12 -5 M14 4 C9 3 7 8 9 12 M-19 -19 C-14 -19 -12 -22 -11 -25 M19 -19 C14 -19 12 -22 11 -25 M-21 -3 C-16 -4 -12 -2 -9 1 M21 -3 C16 -4 12 -2 9 1 M0 -9 C-4 -8 -6 -4 -4 0 M0 8 C4 9 6 5 4 2"/></g>
+<g transform="translate(1034 695)" ${glow} fill="none" stroke="#f1f3ff" stroke-width="2.3" stroke-linejoin="round">
+ <path d="M0 -26 L7.6 -8.6 L26 -7.2 L11.9 4.6 L16.3 22.8 L0 13 L-16.3 22.8 L-11.9 4.6 L-26 -7.2 L-7.6 -8.6 Z" fill="#aab4ff" fill-opacity=".1"/></g>
+<line x1="697" y1="688" x2="697" y2="745" stroke="#8fa6ff" stroke-width="2" opacity=".85"/><line x1="934" y1="688" x2="934" y2="745" stroke="#8fa6ff" stroke-width="2" opacity=".85"/>
+${[1208,1352,1483].map(x=>`<path d="M${x-3} 46 L${x+4} 52 L${x-3} 58 Z" fill="#8a7be0"/>`).join('')}
+`;
+// labels
+[['SORT',597],['ANALYZE',814],['KEEP',1034]].forEach(([t,x])=>{const d=document.createElement('div');d.className='tx';d.textContent=t;
+ d.style.cssText=`left:${x-100}px;width:200px;text-align:center;top:735px;color:#e4e7fa;font-weight:500;font-size:17px;letter-spacing:.2em;line-height:1;padding-left:.2em`;$('c').appendChild(d)});
+// fit nav strip with separators: build real labels
+const nav=$('nav');nav.innerHTML='';
+[['CAPTURE',1092],['ANALYZE',1234],['TRIAGE',1377],['KEEP',1509]].forEach(([t,x])=>{const s=document.createElement('span');s.textContent=t;s.className='tx';s.style.cssText=`left:${x-1092}px;top:0`;nav.appendChild(s)});
+// handwriting underlines
+$('ink').innerHTML=`
+<path d="M190 140 C210 134 235 130 262 128" stroke="#6f78bd" stroke-width="2.6" fill="none" stroke-linecap="round"/>
+<path d="M1437 758 C1470 748 1520 740 1565 738" stroke="#8b86da" stroke-width="3" fill="none" stroke-linecap="round"/>`;
+// fit wordmark/tagline widths
+document.fonts.ready.then(()=>{
+ function fit(id,target){const el=$(id);el.style.letterSpacing='0';el.style.display='inline-block';el.style.width='auto';
+   const n=el.textContent.length;let w=el.getBoundingClientRect().width;el.style.letterSpacing=((target-w)/(n-1))+'px';el.style.paddingLeft='0';
+   el.style.position='absolute';el.style.left=(1633-target)/2+'px';el.style.textAlign='left'}
+ fit('word',775);fit('tag',667);document.body.setAttribute('data-ready','1')});
+</script>
