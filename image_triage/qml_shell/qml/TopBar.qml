@@ -71,6 +71,7 @@ Rectangle {
             Rectangle { x: 1; y: parent.height - 2; width: parent.width - 2; height: 1.5; radius: 1; color: theme.line }
         }
         HoverHandler { id: ch; cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: UiState.openPalette("main") }
         Accessible.role: Accessible.Button; Accessible.name: "Search photos or run a command"
     }
     Row {

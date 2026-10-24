@@ -19,12 +19,17 @@ QtObject {
     property bool settingsOpen: false
     property string settingsSection: "general"
     property string settingsQuery: ""
+    property bool paletteOpen: false
+    property string paletteContext: "main"   // "main", "preview" or "zen": which commands are offered and what the card is called
+    property string paletteQuery: ""
+    property int paletteSel: 0               // highlighted row (test hook; the keyboard moves it)
     property bool compact: false         // window <= 900px: narrow rail, panel and inspector float over the grid (the mockup's phone layout)
     property var pins: ({
         open: true, undo: true, review: true, view: true, filters: true, accept: true, reject: true,
         sort: false, columns: false, rename: false, compare: false, preview: false, ladder: false, convert: false, share: false,
         editor: false, newfolder: false, palette: false, shortcuts: false
     })
+    function openPalette(context) { paletteContext = context || "main"; paletteQuery = ""; paletteSel = 0; paletteOpen = true }
     function togglePin(name) { var p = Object.assign({}, pins); p[name] = !p[name]; pins = p; }
     function setMenu(name) { menu = (menu === name) ? "" : name; }
     // fractional pixel sizes (10.5, 11.5 ...) are not possible with pixelSize, so they go through pointSize at 96 dpi

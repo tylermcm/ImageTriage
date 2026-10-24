@@ -26,7 +26,7 @@ shell reacts to it yet.
 |---|---|---|
 | Brand icon | Visual | |
 | File / Review / View / AI / Help | Visual (hover only, no menus) | the Widgets menu bar actions (`main_window_actions`) |
-| Command search field, Ctrl K | Visual | `command_palette_controller` (no palette exists in the shell) |
+| Command search field, Ctrl K | Real (opens the command palette, see below) | |
 | Sun button | Real (sets and saves the appearance between Slate and Light) | |
 | Inspector button | Memory (`UiState.insp`, not remembered) | persist in `window/state` |
 | Minimize / maximize / close glyphs | Visual. The shell still uses the operating system's frame, so these duplicate it | custom frameless window with native resize, snap and shadows |
@@ -42,7 +42,8 @@ shell reacts to it yet.
 | Filters menu (rating, format, clear) | Memory | `filtering`, saved filter presets |
 | Accept / Reject buttons | Memory | `decision_store`, move/delete via `file_ops` and the delete mode |
 | Sort, Columns menus | Memory (sort and density work on the model) | `view/columns`, details sort keys |
-| Compare, Open preview, Winner ladder, Rename, Resize and convert, Share to phone, Open in editor, Command palette, Keyboard shortcuts | Visual (Compare toggles a flag nothing reads) | `compare` mode, `preview` popout, `batch_rename_controller`, `export_jobs_controller`, `handoff_controller`/PocketDrop, PhotoCraft host, command palette |
+| Compare, Open preview, Winner ladder, Rename, Resize and convert, Share to phone, Open in editor, Keyboard shortcuts | Visual (Compare toggles a flag nothing reads) | `compare` mode, `preview` popout, `batch_rename_controller`, `export_jobs_controller`, `handoff_controller`/PocketDrop, PhotoCraft host |
+| Command palette pin | Real (opens the palette) | |
 | "+" customise pinned buttons | Memory (pins are not saved between runs) | `workspace/toolbar_items`, `workspace/bar_state` |
 | Settings | Real (opens the settings window) | |
 
@@ -104,6 +105,23 @@ shell reacts to it yet.
 - Light and high-contrast accessibility: contrast is checked for the ten themes (tests), but there is no screen-reader pass beyond `Accessible.name` on controls.
 - Text size: `Interface size` is stored but the shell does not scale its type or spacing by it (only the operating system's display scale).
 - Window size under 640 x 520 is refused; below 900 wide the compact layout is used (rail icons only, panel and inspector as sheets).
+
+## Command palette
+
+Ctrl K, the top bar's search field and the rail's palette pin open it (`CommandPalette.qml`, pinned to the top edge over the blurred window;
+Esc, a click outside or Ctrl K again closes it). Ranking is the Widgets palette's own function (`ui.command_palette._rank_commands`, checked by
+a test), shortcuts come from the shortcut registry with the user's overrides, and recent commands use the Widgets key `commands/recent`.
+
+| Piece | Status | Notes |
+|---|---|---|
+| Search, ranking, highlight, recents, keyboard (up, down, Enter, Esc), mouse | Real | |
+| Command list | Partly real | 53 of the Widgets palette's ids, titles and keywords (`palette_model.py`). Left out: per-collection, per-saved-search, per-recipe, per-panel, per-sort and per-column commands, and the AI state filters, which need live window state |
+| Commands that run something | 12 of 53 | Settings, the three themes (Slate, Light, Midnight), sort by name and by AI score, Clear Filters, Compare, Reset Layout, Mark Winner, Reject, Move To _keep (this one only sets the Keep decision). Every other command is listed, can be chosen and is remembered as recent, **and then does nothing** |
+| On / Off tag | Compare only | The Widgets palette shows On or Off for ten toggles (zen, bursts, auto advance, performance logging ...); the shell has none of those states. In the demo data they are fixed |
+| "Current view" tag | Not shown | needs the grid / details view state |
+| Preview Commands and Zen Commands | Model only | the palette can show them (`UiState.paletteContext`), nothing opens it from the popout or zen mode: neither exists in the shell |
+| Smart filter and saved search commands | One fixed sample ("Sharp keepers") | the Widgets palette adds one per built-in and saved filter preset |
+| Opening the palette while another overlay is up | Not handled | Ctrl K over the settings window opens it on top of it |
 
 ## Settings window
 

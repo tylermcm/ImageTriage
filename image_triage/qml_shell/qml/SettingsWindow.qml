@@ -33,7 +33,7 @@ FocusScope {
 
     // the dimmed, blurred application
     ShaderEffectSource { id: snap; anchors.fill: parent; sourceItem: root.sourceItem; live: true; visible: false }
-    MultiEffect { anchors.fill: parent; source: snap; blurEnabled: true; blur: 1.0; blurMax: 8 }
+    MultiEffect { anchors.fill: parent; source: snap; blurEnabled: true; blur: 1.0; blurMax: 15 }
     Rectangle { anchors.fill: parent; color: theme.light ? Qt.rgba(20 / 255, 22 / 255, 28 / 255, 0.34) : Qt.rgba(6 / 255, 7 / 255, 9 / 255, 0.52) }
     MouseArea { anchors.fill: parent; hoverEnabled: true; onWheel: (w) => { w.accepted = true } }       // modal: nothing behind is reachable
 
@@ -44,7 +44,7 @@ FocusScope {
         scale: root.shown ? 1 : 0.96
         Behavior on scale { NumberAnimation { duration: 320; easing.type: Easing.OutBack; easing.overshoot: 1.4 } }
 
-        Shadow { anchors.fill: parent; radius: 14; offsetA: 48; insetA: 24; blurA: 64; alphaA: 0.85; offsetB: 12; blurB: 24; alphaB: 0.5 }
+        Shadow { anchors.fill: parent; radius: 14; offsetA: 48; insetA: 24; blurA: 64; multA: 3; alphaA: 0.85; offsetB: 12; insetB: 12; blurB: 24; alphaB: 0.5 }
         Rectangle { anchors.fill: parent; radius: 14; color: theme.base }
         Rectangle { anchors.fill: parent; radius: 14; color: "transparent"; border.color: theme.line; border.width: 1; z: 10 }
 

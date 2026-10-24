@@ -36,3 +36,5 @@ SStepper 1.0 SStepper.qml
 SSlider 1.0 SSlider.qml
 SSwatches 1.0 SSwatches.qml
 SKeys 1.0 SKeys.qml
+Kbd 1.0 Kbd.qml
+CommandPalette 1.0 CommandPalette.qml
