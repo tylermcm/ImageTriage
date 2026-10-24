@@ -31,6 +31,5 @@ thumbnails, which come from Image Triage's own thumbnail cache rather than the b
 * `.pop{left:0;bottom:...}` is defined after `.rpop{left:calc(100% + 10px)}`, so the rail's pinned-button menus collapse over the rail in the
   mockup. **Not replicated**: the QML menus open to the right of the button, as the CSS intended.
 * (Fixed) At 1440 wide with the inspector open the bar's AI button used to overflow the glass; the size group now drops as soon as the bar would not fit (mockup and shell).
-  **Replicated.**
 * At 900px and below the rail labels stay visible but clipped (`font-size:0` is overridden) and the floating bar ends up below the
   window (the main column is taller than the viewport). **Not replicated**: icon-only rail, bar visible.
