@@ -23,6 +23,8 @@ QtObject {
     })
     function togglePin(name) { var p = Object.assign({}, pins); p[name] = !p[name]; pins = p; }
     function setMenu(name) { menu = (menu === name) ? "" : name; }
+    // fractional pixel sizes (10.5, 11.5 ...) are not possible with pixelSize, so they go through pointSize at 96 dpi
+    function pt(px) { return px * 0.75 }
     readonly property var tabs: ["lib", "faces", "coll", "drop"]
     readonly property var tabTitles: ({ lib: "Library", faces: "Faces", coll: "Collections", drop: "PocketDrop" })
 }

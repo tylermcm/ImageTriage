@@ -25,6 +25,23 @@ def _sample(name: str) -> tuple[str, int, int]:
     return _DECISIONS[h % len(_DECISIONS)], (h >> 3) % 6, 40 + (h >> 7) % 60
 
 
+# The 12 photos of the HTML mockup, used by --mock so the QML shell can be compared with it pixel for pixel.
+_MOCK = (
+    ("DSC_4201", "NEF", 74, 71, "Balanced", "Low", "1/500 \u00b7 f/8 \u00b7 ISO 100", "35 mm", "07:42", "keep", 3),
+    ("DSC_4203", "NEF", 91, 88, "Balanced", "Low", "1/800 \u00b7 f/8 \u00b7 ISO 100", "50 mm", "08:05", "win", 5),
+    ("DSC_4207", "NEF", 93, 90, "Balanced", "Low", "1/640 \u00b7 f/9 \u00b7 ISO 100", "24 mm", "08:31", "", 0),
+    ("DSC_4210", "JPG", 58, 52, "Dark", "Medium", "1/125 \u00b7 f/4 \u00b7 ISO 400", "70 mm", "09:02", "rej", 1),
+    ("DSC_4214", "NEF", 80, 83, "Balanced", "Low", "1/400 \u00b7 f/8 \u00b7 ISO 100", "28 mm", "09:20", "keep", 4),
+    ("DSC_4219", "JPG", 41, 38, "Bright", "Low", "1/1000 \u00b7 f/5.6 \u00b7 ISO 100", "35 mm", "09:48", "rej", 2),
+    ("DSC_4222", "NEF", 88, 86, "Balanced", "Low", "1/320 \u00b7 f/8 \u00b7 ISO 100", "24 mm", "10:12", "win", 5),
+    ("DSC_4226", "NEF", 84, 79, "Balanced", "Low", "1/200 \u00b7 f/6.3 \u00b7 ISO 200", "40 mm", "10:40", "keep", 4),
+    ("DSC_4231", "NEF", 69, 64, "Bright", "Medium", "1/160 \u00b7 f/5.6 \u00b7 ISO 800", "70 mm", "11:03", "rev", 3),
+    ("DSC_4236", "JPG", 63, 60, "Balanced", "Low", "1/1250 \u00b7 f/8 \u00b7 ISO 100", "24 mm", "11:30", "", 0),
+    ("DSC_4240", "NEF", 95, 92, "Balanced", "Low", "1/500 \u00b7 f/8 \u00b7 ISO 100", "35 mm", "12:08", "win", 5),
+    ("DSC_4244", "NEF", 86, 82, "Balanced", "Low", "1/400 \u00b7 f/9 \u00b7 ISO 100", "24 mm", "12:36", "keep", 4),
+)
+
+
 class PhotoModel(QAbstractListModel):
     countsChanged = Signal()
     revisionChanged = Signal()
@@ -44,6 +61,8 @@ class PhotoModel(QAbstractListModel):
         self._loading = False
         self._revision = 0
         self._loaded.connect(self._apply_loaded)
+        self._mock: dict[str, dict] = {}
+        self._mock_path = ""
 
     # -- model ------------------------------------------------------------------------------------------------------------
     def roleNames(self) -> dict:
@@ -99,6 +118,17 @@ class PhotoModel(QAbstractListModel):
             self._loaded.emit(rows, folder)
 
         threading.Thread(target=work, name="qml-scan", daemon=True).start()
+
+    def loadMock(self, directory: str) -> None:
+        """Open p01..p12.jpg from `directory` with the mockup's exact names, decisions, ratings and capture data."""
+        rows = []
+        self._mock = {}
+        for index, m in enumerate(_MOCK, 1):
+            path = os.path.join(directory, f"p{index:02d}.jpg")
+            rows.append({"path": path, "name": m[0], "ext": m[1], "raw": m[1] == "NEF", "decision": m[9], "rating": m[10], "ai": m[2]})
+            self._mock[m[0]] = {"focus": m[3], "expo": m[4], "noise": m[5], "exposure": m[6], "focal": m[7], "captured": f"2026-05-14 {m[8]}"}
+        self._mock_path = "Photos (D:) / 2026 / Georgia trip"
+        self._apply_loaded(rows, "Kutaisi, Georgia")
 
     def _apply_loaded(self, rows: list, folder: str) -> None:
         self._all = rows
@@ -200,10 +230,12 @@ class PhotoModel(QAbstractListModel):
         aperture = ("f/4", "f/5.6", "f/8", "f/9", "f/11")[(h >> 4) % 5]
         iso = (100, 100, 200, 400, 800)[(h >> 8) % 5]
         focus = 45 + (h >> 11) % 55
-        return dict(item, isRaw=item["raw"], position=row + 1, count=len(self._rows), exposure=f"{shutter} \u00b7 {aperture} \u00b7 ISO {iso}",
+        detail = dict(item, isRaw=item["raw"], position=row + 1, count=len(self._rows), exposure=f"{shutter} \u00b7 {aperture} \u00b7 ISO {iso}",
                     focal=("24 mm", "35 mm", "50 mm", "70 mm")[(h >> 14) % 4], captured=f"2026-05-14 {8 + (h >> 17) % 10:02d}:{(h >> 20) % 60:02d}",
                     focus=focus, expo=("Balanced", "Balanced", "Bright", "Dark")[(h >> 22) % 4], noise=("Low", "Low", "Medium")[(h >> 24) % 3],
                     camera="Nikon Z 6", lens="24-70 mm f/4 S", pixels="6048 \u00d7 4024")
+        detail.update(self._mock.get(item["name"], {}))
+        return detail
 
     # -- properties for the bar and header ---------------------------------------------------------------------------------
     def _count(self, decision: str) -> int:
@@ -217,4 +249,5 @@ class PhotoModel(QAbstractListModel):
     rejCount = Property(int, lambda self: self._count("rej"), notify=countsChanged)
     loading = Property(bool, lambda self: self._loading, notify=loadingChanged)
     folderName = Property(str, lambda self: os.path.basename(self._folder.rstrip("/\\")) or self._folder, notify=folderChanged)
-    folderPath = Property(str, lambda self: self._folder, notify=folderChanged)
+    leafName = Property(str, lambda self: "Kutaisi" if self._mock else os.path.basename(self._folder.rstrip("/\\")), notify=folderChanged)
+    folderPath = Property(str, lambda self: self._mock_path or self._folder, notify=folderChanged)

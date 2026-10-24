@@ -10,14 +10,15 @@ Item {
     readonly property bool sizeSwitch: avail >= 640
     readonly property var filterKeys: ["all", "win", "keep", "rej"]
 
-    width: Math.min(content.implicitWidth + 10, avail - 24)
-    height: 46
+    // the mockup: width max-content, max-width 100% - 24px (a long group overflows the glass on the right, exactly as in the mockup)
+    width: Math.min(content.implicitWidth + 12, avail - 24)
+    height: 48
 
     Glass { anchors.fill: parent; sourceItem: bar.sourceItem; radius: 20 }
 
     Row {
         id: content
-        x: 5; y: 5; spacing: 4
+        x: 6; y: 6; spacing: 4
         FbButton {
             id: review; icon: "check"; label: "Review"; showLabel: bar.labels; caret: true; open: reviewMenu.opened
             onClicked: reviewMenu.opened ? reviewMenu.close() : reviewMenu.open()
@@ -54,12 +55,11 @@ Item {
                 }
             }
         }
-        Rectangle { width: 1; height: 22; y: 7; color: theme.line }
+        Rectangle { width: 1; height: 22; y: 7; color: theme.line; anchors.verticalCenter: undefined }
         Seg {
             labels: ["All", "Winners", "Keep", "Rejected"]
             extras: [photos.total, photos.winCount, photos.keepCount, photos.rejCount]
             showExtras: bar.avail >= 860
-            padH: bar.avail >= 860 ? 12 : 9
             current: Math.max(0, bar.filterKeys.indexOf(UiState.filter))
             onActivated: (i) => { UiState.filter = bar.filterKeys[i]; photos.setFilter(bar.filterKeys[i] === "all" ? "all" : bar.filterKeys[i]) }
         }

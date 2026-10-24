@@ -4,10 +4,10 @@ import QtQuick.Shapes
 // A three-channel histogram drawn from path data (a stand-in for the real per-photo histogram).
 Item {
     id: h
-    property color c1: Qt.rgba(0.63, 0.67, 0.75, 0.40)
-    property color c2: Qt.rgba(0.35, 0.59, 1.0, 0.55)
+    property color c1: Qt.rgba(1, 1, 1, 0.35)
+    property color c2: Qt.rgba(90 / 255, 150 / 255, 1.0, 0.5)
     property color c3: Qt.rgba(0.31, 0.78, 0.55, 0.45)
-    property bool three: true
+    property bool three: false
     Shape {
         width: 100; height: 40; preferredRendererType: Shape.CurveRenderer
         transform: Scale { xScale: h.width / 100; yScale: h.height / 40 }

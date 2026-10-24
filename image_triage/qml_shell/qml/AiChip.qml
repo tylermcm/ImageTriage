@@ -47,7 +47,7 @@ Item {
     }
     Row {
         id: row
-        anchors.centerIn: parent
+        x: 11; anchors.verticalCenter: parent.verticalCenter
         spacing: 8
         Icon { name: "spark"; size: 17; color: theme.accentFg; anchors.verticalCenter: parent.verticalCenter }
         Text {

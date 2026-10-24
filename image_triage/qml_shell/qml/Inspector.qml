@@ -25,30 +25,29 @@ Item {
 
         Item {
             id: head
-            width: parent.width; height: 100
+            width: parent.width; height: 104.2         // 12 + 35.2 + 10 + 36 + 10 + 1
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
-            Column {
-                x: 16; y: 12; width: parent.width - 32; spacing: 10
-                Item {
-                    width: parent.width; height: 34
-                    Column {
-                        anchors.verticalCenter: parent.verticalCenter; width: parent.width - 100
-                        Text { width: parent.width; elide: Text.ElideRight; text: insp.has ? insp.cur.name : "No photo"; color: theme.fg; font.pixelSize: 14; font.weight: Font.DemiBold }
-                        Text { text: insp.has ? (insp.cur.isRaw ? "RAW + JPG" : insp.cur.ext) + " · " + insp.cur.pixels : ""; color: theme.fg3; font.pixelSize: 12 }
-                    }
-                    Row {
-                        anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 2
-                        Item { width: 28; height: 28; Rectangle { anchors.fill: parent; radius: 8; color: Qt.alpha(theme.lift, pb.hovered ? 0.08 : 0) }
-                            Icon { anchors.centerIn: parent; name: "chevL"; size: 16; color: theme.fg2 }
-                            HoverHandler { id: pb; cursorShape: Qt.PointingHandCursor } TapHandler { onTapped: insp.step(-1) } Accessible.name: "Previous photo"; Accessible.role: Accessible.Button }
-                        Text { anchors.verticalCenter: parent.verticalCenter; text: insp.has ? insp.cur.position + " / " + insp.cur.count : ""; color: theme.fg3; font.pixelSize: 12 }
-                        Item { width: 28; height: 28; Rectangle { anchors.fill: parent; radius: 8; color: Qt.alpha(theme.lift, nb.hovered ? 0.08 : 0) }
-                            Icon { anchors.centerIn: parent; name: "chevR"; size: 16; color: theme.fg2 }
-                            HoverHandler { id: nb; cursorShape: Qt.PointingHandCursor } TapHandler { onTapped: insp.step(1) } Accessible.name: "Next photo"; Accessible.role: Accessible.Button }
-                    }
+            Item {
+                x: 16; y: 12; width: parent.width - 32; height: 35.2
+                Column {
+                    width: parent.width - 120; height: 35.2
+                    Text { width: parent.width; height: 17; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight; text: insp.has ? (insp.cur.name.indexOf(".") >= 0 ? insp.cur.name : insp.cur.name + "." + insp.cur.ext) : "No photo"
+                           color: theme.fg; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: -0.14 }
+                    Item { width: 1; height: 4 }
+                    Text { height: 13; verticalAlignment: Text.AlignVCenter; text: insp.has ? (insp.cur.isRaw ? "RAW + JPG" : insp.cur.ext) + " \u00b7 " + insp.cur.pixels : ""; color: theme.fg3; font.pointSize: UiState.pt(10.8333) }
                 }
-                Seg { width: parent.width; fill: true; labels: ["Overview", "Quality", "AI"]; current: insp.tab; onActivated: (i) => insp.tab = i }
+                Row {
+                    anchors.right: parent.right; spacing: 8; height: 35.2
+                    Item { y: 1.6; width: 32; height: 32; Rectangle { anchors.fill: parent; radius: 9; color: Qt.alpha(theme.lift, pb.hovered ? 0.08 : 0) }
+                        Icon { anchors.centerIn: parent; name: "chevL"; size: 18; color: theme.fg }
+                        HoverHandler { id: pb; cursorShape: Qt.PointingHandCursor } TapHandler { onTapped: insp.step(-1) } Accessible.name: "Previous photo"; Accessible.role: Accessible.Button }
+                    Text { height: 35.2; verticalAlignment: Text.AlignVCenter; text: insp.has ? insp.cur.position + " / " + insp.cur.count : ""; color: theme.fg3; font.pointSize: UiState.pt(10.8333) }
+                    Item { y: 1.6; width: 32; height: 32; Rectangle { anchors.fill: parent; radius: 9; color: Qt.alpha(theme.lift, nb.hovered ? 0.08 : 0) }
+                        Icon { anchors.centerIn: parent; name: "chevR"; size: 18; color: theme.fg }
+                        HoverHandler { id: nb; cursorShape: Qt.PointingHandCursor } TapHandler { onTapped: insp.step(1) } Accessible.name: "Next photo"; Accessible.role: Accessible.Button }
+                }
             }
+            Seg { x: 16; y: 57.2; width: parent.width - 32; fill: true; labels: ["Overview", "Quality", "AI"]; current: insp.tab; onActivated: (i) => insp.tab = i }
         }
 
         // ---- Overview ------------------------------------------------------------------------------------------------
@@ -63,71 +62,79 @@ Item {
             Column {
                 id: ovCol; width: parent.width
                 Item {
-                    width: parent.width; height: Math.round(width * 2 / 3)
+                    width: parent.width; height: width * 2 / 3
                     Rectangle { anchors.fill: parent; color: theme.base }
                     ThumbImage { anchors.fill: parent; bucket: 800; path: insp.has ? insp.cur.path : "" }
                     Rectangle { x: 10; y: parent.height - 54; width: 112; height: 44; radius: 9; color: Qt.rgba(0, 0, 0, 0.45)
                         Histogram { anchors.fill: parent; anchors.margins: 5 } }
                 }
                 Item {
-                    width: parent.width; height: decCol.implicitHeight + 28
+                    width: parent.width; height: 176.2
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
-                    Column { id: decCol; x: 16; y: 14; width: parent.width - 32; spacing: 12
-                        Text { text: "DECISION"; color: theme.fg3; font.pixelSize: 11; font.weight: Font.DemiBold; font.letterSpacing: 0.8 }
-                        Row {
-                            width: parent.width; spacing: 6
-                            Repeater {
-                                model: [{ k: "win", t: "Winner", i: "star", key: "W", c: theme.win }, { k: "keep", t: "Keep", i: "check", key: "K", c: theme.keep }, { k: "rej", t: "Reject", i: "x", key: "X", c: theme.rej }]
-                                delegate: Rectangle {
-                                    required property var modelData
-                                    readonly property bool on: insp.has && insp.cur.decision === modelData.k
-                                    width: (decCol.width - 12) / 3; height: 76; radius: 12
-                                    color: on ? Qt.alpha(modelData.c, 0.16) : theme.base
-                                    border.color: on ? Qt.alpha(modelData.c, 0.55) : (hh.hovered ? theme.line : theme.lineSoft)
-                                    scale: tp.pressed ? 0.96 : 1
-                                    Behavior on scale { SpringAnimation { spring: 6; damping: 0.4; epsilon: 0.001 } }
-                                    Behavior on color { ColorAnimation { duration: 180 } }
-                                    Column { anchors.centerIn: parent; spacing: 5
-                                        Icon { anchors.horizontalCenter: parent.horizontalCenter; name: modelData.i; size: 20; color: on ? modelData.c : theme.fg2 }
-                                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.t; font.pixelSize: 13; font.weight: Font.Medium; color: on ? modelData.c : theme.fg2 }
-                                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.key; font.pixelSize: 10; color: theme.fg3 } }
-                                    HoverHandler { id: hh; cursorShape: Qt.PointingHandCursor }
-                                    TapHandler { id: tp; onTapped: photos.setDecision(insp.row, modelData.k) }
-                                    Accessible.role: Accessible.Button; Accessible.name: modelData.t
+                    Text { x: 16; y: 14; height: 13; verticalAlignment: Text.AlignVCenter; text: "DECISION"; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
+                    Row {
+                        x: 16; y: 37; width: parent.width - 32; spacing: 6
+                        Repeater {
+                            model: [{ k: "win", t: "Winner", i: "star", key: "W", c: theme.win }, { k: "keep", t: "Keep", i: "check", key: "K", c: theme.keep }, { k: "rej", t: "Reject", i: "x", key: "X", c: theme.rej }]
+                            delegate: Rectangle {
+                                required property var modelData
+                                readonly property bool on: insp.has && insp.cur.decision === modelData.k
+                                width: (320 - 12) / 3; height: 88.2; radius: 12
+                                color: on ? Qt.alpha(modelData.c, 0.16) : theme.base
+                                border.color: on ? Qt.alpha(modelData.c, 0.55) : (hh.hovered ? theme.line : theme.lineSoft)
+                                scale: tp.pressed ? 0.96 : 1
+                                Behavior on scale { SpringAnimation { spring: 6; damping: 0.4; epsilon: 0.001 } }
+                                Behavior on color { ColorAnimation { duration: 180 } }
+                                Icon { x: (parent.width - 20) / 2; y: 11; name: modelData.i; size: 20; color: on ? modelData.c : (hh.hovered ? theme.fg : theme.fg2) }
+                                Text { x: 0; y: 37; width: parent.width; height: 18.2; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                       text: modelData.t; font.pixelSize: 13; font.weight: Font.Medium; color: on ? modelData.c : (hh.hovered ? theme.fg : theme.fg2) }
+                                Item {   // the key hint: a 10px key cap, border 1 with a 2px bottom
+                                    x: (parent.width - width) / 2; y: 61.2; width: kt.implicitWidth + 12; height: 18
+                                    Rectangle { anchors.fill: parent; radius: 5; color: "transparent"; border.color: theme.line }
+                                    Rectangle { x: 1; y: parent.height - 2.5; width: parent.width - 2; height: 1.5; radius: 1; color: theme.line }
+                                    Text { id: kt; anchors.centerIn: parent; anchors.verticalCenterOffset: -0.5; text: modelData.key; font.pixelSize: 10; font.weight: Font.Medium; color: theme.fg3 }
                                 }
+                                HoverHandler { id: hh; cursorShape: Qt.PointingHandCursor }
+                                TapHandler { id: tp; onTapped: photos.setDecision(insp.row, modelData.k) }
+                                Accessible.role: Accessible.Button; Accessible.name: modelData.t
                             }
                         }
+                    }
+                    Item {
+                        x: 16; y: 137.2; width: parent.width - 32; height: 24
                         Row {
                             spacing: 2
                             Repeater {
                                 model: 5
                                 delegate: Item {
                                     required property int index
-                                    width: 28; height: 28
+                                    width: 27; height: 24
                                     readonly property bool on: insp.has && insp.cur.rating >= index + 1
                                     scale: sh.hovered ? 1.2 : 1
                                     Behavior on scale { SpringAnimation { spring: 6; damping: 0.4; epsilon: 0.001 } }
-                                    Text { anchors.centerIn: parent; text: "★"; font.pixelSize: 20; color: on ? theme.star : Qt.alpha(theme.lift, 0.24) }
+                                    Text { anchors.centerIn: parent; text: "\u2605"; font.pixelSize: 20; color: on ? theme.star : Qt.alpha(theme.lift, 0.24) }
                                     HoverHandler { id: sh; cursorShape: Qt.PointingHandCursor }
                                     TapHandler { onTapped: photos.setRating(insp.row, index + 1) }
                                     Accessible.role: Accessible.Button; Accessible.name: (index + 1) + " stars"
                                 }
                             }
-                            Text { anchors.verticalCenter: parent.verticalCenter; leftPadding: 8; text: insp.has && insp.cur.rating ? insp.cur.rating + " of 5" : "Unrated"; color: theme.fg3; font.pixelSize: 12 }
                         }
+                        Text { anchors.right: parent.right; height: 24; verticalAlignment: Text.AlignVCenter; text: insp.has && insp.cur.rating ? insp.cur.rating + " of 5" : "Unrated"; color: theme.fg3; font.pointSize: UiState.pt(10.8333) }
                     }
                 }
                 Item {
-                    width: parent.width; height: capCol.implicitHeight + 28
-                    Column { id: capCol; x: 16; y: 14; width: parent.width - 32; spacing: 8
-                        Text { text: "CAPTURE"; color: theme.fg3; font.pixelSize: 11; font.weight: Font.DemiBold; font.letterSpacing: 0.8; bottomPadding: 2 }
+                    width: parent.width; height: 196.1
+                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
+                    Text { x: 16; y: 14; height: 13; verticalAlignment: Text.AlignVCenter; text: "CAPTURE"; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
+                    Column {
+                        x: 16; y: 37; spacing: 7
                         Repeater {
                             model: insp.has ? [["Camera", insp.cur.camera], ["Lens", insp.cur.lens], ["Exposure", insp.cur.exposure], ["Focal length", insp.cur.focal], ["Captured", insp.cur.captured], ["Pixels", insp.cur.pixels]] : []
                             delegate: Row {
                                 required property var modelData
                                 spacing: 12
-                                Text { width: 96; text: modelData[0]; color: theme.fg3; font.pixelSize: 13 }
-                                Text { text: modelData[1]; color: theme.fg; font.pixelSize: 13 }
+                                Text { width: 96; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[0]; color: theme.fg3; font.pixelSize: 13 }
+                                Text { height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[1]; color: theme.fg; font.pixelSize: 13 }
                             }
                         }
                     }
@@ -165,7 +172,7 @@ Item {
                                     Text { text: modelData[0]; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
                                     Text { anchors.right: parent.right; text: modelData[1]; color: theme.fg2; font.pixelSize: 13 } }
                                 Meter { width: parent.width; value: modelData[2] / 100; threshold: 0.6
-                                    from: quality.tone(modelData[2])[0]; to: quality.tone(modelData[2])[1] }
+                                    stops: quality.tone(modelData[2]) }
                             }
                         }
                     }
@@ -175,7 +182,7 @@ Item {
                     Column { x: 16; y: 14; width: parent.width - 32; spacing: 10
                         Text { text: "HISTOGRAM"; color: theme.fg3; font.pixelSize: 11; font.weight: Font.DemiBold; font.letterSpacing: 0.8 }
                         Rectangle { width: parent.width; height: 84; radius: 10; color: theme.base; clip: true
-                            Histogram { anchors.fill: parent }
+                            Histogram { anchors.fill: parent; three: true }
                             Accessible.name: "Histogram of the selected photo"; Accessible.role: Accessible.Graphic }
                     }
                 }

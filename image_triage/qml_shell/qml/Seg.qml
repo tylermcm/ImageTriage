@@ -9,7 +9,9 @@ Item {
     property int current: 0
     property int padH: 12
     property bool showExtras: true
+    property bool equal: true           // grid-auto-columns: 1fr, every segment as wide as the widest
     property bool fill: false           // stretch the segments to share the whole width equally
+    property real maxCell: 0
     signal activated(int index)
     implicitHeight: 36
     implicitWidth: row.implicitWidth + 4
@@ -38,7 +40,9 @@ Item {
                 readonly property string icon: seg.icons[index] || ""
                 readonly property string extra: seg.showExtras ? (seg.extras[index] || "") : ""
                 height: seg.height - 4
-                width: seg.fill ? (seg.width - 4) / Math.max(1, rep.count) : content.implicitWidth + seg.padH * 2
+                Component.onCompleted: seg.maxCell = Math.max(seg.maxCell, content.implicitWidth + seg.padH * 2)
+                Connections { target: content; function onImplicitWidthChanged() { seg.maxCell = Math.max(seg.maxCell, content.implicitWidth + seg.padH * 2) } }
+                width: seg.fill ? (seg.width - 4) / Math.max(1, rep.count) : (seg.equal ? seg.maxCell : content.implicitWidth + seg.padH * 2)
                 Row {
                     id: content
                     anchors.centerIn: parent

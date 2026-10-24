@@ -29,12 +29,13 @@ Rectangle {
         delegate: Item {
             required property int index
             required property var modelData
-            x: 5; y: 10 + index * 64; width: 62; height: 56
+            x: 4.5; y: 10 + index * 64; width: 62; height: 56
             readonly property bool on: UiState.tab === modelData.k
             Column {
                 anchors.centerIn: parent; spacing: 4
-                Icon { anchors.horizontalCenter: parent.horizontalCenter; name: modelData.i; size: 22; color: on ? theme.accentFg : (hover.hovered ? theme.fg : theme.fg2) }
-                Text { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.t; font.pixelSize: 11; font.weight: Font.Medium; color: on ? theme.accentFg : (hover.hovered ? theme.fg : theme.fg2) }
+                Icon { anchors.horizontalCenter: parent.horizontalCenter; name: modelData.i; size: 22; color: on ? theme.accentFg : theme.fg }
+                // the mockup's `.app button{font:inherit;color:inherit}` outranks `.rb`, so the labels render at 13px regular in the full text colour
+                Text { anchors.horizontalCenter: parent.horizontalCenter; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData.t; font.pixelSize: 13; color: on ? theme.accentFg : theme.fg }
             }
             HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
             TapHandler { onTapped: UiState.tab = modelData.k }
@@ -46,7 +47,7 @@ Rectangle {
     Column {
         id: lower
         y: 10 + 4 * 64 - 8 + 8
-        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.horizontalCenter: parent.horizontalCenter; anchors.horizontalCenterOffset: -0.5
         spacing: 4
 
         Item { width: 40; height: 9; Rectangle { anchors.centerIn: parent; width: 28; height: 1; radius: 1; color: Qt.alpha(theme.lift, 0.20) } }
@@ -152,6 +153,7 @@ Rectangle {
         RailButton { visible: UiState.pins.palette; icon: "palette"; tip: "Command palette (Ctrl K)" }
         RailButton { visible: UiState.pins.shortcuts; icon: "keyboard"; tip: "Keyboard shortcuts" }
 
+        Item { width: 1; height: 4 }   // the customise button sits 8px below the last pin, the pins 4px apart
         RailButton {
             id: add
             icon: "plus"; tip: "Customize pinned buttons"; on: pinMenu.opened
@@ -186,7 +188,7 @@ Rectangle {
     }
 
     RailButton {
-        anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 10
+        anchors.horizontalCenter: parent.horizontalCenter; anchors.horizontalCenterOffset: -0.5; anchors.bottom: parent.bottom; anchors.bottomMargin: 10
         icon: "settings"; tip: "Settings"
     }
 }

@@ -12,6 +12,7 @@ QML_DIR = Path(__file__).resolve().parent / "qml"
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m image_triage.qml_shell", description=__doc__)
     parser.add_argument("--folder", help="photo folder to open")
+    parser.add_argument("--mock", metavar="DIR", help="open p01..p12.jpg from DIR with the HTML mockup's exact data (for pixel comparison)")
     parser.add_argument("--light", action="store_true", help="start in the light theme")
     parser.add_argument("--size", default="1440x900", help="window size (default 1440x900)")
     parser.add_argument("--grab", metavar="PNG", help="render the window to PNG once thumbnails settle, then exit (for checks)")
@@ -38,6 +39,16 @@ def main(argv: list[str] | None = None) -> int:
     QCoreApplication.setOrganizationName("Image Triage")
     QCoreApplication.setApplicationName("Image Triage")
     app = QGuiApplication(sys.argv[:1])
+    from PySide6.QtGui import QFont
+
+    base_font = QFont("Inter")
+    base_font.setFamilies(["Inter", "Segoe UI", "Helvetica Neue", "Arial"])
+    base_font.setPixelSize(13)
+    base_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)   # closer to the mockup's browser rendering
+    if hasattr(base_font, "setFeature"):
+        from PySide6.QtGui import QFont as _F
+        base_font.setFeature(_F.Tag("tnum"), 1)   # font-variant-numeric: tabular-nums, as in the mockup
+    app.setFont(base_font)
     memtrace.start(app)
 
     theme = Theme(light=args.light, parent=app)
@@ -58,7 +69,9 @@ def main(argv: list[str] | None = None) -> int:
     window = roots[0]
     window.setWidth(width)
     window.setHeight(height)
-    if args.folder:
+    if args.mock:
+        photos.loadMock(args.mock)
+    elif args.folder:
         photos.loadFolder(args.folder)
 
     if args.grab:
@@ -68,6 +81,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"grabbed {image.width()}x{image.height()} -> {args.grab}; {photos.shown} photos")
             app.quit()
 
+        from PySide6.QtCore import QPoint
+        from PySide6.QtTest import QTest
+        QTimer.singleShot(300, lambda: QTest.mouseMove(window, QPoint(3, 3)))   # park the pointer off the grid so no cell shows hover
         QTimer.singleShot(int(args.grab_wait * 1000), grab)
         if args.click:
             from PySide6.QtCore import QPoint, Qt
