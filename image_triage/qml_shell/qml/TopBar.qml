@@ -1,12 +1,29 @@
 import QtQuick
 import QtQuick.Shapes
+import QtQuick.Window
 
 // The slim application bar: brand icon, menus, the command search, theme and inspector toggles, window controls.
+// The window has no system frame, so this bar is its title bar: dragging an empty part moves the window (the system's own move, so
+// Windows snapping works), a double click maximises or restores it, and the three buttons at the right are real.
 Rectangle {
     id: top
     height: 42
     color: theme.s1
     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
+
+    readonly property var win: Window.window
+    readonly property bool maximized: win !== null && win.visibility === Window.Maximized
+    function onTitle(p) { var c = top.childAt(p.x, p.y); return c === null || c === brand }       // not over a menu, the search field or a button
+    function windowAction(what) {
+        if (what === "winMin") win.showMinimized()
+        else if (what === "winMax") { if (maximized) win.showNormal(); else win.showMaximized() }
+        else win.close()
+    }
+    DragHandler {
+        target: null; enabled: top.win !== null && top.win.visibility === Window.Windowed
+        onActiveChanged: if (active && top.onTitle(centroid.pressPosition)) top.win.startSystemMove()
+    }
+    TapHandler { acceptedButtons: Qt.LeftButton; onDoubleTapped: (point) => { if (top.onTitle(point.position)) top.windowAction("winMax") } }
 
     readonly property real brandW: UiState.topAligned ? 72 : 30
     property real helpX: 205
@@ -82,7 +99,7 @@ Rectangle {
     }
     Row {
         id: rightRow
-        anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 2
+        anchors.right: winButtons.left; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter; spacing: 2
         Repeater {
             model: [{ i: "sun", tip: "Switch light or dark theme" }, { i: "inspector", tip: "Show or hide the inspector" }]
             delegate: Item {
@@ -96,12 +113,23 @@ Rectangle {
                 Accessible.role: Accessible.Button; Accessible.name: modelData.tip
             }
         }
-        Row {
-            visible: top.width > 900
-            leftPadding: 6
-            Repeater {
-                model: ["winMin", "winMax", "winClose"]
-                delegate: Item { required property string modelData; width: 38; height: 42; Icon { anchors.centerIn: parent; name: modelData; size: 12; color: theme.fg3 } }
+    }
+    Row {   // minimise, maximise or restore, close: flush with the window's corner, like a system title bar
+        id: winButtons
+        anchors.right: parent.right; anchors.top: parent.top
+        Repeater {
+            model: ["winMin", "winMax", "winClose"]
+            delegate: Item {
+                id: wb
+                required property string modelData
+                readonly property bool isClose: modelData === "winClose"
+                width: 38; height: 41
+                Rectangle { anchors.fill: parent; color: wb.isClose ? theme.rej : Qt.alpha(theme.lift, 0.08); visible: wh.hovered }
+                Icon { anchors.centerIn: parent; name: wb.modelData === "winMax" && top.maximized ? "winRestore" : wb.modelData; size: 12; color: wb.isClose && wh.hovered ? "white" : theme.fg3 }
+                HoverHandler { id: wh }
+                TapHandler { onTapped: top.windowAction(wb.modelData) }
+                Accessible.role: Accessible.Button
+                Accessible.name: wb.isClose ? "Close" : wb.modelData === "winMin" ? "Minimize" : top.maximized ? "Restore" : "Maximize"
             }
         }
     }

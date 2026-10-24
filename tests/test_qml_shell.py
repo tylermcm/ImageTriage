@@ -208,3 +208,70 @@ def test_main_qml_loads_and_the_grid_shows_the_model(qapp, tmp_path):
     window.close()
     engine.deleteLater()
     pump(qapp, 0.2)
+
+
+def _load_main(qapp, tmp_path):
+    from image_triage.qml_shell.batch_model import BatchModel
+    from image_triage.qml_shell.filters_model import FiltersModel
+    from image_triage.qml_shell.palette_model import PaletteModel
+    from image_triage.qml_shell.settings_model import SettingsModel
+    from PySide6.QtQml import QQmlApplicationEngine
+
+    model = PhotoModel(parent=qapp)
+    engine = QQmlApplicationEngine()
+    warnings = []
+    engine.warnings.connect(lambda items: warnings.extend(str(i) for i in items))
+    context = engine.rootContext()
+    context.setContextProperty("theme", Theme(parent=qapp))
+    context.setContextProperty("photos", model)
+    context.setContextProperty("settings", SettingsModel(memory=True, parent=qapp))
+    context.setContextProperty("cmdPalette", PaletteModel(memory=True, parent=qapp))
+    context.setContextProperty("advFilters", FiltersModel(model, memory=True, parent=qapp))
+    context.setContextProperty("batch", BatchModel(model, memory=True, parent=qapp))
+    for name, obj in collection_models(model, qapp):
+        context.setContextProperty(name, obj)
+    context.setContextProperty("handoff", HandoffModel(model, memory=True, parent=qapp))
+    context.setContextProperty("transfers", TransferModel(model, memory=True, parent=qapp))
+    context.setContextProperty("thumbs", ThumbService(DiskThumbnailCache(tmp_path / "cache"), parent=qapp))
+    context.setContextProperty("startup", "")
+    engine.addImportPath(str(shell_app.QML_DIR))
+    engine.load(QUrl.fromLocalFile(str(shell_app.QML_DIR / "Main.qml")))
+    assert engine.rootObjects(), warnings
+    return engine, engine.rootObjects()[0], warnings
+
+
+def test_the_window_has_no_system_frame_and_its_own_bar_works_the_controls(qapp, tmp_path):
+    from PySide6.QtCore import Q_ARG, QMetaObject, QPoint, Qt
+    from PySide6.QtGui import QWindow
+    from PySide6.QtTest import QTest
+
+    engine, window, warnings = _load_main(qapp, tmp_path)
+    window.setWidth(1440)
+    window.setHeight(900)
+    pump(qapp, 0.4)
+    assert window.flags() & Qt.WindowType.FramelessWindowHint        # no Windows title bar above the app's own
+    bar = window.findChild(QObject, "topBar")
+    assert bar is not None
+    assert window.visibility() == QWindow.Visibility.Windowed
+
+    QMetaObject.invokeMethod(bar, "windowAction", Q_ARG("QVariant", "winMax"))          # the maximise button, then again to restore
+    pump(qapp, 0.3)
+    assert window.visibility() == QWindow.Visibility.Maximized and bar.property("maximized")
+    QMetaObject.invokeMethod(bar, "windowAction", Q_ARG("QVariant", "winMax"))
+    pump(qapp, 0.3)
+    assert window.visibility() == QWindow.Visibility.Windowed and not bar.property("maximized")
+
+    QTest.mouseDClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(1000, 20))   # an empty part of the bar
+    pump(qapp, 0.3)
+    assert window.visibility() == QWindow.Visibility.Maximized
+    QMetaObject.invokeMethod(bar, "windowAction", Q_ARG("QVariant", "winMax"))
+    pump(qapp, 0.3)
+
+    QTest.mouseDClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(600, 20))   # the search field is not a title area
+    pump(qapp, 0.3)
+    assert window.visibility() == QWindow.Visibility.Windowed
+
+    assert not [w for w in warnings if "ReferenceError" in w or "TypeError" in w or "is not a type" in w], warnings
+    window.close()
+    engine.deleteLater()
+    pump(qapp, 0.2)

@@ -8,6 +8,7 @@ Window {
     minimumWidth: 640; minimumHeight: 520
     title: "Image Triage"
     color: theme.base
+    flags: Qt.Window | Qt.FramelessWindowHint      // no system title bar: TopBar is the title bar, WindowEdges the resize grips
 
     readonly property bool compact: width <= 900          // the mockup's @media (max-width: 900px)
     Binding { target: UiState; property: "compact"; value: win.compact }
@@ -26,7 +27,7 @@ Window {
     Item {
         id: appContent
         anchors.fill: parent
-        TopBar { id: top; width: parent.width }
+        TopBar { id: top; objectName: "topBar"; width: parent.width }
         StatusBar { id: status; width: parent.width; anchors.bottom: parent.bottom }
 
         Item {
@@ -153,6 +154,8 @@ Window {
             }
         }
     }
+
+    WindowEdges { z: 1000; anchors.fill: parent }
 
     // the drag ghost and its hint
     PocketDropGhost {

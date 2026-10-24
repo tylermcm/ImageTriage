@@ -58,7 +58,7 @@ shell reacts to it yet.
 | Command search field, Ctrl K | Real (opens the command palette, see below) | |
 | Sun button | Real (sets and saves the appearance between Slate and Light) | |
 | Inspector button | Memory (`UiState.insp`, not remembered) | persist in `window/state` |
-| Minimize / maximize / close glyphs | Visual. The shell still uses the operating system's frame, so these duplicate it | custom frameless window with native resize, snap and shadows |
+| Minimize / maximize / close | Real. The window is frameless and the bar is its title bar: drag moves it, double click maximizes, edges and corners resize (`WindowEdges.qml`) | the system drop shadow and rounded corners, Windows 11 snap layouts on the maximize button, dragging a maximized window to restore it |
 
 ### Rail
 | Element | Status | To connect |
