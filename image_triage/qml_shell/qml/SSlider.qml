@@ -7,13 +7,14 @@ Item {
     property real from: 0
     property real to: 100
     property real step: 1
+    property real trackW: 220
     property real value: 0
     property string text
     signal moved(real value)
-    width: 220 + 14 + 52; height: 20
+    width: trackW + 14 + 52; height: 20
     Slider {
         id: s
-        x: 0; width: 220; height: 20; padding: 0
+        x: 0; width: sl.trackW; height: 20; padding: 0
         from: sl.from; to: sl.to; stepSize: sl.step; snapMode: Slider.SnapAlways
         value: sl.value
         onMoved: sl.moved(value)
@@ -30,5 +31,5 @@ Item {
         }
         HoverHandler { cursorShape: Qt.PointingHandCursor }
     }
-    Text { x: 220 + 14; width: 52; height: 20; horizontalAlignment: Text.AlignRight; verticalAlignment: Text.AlignVCenter; text: sl.text; color: theme.fg2; font.pixelSize: 13 }
+    Text { x: sl.trackW + 14; width: 52; height: 20; horizontalAlignment: Text.AlignRight; verticalAlignment: Text.AlignVCenter; text: sl.text; color: theme.fg2; font.pixelSize: 13 }
 }

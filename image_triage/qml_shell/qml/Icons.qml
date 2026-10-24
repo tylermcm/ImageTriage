@@ -23,7 +23,7 @@ QtObject {
         settings: circle(12, 12, 3) + gear,
         search: circle(11, 11, 6.5) + "M16 16l4 4",
         chevL: "M14.5 6l-6 6 6 6", chevR: "M9.5 6l6 6-6 6", chevUp: "M6 14l6-6 6 6", chevDown: "M6 10l6 6 6-6",
-        check: "M4.5 12.5l4.5 4.5 10.5-10.5", x: "M6 6l12 12M18 6L6 18", minus: "M5 12h14", plus: "M12 5v14M5 12h14",
+        check: "M4.5 12.5l4.5 4.5 10.5-10.5", x: "M6 6l12 12M18 6L6 18", minus: "M5 12h14", sliders: "M4 7h10M18 7h2M4 17h2M10 17h10" + circle(16, 7, 2) + circle(8, 17, 2), plus: "M12 5v14M5 12h14",
         star: star,
         undo: "M9 7L4.5 11.5 9 16M5 11.5h8a6 6 0 016 6",
         openFolder: "M3.5 8a2 2 0 012-2h4l2 2.5h7a2 2 0 012 2V17a2 2 0 01-2 2h-13a2 2 0 01-2-2z",

@@ -107,8 +107,12 @@ Rectangle {
                 }
                 PopDivider {}
                 PopItem {
+                    label: "Advanced filters\u2026"; icon: "sliders"
+                    onClicked: { filtersMenu.close(); UiState.filtersOpen = true }
+                }
+                PopItem {
                     label: "Clear all filters"; icon: "x"
-                    onClicked: { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters(); filtersMenu.close() }
+                    onClicked: { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters(); advFilters.clearApplied(); filtersMenu.close() }
                 }
             }
         }

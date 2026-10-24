@@ -108,6 +108,7 @@ Window {
     }
 
     SettingsWindow { id: settingsWindow; sourceItem: appContent }
+    FiltersWindow { id: filtersWindow; sourceItem: appContent }
     CommandPalette { id: commandPalette; sourceItem: appContent }
     Shortcut { sequence: "Ctrl+,"; onActivated: UiState.settingsOpen = !UiState.settingsOpen }
     Shortcut { sequence: "Ctrl+K"; onActivated: { if (UiState.paletteOpen) UiState.paletteOpen = false; else UiState.openPalette("main") } }
@@ -119,7 +120,8 @@ Window {
             if (id === "file.workflow_settings") UiState.settingsOpen = true
             else if (id.indexOf("appearance.") === 0) { settings.set("theme", id.slice(11)); settings.save() }
             else if (id.indexOf("sort.") === 0) { UiState.sort = id.slice(5); photos.setSort(UiState.sort) }
-            else if (id === "search.clear_filters") { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters() }
+            else if (id === "search.advanced_filters" || id === "search.save_current") UiState.filtersOpen = true
+            else if (id === "search.clear_filters") { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters(); advFilters.clearApplied() }
             else if (id === "review.compare_mode") UiState.compare = !UiState.compare
             else if (id === "window.reset_layout") { UiState.tab = "lib"; UiState.insp = true }
             else if (id === "review.accept_selection") photos.setDecision(grid.view.currentIndex, "win")

@@ -38,3 +38,6 @@ SSwatches 1.0 SSwatches.qml
 SKeys 1.0 SKeys.qml
 Kbd 1.0 Kbd.qml
 CommandPalette 1.0 CommandPalette.qml
+FInput 1.0 FInput.qml
+FChip 1.0 FChip.qml
+FiltersWindow 1.0 FiltersWindow.qml

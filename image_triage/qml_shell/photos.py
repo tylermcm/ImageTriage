@@ -57,6 +57,7 @@ class PhotoModel(QAbstractListModel):
         self._min_rate = 0
         self._fmt = "all"
         self._sort = "name"
+        self._adv: dict | None = None      # the advanced-filters dialog's part of the query: {"decisions", "min_rating", "file"}
         self._folder = ""
         self._loading = False
         self._revision = 0
@@ -148,6 +149,7 @@ class PhotoModel(QAbstractListModel):
             if (self._filter == "all" or r["decision"] == self._filter)
             and r["rating"] >= self._min_rate
             and (self._fmt == "all" or (r["raw"] if self._fmt == "raw" else not r["raw"]))
+            and self._advanced_ok(r, self._adv)
         ]
         if self._sort == "name":
             rows.sort(key=lambda r: r["name"].casefold())
@@ -163,6 +165,25 @@ class PhotoModel(QAbstractListModel):
         self.endResetModel()
         self.countsChanged.emit()
         self._bump()
+
+    # -- advanced filters (filters_model.py) -------------------------------------------------------------------------------
+    @staticmethod
+    def _advanced_ok(row: dict, adv: dict | None) -> bool:
+        if not adv:
+            return True
+        if adv["decisions"] is not None and row["decision"] not in adv["decisions"]:
+            return False
+        if row["rating"] < adv["min_rating"]:
+            return False
+        return adv["file"] is None or (row["raw"] if adv["file"] == "raw" else not row["raw"])
+
+    def apply_advanced(self, spec: dict | None) -> None:
+        self._adv = spec
+        self._rebuild()
+
+    def count_matching(self, spec: dict | None) -> int:
+        """How many of the folder's photos the dialog's filters keep (the rail's and bar's own filters are not counted)."""
+        return sum(1 for r in self._all if self._advanced_ok(r, spec))
 
     # -- view state --------------------------------------------------------------------------------------------------------
     @Slot(str)
@@ -191,7 +212,7 @@ class PhotoModel(QAbstractListModel):
 
     @Slot()
     def clearFilters(self) -> None:
-        self._filter, self._min_rate, self._fmt = "all", 0, "all"
+        self._filter, self._min_rate, self._fmt, self._adv = "all", 0, "all", None
         self._rebuild()
 
     @Slot(int, str)

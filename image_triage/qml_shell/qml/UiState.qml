@@ -19,6 +19,8 @@ QtObject {
     property bool settingsOpen: false
     property string settingsSection: "general"
     property string settingsQuery: ""
+    property bool filtersOpen: false
+    property real filtersScroll: 0          // test hook: where the filters page starts scrolled
     property bool paletteOpen: false
     property string paletteContext: "main"   // "main", "preview" or "zen": which commands are offered and what the card is called
     property string paletteQuery: ""
