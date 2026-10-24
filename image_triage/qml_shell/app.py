@@ -14,7 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--folder", help="photo folder to open")
     parser.add_argument("--mock", metavar="DIR", help="open p01..p12.jpg from DIR with the HTML mockup's exact data (for pixel comparison)")
     parser.add_argument("--light", action="store_true", help="start in the light theme")
-    parser.add_argument("--size", default="1440x900", help="window size (default 1440x900)")
+    parser.add_argument("--size", default="", help="window size in device-independent pixels (default: 1440x900, or 92%% of the screen if that is smaller)")
     parser.add_argument("--grab", metavar="PNG", help="render the window to PNG once thumbnails settle, then exit (for checks)")
     parser.add_argument("--grab-wait", type=float, default=4.0, help="seconds to wait before grabbing (default 4)")
     parser.add_argument("--click", default="", help="mouse clicks before the grab, 'x,y;x,y' in window coordinates (for headless checks)")
@@ -38,6 +38,11 @@ def main(argv: list[str] | None = None) -> int:
 
     QCoreApplication.setOrganizationName("Image Triage")
     QCoreApplication.setApplicationName("Image Triage")
+    from PySide6.QtCore import Qt as _Qt
+
+    # fractional scales (125%, 150%, 175%) are used as they are, not rounded to whole numbers, so the layout is the same size in
+    # device-independent pixels on every monitor; Qt 6 turns high-DPI scaling on by itself
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(_Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QGuiApplication(sys.argv[:1])
     from PySide6.QtGui import QFont
 
@@ -61,7 +66,13 @@ def main(argv: list[str] | None = None) -> int:
     context.setContextProperty("thumbs", thumbs)
     context.setContextProperty("startup", args.ui)
     engine.addImportPath(str(QML_DIR))
-    width, height = (int(part) for part in args.size.lower().split("x"))
+    if args.size:
+        width, height = (int(part) for part in args.size.lower().split("x"))
+    else:
+        # sizes are in device-independent pixels, so the same on a 1080p, 1440p or 4K screen at any scale; only a screen smaller than
+        # the design size (e.g. 1280x720 at 100%, or 4K at 300%) shrinks the window
+        area = app.primaryScreen().availableGeometry()
+        width, height = min(1440, int(area.width() * 0.92)), min(900, int(area.height() * 0.92))
     engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
     roots = engine.rootObjects()
     if not roots:
@@ -69,6 +80,8 @@ def main(argv: list[str] | None = None) -> int:
     window = roots[0]
     window.setWidth(width)
     window.setHeight(height)
+    if not args.size:
+        window.setPosition(area.x() + (area.width() - width) // 2, area.y() + (area.height() - height) // 2)
     QMetaObject.invokeMethod(window, "applyStartup", Q_ARG("QVariant", width))
     if args.mock:
         photos.loadMock(args.mock)

@@ -48,7 +48,7 @@ Window {
             x: win.compact ? rail.width : rail.width + win.panelW
             width: win.compact ? shell.width - rail.width : shell.width - x - win.inspW
             height: shell.height
-            clip: true
+            z: win.compact ? 0 : 1               // the bar's AI button may overhang the inspector, as in the mockup
 
             Rectangle {
                 id: head
