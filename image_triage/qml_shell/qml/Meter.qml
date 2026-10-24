@@ -7,6 +7,7 @@ Item {
     property real value: 0               // 0..1
     property var stops: [theme.accent]   // one colour = solid; three = evenly spaced ramp across the track
     property real threshold: -1
+    property bool spanTrack: true        // false: the ramp spans the fill itself
     implicitHeight: 4
 
     readonly property real v: Math.max(0, Math.min(1, value))
@@ -17,7 +18,7 @@ Item {
     }
     // the ramp as seen through the fill: [position in fill, colour]
     readonly property var ramp: {
-        if (stops.length < 2 || v <= 0) return [[0, stops[0]], [1, stops[0]]]
+        if (stops.length < 2 || v <= 0 || !spanTrack) return [[0, stops[0]], [1, stops[stops.length - 1]]]
         var out = [[0, stops[0]]], n = stops.length - 1
         for (var i = 1; i < n; i++) if (i / n < v) out.push([i / n / v, stops[i]])
         out.push([1, at(v)])

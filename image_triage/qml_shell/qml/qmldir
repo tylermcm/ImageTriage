@@ -25,3 +25,4 @@ SidePanel 1.0 SidePanel.qml
 Histogram 1.0 Histogram.qml
 Inspector 1.0 Inspector.qml
 ThumbImage 1.0 ThumbImage.qml
+RoundClip 1.0 RoundClip.qml
