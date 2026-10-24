@@ -19,6 +19,7 @@ QtObject {
     property bool settingsOpen: false
     property string settingsSection: "general"
     property string settingsQuery: ""
+    property string batchMode: ""          // "" closed, or "rename", "resize", "convert"
     property bool filtersOpen: false
     property real filtersScroll: 0          // test hook: where the filters page starts scrolled
     property bool paletteOpen: false

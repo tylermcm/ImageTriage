@@ -112,6 +112,7 @@ def test_toggle_state_shows_beside_the_command_and_counts_for_ranking(qapp, stor
 def test_palette_opens_filters_navigates_runs_and_closes_in_qml(qapp, tmp_path, store):
     from PySide6.QtQml import QQmlApplicationEngine
     from image_triage.cache import DiskThumbnailCache
+    from image_triage.qml_shell.batch_model import BatchModel
     from image_triage.qml_shell.filters_model import FiltersModel
     from image_triage.qml_shell.photos import PhotoModel
     from image_triage.qml_shell.thumbs import ThumbService
@@ -121,7 +122,7 @@ def test_palette_opens_filters_navigates_runs_and_closes_in_qml(qapp, tmp_path, 
     warnings = []
     engine.warnings.connect(lambda items: warnings.extend(str(i) for i in items))
     photos = PhotoModel(parent=qapp)
-    objects = (("theme", Theme(parent=qapp)), ("photos", photos), ("advFilters", FiltersModel(photos, memory=True, parent=qapp)), ("settings", SettingsModel(memory=True, parent=qapp)),
+    objects = (("theme", Theme(parent=qapp)), ("photos", photos), ("advFilters", FiltersModel(photos, memory=True, parent=qapp)), ("batch", BatchModel(photos, memory=True, parent=qapp)), ("settings", SettingsModel(memory=True, parent=qapp)),
                ("cmdPalette", palette), ("thumbs", ThumbService(DiskThumbnailCache(tmp_path / "cache"), parent=qapp)), ("startup", ""))
     for name, obj in objects:
         engine.rootContext().setContextProperty(name, obj)

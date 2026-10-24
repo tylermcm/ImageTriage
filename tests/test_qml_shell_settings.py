@@ -182,6 +182,7 @@ def pump(app, seconds=0.2):
 def test_settings_window_opens_edits_and_saves_in_qml(qapp, tmp_path):
     from PySide6.QtQml import QQmlApplicationEngine
     from image_triage.cache import DiskThumbnailCache
+    from image_triage.qml_shell.batch_model import BatchModel
     from image_triage.qml_shell.filters_model import FiltersModel
     from image_triage.qml_shell.palette_model import PaletteModel
     from image_triage.qml_shell.photos import PhotoModel
@@ -194,7 +195,7 @@ def test_settings_window_opens_edits_and_saves_in_qml(qapp, tmp_path):
     engine = QQmlApplicationEngine()
     warnings = []
     engine.warnings.connect(lambda items: warnings.extend(str(i) for i in items))
-    for name, obj in (("theme", theme), ("photos", photos), ("settings", settings), ("cmdPalette", PaletteModel(memory=True, parent=qapp)), ("advFilters", FiltersModel(photos, memory=True, parent=qapp)), ("thumbs", thumbs), ("startup", "")):
+    for name, obj in (("theme", theme), ("photos", photos), ("settings", settings), ("cmdPalette", PaletteModel(memory=True, parent=qapp)), ("advFilters", FiltersModel(photos, memory=True, parent=qapp)), ("batch", BatchModel(photos, memory=True, parent=qapp)), ("thumbs", thumbs), ("startup", "")):
         engine.rootContext().setContextProperty(name, obj)
     engine.addImportPath(str(shell_app.QML_DIR))
     engine.load(QUrl.fromLocalFile(str(shell_app.QML_DIR / "Main.qml")))
