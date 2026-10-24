@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
-    from PySide6.QtCore import QCoreApplication, QTimer, QUrl
+    from PySide6.QtCore import Q_ARG, QCoreApplication, QMetaObject, QTimer, QUrl
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtQml import QQmlApplicationEngine
     from PySide6 import QtQuick as _QtQuick  # noqa: F401 - registers QQuickWindow so the root object is wrapped with grabWindow()
@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     window = roots[0]
     window.setWidth(width)
     window.setHeight(height)
+    QMetaObject.invokeMethod(window, "applyStartup", Q_ARG("QVariant", width))
     if args.mock:
         photos.loadMock(args.mock)
     elif args.folder:

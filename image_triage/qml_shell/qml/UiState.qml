@@ -16,6 +16,7 @@ QtObject {
     property bool compare: false
     property int ai: 0                  // 0 idle, 1 analyzing, 2 ready
     property bool topAligned: false
+    property bool compact: false         // window <= 900px: narrow rail, panel and inspector float over the grid (the mockup's phone layout)
     property var pins: ({
         open: true, undo: true, review: true, view: true, filters: true, accept: true, reject: true,
         sort: false, columns: false, rename: false, compare: false, preview: false, ladder: false, convert: false, share: false,

@@ -55,7 +55,7 @@ Rectangle {
         readonly property real left0: (menus.visible ? menus.x + menus.width : brand.width) + 6
         readonly property real avail: rightRow.x - 6 - left0
         width: Math.max(0, Math.min(460, avail)); height: 28; radius: 9
-        x: left0 + Math.max(0, avail - 460) / 3
+        x: UiState.compact ? left0 : left0 + Math.max(0, avail - 460) / 3      // compact: margin 0
         anchors.verticalCenter: parent.verticalCenter
         color: ch.hovered ? theme.s2 : theme.base; border.color: ch.hovered ? theme.line : theme.lineSoft
         Behavior on color { ColorAnimation { duration: 150 } }

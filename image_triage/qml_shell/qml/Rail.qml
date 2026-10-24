@@ -5,7 +5,11 @@ import QtQuick.Shapes
 Rectangle {
     id: rail
     property int row: 0                  // the grid's current row (what Accept / Reject act on)
-    width: 72
+    width: UiState.compact ? 52 : 72
+    readonly property real btnW: width - 10
+    readonly property real btnH: UiState.compact ? 48 : 56
+    readonly property real pitch: btnH + 8
+    readonly property real pinSize: UiState.compact ? 36 : 40
     color: theme.s1
     Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: theme.lineSoft }
 
@@ -17,8 +21,8 @@ Rectangle {
 
     Rectangle {
         id: pill
-        x: 5; width: 62; height: 56; radius: 14
-        y: 10 + rail.tabIndex * 64
+        x: 5; width: rail.btnW; height: rail.btnH; radius: 14
+        y: 10 + rail.tabIndex * rail.pitch
         opacity: UiState.tab === "" ? 0 : 1
         color: Qt.alpha(theme.accent, 0.15); border.color: Qt.alpha(theme.accent, 0.30)
         Behavior on y { SpringAnimation { spring: 3.4; damping: 0.22; epsilon: 0.25 } }
@@ -29,13 +33,13 @@ Rectangle {
         delegate: Item {
             required property int index
             required property var modelData
-            x: 4.5; y: 10 + index * 64; width: 62; height: 56
+            x: 4.5; y: 10 + index * rail.pitch; width: rail.btnW; height: rail.btnH
             readonly property bool on: UiState.tab === modelData.k
             Column {
                 anchors.centerIn: parent; spacing: 4
                 Icon { anchors.horizontalCenter: parent.horizontalCenter; name: modelData.i; size: 22; color: on ? theme.accentFg : theme.fg }
                 // the mockup's `.app button{font:inherit;color:inherit}` outranks `.rb`, so the labels render at 13px regular in the full text colour
-                Text { anchors.horizontalCenter: parent.horizontalCenter; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData.t; font.pixelSize: 13; color: on ? theme.accentFg : theme.fg }
+                Text { visible: !UiState.compact; anchors.horizontalCenter: parent.horizontalCenter; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData.t; font.pixelSize: 13; color: on ? theme.accentFg : theme.fg }
             }
             HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
             TapHandler { onTapped: UiState.tab = modelData.k }
@@ -46,7 +50,7 @@ Rectangle {
 
     Column {
         id: lower
-        y: 10 + 4 * 64 - 8 + 8
+        y: 10 + 4 * rail.pitch
         anchors.horizontalCenter: parent.horizontalCenter; anchors.horizontalCenterOffset: -0.5
         spacing: 4
 
@@ -188,7 +192,8 @@ Rectangle {
     }
 
     RailButton {
-        anchors.horizontalCenter: parent.horizontalCenter; anchors.horizontalCenterOffset: -0.5; anchors.bottom: parent.bottom; anchors.bottomMargin: 10
+        anchors.horizontalCenter: parent.horizontalCenter; anchors.horizontalCenterOffset: -0.5
+        y: Math.max(lower.y + lower.height + 8, rail.height - 10 - height)    // margin-top: auto: bottom of the rail, or right after the content when that overflows
         icon: "settings"; tip: "Settings"
     }
 }

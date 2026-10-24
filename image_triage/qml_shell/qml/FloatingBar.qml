@@ -16,6 +16,11 @@ Item {
 
     Glass { anchors.fill: parent; sourceItem: bar.sourceItem; radius: 20 }
 
+    Flickable {
+        // overflow-x: auto in the compact layout (clipped and scrollable); in the wide one the overflow stays visible, as in the mockup
+        anchors.fill: parent; clip: UiState.compact
+        contentWidth: content.implicitWidth + 12; contentHeight: height
+        interactive: UiState.compact && contentWidth > width; flickableDirection: Flickable.HorizontalFlick; boundsBehavior: Flickable.StopAtBounds
     Row {
         id: content
         x: 6; y: 6; spacing: 4
@@ -72,5 +77,6 @@ Item {
         }
         Rectangle { width: 1; height: 22; y: 7; color: theme.line }
         AiChip {}
+    }
     }
 }
