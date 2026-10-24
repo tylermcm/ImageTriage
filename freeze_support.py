@@ -97,8 +97,8 @@ class FreezeAssetLayout:
         include_files = [
             (str(ROOT / "packaging" / "ai_runtime_locks"), "packaging/ai_runtime_locks"),
             (
-                str(ROOT / "image_triage" / "ui" / "assets" / "splash_background-v7.png"),
-                "lib/image_triage/ui/assets/splash_background-v7.png",
+                str(ROOT / "image_triage" / "ui" / "assets" / "splash_background-v8.png"),
+                "lib/image_triage/ui/assets/splash_background-v8.png",
             ),
             (
                 str(ROOT / "image_triage" / "ui" / "assets" / "app_icon-v2.ico"),

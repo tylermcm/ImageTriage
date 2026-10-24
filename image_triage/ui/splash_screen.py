@@ -7,7 +7,7 @@ from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QPixma
 from PySide6.QtWidgets import QWidget
 from ..fonts import ui_font
 
-_BACKGROUND_PATH = Path(__file__).resolve().parent / "assets" / "splash_background-v7.png"
+_BACKGROUND_PATH = Path(__file__).resolve().parent / "assets" / "splash_background-v8.png"
 _BACKGROUND_ASPECT = 1633 / 963
 _SPLASH_SIZE_SCALE = 0.75
 
