@@ -9,6 +9,9 @@ python -m image_triage.qml_shell --folder ... --light              # light theme
 python -m image_triage.qml_shell --mock <dir with p01..p12.jpg>    # the mockup's data (for pixel comparison)
 ```
 
+Test hooks: `--ui "k=v;..."` (interface state), `--set "id=value;..."` (settings rows), `--hover x,y`, `--click`, `--grab`, `--size`.
+Ctrl+, or the rail's gear opens the settings window.
+
 ## Design
 
 * `qml/` holds the UI; `UiState.qml` (singleton) holds interface state (tab, inspector, open menu, filters, pins, `compact`).
@@ -25,6 +28,15 @@ python -m image_triage.qml_shell --mock <dir with p01..p12.jpg>    # the mockup'
 * Fractional font sizes (10.5, 11.5 ...) go through `pointSize` (`UiState.pt()`), which assumes 96 dpi; the base font is Inter, falling back to
   Segoe UI, with tabular numerals.
 
+## Settings window
+
+`SettingsWindow.qml` is an in-window overlay (not a second OS window), so the live app behind it can be blurred. Rows and controls are
+`SRow`, `SSwitch`, `SSelect`, `SStepper`, `SSlider`, `SSwatches`, `SKeys`, `SButton`. The page is generated from the schema in
+`settings_model.py`: `SettingsModel` reads and writes the same `QSettings` keys, defaults and limits as the Widgets settings dialog
+(`tests/test_qml_shell_settings.py` checks them against `window.MainWindow`). Theme is one of the real ten appearance modes and previews
+live; accent hue and text contrast are new shell-only keys. Save keeps the window open; Cancel discards unsaved edits and closes.
+Most saved settings are not yet applied by the shell: see `docs/qml_unwired.md`, which lists everything not hooked up, in both windows.
+
 ## Resolution and scaling
 
 Every size is in device-independent pixels. Qt multiplies by the screen's scale (Windows "Scale", Linux `QT_SCALE_FACTOR`/compositor scale), and
@@ -40,10 +52,13 @@ three inspector tabs, the bar's menus, closed panels, three densities, and 1100/
 
 ## Not done yet
 
+Full list: `docs/qml_unwired.md`. In short:
+
+
 Popout wiring (Enter/Space/double-click -> `openRequested`), decisions and ratings persisted to the catalog (the shell shows sample values for
 real folders), drag and drop, multi-select, zoom, compare, PhotoCraft/AI integration, a custom window frame, high-DPI checks, Windows/GPU
 testing (everything above was verified headlessly with a software renderer), `topAligned` switch UI, bundling the Inter font.
 
 ## Tests
 
-`tests/test_qml_shell.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
+`tests/test_qml_shell.py` and `tests/test_qml_shell_settings.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
