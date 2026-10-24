@@ -19,6 +19,7 @@ from image_triage.filtering import (
 from image_triage.models import FilterMode
 from image_triage.qml_shell import app as shell_app
 from image_triage.qml_shell import filters_model as fm
+from image_triage.qml_shell.batch_model import BatchModel
 from image_triage.qml_shell.filters_model import FiltersModel
 from image_triage.qml_shell.photos import PhotoModel
 from image_triage.qml_shell.theme import Theme
@@ -162,7 +163,7 @@ def test_filters_window_opens_from_the_palette_and_closes_in_qml(qapp, tmp_path,
     warnings = []
     engine.warnings.connect(lambda items: warnings.extend(str(i) for i in items))
     for name, obj in (("theme", Theme(parent=qapp)), ("photos", grid), ("settings", SettingsModel(memory=True, parent=qapp)), ("cmdPalette", palette),
-                      ("advFilters", FiltersModel(grid, memory=True, parent=qapp)), ("thumbs", ThumbService(DiskThumbnailCache(tmp_path / "c"), parent=qapp)),
+                      ("advFilters", FiltersModel(grid, memory=True, parent=qapp)), ("batch", BatchModel(grid, memory=True, parent=qapp)), ("thumbs", ThumbService(DiskThumbnailCache(tmp_path / "c"), parent=qapp)),
                       ("startup", "")):
         engine.rootContext().setContextProperty(name, obj)
     engine.addImportPath(str(shell_app.QML_DIR))

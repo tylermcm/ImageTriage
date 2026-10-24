@@ -153,8 +153,8 @@ Rectangle {
         RailButton { visible: UiState.pins.compare; icon: "compare"; tip: "Compare photos"; on: UiState.compare; onClicked: UiState.compare = !UiState.compare }
         RailButton { visible: UiState.pins.preview; icon: "eye"; tip: "Open preview" }
         RailButton { visible: UiState.pins.ladder; icon: "ladder"; tip: "Winner ladder" }
-        RailButton { visible: UiState.pins.rename; icon: "tag"; tip: "Rename selection" }
-        RailButton { visible: UiState.pins.convert; icon: "convert"; tip: "Resize and convert" }
+        RailButton { visible: UiState.pins.rename; icon: "tag"; tip: "Rename selection"; onClicked: UiState.batchMode = "rename" }
+        RailButton { visible: UiState.pins.convert; icon: "convert"; tip: "Resize and convert"; onClicked: UiState.batchMode = "resize" }
         RailButton { visible: UiState.pins.share; icon: "pocketdrop"; tip: "Share to phone" }
         RailButton { visible: UiState.pins.editor; icon: "editor"; tip: "Open in editor" }
         RailButton { visible: UiState.pins.newfolder; icon: "newfolder"; tip: "New folder" }

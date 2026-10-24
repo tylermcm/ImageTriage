@@ -16,9 +16,9 @@
 | Popout / preview (`preview.py`) | not connected (stays a Widgets window) | Enter, Space, double-click, Open preview |
 | Editor (PhotoCraft host) | not connected | E, Open in editor |
 | Settings | built, storage connected, most values not applied | gear, Ctrl+, |
-| Command palette | built, 14 of 53 commands run | Ctrl K |
+| Command palette | built, 18 of 53 commands run | Ctrl K |
 | Filter dialog and saved presets | built; applies decision, rating and RAW / JPEG only (see below) | Filters menu, palette |
-| Batch rename, resize, convert | not built | Rename, Resize and convert |
+| Batch rename, resize, convert | built; **applying is not connected, no file changes** (see below) | Rename and Resize pins, palette, Ctrl+Shift+R / E / C |
 | Share to phone, handoff, transfers (PocketDrop) | not built | Share to phone |
 | Collections, best-of, people / faces | not built | Collections tab, Faces tab |
 | AI setup, review, apply decisions, cull preferences, workflow center, progress | not built | Analyze |
@@ -69,6 +69,7 @@ shell reacts to it yet.
 | Sort, Columns menus | Memory (sort and density work on the model) | `view/columns`, details sort keys |
 | Compare, Open preview, Winner ladder, Rename, Resize and convert, Share to phone, Open in editor, Keyboard shortcuts | Visual (Compare toggles a flag nothing reads) | `compare` mode, `preview` popout, `batch_rename_controller`, `export_jobs_controller`, `handoff_controller`/PocketDrop, PhotoCraft host |
 | Command palette pin | Real (opens the palette) | |
+| Rename and Resize and convert pins | Real (open the batch window) | |
 | "+" customise pinned buttons | Memory (pins are not saved between runs) | `workspace/toolbar_items`, `workspace/bar_state` |
 | Settings | Real (opens the settings window) | |
 
@@ -141,12 +142,28 @@ a test), shortcuts come from the shortcut registry with the user's overrides, an
 |---|---|---|
 | Search, ranking, highlight, recents, keyboard (up, down, Enter, Esc), mouse | Real | |
 | Command list | Partly real | 53 of the Widgets palette's ids, titles and keywords (`palette_model.py`). Left out: per-collection, per-saved-search, per-recipe, per-panel, per-sort and per-column commands, and the AI state filters, which need live window state |
-| Commands that run something | 14 of 53 | Settings, Advanced Filters and Save Current Search (both open the filters window), the three themes (Slate, Light, Midnight), sort by name and by AI score, Clear Filters, Compare, Reset Layout, Mark Winner, Reject, Move To _keep (this one only sets the Keep decision). Every other command is listed, can be chosen and is remembered as recent, **and then does nothing** |
+| Commands that run something | 18 of 53 | Settings, Advanced Filters and Save Current Search (both open the filters window), Rename Image, Batch Rename, Batch Resize and Batch Convert (all open the batch window), the three themes (Slate, Light, Midnight), sort by name and by AI score, Clear Filters, Compare, Reset Layout, Mark Winner, Reject, Move To _keep (this one only sets the Keep decision). Every other command is listed, can be chosen and is remembered as recent, **and then does nothing** |
 | On / Off tag | Compare only | The Widgets palette shows On or Off for ten toggles (zen, bursts, auto advance, performance logging ...); the shell has none of those states. In the demo data they are fixed |
 | "Current view" tag | Not shown | needs the grid / details view state |
 | Preview Commands and Zen Commands | Model only | the palette can show them (`UiState.paletteContext`), nothing opens it from the popout or zen mode: neither exists in the shell |
 | Smart filter and saved search commands | One fixed sample ("Sharp keepers") | the Widgets palette adds one per built-in and saved filter preset |
 | Opening the palette while another overlay is up | Not handled | Ctrl K over the settings window opens it on top of it |
+
+## Batch rename, resize and convert window
+
+One window with a Rename / Resize / Convert switch. Opens from the rail's Rename and Resize and convert pins (when pinned), the palette (Rename Image, Batch
+Rename / Resize / Convert) and Ctrl+Shift+R, E and C (the shell binds these keys itself, so changed shortcuts in Settings do not move them).
+The plans are built by the Widgets app's own planners (`batch_rename.py`, `image_resize.py`, `image_convert.py`), so names, statuses, error messages and
+what blocks the apply button are the same as in the Widgets dialogs (tests check this against the planners and against real files).
+
+| Piece | Status | Notes |
+|---|---|---|
+| Options, live preview, summary, errors, which photos are included | Real | the batch is **every photo the grid shows** (the shell has no multi-select yet); capped at 20,000 files, the table shows the first 1,200 rows as the Widgets dialogs do |
+| **Apply rename / Resize / Convert** | **Not connected** | the button closes the window and reports the count; nothing is renamed, resized, converted or moved, and no undo entry or job is made. The footer says so. Wiring needs the Widgets job controllers (`export_jobs_controller`, `folder_ops_controller`), progress and the undo stack |
+| After a rename the grid | Unchanged | it would need the model to follow the new names |
+| One-photo layout | Not built | the Widgets Resize and Convert dialogs shrink to a small form without a table for one image; the shell always shows the table |
+| Previous settings | Not remembered | the dialogs reopen with defaults, as the Widgets ones do |
+| `--mock` mode | Plans run on empty files staged in a temporary folder named like the sample photos | |
 
 ## Advanced filters window
 

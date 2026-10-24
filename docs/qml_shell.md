@@ -50,6 +50,11 @@ shortcut registry and recents under `commands/recent`. Only a few commands run a
 format and key). Only decisions, rating and RAW / JPEG are applied to the grid so far; see `docs/qml_unwired.md`.
 `scripts/qml_parity/filters.dc.html` is the mockup (`?flt=1&fsel=b0&fopen=ai&fsave=&fdel=Low%20light&fscroll=400&light=1`).
 
+## Batch tools
+
+`BatchWindow.qml` (rename, resize and convert in one overlay window; `batch_model.py` builds the plans with the Widgets app's planners). Applying is not
+connected: no file is changed. `scripts/qml_parity/batch.dc.html` is the mockup (`?bt=rename|resize|convert&bset=preset:custom;cw:0&bopen=fmt`).
+
 ## Resolution and scaling
 
 Every size is in device-independent pixels. Qt multiplies by the screen's scale (Windows "Scale", Linux `QT_SCALE_FACTOR`/compositor scale), and
@@ -74,4 +79,4 @@ testing (everything above was verified headlessly with a software renderer), `to
 
 ## Tests
 
-`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py` and `tests/test_qml_shell_filters.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
+`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.

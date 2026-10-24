@@ -115,6 +115,7 @@ class PhotoModel(QAbstractListModel):
                 rows.append({
                     "path": record.path, "name": record.name, "ext": suffix.lstrip(".").upper() or "FILE",
                     "raw": suffix in RAW_SUFFIXES, "decision": decision, "rating": rating, "ai": ai,
+                    "companions": tuple(record.companion_paths),
                 })
             self._loaded.emit(rows, folder)
 

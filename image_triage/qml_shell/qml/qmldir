@@ -41,3 +41,4 @@ CommandPalette 1.0 CommandPalette.qml
 FInput 1.0 FInput.qml
 FChip 1.0 FChip.qml
 FiltersWindow 1.0 FiltersWindow.qml
+BatchWindow 1.0 BatchWindow.qml

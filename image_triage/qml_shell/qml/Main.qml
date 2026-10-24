@@ -108,9 +108,13 @@ Window {
     }
 
     SettingsWindow { id: settingsWindow; sourceItem: appContent }
+    BatchWindow { id: batchWindow; sourceItem: appContent }
     FiltersWindow { id: filtersWindow; sourceItem: appContent }
     CommandPalette { id: commandPalette; sourceItem: appContent }
     Shortcut { sequence: "Ctrl+,"; onActivated: UiState.settingsOpen = !UiState.settingsOpen }
+    Shortcut { sequence: "Ctrl+Shift+R"; onActivated: UiState.batchMode = "rename" }
+    Shortcut { sequence: "Ctrl+Shift+E"; onActivated: UiState.batchMode = "resize" }
+    Shortcut { sequence: "Ctrl+Shift+C"; onActivated: UiState.batchMode = "convert" }
     Shortcut { sequence: "Ctrl+K"; onActivated: { if (UiState.paletteOpen) UiState.paletteOpen = false; else UiState.openPalette("main") } }
 
     // The commands the shell can carry out today; every other command in the palette is listed but does nothing yet (docs/qml_unwired.md).
@@ -120,6 +124,9 @@ Window {
             if (id === "file.workflow_settings") UiState.settingsOpen = true
             else if (id.indexOf("appearance.") === 0) { settings.set("theme", id.slice(11)); settings.save() }
             else if (id.indexOf("sort.") === 0) { UiState.sort = id.slice(5); photos.setSort(UiState.sort) }
+            else if (id === "tools.batch_rename" || id === "edit.rename_selection") UiState.batchMode = "rename"
+            else if (id === "tools.batch_resize") UiState.batchMode = "resize"
+            else if (id === "tools.batch_convert") UiState.batchMode = "convert"
             else if (id === "search.advanced_filters" || id === "search.save_current") UiState.filtersOpen = true
             else if (id === "search.clear_filters") { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters(); advFilters.clearApplied() }
             else if (id === "review.compare_mode") UiState.compare = !UiState.compare
