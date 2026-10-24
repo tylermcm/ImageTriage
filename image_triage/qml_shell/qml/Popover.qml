@@ -12,7 +12,7 @@ Popup {
     onWantedChanged: { if (wanted) open(); else if (opened) close() }
     onClosed: { if (name !== "" && UiState.menu === name) UiState.menu = "" }
     Component.onCompleted: { if (wanted) open() }
-    property real minWidth: 220
+    property real minWidth: 194             // min-width 208 less padding and border
     property real maxHeight: 10000
     default property alias content: column.data
 
