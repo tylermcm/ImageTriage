@@ -5,7 +5,9 @@ import QtQuick.Controls
 // and the click does not reach what is underneath.
 Popup {
     id: pop
-    property int placement: 0            // 0: above the button, 1: to the right of it
+    property int placement: 0            // 0: above the button, 1: to the right of it, 2: below it, right edges aligned (dropdowns)
+    property real tintAlpha: 0.88
+    property real shadowAlpha: 0.7
     property bool alignBottom: false     // placement 1 only: grow upward from the button's bottom edge
     property string name: ""            // the id UiState.menu uses for this menu (one menu open at a time)
     readonly property bool wanted: name !== "" && UiState.menu === name
@@ -26,8 +28,8 @@ Popup {
     property real originX: 0
     property real originY: 0
     onAboutToShow: { var o = parent.mapToItem(null, 0, 0); originX = o.x; originY = o.y }
-    x: sheet ? 12 - originX : (placement === 1 ? parent.width + 10 : 0)
-    y: sheet ? parent.Window.height - 76 - height - originY : (placement === 1 ? (alignBottom ? parent.height - height + 4 : -8) : -height - 12)
+    x: sheet ? 12 - originX : (placement === 1 ? parent.width + 10 : (placement === 2 ? parent.width - width : 0))
+    y: sheet ? parent.Window.height - 76 - height - originY : (placement === 2 ? parent.height + 6 : (placement === 1 ? (alignBottom ? parent.height - height + 4 : -8) : -height - 12))
 
     enter: Transition {
         ParallelAnimation {
@@ -44,8 +46,8 @@ Popup {
     // the mockup's .pop: backdrop blur(22px) saturate(1.4) under an 88% tint, shadow 0 24px 48px -16px rgba(0,0,0,.7)
     background: Glass {
         sourceItem: pop.parent ? pop.parent.Window.contentItem : null
-        radius: 16; tint: Qt.alpha(theme.s2, 0.88); saturation: 0.4
-        shadowAlphaA: 0.7; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16
+        radius: pop.placement === 2 ? 14 : 16; tint: Qt.alpha(theme.s2, pop.tintAlpha); saturation: 0.4
+        shadowAlphaA: pop.shadowAlpha; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16
     }
     contentItem: Flickable {
         implicitWidth: pop.sheet ? pop.parent.Window.width - 24 - 14 : Math.max(pop.minWidth, column.implicitWidth)
