@@ -73,10 +73,5 @@ Item {
         maskThresholdMin: 0.5; maskSpreadAtMin: 1.0
     }
     Rectangle { anchors.fill: parent; radius: glass.radius; color: glass.tint; border.color: Qt.alpha(theme.lift, 0.11); border.width: 1 }
-    // inset 0 1px 0 lift 9%: a top highlight that follows the rounded corner
-    Rectangle { x: 1; y: 1; width: parent.width - 2; height: parent.height - 2; radius: glass.radius - 1; color: "transparent"; border.color: Qt.alpha(theme.lift, 0.09); border.width: 1
-        layer.enabled: true
-        layer.effect: MultiEffect { maskEnabled: true; maskSource: hiMask; maskInverted: false }
-    }
-    Item { id: hiMask; x: 1; y: 1; width: parent.width - 2; height: 12; visible: false; layer.enabled: true; Rectangle { anchors.fill: parent; color: "white" } }
+    // (the mockup's inset 0 1px 0 highlight sits under the translucent ::before, so it is invisible and is not drawn)
 }
