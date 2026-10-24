@@ -20,7 +20,7 @@ Item {
         color: b.on ? Qt.alpha(theme.accent, 0.16) : Qt.alpha(theme.lift, hover.hovered ? 0.08 : 0)
         Behavior on color { ColorAnimation { duration: 140 } }
     }
-    Icon { anchors.centerIn: parent; name: b.icon; size: 20; color: b.on ? theme.accentFg : (hover.hovered ? b.hoverColor : theme.fg2) }
+    Icon { anchors.centerIn: parent; name: b.icon; size: 20; color: b.on ? theme.accentFg : (hover.hovered ? b.hoverColor : theme.fg) }   // idle pins use the full text colour in the mockup
     Shape {
         visible: b.menu; x: 29; y: 29; width: 6; height: 6; preferredRendererType: Shape.CurveRenderer
         ShapePath { strokeColor: "transparent"; fillColor: Qt.alpha(theme.fg3, 0.9); PathSvg { path: "M6 0L6 6L0 6z" } }

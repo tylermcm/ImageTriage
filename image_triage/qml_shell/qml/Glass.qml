@@ -6,7 +6,7 @@ Item {
     id: glass
     property Item sourceItem
     property real radius: 20
-    property color tint: Qt.alpha(theme.s1, 0.62)
+    property color tint: Qt.alpha(theme.s1, 0.72)
     property int blurRadius: 64
     readonly property int pad: 40
     clip: false
@@ -43,7 +43,7 @@ Item {
     MultiEffect {
         x: -glass.pad; y: -glass.pad; width: glass.width + glass.pad * 2; height: glass.height + glass.pad * 2
         source: ses
-        blurEnabled: true; blur: 1.0; blurMax: glass.blurRadius; saturation: 0.4
+        blurEnabled: true; blur: 1.0; blurMax: glass.blurRadius; saturation: 0.5
         autoPaddingEnabled: false
         maskEnabled: true; maskSource: maskItem
         maskThresholdMin: 0.5; maskSpreadAtMin: 1.0

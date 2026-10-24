@@ -29,7 +29,7 @@ Item {
             Item {
                 anchors.right: parent.right; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter; width: 32; height: 32
                 Rectangle { anchors.fill: parent; radius: 9; color: Qt.alpha(theme.lift, ch.hovered ? 0.08 : 0) }
-                Icon { anchors.centerIn: parent; name: "chevL"; size: 18; color: ch.hovered ? theme.fg : theme.fg2 }
+                Icon { anchors.centerIn: parent; name: "chevL"; size: 18; color: theme.fg }
                 HoverHandler { id: ch; cursorShape: Qt.PointingHandCursor }
                 TapHandler { onTapped: UiState.tab = "" }
                 Accessible.role: Accessible.Button; Accessible.name: "Hide side panel"
@@ -50,7 +50,7 @@ Item {
                     Rectangle {
                         x: 12; width: parent.width - 24; height: 32; radius: 9; color: theme.base; border.color: fieldIn.activeFocus ? theme.accent : theme.lineSoft
                         Row { anchors.verticalCenter: parent.verticalCenter; x: 10; spacing: 8
-                            Icon { name: "search"; size: 16; color: theme.fg3; anchors.verticalCenter: parent.verticalCenter }
+                            Icon { name: "search"; size: 18; color: theme.fg3; anchors.verticalCenter: parent.verticalCenter }
                             TextInput { id: fieldIn; width: 200; color: theme.fg; font.pixelSize: 13; clip: true; anchors.verticalCenter: parent.verticalCenter
                                 Text { visible: !parent.text && !parent.activeFocus; text: "Find a folder"; color: theme.fg3; font: parent.font }
                                 Accessible.name: "Find a folder" }
@@ -63,21 +63,23 @@ Item {
                     PanelRow { icon: "star"; text: "Client selects"; count: "212" } } }
                 Stag { active: lib.on; n: 2; Column { width: parent.width
                     SectionLabel { caption: "Drives" }
-                    Item { width: parent.width; height: 52
-                        Text { x: 16; y: 4; text: "Photos (D:)"; color: theme.fg; font.pixelSize: 13 }
-                        Text { anchors.right: parent.right; anchors.rightMargin: 16; y: 5; text: "612 GB free of 2 TB"; color: theme.fg3; font.pixelSize: 11 }
-                        Meter { x: 16; y: 28; width: parent.width - 32; value: 0.70; from: "#52c79a"; to: "#d3b24f" } }
-                    Item { width: parent.width; height: 52
-                        Text { x: 16; y: 4; text: "Cards (E:)"; color: theme.fg; font.pixelSize: 13 }
-                        Text { anchors.right: parent.right; anchors.rightMargin: 16; y: 5; text: "41 GB free of 256 GB"; color: theme.fg3; font.pixelSize: 11 }
-                        Meter { x: 16; y: 28; width: parent.width - 32; value: 0.84; from: "#d3b24f"; to: "#e5635b" } } } }
+                    Repeater {
+                        model: [{ n: "Photos (D:)", s: "612 GB free of 2 TB", v: 0.70 }, { n: "Cards (E:)", s: "41 GB free of 256 GB", v: 0.84 }]
+                        delegate: Item {
+                            required property var modelData
+                            width: libCol.width; height: 43.2          // 6 + 18.2 line + 7 + 4 meter + 8
+                            Text { x: 16; y: 6; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData.n; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
+                            Text { anchors.right: parent.right; anchors.rightMargin: 16; y: 6; text: modelData.s; color: theme.fg3; font.pointSize: UiState.pt(11) }
+                            Meter { x: 16; y: 31.2; width: parent.width - 32; value: modelData.v; stops: ["#4cbd88", "#e6ac3d", "#ef6856"] }
+                        }
+                    } } }
                 Stag { active: lib.on; n: 3; Column { width: parent.width
                     SectionLabel { caption: "Folders" }
                     PanelRow { icon: "chevR"; text: "2025"; count: "8,410" }
                     PanelRow { icon: "chevDown"; text: "2026"; count: "3,902" }
                     PanelRow { icon: "chevR"; text: "January"; count: "640"; indent: 18 }
                     PanelRow { icon: "chevDown"; text: "Georgia trip"; count: "1,284"; indent: 18 }
-                    PanelRow { icon: "library"; text: photos.folderName || "Kutaisi"; count: String(photos.total); indent: 36; current: true }
+                    PanelRow { icon: "library"; text: photos.leafName || "Kutaisi"; count: String(photos.total); indent: 36; current: true }
                     PanelRow { icon: "library"; text: "Tbilisi"; count: "402"; indent: 36 } } }
             }
         }
@@ -178,7 +180,7 @@ Item {
                             width: parent.width; height: 40
                             Text { x: 16; y: 4; text: modelData[0]; color: theme.fg; font.pixelSize: 13 }
                             Text { anchors.right: parent.right; anchors.rightMargin: 16; y: 5; text: modelData[1]; color: theme.fg3; font.pixelSize: 11 }
-                            Meter { x: 16; y: 26; width: parent.width - 32; height: 3; value: modelData[2]; from: theme.accent; to: modelData[3] ? "#a9d1fb" : theme.accent }
+                            Meter { x: 16; y: 26; width: parent.width - 32; height: 3; value: modelData[2]; stops: modelData[3] ? [theme.accent, "#a9d1fb", theme.accent] : [theme.accent] }
                         }
                     } } }
             }

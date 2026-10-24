@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Shapes
 
 // The photo grid: a virtualized GridView over the model, thumbnails from the disk cache (ThumbImage), edge-to-edge with a 2 px gutter.
 Item {
@@ -34,14 +35,14 @@ Item {
         boundsBehavior: Flickable.StopAtBounds
         model: photos
         cellWidth: width / root.cols
-        cellHeight: Math.round(cellWidth * 2 / 3)
+        cellHeight: (cellWidth - 2) * 2 / 3 + 2   // a 3:2 card plus the 2px gutter
         cacheBuffer: cellHeight * 3
         bottomMargin: root.bottomSpace
         reuseItems: true
         highlightFollowsCurrentItem: false
         currentIndex: 0
         ScrollBar.vertical: ScrollBar {
-            policy: ScrollBar.AsNeeded
+            policy: gv.contentHeight + gv.bottomMargin > gv.height + 1 ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
             contentItem: Rectangle { implicitWidth: 6; radius: 3; color: Qt.alpha(theme.fg, 0.28) }
             background: Item {}
         }
@@ -86,54 +87,77 @@ Item {
                     path: cell.path
                     bucket: root.bucket(Math.ceil(cell.width * Screen.devicePixelRatio))
                     imageOpacity: cell.decision === "rej" ? 0.38 : 1
+                    desaturate: cell.decision === "rej" ? 0.75 : 0
                     scale: hover.hovered ? 1.04 : 1
                     Behavior on scale { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
                 }
                 Rectangle {
+                    // the name / stars / format strip: padding 22 9 7, 11.5px text, a 0.72 black ramp
                     anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                    height: 46
+                    height: 45.1
                     opacity: cell.hot ? 1 : 0
-                    Behavior on opacity { NumberAnimation { duration: 180 } }
+                    Behavior on opacity { NumberAnimation { duration: 200 } }
                     gradient: Gradient { GradientStop { position: 0; color: "transparent" } GradientStop { position: 1; color: "#b8000000" } }
                     Text {
                         visible: UiState.showNames
                         anchors.left: parent.left; anchors.leftMargin: 9; anchors.bottom: parent.bottom; anchors.bottomMargin: 7
-                        width: parent.width - 100; elide: Text.ElideRight
-                        text: cell.name; color: "white"; font.pixelSize: 12
+                        width: parent.width - 120; elide: Text.ElideRight; height: 16.1; verticalAlignment: Text.AlignVCenter
+                        text: cell.name; color: "white"; font.pointSize: UiState.pt(11.5)
                     }
                     Row {
                         anchors.right: parent.right; anchors.rightMargin: 9; anchors.bottom: parent.bottom; anchors.bottomMargin: 7; spacing: 7
                         Item {
-                            width: 56; height: 12
-                            Text { text: "★★★★★"; color: Qt.rgba(1, 1, 1, 0.28); font.pixelSize: 11; font.letterSpacing: 1 }
+                            width: 62.5; height: 13
+                            Text { y: 1; text: "\u2605\u2605\u2605\u2605\u2605"; color: Qt.rgba(1, 1, 1, 0.28); font.pixelSize: 11; font.letterSpacing: 1; height: 11 }
                             Item {
-                                width: parent.width * cell.rating / 5; height: parent.height; clip: true
-                                Text { text: "★★★★★"; color: theme.star; font.pixelSize: 11; font.letterSpacing: 1 }
+                                y: 1; width: parent.width * cell.rating / 5; height: 11; clip: true
+                                Text { text: "\u2605\u2605\u2605\u2605\u2605"; color: theme.star; font.pixelSize: 11; font.letterSpacing: 1; height: 11 }
                             }
                         }
                         Rectangle {
                             visible: UiState.showBadges
-                            width: fmt.implicitWidth + 10; height: 15; radius: 5; color: cell.isRaw ? Qt.alpha(theme.accent, 0.78) : Qt.rgba(1, 1, 1, 0.18)
-                            Text { id: fmt; anchors.centerIn: parent; text: cell.ext; color: "white"; font.pixelSize: 10; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
+                            width: fmt.implicitWidth + 11.7; height: 13; radius: 5; color: cell.isRaw ? Qt.alpha(theme.accent, 0.7) : Qt.rgba(1, 1, 1, 0.18)
+                            Text { id: fmt; anchors.centerIn: parent; text: cell.ext; color: "white"; font.pointSize: UiState.pt(9.5); font.weight: Font.DemiBold; font.letterSpacing: 0.38 }
                         }
                     }
                 }
-                Rectangle {
+                Item {
+                    // decision badge: a 22px disc with a 3px 40% black ring outside it (box-shadow), glyph drawn like the mockup's CSS
+                    id: badge
                     visible: UiState.showBadges && cell.decision !== ""
-                    anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 8
-                    width: 22; height: 22; radius: 11
-                    color: cell.decision === "win" ? theme.win : cell.decision === "keep" ? theme.keep : cell.decision === "rej" ? theme.rej : theme.rev
-                    border.color: Qt.rgba(0, 0, 0, 0.4); border.width: 3
-                    Icon {
-                        anchors.centerIn: parent; size: 12; strokeWidth: 2.2
-                        name: cell.decision === "win" ? "star" : cell.decision === "keep" ? "check" : cell.decision === "rej" ? "x" : "eye"
-                        color: cell.decision === "win" ? "#10261b" : "white"; filled: cell.decision === "win"
+                    x: parent.width - 8 - 22; y: 8; width: 22; height: 22
+                    readonly property color tone: cell.decision === "win" ? theme.win : cell.decision === "keep" ? theme.keep : cell.decision === "rej" ? theme.rej : theme.rev
+                    Rectangle { x: -3; y: -3; width: 28; height: 28; radius: 14; color: Qt.rgba(0, 0, 0, 0.4) }
+                    Rectangle { anchors.fill: parent; radius: 11; color: badge.tone }
+                    Shape {
+                        visible: cell.decision === "win"
+                        x: 5.5; y: 5.5; width: 11; height: 11; preferredRendererType: Shape.CurveRenderer
+                        ShapePath {
+                            strokeColor: "transparent"; fillColor: "#10261b"
+                            PathPolyline { path: [Qt.point(5.5, 0), Qt.point(6.82, 3.96), Qt.point(11, 4.18), Qt.point(7.7, 6.6), Qt.point(8.8, 11), Qt.point(5.5, 8.36), Qt.point(2.2, 11), Qt.point(3.3, 6.6), Qt.point(0, 4.18), Qt.point(4.18, 3.96)] }
+                        }
                     }
+                    Item {
+                        visible: cell.decision === "keep"
+                        x: 7.5; y: 4; width: 7; height: 12; rotation: 45; transformOrigin: Item.Center   // ::before is content-box: 5x10 plus 2px borders
+                        Rectangle { x: 5; width: 2; height: 12; color: "white" }
+                        Rectangle { y: 10; width: 7; height: 2; color: "white" }
+                    }
+                    Item {
+                        visible: cell.decision === "rej"
+                        anchors.fill: parent
+                        Rectangle { anchors.centerIn: parent; width: 10; height: 2; radius: 1; rotation: 45; color: "white" }
+                        Rectangle { anchors.centerIn: parent; width: 10; height: 2; radius: 1; rotation: -45; color: "white" }
+                    }
+                    Rectangle { visible: cell.decision === "rev"; anchors.centerIn: parent; width: 12; height: 12; radius: 6; color: "transparent"; border.width: 2; border.color: "#2a1f06" }
                 }
-                Rectangle {
-                    anchors.fill: parent; color: "transparent"; radius: 3
-                    border.color: theme.accent; border.width: cell.current ? 3 : 0
-                    Behavior on border.width { NumberAnimation { duration: 120 } }
+                Item {
+                    // selection: 3px accent ring with a 1px 45% black line inside it, like the two inset shadows
+                    anchors.fill: parent
+                    opacity: cell.current ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: 200 } }
+                    Rectangle { anchors.fill: parent; color: "transparent"; radius: 3; border.color: theme.accent; border.width: 3 }
+                    Rectangle { anchors.fill: parent; anchors.margins: 3; color: "transparent"; border.color: Qt.rgba(0, 0, 0, 0.45); border.width: 1 }
                 }
             }
             HoverHandler { id: hover }

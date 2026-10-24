@@ -24,10 +24,10 @@ Item {
         id: row
         anchors.centerIn: parent
         spacing: 6
-        Icon { name: btn.icon; size: 17; color: btn.open ? theme.accentFg : (hover.hovered ? theme.fg : theme.fg2); anchors.verticalCenter: parent.verticalCenter }
-        Text { visible: btn.showLabel && btn.label !== ""; text: btn.label; font.pixelSize: 13; color: btn.open ? theme.accentFg : (hover.hovered ? theme.fg : theme.fg2); anchors.verticalCenter: parent.verticalCenter }
+        Icon { name: btn.icon; size: 17; color: btn.open ? theme.accentFg : theme.fg; anchors.verticalCenter: parent.verticalCenter }
+        Text { visible: btn.showLabel && btn.label !== ""; text: btn.label; font.pixelSize: 13; color: btn.open ? theme.accentFg : theme.fg; anchors.verticalCenter: parent.verticalCenter }
         Icon {
-            visible: btn.caret; name: "chevUp"; size: 12; color: theme.fg2; opacity: 0.7; anchors.verticalCenter: parent.verticalCenter
+            visible: btn.caret; name: "chevUp"; size: 12; color: btn.open ? theme.accentFg : theme.fg; opacity: 0.6; anchors.verticalCenter: parent.verticalCenter
             rotation: btn.open ? 180 : 0
             Behavior on rotation { SpringAnimation { spring: 6; damping: 0.45; epsilon: 0.5 } }
         }
