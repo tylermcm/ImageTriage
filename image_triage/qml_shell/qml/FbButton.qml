@@ -11,7 +11,7 @@ Item {
     default property alias menuContent: holder.data
     signal clicked()
     implicitHeight: 36
-    implicitWidth: row.implicitWidth + (showLabel && label !== "" ? 22 : 20)
+    implicitWidth: row.implicitWidth + 2 * (UiState.compact ? 9 : (showLabel && label !== "" ? 11 : 10))
 
     Rectangle {
         anchors.fill: parent; radius: 14

@@ -11,7 +11,8 @@ Item {
     property color hoverColor: theme.fg
     default property alias extra: holder.data
     signal clicked()
-    width: 40; height: 40
+    readonly property real sz: UiState.compact ? 36 : 40
+    width: sz; height: sz
     scale: press.pressed ? 0.92 : 1
     Behavior on scale { SpringAnimation { spring: 6; damping: 0.4; epsilon: 0.001 } }
 

@@ -7,7 +7,7 @@ Rectangle {
     Row {
         anchors.verticalCenter: parent.verticalCenter; x: 12; spacing: 16
         Text { text: photos.shown + " photos"; color: theme.fg3; font.pointSize: UiState.pt(11.5) }
-        Text { text: "1 selected"; color: theme.fg3; font.pointSize: UiState.pt(11.5); visible: parent.parent.width > 640 }
+        Text { text: "1 selected"; color: theme.fg3; font.pointSize: UiState.pt(11.5); visible: !UiState.compact }
         Text { text: photos.loading ? "Reading folder…" : "Thumbnails ready"; color: theme.fg3; font.pointSize: UiState.pt(11.5) }
     }
     Text { anchors.right: parent.right; anchors.rightMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: "Sample data"; color: theme.fg3; font.pointSize: UiState.pt(11.5) }

@@ -21,8 +21,13 @@ Popup {
     focus: true
     padding: 7                           // 6 + the 1px border
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-    x: placement === 1 ? parent.width + 10 : 0
-    y: placement === 1 ? (alignBottom ? parent.height - height + 4 : -8) : -height - 12
+    // compact (<= 900px): the bar's menus become a sheet 12px from both sides, its bottom edge 76px above the window's
+    readonly property bool sheet: UiState.compact && placement === 0
+    property real originX: 0
+    property real originY: 0
+    onAboutToShow: { var o = parent.mapToItem(null, 0, 0); originX = o.x; originY = o.y }
+    x: sheet ? 12 - originX : (placement === 1 ? parent.width + 10 : 0)
+    y: sheet ? parent.Window.height - 76 - height - originY : (placement === 1 ? (alignBottom ? parent.height - height + 4 : -8) : -height - 12)
 
     enter: Transition {
         ParallelAnimation {
@@ -43,7 +48,7 @@ Popup {
         shadowAlphaA: 0.7; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16
     }
     contentItem: Flickable {
-        implicitWidth: Math.max(pop.minWidth, column.implicitWidth)
+        implicitWidth: pop.sheet ? pop.parent.Window.width - 24 - 14 : Math.max(pop.minWidth, column.implicitWidth)
         implicitHeight: Math.min(pop.maxHeight, column.implicitHeight)
         contentHeight: column.implicitHeight
         interactive: contentHeight > height
