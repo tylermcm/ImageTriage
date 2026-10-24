@@ -124,7 +124,7 @@ Window {
                     SButton { anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; text: "Add All to Collection\u2026"; variant: "primary"; h: 28; hpad: 11; radius: 9
                               onClicked: { UiState.collPickerQuery = ""; UiState.collPicker = true } }
                 }
-                PhotoGrid { id: grid; y: head.height + addBar.height; width: parent.width; height: parent.height - head.height - addBar.height; overlay: floatBar }
+                PhotoGrid { id: grid; onContextRequested: (kind, row, x, y) => ctxHost.show(kind, row, x, y, ""); y: head.height + addBar.height; width: parent.width; height: parent.height - head.height - addBar.height; overlay: floatBar }
                 FloatingBar {
                     id: floatBar
                     sourceItem: grid.view
@@ -192,6 +192,21 @@ Window {
     CullWindow { id: cullWindow; sourceItem: appContent }
     AiCenterWindow { id: aiCenterWindow; sourceItem: appContent }
     CullMini { }
+    ContextMenu { id: ctxHost }
+    Toasts { }
+    Connections {
+        target: ctxMenu
+        function onUiRequest(what, arg) {
+            if (what === "share") sidePanel.shareToPhone("sel")
+            else if (what === "showDrop") UiState.tab = "drop"
+            else if (what === "batch") UiState.batchMode = arg
+            else if (what === "newCollection") { UiState.collDlgId = ""; UiState.collDlg = "new" }
+            else if (what === "review") cull.reviewFrame(arg)
+            else if (what === "clearFilters") { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters(); advFilters.clearApplied() }
+            else if (what === "view") { if (arg === "view:names") UiState.showNames = !UiState.showNames; else if (arg === "view:badges") UiState.showBadges = !UiState.showBadges; else UiState.dens = arg.slice(5) }
+            else if (what === "sort") UiState.sort = arg
+        }
+    }
     Connections { target: UiState; function onRequestRowChanged() { if (UiState.requestRow >= 0) { grid.view.currentIndex = UiState.requestRow; UiState.requestRow = -1 } } }
     CommandPalette { id: commandPalette; sourceItem: appContent }
     Shortcut { sequence: "Ctrl+,"; onActivated: UiState.settingsOpen = !UiState.settingsOpen }
@@ -233,9 +248,11 @@ Window {
     // test hook `--ui key=value;...` applies UiState settings so layouts can be checked headlessly.
     property string pendingScope: ""
     property string pendingCull: ""
+    property string pendingCtx: ""
     // the hook `scope=winners|c:<id>|p:<id>` waits for the photos to be loaded (opening a folder resets the view's scope)
     function applyScope() {
         if (pendingCull !== "" && photos.total > 0) { var cs = pendingCull; pendingCull = ""; cull.scene(cs) }
+        if (pendingCtx !== "" && photos.total > 0) { var cx = pendingCtx; pendingCtx = ""; var r = ctxMenu.scene(cx); if (r.kind) ctxHost.show(r.kind, r.row, r.x, r.y, r.sub) }
         if (pendingScope === "" || photos.total === 0) return
         var sc = pendingScope; pendingScope = ""
         if (sc === "winners") collections.openWinners()
@@ -249,6 +266,7 @@ Window {
         var handoffRecipe = ""
         var scope = ""
         var cullScene = ""
+        var ctxScene = ""
         if (typeof startup === "string" && startup.length) {
             var parts = startup.split(";");
             for (var i = 0; i < parts.length; ++i) {
@@ -260,12 +278,14 @@ Window {
                 else if (kv[0] === "hoRecipe") handoffRecipe = String(kv[1])
                 else if (kv[0] === "scope") scope = String(kv[1])
                 else if (kv[0] === "cullScene") cullScene = String(kv[1])
+                else if (kv[0] === "ctxScene") ctxScene = String(kv[1])
                 else if (kv[0] === "filter") { UiState.filter = String(v); photos.setFilter(String(v)) }
                 else UiState[kv[0]] = v;
             }
             if (handoffRecipe !== "") handoff.setRecipe(handoffRecipe)
             pendingScope = scope
             pendingCull = cullScene
+            pendingCtx = ctxScene
             win.applyScope()
             if (UiState.txState !== "") transfers.show(UiState.txState, UiState.txKind, UiState.txCount, UiState.txP)
             if (Object.keys(sample).length) pocketDrop.setSample(sample.pdMode || "", sample.pdState || "", sample.pdActivity || "", sample.pdList || "mixed")
