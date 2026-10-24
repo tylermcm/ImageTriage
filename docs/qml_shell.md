@@ -55,6 +55,15 @@ format and key). Only decisions, rating and RAW / JPEG are applied to the grid s
 `BatchWindow.qml` (rename, resize and convert in one overlay window; `batch_model.py` builds the plans with the Widgets app's planners). Applying is not
 connected: no file is changed. `scripts/qml_parity/batch.dc.html` is the mockup (`?bt=rename|resize|convert&bset=preset:custom;cw:0&bopen=fmt`).
 
+## PocketDrop
+
+The PocketDrop page runs PocketDrop's own C++ engine (`native/pocketdrop`) as a model: `Ui::stateJson()` is what `paint()` would have drawn, `Ui::command()` is what a click would have done, both reached through
+`pd_state_json` / `pd_command` / `pd_remove_paths` (API level 2, additive; `pd_abi_version` stays 1 so the Widgets panel keeps working with the same dll). `image_triage/pocketdrop/host.py` supplies the OS services, `qml_shell/pocketdrop_model.py` adds
+Library groups (a selection, the winners, a collection as one row) and a scripted sample state for `--mock`. `scripts/qml_parity/pocketdrop.dc.html` is the mockup
+(`?tab=drop&pdmode=wifi|anywhere|offline&pdstate=ready|drag|busy|missing|downloading|failed|bluetooth|nonet&pdact=sending|receiving|done&pdlist=empty|shared|mixed&menu=1|lib=1&pdflow=dragging`);
+the same states open in the shell with `--ui "tab=drop;pdMode=anywhere;pdState=missing;pdActivity=none;pdList=mixed;menu=pdmenu|pdlib;pdFlow=dragging"`.
+Build the Windows dll with `native/pocketdrop/build_windows.bat`; `tests/test_qml_shell_pocketdrop.py` builds a Linux copy.
+
 ## Resolution and scaling
 
 Every size is in device-independent pixels. Qt multiplies by the screen's scale (Windows "Scale", Linux `QT_SCALE_FACTOR`/compositor scale), and
@@ -79,4 +88,4 @@ testing (everything above was verified headlessly with a software renderer), `to
 
 ## Tests
 
-`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
+`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py`, `tests/test_qml_shell_pocketdrop.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.

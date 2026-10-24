@@ -11,6 +11,11 @@ Window {
 
     readonly property bool compact: width <= 900          // the mockup's @media (max-width: 900px)
     Binding { target: UiState; property: "compact"; value: win.compact }
+    Binding { target: UiState; property: "selRow"; value: grid.view.currentIndex }
+    // a collection dragged over the PocketDrop button opens that page after a moment
+    readonly property bool railHot: UiState.pdSim ? UiState.tab !== "drop" : UiState.pdDragging && rail.overDrop(UiState.pdGhostX, UiState.pdGhostY)
+    Binding { target: UiState; property: "pdRailHot"; value: win.railHot }
+    Timer { interval: 450; running: UiState.pdRailHot && UiState.tab !== "drop" && !UiState.pdSim; onTriggered: UiState.tab = "drop" }
     readonly property real panelTarget: UiState.tab !== "" ? 300 : 0
     readonly property real inspTarget: UiState.insp ? 352 : 0
     property real panelW: panelTarget
@@ -107,6 +112,32 @@ Window {
         }
     }
 
+    // the drag ghost and its hint
+    PocketDropGhost {
+        z: 80; visible: UiState.pdDragging; info: UiState.pdDragInfo
+        x: UiState.pdSim ? (UiState.tab === "drop" ? 150 : 58) : UiState.pdGhostX + 14
+        y: UiState.pdSim ? (UiState.tab === "drop" ? 290 : 236) : UiState.pdGhostY + 10
+    }
+    Rectangle {
+        z: 80; visible: UiState.pdDragging && UiState.pdRailHot; x: UiState.pdSim ? 78 : UiState.pdGhostX + 20; y: UiState.pdSim ? 318 : UiState.pdGhostY + 58
+        width: tipText.implicitWidth + 22; height: 30; radius: 9; color: theme.s3; border.color: theme.lineSoft
+        Text { id: tipText; anchors.centerIn: parent; text: "Hold to open PocketDrop"; color: theme.fg; font.pixelSize: 12 }
+    }
+    ConfirmCard {
+        id: riskCard
+        title: "Anyone with this link can download the shared files"
+        body: "The link remains active until it expires, you create a new link, leave Anywhere mode, or close Image Triage. Sending files back to this PC is protected by a separate receive code shown only in PocketDrop."
+        confirmText: "Continue"; cancelText: "Cancel"; checkText: "Don\u2019t show this warning again"
+        onAccepted: (dismiss) => pocketDrop.confirmRisk(true, dismiss)
+        onRejected: pocketDrop.confirmRisk(false, false)
+    }
+    ConfirmCard { id: infoCard; confirmText: "OK" }
+    Connections { target: pocketDrop; function onRiskChanged() { if (pocketDrop.riskPending) riskCard.open() } }
+    Connections { target: pocketDrop; function onAlertRequested(title, message) { infoCard.title = title; infoCard.body = message; infoCard.open() } }
+    Connections {   // the still frames of the drag need the photos for the stacked thumbnails
+        target: photos
+        function onCountsChanged() { if (UiState.pdSim) { var i = UiState.pdDragInfo; UiState.pdDragInfo = { key: i.key, title: i.title, sub: i.sub, thumbs: sidePanel.thumbPaths([1, 6, 10]) } } }
+    }
     SettingsWindow { id: settingsWindow; sourceItem: appContent }
     BatchWindow { id: batchWindow; sourceItem: appContent }
     FiltersWindow { id: filtersWindow; sourceItem: appContent }
@@ -143,13 +174,21 @@ Window {
     // test hook `--ui key=value;...` applies UiState settings so layouts can be checked headlessly.
     function applyStartup(w) {
         if (w <= 900) { UiState.tab = ""; UiState.insp = false }
+        var sample = ({})
         if (typeof startup === "string" && startup.length) {
             var parts = startup.split(";");
             for (var i = 0; i < parts.length; ++i) {
                 var kv = parts[i].split("=");
                 if (kv.length !== 2) continue;
                 var v = kv[1] === "true" ? true : kv[1] === "false" ? false : (kv[1] === "" || isNaN(Number(kv[1])) ? kv[1] : Number(kv[1]));
-                if (kv[0] === "inspTab") insp.tab = v; else if (kv[0] === "sel") grid.view.currentIndex = v; else UiState[kv[0]] = v;
+                if (kv[0] === "inspTab") insp.tab = v; else if (kv[0] === "sel") grid.view.currentIndex = v
+                else if (["pdMode", "pdState", "pdActivity", "pdList"].indexOf(kv[0]) >= 0) sample[kv[0]] = String(v)
+                else UiState[kv[0]] = v;
+            }
+            if (Object.keys(sample).length) pocketDrop.setSample(sample.pdMode || "", sample.pdState || "", sample.pdActivity || "", sample.pdList || "mixed")
+            if (UiState.pdSim) {
+                var i = UiState.pdDragInfo
+                UiState.pdDragInfo = { key: i.key, title: i.title, sub: i.sub, thumbs: sidePanel.thumbPaths([1, 6, 10]) }
             }
         }
     }

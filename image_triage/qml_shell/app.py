@@ -38,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     from .filters_model import FiltersModel
     from .palette_model import PaletteModel
     from .photos import PhotoModel
+    from .pocketdrop_model import PocketDropModel
     from .settings_model import ACCENTS, SettingsModel
     from .theme import Theme
     from .thumbs import ThumbService
@@ -68,7 +69,9 @@ def main(argv: list[str] | None = None) -> int:
     palette = PaletteModel(memory=bool(args.mock), parent=app)
     adv_filters = FiltersModel(photos, memory=bool(args.mock), parent=app)
     batch = BatchModel(photos, memory=bool(args.mock), parent=app)
+    pocket_drop = PocketDropModel(photos, memory=bool(args.mock), parent=app)
     app.aboutToQuit.connect(batch.cleanup)
+    app.aboutToQuit.connect(pocket_drop.shutdown)
 
     def apply_theme() -> None:
         index = settings.accentIndex
@@ -88,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     context.setContextProperty("cmdPalette", palette)
     context.setContextProperty("advFilters", adv_filters)
     context.setContextProperty("batch", batch)
+    context.setContextProperty("pocketDrop", pocket_drop)
     context.setContextProperty("thumbs", thumbs)
     context.setContextProperty("startup", args.ui)
     engine.addImportPath(str(QML_DIR))
@@ -103,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     if not roots:
         return 1
     window = roots[0]
+    pocket_drop.setWindowHandle(int(window.winId()))
     window.setWidth(width)
     window.setHeight(height)
     if not args.size:

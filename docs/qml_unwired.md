@@ -19,7 +19,8 @@
 | Command palette | built, 18 of 53 commands run | Ctrl K |
 | Filter dialog and saved presets | built; applies decision, rating and RAW / JPEG only (see below) | Filters menu, palette |
 | Batch rename, resize, convert | built; **applying is not connected, no file changes** (see below) | Rename and Resize pins, palette, Ctrl+Shift+R / E / C |
-| Share to phone, handoff, transfers (PocketDrop) | not built | Share to phone |
+| PocketDrop page of the side panel | built; runs PocketDrop's own engine once `pocketdrop.dll` is rebuilt (see the PocketDrop section) | PocketDrop button, Share to phone, phone icon in Collections |
+| Handoff builder, Move / Copy To Folder cards, transfer progress | not built (mockup only) | Share to phone, Deliver |
 | Collections, best-of, people / faces | not built | Collections tab, Faces tab |
 | AI setup, review, apply decisions, cull preferences, workflow center, progress | not built | Analyze |
 | Help, shortcuts guide, catalog, file associations, splash, toasts, context menu | not built | menus, right click |
@@ -67,7 +68,8 @@ shell reacts to it yet.
 | Filters menu (rating, format, clear) | Memory ("Advanced filters…" opens the filters window, see below) | `filtering` |
 | Accept / Reject buttons | Memory | `decision_store`, move/delete via `file_ops` and the delete mode |
 | Sort, Columns menus | Memory (sort and density work on the model) | `view/columns`, details sort keys |
-| Compare, Open preview, Winner ladder, Rename, Resize and convert, Share to phone, Open in editor, Keyboard shortcuts | Visual (Compare toggles a flag nothing reads) | `compare` mode, `preview` popout, `batch_rename_controller`, `export_jobs_controller`, `handoff_controller`/PocketDrop, PhotoCraft host |
+| Share to phone | Real (opens PocketDrop with the current photo added) | |
+| Compare, Open preview, Winner ladder, Rename, Resize and convert, Open in editor, Keyboard shortcuts | Visual (Compare toggles a flag nothing reads) | `compare` mode, `preview` popout, `batch_rename_controller`, `export_jobs_controller`, `handoff_controller`/PocketDrop, PhotoCraft host |
 | Command palette pin | Real (opens the palette) | |
 | Rename and Resize and convert pins | Real (open the batch window) | |
 | "+" customise pinned buttons | Memory (pins are not saved between runs) | `workspace/toolbar_items`, `workspace/bar_state` |
@@ -79,8 +81,8 @@ shell reacts to it yet.
 | Library: search field | Visual | folder filter |
 | Library: Favorites, Drives (names, sizes), Folders tree | Sample (the tree does not navigate) | `drive_list_model`, `load_favorites`, recent folders, the real folder tree and its expansion rules (`view/single_drive_expansion`, `view/show_hidden_folders`) |
 | Faces: people, counts, indexing progress | Sample | `face_index`, `face_stack` |
-| Collections: Winners, projects | Sample (the winner count is a fixed 96) | collections store (`docs/collections_and_future_projects_decision.md`) |
-| PocketDrop: device, drop zone, transfers | Sample (drop zone has no drop handling; transfers are fixed) | `handoff_controller`, PocketDrop transport |
+| Collections: Winners, projects | Sample (the winner count is a fixed 96, the three projects and their counts are invented; their phone icon and dragging onto the PocketDrop button are Real, see below) | collections store (`docs/collections_and_future_projects_decision.md`) |
+| PocketDrop | **Real** with the rebuilt native module, otherwise Sample; see the PocketDrop section below | |
 
 ### Grid
 | Element | Status | To connect |
@@ -221,6 +223,33 @@ Also not done in the settings window:
 - Keyboard: Tab order is the declaration order with no focus ring styling beyond Qt's default; arrow keys do not move through the section list.
 - The Widgets dialog remembers its size and position (`dialogs/geometry`); the overlay always opens centred.
 - The Widgets "Reset" semantics per section differ: here Reset to defaults resets the visible section to the **documented defaults** and marks the rows unsaved.
+
+## PocketDrop panel
+
+`PocketDropPanel.qml` (with `PocketDropMenu.qml`, `PocketDropLibrary.qml`, `PocketDropGhost.qml`, `ConfirmCard.qml`) shows the state of `pocketdrop_model.py`.
+**With `pocketdrop.dll` built from this repository's `native/pocketdrop` (API level 2) everything below marked Real is PocketDrop's own engine.** An older
+dll (built before API level 2) still serves the Widgets panel, but the QML page then shows "Rebuild it with native/pocketdrop/build_windows.bat" and runs
+as Sample. Linux builds of the same sources are what `tests/test_qml_shell_pocketdrop.py` runs against; **the Windows dll and its offline hotspot,
+Bluetooth setup and share sheet have not been built or run by whoever wrote this.**
+
+| Element | Status | To connect |
+|---|---|---|
+| Server, links, QR code, mode switch (Same Wi-Fi, Anywhere, Offline), tunnel download and start, hotspot, Bluetooth setup card, receive code, transfers with speed, received files and notes, "stop sharing after a download", network address, received-files folder | Real (the engine) | |
+| Copy / Copy QR / Share / Open link / New link | Real (clipboard through Qt; the Windows share sheet needs the window handle, which the shell passes) | |
+| Anywhere warning | Real (the engine's own text and "don't show again"), in `ConfirmCard.qml` | |
+| Add files / Folder / received folder dialogs | Real (QtQuick.Dialogs; the engine's own browse callbacks are not used) | |
+| Drop files or text onto the card | Real (`DropArea`) | |
+| Paste (Ctrl V in the menu, Paste button) | Real. **No keyboard shortcuts** are bound in the shell yet (the Ctrl O / V / C labels in the menu are labels only) | shortcut registry |
+| Always on top | Not offered (it makes no sense inside the main window; the engine still has it) | |
+| Library button and picker: Selection, Winners, Keep, three collections | Real for Selection, Winners and Keep (the grid's decisions, which are themselves Sample data in folders). The three collections are **Sample membership** (Album selects = winners and keep, Print order = winners, Portfolio = five stars) because collections are not stored anywhere yet | collections store |
+| A Library group is one row; its files (and a RAW's JPG) are what the engine serves | Real; groups live only in this process | persist groups with the session |
+| "Send as: Originals / Proofing JPEGs" chip | **Visual**: the size estimate changes, the originals are always what is sent | handoff recipes (`handoff_controller`), export on send |
+| Dragging a collection onto the PocketDrop button, hover to open, drop on the page | Real for the three collections in the Collections tab. Photos in the grid cannot be dragged yet | grid drag source (`dragdrop_controller`) |
+| Phone icon on collections, Share to phone pin | Real (adds that group, opens the page) | |
+| Handoff builder, transfer cards, "Move / Copy To Folder" dialogs | not built | see the window table |
+| `--mock` and tests without the dll | Sample (scripted states built to look like the mockup, nothing listens on a port) | |
+
+Source of truth for the C++: `native/pocketdrop/src/ui` is now Image Triage's own copy (new `Ui::stateJson`, `command`, `removePaths`, `menuCommand`); `scripts/sync_pocketdrop.py` refuses to overwrite it without `--force`.
 
 ## Tooling that is not part of the product
 - `--mock`, `--set`, `--ui`, `--click`, `--hover`, `--grab` are test hooks of `python -m image_triage.qml_shell`.

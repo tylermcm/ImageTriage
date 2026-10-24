@@ -282,6 +282,7 @@ struct pd_host {
     CallbackShell shell;
     CallbackGfx gfx;
     Ui ui;
+    std::string json;
     pd_host(const pd_shell& s, const pd_gfx& g) : shell(s), gfx(g), ui(shell) {}
 };
 
@@ -366,6 +367,23 @@ PD_API void pd_share_link(pd_host* h) {
 }
 PD_API void pd_refresh_network(pd_host* h) {
     if (h) h->ui.refreshNetwork();
+}
+
+PD_API int pd_api_level(void) { return PD_API_LEVEL; }
+PD_API const char* pd_state_json(pd_host* h) {
+    if (!h) return "{}";
+    h->json = h->ui.stateJson();
+    return h->json.c_str();
+}
+PD_API void pd_command(pd_host* h, const char* name, const char* arg) {
+    if (h && name) h->ui.command(name, arg ? arg : "");
+}
+PD_API void pd_remove_paths(pd_host* h, const char* const* paths, int count) {
+    if (!h || !paths || count <= 0) return;
+    std::vector<std::string> list;
+    for (int i = 0; i < count; i++)
+        if (paths[i]) list.emplace_back(paths[i]);
+    h->ui.removePaths(list);
 }
 
 PD_API void pd_sink_add(pd_sink* s, const char* text) {
