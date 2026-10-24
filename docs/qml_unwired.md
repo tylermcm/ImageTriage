@@ -16,11 +16,12 @@
 | Popout / preview (`preview.py`) | not connected (stays a Widgets window) | Enter, Space, double-click, Open preview |
 | Editor (PhotoCraft host) | not connected | E, Open in editor |
 | Settings | built, storage connected, most values not applied | gear, Ctrl+, |
-| Command palette | built, 18 of 53 commands run | Ctrl K |
+| Command palette | built, 19 of 53 commands run | Ctrl K |
 | Filter dialog and saved presets | built; applies decision, rating and RAW / JPEG only (see below) | Filters menu, palette |
 | Batch rename, resize, convert | built; **applying is not connected, no file changes** (see below) | Rename and Resize pins, palette, Ctrl+Shift+R / E / C |
 | PocketDrop page of the side panel | built; runs PocketDrop's own engine once `pocketdrop.dll` is rebuilt (see the PocketDrop section) | PocketDrop button, Share to phone, phone icon in Collections |
-| Handoff builder, Move / Copy To Folder cards, transfer progress | not built (mockup only) | Share to phone, Deliver |
+| Deliver / Handoff Builder | built; recipes real, **running is not connected** (see its section) | Ctrl Alt H, palette |
+| Move / Copy To Folder cards, handoff progress and done cards | built, **scripted: nothing is transferred**; nothing opens the Move / Copy cards yet except a handoff run | Run workflow |
 | Collections, best-of, people / faces | not built | Collections tab, Faces tab |
 | AI setup, review, apply decisions, cull preferences, workflow center, progress | not built | Analyze |
 | Help, shortcuts guide, catalog, file associations, splash, toasts, context menu | not built | menus, right click |
@@ -144,7 +145,7 @@ a test), shortcuts come from the shortcut registry with the user's overrides, an
 |---|---|---|
 | Search, ranking, highlight, recents, keyboard (up, down, Enter, Esc), mouse | Real | |
 | Command list | Partly real | 53 of the Widgets palette's ids, titles and keywords (`palette_model.py`). Left out: per-collection, per-saved-search, per-recipe, per-panel, per-sort and per-column commands, and the AI state filters, which need live window state |
-| Commands that run something | 18 of 53 | Settings, Advanced Filters and Save Current Search (both open the filters window), Rename Image, Batch Rename, Batch Resize and Batch Convert (all open the batch window), the three themes (Slate, Light, Midnight), sort by name and by AI score, Clear Filters, Compare, Reset Layout, Mark Winner, Reject, Move To _keep (this one only sets the Keep decision). Every other command is listed, can be chosen and is remembered as recent, **and then does nothing** |
+| Commands that run something | 19 of 53 | Settings, Advanced Filters and Save Current Search (both open the filters window), Rename Image, Batch Rename, Batch Resize and Batch Convert (all open the batch window), the three themes (Slate, Light, Midnight), sort by name and by AI score, Clear Filters, Compare, Reset Layout, Deliver / Handoff Builder (opens its window), Mark Winner, Reject, Move To _keep (this one only sets the Keep decision). Every other command is listed, can be chosen and is remembered as recent, **and then does nothing** |
 | On / Off tag | Compare only | The Widgets palette shows On or Off for ten toggles (zen, bursts, auto advance, performance logging ...); the shell has none of those states. In the demo data they are fixed |
 | "Current view" tag | Not shown | needs the grid / details view state |
 | Preview Commands and Zen Commands | Model only | the palette can show them (`UiState.paletteContext`), nothing opens it from the popout or zen mode: neither exists in the shell |
@@ -246,10 +247,28 @@ Bluetooth setup and share sheet have not been built or run by whoever wrote this
 | "Send as: Originals / Proofing JPEGs" chip | **Visual**: the size estimate changes, the originals are always what is sent | handoff recipes (`handoff_controller`), export on send |
 | Dragging a collection onto the PocketDrop button, hover to open, drop on the page | Real for the three collections in the Collections tab. Photos in the grid cannot be dragged yet | grid drag source (`dragdrop_controller`) |
 | Phone icon on collections, Share to phone pin | Real (adds that group, opens the page) | |
-| Handoff builder, transfer cards, "Move / Copy To Folder" dialogs | not built | see the window table |
+| Handoff builder, transfer cards, "Move / Copy To Folder" dialogs | built (see the next section) | |
 | `--mock` and tests without the dll | Sample (scripted states built to look like the mockup, nothing listens on a port) | |
 
 Source of truth for the C++: `native/pocketdrop/src/ui` is now Image Triage's own copy (new `Ui::stateJson`, `command`, `removePaths`, `menuCommand`); `scripts/sync_pocketdrop.py` refuses to overwrite it without `--force`.
+
+## Deliver / Handoff Builder and transfer cards
+
+`HandoffWindow.qml` (`handoff_model.py`) and `TransferCards.qml` (`transfer_model.py`). The window's left side tightens its spacing on shorter windows and does not scroll
+down to a 690 px tall window (checked at 900, 800 and 720 px tall); below that it scrolls as a last resort.
+
+| Piece | Status | To connect |
+|---|---|---|
+| Recipes: the five built-ins, their wording, the preview lines (`recipe_summary_lines`), resize presets, convert formats, archive formats | Real (the Widgets app's own) | |
+| Saved recipes: Save recipe / Update saved / Delete saved, the Load list | Real: the Widgets settings key `workflow/recipes`, so the Widgets app sees them and the other way round (`--mock` shows a fixed "Wedding handoff" and stores nothing) | |
+| Which fields apply (transfer and folder-per-record for bundles; resize, convert, filename, metadata, archive for exports) | Real (the Widgets dialog's rules) | |
+| Scope: "N image bundles" | Every photo the grid shows (the Widgets dialog uses the selection; the shell has one selected cell) | multi-select |
+| Destination root: starts at the folder being viewed; Browse… | Real (folder dialog) | |
+| **Run workflow** | **Not connected.** It opens the cards below; no file is exported, copied, moved or archived | `workflows.export` (`build_workflow_export_plan`, `WorkflowExportTask`), bundle copy / move / archive in `file_ops` and `archive_ops`, as a background job with the status bar |
+| Recipe that moves bundles asks "Run destructive workflow?" first | Real wording and rule | |
+| Move / Copy confirm, progress, done cards; "Include paired RAW/JPEG and sidecar files"; Cancel; Open destination | Cards and wording follow the mockup; the progress is **scripted** (6 s, a made-up speed), Include paired is remembered only on the card, Open destination opens the folder only if it exists | `file_ops` transfer jobs, `transfer_dialogs.confirm_transfer` rules (count of 2 or more gets a completion card) |
+| Opening Move / Copy To Folder, To Recent Destination | Nothing opens them yet (Review menu, palette and shortcuts are Visual) | menus, palette ids `review.move_selection` ... |
+| Ctrl Alt H, palette "Deliver / Handoff Builder" | Real (open the window) | |
 
 ## Tooling that is not part of the product
 - `--mock`, `--set`, `--ui`, `--click`, `--hover`, `--grab` are test hooks of `python -m image_triage.qml_shell`.

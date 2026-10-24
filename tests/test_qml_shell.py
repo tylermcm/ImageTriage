@@ -12,6 +12,8 @@ from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 from image_triage.cache import DiskThumbnailCache
 from image_triage.qml_shell import app as shell_app
 from image_triage.qml_shell.pocketdrop_model import PocketDropModel
+from image_triage.qml_shell.handoff_model import HandoffModel
+from image_triage.qml_shell.transfer_model import TransferModel
 from image_triage.qml_shell.photos import PhotoModel
 from image_triage.qml_shell.theme import DARK, LIGHT, Theme, derive
 from image_triage.qml_shell.thumbs import ThumbService
@@ -185,6 +187,8 @@ def test_main_qml_loads_and_the_grid_shows_the_model(qapp, tmp_path):
     context.setContextProperty("advFilters", FiltersModel(model, memory=True, parent=qapp))
     context.setContextProperty("batch", BatchModel(model, memory=True, parent=qapp))
     context.setContextProperty("pocketDrop", PocketDropModel(model, memory=True, parent=qapp))
+    context.setContextProperty("handoff", HandoffModel(model, memory=True, parent=qapp))
+    context.setContextProperty("transfers", TransferModel(model, memory=True, parent=qapp))
     context.setContextProperty("thumbs", thumbs)
     context.setContextProperty("startup", "")
     engine.addImportPath(str(shell_app.QML_DIR))

@@ -21,6 +21,11 @@ QtObject {
     property string settingsQuery: ""
     property string batchMode: ""          // "" closed, or "rename", "resize", "convert"
     property bool filtersOpen: false
+    property bool handoffOpen: false
+    property string txState: ""            // test hooks for the transfer cards: confirm | progress | done, with txKind and txP
+    property string txKind: "copy"
+    property real txP: 0.42
+    property int txCount: 12
     property real filtersScroll: 0          // test hook: where the filters page starts scrolled
     property bool paletteOpen: false
     property string paletteContext: "main"   // "main", "preview" or "zen": which commands are offered and what the card is called

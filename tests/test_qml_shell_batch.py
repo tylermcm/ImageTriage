@@ -12,6 +12,8 @@ from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 from image_triage.models import ImageRecord
 from image_triage.qml_shell import app as shell_app
 from image_triage.qml_shell.pocketdrop_model import PocketDropModel
+from image_triage.qml_shell.handoff_model import HandoffModel
+from image_triage.qml_shell.transfer_model import TransferModel
 from image_triage.qml_shell.batch_model import PREVIEW_ROW_LIMIT, BatchModel
 from image_triage.qml_shell.filters_model import FiltersModel
 from image_triage.qml_shell.photos import PhotoModel
@@ -161,7 +163,7 @@ def test_batch_window_opens_from_the_palette_and_switches_tools_in_qml(qapp, tmp
     warnings = []
     engine.warnings.connect(lambda items: warnings.extend(str(i) for i in items))
     for name, obj in (("theme", Theme(parent=qapp)), ("photos", model), ("settings", SettingsModel(memory=True, parent=qapp)), ("cmdPalette", palette),
-                      ("advFilters", FiltersModel(model, memory=True, parent=qapp)), ("batch", BatchModel(model, parent=qapp)), ("pocketDrop", PocketDropModel(model, memory=True, parent=qapp)),
+                      ("advFilters", FiltersModel(model, memory=True, parent=qapp)), ("batch", BatchModel(model, parent=qapp)), ("pocketDrop", PocketDropModel(model, memory=True, parent=qapp)), ("handoff", HandoffModel(model, memory=True, parent=qapp)), ("transfers", TransferModel(model, memory=True, parent=qapp)),
                       ("thumbs", ThumbService(DiskThumbnailCache(tmp_path / "c"), parent=qapp)), ("startup", "")):
         engine.rootContext().setContextProperty(name, obj)
     engine.addImportPath(str(shell_app.QML_DIR))

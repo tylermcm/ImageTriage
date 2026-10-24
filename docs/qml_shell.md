@@ -64,6 +64,11 @@ Library groups (a selection, the winners, a collection as one row) and a scripte
 the same states open in the shell with `--ui "tab=drop;pdMode=anywhere;pdState=missing;pdActivity=none;pdList=mixed;menu=pdmenu|pdlib;pdFlow=dragging"`.
 Build the Windows dll with `native/pocketdrop/build_windows.bat`; `tests/test_qml_shell_pocketdrop.py` builds a Linux copy.
 
+## Handoff builder and transfer cards
+
+`HandoffWindow.qml` and `TransferCards.qml`, models `handoff_model.py` and `transfer_model.py`. Mockup: `scripts/qml_parity/handoff.dc.html` (`?ho=1&hrecipe=saved:wedding_handoff`, `?tx=confirm|progress|done&txk=copy|move|wf&txp=0.42`);
+in the shell `--ui "handoffOpen=true;hoRecipe=saved:wedding_handoff"` and `--ui "txState=progress;txKind=copy;txP=0.42"`. Running a recipe is not connected (docs/qml_unwired.md).
+
 ## Resolution and scaling
 
 Every size is in device-independent pixels. Qt multiplies by the screen's scale (Windows "Scale", Linux `QT_SCALE_FACTOR`/compositor scale), and
@@ -88,4 +93,4 @@ testing (everything above was verified headlessly with a software renderer), `to
 
 ## Tests
 
-`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py`, `tests/test_qml_shell_pocketdrop.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
+`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py`, `tests/test_qml_shell_pocketdrop.py`, `tests/test_qml_shell_handoff.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
