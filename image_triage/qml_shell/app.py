@@ -38,7 +38,9 @@ def main(argv: list[str] | None = None) -> int:
     from .filters_model import FiltersModel
     from .palette_model import PaletteModel
     from .photos import PhotoModel
+    from .handoff_model import HandoffModel
     from .pocketdrop_model import PocketDropModel
+    from .transfer_model import TransferModel
     from .settings_model import ACCENTS, SettingsModel
     from .theme import Theme
     from .thumbs import ThumbService
@@ -69,6 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     palette = PaletteModel(memory=bool(args.mock), parent=app)
     adv_filters = FiltersModel(photos, memory=bool(args.mock), parent=app)
     batch = BatchModel(photos, memory=bool(args.mock), parent=app)
+    handoff = HandoffModel(photos, memory=bool(args.mock), parent=app)
+    transfers = TransferModel(photos, memory=bool(args.mock), parent=app)
+    handoff.runRequested.connect(transfers.handoff)
     pocket_drop = PocketDropModel(photos, memory=bool(args.mock), parent=app)
     app.aboutToQuit.connect(batch.cleanup)
     app.aboutToQuit.connect(pocket_drop.shutdown)
@@ -92,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
     context.setContextProperty("advFilters", adv_filters)
     context.setContextProperty("batch", batch)
     context.setContextProperty("pocketDrop", pocket_drop)
+    context.setContextProperty("handoff", handoff)
+    context.setContextProperty("transfers", transfers)
     context.setContextProperty("thumbs", thumbs)
     context.setContextProperty("startup", args.ui)
     engine.addImportPath(str(QML_DIR))

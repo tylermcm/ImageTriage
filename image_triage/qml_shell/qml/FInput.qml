@@ -20,6 +20,8 @@ Rectangle {
         color: theme.fg; font.pixelSize: 13; clip: true; selectByMouse: true
         text: f.text
         onTextEdited: f.edited(text)
+        onTextChanged: { if (!activeFocus) cursorPosition = 0 }      // a long value shows its start, not its end
+        onActiveFocusChanged: { if (!activeFocus) cursorPosition = 0 }
         Text { visible: !parent.text; text: f.placeholder; color: theme.fg3; font: parent.font; width: parent.width; elide: Text.ElideRight }
         Accessible.name: f.placeholder
     }

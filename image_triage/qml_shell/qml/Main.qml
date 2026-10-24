@@ -140,9 +140,12 @@ Window {
     }
     SettingsWindow { id: settingsWindow; sourceItem: appContent }
     BatchWindow { id: batchWindow; sourceItem: appContent }
+    HandoffWindow { id: handoffWindow; sourceItem: appContent }
+    TransferCards { id: transferCards; sourceItem: appContent }
     FiltersWindow { id: filtersWindow; sourceItem: appContent }
     CommandPalette { id: commandPalette; sourceItem: appContent }
     Shortcut { sequence: "Ctrl+,"; onActivated: UiState.settingsOpen = !UiState.settingsOpen }
+    Shortcut { sequence: "Ctrl+Alt+H"; onActivated: UiState.handoffOpen = !UiState.handoffOpen }
     Shortcut { sequence: "Ctrl+Shift+R"; onActivated: UiState.batchMode = "rename" }
     Shortcut { sequence: "Ctrl+Shift+E"; onActivated: UiState.batchMode = "resize" }
     Shortcut { sequence: "Ctrl+Shift+C"; onActivated: UiState.batchMode = "convert" }
@@ -155,6 +158,7 @@ Window {
             if (id === "file.workflow_settings") UiState.settingsOpen = true
             else if (id.indexOf("appearance.") === 0) { settings.set("theme", id.slice(11)); settings.save() }
             else if (id.indexOf("sort.") === 0) { UiState.sort = id.slice(5); photos.setSort(UiState.sort) }
+            else if (id === "workflow.handoff_builder") UiState.handoffOpen = true
             else if (id === "tools.batch_rename" || id === "edit.rename_selection") UiState.batchMode = "rename"
             else if (id === "tools.batch_resize") UiState.batchMode = "resize"
             else if (id === "tools.batch_convert") UiState.batchMode = "convert"
@@ -175,6 +179,7 @@ Window {
     function applyStartup(w) {
         if (w <= 900) { UiState.tab = ""; UiState.insp = false }
         var sample = ({})
+        var handoffRecipe = ""
         if (typeof startup === "string" && startup.length) {
             var parts = startup.split(";");
             for (var i = 0; i < parts.length; ++i) {
@@ -183,8 +188,11 @@ Window {
                 var v = kv[1] === "true" ? true : kv[1] === "false" ? false : (kv[1] === "" || isNaN(Number(kv[1])) ? kv[1] : Number(kv[1]));
                 if (kv[0] === "inspTab") insp.tab = v; else if (kv[0] === "sel") grid.view.currentIndex = v
                 else if (["pdMode", "pdState", "pdActivity", "pdList"].indexOf(kv[0]) >= 0) sample[kv[0]] = String(v)
+                else if (kv[0] === "hoRecipe") handoffRecipe = String(kv[1])
                 else UiState[kv[0]] = v;
             }
+            if (handoffRecipe !== "") handoff.setRecipe(handoffRecipe)
+            if (UiState.txState !== "") transfers.show(UiState.txState, UiState.txKind, UiState.txCount, UiState.txP)
             if (Object.keys(sample).length) pocketDrop.setSample(sample.pdMode || "", sample.pdState || "", sample.pdActivity || "", sample.pdList || "mixed")
             if (UiState.pdSim) {
                 var i = UiState.pdDragInfo

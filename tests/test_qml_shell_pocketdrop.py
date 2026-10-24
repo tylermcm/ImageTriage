@@ -23,6 +23,8 @@ from image_triage.qml_shell.filters_model import FiltersModel
 from image_triage.qml_shell.palette_model import PaletteModel
 from image_triage.qml_shell.photos import PhotoModel
 from image_triage.qml_shell.pocketdrop_model import PocketDropModel
+from image_triage.qml_shell.handoff_model import HandoffModel
+from image_triage.qml_shell.transfer_model import TransferModel
 from image_triage.qml_shell.settings_model import SettingsModel
 from image_triage.qml_shell.theme import Theme
 from image_triage.qml_shell.thumbs import ThumbService
@@ -154,7 +156,7 @@ def test_page_loads_without_qml_errors(qapp, tmp_path):
     palette = PaletteModel(memory=True, parent=qapp)
     for name, obj in (("theme", theme), ("photos", model), ("settings", SettingsModel(memory=True, parent=qapp)), ("cmdPalette", palette),
                       ("advFilters", FiltersModel(model, memory=True, parent=qapp)), ("batch", BatchModel(model, memory=True, parent=qapp)),
-                      ("pocketDrop", PocketDropModel(model, memory=True, parent=qapp)), ("thumbs", ThumbService(parent=qapp)),
+                      ("pocketDrop", PocketDropModel(model, memory=True, parent=qapp)), ("handoff", HandoffModel(model, memory=True, parent=qapp)), ("transfers", TransferModel(model, memory=True, parent=qapp)), ("thumbs", ThumbService(parent=qapp)),
                       ("startup", "tab=drop;pdMode=anywhere;pdState=missing;pdList=mixed")):
         context.setContextProperty(name, obj)
     engine.addImportPath(str(shell_app.QML_DIR))
