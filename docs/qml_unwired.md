@@ -363,7 +363,7 @@ in the shell `--ui "refScene=hlp-start"` (the same names). `--mock` and the test
 | About: Release notes, Report a problem | **Real** (the default browser: the release's notes URL when the check found one, otherwise the repository's releases / new issue page) | |
 | About: Open the log folder | **Real** (`perf.performance_log_dir()`); in `--mock` a toast says it is sample data | |
 | About: **Licences and credits** | **Not connected**: a toast says so | a licences page (the LICENSE file and `docs/ai_model_licence_audit.md` hold the text) |
-| About: icon | The current `app_icon-v2.png` (it changes with the new icon) | |
+| About: icon | `app_icon-v3.png` (the new icon, drawn from `scripts/icon_art/`) | |
 | Keyboard shortcuts: the list | **Real, curated**: the shell's own keys plus the registry actions it has; a row tied to a registry action shows the key the user set (`ui/shortcuts.load_shortcut_overrides`) in blue | the shell binds fixed keys, not the user's overrides (also noted under Grid) |
 | Keyboard shortcuts: search | Real (matches the action, the category and an exact key name) | |
 | Change shortcuts in Settings | Opens the Settings window (the shortcuts section of the settings window is itself a sample list) | the registry editor |

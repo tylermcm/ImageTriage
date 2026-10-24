@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+<defs>
+<linearGradient id="tile" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a2a2e"/><stop offset="1" stop-color="#0d0d10"/></linearGradient>
+<linearGradient id="ring" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#ffc24d"/><stop offset="1" stop-color="#ff6a2b"/></linearGradient>
+</defs>
+<rect x="8" y="8" width="240" height="240" rx="58" fill="url(#tile)"/>
+<g stroke="url(#ring)" stroke-width="20" stroke-linecap="round" fill="none"><circle cx="128" cy="128" r="86"/><line x1="214.00" y1="128.00" x2="143.96" y2="158.02"/><line x1="171.00" y1="202.48" x2="109.98" y2="156.83"/><line x1="85.00" y1="202.48" x2="94.02" y2="126.81"/><line x1="42.00" y1="128.00" x2="112.04" y2="97.98"/><line x1="85.00" y1="53.52" x2="146.02" y2="99.17"/><line x1="171.00" y1="53.52" x2="161.98" y2="129.19"/></g>
+<circle cx="128" cy="128" r="11" fill="#fff"/>
+</svg>
