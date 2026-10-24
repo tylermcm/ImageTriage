@@ -83,7 +83,7 @@ Window {
             for (var i = 0; i < parts.length; ++i) {
                 var kv = parts[i].split("=");
                 if (kv.length !== 2) continue;
-                var v = kv[1] === "true" ? true : kv[1] === "false" ? false : (isNaN(Number(kv[1])) ? kv[1] : Number(kv[1]));
+                var v = kv[1] === "true" ? true : kv[1] === "false" ? false : (kv[1] === "" || isNaN(Number(kv[1])) ? kv[1] : Number(kv[1]));
                 if (kv[0] === "inspTab") insp.tab = v; else if (kv[0] === "sel") grid.view.currentIndex = v; else UiState[kv[0]] = v;
             }
         }

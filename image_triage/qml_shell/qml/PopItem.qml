@@ -14,14 +14,15 @@ Item {
     Rectangle { anchors.fill: parent; radius: 10; color: Qt.alpha(theme.lift, hover.hovered ? 0.08 : 0) }
     Row {
         anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 10; spacing: 10
-        Icon { visible: row.icon !== ""; name: row.icon; color: theme.fg2; size: 16; anchors.verticalCenter: parent.verticalCenter }
+        Icon { visible: row.icon !== ""; name: row.icon; color: hover.hovered ? theme.fg : theme.fg2; size: 18; anchors.verticalCenter: parent.verticalCenter }
         Text { text: row.label; color: hover.hovered ? theme.fg : theme.fg2; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
     }
-    Text {
-        visible: row.kbd !== ""; text: row.kbd; color: theme.fg3; font.pixelSize: 10; font.weight: Font.Medium
+    Item {   // key cap: 10px text, 1px border with a 2px bottom
+        visible: row.kbd !== ""; width: kt.implicitWidth + 12; height: 18
         anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
-        padding: 2; leftPadding: 5; rightPadding: 5
-        Rectangle { anchors.fill: parent; z: -1; radius: 5; color: "transparent"; border.color: theme.line }
+        Rectangle { anchors.fill: parent; radius: 5; color: "transparent"; border.color: theme.line }
+        Rectangle { x: 1; y: parent.height - 2.5; width: parent.width - 2; height: 1.5; radius: 1; color: theme.line }
+        Text { id: kt; anchors.centerIn: parent; anchors.verticalCenterOffset: -0.5; text: row.kbd; color: theme.fg3; font.pixelSize: 10; font.weight: Font.Medium }
     }
     Icon {
         visible: row.mode === "tick"; name: "check"; size: 14; color: theme.accentFg; opacity: row.checked ? 1 : 0

@@ -7,6 +7,11 @@ Popup {
     id: pop
     property int placement: 0            // 0: above the button, 1: to the right of it
     property bool alignBottom: false     // placement 1 only: grow upward from the button's bottom edge
+    property string name: ""            // the id UiState.menu uses for this menu (one menu open at a time)
+    readonly property bool wanted: name !== "" && UiState.menu === name
+    onWantedChanged: { if (wanted) open(); else if (opened) close() }
+    onClosed: { if (name !== "" && UiState.menu === name) UiState.menu = "" }
+    Component.onCompleted: { if (wanted) open() }
     property real minWidth: 220
     property real maxHeight: 10000
     default property alias content: column.data
@@ -14,7 +19,7 @@ Popup {
     modal: true
     dim: false
     focus: true
-    padding: 6
+    padding: 7                           // 6 + the 1px border
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
     x: placement === 1 ? parent.width + 10 : 0
     y: placement === 1 ? (alignBottom ? parent.height - height + 4 : -8) : -height - 12
@@ -31,7 +36,12 @@ Popup {
             NumberAnimation { property: "scale"; to: 0.97; duration: 110 }
         }
     }
-    background: Rectangle { radius: 16; color: Qt.alpha(theme.s2, 0.97); border.color: Qt.alpha(theme.lift, 0.11) }
+    // the mockup's .pop: backdrop blur(22px) saturate(1.4) under an 88% tint, shadow 0 24px 48px -16px rgba(0,0,0,.7)
+    background: Glass {
+        sourceItem: pop.parent ? pop.parent.Window.contentItem : null
+        radius: 16; tint: Qt.alpha(theme.s2, 0.88); saturation: 0.4
+        shadowAlphaA: 0.7; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16
+    }
     contentItem: Flickable {
         implicitWidth: Math.max(pop.minWidth, column.implicitWidth)
         implicitHeight: Math.min(pop.maxHeight, column.implicitHeight)

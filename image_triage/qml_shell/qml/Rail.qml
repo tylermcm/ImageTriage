@@ -56,9 +56,9 @@ Rectangle {
         RailButton { visible: UiState.pins.undo; icon: "undo"; tip: "Undo" }
         RailButton {
             visible: UiState.pins.review; icon: "check"; tip: "Review"; menu: true; on: reviewMenu.opened
-            onClicked: reviewMenu.opened ? reviewMenu.close() : reviewMenu.open()
+            onClicked: UiState.setMenu("review")
             Popover {
-                id: reviewMenu; placement: 1
+                id: reviewMenu; name: "review"; placement: 1
                 PopHeader { caption: "Decision for selection" }
                 PopItem { label: "Mark winner"; icon: "star"; kbd: "W"; onClicked: { photos.setDecision(rail.row, "win"); reviewMenu.close() } }
                 PopItem { label: "Keep"; icon: "check"; kbd: "K"; onClicked: { photos.setDecision(rail.row, "keep"); reviewMenu.close() } }
@@ -69,9 +69,9 @@ Rectangle {
         }
         RailButton {
             visible: UiState.pins.view; icon: "view"; tip: "View"; menu: true; on: viewMenu.opened
-            onClicked: viewMenu.opened ? viewMenu.close() : viewMenu.open()
+            onClicked: UiState.setMenu("view")
             Popover {
-                id: viewMenu; placement: 1
+                id: viewMenu; name: "view"; placement: 1
                 PopHeader { caption: "On each thumbnail" }
                 PopItem { label: "Filenames"; mode: "switch"; checked: UiState.showNames; onClicked: UiState.showNames = !UiState.showNames }
                 PopItem { label: "Decision badges"; mode: "switch"; checked: UiState.showBadges; onClicked: UiState.showBadges = !UiState.showBadges }
@@ -79,9 +79,9 @@ Rectangle {
         }
         RailButton {
             visible: UiState.pins.filters; icon: "funnel"; tip: "Filters"; menu: true; on: filtersMenu.opened
-            onClicked: filtersMenu.opened ? filtersMenu.close() : filtersMenu.open()
+            onClicked: UiState.setMenu("filters")
             Popover {
-                id: filtersMenu; placement: 1
+                id: filtersMenu; name: "filters"; placement: 1
                 PopHeader { caption: "Minimum rating" }
                 Repeater {
                     model: [[0, "Any"], [3, "3 stars and up"], [4, "4 stars and up"], [5, "5 stars"]]
@@ -112,9 +112,9 @@ Rectangle {
         RailButton { visible: UiState.pins.reject; icon: "reject"; tip: "Reject selection"; hoverColor: theme.rej; onClicked: photos.setDecision(rail.row, "rej") }
         RailButton {
             visible: UiState.pins.sort; icon: "sort"; tip: "Sort"; menu: true; on: sortMenu.opened
-            onClicked: sortMenu.opened ? sortMenu.close() : sortMenu.open()
+            onClicked: UiState.setMenu("sort")
             Popover {
-                id: sortMenu; placement: 1
+                id: sortMenu; name: "sort"; placement: 1
                 PopHeader { caption: "Sort photos by" }
                 Repeater {
                     model: [["name", "Name"], ["ai", "AI score"], ["rating", "Rating"], ["decision", "Decision"]]
@@ -128,9 +128,9 @@ Rectangle {
         }
         RailButton {
             visible: UiState.pins.columns; icon: "columns"; tip: "Columns"; menu: true; on: columnsMenu.opened
-            onClicked: columnsMenu.opened ? columnsMenu.close() : columnsMenu.open()
+            onClicked: UiState.setMenu("columns")
             Popover {
-                id: columnsMenu; placement: 1
+                id: columnsMenu; name: "columns"; placement: 1
                 PopHeader { caption: "Thumbnail size" }
                 Repeater {
                     model: [["s", "Small"], ["m", "Medium"], ["l", "Large"]]
@@ -157,9 +157,9 @@ Rectangle {
         RailButton {
             id: add
             icon: "plus"; tip: "Customize pinned buttons"; on: pinMenu.opened
-            onClicked: pinMenu.opened ? pinMenu.close() : pinMenu.open()
+            onClicked: UiState.setMenu("pins")
             Popover {
-                id: pinMenu; placement: 1; alignBottom: true; minWidth: 250; maxHeight: Math.max(240, rail.Window.height - 140)
+                id: pinMenu; name: "pins"; placement: 1; alignBottom: true; minWidth: 250; maxHeight: Math.max(240, rail.Window.height - 140)
                 PopHeader { caption: "Pinned buttons" }
                 Text {
                     width: parent.width - 20; x: 10; wrapMode: Text.WordWrap; bottomPadding: 6

@@ -21,9 +21,9 @@ Item {
         x: 6; y: 6; spacing: 4
         FbButton {
             id: review; icon: "check"; label: "Review"; showLabel: bar.labels; caret: true; open: reviewMenu.opened
-            onClicked: reviewMenu.opened ? reviewMenu.close() : reviewMenu.open()
+            onClicked: UiState.setMenu("fReview")
             Popover {
-                id: reviewMenu
+                id: reviewMenu; name: "fReview"
                 PopItem { label: "Mark winner"; icon: "star"; kbd: "W"; onClicked: { photos.setDecision(bar.row, "win"); reviewMenu.close() } }
                 PopItem { label: "Keep"; icon: "check"; kbd: "K"; onClicked: { photos.setDecision(bar.row, "keep"); reviewMenu.close() } }
                 PopItem { label: "Reject"; icon: "x"; kbd: "X"; onClicked: { photos.setDecision(bar.row, "rej"); reviewMenu.close() } }
@@ -33,18 +33,18 @@ Item {
         }
         FbButton {
             id: view; icon: "view"; label: "View"; showLabel: bar.labels; caret: true; open: viewMenu.opened
-            onClicked: viewMenu.opened ? viewMenu.close() : viewMenu.open()
+            onClicked: UiState.setMenu("fView")
             Popover {
-                id: viewMenu
+                id: viewMenu; name: "fView"
                 PopItem { label: "Filenames"; mode: "switch"; checked: UiState.showNames; onClicked: UiState.showNames = !UiState.showNames }
                 PopItem { label: "Decision badges"; mode: "switch"; checked: UiState.showBadges; onClicked: UiState.showBadges = !UiState.showBadges }
             }
         }
         FbButton {
             id: sortBtn; icon: "sort"; label: "Sort"; showLabel: bar.labels; caret: true; open: sortMenu.opened
-            onClicked: sortMenu.opened ? sortMenu.close() : sortMenu.open()
+            onClicked: UiState.setMenu("fSort")
             Popover {
-                id: sortMenu
+                id: sortMenu; name: "fSort"
                 Repeater {
                     model: [["name", "Name"], ["ai", "AI score"], ["rating", "Rating"], ["decision", "Decision"]]
                     delegate: PopItem {
