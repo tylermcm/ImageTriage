@@ -86,7 +86,7 @@ def derive(spec: dict) -> dict[str, QColor]:
         "fg3": mix(base, lift, contrast * 0.64),
         "lift": lift,
         "accent": accent,
-        "accentFg": mix(accent, WHITE, 30) if lift == WHITE else accent,
+        "accentFg": mix(accent, WHITE, 30) if lift == WHITE else mix(accent, BLACK, 30),
     }
     colors = {name: _color(value) for name, value in tokens.items()}
     for name, value in (("win", "#3fb97a"), ("keep", "#4b8ff0"), ("rev", "#e0b04a"), ("rej", "#e5635b"), ("star", spec["star"])):

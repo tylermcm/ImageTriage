@@ -200,7 +200,7 @@ class PhotoModel(QAbstractListModel):
         aperture = ("f/4", "f/5.6", "f/8", "f/9", "f/11")[(h >> 4) % 5]
         iso = (100, 100, 200, 400, 800)[(h >> 8) % 5]
         focus = 45 + (h >> 11) % 55
-        return dict(item, position=row + 1, count=len(self._rows), exposure=f"{shutter} \u00b7 {aperture} \u00b7 ISO {iso}",
+        return dict(item, isRaw=item["raw"], position=row + 1, count=len(self._rows), exposure=f"{shutter} \u00b7 {aperture} \u00b7 ISO {iso}",
                     focal=("24 mm", "35 mm", "50 mm", "70 mm")[(h >> 14) % 4], captured=f"2026-05-14 {8 + (h >> 17) % 10:02d}:{(h >> 20) % 60:02d}",
                     focus=focus, expo=("Balanced", "Balanced", "Bright", "Dark")[(h >> 22) % 4], noise=("Low", "Low", "Medium")[(h >> 24) % 3],
                     camera="Nikon Z 6", lens="24-70 mm f/4 S", pixels="6048 \u00d7 4024")
