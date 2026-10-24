@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Shapes
+import QtQuick.Effects
 
 // The left rail: four destinations with a sliding pill, then a hairline split, the pinned toolbar buttons, "+" to customise, settings.
 Rectangle {
@@ -19,14 +20,30 @@ Rectangle {
     ]
     readonly property int tabIndex: Math.max(0, UiState.tabs.indexOf(UiState.tab))
 
-    Rectangle {
+    Item {
         id: pill
-        x: 5; width: rail.btnW; height: rail.btnH; radius: 14
+        x: 5; width: rail.btnW; height: rail.btnH
         y: 10 + rail.tabIndex * rail.pitch
         opacity: UiState.tab === "" ? 0 : 1
-        color: Qt.alpha(theme.accent, 0.15); border.color: Qt.alpha(theme.accent, 0.30)
         Behavior on y { SpringAnimation { spring: 3.4; damping: 0.22; epsilon: 0.25 } }
         Behavior on opacity { NumberAnimation { duration: 250 } }
+        // box-shadow 0 6px 18px -8px accent: a smaller copy of the pill, lowered and blurred, drawn only outside the pill
+        Item {
+            x: -40; y: -40; width: pill.width + 80; height: pill.height + 80
+            layer.enabled: true
+            layer.effect: MultiEffect { maskEnabled: true; maskInverted: true; maskSource: pillMask; maskThresholdMin: 0.5; maskSpreadAtMin: 1.0 }
+            Rectangle {
+                x: 40 + pill.glowInset; y: 40 + pill.glowInset + 6; width: pill.width - 2 * pill.glowInset; height: pill.height - 2 * pill.glowInset; radius: 8; color: theme.accent
+                layer.enabled: true
+                layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: pill.glowBlur; autoPaddingEnabled: true }
+            }
+        }
+        Item { id: pillMask; x: -40; y: -40; width: pill.width + 80; height: pill.height + 80; visible: false; layer.enabled: true
+            Rectangle { x: 40; y: 40; width: pill.width; height: pill.height; radius: 14 } }
+        Rectangle { anchors.fill: parent; radius: 14; color: Qt.alpha(theme.accent, 0.15) }
+        Rectangle { anchors.fill: parent; radius: 14; color: "transparent"; border.color: Qt.alpha(theme.accent, 0.30); border.width: 1 }   // inset 0 0 0 1px
+        property real glowBlur: 32
+        property real glowInset: 6
     }
     Repeater {
         model: rail.dests

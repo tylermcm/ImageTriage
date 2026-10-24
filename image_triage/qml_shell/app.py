@@ -17,6 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--size", default="", help="window size in device-independent pixels (default: 1440x900, or 92%% of the screen if that is smaller)")
     parser.add_argument("--grab", metavar="PNG", help="render the window to PNG once thumbnails settle, then exit (for checks)")
     parser.add_argument("--grab-wait", type=float, default=4.0, help="seconds to wait before grabbing (default 4)")
+    parser.add_argument("--hover", default="", help="park the pointer at 'x,y' (window coordinates) instead of off the grid, to check hover states headlessly")
     parser.add_argument("--click", default="", help="mouse clicks before the grab, 'x,y;x,y' in window coordinates (for headless checks)")
     parser.add_argument("--ui", default="", help="UiState settings applied at startup, e.g. 'tab=faces;insp=false;inspTab=2' (for headless checks)")
     return parser
@@ -97,7 +98,8 @@ def main(argv: list[str] | None = None) -> int:
 
         from PySide6.QtCore import QPoint
         from PySide6.QtTest import QTest
-        QTimer.singleShot(300, lambda: QTest.mouseMove(window, QPoint(3, 3)))   # park the pointer off the grid so no cell shows hover
+        hx, hy = (int(v) for v in args.hover.split(",")) if args.hover else (3, 3)
+        QTimer.singleShot(300, lambda: QTest.mouseMove(window, QPoint(hx, hy)))   # park the pointer off the grid so no cell shows hover
         QTimer.singleShot(int(args.grab_wait * 1000), grab)
         if args.click:
             from PySide6.QtCore import Qt

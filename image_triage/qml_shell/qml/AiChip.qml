@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Shapes
+import QtQuick.Effects
 
 // The AI button: an animated conic-gradient ring while it analyzes, a steady green one when results are ready.
 Item {
@@ -9,6 +10,27 @@ Item {
     implicitWidth: row.implicitWidth + 25
     NumberAnimation on angle { running: UiState.ai === 1; from: 0; to: 360; duration: 2200; loops: Animation.Infinite }
 
+    // ::after: the same conic ramp, inset 3px, blurred 12px, half opacity, behind the chip while it analyzes
+    Shape {
+        x: 3; y: 3; width: chip.width - 6; height: chip.height - 6
+        opacity: UiState.ai === 1 ? 0.5 : 0
+        Behavior on opacity { NumberAnimation { duration: 400 } }
+        preferredRendererType: Shape.CurveRenderer
+        layer.enabled: opacity > 0
+        layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: 26; autoPaddingEnabled: true }
+        ShapePath {
+            strokeColor: "transparent"
+            fillGradient: ConicalGradient {
+                centerX: chip.width / 2 - 3; centerY: chip.height / 2 - 3; angle: 90 - chip.angle
+                GradientStop { position: 0.0; color: "transparent" }
+                GradientStop { position: 0.15; color: "#d58ae8" }
+                GradientStop { position: 0.35; color: theme.accent }
+                GradientStop { position: 0.55; color: "transparent" }
+                GradientStop { position: 1.0; color: "transparent" }
+            }
+            PathSvg { path: Icons.rect(0, 0, chip.width - 6, chip.height - 6, 11) }
+        }
+    }
     Rectangle { anchors.fill: parent; radius: 14; color: theme.s3 }
     Shape {
         id: ring
