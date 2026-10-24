@@ -62,6 +62,7 @@ QtObject {
     property string peopleQuery: ""
     property string peopleSel: ""           // test hook: comma-separated ids to start selected
     property string faceQuery: ""
+    property int requestRow: -1             // a window asks the grid to move to this row (Show in grid)
     property bool compact: false         // window <= 900px: narrow rail, panel and inspector float over the grid (the mockup's phone layout)
     property var pins: ({
         open: true, undo: true, review: true, view: true, filters: true, accept: true, reject: true,

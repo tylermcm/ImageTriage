@@ -212,7 +212,7 @@ class PhotoModel(QAbstractListModel):
             source = [self._rows[row]] if 0 <= row < len(self._rows) else []
         else:
             source = [r for r in self._all if (decision is None or r["decision"] == decision) and r["rating"] >= min_rating]
-        return [{"path": r["path"], "name": r["name"], "companions": tuple(r.get("companions", ()))} for r in source]
+        return [{"path": r["path"], "name": r["name"], "decision": r["decision"], "companions": tuple(r.get("companions", ()))} for r in source]
 
     # -- view state --------------------------------------------------------------------------------------------------------
     @Slot(str)

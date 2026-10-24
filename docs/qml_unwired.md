@@ -23,7 +23,7 @@
 | Deliver / Handoff Builder | built; recipes real, **running is not connected** (see its section) | Ctrl Alt H, palette |
 | Move / Copy To Folder cards, handoff progress and done cards | built, **scripted: nothing is transferred**; nothing opens the Move / Copy cards yet except a handoff run | Run workflow |
 | Collections (new / edit dialog, picker, menu), best-of, Tag People | built; collections **real** (the Widgets library store), people real with a face index, best-of real planner with few signals (see its section) | Collections tab (+, menu, right-click), Add All bar, B, Faces tab (All people…), Ctrl Alt B, palette |
-| AI setup, review, apply decisions, cull preferences, workflow center, progress | not built | Analyze |
+| Cull window (prepare, progress, review, apply) and AI Center (setup, models, defaults, recent runs) | built, **the analysis is scripted: nothing is measured** (see its section) | Analyze button |
 | Help, shortcuts guide, catalog, file associations, splash, toasts, context menu | not built | menus, right click |
 
 
@@ -294,6 +294,29 @@ collection badge in `PhotoGrid.qml`; models `collections_model.py`, `people_mode
 | Best-of-Set: strategies, proposal size, the planner | **Real planner** (`workflows.best_of.build_best_of_set_plan`) with the signals the shell has: your winners. AI scores, review results and burst groups are not passed in (they do not exist in the shell yet), so Balanced and Top N differ little | AI results, bursts |
 | Best-of result | Shown as a **shortlist view of the folder** with a "Back to folder" button (the Widgets dialog selects the photos; the shell has one selected cell). The dialog's wording says so | multi-select |
 | Palette: Best-of-Set Auto Assembly, Create Virtual Collection, Add Selection To Collection, People | Run (Ctrl Alt B opens best-of) | |
+
+## Cull window and AI Center
+
+`CullWindow.qml` (four pages: Prepare, Analyze, Review, Apply, and a done page), `AiCenterWindow.qml`, `CullMini.qml` (the progress card when you choose Keep browsing), the Analyze chip (`AiChip.qml`), and the dim and reason
+badge on flagged frames in `PhotoGrid.qml`. Model: `cull_model.py` (`cull`). Designed from the v5 culling plan (`docs/ai_v5_plan.md`, `docs/ai_v5_implementation.md`): reject-only, flag and dim, never hide, no automatic winner.
+Mockup: `scripts/qml_parity/cull.dc.html` with `harness_cull.html` (`?scene=cu-prep|cu-missing|cu-installing|cu-error|cu-gpu|cu-cpu|cu-tune|cu-run|cu-mini|cu-review|cu-eyes|cu-ranked|cu-restored|cu-apply|cu-bin|cu-done|cu-grid|ac-ready|ac-fresh|ac-error`);
+in the shell `--ui "cullScene=cu-review"` (the same names).
+
+| Piece | Status | To connect |
+|---|---|---|
+| Wording, reasons (Eyes closed, Soft, Clipped, Blown out, Near-duplicate), the three strictness presets, the fine-tune values | Real wording; Balanced is the cascade's measured `CascadeSettings` (`tests` check it). Careful and Strict are **invented presets** around it | review on other genres (plan, risks) |
+| The CPU-ranking warning and its timings | Real text (`cascade.launch`) | |
+| "Rank on the CPU" default in AI Center | **Real**: the Widgets settings key `ai/cascade_rank_on_cpu` | |
+| **The analysis** (stages, progress, which frames are flagged, the numbers in the detail panel) | **Sample**: a scripted run; frames are flagged by a hash of their names (the mockup's five in `--mock`), stacks are fixed-size groups, metrics are the mockup's constants. Nothing is measured | `cascade.folder` / `CascadeRunTask` (stacks, pass 1, blink), progress and cancel from the task |
+| Frames you marked as winners are never flagged | Real rule | |
+| AI runtime, graphics card, models (installed, installing, Repair, Remove, Install), the Visual C++ message | **Sample states**; "Set up AI" runs a scripted install, the Visual C++ link opens the real Microsoft download | `ai_env`, `ai_model_store`, `ai_platform` (VC++ version check), hardware detection |
+| Ranking and its "1st choice" marks | **Sample** (marks the first unflagged frame of a stack) | the ranker workers (`cascade/rankers`) |
+| Recent runs table | **Sample** (the current run plus two invented rows) | per-folder cached results |
+| Reject (Apply > Mark as Rejects), Undo, Restore, Keep both | **Real**: the grid's own Reject decision, with Undo | |
+| **Move to the recycle bin** | **Not connected**: choosing it marks the frames as Rejects and says so | `file_ops` recycle bin, with paired files |
+| Show in grid | Real (moves the grid to that frame) | |
+| Results saved with the folder / reopened later | Not connected (kept in memory for this session) | catalog migration 9 (`cascade_role`, `triggered_tags`) |
+| Cull on `--mock` | Starts from the mockup's flags; scenes reset those frames to undecided | |
 
 ## Tooling that is not part of the product
 - `--mock`, `--set`, `--ui`, `--click`, `--hover`, `--grab` are test hooks of `python -m image_triage.qml_shell`.

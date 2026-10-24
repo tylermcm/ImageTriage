@@ -81,6 +81,7 @@ Item {
             width: GridView.view.cellWidth
             height: GridView.view.cellHeight
             readonly property bool current: GridView.isCurrentItem
+            readonly property var flag: { void cull.flagRev; return cull.gridFlag(cell.path) || ({}) }
             readonly property bool hot: hover.hovered || current
 
             Item {
@@ -93,8 +94,8 @@ Item {
                     anchors.fill: parent
                     path: cell.path
                     bucket: root.bucket(Math.ceil(cell.width * Screen.devicePixelRatio))
-                    imageOpacity: cell.decision === "rej" ? 0.38 : 1
-                    desaturate: cell.decision === "rej" ? 0.75 : 0
+                    imageOpacity: cell.decision === "rej" || cell.flag.label !== undefined ? 0.38 : 1
+                    desaturate: cell.decision === "rej" ? 0.75 : (cell.flag.label !== undefined ? 0.7 : 0)
                     scale: hover.hovered ? 1.04 : 1
                     Behavior on scale { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
                 }
@@ -128,11 +129,18 @@ Item {
                         }
                     }
                 }
+                Rectangle {   // what the cull flagged this frame for (it is dimmed, never hidden)
+                    visible: UiState.showBadges && cell.flag.label !== undefined
+                    x: 8; y: 8; height: 20; width: fgl.implicitWidth + 25; radius: 10; color: Qt.rgba(10 / 255, 12 / 255, 16 / 255, 0.72)
+                    Row { x: 6; anchors.verticalCenter: parent.verticalCenter; spacing: 5
+                        Rectangle { width: 7; height: 7; radius: 3.5; color: cell.flag.color || "transparent"; anchors.verticalCenter: parent.verticalCenter }
+                        Text { id: fgl; text: cell.flag.label || ""; color: "white"; font.pointSize: UiState.pt(11); font.weight: Font.Medium; anchors.verticalCenter: parent.verticalCenter } }
+                }
                 Item {   // the collection that collects new winners: a small dark disc with its mark, on photos that are in it
                     id: collMark
                     readonly property var mark: { void collections.revision; void photos.scopeKind; return collections.markFor(cell.path, cell.name) }
                     visible: UiState.showBadges && mark.name !== undefined
-                    x: 8; y: 8; width: 22; height: 22
+                    x: 8; y: cell.flag.label !== undefined ? 34 : 8; width: 22; height: 22
                     Rectangle { x: -1; y: -1; width: 24; height: 24; radius: 12; color: Qt.rgba(1, 1, 1, 0.08) }
                     Rectangle { anchors.fill: parent; radius: 11; color: Qt.rgba(10 / 255, 12 / 255, 16 / 255, 0.6) }
                     CollMark { anchors.centerIn: parent; color: collMark.mark.color || ""; iconPath: collMark.mark.iconPath || ""; ring: 11; iconSize: 13 }
