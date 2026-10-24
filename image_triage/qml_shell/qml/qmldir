@@ -49,3 +49,11 @@ PocketDropMenu 1.0 PocketDropMenu.qml
 PocketDropLibrary 1.0 PocketDropLibrary.qml
 PocketDropPanel 1.0 PocketDropPanel.qml
 PocketDropGhost 1.0 PocketDropGhost.qml
+CollMark 1.0 CollMark.qml
+Backdrop 1.0 Backdrop.qml
+CollectionDialog 1.0 CollectionDialog.qml
+CollectionPicker 1.0 CollectionPicker.qml
+BestOfDialog 1.0 BestOfDialog.qml
+TagPeopleWindow 1.0 TagPeopleWindow.qml
+FaceDisc 1.0 FaceDisc.qml
+DialogCard 1.0 DialogCard.qml

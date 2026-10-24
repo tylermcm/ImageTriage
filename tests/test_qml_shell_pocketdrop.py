@@ -22,7 +22,9 @@ from image_triage.qml_shell.batch_model import BatchModel
 from image_triage.qml_shell.filters_model import FiltersModel
 from image_triage.qml_shell.palette_model import PaletteModel
 from image_triage.qml_shell.photos import PhotoModel
+from image_triage.qml_shell.collections_model import CollectionsModel
 from image_triage.qml_shell.pocketdrop_model import PocketDropModel
+from qml_support import collection_models
 from image_triage.qml_shell.handoff_model import HandoffModel
 from image_triage.qml_shell.transfer_model import TransferModel
 from image_triage.qml_shell.settings_model import SettingsModel
@@ -108,15 +110,19 @@ def test_risk_prompt_comes_before_anywhere_unless_dismissed(qapp, photos):
 
 
 def test_library_groups_are_one_row_with_their_files_behind_them(qapp, photos):
-    model = PocketDropModel(photos, memory=True, parent=qapp)
+    collections = CollectionsModel(photos, memory=True, parent=qapp)
+    cid = collections.save("", "Shortlist", "#4c8dff", "", False)
+    collections.addVisible(cid)
+    key = f"col:{cid}"
+    model = PocketDropModel(photos, memory=True, parent=qapp, collections=collections)
     model.refreshLibrary(0)
     entries = {e["key"]: e for bucket in model.library.values() for e in bucket}
-    assert set(entries) == {"sel", "win", "keep", "col:album", "col:print", "col:port"}
-    model.addLibrary("col:album")
+    assert set(entries) == {"sel", "win", "keep"} | {f"col:{c['id']}" for c in collections.rows}
+    model.addLibrary(key)
     row = model.rows[0]
-    assert (row["kind"], row["title"], row["asLabel"]) == ("coll", "Album selects", "Originals")
+    assert (row["kind"], row["title"], row["asLabel"]) == ("coll", "Shortlist", "Originals")
     assert len(row["thumbs"]) == 3
-    model.addLibrary("col:album")                           # adding twice changes nothing
+    model.addLibrary(key)                                   # adding twice changes nothing
     assert [r["kind"] for r in model.rows].count("coll") == 1
     model.toggleSendAs(row["key"])
     assert model.rows[0]["asLabel"] == "Proofing JPEGs" and "as JPEG" in model.rows[0]["sub"]
@@ -125,11 +131,14 @@ def test_library_groups_are_one_row_with_their_files_behind_them(qapp, photos):
 
 
 def test_collection_membership_uses_the_real_decisions(qapp, photos):
-    model = PocketDropModel(photos, parent=qapp, memory=False)       # no native module needed to list what would be shared
+    collections = CollectionsModel(photos, memory=True, parent=qapp)
+    cid = collections.save("", "Shortlist", "", "", False)
+    collections.addSelection(cid, 0)
+    model = PocketDropModel(photos, parent=qapp, memory=False, collections=collections)       # no native module needed to list what would be shared
     model.refreshLibrary(0)
     entries = {e["key"]: e for bucket in model.library.values() for e in bucket}
     assert entries["win"]["count"] == 2 and entries["keep"]["count"] == 1
-    assert entries["col:album"]["count"] == 3 and entries["col:print"]["count"] == 2 and entries["col:port"]["count"] == 1
+    assert entries[f"col:{cid}"]["count"] == 1 and entries["col:c5"]["empty"]       # the sample "Client proofs" has nobody in it
     assert entries["sel"]["count"] == 1 and entries["sel"]["paths"][0].endswith("A1.NEF")
     assert len(entries["sel"]["paths"]) == 2                          # the RAW's JPG goes with it
     assert entries["win"]["sub"].startswith("2 photos · ")
@@ -156,7 +165,7 @@ def test_page_loads_without_qml_errors(qapp, tmp_path):
     palette = PaletteModel(memory=True, parent=qapp)
     for name, obj in (("theme", theme), ("photos", model), ("settings", SettingsModel(memory=True, parent=qapp)), ("cmdPalette", palette),
                       ("advFilters", FiltersModel(model, memory=True, parent=qapp)), ("batch", BatchModel(model, memory=True, parent=qapp)),
-                      ("pocketDrop", PocketDropModel(model, memory=True, parent=qapp)), ("handoff", HandoffModel(model, memory=True, parent=qapp)), ("transfers", TransferModel(model, memory=True, parent=qapp)), ("thumbs", ThumbService(parent=qapp)),
+                      *collection_models(model, qapp), ("handoff", HandoffModel(model, memory=True, parent=qapp)), ("transfers", TransferModel(model, memory=True, parent=qapp)), ("thumbs", ThumbService(parent=qapp)),
                       ("startup", "tab=drop;pdMode=anywhere;pdState=missing;pdList=mixed")):
         context.setContextProperty(name, obj)
     engine.addImportPath(str(shell_app.QML_DIR))

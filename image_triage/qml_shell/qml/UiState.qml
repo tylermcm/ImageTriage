@@ -44,6 +44,24 @@ QtObject {
         if (pdFlow === "dragging") { pdDragInfo = { key: "col:album", title: "Album selects", sub: "84 photos \u00b7 612 MB", thumbs: ["", "", ""] }; pdSim = true; pdDragging = true }
         else { pdSim = false; pdDragging = false }
     }
+    // collections, faces, best-of, tag people (test hooks: collDlg, collDlgId, collDlgTab, collName, collMenu, collPicker, cldrop, peopleSel ...)
+    property string collDlg: ""             // "" closed, "new" or "edit"
+    property string collDlgId: ""
+    property string collDlgTab: "color"
+    property string collName: ""            // test hook: name typed into the dialog
+    property string collMenu: ""            // id of the collection whose menu is open ("" none)
+    property bool collPicker: false
+    property string collPickerQuery: ""
+    property string cldrop: ""              // id of the collection row a drag is over
+    property bool bestOfOpen: false
+    property string boStrat: ""             // test hook: the strategy the best-of window starts on
+    property int boN: 0                     // test hook: its proposal size
+    property bool peopleOpen: false
+    property string peopleFilter: "all"
+    property bool peopleSingles: false
+    property string peopleQuery: ""
+    property string peopleSel: ""           // test hook: comma-separated ids to start selected
+    property string faceQuery: ""
     property bool compact: false         // window <= 900px: narrow rail, panel and inspector float over the grid (the mockup's phone layout)
     property var pins: ({
         open: true, undo: true, review: true, view: true, filters: true, accept: true, reject: true,

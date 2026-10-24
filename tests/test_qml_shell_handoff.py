@@ -16,6 +16,7 @@ from image_triage.qml_shell.handoff_model import RECIPES_KEY, HandoffModel
 from image_triage.qml_shell.palette_model import PaletteModel
 from image_triage.qml_shell.photos import PhotoModel
 from image_triage.qml_shell.pocketdrop_model import PocketDropModel
+from qml_support import collection_models
 from image_triage.qml_shell.settings_model import SettingsModel
 from image_triage.qml_shell.theme import Theme
 from image_triage.qml_shell.thumbs import ThumbService
@@ -182,7 +183,7 @@ def test_windows_load_without_qml_errors(qapp, photos):
     context = engine.rootContext()
     for name, obj in (("theme", Theme(parent=qapp)), ("photos", photos), ("settings", SettingsModel(memory=True, parent=qapp)),
                       ("cmdPalette", PaletteModel(memory=True, parent=qapp)), ("advFilters", FiltersModel(photos, memory=True, parent=qapp)),
-                      ("batch", BatchModel(photos, memory=True, parent=qapp)), ("pocketDrop", PocketDropModel(photos, memory=True, parent=qapp)),
+                      ("batch", BatchModel(photos, memory=True, parent=qapp)), *collection_models(photos, qapp),
                       ("handoff", HandoffModel(photos, memory=True, parent=qapp)), ("transfers", TransferModel(photos, memory=True, parent=qapp)),
                       ("thumbs", ThumbService(parent=qapp)), ("startup", "handoffOpen=true;hoRecipe=saved:wedding_handoff;txState=progress;txKind=copy")):
         context.setContextProperty(name, obj)
