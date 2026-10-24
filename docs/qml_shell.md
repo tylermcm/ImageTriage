@@ -39,7 +39,7 @@ Most saved settings are not yet applied by the shell: see `docs/qml_unwired.md`,
 
 ## Command palette
 
-`CommandPalette.qml` is a card pinned to the top edge over the dimmed and blurred window (Ctrl K, the top bar's search field, the rail pin).
+`CommandPalette.qml` is a card floating near the top (96 px down) over the dimmed and blurred window (Ctrl K, the top bar's search field, the rail pin).
 `palette_model.py` supplies the commands (ids, titles, keywords of the Widgets palette), the Widgets ranking function, shortcuts from the
 shortcut registry and recents under `commands/recent`. Only a few commands run an action so far; see `docs/qml_unwired.md`.
 `scripts/qml_parity/palette.dc.html` is the mockup (`?pal=1&q=...&pi=N&ctx=preview&light=1` in `harness_palette.html`).

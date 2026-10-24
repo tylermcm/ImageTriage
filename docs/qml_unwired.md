@@ -108,7 +108,7 @@ shell reacts to it yet.
 
 ## Command palette
 
-Ctrl K, the top bar's search field and the rail's palette pin open it (`CommandPalette.qml`, pinned to the top edge over the blurred window;
+Ctrl K, the top bar's search field and the rail's palette pin open it (`CommandPalette.qml`, floating near the top over the blurred window;
 Esc, a click outside or Ctrl K again closes it). Ranking is the Widgets palette's own function (`ui.command_palette._rank_commands`, checked by
 a test), shortcuts come from the shortcut registry with the user's overrides, and recent commands use the Widgets key `commands/recent`.
 

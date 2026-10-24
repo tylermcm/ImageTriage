@@ -809,7 +809,7 @@ kbd{font:500 10px Inter,system-ui;color:var(--fg3);border:1px solid var(--line);
 </div>
 </x-dc>
 
-<script type="text/x-dc" data-dc-script data-props='{"palPos":{"editor":"enum","options":["top","float"],"default":"top"},"topAlign":{"editor":"enum","options":["current","aligned"],"default":"current"},"$preview":{"width":1440,"height":900}}'>
+<script type="text/x-dc" data-dc-script data-props='{"palPos":{"editor":"enum","options":["float","top"],"default":"float"},"topAlign":{"editor":"enum","options":["current","aligned"],"default":"current"},"$preview":{"width":1440,"height":900}}'>
 class Component extends DCLogic {
   state = {
     tab: 'lib', insp: true, itab: 'info', sel: 2, filter: 'all', dens: 'm', sort: 'name', menu: '', ai: 0,
@@ -1122,7 +1122,7 @@ class Component extends DCLogic {
         pick: () => this.setState({ sel: p.id, menu: '' })
       })),
 
-      pal: { cls: (s.pal ? 'on' : '') + (this.props.palPos === 'float' ? '' : ' ptop'), q: s.palQ, items: items, empty: flatOrder.length === 0, title: palTitle,
+      pal: { cls: (s.pal ? 'on' : '') + (this.props.palPos === 'top' ? ' ptop' : ''), q: s.palQ, items: items, empty: flatOrder.length === 0, title: palTitle,
         ctxChip: s.palCtx !== 'main', ctxLabel: s.palCtx === 'preview' ? 'Preview' : 'Zen',
         count: pl.rows.length === pl.total ? pl.total + ' commands' : pl.rows.length + ' of ' + pl.total },
       palOpen: () => this.palOpen('main'), palClose: () => this.palClose(),
