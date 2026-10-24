@@ -8,12 +8,12 @@ Item {
     property real angle: 0
     implicitHeight: 36
     implicitWidth: row.implicitWidth + 25
-    NumberAnimation on angle { running: UiState.ai === 1; from: 0; to: 360; duration: 2200; loops: Animation.Infinite }
+    NumberAnimation on angle { running: cull.aiState === 1; from: 0; to: 360; duration: 2200; loops: Animation.Infinite }
 
     // ::after: the same conic ramp, inset 3px, blurred 12px, half opacity, behind the chip while it analyzes
     Shape {
         x: 3; y: 3; width: chip.width - 6; height: chip.height - 6
-        opacity: UiState.ai === 1 ? 0.5 : 0
+        opacity: cull.aiState === 1 ? 0.5 : 0
         Behavior on opacity { NumberAnimation { duration: 400 } }
         preferredRendererType: Shape.CurveRenderer
         layer.enabled: opacity > 0
@@ -36,7 +36,7 @@ Item {
         id: ring
         anchors.fill: parent
         preferredRendererType: Shape.CurveRenderer
-        opacity: UiState.ai === 1 ? 1 : 0
+        opacity: cull.aiState === 1 ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: 350 } }
         ShapePath {
             fillRule: ShapePath.OddEvenFill; strokeColor: "transparent"
@@ -55,7 +55,7 @@ Item {
     Shape {
         anchors.fill: parent
         preferredRendererType: Shape.CurveRenderer
-        opacity: UiState.ai === 2 ? 1 : 0
+        opacity: cull.aiState === 2 ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: 350 } }
         ShapePath {
             fillRule: ShapePath.OddEvenFill; strokeColor: "transparent"
@@ -74,18 +74,13 @@ Item {
         spacing: 8
         Icon { name: "spark"; size: 17; color: theme.accentFg; anchors.verticalCenter: parent.verticalCenter }
         Text {
-            text: UiState.ai === 0 ? "Analyze" : UiState.ai === 1 ? "Analyzing…" : "AI ready"
+            text: cull.aiState === 0 ? "Analyze" : cull.aiState === 1 ? "Analyzing…" : "AI ready"
             color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium; anchors.verticalCenter: parent.verticalCenter
         }
     }
-    Timer { id: done; interval: 2600; onTriggered: UiState.ai = 2 }
     HoverHandler { cursorShape: Qt.PointingHandCursor }
     TapHandler {
-        onTapped: {
-            if (UiState.ai === 1) return;
-            if (UiState.ai === 2) { UiState.ai = 0; return; }
-            UiState.ai = 1; done.restart();
-        }
+        onTapped: cull.openCull()
     }
     Accessible.role: Accessible.Button
     Accessible.name: "AI analysis"

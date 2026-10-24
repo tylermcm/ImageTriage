@@ -73,6 +73,11 @@ in the shell `--ui "tab=coll;sel=1;collDlg=new"`, `collDlgId=c3;collDlg=edit`, `
 (put an id before the flag that opens the window; `--mock` supplies the sample collections c1 to c5 and people p1 to p14). The Wedding icon is a diamond ring (the mockup copy carries the same path).
 What is real and what is not: docs/qml_unwired.md, section "Collections, best-of and Tag People". Tests: `tests/test_qml_shell_collections.py`.
 
+## Cull window and AI Center
+
+`CullWindow.qml`, `AiCenterWindow.qml`, `CullMini.qml`; model `cull_model.py` (the Analyze chip opens it). Mockup `scripts/qml_parity/cull.dc.html` with `harness_cull.html` (`?scene=cu-prep` and the others listed in docs/qml_unwired.md);
+in the shell `--ui "cullScene=cu-review"`. Flagged frames draw a reason badge and are dimmed in the grid (`cull.gridFlag(path)`). **The analysis is scripted**; see docs/qml_unwired.md, section "Cull window and AI Center". Tests: `tests/test_qml_shell_cull.py`.
+
 ## Handoff builder and transfer cards
 
 `HandoffWindow.qml` and `TransferCards.qml`, models `handoff_model.py` and `transfer_model.py`. Mockup: `scripts/qml_parity/handoff.dc.html` (`?ho=1&hrecipe=saved:wedding_handoff`, `?tx=confirm|progress|done&txk=copy|move|wf&txp=0.42`);
@@ -102,4 +107,4 @@ testing (everything above was verified headlessly with a software renderer), `to
 
 ## Tests
 
-`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py`, `tests/test_qml_shell_pocketdrop.py`, `tests/test_qml_shell_handoff.py`, `tests/test_qml_shell_collections.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
+`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py`, `tests/test_qml_shell_pocketdrop.py`, `tests/test_qml_shell_handoff.py`, `tests/test_qml_shell_collections.py`, `tests/test_qml_shell_cull.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.

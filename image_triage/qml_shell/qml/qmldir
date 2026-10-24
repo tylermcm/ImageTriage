@@ -57,3 +57,6 @@ BestOfDialog 1.0 BestOfDialog.qml
 TagPeopleWindow 1.0 TagPeopleWindow.qml
 FaceDisc 1.0 FaceDisc.qml
 DialogCard 1.0 DialogCard.qml
+CullWindow 1.0 CullWindow.qml
+AiCenterWindow 1.0 AiCenterWindow.qml
+CullMini 1.0 CullMini.qml

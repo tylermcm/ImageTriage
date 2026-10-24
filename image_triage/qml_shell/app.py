@@ -36,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     from .. import memtrace
     from .batch_model import BatchModel
     from .bestof_model import BestOfModel
+    from .cull_model import CullModel
     from .collections_model import CollectionsModel
     from .people_model import PeopleModel
     from .filters_model import FiltersModel
@@ -80,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     collections = CollectionsModel(photos, memory=bool(args.mock), parent=app)
     people = PeopleModel(photos, memory=bool(args.mock), parent=app)
     best_of = BestOfModel(photos, parent=app)
+    cull = CullModel(photos, memory=bool(args.mock), parent=app)
     pocket_drop = PocketDropModel(photos, memory=bool(args.mock), parent=app, collections=collections)
     app.aboutToQuit.connect(batch.cleanup)
     app.aboutToQuit.connect(pocket_drop.shutdown)
@@ -106,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     context.setContextProperty("collections", collections)
     context.setContextProperty("people", people)
     context.setContextProperty("bestOf", best_of)
+    context.setContextProperty("cull", cull)
     context.setContextProperty("handoff", handoff)
     context.setContextProperty("transfers", transfers)
     context.setContextProperty("thumbs", thumbs)

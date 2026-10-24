@@ -189,6 +189,10 @@ Window {
     CollectionPicker { id: collectionPicker; sourceItem: appContent }
     BestOfDialog { id: bestOfDialog; sourceItem: appContent }
     TagPeopleWindow { id: tagPeopleWindow; sourceItem: appContent }
+    CullWindow { id: cullWindow; sourceItem: appContent }
+    AiCenterWindow { id: aiCenterWindow; sourceItem: appContent }
+    CullMini { }
+    Connections { target: UiState; function onRequestRowChanged() { if (UiState.requestRow >= 0) { grid.view.currentIndex = UiState.requestRow; UiState.requestRow = -1 } } }
     CommandPalette { id: commandPalette; sourceItem: appContent }
     Shortcut { sequence: "Ctrl+,"; onActivated: UiState.settingsOpen = !UiState.settingsOpen }
     Shortcut { sequence: "Ctrl+Alt+H"; onActivated: UiState.handoffOpen = !UiState.handoffOpen }
@@ -228,8 +232,10 @@ Window {
     // Called once the window has its real size (the mockup's componentDidMount: both side sheets start closed when narrow), then the
     // test hook `--ui key=value;...` applies UiState settings so layouts can be checked headlessly.
     property string pendingScope: ""
+    property string pendingCull: ""
     // the hook `scope=winners|c:<id>|p:<id>` waits for the photos to be loaded (opening a folder resets the view's scope)
     function applyScope() {
+        if (pendingCull !== "" && photos.total > 0) { var cs = pendingCull; pendingCull = ""; cull.scene(cs) }
         if (pendingScope === "" || photos.total === 0) return
         var sc = pendingScope; pendingScope = ""
         if (sc === "winners") collections.openWinners()
@@ -242,6 +248,7 @@ Window {
         var sample = ({})
         var handoffRecipe = ""
         var scope = ""
+        var cullScene = ""
         if (typeof startup === "string" && startup.length) {
             var parts = startup.split(";");
             for (var i = 0; i < parts.length; ++i) {
@@ -252,11 +259,13 @@ Window {
                 else if (["pdMode", "pdState", "pdActivity", "pdList"].indexOf(kv[0]) >= 0) sample[kv[0]] = String(v)
                 else if (kv[0] === "hoRecipe") handoffRecipe = String(kv[1])
                 else if (kv[0] === "scope") scope = String(kv[1])
+                else if (kv[0] === "cullScene") cullScene = String(kv[1])
                 else if (kv[0] === "filter") { UiState.filter = String(v); photos.setFilter(String(v)) }
                 else UiState[kv[0]] = v;
             }
             if (handoffRecipe !== "") handoff.setRecipe(handoffRecipe)
             pendingScope = scope
+            pendingCull = cullScene
             win.applyScope()
             if (UiState.txState !== "") transfers.show(UiState.txState, UiState.txKind, UiState.txCount, UiState.txP)
             if (Object.keys(sample).length) pocketDrop.setSample(sample.pdMode || "", sample.pdState || "", sample.pdActivity || "", sample.pdList || "mixed")
