@@ -8,7 +8,7 @@ class DCLogic{ setState(p){ this.state=Object.assign({},this.state,p); window.__
  for(const n of [...helm.children]) document.head.appendChild(n.cloneNode(true)); helm.remove();
  const code=doc.querySelector('script[data-dc-script]').textContent;
  const Comp=new Function('DCLogic',code+';return Component;')(DCLogic);
- const inst=new Comp(); inst.props={topAlign:'current',palPos:new URLSearchParams(location.search).get('pos')||'top'};
+ const inst=new Comp(); inst.props={topAlign:'current',palPos:new URLSearchParams(location.search).get('pos')||'float'};
  const q=new URLSearchParams(location.search);
  if(q.get('light'))inst.state.light=true;
  if(q.get('tab')!==null&&q.get('tab')!=='')inst.state.tab=q.get('tab');

@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Effects
 
-// The command palette: a card pinned to the top edge of the window, over the dimmed and blurred application. Layout, sizes and colours
+// The command palette: a card floating near the top of the window, over the dimmed and blurred application. Layout, sizes and colours
 // follow the HTML mockup; commands, ranking, shortcuts and recents come from `palette` (palette_model.py).
 FocusScope {
     id: root
@@ -20,7 +20,8 @@ FocusScope {
     readonly property var rowIdx: { var r = []; for (var i = 0; i < items.length; ++i) if (items[i].kind === "row") r.push(i); return r }
     readonly property int cur: Math.max(0, Math.min(UiState.paletteSel, rowIdx.length - 1))
     readonly property real cardW: Math.min(680, width - 48)
-    readonly property real maxH: Math.min(580, height - 72)
+    readonly property real cardTop: 96
+    readonly property real maxH: Math.min(540, height - 160)
     readonly property real listPad: 6
     readonly property real headFirst: 24
     readonly property real headNext: 30
@@ -32,8 +33,8 @@ FocusScope {
         for (var i = 0; i < items.length; ++i) h += items[i].kind === "hdr" ? (i === 0 ? headFirst : headNext) : rowH
         return h
     }
-    readonly property real listH: Math.max(0, Math.min(contentH + 2 * listPad, maxH - 56 - 38 - 1))
-    readonly property real cardH: 56 + listH + 38 + 1          // + the card's bottom border
+    readonly property real listH: Math.max(0, Math.min(contentH + 2 * listPad, maxH - 56 - 38 - 2))
+    readonly property real cardH: 1 + 56 + listH + 38 + 1          // inside the card's 1px border
 
     function close() { UiState.paletteOpen = false }
     function run(i) {
@@ -62,31 +63,33 @@ FocusScope {
 
     Item {
         id: card
-        x: (root.width - width) / 2; y: root.shown ? 0 : -14
+        x: (root.width - width) / 2; y: root.cardTop - (root.shown ? 0 : 8)
         width: root.cardW; height: root.cardH
+        scale: root.shown ? 1 : 0.985
         Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutQuint } }
+        Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutQuint } }
         Behavior on height { enabled: false }
 
-        Shadow { x: 0; y: -18; width: parent.width; height: parent.height + 18; radius: 18; offsetA: 48; insetA: 24; blurA: 64; multA: 3; alphaA: 0.85; offsetB: 12; insetB: 12; blurB: 24; alphaB: 0.5 }
+        Shadow { anchors.fill: parent; radius: 18; offsetA: 48; insetA: 24; blurA: 64; multA: 3; alphaA: 0.85; offsetB: 12; insetB: 12; blurB: 24; alphaB: 0.5 }
 
-        Rectangle { x: -1; y: -19; width: parent.width + 2; height: parent.height + 20; radius: 19; color: "transparent"; border.width: 1; border.color: theme.lineSoft }
+        Rectangle { x: -1; y: -1; width: parent.width + 2; height: parent.height + 2; radius: 19; color: "transparent"; border.width: 1; border.color: theme.lineSoft }
         Item {
             anchors.fill: parent; clip: true
             // frosted glass of the dimmed window behind the card, then the surface tint
             Item { id: cardMask; anchors.fill: parent; visible: false; layer.enabled: true
-                Rectangle { y: -18; width: parent.width; height: parent.height + 18; radius: 18 } }
+                Rectangle { width: parent.width; height: parent.height; radius: 18 } }
             ShaderEffectSource {
                 id: glassSrc; anchors.fill: parent; sourceItem: scene; live: true; visible: false
-                sourceRect: Qt.rect(card.x, 0, card.width, card.height)
+                sourceRect: Qt.rect(card.x, root.cardTop, card.width, card.height)
             }
             MultiEffect {
                 anchors.fill: parent; source: glassSrc; blurEnabled: true; blur: 1.0; blurMax: 64; saturation: 0.4
                 maskEnabled: true; maskSource: cardMask; maskThresholdMin: 0.5; maskSpreadAtMin: 1.0
             }
-            Rectangle { y: -18; width: parent.width; height: parent.height + 18; radius: 18; color: Qt.alpha(theme.s2, theme.light ? 0.95 : 0.90)
+            Rectangle { width: parent.width; height: parent.height; radius: 18; color: Qt.alpha(theme.s2, theme.light ? 0.95 : 0.90)
                         border.width: 1; border.color: Qt.alpha(theme.lift, 0.11) }
             Item {   // inside the 1px border
-                id: inner; x: 1; width: parent.width - 2; height: parent.height - 1
+                id: inner; x: 1; y: 1; width: parent.width - 2; height: parent.height - 2
 
             // ---- search row ---------------------------------------------------------------------------------------------
             Item {
