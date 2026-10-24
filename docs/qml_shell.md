@@ -25,6 +25,14 @@ python -m image_triage.qml_shell --mock <dir with p01..p12.jpg>    # the mockup'
 * Fractional font sizes (10.5, 11.5 ...) go through `pointSize` (`UiState.pt()`), which assumes 96 dpi; the base font is Inter, falling back to
   Segoe UI, with tabular numerals.
 
+## Resolution and scaling
+
+Every size is in device-independent pixels. Qt multiplies by the screen's scale (Windows "Scale", Linux `QT_SCALE_FACTOR`/compositor scale), and
+the rounding policy is `PassThrough`, so 125%, 150% and 175% are used exactly. A 1080p screen at 100%, a 4K screen at 200% and a 1440p
+screen at 133% all lay the window out identically (1440 x 900 dips); only a screen with less than 1440 x 900 dips available shrinks it
+(92% of the work area, centred). Headless checks at 1.0, 1.25, 1.5 and 2.0 against the mockup rendered at the same `deviceScaleFactor`
+(`scripts/qml_parity/shotd.js`) differ by 3.1 to 3.5 / 255, the same as at 1.0. Thumbnails are requested at the device pixel size.
+
 ## Parity with the HTML mockup
 
 See `scripts/qml_parity/README.md`. The mockup is rendered in Chromium and compared pixel for pixel in dark and light, every rail tab, all
