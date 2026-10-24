@@ -7,7 +7,7 @@ Item {
     id: root
     property alias view: gv
     readonly property int minCell: UiState.dens === "s" ? 150 : UiState.dens === "m" ? 230 : 340
-    readonly property int cols: Math.max(1, Math.floor(gv.width / minCell))
+    readonly property int cols: Math.max(1, Math.floor(gv.width / (minCell + 2)))   // auto-fill: n tracks of min width plus (n-1) gaps
     property int bottomSpace: 132
     property Item overlay                // something floating over the grid (the bar): taps inside it are not the grid's
     signal openRequested(int row)
