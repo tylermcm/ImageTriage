@@ -26,6 +26,19 @@ QtObject {
     property string paletteContext: "main"   // "main", "preview" or "zen": which commands are offered and what the card is called
     property string paletteQuery: ""
     property int paletteSel: 0               // highlighted row (test hook; the keyboard moves it)
+    property int selRow: -1                  // the grid's current row (bound in Main), what "Selection" in PocketDrop's Library means
+    // dragging a collection (or the selection) towards PocketDrop; pdFlow is the test hook that shows the mockup's still frames of it
+    property bool pdDragging: false
+    property var pdDragInfo: ({ key: "", title: "", sub: "", thumbs: ["", "", ""] })
+    property real pdGhostX: 0
+    property real pdGhostY: 0
+    property bool pdSim: false
+    property bool pdRailHot: false           // the dragged item is over the PocketDrop button (switches to its page after a moment)
+    property string pdFlow: ""
+    onPdFlowChanged: {
+        if (pdFlow === "dragging") { pdDragInfo = { key: "col:album", title: "Album selects", sub: "84 photos \u00b7 612 MB", thumbs: ["", "", ""] }; pdSim = true; pdDragging = true }
+        else { pdSim = false; pdDragging = false }
+    }
     property bool compact: false         // window <= 900px: narrow rail, panel and inspector float over the grid (the mockup's phone layout)
     property var pins: ({
         open: true, undo: true, review: true, view: true, filters: true, accept: true, reject: true,

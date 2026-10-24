@@ -186,6 +186,16 @@ class PhotoModel(QAbstractListModel):
         """How many of the folder's photos the dialog's filters keep (the rail's and bar's own filters are not counted)."""
         return sum(1 for r in self._all if self._advanced_ok(r, spec))
 
+    def collect(self, *, row: int | None = None, decision: str | None = None, min_rating: int = 0) -> list[dict]:
+        """Photos for sharing: the shown row `row`, or everything in the folder with `decision` and at least `min_rating` stars.
+
+        Each is {"path", "name", "companions"}; a RAW's JPEG (and the like) travels with it."""
+        if row is not None:
+            source = [self._rows[row]] if 0 <= row < len(self._rows) else []
+        else:
+            source = [r for r in self._all if (decision is None or r["decision"] == decision) and r["rating"] >= min_rating]
+        return [{"path": r["path"], "name": r["name"], "companions": tuple(r.get("companions", ()))} for r in source]
+
     # -- view state --------------------------------------------------------------------------------------------------------
     @Slot(str)
     def setFilter(self, decision: str) -> None:

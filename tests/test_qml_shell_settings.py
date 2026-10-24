@@ -9,6 +9,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 
 from image_triage.qml_shell import app as shell_app
+from image_triage.qml_shell.pocketdrop_model import PocketDropModel
 from image_triage.qml_shell import settings_model as sm
 from image_triage.qml_shell.settings_model import SettingsModel
 from image_triage.qml_shell.theme import Theme, _palette_spec
@@ -195,7 +196,7 @@ def test_settings_window_opens_edits_and_saves_in_qml(qapp, tmp_path):
     engine = QQmlApplicationEngine()
     warnings = []
     engine.warnings.connect(lambda items: warnings.extend(str(i) for i in items))
-    for name, obj in (("theme", theme), ("photos", photos), ("settings", settings), ("cmdPalette", PaletteModel(memory=True, parent=qapp)), ("advFilters", FiltersModel(photos, memory=True, parent=qapp)), ("batch", BatchModel(photos, memory=True, parent=qapp)), ("thumbs", thumbs), ("startup", "")):
+    for name, obj in (("theme", theme), ("photos", photos), ("settings", settings), ("cmdPalette", PaletteModel(memory=True, parent=qapp)), ("advFilters", FiltersModel(photos, memory=True, parent=qapp)), ("batch", BatchModel(photos, memory=True, parent=qapp)), ("pocketDrop", PocketDropModel(photos, memory=True, parent=qapp)), ("thumbs", thumbs), ("startup", "")):
         engine.rootContext().setContextProperty(name, obj)
     engine.addImportPath(str(shell_app.QML_DIR))
     engine.load(QUrl.fromLocalFile(str(shell_app.QML_DIR / "Main.qml")))

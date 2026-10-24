@@ -9,6 +9,18 @@ Item {
     readonly property real p: Math.max(0, Math.min(1, width / fullW))
     clip: true
 
+    // Hands a Library entry (a collection key such as "col:album") to PocketDrop and shows its page.
+    function shareToPhone(key) {
+        pocketDrop.refreshLibrary(UiState.selRow)
+        pocketDrop.addLibrary(key)
+        UiState.tab = "drop"
+    }
+    function thumbPaths(idx) {
+        var out = []
+        for (var i = 0; i < 3; ++i) { var it = photos.get(idx[i] % Math.max(1, photos.shown)); out.push(it && it.path ? it.path : "") }
+        return out
+    }
+
     Rectangle { anchors.fill: parent; color: theme.s2 }
     Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: theme.lineSoft }
 
@@ -130,7 +142,7 @@ Item {
                 Stag { active: coll.on; n: 1; Column { width: parent.width
                     SectionLabel { caption: "Projects" }
                     Repeater {
-                        model: [["Album selects", "84", [1, 6, 10]], ["Print order", "24", [4, 2, 7]], ["Portfolio", "18", [11, 0, 8]]]
+                        model: [["Album selects", "84", [1, 6, 10], "col:album", "612 MB"], ["Print order", "24", [4, 2, 7], "col:print", "388 MB"], ["Portfolio", "18", [11, 0, 8], "col:port", "276 MB"]]
                         delegate: Item {
                             required property var modelData
                             width: parent.width; height: 48.4
@@ -147,52 +159,36 @@ Item {
                                 Text { height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[0]; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
                                 Text { height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[1] + " photos"; color: theme.fg3; font.pointSize: UiState.pt(10.8333) } }
                             HoverHandler { id: ph; cursorShape: Qt.PointingHandCursor }
+                            Item {   // share to phone: adds this collection to PocketDrop
+                                visible: ph.hovered || dragH.active; anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; width: 30; height: 30
+                                Rectangle { anchors.fill: parent; radius: 9; color: Qt.alpha(theme.lift, sh.hovered ? 0.08 : 0) }
+                                Icon { anchors.centerIn: parent; name: "pocketdrop"; size: 17; strokeWidth: 1.7; color: sh.hovered ? theme.accentFg : theme.fg3 }
+                                HoverHandler { id: sh; cursorShape: Qt.PointingHandCursor }
+                                TapHandler { onTapped: panel.shareToPhone(modelData[3]) }
+                                Accessible.role: Accessible.Button; Accessible.name: "Share " + modelData[0] + " to phone"
+                            }
+                            DragHandler {   // drag onto the PocketDrop button (it opens after a moment) and drop on its page
+                                id: dragH; target: null; cursorShape: Qt.ClosedHandCursor
+                                onActiveChanged: {
+                                    if (active) {
+                                        UiState.pdDragInfo = { key: modelData[3], title: modelData[0], sub: modelData[1] + " photos \u00b7 " + modelData[4], thumbs: panel.thumbPaths(modelData[2]) }
+                                        UiState.pdGhostX = centroid.scenePosition.x; UiState.pdGhostY = centroid.scenePosition.y
+                                        UiState.pdDragging = true
+                                    } else {
+                                        var p = panel.mapFromItem(null, centroid.scenePosition.x, centroid.scenePosition.y)
+                                        var onPage = UiState.tab === "drop" && p.x >= 0 && p.x <= panel.width && p.y >= 0 && p.y <= panel.height
+                                        UiState.pdDragging = false
+                                        if (onPage) panel.shareToPhone(modelData[3])
+                                    }
+                                }
+                                onCentroidChanged: { if (active) { UiState.pdGhostX = centroid.scenePosition.x; UiState.pdGhostY = centroid.scenePosition.y } }
+                            }
                         }
                     } } }
             }
         }
 
         // ---- PocketDrop ----------------------------------------------------------------------------------------------
-        Flickable {
-            id: drop
-            readonly property bool on: UiState.tab === "drop"
-            y: head.height; width: parent.width; height: parent.height - head.height
-            contentHeight: dropCol.implicitHeight + 24; clip: true; boundsBehavior: Flickable.StopAtBounds
-            opacity: on ? 1 : 0; visible: opacity > 0.01
-            Behavior on opacity { NumberAnimation { duration: 250 } }
-            Column {
-                id: dropCol; width: parent.width; topPadding: 12
-                Stag { active: drop.on; n: 0; Column { width: parent.width
-                    SectionLabel { caption: "Device" }
-                    Item { width: parent.width; height: 50.4
-                        Rectangle { x: 12; y: 14.2; width: 16; height: 16; radius: 8; color: Qt.alpha(theme.win, 0.22) }       // 0 0 0 4px, 22%
-                        Rectangle { x: 16; y: 18.2; width: 8; height: 8; radius: 4; color: theme.win }
-                        Column { x: 34; y: 4
-                            Text { height: 18.2; verticalAlignment: Text.AlignVCenter; text: "Pixel 8 Pro"; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
-                            Text { height: 18.2; verticalAlignment: Text.AlignVCenter; text: "Connected over Wi-Fi"; color: theme.fg3; font.pixelSize: 13 } } } } }
-                Stag { active: drop.on; n: 1
-                    Item { width: parent.width; height: 6 + 74.4
-                        Rectangle { x: 16; y: 6; width: parent.width - 32; height: 74.4; radius: 12; color: dz.hovered ? Qt.alpha(theme.accent, 0.08) : "transparent"
-                            Behavior on color { ColorAnimation { duration: 200 } }
-                            Shape { id: dashed; anchors.fill: parent; layer.enabled: true; layer.samples: 4   // dashes need the geometry renderer
-                                ShapePath { strokeColor: dz.hovered ? theme.accent : theme.line; strokeWidth: 1; fillColor: "transparent"; strokeStyle: ShapePath.DashLine; dashPattern: [3, 3]
-                                    PathSvg { path: Icons.rect(0.5, 0.5, dashed.width - 1, dashed.height - 1, 11.5) } } }
-                            Text { anchors.centerIn: parent; width: parent.width - 26; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; lineHeight: 18.2; lineHeightMode: Text.FixedHeight
-                                   text: "Drop photos here to send to your phone"; color: theme.fg3; font.pixelSize: 13 }
-                            HoverHandler { id: dz } } } }
-                Stag { active: drop.on; n: 2; Column { width: parent.width
-                    SectionLabel { caption: "Transfers" }
-                    Repeater {
-                        model: [["Album selects.zip", "64% \u00b7 18 MB/s", 0.64, true], ["DSC_4207.jpg", "Sent", 1.0, false], ["DSC_4240.jpg", "Sent", 1.0, false], ["Client selects", "Waiting", 0.0, false]]
-                        delegate: Item {
-                            required property var modelData
-                            width: parent.width; height: 42.2
-                            Text { x: 16; y: 7; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[0]; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
-                            Text { anchors.right: parent.right; anchors.rightMargin: 16; y: 7; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[1]; color: theme.fg3; font.pointSize: UiState.pt(11) }
-                            Meter { x: 16; y: 32.2; width: parent.width - 32; height: 3; value: modelData[2]; spanTrack: false; stops: modelData[3] ? [theme.accent, "#90d4ff", theme.accent] : [theme.accent] }
-                        }
-                    } } }
-            }
-        }
+        PocketDropPanel { id: drop; y: head.height; width: parent.width; height: parent.height - head.height }
     }
 }

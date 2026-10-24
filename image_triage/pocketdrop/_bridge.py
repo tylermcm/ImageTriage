@@ -5,11 +5,13 @@ Only the layout of the C interface lives here; panel.py implements it with Qt.
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
 from ctypes import CFUNCTYPE, POINTER, c_char_p, c_float, c_int, c_ssize_t, c_uint8, c_void_p
 from pathlib import Path
 
 ABI_VERSION = 1
+MODEL_API_LEVEL = 2
 
 _F4 = POINTER(c_float)
 _SINK = c_void_p
@@ -98,7 +100,11 @@ class Shell(ctypes.Structure):
 
 def library_path() -> Path:
     """Beside this module, both from source and in the frozen build, where
-    freeze_support copies it to lib/image_triage/pocketdrop."""
+    freeze_support copies it to lib/image_triage/pocketdrop. IMAGE_TRIAGE_POCKETDROP_LIB
+    names another build (the tests compile one for Linux)."""
+    override = os.environ.get("IMAGE_TRIAGE_POCKETDROP_LIB")
+    if override:
+        return Path(override)
     name = {"win32": "pocketdrop.dll", "darwin": "libpocketdrop.dylib"}.get(sys.platform, "libpocketdrop.so")
     return Path(__file__).resolve().parent / name
 
@@ -139,9 +145,23 @@ def load_library() -> ctypes.CDLL:
     lib.pd_add_text.argtypes = [host, c_char_p]
     lib.pd_sink_add.argtypes = [_SINK, c_char_p]
     lib.pd_sink_set.argtypes = [_SINK, c_char_p]
+    # API level 2 (pd_state_json and pd_command, for hosts that draw their own interface) is additive, so a DLL built before it
+    # still loads for the Widgets panel; has_model() tells the QML shell whether it can drive this one.
+    if hasattr(lib, "pd_api_level"):
+        lib.pd_api_level.restype = c_int
+        lib.pd_state_json.argtypes = [host]
+        lib.pd_state_json.restype = c_char_p
+        lib.pd_command.argtypes = [host, c_char_p, c_char_p]
+        lib.pd_command.restype = None
+        lib.pd_remove_paths.argtypes = [host, POINTER(c_char_p), c_int]
+        lib.pd_remove_paths.restype = None
     if lib.pd_abi_version() != ABI_VERSION:
         raise NativeUnavailable(f"{path.name} is out of date. Rebuild it with native/pocketdrop/build_windows.bat.")
     return lib
+
+
+def has_model(lib: ctypes.CDLL) -> bool:
+    return hasattr(lib, "pd_api_level") and lib.pd_api_level() >= MODEL_API_LEVEL
 
 
 def floats(pointer, count: int) -> list[float]:

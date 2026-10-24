@@ -19,6 +19,11 @@ Rectangle {
         { k: "coll", t: "Collections", i: "collections" }, { k: "drop", t: "PocketDrop", i: "pocketdrop" }
     ]
     readonly property int tabIndex: Math.max(0, UiState.tabs.indexOf(UiState.tab))
+    // true when a point in window coordinates is over the PocketDrop destination (a dragged collection waits there for its page to open)
+    function overDrop(gx, gy) {
+        var p = rail.mapFromItem(null, gx, gy)
+        return p.x >= 4.5 && p.x <= 4.5 + btnW && p.y >= 10 + 3 * pitch && p.y <= 10 + 3 * pitch + btnH
+    }
 
     AccentPill {
         id: pill
@@ -35,6 +40,11 @@ Rectangle {
             required property var modelData
             x: 4.5; y: 10 + index * rail.pitch; width: rail.btnW; height: rail.btnH
             readonly property bool on: UiState.tab === modelData.k
+            Rectangle {   // a collection is being dragged over PocketDrop: accent ring that pulses
+                visible: modelData.k === "drop" && UiState.pdRailHot; anchors.fill: parent; radius: 14; color: Qt.alpha(theme.accent, 0.18)
+                border.width: 2; border.color: theme.accent
+                SequentialAnimation on opacity { running: parent.visible; loops: Animation.Infinite; NumberAnimation { to: 0.55; duration: 550 } NumberAnimation { to: 1; duration: 550 } }
+            }
             Column {
                 anchors.centerIn: parent; spacing: 4
                 Icon { anchors.horizontalCenter: parent.horizontalCenter; name: modelData.i; size: 22; color: on ? theme.accentFg : theme.fg }
@@ -155,7 +165,10 @@ Rectangle {
         RailButton { visible: UiState.pins.ladder; icon: "ladder"; tip: "Winner ladder" }
         RailButton { visible: UiState.pins.rename; icon: "tag"; tip: "Rename selection"; onClicked: UiState.batchMode = "rename" }
         RailButton { visible: UiState.pins.convert; icon: "convert"; tip: "Resize and convert"; onClicked: UiState.batchMode = "resize" }
-        RailButton { visible: UiState.pins.share; icon: "pocketdrop"; tip: "Share to phone" }
+        RailButton {   // opens PocketDrop with the current photo added
+            visible: UiState.pins.share; icon: "pocketdrop"; tip: "Share to phone"
+            onClicked: { pocketDrop.refreshLibrary(rail.row); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
+        }
         RailButton { visible: UiState.pins.editor; icon: "editor"; tip: "Open in editor" }
         RailButton { visible: UiState.pins.newfolder; icon: "newfolder"; tip: "New folder" }
         RailButton { visible: UiState.pins.palette; icon: "palette"; tip: "Command palette (Ctrl K)"; onClicked: UiState.openPalette("main") }

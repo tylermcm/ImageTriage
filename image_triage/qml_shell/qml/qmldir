@@ -42,3 +42,8 @@ FInput 1.0 FInput.qml
 FChip 1.0 FChip.qml
 FiltersWindow 1.0 FiltersWindow.qml
 BatchWindow 1.0 BatchWindow.qml
+ConfirmCard 1.0 ConfirmCard.qml
+PocketDropMenu 1.0 PocketDropMenu.qml
+PocketDropLibrary 1.0 PocketDropLibrary.qml
+PocketDropPanel 1.0 PocketDropPanel.qml
+PocketDropGhost 1.0 PocketDropGhost.qml

@@ -1,2 +1,6 @@
 https://github.com/tylermcm/PocketDrop
 1d8ae6a5f545e3ffd3d30d09bb9c9eb2360c3267 (with uncommitted changes)
+
+Image Triage's copy of src/ui/ui.h and ui.cpp has diverged from upstream: Ui::stateJson, Ui::command, Ui::removePaths and
+Ui::menuCommand (the old menu switch, split out) serve the QML shell through capi/pocketdrop_capi.h (API level 2). scripts/sync_pocketdrop.py
+refuses to overwrite them without --force. Port these four functions into PocketDrop itself before syncing from it again.

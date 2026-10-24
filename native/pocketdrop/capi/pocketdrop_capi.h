@@ -124,6 +124,19 @@ PD_API void pd_copy_link(pd_host* host);
 PD_API void pd_share_link(pd_host* host);
 PD_API void pd_refresh_network(pd_host* host);
 
+/* ---- Model interface, API level 2 (additive; PD_ABI_VERSION stays 1).
+ * For hosts that draw their own interface: pd_state_json returns everything pd_paint would
+ * draw, pd_command performs what a click would. */
+#define PD_API_LEVEL 2
+PD_API int pd_api_level(void);
+/* UTF-8 JSON, valid until the next pd_state_json call on this host. */
+PD_API const char* pd_state_json(pd_host* host);
+/* name: mode(0|1|2) card copy share open_link new_link add_files add_folder paste clear
+ * remove(row) row(row) drag_over(0|1) refresh addr(index) set_inbox(path)
+ * menu(open_inbox|change_inbox|burn|auto_any|warn_any|topmost|stop_tunnel|about). */
+PD_API void pd_command(pd_host* host, const char* name, const char* arg);
+PD_API void pd_remove_paths(pd_host* host, const char* const* paths, int count);
+
 PD_API void pd_sink_add(pd_sink* sink, const char* text);
 PD_API void pd_sink_set(pd_sink* sink, const char* text);
 

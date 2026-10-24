@@ -32,6 +32,15 @@ SOURCES = (
 
 
 def main() -> int:
+    if "--force" not in sys.argv:
+        print(
+            "native/pocketdrop/src/ui now carries Image Triage's own changes (Ui::stateJson, Ui::command, Ui::removePaths,\n"
+            "Ui::menuCommand, used by the QML shell) and is the working copy of PocketDrop's UI. Syncing would delete them.\n"
+            "Port those four functions into the upstream checkout first, then run this with --force.",
+            file=sys.stderr,
+        )
+        return 2
+    sys.argv.remove("--force")
     upstream = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT.parent / "PocketDrop"
     src = upstream / "src"
     if not (src / "ui" / "ui.cpp").is_file():
