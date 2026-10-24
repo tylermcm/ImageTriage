@@ -65,11 +65,7 @@ Item {
                 Item {
                     width: parent.width; height: Math.round(width * 2 / 3)
                     Rectangle { anchors.fill: parent; color: theme.base }
-                    Image {
-                        anchors.fill: parent; fillMode: Image.PreserveAspectCrop; asynchronous: true; cache: false
-                        sourceSize: Qt.size(800, 533)
-                        source: insp.has ? "image://thumbs/" + encodeURIComponent(insp.cur.path) : ""
-                    }
+                    ThumbImage { anchors.fill: parent; bucket: 800; path: insp.has ? insp.cur.path : "" }
                     Rectangle { x: 10; y: parent.height - 54; width: 112; height: 44; radius: 9; color: Qt.rgba(0, 0, 0, 0.45)
                         Histogram { anchors.fill: parent; anchors.margins: 5 } }
                 }
@@ -259,8 +255,7 @@ Item {
                                     readonly property var it: { void photos.revision; return photos.get((insp.row + index) % Math.max(1, photos.shown)) }
                                     Rectangle { anchors.fill: parent; radius: 6; color: theme.s3; clip: true; opacity: index === 0 ? 1 : 0.55
                                         border.color: index === 0 ? theme.accent : "transparent"; border.width: 2
-                                        Image { anchors.fill: parent; fillMode: Image.PreserveAspectCrop; asynchronous: true; cache: false; sourceSize: Qt.size(160, 107)
-                                            source: it && it.path ? "image://thumbs/" + encodeURIComponent(it.path) : "" } }
+                                        ThumbImage { anchors.fill: parent; bucket: 160; path: it && it.path ? it.path : "" } }
                                 }
                             }
                         }
