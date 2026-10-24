@@ -58,6 +58,7 @@ shell reacts to it yet.
 | Command search field, Ctrl K | Real (opens the command palette, see below) | |
 | Sun button | Real (sets and saves the appearance between Slate and Light) | |
 | Inspector button | Memory (`UiState.insp`, not remembered) | persist in `window/state` |
+| Side panel and inspector width | **Real**: drag the edge (double click resets); remembered in the settings store | |
 | Minimize / maximize / close | Real. The window is frameless and the bar is its title bar: drag moves it, double click maximizes, edges and corners resize (`WindowEdges.qml`) | the system drop shadow and rounded corners, Windows 11 snap layouts on the maximize button, dragging a maximized window to restore it |
 
 ### Rail
@@ -128,7 +129,7 @@ shell reacts to it yet.
 | Folder path, scan progress, AI status chip, update indicator, PhotoCraft status | Not present |
 
 ### Window and application
-- No saved window geometry, panel widths or open tab (`window/geometry`, `window/state`, pane width ratios).
+- No saved window geometry or open tab (`window/geometry`, `window/state`); the panel and inspector widths are saved, and the window always starts maximized.
 - No folder session restore (`view/restore_folder_position`), recent folders, favorites.
 - No startup tasks: update check, catalog refresh, PhotoCraft prestart, AI setup prompt.
 - No application menu, tray, file associations, single-instance handoff, crash/diagnostics hooks (`app_logging`).

@@ -233,6 +233,7 @@ class SettingsModel(QObject):
         super().__init__(parent)
         self._memory = memory
         self._store: dict = {}
+        self._layout: dict = {}
         self._qs = None
         if not memory:
             from ..app_identity import user_settings
@@ -247,6 +248,24 @@ class SettingsModel(QObject):
         self._saved = False
         self._conflict = ""
         self.load()
+
+    # -- window layout (not a settings row: the widths of the side panel and the inspector, remembered between runs) ------------------
+    @Slot(str, float, result=float)
+    def layoutWidth(self, name: str, default: float) -> float:
+        if self._memory:
+            return float(self._layout.get(name, default))
+        try:
+            return float(self._qs.value("window/" + name + "_width", default))
+        except (TypeError, ValueError):
+            return default
+
+    @Slot(str, float)
+    def setLayoutWidth(self, name: str, value: float) -> None:
+        if self._memory:
+            self._layout[name] = float(value)
+            return
+        self._qs.setValue("window/" + name + "_width", float(value))
+        self._qs.sync()
 
     # -- storage ---------------------------------------------------------------------------------------------------------------
     def _read(self, f: F):

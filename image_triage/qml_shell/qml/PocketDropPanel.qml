@@ -115,7 +115,7 @@ Item {
                 x: 2 + index * seg.cell; y: 2; width: seg.cell; height: 30
                 readonly property bool sel: (page.d.mode || 0) === index
                 readonly property string badge: (page.d.badges || ["", "", ""])[index] || ""
-                Text { anchors.centerIn: parent; text: page.modeNames[index]; color: sel ? theme.fg : theme.fg2; font.pointSize: UiState.pt(12.5); Behavior on color { ColorAnimation { duration: 200 } } }
+                Text { anchors.centerIn: parent; width: parent.width - 6; horizontalAlignment: Text.AlignHCenter; fontSizeMode: Text.HorizontalFit; minimumPixelSize: 10; text: page.modeNames[index]; color: sel ? theme.fg : theme.fg2; font.pointSize: UiState.pt(12.5); Behavior on color { ColorAnimation { duration: 200 } } }
                 Rectangle { visible: badge !== ""; x: parent.width - 13; y: 3; width: 6; height: 6; radius: 3
                     color: badge === "ok" ? theme.win : badge === "warn" ? theme.rev : theme.rej }
                 HoverHandler { cursorShape: Qt.PointingHandCursor }

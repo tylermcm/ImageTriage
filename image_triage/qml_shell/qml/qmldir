@@ -73,3 +73,4 @@ LibraryWindow 1.0 LibraryWindow.qml
 FileAssocWindow 1.0 FileAssocWindow.qml
 SplashCard 1.0 SplashCard.qml
 SplashWindow 1.0 SplashWindow.qml
+SideResizer 1.0 SideResizer.qml

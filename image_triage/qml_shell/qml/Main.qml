@@ -17,12 +17,19 @@ Window {
     readonly property bool railHot: UiState.pdSim ? UiState.tab !== "drop" : UiState.pdDragging && rail.overDrop(UiState.pdGhostX, UiState.pdGhostY)
     Binding { target: UiState; property: "pdRailHot"; value: win.railHot }
     Timer { interval: 450; running: UiState.pdRailHot && UiState.tab !== "drop" && !UiState.pdSim; onTriggered: UiState.tab = "drop" }
-    readonly property real panelTarget: UiState.tab !== "" ? 300 : 0
-    readonly property real inspTarget: UiState.insp ? 352 : 0
+    // The side panel and the inspector have the widths the user dragged them to, within a minimum (below it their contents would clip)
+    // and a maximum, and never so wide that the grid keeps less than mainMin.
+    readonly property real mainMin: 400
+    readonly property real availSide: Math.max(0, shell.width - rail.width - mainMin)
+    readonly property real panelWanted: Math.max(UiState.panelMin, Math.min(UiState.panelMax, UiState.panelW, availSide - (UiState.insp ? UiState.inspMin : 0)))
+    readonly property real inspWanted: Math.max(UiState.inspMin, Math.min(UiState.inspMax, UiState.inspW, availSide - (UiState.tab !== "" ? panelWanted : 0)))
+    property bool resizing: false                      // a handle is being dragged: follow the pointer, do not animate
+    readonly property real panelTarget: UiState.tab !== "" ? panelWanted : 0
+    readonly property real inspTarget: UiState.insp ? inspWanted : 0
     property real panelW: panelTarget
     property real inspW: inspTarget
-    Behavior on panelW { NumberAnimation { duration: 600; easing.type: Easing.OutQuint } }
-    Behavior on inspW { NumberAnimation { duration: 600; easing.type: Easing.OutQuint } }
+    Behavior on panelW { enabled: !win.resizing; NumberAnimation { duration: 600; easing.type: Easing.OutQuint } }
+    Behavior on inspW { enabled: !win.resizing; NumberAnimation { duration: 600; easing.type: Easing.OutQuint } }
 
     Item {
         id: appContent
@@ -39,7 +46,7 @@ Window {
                 id: sidePanel
                 // wide: a column that animates its width; compact: a 320px sheet that slides in over the grid
                 readonly property real sheetW: Math.min(320, shell.width - rail.width)
-                fullW: win.compact ? sheetW : 300
+                fullW: win.compact ? sheetW : win.panelWanted
                 x: win.compact ? rail.width + (UiState.tab !== "" ? 0 : -sheetW * 1.05) : rail.width
                 Behavior on x { enabled: win.compact; NumberAnimation { duration: 550; easing.type: Easing.OutQuint } }
                 width: win.compact ? sheetW : win.panelW
@@ -144,13 +151,29 @@ Window {
             Inspector {
                 id: insp
                 readonly property real sheetW: Math.min(380, shell.width)
-                fullW: win.compact ? sheetW : 352
+                fullW: win.compact ? sheetW : win.inspWanted
                 x: win.compact ? shell.width - (UiState.insp ? sheetW : -sheetW * 0.05) : shell.width - win.inspW
                 Behavior on x { enabled: win.compact; NumberAnimation { duration: 550; easing.type: Easing.OutQuint } }
                 width: win.compact ? sheetW : win.inspW; height: parent.height
                 z: win.compact ? 30 : 0
                 row: grid.view.currentIndex
                 onStep: (d) => { grid.view.currentIndex = Math.max(0, Math.min(photos.shown - 1, grid.view.currentIndex + d)) }
+            }
+            SideResizer {   // the edge between the side panel and the grid
+                objectName: "panelResizer"
+                visible: !win.compact && UiState.tab !== ""
+                x: rail.width + win.panelW - width / 2; z: 40; height: parent.height
+                onMoved: (px) => { win.resizing = true; UiState.panelW = Math.max(UiState.panelMin, Math.min(UiState.panelMax, px - rail.width)) }
+                onFinished: { win.resizing = false; settings.setLayoutWidth("panel", win.panelWanted) }
+                onReset: { UiState.panelW = 300; settings.setLayoutWidth("panel", 300) }
+            }
+            SideResizer {   // the edge between the grid and the inspector
+                objectName: "inspResizer"
+                visible: !win.compact && UiState.insp
+                x: shell.width - win.inspW - width / 2; z: 40; height: parent.height
+                onMoved: (px) => { win.resizing = true; UiState.inspW = Math.max(UiState.inspMin, Math.min(UiState.inspMax, shell.width - px)) }
+                onFinished: { win.resizing = false; settings.setLayoutWidth("inspector", win.inspWanted) }
+                onReset: { UiState.inspW = 352; settings.setLayoutWidth("inspector", 352) }
             }
         }
     }
@@ -266,7 +289,10 @@ Window {
         }
     }
     Connections { target: UiState; function onCompareChanged() { cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off") } }
-    Component.onCompleted: cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off")
+    Component.onCompleted: {
+        cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off")
+        UiState.panelW = settings.layoutWidth("panel", 300); UiState.inspW = settings.layoutWidth("inspector", 352)
+    }
 
     // Called once the window has its real size (the mockup's componentDidMount: both side sheets start closed when narrow), then the
     // test hook `--ui key=value;...` applies UiState settings so layouts can be checked headlessly.

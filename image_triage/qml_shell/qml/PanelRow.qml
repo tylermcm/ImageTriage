@@ -17,8 +17,10 @@ Item {
     Row {
         anchors.verticalCenter: parent.verticalCenter; x: 16 + row.indent; spacing: 10
         Icon { visible: row.icon !== ""; name: row.icon; size: 16; color: row.current ? theme.fg : theme.fg2; anchors.verticalCenter: parent.verticalCenter }
-        Text { text: row.text; color: row.muted ? theme.fg3 : (row.current || hover.hovered ? theme.fg : theme.fg2); font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
+        Text { text: row.text; color: row.muted ? theme.fg3 : (row.current || hover.hovered ? theme.fg : theme.fg2); font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter
+               elide: Text.ElideRight
+               width: Math.min(implicitWidth, Math.max(20, row.width - (16 + row.indent) - (row.icon !== "" ? 26 : 0) - (row.count !== "" ? cnt.implicitWidth + 16 + 12 : 16))) }
     }
-    Text { visible: row.count !== ""; text: row.count; color: theme.fg3; font.pixelSize: 11; anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter }
+    Text { id: cnt; visible: row.count !== ""; text: row.count; color: theme.fg3; font.pixelSize: 11; anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter }
     HoverHandler { id: hover; cursorShape: row.interactive ? Qt.PointingHandCursor : Qt.ArrowCursor }
 }
