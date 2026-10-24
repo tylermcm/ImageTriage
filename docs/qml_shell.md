@@ -28,6 +28,12 @@ Ctrl+, or the rail's gear opens the settings window.
 * Fractional font sizes (10.5, 11.5 ...) go through `pointSize` (`UiState.pt()`), which assumes 96 dpi; the base font is Inter, falling back to
   Segoe UI, with tabular numerals.
 
+## Window frame
+
+The main window is frameless (`Qt.FramelessWindowHint`): no Windows title bar. `TopBar.qml` is the title bar. Dragging an empty part calls `startSystemMove()` (the system's own move, so Windows snapping works),
+a double click toggles maximized, and the three buttons at the right minimize, maximize or restore, and close. `WindowEdges.qml` puts thin grips on the edges and corners that call `startSystemResize()`;
+they are off while the window is maximized. The buttons show in the compact layout too, since the window has no other way to close. `tests/test_qml_shell.py` checks the flag, the buttons and the double click.
+
 ## Settings window
 
 `SettingsWindow.qml` is an in-window overlay (not a second OS window), so the live app behind it can be blurred. Rows and controls are
@@ -112,7 +118,7 @@ Full list: `docs/qml_unwired.md`. In short:
 
 
 Popout wiring (Enter/Space/double-click -> `openRequested`), decisions and ratings persisted to the catalog (the shell shows sample values for
-real folders), drag and drop, multi-select, zoom, compare, PhotoCraft/AI integration, a custom window frame, high-DPI checks, Windows/GPU
+real folders), drag and drop, multi-select, zoom, compare, PhotoCraft/AI integration, the frameless window's system shadow and snap layouts (`docs/qml_unwired.md`), high-DPI checks, Windows/GPU
 testing (everything above was verified headlessly with a software renderer), `topAligned` switch UI, bundling the Inter font.
 
 ## Tests
