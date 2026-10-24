@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Effects
 
 // A segmented control whose highlight slides (with a little spring) to the chosen segment.
 Item {
@@ -17,15 +18,33 @@ Item {
     implicitWidth: row.implicitWidth + 4
 
     Rectangle { anchors.fill: parent; radius: 14; color: Qt.alpha(theme.base, 0.6) }
-    Rectangle {
+    Item {
         id: thumb
-        y: 2; height: seg.height - 4; radius: 12; color: theme.s3
-        border.color: Qt.alpha(theme.lift, 0.07)
+        y: 2; height: seg.height - 4
         property Item target: { void row.width; void rep.count; return rep.itemAt(seg.current); }
         x: target ? target.x + 2 : 2
         width: target ? target.width : 40
         Behavior on x { SpringAnimation { spring: 4.5; damping: 0.30; epsilon: 0.25 } }
         Behavior on width { SpringAnimation { spring: 4.5; damping: 0.30; epsilon: 0.25 } }
+
+        // box-shadow 0 4px 10px -4px rgba(0,0,0,.5): a smaller copy, lowered and blurred, under the pill
+        Rectangle {
+            x: 4; y: 4 + 4; width: parent.width - 8; height: parent.height - 8; radius: 8
+            color: "black"; opacity: 0.5
+            layer.enabled: true
+            layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: 14; autoPaddingEnabled: true }
+        }
+        Rectangle { anchors.fill: parent; radius: 12; color: theme.s3 }
+        // inset 0 1px 0 lift 10%: a one pixel highlight along the top edge that follows the rounded corners
+        Item {
+            anchors.fill: parent
+            layer.enabled: true
+            layer.effect: MultiEffect { maskEnabled: true; maskSource: capMask; maskThresholdMin: 0.5; maskSpreadAtMin: 1.0 }
+            Rectangle { anchors.fill: parent; radius: 12; color: "transparent"; border.color: Qt.alpha(theme.lift, 0.10); border.width: 1 }
+            Rectangle { y: 1; x: 0; width: parent.width; height: parent.height - 1; radius: 12; color: theme.s3 }   // hides the lower part of the ring
+        }
+        Item { id: capMask; anchors.fill: parent; visible: false; layer.enabled: true
+            Rectangle { anchors.fill: parent; radius: 12 } }
     }
     Row {
         id: row
