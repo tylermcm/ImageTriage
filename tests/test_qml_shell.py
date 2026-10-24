@@ -166,6 +166,9 @@ def test_main_qml_loads_and_the_grid_shows_the_model(qapp, tmp_path):
 
     theme = Theme(parent=qapp)
     model = PhotoModel(parent=qapp)
+    from image_triage.qml_shell.settings_model import SettingsModel
+
+    settings = SettingsModel(memory=True, parent=qapp)
     thumbs = ThumbService(DiskThumbnailCache(tmp_path / "cache"), parent=qapp)
     engine = QQmlApplicationEngine()
     warnings = []
@@ -173,6 +176,7 @@ def test_main_qml_loads_and_the_grid_shows_the_model(qapp, tmp_path):
     context = engine.rootContext()
     context.setContextProperty("theme", theme)
     context.setContextProperty("photos", model)
+    context.setContextProperty("settings", settings)
     context.setContextProperty("thumbs", thumbs)
     context.setContextProperty("startup", "")
     engine.addImportPath(str(shell_app.QML_DIR))

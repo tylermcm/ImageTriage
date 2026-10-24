@@ -57,6 +57,11 @@ def mix(first: tuple[float, float, float], second: tuple[float, float, float], p
     return srgb_from_oklab(*(a[i] + (b[i] - a[i]) * t for i in range(3)))
 
 
+def oklch_from_srgb(r: float, g: float, b: float) -> tuple[float, float, float]:
+    lightness, a, b2 = oklab_from_srgb(r, g, b)
+    return lightness, math.hypot(a, b2), math.degrees(math.atan2(b2, a)) % 360.0
+
+
 def _color(triple: tuple[float, float, float]) -> QColor:
     return QColor.fromRgbF(*(max(0.0, min(1.0, v)) for v in triple))
 
@@ -87,11 +92,37 @@ def derive(spec: dict) -> dict[str, QColor]:
         "lift": lift,
         "accent": accent,
         "accentFg": mix(accent, WHITE, 30) if lift == WHITE else mix(accent, BLACK, 30),
+        "onAccent": oklch(0.2, 0.03, 262.0) if lift == WHITE else WHITE,     # text on a filled accent button
     }
     colors = {name: _color(value) for name, value in tokens.items()}
     for name, value in (("win", "#3fb97a"), ("keep", "#4b8ff0"), ("rev", "#e0b04a"), ("rej", "#e5635b"), ("star", spec["star"])):
         colors[name] = QColor(value)
     return colors
+
+
+def _palette_spec(mode: str, system_dark: bool) -> dict:
+    """base / accent / contrast of one of the Widgets app's appearance modes, read from its real palette. Slate and Light are the
+    mockup's own two palettes exactly."""
+    if mode == "auto":
+        mode = "slate" if system_dark else "light"
+    if mode == "slate":
+        return dict(DARK)
+    if mode == "light":
+        return dict(LIGHT)
+    from ..ui.theme import AppearanceMode, resolve_theme
+
+    palette = resolve_theme(AppearanceMode(mode), None)  # type: ignore[arg-type]  # only AUTO needs an application
+    lift = WHITE if palette.is_dark else BLACK
+
+    def lch(token) -> tuple[float, float, float]:
+        return oklch_from_srgb(token.red / 255.0, token.green / 255.0, token.blue / 255.0)
+
+    base = lch(palette.window_bg)
+    text = lch(palette.text_primary)
+    span = (1.0 - base[0]) if palette.is_dark else base[0]
+    pull = (text[0] - base[0]) if palette.is_dark else (base[0] - text[0])
+    contrast = max(40.0, min(100.0, 100.0 * pull / span)) if span > 0 else 90.0
+    return {"base": base, "accent": lch(palette.accent), "contrast": contrast, "lift": lift, "star": "#f0b84a" if palette.is_dark else "#c98a14"}
 
 
 class Theme(QObject):
@@ -130,11 +161,25 @@ class Theme(QObject):
     lift = Property(QColor, lambda self: self._get("lift"), notify=changed)
     accent = Property(QColor, lambda self: self._get("accent"), notify=changed)
     accentFg = Property(QColor, lambda self: self._get("accentFg"), notify=changed)
+    onAccent = Property(QColor, lambda self: self._get("onAccent"), notify=changed)
     win = Property(QColor, lambda self: self._get("win"), notify=changed)
     keep = Property(QColor, lambda self: self._get("keep"), notify=changed)
     rev = Property(QColor, lambda self: self._get("rev"), notify=changed)
     rej = Property(QColor, lambda self: self._get("rej"), notify=changed)
     star = Property(QColor, lambda self: self._get("star"), notify=changed)
+
+    @Slot(str, int, int, bool)
+    def applyMode(self, mode: str, accent_hue: int, contrast: int, system_dark: bool = True) -> None:
+        """Re-derive every colour for an appearance mode, an optional accent hue (-1 keeps the mode's own) and the contrast slider
+        (90 = the mode's own contrast; each step moves it one point)."""
+        spec = _palette_spec(mode, system_dark)
+        lifted_light = spec["lift"] == BLACK
+        if accent_hue >= 0:
+            spec["accent"] = (0.56, 0.17, float(accent_hue)) if lifted_light else (0.70, 0.15, float(accent_hue))
+        spec["contrast"] = max(40.0, min(100.0, spec["contrast"] + (contrast - 90)))
+        self._light = lifted_light
+        self._colors = derive(spec)
+        self.changed.emit()
 
     @Slot(float, float, float, result=QColor)
     def oklch(self, lightness: float, chroma: float, hue: float) -> QColor:

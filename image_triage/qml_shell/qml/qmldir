@@ -26,3 +26,13 @@ Histogram 1.0 Histogram.qml
 Inspector 1.0 Inspector.qml
 ThumbImage 1.0 ThumbImage.qml
 RoundClip 1.0 RoundClip.qml
+AccentPill 1.0 AccentPill.qml
+SettingsWindow 1.0 SettingsWindow.qml
+SButton 1.0 SButton.qml
+SRow 1.0 SRow.qml
+SSwitch 1.0 SSwitch.qml
+SSelect 1.0 SSelect.qml
+SStepper 1.0 SStepper.qml
+SSlider 1.0 SSlider.qml
+SSwatches 1.0 SSwatches.qml
+SKeys 1.0 SKeys.qml

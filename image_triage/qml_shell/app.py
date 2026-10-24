@@ -17,6 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--size", default="", help="window size in device-independent pixels (default: 1440x900, or 92%% of the screen if that is smaller)")
     parser.add_argument("--grab", metavar="PNG", help="render the window to PNG once thumbnails settle, then exit (for checks)")
     parser.add_argument("--grab-wait", type=float, default=4.0, help="seconds to wait before grabbing (default 4)")
+    parser.add_argument("--set", default="", help="setting values applied after startup, 'id=value;id=value' (for headless checks of the settings window)")
     parser.add_argument("--hover", default="", help="park the pointer at 'x,y' (window coordinates) instead of off the grid, to check hover states headlessly")
     parser.add_argument("--click", default="", help="mouse clicks before the grab, 'x,y;x,y' in window coordinates (for headless checks)")
     parser.add_argument("--ui", default="", help="UiState settings applied at startup, e.g. 'tab=faces;insp=false;inspTab=2' (for headless checks)")
@@ -34,16 +35,17 @@ def main(argv: list[str] | None = None) -> int:
 
     from .. import memtrace
     from .photos import PhotoModel
+    from .settings_model import ACCENTS, SettingsModel
     from .theme import Theme
     from .thumbs import ThumbService
 
     QCoreApplication.setOrganizationName("Image Triage")
     QCoreApplication.setApplicationName("Image Triage")
-    from PySide6.QtCore import Qt as _Qt
+    from PySide6.QtCore import Qt
 
     # fractional scales (125%, 150%, 175%) are used as they are, not rounded to whole numbers, so the layout is the same size in
     # device-independent pixels on every monitor; Qt 6 turns high-DPI scaling on by itself
-    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(_Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QGuiApplication(sys.argv[:1])
     from PySide6.QtGui import QFont
 
@@ -59,11 +61,23 @@ def main(argv: list[str] | None = None) -> int:
 
     theme = Theme(light=args.light, parent=app)
     photos = PhotoModel(parent=app)
+    settings = SettingsModel(memory=bool(args.mock), parent=app)
+
+    def apply_theme() -> None:
+        index = settings.accentIndex
+        system_dark = app.styleHints().colorScheme() != Qt.ColorScheme.Light
+        theme.applyMode(settings.themeMode, ACCENTS[index][1] if 0 <= index < len(ACCENTS) else -1, settings.contrast, system_dark)
+
+    settings.previewChanged.connect(apply_theme)
+    apply_theme()
+    if args.light:
+        theme.light = True
     engine = QQmlApplicationEngine()
     thumbs = ThumbService(parent=app)
     context = engine.rootContext()
     context.setContextProperty("theme", theme)
     context.setContextProperty("photos", photos)
+    context.setContextProperty("settings", settings)
     context.setContextProperty("thumbs", thumbs)
     context.setContextProperty("startup", args.ui)
     engine.addImportPath(str(QML_DIR))
@@ -84,6 +98,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.size:
         window.setPosition(area.x() + (area.width() - width) // 2, area.y() + (area.height() - height) // 2)
     QMetaObject.invokeMethod(window, "applyStartup", Q_ARG("QVariant", width))
+    for pair in filter(None, args.set.split(";")):
+        key, _, raw = pair.partition("=")
+        settings.set(key, True if raw == "true" else False if raw == "false" else (float(raw) if "." in raw else int(raw)) if raw.lstrip("-").replace(".", "", 1).isdigit() else raw)
     if args.mock:
         photos.loadMock(args.mock)
     elif args.folder:
