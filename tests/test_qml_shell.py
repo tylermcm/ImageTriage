@@ -12,6 +12,7 @@ from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 from image_triage.cache import DiskThumbnailCache
 from image_triage.qml_shell import app as shell_app
 from image_triage.qml_shell.pocketdrop_model import PocketDropModel
+from qml_support import collection_models
 from image_triage.qml_shell.handoff_model import HandoffModel
 from image_triage.qml_shell.transfer_model import TransferModel
 from image_triage.qml_shell.photos import PhotoModel
@@ -186,7 +187,8 @@ def test_main_qml_loads_and_the_grid_shows_the_model(qapp, tmp_path):
     context.setContextProperty("cmdPalette", PaletteModel(memory=True, parent=qapp))
     context.setContextProperty("advFilters", FiltersModel(model, memory=True, parent=qapp))
     context.setContextProperty("batch", BatchModel(model, memory=True, parent=qapp))
-    context.setContextProperty("pocketDrop", PocketDropModel(model, memory=True, parent=qapp))
+    for name, obj in collection_models(model, qapp):
+        context.setContextProperty(name, obj)
     context.setContextProperty("handoff", HandoffModel(model, memory=True, parent=qapp))
     context.setContextProperty("transfers", TransferModel(model, memory=True, parent=qapp))
     context.setContextProperty("thumbs", thumbs)

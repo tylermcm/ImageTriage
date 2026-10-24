@@ -46,6 +46,7 @@ class PhotoModel(QAbstractListModel):
     countsChanged = Signal()
     revisionChanged = Signal()
     folderChanged = Signal()
+    scopeChanged = Signal()
     loadingChanged = Signal()
     _loaded = Signal(list, str)
 
@@ -64,6 +65,9 @@ class PhotoModel(QAbstractListModel):
         self._loaded.connect(self._apply_loaded)
         self._mock: dict[str, dict] = {}
         self._mock_path = ""
+        self._scope_kind = ""           # "" (the folder), "collection", "winners", "person" or "best": what the grid is limited to
+        self._scope_id = ""
+        self._scope_pred = None
 
     # -- model ------------------------------------------------------------------------------------------------------------
     def roleNames(self) -> dict:
@@ -134,6 +138,8 @@ class PhotoModel(QAbstractListModel):
 
     def _apply_loaded(self, rows: list, folder: str) -> None:
         self._all = rows
+        if folder != self._folder:
+            self._scope_kind, self._scope_id, self._scope_pred = "", "", None      # a collection or person is not a folder: opening one leaves it
         self._folder = folder
         self._loading = False
         self._rebuild()
@@ -144,9 +150,21 @@ class PhotoModel(QAbstractListModel):
         """Replace everything at once (benchmarks, tests)."""
         self._apply_loaded(rows, folder)
 
+    def _scoped(self) -> list[dict]:
+        pred = self._scope_pred
+        return self._all if pred is None else [r for r in self._all if pred(r)]
+
+    def set_scope(self, kind: str = "", ident: str = "", predicate=None) -> None:
+        """Limit the grid to the folder's photos that satisfy `predicate(row)` (a collection, the winners, a person, a shortlist).
+
+        Collections and people can span folders; the shell only has the open folder's photos, so only those are shown."""
+        self._scope_kind, self._scope_id, self._scope_pred = kind, ident, predicate
+        self._rebuild()
+        self.scopeChanged.emit()
+
     def _rebuild(self) -> None:
         rows = [
-            r for r in self._all
+            r for r in self._scoped()
             if (self._filter == "all" or r["decision"] == self._filter)
             and r["rating"] >= self._min_rate
             and (self._fmt == "all" or (r["raw"] if self._fmt == "raw" else not r["raw"]))
@@ -271,10 +289,12 @@ class PhotoModel(QAbstractListModel):
 
     # -- properties for the bar and header ---------------------------------------------------------------------------------
     def _count(self, decision: str) -> int:
-        return sum(1 for r in self._all if r["decision"] == decision)
+        return sum(1 for r in self._scoped() if r["decision"] == decision)
 
     revision = Property(int, lambda self: self._revision, notify=revisionChanged)
-    total = Property(int, lambda self: len(self._all), notify=countsChanged)
+    total = Property(int, lambda self: len(self._scoped()), notify=countsChanged)
+    scopeKind = Property(str, lambda self: self._scope_kind, notify=scopeChanged)
+    scopeId = Property(str, lambda self: self._scope_id, notify=scopeChanged)
     shown = Property(int, lambda self: len(self._rows), notify=countsChanged)
     winCount = Property(int, lambda self: self._count("win"), notify=countsChanged)
     keepCount = Property(int, lambda self: self._count("keep"), notify=countsChanged)

@@ -11,6 +11,7 @@ from PySide6.QtTest import QTest
 
 from image_triage.qml_shell import app as shell_app
 from image_triage.qml_shell.pocketdrop_model import PocketDropModel
+from qml_support import collection_models
 from image_triage.qml_shell.handoff_model import HandoffModel
 from image_triage.qml_shell.transfer_model import TransferModel
 from image_triage.qml_shell import palette_model as pm
@@ -125,7 +126,7 @@ def test_palette_opens_filters_navigates_runs_and_closes_in_qml(qapp, tmp_path, 
     warnings = []
     engine.warnings.connect(lambda items: warnings.extend(str(i) for i in items))
     photos = PhotoModel(parent=qapp)
-    objects = (("theme", Theme(parent=qapp)), ("photos", photos), ("advFilters", FiltersModel(photos, memory=True, parent=qapp)), ("batch", BatchModel(photos, memory=True, parent=qapp)), ("pocketDrop", PocketDropModel(photos, memory=True, parent=qapp)), ("handoff", HandoffModel(photos, memory=True, parent=qapp)), ("transfers", TransferModel(photos, memory=True, parent=qapp)), ("settings", SettingsModel(memory=True, parent=qapp)),
+    objects = (("theme", Theme(parent=qapp)), ("photos", photos), ("advFilters", FiltersModel(photos, memory=True, parent=qapp)), ("batch", BatchModel(photos, memory=True, parent=qapp)), *collection_models(photos, qapp), ("handoff", HandoffModel(photos, memory=True, parent=qapp)), ("transfers", TransferModel(photos, memory=True, parent=qapp)), ("settings", SettingsModel(memory=True, parent=qapp)),
                ("cmdPalette", palette), ("thumbs", ThumbService(DiskThumbnailCache(tmp_path / "cache"), parent=qapp)), ("startup", ""))
     for name, obj in objects:
         engine.rootContext().setContextProperty(name, obj)

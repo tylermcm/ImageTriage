@@ -16,13 +16,13 @@
 | Popout / preview (`preview.py`) | not connected (stays a Widgets window) | Enter, Space, double-click, Open preview |
 | Editor (PhotoCraft host) | not connected | E, Open in editor |
 | Settings | built, storage connected, most values not applied | gear, Ctrl+, |
-| Command palette | built, 19 of 53 commands run | Ctrl K |
+| Command palette | built, 23 of 53 commands run | Ctrl K |
 | Filter dialog and saved presets | built; applies decision, rating and RAW / JPEG only (see below) | Filters menu, palette |
 | Batch rename, resize, convert | built; **applying is not connected, no file changes** (see below) | Rename and Resize pins, palette, Ctrl+Shift+R / E / C |
 | PocketDrop page of the side panel | built; runs PocketDrop's own engine once `pocketdrop.dll` is rebuilt (see the PocketDrop section) | PocketDrop button, Share to phone, phone icon in Collections |
 | Deliver / Handoff Builder | built; recipes real, **running is not connected** (see its section) | Ctrl Alt H, palette |
 | Move / Copy To Folder cards, handoff progress and done cards | built, **scripted: nothing is transferred**; nothing opens the Move / Copy cards yet except a handoff run | Run workflow |
-| Collections, best-of, people / faces | not built | Collections tab, Faces tab |
+| Collections (new / edit dialog, picker, menu), best-of, Tag People | built; collections **real** (the Widgets library store), people real with a face index, best-of real planner with few signals (see its section) | Collections tab (+, menu, right-click), Add All bar, B, Faces tab (All people…), Ctrl Alt B, palette |
 | AI setup, review, apply decisions, cull preferences, workflow center, progress | not built | Analyze |
 | Help, shortcuts guide, catalog, file associations, splash, toasts, context menu | not built | menus, right click |
 
@@ -81,8 +81,8 @@ shell reacts to it yet.
 |---|---|---|
 | Library: search field | Visual | folder filter |
 | Library: Favorites, Drives (names, sizes), Folders tree | Sample (the tree does not navigate) | `drive_list_model`, `load_favorites`, recent folders, the real folder tree and its expansion rules (`view/single_drive_expansion`, `view/show_hidden_folders`) |
-| Faces: people, counts, indexing progress | Sample | `face_index`, `face_stack` |
-| Collections: Winners, projects | Sample (the winner count is a fixed 96, the three projects and their counts are invented; their phone icon and dragging onto the PocketDrop button are Real, see below) | collections store (`docs/collections_and_future_projects_decision.md`) |
+| Faces: search, people list, All people…, scoping the grid to a person | Real when the open folder has a face index (the Widgets index file), Sample in `--mock`; see the collections section. The face index block shows the sample 86 % in `--mock` and a plain count otherwise (no scan progress yet) | `face_index` progress |
+| Collections: Winners, collection rows, +, menu, phone icon, dragging onto the PocketDrop button | Real (see the collections section). Winners opens the winners of the open folder only (the mockup says "every shoot": there is no library-wide decision store to read yet) | decision store across folders |
 | PocketDrop | **Real** with the rebuilt native module, otherwise Sample; see the PocketDrop section below | |
 
 ### Grid
@@ -145,7 +145,7 @@ a test), shortcuts come from the shortcut registry with the user's overrides, an
 |---|---|---|
 | Search, ranking, highlight, recents, keyboard (up, down, Enter, Esc), mouse | Real | |
 | Command list | Partly real | 53 of the Widgets palette's ids, titles and keywords (`palette_model.py`). Left out: per-collection, per-saved-search, per-recipe, per-panel, per-sort and per-column commands, and the AI state filters, which need live window state |
-| Commands that run something | 19 of 53 | Settings, Advanced Filters and Save Current Search (both open the filters window), Rename Image, Batch Rename, Batch Resize and Batch Convert (all open the batch window), the three themes (Slate, Light, Midnight), sort by name and by AI score, Clear Filters, Compare, Reset Layout, Deliver / Handoff Builder (opens its window), Mark Winner, Reject, Move To _keep (this one only sets the Keep decision). Every other command is listed, can be chosen and is remembered as recent, **and then does nothing** |
+| Commands that run something | 23 of 53 | Settings, Advanced Filters and Save Current Search (both open the filters window), Rename Image, Batch Rename, Batch Resize and Batch Convert (all open the batch window), the three themes (Slate, Light, Midnight), sort by name and by AI score, Clear Filters, Compare, Reset Layout, Deliver / Handoff Builder (opens its window), Best-of-Set Auto Assembly, Create Virtual Collection, Add Selection To Collection and People (open their windows), Mark Winner, Reject, Move To _keep (this one only sets the Keep decision). Every other command is listed, can be chosen and is remembered as recent, **and then does nothing** |
 | On / Off tag | Compare only | The Widgets palette shows On or Off for ten toggles (zen, bursts, auto advance, performance logging ...); the shell has none of those states. In the demo data they are fixed |
 | "Current view" tag | Not shown | needs the grid / details view state |
 | Preview Commands and Zen Commands | Model only | the palette can show them (`UiState.paletteContext`), nothing opens it from the popout or zen mode: neither exists in the shell |
@@ -242,10 +242,10 @@ Bluetooth setup and share sheet have not been built or run by whoever wrote this
 | Drop files or text onto the card | Real (`DropArea`) | |
 | Paste (Ctrl V in the menu, Paste button) | Real. **No keyboard shortcuts** are bound in the shell yet (the Ctrl O / V / C labels in the menu are labels only) | shortcut registry |
 | Always on top | Not offered (it makes no sense inside the main window; the engine still has it) | |
-| Library button and picker: Selection, Winners, Keep, three collections | Real for Selection, Winners and Keep (the grid's decisions, which are themselves Sample data in folders). The three collections are **Sample membership** (Album selects = winners and keep, Print order = winners, Portfolio = five stars) because collections are not stored anywhere yet | collections store |
+| Library button and picker: Selection, Winners, Keep, your collections | Real for Selection, Winners and Keep (the grid's decisions, which are themselves Sample data in folders) and for your collections (the members that are in the open folder; a collection can also hold photos from other folders, which PocketDrop does not list). In `--mock` the five sample collections | |
 | A Library group is one row; its files (and a RAW's JPG) are what the engine serves | Real; groups live only in this process | persist groups with the session |
 | "Send as: Originals / Proofing JPEGs" chip | **Visual**: the size estimate changes, the originals are always what is sent | handoff recipes (`handoff_controller`), export on send |
-| Dragging a collection onto the PocketDrop button, hover to open, drop on the page | Real for the three collections in the Collections tab. Photos in the grid cannot be dragged yet | grid drag source (`dragdrop_controller`) |
+| Dragging a collection onto the PocketDrop button, hover to open, drop on the page | Real for the collections in the Collections tab. Photos in the grid cannot be dragged yet | grid drag source (`dragdrop_controller`) |
 | Phone icon on collections, Share to phone pin | Real (adds that group, opens the page) | |
 | Handoff builder, transfer cards, "Move / Copy To Folder" dialogs | built (see the next section) | |
 | `--mock` and tests without the dll | Sample (scripted states built to look like the mockup, nothing listens on a port) | |
@@ -269,6 +269,31 @@ down to a 690 px tall window (checked at 900, 800 and 720 px tall); below that i
 | Move / Copy confirm, progress, done cards; "Include paired RAW/JPEG and sidecar files"; Cancel; Open destination | Cards and wording follow the mockup; the progress is **scripted** (6 s, a made-up speed), Include paired is remembered only on the card, Open destination opens the folder only if it exists | `file_ops` transfer jobs, `transfer_dialogs.confirm_transfer` rules (count of 2 or more gets a completion card) |
 | Opening Move / Copy To Folder, To Recent Destination | Nothing opens them yet (Review menu, palette and shortcuts are Visual) | menus, palette ids `review.move_selection` ... |
 | Ctrl Alt H, palette "Deliver / Handoff Builder" | Real (open the window) | |
+
+## Collections, best-of and Tag People
+
+`SidePanel.qml` (Collections and Faces pages and the collection menu), `CollectionDialog.qml`, `CollectionPicker.qml`, `BestOfDialog.qml`, `TagPeopleWindow.qml`, the header and the Add All bar in `Main.qml`, the
+collection badge in `PhotoGrid.qml`; models `collections_model.py`, `people_model.py`, `bestof_model.py`, and `PhotoModel.set_scope` (the grid showing a collection, the winners, a person or a shortlist).
+
+| Piece | Status | To connect |
+|---|---|---|
+| Collections: create, rename, colour, delete, add and remove photos, "New winners go here" | **Real**: `library_store.LibraryStore` (`library.sqlite3`) and the Widgets settings key `collections/also_add_to`, so the Widgets app sees the same collections. Names follow the Widgets dialog's rules | |
+| Collection icons (23 icons and a tint) | **Stored beside the Widgets data** (settings key `collections/icons`, id to icon); the Widgets app ignores them and shows its colour only | the store's schema (a column) |
+| "More…" colour button, "+" (your own icon), Export… in the collection menu | **Visual** | colour picker, icon import, `export` of a collection |
+| Opening a collection / Winners / a person / a shortlist | Real, as a view of the open folder: the grid shows the members that are in the folder being viewed. Photos of the collection that live in other folders are counted (the sidebar's number) but not shown. "Winners" is the open folder's winners, not "every shoot" | multi-folder grid, catalog |
+| W also adds to the collecting collection, B adds the photo you are on (or opens the picker when none collects) | Real | the shortcut registry (fixed keys here) |
+| Add All bar, Add All to Collection… picker, Recent first | Real (adds everything the grid shows) | |
+| Dropping photos on a collection row, "Drop here" state | The row accepts drops and shows the state; **the grid is not a drag source yet**, so nothing can be dropped on it (`--ui cldrop=<id>` shows the look) | grid drag source |
+| Right-click on a photo > Collections | not built (the photo context menu is a later window) | context menu |
+| Collection badge on photos in the collecting collection | Real (plain folder view only, as in the mockup) | |
+| Delete collection | Asks first (the mockup deletes at once); only the collection is removed | |
+| The people list in Faces and Tag People | **Real** from the open folder's face index (the Widgets index file: `ui.face_groups`, `people_search`) when one exists, else the empty text. In `--mock`: 14 sample people | |
+| Naming a person, Merge Selected (asks for a name when none of the faces has one), Ignore + Undo, Clear Selected (clears the names) | Real: `people_search.assign_person_names` / `set_clusters_ignored` on the same index | |
+| **Rescan Faces**, face crops (the avatars are a coloured disc with the initial), index progress | **Not connected** | `face_index` scan job, crop cache |
+| Tag People window layout | Footer always at the bottom (in the mockup the footer jumps up when nothing is selected, a grid bug) | |
+| Best-of-Set: strategies, proposal size, the planner | **Real planner** (`workflows.best_of.build_best_of_set_plan`) with the signals the shell has: your winners. AI scores, review results and burst groups are not passed in (they do not exist in the shell yet), so Balanced and Top N differ little | AI results, bursts |
+| Best-of result | Shown as a **shortlist view of the folder** with a "Back to folder" button (the Widgets dialog selects the photos; the shell has one selected cell). The dialog's wording says so | multi-select |
+| Palette: Best-of-Set Auto Assembly, Create Virtual Collection, Add Selection To Collection, People | Run (Ctrl Alt B opens best-of) | |
 
 ## Tooling that is not part of the product
 - `--mock`, `--set`, `--ui`, `--click`, `--hover`, `--grab` are test hooks of `python -m image_triage.qml_shell`.

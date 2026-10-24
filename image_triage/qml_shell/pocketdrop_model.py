@@ -21,15 +21,8 @@ from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
 SAMPLE_NAMES = ("DSC_4821.NEF", "Kutaisi picks", "Anna portrait final.jpg", "Meet at the old gate at 6")
 _AS_LABELS = ("Originals", "Proofing JPEGs")
-# What the three sample collections hold in the real photo list (collections themselves are not stored yet).
-_COLLECTIONS = (
-    ("col:album", "Album selects", "win+keep"),
-    ("col:print", "Print order", "win"),
-    ("col:port", "Portfolio", "rating5"),
-)
-_SAMPLE_THUMBS = {"sel": (1, 2, 3), "win": (4, 6, 10), "keep": (2, 7, 9), "col:album": (1, 6, 10), "col:print": (4, 2, 7), "col:port": (3, 8, 5)}
-_SAMPLE_COUNTS = {"sel": ("4 photos", "96 MB"), "win": ("96 photos", "1.4 GB"), "keep": ("412 photos", "5.9 GB"),
-                  "col:album": ("84 photos", "612 MB"), "col:print": ("24 photos", "388 MB"), "col:port": ("18 photos", "276 MB")}
+_SAMPLE_THUMBS = {"sel": (1, 2, 3), "win": (4, 6, 10), "keep": (2, 7, 9)}
+_SAMPLE_COUNTS = {"sel": ("4 photos", "96 MB"), "win": ("96 photos", "1.4 GB"), "keep": ("412 photos", "5.9 GB")}
 
 
 def _size(n: float) -> str:
@@ -101,9 +94,10 @@ class PocketDropModel(QObject):
     alertRequested = Signal(str, str)
     notice = Signal(str)
 
-    def __init__(self, photos, memory: bool = False, parent: QObject | None = None, settings=None) -> None:
+    def __init__(self, photos, memory: bool = False, parent: QObject | None = None, settings=None, collections=None) -> None:
         super().__init__(parent)
         self._photos = photos
+        self._collections = collections          # CollectionsModel: its collections are what the Library picker offers
         self._settings = settings
         self._memory = memory
         self._want_sample_group = False
@@ -301,14 +295,8 @@ class PocketDropModel(QObject):
         out.append(("sel", "Selection", sel))
         out.append(("win", "Winners", p.collect(decision="win")))
         out.append(("keep", "Keep", p.collect(decision="keep")))
-        for key, title, rule in _COLLECTIONS:
-            if rule == "win+keep":
-                rows = p.collect(decision="win") + p.collect(decision="keep")
-            elif rule == "win":
-                rows = p.collect(decision="win")
-            else:
-                rows = p.collect(min_rating=5)
-            out.append((key, title, rows))
+        for c in (self._collections.rows if self._collections is not None else []):
+            out.append((f"col:{c['id']}", c["name"], self._collections.member_rows(c["id"])))
         return out
 
     @Slot(int)
@@ -317,7 +305,7 @@ class PocketDropModel(QObject):
         current, collections = [], []
         for key, title, rows in self._entries(selected_row):
             paths = self._paths_of(rows)
-            if self._memory:
+            if self._memory and not key.startswith("col:"):
                 count, size = _SAMPLE_COUNTS[key]
                 sub = f"{count} \u00b7 {size}"
                 everything = self._photos.collect()
@@ -387,7 +375,7 @@ class PocketDropModel(QObject):
     def _photos_changed(self) -> None:
         if self._memory and self._want_sample_group and not self._groups:
             self.refreshLibrary(-1)
-            self.addLibrary("col:album")
+            self.addLibrary("col:c1")
 
     def _sample_command(self, name: str, arg: str) -> None:
         s = self._sample

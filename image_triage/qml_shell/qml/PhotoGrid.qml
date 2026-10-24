@@ -12,6 +12,12 @@ Item {
     property Item overlay                // something floating over the grid (the bar): taps inside it are not the grid's
     signal openRequested(int row)
 
+    // B: the photo you are on goes into the collection that collects (or, when there is none, you choose one)
+    function addToCollection() {
+        if (collections.activeId !== "") collections.addSelection(collections.activeId, gv.currentIndex)
+        else { UiState.collPickerQuery = ""; UiState.collPicker = true }
+    }
+
     function blocked(scenePoint) {
         if (!overlay) return false;
         var p = overlay.mapFromItem(null, scenePoint.x, scenePoint.y);
@@ -48,7 +54,8 @@ Item {
         }
         Keys.onPressed: (e) => {
             var k = e.key;
-            if (k === Qt.Key_W) photos.setDecision(currentIndex, "win");
+            if (k === Qt.Key_W) { photos.setDecision(currentIndex, "win"); if (collections.activeId !== "") collections.addSelection(collections.activeId, currentIndex) }
+            else if (k === Qt.Key_B) root.addToCollection();
             else if (k === Qt.Key_K) photos.setDecision(currentIndex, "keep");
             else if (k === Qt.Key_X) photos.setDecision(currentIndex, "rej");
             else if (k === Qt.Key_U) photos.setDecision(currentIndex, "");
@@ -120,6 +127,15 @@ Item {
                             Text { id: fmt; anchors.centerIn: parent; text: cell.ext; color: "white"; font.pointSize: UiState.pt(9.5); font.weight: Font.DemiBold; font.letterSpacing: 0.38 }
                         }
                     }
+                }
+                Item {   // the collection that collects new winners: a small dark disc with its mark, on photos that are in it
+                    id: collMark
+                    readonly property var mark: { void collections.revision; void photos.scopeKind; return collections.markFor(cell.path, cell.name) }
+                    visible: UiState.showBadges && mark.name !== undefined
+                    x: 8; y: 8; width: 22; height: 22
+                    Rectangle { x: -1; y: -1; width: 24; height: 24; radius: 12; color: Qt.rgba(1, 1, 1, 0.08) }
+                    Rectangle { anchors.fill: parent; radius: 11; color: Qt.rgba(10 / 255, 12 / 255, 16 / 255, 0.6) }
+                    CollMark { anchors.centerIn: parent; color: collMark.mark.color || ""; iconPath: collMark.mark.iconPath || ""; ring: 11; iconSize: 13 }
                 }
                 Item {
                     // decision badge: a 22px disc with a 3px 40% black ring outside it (box-shadow), glyph drawn like the mockup's CSS

@@ -64,6 +64,15 @@ Library groups (a selection, the winners, a collection as one row) and a scripte
 the same states open in the shell with `--ui "tab=drop;pdMode=anywhere;pdState=missing;pdActivity=none;pdList=mixed;menu=pdmenu|pdlib;pdFlow=dragging"`.
 Build the Windows dll with `native/pocketdrop/build_windows.bat`; `tests/test_qml_shell_pocketdrop.py` builds a Linux copy.
 
+## Collections, best-of and people
+
+`SidePanel.qml` (Collections and Faces pages, the collection menu), `CollectionDialog.qml`, `CollectionPicker.qml`, `BestOfDialog.qml`, `TagPeopleWindow.qml`; models `collections_model.py` (the Widgets `LibraryStore`),
+`people_model.py` (the face index) and `bestof_model.py` (the Widgets planner). The grid can show "a view of the folder": `PhotoModel.set_scope(kind, id, predicate)` filters the loaded rows, the header and the Add All bar follow `photos.scopeKind`.
+Mockup: `scripts/qml_parity/collections.dc.html` with `harness_collections.html` (`?scene=new|edit|icons|name-error|picker|menu|viewing|winners|addbar|empty|bestof|faces|faces-none|person|people|people-selected|people-undo|people-unnamed`);
+in the shell `--ui "tab=coll;sel=1;collDlg=new"`, `collDlgId=c3;collDlg=edit`, `collMenu=c2`, `filter=win;collPicker=true`, `bestOfOpen=true;boN=6`, `scope=c:c1|winners|p:p1`, `tab=faces`, `peopleOpen=true;peopleSel=p5,p6;peopleFilter=unnamed`
+(put an id before the flag that opens the window; `--mock` supplies the sample collections c1 to c5 and people p1 to p14). The Wedding icon is a diamond ring (the mockup copy carries the same path).
+What is real and what is not: docs/qml_unwired.md, section "Collections, best-of and Tag People". Tests: `tests/test_qml_shell_collections.py`.
+
 ## Handoff builder and transfer cards
 
 `HandoffWindow.qml` and `TransferCards.qml`, models `handoff_model.py` and `transfer_model.py`. Mockup: `scripts/qml_parity/handoff.dc.html` (`?ho=1&hrecipe=saved:wedding_handoff`, `?tx=confirm|progress|done&txk=copy|move|wf&txp=0.42`);
@@ -93,4 +102,4 @@ testing (everything above was verified headlessly with a software renderer), `to
 
 ## Tests
 
-`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py`, `tests/test_qml_shell_pocketdrop.py`, `tests/test_qml_shell_handoff.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
+`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py`, `tests/test_qml_shell_pocketdrop.py`, `tests/test_qml_shell_handoff.py`, `tests/test_qml_shell_collections.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.

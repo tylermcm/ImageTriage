@@ -60,15 +60,46 @@ Window {
 
                 Rectangle {
                     id: head
+                    readonly property string kind: { void photos.scopeKind; return photos.scopeKind }
+                    readonly property var col: { void collections.revision; void photos.scopeId; return kind === "collection" ? collections.get(photos.scopeId) : ({}) }
+                    readonly property var person: { void people.revision; void photos.scopeId; return kind === "person" ? people.card(photos.scopeId) : ({}) }
                     width: parent.width; height: 44; color: theme.base
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
-                    Row {
+                    component Chip: Rectangle { property alias label: cl.text; height: 18.5; width: cl.implicitWidth + 16; radius: 10; color: theme.s2; border.color: theme.lineSoft
+                                                Text { id: cl; anchors.centerIn: parent; color: theme.fg2; font.pixelSize: 11; font.weight: Font.Medium } }
+                    component HBtn: Item { property alias text: bl.text; signal clicked(); implicitWidth: bl.implicitWidth + 22; width: implicitWidth; height: 28
+                                           Rectangle { anchors.fill: parent; radius: 9; color: bh.hovered ? Qt.tint(theme.s3, Qt.alpha(theme.lift, 0.06)) : theme.s3; border.color: theme.lineSoft }
+                                           Text { id: bl; anchors.centerIn: parent; color: theme.fg; font.pixelSize: 12 }
+                                           HoverHandler { id: bh; cursorShape: Qt.PointingHandCursor }
+                                           TapHandler { onTapped: parent.clicked() }
+                                           Accessible.role: Accessible.Button; Accessible.name: bl.text }
+                    Row {   // the folder
+                        visible: head.kind === ""
                         anchors.verticalCenter: parent.verticalCenter; x: 14; spacing: 10
                         Text { text: photos.folderName || "Open a folder"; color: theme.fg; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: -0.14 }
                         Text { visible: !win.compact; text: photos.folderPath; color: theme.fg3; font.pixelSize: 13; width: Math.min(implicitWidth, Math.max(0, main.width - 330 - x)); elide: Text.ElideRight }
                     }
+                    Row {   // a collection, the winners of every shoot, a person or a best-of shortlist
+                        visible: head.kind !== ""
+                        anchors.verticalCenter: parent.verticalCenter; x: 14; spacing: 10
+                        CollMark { visible: head.kind === "collection"; anchors.verticalCenter: parent.verticalCenter; color: head.col.color || ""; iconPath: head.col.iconPath || ""; ring: 16; iconSize: 18 }
+                        Icon { visible: head.kind === "winners"; anchors.verticalCenter: parent.verticalCenter; name: "heart"; size: 18; strokeWidth: 1.8; color: theme.fg2 }
+                        Icon { visible: head.kind === "best"; anchors.verticalCenter: parent.verticalCenter; name: "star"; size: 18; strokeWidth: 1.8; color: theme.fg2 }
+                        FaceDisc { visible: head.kind === "person"; anchors.verticalCenter: parent.verticalCenter; width: 22; height: 22; hue: head.person.hue || 0; initial: head.person.init || "?"; fontSize: 10.5 }
+                        Text { anchors.verticalCenter: parent.verticalCenter; color: theme.fg; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: -0.14
+                               width: Math.min(implicitWidth, Math.max(60, main.width - 560))
+                               elide: Text.ElideRight
+                               text: head.kind === "collection" ? (head.col.name || "") : head.kind === "winners" ? "Winners" : head.kind === "best" ? "Best of set" : people.labelOf(photos.scopeId) }
+                        Chip { anchors.verticalCenter: parent.verticalCenter; label: head.kind === "collection" ? "Collection" : head.kind === "winners" ? "Every shoot" : head.kind === "best" ? "Shortlist" : "Person" }
+                        Text { visible: !win.compact; anchors.verticalCenter: parent.verticalCenter; color: theme.fg3; font.pixelSize: 13
+                               width: Math.min(implicitWidth, Math.max(0, main.width - (head.kind === "collection" ? 380 : 270) - x))
+                               elide: Text.ElideRight
+                               text: head.kind === "collection" ? "References only" : head.kind === "winners" ? "Grouped by folder" : head.kind === "best" ? bestOf.summary : "Photos with this face in this folder" }
+                    }
                     Row {
                         anchors.verticalCenter: parent.verticalCenter; anchors.right: parent.right; anchors.rightMargin: 14; spacing: 10
+                        HBtn { visible: head.kind !== ""; text: "Back to folder"; onClicked: collections.closeScope() }
+                        HBtn { visible: head.kind === "collection"; text: "Remove selection"; onClicked: collections.removeSelection(photos.scopeId, grid.view.currentIndex) }
                         Rectangle {
                             height: 24; width: shown.implicitWidth + 31; radius: 12; color: theme.s2; border.color: theme.lineSoft
                             Row { anchors.centerIn: parent; spacing: 6
@@ -77,12 +108,23 @@ Window {
                             }
                         }
                         Rectangle {
+                            visible: head.kind === ""
                             height: 24; width: wins.implicitWidth + 20; radius: 12; color: theme.s2; border.color: theme.lineSoft
                             Text { id: wins; anchors.centerIn: parent; text: photos.winCount + " winners"; color: theme.fg; font.pointSize: UiState.pt(11.5) }
                         }
                     }
                 }
-                PhotoGrid { id: grid; y: head.height; width: parent.width; height: parent.height - head.height; overlay: floatBar }
+                Rectangle {   // narrowed the folder down? offer to put the whole result into a collection
+                    id: addBar
+                    visible: photos.scopeKind === "" && photos.shown < photos.total && photos.shown > 0
+                    y: head.height; width: parent.width; height: visible ? 42 : 0
+                    color: Qt.tint(theme.base, Qt.alpha(theme.accent, 0.09))
+                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
+                    Text { x: 14; anchors.verticalCenter: parent.verticalCenter; text: photos.shown + (photos.shown === 1 ? " photo matches" : " photos match"); color: theme.fg2; font.pointSize: UiState.pt(12.5) }
+                    SButton { anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; text: "Add All to Collection\u2026"; variant: "primary"; h: 28; hpad: 11; radius: 9
+                              onClicked: { UiState.collPickerQuery = ""; UiState.collPicker = true } }
+                }
+                PhotoGrid { id: grid; y: head.height + addBar.height; width: parent.width; height: parent.height - head.height - addBar.height; overlay: floatBar }
                 FloatingBar {
                     id: floatBar
                     sourceItem: grid.view
@@ -143,12 +185,17 @@ Window {
     HandoffWindow { id: handoffWindow; sourceItem: appContent }
     TransferCards { id: transferCards; sourceItem: appContent }
     FiltersWindow { id: filtersWindow; sourceItem: appContent }
+    CollectionDialog { id: collectionDialog; sourceItem: appContent }
+    CollectionPicker { id: collectionPicker; sourceItem: appContent }
+    BestOfDialog { id: bestOfDialog; sourceItem: appContent }
+    TagPeopleWindow { id: tagPeopleWindow; sourceItem: appContent }
     CommandPalette { id: commandPalette; sourceItem: appContent }
     Shortcut { sequence: "Ctrl+,"; onActivated: UiState.settingsOpen = !UiState.settingsOpen }
     Shortcut { sequence: "Ctrl+Alt+H"; onActivated: UiState.handoffOpen = !UiState.handoffOpen }
     Shortcut { sequence: "Ctrl+Shift+R"; onActivated: UiState.batchMode = "rename" }
     Shortcut { sequence: "Ctrl+Shift+E"; onActivated: UiState.batchMode = "resize" }
     Shortcut { sequence: "Ctrl+Shift+C"; onActivated: UiState.batchMode = "convert" }
+    Shortcut { sequence: "Ctrl+Alt+B"; onActivated: UiState.bestOfOpen = true }
     Shortcut { sequence: "Ctrl+K"; onActivated: { if (UiState.paletteOpen) UiState.paletteOpen = false; else UiState.openPalette("main") } }
 
     // The commands the shell can carry out today; every other command in the palette is listed but does nothing yet (docs/qml_unwired.md).
@@ -159,6 +206,10 @@ Window {
             else if (id.indexOf("appearance.") === 0) { settings.set("theme", id.slice(11)); settings.save() }
             else if (id.indexOf("sort.") === 0) { UiState.sort = id.slice(5); photos.setSort(UiState.sort) }
             else if (id === "workflow.handoff_builder") UiState.handoffOpen = true
+            else if (id === "workflow.best_of") UiState.bestOfOpen = true
+            else if (id === "library.create_collection") { UiState.collDlgId = ""; UiState.collDlg = "new" }
+            else if (id === "library.add_selected_to_collection") grid.addToCollection()
+            else if (id === "ai.people") UiState.peopleOpen = true
             else if (id === "tools.batch_rename" || id === "edit.rename_selection") UiState.batchMode = "rename"
             else if (id === "tools.batch_resize") UiState.batchMode = "resize"
             else if (id === "tools.batch_convert") UiState.batchMode = "convert"
@@ -176,10 +227,21 @@ Window {
 
     // Called once the window has its real size (the mockup's componentDidMount: both side sheets start closed when narrow), then the
     // test hook `--ui key=value;...` applies UiState settings so layouts can be checked headlessly.
+    property string pendingScope: ""
+    // the hook `scope=winners|c:<id>|p:<id>` waits for the photos to be loaded (opening a folder resets the view's scope)
+    function applyScope() {
+        if (pendingScope === "" || photos.total === 0) return
+        var sc = pendingScope; pendingScope = ""
+        if (sc === "winners") collections.openWinners()
+        else if (sc.indexOf("c:") === 0) collections.open(sc.slice(2))
+        else if (sc.indexOf("p:") === 0) people.openPerson(sc.slice(2))
+    }
+    Connections { target: photos; function onCountsChanged() { win.applyScope() } }
     function applyStartup(w) {
         if (w <= 900) { UiState.tab = ""; UiState.insp = false }
         var sample = ({})
         var handoffRecipe = ""
+        var scope = ""
         if (typeof startup === "string" && startup.length) {
             var parts = startup.split(";");
             for (var i = 0; i < parts.length; ++i) {
@@ -189,9 +251,13 @@ Window {
                 if (kv[0] === "inspTab") insp.tab = v; else if (kv[0] === "sel") grid.view.currentIndex = v
                 else if (["pdMode", "pdState", "pdActivity", "pdList"].indexOf(kv[0]) >= 0) sample[kv[0]] = String(v)
                 else if (kv[0] === "hoRecipe") handoffRecipe = String(kv[1])
+                else if (kv[0] === "scope") scope = String(kv[1])
+                else if (kv[0] === "filter") { UiState.filter = String(v); photos.setFilter(String(v)) }
                 else UiState[kv[0]] = v;
             }
             if (handoffRecipe !== "") handoff.setRecipe(handoffRecipe)
+            pendingScope = scope
+            win.applyScope()
             if (UiState.txState !== "") transfers.show(UiState.txState, UiState.txKind, UiState.txCount, UiState.txP)
             if (Object.keys(sample).length) pocketDrop.setSample(sample.pdMode || "", sample.pdState || "", sample.pdActivity || "", sample.pdList || "mixed")
             if (UiState.pdSim) {
