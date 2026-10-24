@@ -11,6 +11,7 @@ Item {
     property int bottomSpace: 132
     property Item overlay                // something floating over the grid (the bar): taps inside it are not the grid's
     signal openRequested(int row)
+    signal contextRequested(string kind, int row, real x, real y)
 
     // B: the photo you are on goes into the collection that collects (or, when there is none, you choose one)
     function addToCollection() {
@@ -189,6 +190,15 @@ Item {
                 onTapped: (point) => { if (root.blocked(point.scenePosition)) return; gv.currentIndex = cell.index; gv.forceActiveFocus() }
                 onDoubleTapped: (point) => { if (!root.blocked(point.scenePosition)) root.openRequested(cell.index) }
             }
+        }
+    }
+    MouseArea {   // right click: the photo's menu, or the folder's menu on empty space (left clicks pass through to the cells)
+        anchors.fill: parent; acceptedButtons: Qt.RightButton
+        onPressed: (m) => {
+            var idx = gv.indexAt(m.x - gv.x + gv.contentX, m.y - gv.y + gv.contentY)
+            var p = mapToItem(null, m.x, m.y)
+            if (idx >= 0) { gv.currentIndex = idx; gv.forceActiveFocus(); root.contextRequested("photo", idx, p.x, p.y) }
+            else root.contextRequested("folder", -1, p.x, p.y)
         }
     }
 }

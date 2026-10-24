@@ -60,3 +60,5 @@ DialogCard 1.0 DialogCard.qml
 CullWindow 1.0 CullWindow.qml
 AiCenterWindow 1.0 AiCenterWindow.qml
 CullMini 1.0 CullMini.qml
+ContextMenu 1.0 ContextMenu.qml
+Toasts 1.0 Toasts.qml

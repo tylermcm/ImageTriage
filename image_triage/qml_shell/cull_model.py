@@ -139,6 +139,27 @@ class CullModel(QObject):
         label, color, _rej = REASONS[reason]
         return {"label": label, "color": color}
 
+    def flagInfo(self, path: str) -> dict:
+        """The reason this frame is flagged for (label, colour) while the flag stands, else nothing."""
+        reason = self._flags.get(path)
+        if not self._s["done"] or not reason or self._s["restored"].get(path):
+            return {}
+        row = next((r for r in self._rows() if r["path"] == path), None)
+        if row is None or row["decision"]:
+            return {}
+        return {"label": REASONS[reason][0], "color": REASONS[reason][1]}
+
+    @Slot(str, bool)
+    def restorePath(self, path: str, on: bool) -> None:
+        if self._flags.get(path):
+            r = dict(self._s["restored"])
+            r[path] = on
+            self._set(restored=r)
+
+    @Slot(str)
+    def reviewFrame(self, path: str) -> None:
+        self._set(window="cull", hidden=False, page="rev", sel=path, filter="all")
+
     @Slot(str, result="QVariantMap")
     def gridFlag(self, path: str) -> dict:
         """What the grid draws on a flagged frame: its reason and colour (nothing for a frame that was decided, restored or not flagged)."""

@@ -24,7 +24,8 @@
 | Move / Copy To Folder cards, handoff progress and done cards | built, **scripted: nothing is transferred**; nothing opens the Move / Copy cards yet except a handoff run | Run workflow |
 | Collections (new / edit dialog, picker, menu), best-of, Tag People | built; collections **real** (the Widgets library store), people real with a face index, best-of real planner with few signals (see its section) | Collections tab (+, menu, right-click), Add All bar, B, Faces tab (All people…), Ctrl Alt B, palette |
 | Cull window (prepare, progress, review, apply) and AI Center (setup, models, defaults, recent runs) | built, **the analysis is scripted: nothing is measured** (see its section) | Analyze button |
-| Help, shortcuts guide, catalog, file associations, splash, toasts, context menu | not built | menus, right click |
+| Photo menu, folder menu and toasts | built; some entries say "not connected yet" (see their section) | right click on a photo or on empty grid space |
+| Help, shortcuts guide, catalog, file associations, splash | not built | menus |
 
 
 The QML shell (`image_triage/qml_shell/`, branch `qml-shell`) is a finished *front end* with a thin real back end. This file lists
@@ -93,7 +94,7 @@ shell reacts to it yet.
 | Enter / Space / double-click | `openRequested(row)` is emitted and **nothing listens** | the popout (`preview.py`, `FullScreenPreview`) in its own window |
 | Selection | One cell only; no multi-select, range select, rubber band | `records_view`, selection model |
 | Drag and drop out of or into the grid | None | `dragdrop_controller` |
-| Context menu | None | `context_menu_controller` |
+| Context menu | Built (see the Context menus and toasts section); multi-select menus do not exist (one selected cell) | `context_menu_controller` |
 | Burst groups and stacks | None (settings stored, no grouping) | `bursts`, `face_stack`, `annotation_controller` |
 | Compare mode, zoom, details view | None | `details_view`, `compare` |
 | AI tags on cards | Badge for the decision only; the AI badges and hover reasons are not drawn | `show_ai_tags_in_grid` |
@@ -317,6 +318,28 @@ in the shell `--ui "cullScene=cu-review"` (the same names).
 | Show in grid | Real (moves the grid to that frame) | |
 | Results saved with the folder / reopened later | Not connected (kept in memory for this session) | catalog migration 9 (`cascade_role`, `triggered_tags`) |
 | Cull on `--mock` | Starts from the mockup's flags; scenes reset those frames to undecided | |
+
+## Context menus and toasts
+
+`ContextMenu.qml` (the photo menu, the folder menu and their fly-out submenus), `Toasts.qml`; models `menu_model.py` (`ctxMenu`, `toasts`). Right click a photo or empty grid space. Mockup:
+`scripts/qml_parity/menu.dc.html` with `harness_menu.html` (`?scene=cx-photo|cx-coll|cx-with|cx-move|cx-flag|cx-bg|cx-sort|tt-undo|tt-stack|tt-warn`); in the shell `--ui "ctxScene=cx-photo"` (the same names).
+
+| Entry | Status | To connect |
+|---|---|---|
+| Winner / Keep / Reject row | **Real** (the grid's decision), with a toast and Undo | the decision store |
+| Collections (tick list, New collection…) | **Real** (library store), toast with Undo | |
+| Share to phone | **Real** (adds the selection to PocketDrop and opens it) | |
+| Rename… / Resize… / Convert… | Real (open the batch window; applying is still not connected) | |
+| Copy path, Copy file name, Copy folder path | **Real** (clipboard) | |
+| Show in File Explorer, Show folder in File Explorer | **Real** (`shell_actions`, Qt) | |
+| Refresh folder, Sort by, View (names, badges, size), Clear filters | **Real** (sort goes through the photo model) | |
+| Flagged banner: Why was it flagged? / Restore | **Real** (opens the Cull review at that frame; restoring un-flags it, with Undo) | the cull results are Sample |
+| **Open (Space), Open in editor (E)** | **Not connected**: asks the window, nothing listens; a toast says so | the popout, the PhotoCraft host |
+| **Open with…, Copy or move…** | **Not connected**: a toast says so (the recent destinations listed are Sample) | `shell_actions.open_with_default`, `file_ops`, recent destinations |
+| **Delete** | **Not connected**: a toast says so and nothing changes | recycle bin (`file_ops`), Undo |
+| Multi-photo menu, Photoshop entry, "Send to" actions, AI group entries | not offered (no multi-select, Photoshop is inside Open with, the new cull has no AI groups) | multi-select |
+| Toasts (up to three, 6 seconds, Undo / Show / Open settings buttons) | **Real** component; used by the menu only so far (the other windows do not raise toasts yet) | other actions |
+| "Open settings" and "Learn more" toast buttons from the mockup | Only in the mockup's samples | |
 
 ## Tooling that is not part of the product
 - `--mock`, `--set`, `--ui`, `--click`, `--hover`, `--grab` are test hooks of `python -m image_triage.qml_shell`.
