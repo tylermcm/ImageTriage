@@ -62,3 +62,13 @@ AiCenterWindow 1.0 AiCenterWindow.qml
 CullMini 1.0 CullMini.qml
 ContextMenu 1.0 ContextMenu.qml
 Toasts 1.0 Toasts.qml
+RSearch 1.0 RSearch.qml
+KeyCap 1.0 KeyCap.qml
+RHeader 1.0 RHeader.qml
+HelpMenu 1.0 HelpMenu.qml
+HelpWindow 1.0 HelpWindow.qml
+ShortcutsWindow 1.0 ShortcutsWindow.qml
+LibraryWindow 1.0 LibraryWindow.qml
+FileAssocWindow 1.0 FileAssocWindow.qml
+SplashCard 1.0 SplashCard.qml
+SplashWindow 1.0 SplashWindow.qml

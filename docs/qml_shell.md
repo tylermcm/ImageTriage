@@ -83,6 +83,11 @@ in the shell `--ui "cullScene=cu-review"`. Flagged frames draw a reason badge an
 `ContextMenu.qml`, `Toasts.qml`; models `menu_model.py` (`ctxMenu`, `toasts`). Right click in `PhotoGrid.qml` asks `Main.qml` to open the menu at the pointer. Mockup `scripts/qml_parity/menu.dc.html` with `harness_menu.html`;
 in the shell `--ui "ctxScene=cx-photo"`. What is real and what says "not connected yet": docs/qml_unwired.md, section "Context menus and toasts". Tests: `tests/test_qml_shell_menu.py`.
 
+## Help, shortcuts, library, file associations and splash
+
+`HelpMenu.qml`, `HelpWindow.qml`, `ShortcutsWindow.qml`, `LibraryWindow.qml`, `FileAssocWindow.qml`, `SplashCard.qml`, `SplashWindow.qml`; model `reference_model.py` (`reference`). The top bar's Help button, F1 and Ctrl+/ open them.
+Mockup `scripts/qml_parity/help.dc.html` with `harness_help.html`; in the shell `--ui "refScene=hlp-start"`. What is real and what says "not connected yet": docs/qml_unwired.md, section "Help, shortcuts, library, file types and splash". Tests: `tests/test_qml_shell_reference.py`.
+
 ## Handoff builder and transfer cards
 
 `HandoffWindow.qml` and `TransferCards.qml`, models `handoff_model.py` and `transfer_model.py`. Mockup: `scripts/qml_parity/handoff.dc.html` (`?ho=1&hrecipe=saved:wedding_handoff`, `?tx=confirm|progress|done&txk=copy|move|wf&txp=0.42`);
@@ -112,4 +117,4 @@ testing (everything above was verified headlessly with a software renderer), `to
 
 ## Tests
 
-`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py`, `tests/test_qml_shell_pocketdrop.py`, `tests/test_qml_shell_handoff.py`, `tests/test_qml_shell_collections.py`, `tests/test_qml_shell_cull.py`, `tests/test_qml_shell_menu.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
+`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py`, `tests/test_qml_shell_pocketdrop.py`, `tests/test_qml_shell_handoff.py`, `tests/test_qml_shell_collections.py`, `tests/test_qml_shell_cull.py`, `tests/test_qml_shell_menu.py`, `tests/test_qml_shell_reference.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.

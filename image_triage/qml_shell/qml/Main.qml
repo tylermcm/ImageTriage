@@ -192,6 +192,17 @@ Window {
     CullWindow { id: cullWindow; sourceItem: appContent }
     AiCenterWindow { id: aiCenterWindow; sourceItem: appContent }
     CullMini { }
+    HelpMenu { menuX: top.helpX }
+    Rectangle {   // the splash scenes of the mockup, drawn over the window (the real splash is SplashWindow.qml)
+        z: 120; anchors.fill: parent; color: "#05060a"; visible: reference.view.splash.on && reference.view.splash.preview
+        Item { anchors.centerIn: parent; width: 765; height: 451
+            Shadow { anchors.fill: parent; radius: 6; offsetA: 40; insetA: 20; blurA: 120; alphaA: 0.9; offsetB: 0; insetB: 0; blurB: 0; alphaB: 0 }
+            SplashCard { anchors.fill: parent; status: reference.view.splash.status; progress: reference.view.splash.p; version: reference.view.splash.version } }
+    }
+    HelpWindow { id: helpWindow; sourceItem: appContent }
+    ShortcutsWindow { id: shortcutsWindow; sourceItem: appContent }
+    LibraryWindow { id: libraryWindow; sourceItem: appContent }
+    FileAssocWindow { id: fileAssocWindow; sourceItem: appContent }
     ContextMenu { id: ctxHost }
     Toasts { }
     Connections {
@@ -207,9 +218,19 @@ Window {
             else if (what === "sort") UiState.sort = arg
         }
     }
+    Connections {   // a button in a help article opens a tab or a window of the shell
+        target: reference
+        function onUiRequest(what) {
+            if (what === "settings") UiState.settingsOpen = true
+            else if (what === "cull") cull.openCull()
+            else if (what === "coll" || what === "faces" || what === "drop") UiState.tab = what
+        }
+    }
     Connections { target: UiState; function onRequestRowChanged() { if (UiState.requestRow >= 0) { grid.view.currentIndex = UiState.requestRow; UiState.requestRow = -1 } } }
     CommandPalette { id: commandPalette; sourceItem: appContent }
     Shortcut { sequence: "Ctrl+,"; onActivated: UiState.settingsOpen = !UiState.settingsOpen }
+    Shortcut { sequence: "F1"; onActivated: reference.toggleHelp() }
+    Shortcut { sequence: "Ctrl+/"; onActivated: reference.toggleKeys() }
     Shortcut { sequence: "Ctrl+Alt+H"; onActivated: UiState.handoffOpen = !UiState.handoffOpen }
     Shortcut { sequence: "Ctrl+Shift+R"; onActivated: UiState.batchMode = "rename" }
     Shortcut { sequence: "Ctrl+Shift+E"; onActivated: UiState.batchMode = "resize" }
@@ -267,6 +288,7 @@ Window {
         var scope = ""
         var cullScene = ""
         var ctxScene = ""
+        var refScene = ""
         if (typeof startup === "string" && startup.length) {
             var parts = startup.split(";");
             for (var i = 0; i < parts.length; ++i) {
@@ -279,6 +301,7 @@ Window {
                 else if (kv[0] === "scope") scope = String(kv[1])
                 else if (kv[0] === "cullScene") cullScene = String(kv[1])
                 else if (kv[0] === "ctxScene") ctxScene = String(kv[1])
+                else if (kv[0] === "refScene") refScene = String(kv[1])
                 else if (kv[0] === "filter") { UiState.filter = String(v); photos.setFilter(String(v)) }
                 else UiState[kv[0]] = v;
             }
@@ -286,6 +309,7 @@ Window {
             pendingScope = scope
             pendingCull = cullScene
             pendingCtx = ctxScene
+            if (refScene !== "") reference.scene(refScene)
             win.applyScope()
             if (UiState.txState !== "") transfers.show(UiState.txState, UiState.txKind, UiState.txCount, UiState.txP)
             if (Object.keys(sample).length) pocketDrop.setSample(sample.pdMode || "", sample.pdState || "", sample.pdActivity || "", sample.pdList || "mixed")

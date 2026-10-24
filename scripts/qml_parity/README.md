@@ -33,3 +33,9 @@ thumbnails, which come from Image Triage's own thumbnail cache rather than the b
 * (Fixed) At 1440 wide with the inspector open the bar's AI button used to overflow the glass; the size group now drops as soon as the bar would not fit (mockup and shell).
 * At 900px and below the rail labels stay visible but clipped (`font-size:0` is overridden) and the floating bar ends up below the
   window (the main column is taller than the viewport). **Not replicated**: icon-only rail, bar visible.
+
+## Round 2: help, shortcuts, Browse Library, file associations, splash
+
+`help.dc.html` with `harness_help.html` (`?scene=hlp-start|hlp-search|hlp-cull|hlp-trouble|hlp-about|hlp-about-new|hm-open|sk-main|sk-search|lib-results|lib-search|lib-empty|fa-main|fa-none|fa-other-os|sp-start|sp-mid|sp-end`);
+the shell shows the same scene with `--ui "refScene=hlp-start"`. `help_splash.jpg` and `help_icon.png` are the mockup's splash and icon (the splash is a downscale of the artwork that was current when it was drawn).
+The sample library, sample file-type states and the "2.4.0 available" text are invented for the mockup.
