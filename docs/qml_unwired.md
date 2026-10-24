@@ -1,5 +1,30 @@
 # QML shell: what is not hooked up yet
 
+> **Status: wiring has NOT been done.** The QML shell is a finished front end (layout, look, menus, settings storage, theme) with almost
+> nothing behind its buttons. It was built UI first, on purpose, and the connecting work is deferred, not forgotten. Do not treat any
+> control as working unless this file marks it **Real**. A control that is missing from this file has not been checked either way.
+>
+> Planned order once the UI is done: (1) popout (`FullScreenPreview`, opened from the shell, kept as a separate Widgets window),
+> (2) editor on E (PhotoCraft host, with the validation protocol in `docs/photocraft_handoff.md`), (3) decisions, ratings and folder
+> loading written to the real stores, (4) the menus, the dialogs listed below, then the settings that nothing reads yet.
+> Whoever wires something must change its row here in the same commit.
+
+## Windows and dialogs not built or not connected
+
+| Window | In the QML shell | Opens from |
+|---|---|---|
+| Popout / preview (`preview.py`) | not connected (stays a Widgets window) | Enter, Space, double-click, Open preview |
+| Editor (PhotoCraft host) | not connected | E, Open in editor |
+| Settings | built, storage connected, most values not applied | gear, Ctrl+, |
+| Command palette | built, 12 of 53 commands run | Ctrl K |
+| Filter dialog and saved presets | not built | Filters, Advanced Filters |
+| Batch rename, resize, convert | not built | Rename, Resize and convert |
+| Share to phone, handoff, transfers (PocketDrop) | not built | Share to phone |
+| Collections, best-of, people / faces | not built | Collections tab, Faces tab |
+| AI setup, review, apply decisions, cull preferences, workflow center, progress | not built | Analyze |
+| Help, shortcuts guide, catalog, file associations, splash, toasts, context menu | not built | menus, right click |
+
+
 The QML shell (`image_triage/qml_shell/`, branch `qml-shell`) is a finished *front end* with a thin real back end. This file lists
 everything that looks live but is not connected to the application, so nothing is mistaken for working. **Update it in the same commit
 whenever something gets wired or a new control is added.** The Widgets application on `main` is untouched and still does all of this.
