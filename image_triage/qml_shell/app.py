@@ -148,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.size:
         window.setPosition(area.x() + (area.width() - width) // 2, area.y() + (area.height() - height) // 2)
     QMetaObject.invokeMethod(window, "applyStartup", Q_ARG("QVariant", width))
+    if not (args.size or args.grab or args.mock):
+        window.showMaximized()                            # the real app opens maximised; headless checks keep their exact size
     for pair in filter(None, args.set.split(";")):
         key, _, raw = pair.partition("=")
         settings.set(key, True if raw == "true" else False if raw == "false" else (float(raw) if "." in raw else int(raw)) if raw.lstrip("-").replace(".", "", 1).isdigit() else raw)

@@ -210,7 +210,7 @@ def test_main_qml_loads_and_the_grid_shows_the_model(qapp, tmp_path):
     pump(qapp, 0.2)
 
 
-def _load_main(qapp, tmp_path):
+def _load_main(qapp, tmp_path, startup=""):
     from image_triage.qml_shell.batch_model import BatchModel
     from image_triage.qml_shell.filters_model import FiltersModel
     from image_triage.qml_shell.palette_model import PaletteModel
@@ -233,7 +233,7 @@ def _load_main(qapp, tmp_path):
     context.setContextProperty("handoff", HandoffModel(model, memory=True, parent=qapp))
     context.setContextProperty("transfers", TransferModel(model, memory=True, parent=qapp))
     context.setContextProperty("thumbs", ThumbService(DiskThumbnailCache(tmp_path / "cache"), parent=qapp))
-    context.setContextProperty("startup", "")
+    context.setContextProperty("startup", startup)
     engine.addImportPath(str(shell_app.QML_DIR))
     engine.load(QUrl.fromLocalFile(str(shell_app.QML_DIR / "Main.qml")))
     assert engine.rootObjects(), warnings

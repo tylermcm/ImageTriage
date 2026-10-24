@@ -79,7 +79,7 @@ Item {
                             delegate: Rectangle {
                                 required property var modelData
                                 readonly property bool on: insp.has && insp.cur.decision === modelData.k
-                                width: (320 - 12) / 3; height: 88.2; radius: 12
+                                width: (insp.fullW - 32 - 12) / 3; height: 88.2; radius: 12
                                 color: on ? Qt.alpha(modelData.c, 0.16) : theme.base
                                 border.color: on ? Qt.alpha(modelData.c, 0.55) : (hh.hovered ? theme.line : theme.lineSoft)
                                 scale: tp.pressed ? 0.96 : 1
@@ -260,7 +260,7 @@ Item {
                         Repeater { model: 4
                             delegate: Item {
                                 required property int index
-                                width: (320 - 12) / 4; height: width * 2 / 3
+                                width: (insp.fullW - 32 - 12) / 4; height: width * 2 / 3
                                 readonly property var it: { void photos.revision; return photos.get((insp.row + index) % Math.max(1, photos.shown)) }
                                 Rectangle { visible: index === 0; x: -2; y: -2; width: parent.width + 4; height: parent.height + 4; radius: 8; color: theme.accent }   // box-shadow spread
                                 RoundClip { anchors.fill: parent; radius: 6; opacity: index === 0 ? 1 : 0.55

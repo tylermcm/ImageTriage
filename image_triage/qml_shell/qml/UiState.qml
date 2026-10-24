@@ -5,6 +5,12 @@ import QtQuick
 QtObject {
     property string tab: "lib"          // "" = side panel closed
     property bool insp: true
+    property real panelW: 300               // widths the user dragged the side panel and the inspector to (Main clamps them to what fits)
+    property real inspW: 352
+    readonly property real panelMin: 260    // narrower than this the library rows, faces and PocketDrop cards would clip
+    readonly property real panelMax: 480
+    readonly property real inspMin: 300
+    readonly property real inspMax: 560
     property string menu: ""            // "" or the id of the open popover
     property string filter: "all"
     property string dens: "m"

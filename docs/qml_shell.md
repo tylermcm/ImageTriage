@@ -33,6 +33,9 @@ Ctrl+, or the rail's gear opens the settings window.
 The main window is frameless (`Qt.FramelessWindowHint`): no Windows title bar. `TopBar.qml` is the title bar. Dragging an empty part calls `startSystemMove()` (the system's own move, so Windows snapping works),
 a double click toggles maximized, and the three buttons at the right minimize, maximize or restore, and close. `WindowEdges.qml` puts thin grips on the edges and corners that call `startSystemResize()`;
 they are off while the window is maximized. The buttons show in the compact layout too, since the window has no other way to close. `tests/test_qml_shell.py` checks the flag, the buttons and the double click.
+The real app opens maximized (not with `--size`, `--grab` or `--mock`, which keep their exact size); restoring gives 1440 x 900, centred.
+
+The side panel and the inspector are resized by dragging their edge (`SideResizer.qml`; a double click puts the width back). Minimums keep their contents from clipping (panel 260, inspector 300), maximums keep them from taking over (480, 560), and the grid always keeps at least 400 px: when the window is narrow the panels shrink toward their minimums first. The widths are remembered (`settings.layoutWidth`, QSettings `window/panel_width`, `window/inspector_width`). The compact layout (900 px and narrower) uses fixed sheets and has no handles. `--ui "panelW=300;inspW=352"` sets them for checks. Tests: `tests/test_qml_shell_layout.py`.
 
 ## Settings window
 
