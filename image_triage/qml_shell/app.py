@@ -1,4 +1,4 @@
-"""Bootstrap for the QML shell: engine, context objects, thumbnail provider, and a headless grab mode for checking the layout."""
+"""Bootstrap for the QML shell: engine, context objects, thumbnail service, and a headless grab mode for checking the layout."""
 from __future__ import annotations
 
 import argparse
@@ -33,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     from .. import memtrace
     from .photos import PhotoModel
     from .theme import Theme
-    from .thumbs import ThumbProvider
+    from .thumbs import ThumbService
 
     QCoreApplication.setOrganizationName("Image Triage")
     QCoreApplication.setApplicationName("Image Triage")
@@ -43,10 +43,11 @@ def main(argv: list[str] | None = None) -> int:
     theme = Theme(light=args.light, parent=app)
     photos = PhotoModel(parent=app)
     engine = QQmlApplicationEngine()
-    engine.addImageProvider("thumbs", ThumbProvider())
+    thumbs = ThumbService(parent=app)
     context = engine.rootContext()
     context.setContextProperty("theme", theme)
     context.setContextProperty("photos", photos)
+    context.setContextProperty("thumbs", thumbs)
     context.setContextProperty("startup", args.ui)
     engine.addImportPath(str(QML_DIR))
     width, height = (int(part) for part in args.size.lower().split("x"))

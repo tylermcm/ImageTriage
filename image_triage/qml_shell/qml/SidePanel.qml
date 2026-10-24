@@ -135,9 +135,8 @@ Item {
                                 Item { width: 34 + 2 * 22; height: 34; anchors.verticalCenter: parent.verticalCenter
                                     Repeater { model: 3
                                         delegate: Rectangle { required property int index; x: index * 22; width: 34; height: 34; radius: 7; color: theme.s3; border.color: theme.s2; border.width: 2; clip: true
-                                            Image { anchors.fill: parent; fillMode: Image.PreserveAspectCrop; asynchronous: true; cache: false
-                                                sourceSize: Qt.size(160, 107)
-                                                source: { void photos.revision; var it = photos.get((modelData[2] + index) % Math.max(1, photos.shown)); return it && it.path ? "image://thumbs/" + encodeURIComponent(it.path) : "" } } } } }
+                                            ThumbImage { anchors.fill: parent; bucket: 160
+                                                path: { void photos.revision; var it = photos.get((modelData[2] + index) % Math.max(1, photos.shown)); return it && it.path ? it.path : "" } } } } }
                                 Column { anchors.verticalCenter: parent.verticalCenter
                                     Text { text: modelData[0]; color: theme.fg; font.pixelSize: 13 }
                                     Text { text: modelData[1] + " photos"; color: theme.fg3; font.pixelSize: 11 } } }

@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
-// The photo grid: a virtualized GridView over the model, thumbnails from image://thumbs, edge-to-edge with a 2 px gutter.
+// The photo grid: a virtualized GridView over the model, thumbnails from the disk cache (ThumbImage), edge-to-edge with a 2 px gutter.
 Item {
     id: root
     property alias view: gv
@@ -18,6 +18,7 @@ Item {
 
     GridView {
         id: gv
+        objectName: "photoGrid"
         anchors.fill: parent
         anchors.margins: 1
         clip: true
@@ -52,6 +53,8 @@ Item {
 
         delegate: Item {
             id: cell
+            GridView.onPooled: img.release()
+            GridView.onReused: img.rev++
             required property int index
             required property string path
             required property string name
@@ -70,17 +73,13 @@ Item {
                 anchors.margins: 1
                 clip: true
                 Rectangle { anchors.fill: parent; color: theme.s2 }
-                Image {
+                ThumbImage {
                     id: img
                     anchors.fill: parent
-                    source: "image://thumbs/" + encodeURIComponent(cell.path)
-                    sourceSize: { var w = root.bucket(Math.ceil(cell.width * Screen.devicePixelRatio)); return Qt.size(w, Math.round(w * 2 / 3)); }
-                    asynchronous: true
-                    cache: false
-                    fillMode: Image.PreserveAspectCrop
-                    opacity: status === Image.Ready ? (cell.decision === "rej" ? 0.38 : 1) : 0
+                    path: cell.path
+                    bucket: root.bucket(Math.ceil(cell.width * Screen.devicePixelRatio))
+                    imageOpacity: cell.decision === "rej" ? 0.38 : 1
                     scale: hover.hovered ? 1.04 : 1
-                    Behavior on opacity { NumberAnimation { duration: 220 } }
                     Behavior on scale { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
                 }
                 Rectangle {
