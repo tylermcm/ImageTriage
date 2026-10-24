@@ -25,7 +25,7 @@
 | Collections (new / edit dialog, picker, menu), best-of, Tag People | built; collections **real** (the Widgets library store), people real with a face index, best-of real planner with few signals (see its section) | Collections tab (+, menu, right-click), Add All bar, B, Faces tab (All people…), Ctrl Alt B, palette |
 | Cull window (prepare, progress, review, apply) and AI Center (setup, models, defaults, recent runs) | built, **the analysis is scripted: nothing is measured** (see its section) | Analyze button |
 | Photo menu, folder menu and toasts | built; some entries say "not connected yet" (see their section) | right click on a photo or on empty grid space |
-| Help, shortcuts guide, catalog, file associations, splash | not built | menus |
+| Help, shortcuts guide, catalog, file associations, splash | **Built** (see the Help, shortcuts, library, file types and splash section) | |
 
 
 The QML shell (`image_triage/qml_shell/`, branch `qml-shell`) is a finished *front end* with a thin real back end. This file lists
@@ -53,7 +53,8 @@ shell reacts to it yet.
 | Element | Status | To connect |
 |---|---|---|
 | Brand icon | Visual | |
-| File / Review / View / AI / Help | Visual (hover only, no menus) | the Widgets menu bar actions (`main_window_actions`) |
+| File / Review / View / AI | Visual (hover only, no menus) | the Widgets menu bar actions (`main_window_actions`) |
+| Help | **Real**: opens the Help menu (Help, Keyboard shortcuts, Browse Library, File associations, Check for updates, About) | |
 | Command search field, Ctrl K | Real (opens the command palette, see below) | |
 | Sun button | Real (sets and saves the appearance between Slate and Light) | |
 | Inspector button | Memory (`UiState.insp`, not remembered) | persist in `window/state` |
@@ -344,3 +345,39 @@ in the shell `--ui "cullScene=cu-review"` (the same names).
 ## Tooling that is not part of the product
 - `--mock`, `--set`, `--ui`, `--click`, `--hover`, `--grab` are test hooks of `python -m image_triage.qml_shell`.
 - `scripts/qml_parity/` renders the HTML mockup for pixel comparison; `scripts/qml_parity.py` overlays two screenshots.
+
+## Help, shortcuts, library, file types and splash
+
+`HelpMenu.qml`, `HelpWindow.qml`, `ShortcutsWindow.qml`, `LibraryWindow.qml`, `FileAssocWindow.qml`, `SplashCard.qml`, `SplashWindow.qml`; one model, `reference_model.py` (`reference`), with the words and tables in `reference_content.py`.
+Open them from the top bar's Help menu, F1 (Help) and Ctrl+/ (shortcuts). Mockup: `scripts/qml_parity/help.dc.html` with `harness_help.html` (`?scene=hlp-start|hlp-search|hlp-cull|hlp-trouble|hlp-about|hlp-about-new|hm-open|sk-main|sk-search|lib-results|lib-search|lib-empty|fa-main|fa-none|fa-other-os|sp-start|sp-mid|sp-end`);
+in the shell `--ui "refScene=hlp-start"` (the same names). `--mock` and the tests use sample data where the real thing needs the disk or Windows; every row says which.
+
+| Element | Status | To connect |
+|---|---|---|
+| Help topics and their text | **Real, written for the shell** (they describe the rail, tabs and windows of the QML shell, not the Widgets help pages) | `ui/help_topics.py` is the Widgets text and was not reused |
+| Search in Help | Real (matches topic titles, leads and every paragraph; the number is how many blocks matched) | |
+| Buttons in articles (Open Collections, Faces, Cull, PocketDrop, Settings, See every shortcut) | **Real** (they open that tab or window) | |
+| About: version | **Real** (`_version.__version__`) | |
+| About: Check for updates / Check again | **Real**: `updater.check_for_update()` in a worker thread (states: not asked yet, checking, up to date, newer version, could not check, with Cancel) | |
+| About: **Download** (a newer version) | **Not connected**: a toast says so | `help_update_controller` (download, verify the SHA-256, install, restart) |
+| About: Release notes, Report a problem | **Real** (the default browser: the release's notes URL when the check found one, otherwise the repository's releases / new issue page) | |
+| About: Open the log folder | **Real** (`perf.performance_log_dir()`); in `--mock` a toast says it is sample data | |
+| About: **Licences and credits** | **Not connected**: a toast says so | a licences page (the LICENSE file and `docs/ai_model_licence_audit.md` hold the text) |
+| About: icon | The current `app_icon-v2.png` (it changes with the new icon) | |
+| Keyboard shortcuts: the list | **Real, curated**: the shell's own keys plus the registry actions it has; a row tied to a registry action shows the key the user set (`ui/shortcuts.load_shortcut_overrides`) in blue | the shell binds fixed keys, not the user's overrides (also noted under Grid) |
+| Keyboard shortcuts: search | Real (matches the action, the category and an exact key name) | |
+| Change shortcuts in Settings | Opens the Settings window (the shortcuts section of the settings window is itself a sample list) | the registry editor |
+| `--mock` | One key is shown as changed (Compare is V) | |
+| Browse Library: roots, counts, search, scope | **Real** (`LibraryStore`: `list_catalog_roots`, `search_catalog`; the counts are the indexed bundles per folder); `--mock` shows the mockup's three sample folders and the folder's photos as the results | |
+| Browse Library: Add folder, Index a folder | **Real** (adds the root and indexes it in a worker thread; the footer says "Indexing..." meanwhile); `--mock` adds an empty sample row | |
+| Browse Library: Re-index, Remove | **Real** (re-index in a worker thread; remove asks nothing and moves no files, with a toast) | confirm on remove |
+| Browse Library: results | At most 120 per search. Cards show the thumbnail from the shell's thumbnail cache | paging |
+| Browse Library: **Show N in the grid** | **Not connected**: a toast says so; the results stay in this window | a virtual scope for folders that are not open (`records_view.load_virtual_scope_records`) |
+| File associations: states, counts, groups | **Real on Windows** (`file_associations.query_windows_file_association_states`; the types are the formats the app opens, so the totals are not the mockup's 58); `--mock` shows a sample mix | |
+| Make available for all types / Remove all | **Real on Windows** (`register_` and `remove_windows_file_associations`) | |
+| Make default | **Real on Windows**: opens the Windows chooser for that type and looks again a few seconds later | |
+| Windows Default Apps… | **Real on Windows** (`open_windows_default_apps_settings`) | |
+| File associations on any other system | The window says "Managed by your system" and hides the Windows buttons (the mockup keeps them visible) | |
+| Splash | **Real**: a frameless window shown before the main window is built (status "Starting...", "Loading the interface...", "Reading your folder...", "Ready"; the bar follows); not shown for `--mock` or `--grab` | startup steps are three fixed stages, not measured |
+| Splash artwork | `ui/assets/splash_background-v8.png` (redrawn from code, `scripts/splash_art/`) | |
+| Closing a window | Esc, the close button, Done or a click outside | |

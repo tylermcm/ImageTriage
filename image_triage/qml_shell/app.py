@@ -43,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     from .filters_model import FiltersModel
     from .palette_model import PaletteModel
     from .photos import PhotoModel
+    from .reference_model import ReferenceModel
     from .handoff_model import HandoffModel
     from .pocketdrop_model import PocketDropModel
     from .transfer_model import TransferModel
@@ -86,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     toasts = ToastModel(parent=app)
     menu = MenuModel(photos, collections, cull, toasts, memory=bool(args.mock), parent=app)
     pocket_drop = PocketDropModel(photos, memory=bool(args.mock), parent=app, collections=collections)
+    reference = ReferenceModel(photos, toasts, memory=bool(args.mock), parent=app)
     app.aboutToQuit.connect(batch.cleanup)
     app.aboutToQuit.connect(pocket_drop.shutdown)
 
@@ -114,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     context.setContextProperty("cull", cull)
     context.setContextProperty("toasts", toasts)
     context.setContextProperty("ctxMenu", menu)
+    context.setContextProperty("reference", reference)
     context.setContextProperty("handoff", handoff)
     context.setContextProperty("transfers", transfers)
     context.setContextProperty("thumbs", thumbs)
@@ -126,11 +129,19 @@ def main(argv: list[str] | None = None) -> int:
         # the design size (e.g. 1280x720 at 100%, or 4K at 300%) shrinks the window
         area = app.primaryScreen().availableGeometry()
         width, height = min(1440, int(area.width() * 0.92)), min(900, int(area.height() * 0.92))
+    # the launch splash (its own frameless window) is up while the main window is built; not for headless checks, which have their own scenes
+    splash = not (args.grab or args.mock)
+    if splash:
+        engine.load(QUrl.fromLocalFile(str(QML_DIR / "SplashWindow.qml")))
+        reference.splashShow("Starting\u2026", 8)
+        app.processEvents()
+        reference.splashShow("Loading the interface\u2026", 35)
+        app.processEvents()
     engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
     roots = engine.rootObjects()
-    if not roots:
+    if not roots or (splash and len(roots) < 2):
         return 1
-    window = roots[0]
+    window = roots[-1]
     pocket_drop.setWindowHandle(int(window.winId()))
     window.setWidth(width)
     window.setHeight(height)
@@ -144,6 +155,21 @@ def main(argv: list[str] | None = None) -> int:
         photos.loadMock(args.mock)
     elif args.folder:
         photos.loadFolder(args.folder)
+    if splash:
+        if args.folder and not args.mock:
+            reference.splashShow("Reading your folder\u2026", 70)
+
+            def folder_done() -> None:
+                if not photos.loading:
+                    reference.splashShow("Ready", 100)
+                    QTimer.singleShot(250, reference.splashHide)
+                    photos.loadingChanged.disconnect(folder_done)
+
+            photos.loadingChanged.connect(folder_done)
+            QTimer.singleShot(15000, reference.splashHide)         # never leave it up if the folder never answers
+        else:
+            reference.splashShow("Ready", 100)
+            QTimer.singleShot(250, reference.splashHide)
 
     if args.grab:
         def grab() -> None:

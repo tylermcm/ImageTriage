@@ -9,6 +9,8 @@ Rectangle {
     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
 
     readonly property real brandW: UiState.topAligned ? 72 : 30
+    property real helpX: 205
+    function setHelpX(v) { helpX = v }                  // where the Help menu opens: under the Help button
 
     Item {
         id: brand
@@ -45,6 +47,10 @@ Rectangle {
                 Rectangle { anchors.fill: parent; radius: 7; color: Qt.alpha(theme.lift, h.hovered ? 0.08 : 0) }
                 Text { id: lbl; anchors.centerIn: parent; text: modelData; color: h.hovered ? theme.fg : theme.fg2; font.pixelSize: 13 }
                 HoverHandler { id: h; cursorShape: Qt.PointingHandCursor }
+                readonly property real gx: menus.x + x
+                onGxChanged: if (modelData === "Help") setHelpX(gx)
+                Component.onCompleted: if (modelData === "Help") setHelpX(gx)
+                TapHandler { enabled: modelData === "Help"; onTapped: reference.toggleMenu() }
                 Accessible.role: Accessible.MenuItem; Accessible.name: modelData
             }
         }
