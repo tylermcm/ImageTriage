@@ -34,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     from PySide6 import QtQuick as _QtQuick  # noqa: F401 - registers QQuickWindow so the root object is wrapped with grabWindow()
 
     from .. import memtrace
+    from .filters_model import FiltersModel
     from .palette_model import PaletteModel
     from .photos import PhotoModel
     from .settings_model import ACCENTS, SettingsModel
@@ -64,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     photos = PhotoModel(parent=app)
     settings = SettingsModel(memory=bool(args.mock), parent=app)
     palette = PaletteModel(memory=bool(args.mock), parent=app)
+    adv_filters = FiltersModel(photos, memory=bool(args.mock), parent=app)
 
     def apply_theme() -> None:
         index = settings.accentIndex
@@ -81,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     context.setContextProperty("photos", photos)
     context.setContextProperty("settings", settings)
     context.setContextProperty("cmdPalette", palette)
+    context.setContextProperty("advFilters", adv_filters)
     context.setContextProperty("thumbs", thumbs)
     context.setContextProperty("startup", args.ui)
     engine.addImportPath(str(QML_DIR))

@@ -6,6 +6,7 @@ Item {
     id: sel
     property var options: []          // [{label, value}]
     property var current              // the chosen value
+    property real menuMax: 10000       // cap on the menu's height; longer lists scroll
     signal picked(var value)
     readonly property string currentLabel: {
         for (var i = 0; i < options.length; ++i) if (options[i].value === current) return options[i].label
@@ -33,7 +34,7 @@ Item {
     TapHandler { onTapped: menu.opened ? menu.close() : menu.open() }
 
     Popover {
-        id: menu; placement: 2; minWidth: sel.width - 14; tintAlpha: 0.92
+        id: menu; placement: 2; minWidth: sel.width - 14; tintAlpha: 0.92; maxHeight: sel.menuMax - 14
         Repeater {
             model: sel.options
             delegate: Item {

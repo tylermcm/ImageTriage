@@ -16,8 +16,8 @@
 | Popout / preview (`preview.py`) | not connected (stays a Widgets window) | Enter, Space, double-click, Open preview |
 | Editor (PhotoCraft host) | not connected | E, Open in editor |
 | Settings | built, storage connected, most values not applied | gear, Ctrl+, |
-| Command palette | built, 12 of 53 commands run | Ctrl K |
-| Filter dialog and saved presets | not built | Filters, Advanced Filters |
+| Command palette | built, 14 of 53 commands run | Ctrl K |
+| Filter dialog and saved presets | built; applies decision, rating and RAW / JPEG only (see below) | Filters menu, palette |
 | Batch rename, resize, convert | not built | Rename, Resize and convert |
 | Share to phone, handoff, transfers (PocketDrop) | not built | Share to phone |
 | Collections, best-of, people / faces | not built | Collections tab, Faces tab |
@@ -64,7 +64,7 @@ shell reacts to it yet.
 | Undo | Visual | the undo stack (`file_ops`, window `_undo_stack`) |
 | Review menu (winner / keep / reject / clear) | Memory (decisions on the in-memory model) | `decision_store` per session |
 | View menu (filenames, badges) | Memory (also not saved) | `view/*` keys |
-| Filters menu (rating, format, clear) | Memory | `filtering`, saved filter presets |
+| Filters menu (rating, format, clear) | Memory ("Advanced filters…" opens the filters window, see below) | `filtering` |
 | Accept / Reject buttons | Memory | `decision_store`, move/delete via `file_ops` and the delete mode |
 | Sort, Columns menus | Memory (sort and density work on the model) | `view/columns`, details sort keys |
 | Compare, Open preview, Winner ladder, Rename, Resize and convert, Share to phone, Open in editor, Keyboard shortcuts | Visual (Compare toggles a flag nothing reads) | `compare` mode, `preview` popout, `batch_rename_controller`, `export_jobs_controller`, `handoff_controller`/PocketDrop, PhotoCraft host |
@@ -141,12 +141,29 @@ a test), shortcuts come from the shortcut registry with the user's overrides, an
 |---|---|---|
 | Search, ranking, highlight, recents, keyboard (up, down, Enter, Esc), mouse | Real | |
 | Command list | Partly real | 53 of the Widgets palette's ids, titles and keywords (`palette_model.py`). Left out: per-collection, per-saved-search, per-recipe, per-panel, per-sort and per-column commands, and the AI state filters, which need live window state |
-| Commands that run something | 12 of 53 | Settings, the three themes (Slate, Light, Midnight), sort by name and by AI score, Clear Filters, Compare, Reset Layout, Mark Winner, Reject, Move To _keep (this one only sets the Keep decision). Every other command is listed, can be chosen and is remembered as recent, **and then does nothing** |
+| Commands that run something | 14 of 53 | Settings, Advanced Filters and Save Current Search (both open the filters window), the three themes (Slate, Light, Midnight), sort by name and by AI score, Clear Filters, Compare, Reset Layout, Mark Winner, Reject, Move To _keep (this one only sets the Keep decision). Every other command is listed, can be chosen and is remembered as recent, **and then does nothing** |
 | On / Off tag | Compare only | The Widgets palette shows On or Off for ten toggles (zen, bursts, auto advance, performance logging ...); the shell has none of those states. In the demo data they are fixed |
 | "Current view" tag | Not shown | needs the grid / details view state |
 | Preview Commands and Zen Commands | Model only | the palette can show them (`UiState.paletteContext`), nothing opens it from the popout or zen mode: neither exists in the shell |
 | Smart filter and saved search commands | One fixed sample ("Sharp keepers") | the Widgets palette adds one per built-in and saved filter preset |
 | Opening the palette while another overlay is up | Not handled | Ctrl K over the settings window opens it on top of it |
+
+## Advanced filters window
+
+Opens from the rail's Filters menu ("Advanced filters…") and from the palette (Advanced Filters, Save Current Search). The query, its wording
+(`active_filter_labels`), the eight built-in presets and the saved-search format are the Widgets app's own (`filtering.py`); saved searches are
+stored under the same key, `filters/saved_queries`, so both front ends share them (tests check the format).
+
+| Piece | Status | Notes |
+|---|---|---|
+| Form, chips, built-in and saved presets, save / replace / delete, Reset, Cancel | Real | the Widgets app's name prompt and overwrite popup became an inline name box with a "Replace" button, and delete asks in place |
+| Apply: **decision filters** (quick filter Winners, Rejects, Unreviewed; review state Accepted, Rejected, Unreviewed), **minimum rating**, **file type RAW and JPEG** | Real, on the in-memory sample ratings and decisions | nothing is stored per folder; the grid forgets them on restart |
+| Quick filters Edited, Smart Groups, Duplicates and the AI ones; file types other than RAW and JPEG; AI state; orientation; camera, lens, tags, folder; captured dates; ISO; focal length; search confidence | **Stored in the query and saved with presets, not applied** | the shell has no metadata, no AI results and no duplicate or burst grouping to filter on. The footer says how many set filters are not applied |
+| "N of M photos match" | Real for the filters the shell applies | ignores the others, so it can read higher than the Widgets app would |
+| The grid after Apply | Gains no highlight in the floating bar's All / Winners / Keep / Rejected control or the rail's rating and format ticks | those keep their own state; "Clear all filters" clears both |
+| Preset "Sharp keepers" in the palette | Fixed sample, not a saved search | |
+| Dates | Typed as YYYY-MM-DD; no calendar popup (the Widgets dialog has one) | |
+| Not stored | The applied query is not remembered between runs or per folder (the Widgets app keeps it in the folder session) | |
 
 ## Settings window
 

@@ -44,6 +44,12 @@ Most saved settings are not yet applied by the shell: see `docs/qml_unwired.md`,
 shortcut registry and recents under `commands/recent`. Only a few commands run an action so far; see `docs/qml_unwired.md`.
 `scripts/qml_parity/palette.dc.html` is the mockup (`?pal=1&q=...&pi=N&ctx=preview&light=1` in `harness_palette.html`).
 
+## Advanced filters
+
+`FiltersWindow.qml` (overlay like the settings window; `filters_model.py` holds the query, presets and saved searches in the Widgets app's own
+format and key). Only decisions, rating and RAW / JPEG are applied to the grid so far; see `docs/qml_unwired.md`.
+`scripts/qml_parity/filters.dc.html` is the mockup (`?flt=1&fsel=b0&fopen=ai&fsave=&fdel=Low%20light&fscroll=400&light=1`).
+
 ## Resolution and scaling
 
 Every size is in device-independent pixels. Qt multiplies by the screen's scale (Windows "Scale", Linux `QT_SCALE_FACTOR`/compositor scale), and
@@ -68,4 +74,4 @@ testing (everything above was verified headlessly with a software renderer), `to
 
 ## Tests
 
-`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py` and `tests/test_qml_shell_palette.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
+`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py` and `tests/test_qml_shell_filters.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
