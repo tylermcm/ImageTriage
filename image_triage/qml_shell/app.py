@@ -86,8 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         QTimer.singleShot(300, lambda: QTest.mouseMove(window, QPoint(3, 3)))   # park the pointer off the grid so no cell shows hover
         QTimer.singleShot(int(args.grab_wait * 1000), grab)
         if args.click:
-            from PySide6.QtCore import QPoint, Qt
-            from PySide6.QtTest import QTest
+            from PySide6.QtCore import Qt
 
             points = [tuple(int(v) for v in part.split(",")) for part in args.click.split(";") if part.strip()]
 

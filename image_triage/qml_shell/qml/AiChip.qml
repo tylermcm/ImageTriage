@@ -19,11 +19,12 @@ Item {
         ShapePath {
             fillRule: ShapePath.OddEvenFill; strokeColor: "transparent"
             fillGradient: ConicalGradient {
-                centerX: chip.width / 2; centerY: chip.height / 2; angle: chip.angle
+                // CSS runs clockwise from the angle, Qt counter-clockwise from 3 o'clock: mirrored stops, start angle 90 - a
+                centerX: chip.width / 2; centerY: chip.height / 2; angle: 90 - chip.angle
                 GradientStop { position: 0.0; color: "transparent" }
-                GradientStop { position: 0.45; color: "transparent" }
-                GradientStop { position: 0.65; color: theme.accent }
-                GradientStop { position: 0.85; color: "#d58ae8" }
+                GradientStop { position: 0.15; color: "#d58ae8" }
+                GradientStop { position: 0.35; color: theme.accent }
+                GradientStop { position: 0.55; color: "transparent" }
                 GradientStop { position: 1.0; color: "transparent" }
             }
             PathSvg { path: Icons.rect(0, 0, chip.width, chip.height, 14) + Icons.rect(1.5, 1.5, chip.width - 3, chip.height - 3, 12.5) }
@@ -37,7 +38,7 @@ Item {
         ShapePath {
             fillRule: ShapePath.OddEvenFill; strokeColor: "transparent"
             fillGradient: ConicalGradient {
-                centerX: chip.width / 2; centerY: chip.height / 2; angle: 0
+                centerX: chip.width / 2; centerY: chip.height / 2; angle: 90
                 GradientStop { position: 0.0; color: theme.win }
                 GradientStop { position: 0.5; color: "#3ec7c0" }
                 GradientStop { position: 1.0; color: theme.win }

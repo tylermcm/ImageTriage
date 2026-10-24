@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Property, QObject, Signal
+from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtGui import QColor
 
 
@@ -135,3 +135,8 @@ class Theme(QObject):
     rev = Property(QColor, lambda self: self._get("rev"), notify=changed)
     rej = Property(QColor, lambda self: self._get("rej"), notify=changed)
     star = Property(QColor, lambda self: self._get("star"), notify=changed)
+
+    @Slot(float, float, float, result=QColor)
+    def oklch(self, lightness: float, chroma: float, hue: float) -> QColor:
+        """An OKLCH colour as a QColor (CSS ``oklch()``), for gradients the mockup defines in OKLCH."""
+        return _color(oklch(lightness, chroma, hue))

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Shapes
 
 // The panel beside the rail: Library, Faces, Collections, PocketDrop. Opening animates the column's width (in Main); the contents
 // slide and fade with it, and each page's blocks rise in one after another when it becomes the current page.
@@ -93,11 +94,11 @@ Item {
             opacity: on ? 1 : 0; visible: opacity > 0.01
             Behavior on opacity { NumberAnimation { duration: 250 } }
             Column {
-                id: facesCol; width: parent.width; topPadding: 0
+                id: facesCol; width: parent.width; topPadding: 12
                 Stag { active: faces.on; n: 0; Column { width: parent.width
                     SectionLabel { caption: "People" }
                     Grid {
-                        x: 16; columns: 3; columnSpacing: 8; rowSpacing: 6
+                        x: 16; y: 0; topPadding: 6; bottomPadding: 6; columns: 3; columnSpacing: 8; rowSpacing: 14
                         Avatar { initial: "A"; label: "Anna"; count: 214; hue: 20 }
                         Avatar { initial: "M"; label: "Mark"; count: 187; hue: 150 }
                         Avatar { initial: "L"; label: "Lena"; count: 142; hue: 260 }
@@ -107,8 +108,9 @@ Item {
                     } } }
                 Stag { active: faces.on; n: 1; Column { width: parent.width
                     SectionLabel { caption: "Indexing" }
+                    Item { width: 1; height: 1 }
                     Meter { x: 16; width: parent.width - 32; value: 0.86 }
-                    PanelRow { text: "1,104 of 1,284 photos scanned"; count: "86%"; interactive: false } } }
+                    PanelRow { text: "1,104 of 1,284 photos scanned"; count: "86%"; interactive: false; muted: true } } }
             }
         }
 
@@ -121,27 +123,29 @@ Item {
             opacity: on ? 1 : 0; visible: opacity > 0.01
             Behavior on opacity { NumberAnimation { duration: 250 } }
             Column {
-                id: collCol; width: parent.width
+                id: collCol; width: parent.width; topPadding: 12
                 Stag { active: coll.on; n: 0; Column { width: parent.width
                     SectionLabel { caption: "Winners" }
-                    PanelRow { icon: "star"; text: "All winners"; count: String(photos.winCount); current: true } } }
+                    PanelRow { icon: "star"; text: "All winners"; count: "96"; current: true } } }
                 Stag { active: coll.on; n: 1; Column { width: parent.width
                     SectionLabel { caption: "Projects" }
                     Repeater {
-                        model: [["Album selects", "84", 1], ["Print order", "24", 4], ["Portfolio", "18", 7]]
+                        model: [["Album selects", "84", [1, 6, 10]], ["Print order", "24", [4, 2, 7]], ["Portfolio", "18", [11, 0, 8]]]
                         delegate: Item {
                             required property var modelData
-                            width: parent.width; height: 46
+                            width: parent.width; height: 48.4
                             Rectangle { anchors.fill: parent; color: Qt.alpha(theme.lift, ph.hovered ? 0.05 : 0) }
-                            Row { x: 16; anchors.verticalCenter: parent.verticalCenter; spacing: 12
-                                Item { width: 34 + 2 * 22; height: 34; anchors.verticalCenter: parent.verticalCenter
-                                    Repeater { model: 3
-                                        delegate: Rectangle { required property int index; x: index * 22; width: 34; height: 34; radius: 7; color: theme.s3; border.color: theme.s2; border.width: 2; clip: true
+                            Item { x: 16; y: 7.2; width: 34 + 2 * 22; height: 34
+                                Repeater { model: 3
+                                    delegate: Item { required property int index; x: index * 22; width: 34; height: 34
+                                        Rectangle { anchors.fill: parent; radius: 7; color: theme.s2 }                    // the 2px border
+                                        RoundClip { x: 2; y: 2; width: 30; height: 30; radius: 5
+                                            Rectangle { anchors.fill: parent; color: theme.s3 }
                                             ThumbImage { anchors.fill: parent; bucket: 160
-                                                path: { void photos.revision; var it = photos.get((modelData[2] + index) % Math.max(1, photos.shown)); return it && it.path ? it.path : "" } } } } }
-                                Column { anchors.verticalCenter: parent.verticalCenter
-                                    Text { text: modelData[0]; color: theme.fg; font.pixelSize: 13 }
-                                    Text { text: modelData[1] + " photos"; color: theme.fg3; font.pixelSize: 11 } } }
+                                                path: { void photos.revision; var it = photos.get(modelData[2][index] % Math.max(1, photos.shown)); return it && it.path ? it.path : "" } } } } } }
+                            Column { x: 94; y: 6
+                                Text { height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[0]; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
+                                Text { height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[1] + " photos"; color: theme.fg3; font.pointSize: UiState.pt(10.8333) } }
                             HoverHandler { id: ph; cursorShape: Qt.PointingHandCursor }
                         }
                     } } }
@@ -157,30 +161,35 @@ Item {
             opacity: on ? 1 : 0; visible: opacity > 0.01
             Behavior on opacity { NumberAnimation { duration: 250 } }
             Column {
-                id: dropCol; width: parent.width
+                id: dropCol; width: parent.width; topPadding: 12
                 Stag { active: drop.on; n: 0; Column { width: parent.width
                     SectionLabel { caption: "Device" }
-                    Item { width: parent.width; height: 46
-                        Rectangle { x: 16; y: 18; width: 8; height: 8; radius: 4; color: theme.win }
-                        Rectangle { x: 12; y: 14; width: 16; height: 16; radius: 8; color: Qt.alpha(theme.win, 0.2); z: -1 }
-                        Column { x: 40; anchors.verticalCenter: parent.verticalCenter
-                            Text { text: "Pixel 8 Pro"; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
-                            Text { text: "Connected over Wi-Fi"; color: theme.fg3; font.pixelSize: 12 } } } } }
+                    Item { width: parent.width; height: 50.4
+                        Rectangle { x: 12; y: 14.2; width: 16; height: 16; radius: 8; color: Qt.alpha(theme.win, 0.22) }       // 0 0 0 4px, 22%
+                        Rectangle { x: 16; y: 18.2; width: 8; height: 8; radius: 4; color: theme.win }
+                        Column { x: 34; y: 4
+                            Text { height: 18.2; verticalAlignment: Text.AlignVCenter; text: "Pixel 8 Pro"; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
+                            Text { height: 18.2; verticalAlignment: Text.AlignVCenter; text: "Connected over Wi-Fi"; color: theme.fg3; font.pixelSize: 13 } } } } }
                 Stag { active: drop.on; n: 1
-                    Item { width: parent.width; height: 84
-                        Rectangle { x: 16; y: 6; width: parent.width - 32; height: 72; radius: 12; color: dz.hovered ? Qt.alpha(theme.accent, 0.08) : "transparent"; border.color: dz.hovered ? theme.accent : theme.line; border.width: 1.5
-                            Text { anchors.centerIn: parent; width: parent.width - 24; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; text: "Drop photos here to send to your phone"; color: theme.fg3; font.pixelSize: 13 }
+                    Item { width: parent.width; height: 6 + 74.4
+                        Rectangle { x: 16; y: 6; width: parent.width - 32; height: 74.4; radius: 12; color: dz.hovered ? Qt.alpha(theme.accent, 0.08) : "transparent"
+                            Behavior on color { ColorAnimation { duration: 200 } }
+                            Shape { id: dashed; anchors.fill: parent; layer.enabled: true; layer.samples: 4   // dashes need the geometry renderer
+                                ShapePath { strokeColor: dz.hovered ? theme.accent : theme.line; strokeWidth: 1; fillColor: "transparent"; strokeStyle: ShapePath.DashLine; dashPattern: [3, 3]
+                                    PathSvg { path: Icons.rect(0.5, 0.5, dashed.width - 1, dashed.height - 1, 11.5) } } }
+                            Text { anchors.centerIn: parent; width: parent.width - 26; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; lineHeight: 18.2; lineHeightMode: Text.FixedHeight
+                                   text: "Drop photos here to send to your phone"; color: theme.fg3; font.pixelSize: 13 }
                             HoverHandler { id: dz } } } }
                 Stag { active: drop.on; n: 2; Column { width: parent.width
                     SectionLabel { caption: "Transfers" }
                     Repeater {
-                        model: [["Album selects.zip", "64% · 18 MB/s", 0.64, true], ["DSC_4207.jpg", "Sent", 1.0, false], ["DSC_4240.jpg", "Sent", 1.0, false], ["Client selects", "Waiting", 0.0, false]]
+                        model: [["Album selects.zip", "64% \u00b7 18 MB/s", 0.64, true], ["DSC_4207.jpg", "Sent", 1.0, false], ["DSC_4240.jpg", "Sent", 1.0, false], ["Client selects", "Waiting", 0.0, false]]
                         delegate: Item {
                             required property var modelData
-                            width: parent.width; height: 40
-                            Text { x: 16; y: 4; text: modelData[0]; color: theme.fg; font.pixelSize: 13 }
-                            Text { anchors.right: parent.right; anchors.rightMargin: 16; y: 5; text: modelData[1]; color: theme.fg3; font.pixelSize: 11 }
-                            Meter { x: 16; y: 26; width: parent.width - 32; height: 3; value: modelData[2]; stops: modelData[3] ? [theme.accent, "#a9d1fb", theme.accent] : [theme.accent] }
+                            width: parent.width; height: 42.2
+                            Text { x: 16; y: 7; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[0]; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
+                            Text { anchors.right: parent.right; anchors.rightMargin: 16; y: 7; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[1]; color: theme.fg3; font.pointSize: UiState.pt(11) }
+                            Meter { x: 16; y: 32.2; width: parent.width - 32; height: 3; value: modelData[2]; spanTrack: false; stops: modelData[3] ? [theme.accent, "#90d4ff", theme.accent] : [theme.accent] }
                         }
                     } } }
             }
