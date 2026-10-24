@@ -57,8 +57,9 @@ Window {
                     }
                 }
             }
-            PhotoGrid { id: grid; y: head.height; width: parent.width; height: parent.height - head.height }
+            PhotoGrid { id: grid; y: head.height; width: parent.width; height: parent.height - head.height; overlay: floatBar }
             FloatingBar {
+                id: floatBar
                 sourceItem: grid.view
                 avail: main.width
                 row: grid.view.currentIndex

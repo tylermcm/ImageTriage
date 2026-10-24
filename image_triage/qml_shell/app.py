@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import time
 from pathlib import Path
 
 QML_DIR = Path(__file__).resolve().parent / "qml"
@@ -17,6 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--size", default="1440x900", help="window size (default 1440x900)")
     parser.add_argument("--grab", metavar="PNG", help="render the window to PNG once thumbnails settle, then exit (for checks)")
     parser.add_argument("--grab-wait", type=float, default=4.0, help="seconds to wait before grabbing (default 4)")
+    parser.add_argument("--click", default="", help="mouse clicks before the grab, 'x,y;x,y' in window coordinates (for headless checks)")
     parser.add_argument("--ui", default="", help="UiState settings applied at startup, e.g. 'tab=faces;insp=false;inspTab=2' (for headless checks)")
     return parser
 
@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     from PySide6.QtCore import QCoreApplication, QTimer, QUrl
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtQml import QQmlApplicationEngine
-    from PySide6.QtQuick import QQuickWindow
+    from PySide6 import QtQuick as _QtQuick  # noqa: F401 - registers QQuickWindow so the root object is wrapped with grabWindow()
 
     from .. import memtrace
     from .photos import PhotoModel
@@ -69,6 +69,21 @@ def main(argv: list[str] | None = None) -> int:
             app.quit()
 
         QTimer.singleShot(int(args.grab_wait * 1000), grab)
+        if args.click:
+            from PySide6.QtCore import QPoint, Qt
+            from PySide6.QtTest import QTest
+
+            points = [tuple(int(v) for v in part.split(",")) for part in args.click.split(";") if part.strip()]
+
+            def press(index: int = 0) -> None:
+                if index >= len(points):
+                    return
+                x, y = points[index]
+                QTest.mouseMove(window, QPoint(x, y))
+                QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(x, y))
+                QTimer.singleShot(700, lambda: press(index + 1))
+
+            QTimer.singleShot(int(args.grab_wait * 1000) - 2500, press)
     code = app.exec()
     memtrace.stop()
     return code

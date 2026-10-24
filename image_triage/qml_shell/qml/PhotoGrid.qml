@@ -8,7 +8,14 @@ Item {
     readonly property int minCell: UiState.dens === "s" ? 150 : UiState.dens === "m" ? 230 : 340
     readonly property int cols: Math.max(1, Math.floor(gv.width / minCell))
     property int bottomSpace: 132
+    property Item overlay                // something floating over the grid (the bar): taps inside it are not the grid's
     signal openRequested(int row)
+
+    function blocked(scenePoint) {
+        if (!overlay) return false;
+        var p = overlay.mapFromItem(null, scenePoint.x, scenePoint.y);
+        return p.x >= 0 && p.y >= 0 && p.x <= overlay.width && p.y <= overlay.height;
+    }
 
     function bucket(px) {
         var sizes = [160, 240, 360, 540, 800];
@@ -131,8 +138,8 @@ Item {
             }
             HoverHandler { id: hover }
             TapHandler {
-                onTapped: { gv.currentIndex = cell.index; gv.forceActiveFocus() }
-                onDoubleTapped: root.openRequested(cell.index)
+                onTapped: (point) => { if (root.blocked(point.scenePosition)) return; gv.currentIndex = cell.index; gv.forceActiveFocus() }
+                onDoubleTapped: (point) => { if (!root.blocked(point.scenePosition)) root.openRequested(cell.index) }
             }
         }
     }

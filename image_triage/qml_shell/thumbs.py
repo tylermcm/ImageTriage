@@ -109,8 +109,12 @@ class ThumbService(QObject):
             if wanted and not self.disk._file_path(key).exists():
                 image, _error = load_image_for_display(key.path, QSize(key.width, key.height), prefer_embedded=True)
                 if not image.isNull():
-                    if image.width() > key.width or image.height() > key.height:
-                        image = image.scaled(key.width, key.height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    if image.width() != key.width or image.height() != key.height:
+                        # Fill the cell exactly (the grid crops to its 3:2 cell anyway), so every cached file is the bucket's size.
+                        image = image.scaled(key.width, key.height, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+                        left = max(0, (image.width() - key.width) // 2)
+                        top = max(0, (image.height() - key.height) // 2)
+                        image = image.copy(left, top, key.width, key.height)
                     if _JOBS is not None:
                         _JOBS.result(memtrace.image_bytes(image))
                     self.disk.save(key, image)
