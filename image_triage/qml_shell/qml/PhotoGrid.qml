@@ -53,19 +53,35 @@ Item {
             contentItem: Rectangle { implicitWidth: 6; radius: 3; color: Qt.alpha(theme.fg, 0.28) }
             background: Item {}
         }
+        property int anchorIndex: 0       // where a Shift+click or Shift+arrow range starts: the last photo picked on its own
+        function pick() { return photos.selectionRows(currentIndex) }
+        function stepTo(target, extend) {
+            target = Math.max(0, Math.min(count - 1, target))
+            if (extend) photos.selectRange(anchorIndex, target)
+            else { photos.clearSelection(); anchorIndex = target }
+            currentIndex = target
+            positionViewAtIndex(target, GridView.Contain)
+        }
         Keys.onPressed: (e) => {
             var k = e.key;
-            if (k === Qt.Key_W) { photos.setDecision(currentIndex, "win"); if (collections.activeId !== "") collections.addSelection(collections.activeId, currentIndex) }
+            var shift = (e.modifiers & Qt.ShiftModifier) !== 0, ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
+            if (ctrl && k === Qt.Key_A) photos.selectAll();
+            else if (ctrl) return;
+            else if (shift && (k === Qt.Key_Left || k === Qt.Key_Right || k === Qt.Key_Up || k === Qt.Key_Down))
+                stepTo(currentIndex + (k === Qt.Key_Left ? -1 : k === Qt.Key_Right ? 1 : k === Qt.Key_Up ? -root.cols : root.cols), true);
+            else if (k === Qt.Key_Escape && photos.picked > 0) photos.clearSelection();
+            else if (k === Qt.Key_W) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") for (var i = 0; i < rows.length; ++i) collections.addSelection(collections.activeId, rows[i]) }
             else if (k === Qt.Key_B) root.addToCollection();
-            else if (k === Qt.Key_K) photos.setDecision(currentIndex, "keep");
-            else if (k === Qt.Key_X) photos.setDecision(currentIndex, "rej");
-            else if (k === Qt.Key_U) photos.setDecision(currentIndex, "");
-            else if (k >= Qt.Key_1 && k <= Qt.Key_5) photos.setRating(currentIndex, k - Qt.Key_0);
+            else if (k === Qt.Key_K) photos.setDecisionMany(pick(), "keep");
+            else if (k === Qt.Key_X) photos.setDecisionMany(pick(), "rej");
+            else if (k === Qt.Key_U) photos.setDecisionMany(pick(), "");
+            else if (k >= Qt.Key_1 && k <= Qt.Key_5) photos.setRatingMany(pick(), k - Qt.Key_0);
             else if (k === Qt.Key_I) UiState.insp = !UiState.insp;
             else if (k === Qt.Key_Return || k === Qt.Key_Space) root.openRequested(currentIndex);
             else return;
             e.accepted = true;
         }
+        onCurrentIndexChanged: { if (!photos.picked) anchorIndex = currentIndex }
 
         delegate: Item {
             id: cell
@@ -80,6 +96,7 @@ Item {
             required property string decision
             required property int rating
             required property int ai
+            required property bool selected
             width: GridView.view.cellWidth
             height: GridView.view.cellHeight
             readonly property bool current: GridView.isCurrentItem
@@ -188,16 +205,25 @@ Item {
                 Item {
                     // selection: 3px accent ring with a 1px 45% black line inside it, like the two inset shadows
                     anchors.fill: parent
-                    opacity: cell.current ? 1 : 0
+                    opacity: cell.current || cell.selected ? 1 : 0
                     Behavior on opacity { NumberAnimation { duration: 200 } }
                     Rectangle { anchors.fill: parent; color: "transparent"; radius: 3; border.color: theme.accent; border.width: 3 }
                     Rectangle { anchors.fill: parent; anchors.margins: 3; color: "transparent"; border.color: Qt.rgba(0, 0, 0, 0.45); border.width: 1 }
                 }
             }
             HoverHandler { id: hover }
-            TapHandler {
-                onTapped: (point) => { if (root.blocked(point.scenePosition)) return; gv.currentIndex = cell.index; gv.forceActiveFocus() }
+            TapHandler {   // a click: this photo alone
+                acceptedModifiers: Qt.NoModifier
+                onTapped: (point) => { if (root.blocked(point.scenePosition)) return; photos.clearSelection(); gv.currentIndex = cell.index; gv.anchorIndex = cell.index; gv.forceActiveFocus() }
                 onDoubleTapped: (point) => { if (!root.blocked(point.scenePosition)) root.openRequested(cell.index) }
+            }
+            TapHandler {   // Ctrl+click: add it to the pick or take it out
+                acceptedModifiers: Qt.ControlModifier
+                onTapped: (point) => { if (root.blocked(point.scenePosition)) return; photos.toggleSelected(cell.index, gv.currentIndex); gv.currentIndex = cell.index; gv.anchorIndex = cell.index; gv.forceActiveFocus() }
+            }
+            TapHandler {   // Shift+click: everything from the last photo picked on its own to this one
+                acceptedModifiers: Qt.ShiftModifier
+                onTapped: (point) => { if (root.blocked(point.scenePosition)) return; photos.selectRange(gv.anchorIndex, cell.index); gv.currentIndex = cell.index; gv.forceActiveFocus() }
             }
         }
     }

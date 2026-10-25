@@ -62,6 +62,7 @@ class BatchModel(QObject):
         self._stage: str = ""            # --mock: empty files named like the sample photos, so the planners have real paths to look at
         self._revision = 0
         self._active = False
+        photos.selectionChanged.connect(self._photos_changed)
         photos.countsChanged.connect(self._photos_changed)      # the folder finished loading, or a filter changed what is shown
 
     def _photos_changed(self) -> None:
@@ -75,7 +76,7 @@ class BatchModel(QObject):
 
     def _batch(self) -> list[dict]:
         """One entry per shown photo: its thumbnail path, the path the planners look at, its file name and companions."""
-        rows = list(self._photos._rows)[:SOURCE_LIMIT]
+        rows = self._photos.scope_rows()[:SOURCE_LIMIT]
         out = []
         if self._memory:
             if not self._stage:

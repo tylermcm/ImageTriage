@@ -68,6 +68,7 @@ class HandoffModel(QObject):
         self._root = _DEMO_ROOT if memory else ""
         self._revision = 0
         photos.countsChanged.connect(self._bump)
+        photos.selectionChanged.connect(self._bump)
 
     # -- storage (the Widgets app's key) ---------------------------------------------------------------------------------------
     def _load_saved(self) -> list[WorkflowRecipe]:
@@ -173,7 +174,7 @@ class HandoffModel(QObject):
 
     @property
     def count(self) -> int:
-        return self._photos.shown
+        return len(self._photos.scope_rows())
 
     countText = Property(str, lambda self: f"{self.count} image bundle{'s' if self.count != 1 else ''}", notify=revisionChanged)
     title = Property(str, lambda self: " ".join(str(self._v["name"]).split()) or "Export Recipe", notify=revisionChanged)
@@ -259,7 +260,7 @@ class HandoffModel(QObject):
         """Hand the recipe to the transfer cards (which ask first when it moves files)."""
         if not self.hasRoot:
             return
-        records = [r["record"] for r in self._photos._rows if r.get("record") is not None]
+        records = [r["record"] for r in self._photos.scope_rows() if r.get("record") is not None]
         if records and not self._memory:
             self.jobPrepared.emit({"recipe": self._recipe(), "records": records, "root": self._root.strip(), "folder": self._photos.folder_dir()})
         else:

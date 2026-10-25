@@ -17,7 +17,7 @@ from ..formats import RAW_SUFFIXES
 from ..scanner import scan_folder
 from .inspector_sample import sample_ai, sample_measured
 
-PathRole, NameRole, ExtRole, RawRole, DecisionRole, RatingRole, AiRole, TitleRole = (Qt.ItemDataRole.UserRole + n for n in range(1, 9))
+PathRole, NameRole, ExtRole, RawRole, DecisionRole, RatingRole, AiRole, TitleRole, SelectedRole = (Qt.ItemDataRole.UserRole + n for n in range(1, 10))
 
 _DECISIONS = ("", "keep", "win", "rej", "rev", "", "keep", "")  # weights by position
 
@@ -63,6 +63,7 @@ class PhotoModel(QAbstractListModel):
     loadingChanged = Signal()
     annotationChanged = Signal(object)      # a row's decision or rating changed (the row dict, with its scanner record): save it
     undoChanged = Signal()
+    selectionChanged = Signal()             # the set of photos picked with Ctrl, Shift or Ctrl+A changed
     _loaded = Signal(list, str, int)
 
     def __init__(self, parent=None) -> None:
@@ -72,6 +73,7 @@ class PhotoModel(QAbstractListModel):
         self._next_undo_id = 0
         self._history: list[dict] = []      # what undo steps back through: {"path", "decision": (before, after), "rating": (before, after)}
         self._rows: list[dict] = []
+        self._selected: set[str] = set()    # photos picked on purpose (by `_path_key`): empty means "just the one the grid is on", and a scope of every photo shown
         self._filter = "all"
         self._min_rate = 0
         self._fmt = "all"
@@ -94,7 +96,7 @@ class PhotoModel(QAbstractListModel):
     def roleNames(self) -> dict:
         return {
             PathRole: QByteArray(b"path"), NameRole: QByteArray(b"name"), ExtRole: QByteArray(b"ext"), RawRole: QByteArray(b"isRaw"),
-            DecisionRole: QByteArray(b"decision"), RatingRole: QByteArray(b"rating"), AiRole: QByteArray(b"ai"), TitleRole: QByteArray(b"title"),
+            DecisionRole: QByteArray(b"decision"), RatingRole: QByteArray(b"rating"), AiRole: QByteArray(b"ai"), TitleRole: QByteArray(b"title"), SelectedRole: QByteArray(b"selected"),
         }
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -120,6 +122,8 @@ class PhotoModel(QAbstractListModel):
             return row["rating"]
         if role == AiRole:
             return row["ai"]
+        if role == SelectedRole:
+            return _path_key(row["path"]) in self._selected
         return None
 
     # -- loading -----------------------------------------------------------------------------------------------------------
@@ -173,6 +177,9 @@ class PhotoModel(QAbstractListModel):
         if token != -1 and token != self._load_token:
             return                          # superseded by a newer loadFolder: that one reports when it is done
         self._all = rows
+        if folder != self._folder and self._selected:
+            self._selected = set()
+            self.selectionChanged.emit()
         if folder != self._folder:
             self._scope_kind, self._scope_id, self._scope_pred = "", "", None      # a collection or person is not a folder: opening one leaves it
         if folder != self._folder:
@@ -295,6 +302,119 @@ class PhotoModel(QAbstractListModel):
         self.undoChanged.emit()
         if target.get("record") is not None:
             self.annotationChanged.emit(target)
+
+    # -- picking several photos ---------------------------------------------------------------------------------------------
+    def _notify_selection(self, rows: list[int]) -> None:
+        for row in rows:
+            index = self.index(row)
+            self.dataChanged.emit(index, index, [SelectedRole])
+        self.selectionChanged.emit()
+
+    def _selected_rows(self) -> list[int]:
+        return [i for i, r in enumerate(self._rows) if _path_key(r["path"]) in self._selected]
+
+    @Slot()
+    def clearSelection(self) -> None:
+        if not self._selected:
+            return
+        before = self._selected_rows()
+        self._selected = set()
+        self._notify_selection(before)
+
+    @Slot(int, int)
+    def toggleSelected(self, row: int, current: int = -1) -> None:
+        """Ctrl+click: add the photo to the pick or take it out. With nothing picked yet the photo the grid was on (`current`) is picked first."""
+        if not 0 <= row < len(self._rows):
+            return
+        changed = []
+        if not self._selected and 0 <= current < len(self._rows) and current != row:
+            self._selected.add(_path_key(self._rows[current]["path"]))
+            changed.append(current)
+        key = _path_key(self._rows[row]["path"])
+        self._selected.symmetric_difference_update({key})
+        changed.append(row)
+        self._notify_selection(changed)
+
+    @Slot(int, int)
+    def selectRange(self, anchor: int, row: int) -> None:
+        """Shift+click or Shift+arrow: pick every photo from `anchor` to `row`."""
+        if not self._rows:
+            return
+        low, high = sorted((max(0, min(len(self._rows) - 1, anchor)), max(0, min(len(self._rows) - 1, row))))
+        before = set(self._selected_rows())
+        self._selected = {_path_key(self._rows[i]["path"]) for i in range(low, high + 1)}
+        self._notify_selection(sorted(before | set(range(low, high + 1))))
+
+    @Slot()
+    def selectAll(self) -> None:
+        if not self._rows:
+            return
+        self._selected = {_path_key(r["path"]) for r in self._rows}
+        self._notify_selection(list(range(len(self._rows))))
+
+    @Slot(int, result="QVariantList")
+    def selectionRows(self, current: int) -> list:
+        """The rows an action applies to: the ones picked on purpose, else the row the grid is on."""
+        picked = self._selected_rows()
+        return picked if picked else ([current] if 0 <= current < len(self._rows) else [])
+
+    def scope_rows(self) -> list[dict]:
+        """The photos a batch or a handoff takes: the ones picked on purpose, else every photo shown."""
+        picked = self._selected_rows()
+        return [self._rows[i] for i in picked] if picked else list(self._rows)
+
+    picked = Property(int, lambda self: len(self._selected_rows()), notify=selectionChanged)
+
+    def _decide_many(self, rows: list[int], decision: str | None = None, rating: int | None = None) -> None:
+        """Set a decision or a rating on several photos as one step (Ctrl+Z takes all of them back). It clears when every one already has it."""
+        targets = [self._rows[i] for i in rows if 0 <= i < len(self._rows)]
+        if not targets:
+            return
+        field, value = ("decision", decision) if decision is not None else ("rating", rating)
+        new = "" if field == "decision" else 0
+        if not all(t[field] == value for t in targets):
+            new = value
+        before = {t["path"]: (t["decision"], t["rating"]) for t in targets}
+        for t in targets:
+            t[field] = new
+        for i in rows:
+            if 0 <= i < len(self._rows):
+                index = self.index(i)
+                self.dataChanged.emit(index, index, [DecisionRole if field == "decision" else RatingRole])
+        self.countsChanged.emit()
+        self._bump()
+        changed = [t for t in targets if before[t["path"]] != (t["decision"], t["rating"])]
+        for t in changed:
+            if t.get("record") is not None:
+                self.annotationChanged.emit(t)
+        if not changed:
+            return
+
+        def undo() -> bool:
+            for t in changed:
+                mine = next((r for r in self._all if r["path"] == t["path"]), None)
+                if mine is not None:
+                    mine["decision"], mine["rating"] = before[t["path"]]
+                    if mine.get("record") is not None:
+                        self.annotationChanged.emit(mine)
+            self._rebuild()
+            return True
+
+        self.push_undo(f"{field} of {len(changed)} photos", undo)
+
+    @Slot("QVariantList", str)
+    def setDecisionMany(self, rows: list, decision: str) -> None:
+        if len(rows) == 1:
+            self.setDecision(int(rows[0]), decision)
+        else:
+            self._decide_many([int(r) for r in rows], decision=decision)
+
+    @Slot("QVariantList", int)
+    def setRatingMany(self, rows: list, value: int) -> None:
+        if len(rows) == 1:
+            self.setRating(int(rows[0]), value)
+        else:
+            self._decide_many([int(r) for r in rows], rating=value)
 
     @Slot(int, str)
     def setDecision(self, row: int, decision: str) -> None:

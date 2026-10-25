@@ -102,7 +102,8 @@ shell reacts to it yet.
 | The ink on a card (name, stars, format tag) | **Real**: light ink on a dark scrim, or dark ink on a light one when the bottom strip of the photo is bright (`ThumbService.tone` measures the cached thumbnail, only for the card shown; a rejected or flagged photo is measured as dimmed). Unknown until the thumbnail exists, then the usual look | the threshold (0.6 of sRGB luma) is a judgement, tune it on real shoots; a strip that is half bright and half dark gets one answer for the whole strip |
 | W / K / X / U / 1-5 keys | **Real** (saved, see above) | the shell binds fixed keys, not the user's overrides (the shortcut registry) |
 | Enter / Space / double-click | **Real**: open the popout (`popout.py`), see "Popout" below | |
-| Selection | One cell only; no multi-select, range select, rubber band | `records_view`, selection model |
+| Selection | **Real**: click picks one; Ctrl+click adds or removes, Shift+click and Shift+arrows pick a range, Ctrl+A picks all, Esc clears (`photos.py`, the pick is kept by path across sorts and filters and goes with the folder). The picked cells wear the same accent ring as the current one. No rubber band | the rubber band; `records_view`'s selection model |
+| W, K, X, U and 1 to 5 with a pick | **Real**: they apply to every photo picked, as one undo step (the same key again clears them when all have it); W also adds them to the collection that collects winners. Delete, Move, Copy, B and the photo menu still act on the one photo the grid is on | multi-photo file actions with progress cards |
 | Drag and drop out of or into the grid | None | `dragdrop_controller` |
 | Context menu | Built (see the Context menus and toasts section); multi-select menus do not exist (one selected cell) | `context_menu_controller` |
 | Burst groups and stacks | None (settings stored, no grouping) | `bursts`, `face_stack`, `annotation_controller` |
@@ -132,7 +133,7 @@ shell reacts to it yet.
 | Element | Status |
 |---|---|
 | Photo count, "Thumbnails ready" | Real (count, loading flag) |
-| "1 selected" | Fixed text |
+| "1 selected" | The number picked (1 when nothing is picked on purpose) |
 | "Sample data" | Fixed text |
 | Folder path, scan progress, AI status chip, update indicator, PhotoCraft status | Not present |
 
@@ -172,7 +173,7 @@ what blocks the apply button are the same as in the Widgets dialogs (tests check
 
 | Piece | Status | Notes |
 |---|---|---|
-| Options, live preview, summary, errors, which photos are included | Real | the batch is **every photo the grid shows** (the shell has no multi-select yet); capped at 20,000 files, the table shows the first 1,200 rows as the Widgets dialogs do |
+| Options, live preview, summary, errors, which photos are included | Real | the batch is the photos picked (Ctrl, Shift, Ctrl+A), **else every photo the grid shows**; capped at 20,000 files, the table shows the first 1,200 rows as the Widgets dialogs do |
 | **Apply rename / Resize / Convert** | **Real** (not for `--mock`'s sample photos, which only count) | runs the Widgets' own `BatchRenameApplyTask`, `ResizeApplyTask`, `ConvertApplyTask` on a worker thread; a toast follows the progress and the folder is read again. A rename moves the saved decisions with the files and **can be undone** (Ctrl+Z or the toast); resize and convert write copies (or overwrite when that option is on) and have no undo, as in the Widgets app. Photos the batch left out are listed in the toast. The footer says "Sample photos: no file will change" in `--mock` |
 | After a rename the grid | Real: the folder is read again, so the grid shows the new names and the decisions that followed | |
 | One-photo layout | Not built | the Widgets Resize and Convert dialogs shrink to a small form without a table for one image; the shell always shows the table |
@@ -275,7 +276,7 @@ down to a 690 px tall window (checked at 900, 800 and 720 px tall); below that i
 | Recipes: the five built-ins, their wording, the preview lines (`recipe_summary_lines`), resize presets, convert formats, archive formats | Real (the Widgets app's own) | |
 | Saved recipes: Save recipe / Update saved / Delete saved, the Load list | Real: the Widgets settings key `workflow/recipes`, so the Widgets app sees them and the other way round (`--mock` shows a fixed "Wedding handoff" and stores nothing) | |
 | Which fields apply (transfer and folder-per-record for bundles; resize, convert, filename, metadata, archive for exports) | Real (the Widgets dialog's rules) | |
-| Scope: "N image bundles" | Every photo the grid shows (the Widgets dialog uses the selection; the shell has one selected cell) | multi-select |
+| Scope: "N image bundles" | **Real**: the photos picked in the grid, else every photo it shows; "N image bundles" follows the pick |  |
 | Destination root: starts at the folder being viewed; Browse… | Real (folder dialog) | |
 | **Run workflow** | **Real** (not for `--mock`'s sample photos, which play the cards' script): `workflow_runner.py` runs the recipe with the Widgets' own code on worker threads: Export (`build_workflow_export_plan` + `WorkflowExportTask`, then optionally `CreateArchiveTask`), Bundles + Archive (`CreateArchiveTask`), Bundles + Copy or Move (`file_ops.copy_paths` / `move_paths`, a folder per photo when the recipe groups them). The scope is every photo the grid shows. A **move** takes the saved decisions with the files, takes the photos out of the grid and is undone by one Ctrl+Z; a run that wrote into the open folder reads it again. Photos left out (an edit that could not be rendered, a failed copy) are named in a toast | the Widgets' status-bar message and edited-render handling of a RAW with edits (the shell exports the file itself) |
 | Recipe that moves bundles asks "Run destructive workflow?" first | Real wording and rule | |
