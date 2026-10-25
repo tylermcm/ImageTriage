@@ -131,7 +131,7 @@ Mockup `scripts/qml_parity/help.dc.html` with `harness_help.html`; in the shell 
 ## Handoff builder and transfer cards
 
 `HandoffWindow.qml` and `TransferCards.qml`, models `handoff_model.py` and `transfer_model.py`. Mockup: `scripts/qml_parity/handoff.dc.html` (`?ho=1&hrecipe=saved:wedding_handoff`, `?tx=confirm|progress|done&txk=copy|move|wf&txp=0.42`);
-in the shell `--ui "handoffOpen=true;hoRecipe=saved:wedding_handoff"` and `--ui "txState=progress;txKind=copy;txP=0.42"`. Running a recipe is not connected (docs/qml_unwired.md).
+in the shell `--ui "handoffOpen=true;hoRecipe=saved:wedding_handoff"` and `--ui "txState=progress;txKind=copy;txP=0.42"`. Running a recipe is real (`workflow_runner.py`; tests `tests/test_qml_shell_workflow_run.py`): see docs/qml_unwired.md.
 
 ## Decisions, ratings and Undo
 

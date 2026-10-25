@@ -28,6 +28,16 @@ def _is_recycle_folder(folder: str) -> bool:
     return bool(folder) and any(part.casefold() == "recycle bin" for part in Path(folder).parts)
 
 
+def rekey_after_move(record, moves, annotation) -> None:
+    """A saved decision follows its photo to the new path (the Widgets' `rekey_annotation_after_move`)."""
+    if annotation is None or annotation.is_empty:
+        return
+    from ..decision_store import DecisionStore
+    from ..record_ops_controller import RecordOpsController
+
+    DecisionStore().move_annotation(session_id(), record.path, RecordOpsController.record_after_moves(record, tuple(moves)), annotation)
+
+
 def _label(path: str) -> str:
     parts = [p for p in str(path).replace("\\", "/").split("/") if p]
     return " / ".join(parts[-2:]) if parts else str(path)
@@ -84,13 +94,7 @@ class FileActions(QObject):
         return DecisionStore()
 
     def _rekey(self, record, moves: tuple[FileMove, ...], annotation: SessionAnnotation | None) -> None:
-        """A decision follows its photo to the new path (the Widgets' `rekey_annotation_after_move`)."""
-        if annotation is None or annotation.is_empty:
-            return
-        from ..record_ops_controller import RecordOpsController
-
-        moved = RecordOpsController.record_after_moves(record, moves)
-        self._store().move_annotation(session_id(), record.path, moved, annotation)
+        rekey_after_move(record, moves, annotation)
 
     # ---------------- recent destinations ----------------
     def recent(self) -> list[str]:

@@ -103,7 +103,7 @@ FocusScope {
             Text { textFormat: Text.StyledText; color: theme.fg3; font.pixelSize: 12; text: "<font color='" + theme.fg2 + "'>Items remaining:</font> " + (root.c.left || "") } }
         Item { width: 1; height: 20 }
         Row { anchors.right: parent.right; spacing: 8
-            TBtn { text: root.c.cancelLabel || "Cancel"; onClicked: transfers.cancel() } }
+            TBtn { visible: root.c.canCancel !== false; text: root.c.cancelLabel || "Cancel"; onClicked: transfers.cancel() } }
     }
 
     // ---- done ---------------------------------------------------------------------------------------------------------------

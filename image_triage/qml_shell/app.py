@@ -83,17 +83,21 @@ def main(argv: list[str] | None = None) -> int:
 
     theme = Theme(light=args.light, parent=app)
     photos = PhotoModel(parent=app)
+    toasts = ToastModel(parent=app)
     settings = SettingsModel(memory=bool(args.mock), parent=app)
     palette = PaletteModel(memory=bool(args.mock), parent=app)
     adv_filters = FiltersModel(photos, memory=bool(args.mock), parent=app)
     handoff = HandoffModel(photos, memory=bool(args.mock), parent=app)
-    transfers = TransferModel(photos, memory=bool(args.mock), parent=app)
+    from .workflow_runner import WorkflowRunner
+
+    runner = WorkflowRunner(parent=app)
+    transfers = TransferModel(photos, memory=bool(args.mock), parent=app, toasts=toasts, runner=runner)
+    handoff.jobPrepared.connect(transfers.setJob)          # before the cards are asked for: what a Start will run
     handoff.runRequested.connect(transfers.handoff)
     collections = CollectionsModel(photos, memory=bool(args.mock), parent=app)
     people = PeopleModel(photos, memory=bool(args.mock), parent=app)
     best_of = BestOfModel(photos, parent=app)
     cull = CullModel(photos, memory=bool(args.mock), parent=app)
-    toasts = ToastModel(parent=app)
     batch = BatchModel(photos, memory=bool(args.mock), parent=app, toasts=toasts)
     files = FileActions(photos, toasts, memory=bool(args.mock), parent=app)
     menu = MenuModel(photos, collections, cull, toasts, memory=bool(args.mock), parent=app, files=files)

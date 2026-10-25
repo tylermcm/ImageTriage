@@ -5,8 +5,8 @@ The recipes, their wording and their storage are the Widgets app's own: `workflo
 (`workflow/recipes`) as `window.MainWindow`, so a recipe saved here shows up there and the other way round. The scope is every photo
 the grid shows.
 
-**Running is not connected yet.** `run()` hands the recipe to the transfer cards (transfer_model.py), which play a scripted progress; no
-file is written, copied, moved or archived. docs/qml_unwired.md lists this.
+**Running is real** (not for the sample photos of `--mock`): `run()` hands the recipe and the photos to the transfer cards (transfer_model.py), which
+start `workflow_runner.WorkflowRunner` once any question has been answered. In `--mock` the cards play a scripted progress and no file is touched.
 """
 from __future__ import annotations
 
@@ -54,6 +54,7 @@ def _values(recipe: WorkflowRecipe) -> dict:
 class HandoffModel(QObject):
     revisionChanged = Signal()
     runRequested = Signal(str, int, str, str)          # kind, item count, from folder, to folder
+    jobPrepared = Signal(object)                       # {"recipe", "records", "root", "folder"}: what the transfer cards run when they start (real photos only)
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -258,4 +259,9 @@ class HandoffModel(QObject):
         """Hand the recipe to the transfer cards (which ask first when it moves files)."""
         if not self.hasRoot:
             return
+        records = [r["record"] for r in self._photos._rows if r.get("record") is not None]
+        if records and not self._memory:
+            self.jobPrepared.emit({"recipe": self._recipe(), "records": records, "root": self._root.strip(), "folder": self._photos.folder_dir()})
+        else:
+            self.jobPrepared.emit(None)
         self.runRequested.emit(self.runKind(), self.count, self._photos.folderPath or _DEMO_ROOT, self._destination())
