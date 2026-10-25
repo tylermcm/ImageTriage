@@ -309,7 +309,7 @@ FocusScope {
                     }
                     Text {
                         font.pixelSize: 12; width: 640; elide: Text.ElideRight
-                        text: batch.foot + (batch.canApply ? "  Applying is not connected yet, so no file will change." : "")
+                        text: batch.foot + (batch.canApply && batch.sampleNote !== "" ? "  " + batch.sampleNote : "")
                         color: batch.errorCount > 0 ? theme.rej : theme.fg3
                     }
                 }
@@ -317,7 +317,7 @@ FocusScope {
                     anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; spacing: 8
                     SButton { text: "Reset"; variant: "ghost"; h: 34; hpad: 16; radius: 12; onClicked: batch.reset() }
                     SButton { text: "Cancel"; variant: "ghost"; h: 34; hpad: 16; radius: 12; onClicked: root.close() }
-                    SButton { text: batch.applyLabel; variant: "primary"; h: 34; hpad: 16; radius: 12; enabled: batch.canApply; onClicked: root.apply() }
+                    SButton { text: batch.applyLabel; variant: "primary"; h: 34; hpad: 16; radius: 12; enabled: batch.canApply && !batch.busy; onClicked: root.apply() }
                 }
             }
         }

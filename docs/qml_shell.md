@@ -92,8 +92,8 @@ format and key). Only decisions, rating and RAW / JPEG are applied to the grid s
 
 ## Batch tools
 
-`BatchWindow.qml` (rename, resize and convert in one overlay window; `batch_model.py` builds the plans with the Widgets app's planners). Applying is not
-connected: no file is changed. `scripts/qml_parity/batch.dc.html` is the mockup (`?bt=rename|resize|convert&bset=preset:custom;cw:0&bopen=fmt`).
+`BatchWindow.qml` (rename, resize and convert in one overlay window; `batch_model.py` builds the plans with the Widgets app's planners). Applying is real
+(`BatchRenameApplyTask`, `ResizeApplyTask`, `ConvertApplyTask` on a worker thread; a rename can be undone). Tests: `tests/test_qml_shell_batch_apply.py`. `scripts/qml_parity/batch.dc.html` is the mockup (`?bt=rename|resize|convert&bset=preset:custom;cw:0&bopen=fmt`).
 
 ## PocketDrop
 

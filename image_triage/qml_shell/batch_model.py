@@ -2,8 +2,9 @@
 
 The plans are built by the Widgets app's own planners (`batch_rename.build_batch_rename_preview`, `image_resize.build_resize_plan`,
 `image_convert.build_convert_plan`), so names, statuses, error messages and what blocks Apply are identical. The scope is every photo the
-grid shows. **Applying is not connected yet**: `apply()` records what would be done and closes the window; no file is touched. See
-docs/qml_unwired.md.
+grid shows. **Applying is real** (not for the sample photos of `--mock`): rename runs the Widgets' `BatchRenameApplyTask`, resize and convert their
+`ResizeApplyTask` / `ConvertApplyTask`, on a worker thread with a toast that follows the progress. A rename moves the saved decisions with the files
+and can be undone (Ctrl+Z); resize and convert write copies (or overwrite, if the option says so) and have no undo, as in the Widgets app.
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import Property, QObject, Qt, QThreadPool, Signal, Slot
 
 from ..batch_rename import BatchRenameRules, RenameCaseMode, build_batch_rename_preview
 from ..image_convert import ConvertOptions, ConvertSourceItem, build_convert_plan, convert_formats, format_for_suffix
@@ -45,9 +46,15 @@ class BatchModel(QObject):
     revisionChanged = Signal()
     applied = Signal(str, int)          # mode, how many items the plan would have touched
 
-    def __init__(self, photos, memory: bool = False, parent: QObject | None = None) -> None:
+    def __init__(self, photos, memory: bool = False, parent: QObject | None = None, toasts=None) -> None:
         super().__init__(parent)
         self._photos = photos
+        self._toasts = toasts
+        self._busy = False
+        self._toast_id = 0
+        self._done = None
+        self._signals = None
+        self._exec: tuple = ()           # what Apply would run: ("rename", preview, None) or ("resize" | "convert", plan, options)
         self._memory = memory
         self._mode = "rename"
         self._v: dict[str, object] = dict(_DEFAULTS)
@@ -87,7 +94,7 @@ class BatchModel(QObject):
                 out.append({"thumb": row["path"], "path": path, "name": name, "companions": companions})
         else:
             for row in rows:
-                out.append({"thumb": row["path"], "path": row["path"], "name": self._file_name(row), "companions": tuple(row.get("companions", ()))})
+                out.append({"thumb": row["path"], "path": row["path"], "name": self._file_name(row), "companions": tuple(row.get("companions", ())), "record": row.get("record")})
         return out
 
     def _compute(self) -> None:
@@ -96,13 +103,16 @@ class BatchModel(QObject):
         mode = self._mode
         rows: list[dict] = []
         if mode == "rename":
-            records = [ImageRecord(path=b["path"], name=b["name"], size=0, modified_ns=0, companion_paths=b["companions"]) for b in batch]
+            # a real photo's own size and time: a saved decision is found again by them
+            records = [ImageRecord(path=b["path"], name=b["name"], size=b["record"].size if b.get("record") else 0, modified_ns=b["record"].modified_ns if b.get("record") else 0,
+                                   companion_paths=b["companions"]) for b in batch]
             rules = BatchRenameRules(
                 new_name=str(v["newName"]), prefix=str(v["prefix"]), suffix=str(v["suffix"]), case_mode=RenameCaseMode(v["case"]),
                 collapse_whitespace=bool(v["collapse"]), sequence_enabled=len(records) > 1 or bool(v["seq"]),
                 sequence_start=int(v["start"]), sequence_step=int(v["step"]), sequence_padding=int(v["pad"]), sequence_separator=str(v["sep"]),
             )
             preview = build_batch_rename_preview(records, rules)
+            self._exec = ("rename", preview, None)
             thumbs = {b["path"]: b["thumb"] for b in batch}
             for item in preview.items[:PREVIEW_ROW_LIMIT]:
                 pair = ""
@@ -123,6 +133,7 @@ class BatchModel(QObject):
                 ignore_orientation=bool(v["ignOri"]), overwrite=bool(v["over"]), strip_metadata=bool(v["strip"]),
             )
             plan = build_resize_plan([ResizeSourceItem(b["path"], b["name"]) for b in batch], options)
+            self._exec = ("resize", plan, options)
             thumbs = {b["path"]: b["thumb"] for b in batch}
             for item in plan.items[:PREVIEW_ROW_LIMIT]:
                 rows.append(self._row(thumbs.get(item.source.source_path, ""), item.source.source_name, item.target_name or item.source.source_name,
@@ -137,6 +148,7 @@ class BatchModel(QObject):
         else:
             options = ConvertOptions(output_suffix=str(v["fmt"]), overwrite=bool(v["over"]), strip_metadata=bool(v["strip"]))
             plan = build_convert_plan([ConvertSourceItem(b["path"], b["name"]) for b in batch], options)
+            self._exec = ("convert", plan, options)
             thumbs = {b["path"]: b["thumb"] for b in batch}
             for item in plan.items[:PREVIEW_ROW_LIMIT]:
                 rows.append(self._row(thumbs.get(item.source.source_path, ""), item.source.source_name, item.target_name or item.source.source_name,
@@ -240,8 +252,114 @@ class BatchModel(QObject):
 
     @Slot()
     def apply(self) -> None:
-        """Not connected: nothing is renamed, resized or converted. The plan is only counted."""
-        self.applied.emit(self._mode, int(self._result.get("count", 0)))
+        """Rename, resize or convert what the preview shows. The sample photos of `--mock` have no files: the plan is only counted."""
+        count = int(self._result.get("count", 0))
+        self.applied.emit(self._mode, count)
+        if self._memory or self._busy or not self._exec or not self._result.get("ok") or self._exec[0] != self._mode:
+            return
+        kind, plan, options = self._exec
+        self._busy = True
+        self.revisionChanged.emit()
+        noun = {"rename": "Renaming", "resize": "Resizing", "convert": "Converting"}[kind]
+        self._toast_id = self._toasts.push("info", f"{noun} {count} photo{'s' if count != 1 else ''}\u2026", "Preparing\u2026", seconds=0) if self._toasts is not None else 0
+        if kind == "rename":
+            from ..batch_rename import BatchRenameApplyTask
+
+            task = BatchRenameApplyTask(plan.planned_moves)
+            annotations = {row["path"]: row.get("annotation") for row in self._photos.all_rows()}
+            self._done = lambda result: self._rename_done(plan, annotations, result)
+        elif kind == "resize":
+            from ..image_resize import ResizeApplyTask
+
+            task = ResizeApplyTask(plan, options)
+            self._done = lambda result: self._copies_done("Resized", result)
+        else:
+            from ..image_convert import ConvertApplyTask
+
+            task = ConvertApplyTask(plan, options)
+            self._done = lambda result: self._copies_done("Converted", result)
+        self._signals = task.signals               # kept: the task is deleted when it has run, and the signals must outlive it
+        # bound methods of this object, queued: the results arrive on the UI thread, not on the worker's
+        task.signals.progress.connect(self._progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._failed, Qt.ConnectionType.QueuedConnection)
+        QThreadPool.globalInstance().start(task)
+
+    def _finished(self, result) -> None:
+        done, self._done = self._done, None
+        if done is not None:
+            done(result)
+
+    # -- the work finishing --------------------------------------------------------------------------------------------------------
+    def _progress(self, current: int, total: int, message: str) -> None:
+        if self._toasts is not None:
+            self._toasts.update(self._toast_id, body=f"{message}  ({current} of {total})")
+
+    def _end(self) -> None:
+        self._busy = False
+        if self._toasts is not None:
+            self._toasts.close(self._toast_id)
+        self.revisionChanged.emit()
+
+    def _failed(self, message: str) -> None:
+        self._end()
+        if self._toasts is not None:
+            self._toasts.push("error", "The batch stopped", message)
+        self._photos.reload()
+
+    def _copies_done(self, verb: str, outcome) -> None:
+        self._end()
+        written = len(outcome)
+        failed = tuple(getattr(outcome, "failed", ()))
+        if self._toasts is not None:
+            if failed:
+                self._toasts.push("warn", f"{verb} {written}, left out {len(failed)}", f"{Path(failed[0][0]).name}: {failed[0][1]}")
+            else:
+                self._toasts.push("success", f"{verb} {written} photo{'s' if written != 1 else ''}", "The new files are in the folder.")
+        self._photos.reload()
+
+    def _rename_done(self, preview, annotations: dict, moves) -> None:
+        from ..record_ops_controller import RecordOpsController
+        from .decision_bridge import session_id
+
+        self._end()
+        renamed = [item for item in preview.items if item.status == "Rename"]
+        updates = []
+        for item in renamed:
+            annotation = annotations.get(item.record.path)
+            if annotation is not None and not annotation.is_empty:
+                updates.append((item.record, RecordOpsController.record_after_moves(item.record, item.planned_moves), annotation))
+        if updates:
+            from ..decision_store import DecisionStore
+
+            DecisionStore().move_annotations(session_id(), [(old.path, new, annotation) for old, new, annotation in updates])
+        if self._toasts is not None:
+            entry = {"id": self._photos.push_undo(f"rename of {len(renamed)} photos", lambda: self._undo_rename(renamed, updates))}
+            self._toasts.push("success", f"Renamed {len(renamed)} photo{'s' if len(renamed) != 1 else ''}", "", "Undo", lambda: self._photos.undo_entry(entry["id"]))
+        self._photos.reload()
+
+    def _undo_rename(self, renamed, updates) -> bool:
+        from ..file_ops import FileMove, rename_paths
+        from .decision_bridge import session_id
+
+        back = tuple(FileMove(source_path=m.target_path, target_path=m.source_path) for item in renamed for m in item.planned_moves)
+        try:
+            rename_paths(back)
+        except Exception as exc:
+            if self._toasts is not None:
+                self._toasts.push("error", "Could not undo the rename", str(exc))
+            return False
+        if updates:
+            from ..decision_store import DecisionStore
+
+            DecisionStore().move_annotations(session_id(), [(new.path, old, annotation) for old, new, annotation in updates])
+        self._photos.reload()
+        if self._toasts is not None:
+            self._toasts.push("success", f"Renamed {len(renamed)} photo{'s' if len(renamed) != 1 else ''} back")
+        return True
+
+    busy = Property(bool, lambda self: self._busy, notify=revisionChanged)
+    sampleNote = Property(str, lambda self: "Sample photos: no file will change." if self._memory else "", notify=revisionChanged)
 
     def _refresh(self) -> None:
         self._compute()
@@ -261,3 +379,4 @@ class BatchModel(QObject):
         if self._stage:
             shutil.rmtree(self._stage, ignore_errors=True)
             self._stage = ""
+

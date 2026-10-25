@@ -56,6 +56,18 @@ class ToastModel(QObject):
     def show(self, kind: str, title: str, body: str = "") -> int:
         return self.push(kind, title, body)
 
+    def update(self, ident: int, title: str | None = None, body: str | None = None) -> None:
+        """Change the words of a toast that is showing (a job's progress)."""
+        for item in self._items:
+            if item["id"] == ident:
+                if title is not None:
+                    item["title"] = title
+                if body is not None:
+                    item["body"] = body
+                self._items = list(self._items)
+                self.changed.emit()
+                return
+
     @Slot(int)
     def close(self, ident: int) -> None:
         timer = self._timers.pop(ident, None)

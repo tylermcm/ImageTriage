@@ -18,7 +18,7 @@
 | Settings | built, storage connected, most values not applied | gear, Ctrl+, |
 | Command palette | built, 25 of 53 commands run | Ctrl K |
 | Filter dialog and saved presets | built; applies decision, rating and RAW / JPEG only (see below) | Filters menu, palette |
-| Batch rename, resize, convert | built; **applying is not connected, no file changes** (see below) | Rename and Resize pins, palette, Ctrl+Shift+R / E / C |
+| Batch rename, resize, convert | built and **applying is real** (see below) | Rename and Resize pins, palette, Ctrl+Shift+R / E / C |
 | PocketDrop page of the side panel | built; runs PocketDrop's own engine once `pocketdrop.dll` is rebuilt (see the PocketDrop section) | PocketDrop button, Share to phone, phone icon in Collections |
 | Deliver / Handoff Builder | built; recipes real, **running is not connected** (see its section) | Ctrl Alt H, palette |
 | Move / Copy To Folder cards, handoff progress and done cards | built, **scripted: nothing is transferred**; the handoff run opens them; a single photo's move or copy does not use them (see below) | Run workflow |
@@ -173,8 +173,8 @@ what blocks the apply button are the same as in the Widgets dialogs (tests check
 | Piece | Status | Notes |
 |---|---|---|
 | Options, live preview, summary, errors, which photos are included | Real | the batch is **every photo the grid shows** (the shell has no multi-select yet); capped at 20,000 files, the table shows the first 1,200 rows as the Widgets dialogs do |
-| **Apply rename / Resize / Convert** | **Not connected** | the button closes the window and reports the count; nothing is renamed, resized, converted or moved, and no undo entry or job is made. The footer says so. Wiring needs the Widgets job controllers (`export_jobs_controller`, `folder_ops_controller`), progress and the undo stack |
-| After a rename the grid | Unchanged | it would need the model to follow the new names |
+| **Apply rename / Resize / Convert** | **Real** (not for `--mock`'s sample photos, which only count) | runs the Widgets' own `BatchRenameApplyTask`, `ResizeApplyTask`, `ConvertApplyTask` on a worker thread; a toast follows the progress and the folder is read again. A rename moves the saved decisions with the files and **can be undone** (Ctrl+Z or the toast); resize and convert write copies (or overwrite when that option is on) and have no undo, as in the Widgets app. Photos the batch left out are listed in the toast. The footer says "Sample photos: no file will change" in `--mock` |
+| After a rename the grid | Real: the folder is read again, so the grid shows the new names and the decisions that followed | |
 | One-photo layout | Not built | the Widgets Resize and Convert dialogs shrink to a small form without a table for one image; the shell always shows the table |
 | Previous settings | Not remembered | the dialogs reopen with defaults, as the Widgets ones do |
 | `--mock` mode | Plans run on empty files staged in a temporary folder named like the sample photos | |
@@ -345,7 +345,7 @@ in the shell `--ui "cullScene=cu-review"` (the same names).
 | Winner / Keep / Reject row | **Real** (the grid's decision), with a toast and Undo | the decision store |
 | Collections (tick list, New collection…) | **Real** (library store), toast with Undo | |
 | Share to phone | **Real** (adds the selection to PocketDrop and opens it) | |
-| Rename… / Resize… / Convert… | Real (open the batch window; applying is still not connected) | |
+| Rename… / Resize… / Convert… | Real (open the batch window, which applies) | |
 | Copy path, Copy file name, Copy folder path | **Real** (clipboard) | |
 | Show in File Explorer, Show folder in File Explorer | **Real** (`shell_actions`, Qt) | |
 | Refresh folder, Sort by, View (names, badges, size), Clear filters | **Real** (sort goes through the photo model) | |
