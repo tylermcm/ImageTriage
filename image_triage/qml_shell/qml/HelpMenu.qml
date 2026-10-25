@@ -10,14 +10,14 @@ Item {
     anchors.fill: parent
     visible: v.menu
     z: 100
-    MouseArea { anchors.fill: parent; onClicked: reference.closeMenu() }
+    MouseArea { x: 0; y: 42; width: parent.width; height: parent.height - 42; onClicked: reference.closeMenu() }   // below the bar, so the bar's titles stay live
     Item {
         id: card
         x: root.menuX; y: 41; width: 268; height: col.height + 12
         opacity: root.v.menu ? 1 : 0; scale: root.v.menu ? 1 : 0.96; transformOrigin: Item.TopLeft
         Behavior on scale { NumberAnimation { duration: 280; easing.type: Easing.OutBack; easing.overshoot: 1.4 } }
         Behavior on opacity { NumberAnimation { duration: 160 } }
-        Glass { anchors.fill: parent; sourceItem: root.Window.contentItem; radius: 14; tint: Qt.alpha(theme.s2, 0.92); saturation: 0.4; shadowAlphaA: 0.7; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16 }
+        Glass { anchors.fill: parent; radius: 14; frosted: false; tint: theme.s2; shadowAlphaA: 0.7; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16 }
         Rectangle { anchors.fill: parent; radius: 14; color: "transparent"; border.color: Qt.alpha(theme.lift, 0.11) }
         Column {
             id: col

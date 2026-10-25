@@ -59,15 +59,28 @@ Rectangle {
         Repeater {
             model: ["File", "Review", "View", "AI", "Help"]
             delegate: Item {
+                id: title
                 required property string modelData
+                objectName: "menuTitle-" + modelData
                 width: lbl.implicitWidth + 18; height: 28
-                Rectangle { anchors.fill: parent; radius: 7; color: Qt.alpha(theme.lift, h.hovered ? 0.08 : 0) }
-                Text { id: lbl; anchors.centerIn: parent; text: modelData; color: h.hovered ? theme.fg : theme.fg2; font.pixelSize: 13 }
-                HoverHandler { id: h; cursorShape: Qt.PointingHandCursor }
+                readonly property string key: modelData.toLowerCase()
+                readonly property bool shown: modelData === "Help" ? reference.menuOpen : UiState.topMenu === key     // this one's menu is open
+                // File, Review, View and AI open their menu (TopMenus.qml), Help its own (HelpMenu.qml); one at a time
+                function show() {
+                    if (modelData === "Help") { UiState.topMenu = ""; UiState.topSub = -1; if (!reference.menuOpen) reference.toggleMenu() }
+                    else { if (reference.menuOpen) reference.closeMenu(); UiState.topSub = -1; UiState.topMenuX = gx; UiState.topMenu = key }
+                }
+                Rectangle { anchors.fill: parent; radius: 7; color: Qt.alpha(theme.lift, h.hovered || title.shown ? 0.08 : 0) }
+                Text { id: lbl; anchors.centerIn: parent; text: modelData; color: h.hovered || title.shown ? theme.fg : theme.fg2; font.pixelSize: 13 }
+                HoverHandler {
+                    id: h; cursorShape: Qt.PointingHandCursor
+                    // with one menu open, moving over another title opens that one, as in any menu bar
+                    onHoveredChanged: if (hovered && !title.shown && (UiState.topMenu !== "" || reference.menuOpen)) title.show()
+                }
                 readonly property real gx: menus.x + x
                 onGxChanged: if (modelData === "Help") setHelpX(gx)
                 Component.onCompleted: if (modelData === "Help") setHelpX(gx)
-                TapHandler { enabled: modelData === "Help"; onTapped: reference.toggleMenu() }
+                TapHandler { onTapped: { if (title.shown) { UiState.topMenu = ""; UiState.topSub = -1; if (reference.menuOpen) reference.closeMenu() } else title.show() } }
                 Accessible.role: Accessible.MenuItem; Accessible.name: modelData
             }
         }
@@ -99,12 +112,12 @@ Rectangle {
     }
     Row {
         id: rightRow
-        anchors.right: winButtons.left; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter; spacing: 2
+        anchors.right: winButtons.left; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter; anchors.verticalCenterOffset: -0.5; spacing: 2   // centred in the 41 px above the 1 px line
         Repeater {
             model: [{ i: "sun", tip: "Switch light or dark theme" }, { i: "inspector", tip: "Show or hide the inspector" }]
             delegate: Item {
                 required property var modelData
-                width: 32; height: 32; y: 4.5
+                width: 32; height: 32          // the Row centres it: a y of its own here pushed the highlight down onto the line
                 readonly property bool on: modelData.i === "inspector" && UiState.insp
                 Rectangle { anchors.fill: parent; radius: 9; color: on ? Qt.alpha(theme.accent, 0.16) : Qt.alpha(theme.lift, bh.hovered ? 0.08 : 0) }
                 Icon { anchors.centerIn: parent; name: modelData.i; size: 18; color: on ? theme.accentFg : theme.fg }   // `.app button{color:inherit}` outranks `.ibtn`, so the idle icon is the full text colour
@@ -117,6 +130,10 @@ Rectangle {
     Row {   // minimise, maximise or restore, close: flush with the window's corner, like a system title bar
         id: winButtons
         anchors.right: parent.right; anchors.top: parent.top
+        // Inside the delegates below `top` is the delegate's own anchor line, not this bar (a delegate's context looks at its item first), so they
+        // reach the bar through these.
+        readonly property bool maximized: top.maximized
+        function act(what) { top.windowAction(what) }
         Repeater {
             model: ["winMin", "winMax", "winClose"]
             delegate: Item {
@@ -125,11 +142,11 @@ Rectangle {
                 readonly property bool isClose: modelData === "winClose"
                 width: 38; height: 41
                 Rectangle { anchors.fill: parent; color: wb.isClose ? theme.rej : Qt.alpha(theme.lift, 0.08); visible: wh.hovered }
-                Icon { anchors.centerIn: parent; name: wb.modelData === "winMax" && top.maximized ? "winRestore" : wb.modelData; size: 12; color: wb.isClose && wh.hovered ? "white" : theme.fg3 }
+                Icon { anchors.centerIn: parent; name: wb.modelData === "winMax" && winButtons.maximized ? "winRestore" : wb.modelData; size: 12; color: wb.isClose && wh.hovered ? "white" : theme.fg3 }
                 HoverHandler { id: wh }
-                TapHandler { onTapped: top.windowAction(wb.modelData) }
+                TapHandler { onTapped: winButtons.act(wb.modelData) }
                 Accessible.role: Accessible.Button
-                Accessible.name: wb.isClose ? "Close" : wb.modelData === "winMin" ? "Minimize" : top.maximized ? "Restore" : "Maximize"
+                Accessible.name: wb.isClose ? "Close" : wb.modelData === "winMin" ? "Minimize" : winButtons.maximized ? "Restore" : "Maximize"
             }
         }
     }

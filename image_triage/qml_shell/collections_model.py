@@ -46,6 +46,7 @@ ICONS = (
     ("star", "Favorite", "M12 4l2.4 5 5.4.6-4 3.7 1.1 5.4L12 16l-4.9 2.7 1.1-5.4-4-3.7 5.4-.6z"),
     ("flag", "Flag", "M5 21V4M5 4h11l-2 4 2 4H5"),
     ("film", "Film", "M4 5h16v14H4zM8 5v14M16 5v14M4 9h4M4 15h4M16 9h4M16 15h4"),
+    ("pin", "Places", "M12 21s-6.5-6-6.5-11a6.5 6.5 0 0113 0c0 5-6.5 11-6.5 11zM12 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"),     # the last tile: where the mockup had a "+"
 )
 _ICON_PATH = {key: path for key, _label, path in ICONS}
 # What --mock shows: (id, name, colour, icon, member photo names, also add winners here)

@@ -31,6 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     from PySide6.QtCore import Q_ARG, QCoreApplication, QMetaObject, QTimer, QUrl
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtQml import QQmlApplicationEngine
+    from PySide6.QtWidgets import QApplication      # the popout is the Widgets app's own viewer, so this is a widgets application
     from PySide6 import QtQuick as _QtQuick  # noqa: F401 - registers QQuickWindow so the root object is wrapped with grabWindow()
 
     from .. import memtrace
@@ -39,7 +40,12 @@ def main(argv: list[str] | None = None) -> int:
     from .cull_model import CullModel
     from .menu_model import MenuModel, ToastModel
     from .collections_model import CollectionsModel
+    from .ai_scores import AiScores
+    from .histograms import HistogramService
+    from .inspection import InspectionService
+    from .library_nav import LibraryNavModel
     from .people_model import PeopleModel
+    from .popout import PopoutHost
     from .filters_model import FiltersModel
     from .palette_model import PaletteModel
     from .photos import PhotoModel
@@ -58,7 +64,10 @@ def main(argv: list[str] | None = None) -> int:
     # fractional scales (125%, 150%, 175%) are used as they are, not rounded to whole numbers, so the layout is the same size in
     # device-independent pixels on every monitor; Qt 6 turns high-DPI scaling on by itself
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-    app = QGuiApplication(sys.argv[:1])
+    app = QApplication(sys.argv[:1])
+    from PySide6.QtGui import QIcon
+
+    app.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "ui" / "assets" / "app_icon-v4.ico")))      # the taskbar and every window
     from PySide6.QtGui import QFont
 
     base_font = QFont("Inter")
@@ -120,6 +129,14 @@ def main(argv: list[str] | None = None) -> int:
     context.setContextProperty("handoff", handoff)
     context.setContextProperty("transfers", transfers)
     context.setContextProperty("thumbs", thumbs)
+    context.setContextProperty("histograms", HistogramService(parent=app))
+    context.setContextProperty("inspection", InspectionService(parent=app))
+    context.setContextProperty("aiScores", AiScores(photos, memory=bool(args.mock), parent=app))
+    library_nav = LibraryNavModel(photos, memory=bool(args.mock), persist=not args.grab, parent=app)
+    context.setContextProperty("libraryNav", library_nav)
+    popout = PopoutHost(photos, thumbs, collections, prebuild=not args.grab, parent=app)
+    app.aboutToQuit.connect(popout.shutdown)
+    context.setContextProperty("popout", popout)
     context.setContextProperty("startup", args.ui)
     engine.addImportPath(str(QML_DIR))
     if args.size:
@@ -143,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     window = roots[-1]
     pocket_drop.setWindowHandle(int(window.winId()))
+    popout.setWindow(window)
     window.setWidth(width)
     window.setHeight(height)
     if not args.size:
@@ -156,9 +174,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.mock:
         photos.loadMock(args.mock)
     elif args.folder:
-        photos.loadFolder(args.folder)
+        library_nav.openFolder(args.folder)                # loads it, and puts the Library page's tree on its drive
+    else:
+        library_nav.restoreLastFolder()                    # no folder asked for: the one that was open when the app was closed, on the photo that was current
     if splash:
-        if args.folder and not args.mock:
+        if library_nav.openPath and not args.mock:
             reference.splashShow("Reading your folder\u2026", 70)
 
             def folder_done() -> None:

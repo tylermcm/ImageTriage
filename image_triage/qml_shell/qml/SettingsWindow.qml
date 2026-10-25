@@ -27,6 +27,7 @@ FocusScope {
     property string recording: ""
 
     function open() { UiState.settingsOpen = true; root.forceActiveFocus() }
+    function openGuide() { reference.setQuery(""); reference.setTopic("settings"); reference.open("help") }       // the Help window's Settings guide, over this window
     function cancel() { settings.discard(); UiState.settingsOpen = false; UiState.settingsQuery = ""; root.recording = "" }
     onShownChanged: if (shown) { forceActiveFocus() }
     Keys.onEscapePressed: root.cancel()
@@ -103,8 +104,23 @@ FocusScope {
                         Accessible.name: "Search settings"
                     }
                 }
+                // The section list scrolls in the room above the help block, so in a short window it never runs into it.
+                readonly property real helpFull: 121.6
+                readonly property bool roomy: height >= 44 + 12 + 32 + 4 + root.navSections.length * 42 + 20 + helpFull + 12 + 4     // else the help block is only its link
+                readonly property real helpH: roomy ? helpFull : 44
+                Flickable {
+                    id: navFlick; objectName: "settingsNavList"
+                    x: 12; y: 44 + 12 + 32 + 4; width: parent.width - 25; height: Math.max(0, nav.height - y - nav.helpH - 12 - 4)
+                    contentWidth: width; contentHeight: nl.height; clip: true; boundsBehavior: Flickable.StopAtBounds; interactive: contentHeight > height
+                    function reveal() {      // keep the chosen section in view
+                        var top = 10 + root.navIndex * 42
+                        if (top < contentY) contentY = Math.max(0, top - 10)
+                        else if (top + 40 > contentY + height) contentY = Math.min(Math.max(0, contentHeight - height), top + 40 + 10 - height)
+                    }
+                    Connections { target: root; function onNavIndexChanged() { navFlick.reveal() } }
+                    onHeightChanged: reveal()
                 Item {
-                    id: nl; x: 12; y: 44 + 12 + 32 + 4; width: parent.width - 25; height: root.navSections.length * 42 + 20
+                    id: nl; width: parent.width; height: root.navSections.length * 42 + 20
                     AccentPill {
                         x: 0; y: 10; width: parent.width; height: 40; radius: 12
                         transform: Translate { y: root.navIndex * 42; Behavior on y { SpringAnimation { spring: 3.4; damping: 0.22; epsilon: 0.25 } } }
@@ -140,13 +156,21 @@ FocusScope {
                         }
                     }
                 }
-                Item {   // the help block: 1px rule, 12px padding, 12px from the bottom; positions measured from the mockup
-                    x: 12; width: parent.width - 24 - 1; height: 121.6; y: parent.height - 121.6 - 12
+                }
+                Item {   // the help block: 1px rule, 12px padding, 12px from the bottom; positions measured from the mockup. In a short window only the link stays.
+                    objectName: "settingsHelp"; x: 12; width: parent.width - 24 - 1; height: nav.helpH; y: parent.height - nav.helpH - 12
                     Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
-                    Text { x: 4; y: 13; height: 16.8; verticalAlignment: Text.AlignVCenter; text: "Need a hand?"; color: theme.fg; font.pixelSize: 12; font.weight: Font.Medium }
-                    Text { x: 4; y: 33.8; width: parent.width - 8; wrapMode: Text.WordWrap; text: "See what each setting changes and when to use it."; color: theme.fg3; font.pixelSize: 12; lineHeight: 16.8; lineHeightMode: Text.FixedHeight }
-                    Text { x: 4; y: 75.4; height: 20.8; verticalAlignment: Text.AlignVCenter; text: "Open the settings guide"; color: theme.accentFg; font.pixelSize: 12 }
-                    Text { x: 4; y: 106.2; height: 15.4; verticalAlignment: Text.AlignVCenter; text: "Image Triage " + settings.appVersion; color: theme.fg3; font.pixelSize: 11 }
+                    Text { visible: nav.roomy; x: 4; y: 13; height: 16.8; verticalAlignment: Text.AlignVCenter; text: "Need a hand?"; color: theme.fg; font.pixelSize: 12; font.weight: Font.Medium }
+                    Text { visible: nav.roomy; x: 4; y: 33.8; width: parent.width - 8; wrapMode: Text.WordWrap; text: "See what each setting changes and when to use it."; color: theme.fg3; font.pixelSize: 12; lineHeight: 16.8; lineHeightMode: Text.FixedHeight }
+                    Text {
+                        id: guideLink; objectName: "settingsGuideLink"
+                        x: 4; y: nav.roomy ? 75.4 : 12; height: 20.8; verticalAlignment: Text.AlignVCenter; text: "Open the settings guide"; color: theme.accentFg; font.pixelSize: 12
+                        font.underline: guideHover.hovered
+                        HoverHandler { id: guideHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: root.openGuide() }
+                        Accessible.role: Accessible.Link; Accessible.name: "Open the settings guide"
+                    }
+                    Text { visible: nav.roomy; x: 4; y: 106.2; height: 15.4; verticalAlignment: Text.AlignVCenter; text: "Image Triage " + settings.appVersion; color: theme.fg3; font.pixelSize: 11 }
                 }
             }
 

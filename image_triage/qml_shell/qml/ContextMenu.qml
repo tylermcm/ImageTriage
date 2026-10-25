@@ -52,7 +52,7 @@ Item {
         width: w; height: root.total(list)
         scale: root.visible ? 1 : 0.96; transformOrigin: Item.TopLeft
         Behavior on scale { NumberAnimation { duration: 280; easing.type: Easing.OutBack; easing.overshoot: 1.6 } }
-        Glass { anchors.fill: parent; sourceItem: root.Window.contentItem; radius: 14; tint: Qt.alpha(theme.s2, 0.92); saturation: 0.4; shadowAlphaA: 0.7; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16 }
+        Glass { anchors.fill: parent; radius: 14; frosted: false; tint: theme.s2; shadowAlphaA: 0.7; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16 }
         Rectangle { anchors.fill: parent; radius: 14; color: "transparent"; border.color: Qt.alpha(theme.lift, 0.11) }
         MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onPressed: (e) => { e.accepted = true } }
         Column { id: col; x: 6; y: 6; width: pn.width - 12 }

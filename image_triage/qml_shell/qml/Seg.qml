@@ -16,6 +16,7 @@ Item {
     signal activated(int index)
     implicitHeight: 36
     implicitWidth: row.implicitWidth + 4
+    clip: true                           // nothing of the pill's shadow shows outside the track
 
     Rectangle { anchors.fill: parent; radius: 14; color: Qt.alpha(theme.base, 0.6) }
     Item {
@@ -27,12 +28,14 @@ Item {
         Behavior on x { SpringAnimation { spring: 4.5; damping: 0.30; epsilon: 0.25 } }
         Behavior on width { SpringAnimation { spring: 4.5; damping: 0.30; epsilon: 0.25 } }
 
-        // box-shadow 0 4px 10px -4px rgba(0,0,0,.5): a smaller copy, lowered and blurred, under the pill
+        // box-shadow 0 4px 10px -4px rgba(0,0,0,.5): a smaller copy, lowered and blurred, under the pill. Kept small and inside the track: the
+        // mockup's blur reached past the pill's bottom edge and darkened the 2px gap below it, so the pill looked flush with the bottom of its
+        // track and floating at the top.
         Rectangle {
-            x: 4; y: 4 + 4; width: parent.width - 8; height: parent.height - 8; radius: 8
-            color: "black"; opacity: 0.5
+            x: 5; y: 5 + 1; width: parent.width - 10; height: parent.height - 10; radius: 7
+            color: "black"; opacity: theme.light ? 0.22 : 0.5
             layer.enabled: true
-            layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: 14; autoPaddingEnabled: true }
+            layer.effect: MultiEffect { blurEnabled: true; blur: 0.7; blurMax: 8; autoPaddingEnabled: true }
         }
         Rectangle { anchors.fill: parent; radius: 12; color: theme.s3 }
         // inset 0 1px 0 lift 10%: a one pixel highlight along the top edge that follows the rounded corners

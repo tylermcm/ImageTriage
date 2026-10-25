@@ -28,7 +28,8 @@ QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.Software)
 
 @pytest.fixture(scope="module")
 def qapp():
-    return QCoreApplication.instance() or QGuiApplication([])
+    from PySide6.QtWidgets import QApplication   # the shell is a widgets application: the popout is a Widgets window
+    return QCoreApplication.instance() or QApplication([])
 
 
 def pump(app, seconds=0.2):
@@ -58,7 +59,7 @@ def collections(qapp, photos):
 # ---- collections (sample) ----------------------------------------------------------------------------------------------------
 
 def test_the_icon_library_has_a_diamond_ring_for_weddings(collections):
-    assert len(ICONS) == 23 and len({k for k, _l, _p in ICONS}) == 23       # the mockup's grid: 23 icons and the "+" tile
+    assert len(ICONS) == 24 and len({k for k, _l, _p in ICONS}) == 24       # the mockup's 23 icons, and a 24th where its "+" tile was
     labels = {k: label for k, label, _p in ICONS}
     assert labels["ring"] == "Wedding" and collections.iconPathOf("ring").startswith("M12 21a4.5 4.5")
     assert [c["label"] for c in collections.colors()][:2] == ["No color", "Blue"]

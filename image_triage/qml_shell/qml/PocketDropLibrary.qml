@@ -8,7 +8,6 @@ Popover {
     property real panelW: 300
     name: "pdlib"
     placement: 0
-    tintAlpha: 0.94
     onAboutToShow: pocketDrop.refreshLibrary(UiState.selRow)
     minWidth: panelW - 24 - 14
     maxHeight: parent && parent.parent ? parent.parent.height - 120 : 400

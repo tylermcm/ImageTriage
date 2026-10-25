@@ -22,11 +22,42 @@ Ctrl+, or the rail's gear opens the settings window.
   on a worker otherwise; `ready(path)` tells the delegate to re-ask. Buckets share cache files between neighbours.
 * The grid is a `GridView` (virtualized, `reuseItems`) over a flat model; 100,000 photos load in ~0.2 s with flat memory.
 * Frosted glass (`Glass.qml`) = `ShaderEffectSource` of the window content under the item + `MultiEffect` blur/saturation + tint, with the
-  CSS box-shadows drawn only outside the shape (inverted mask).
+  CSS box-shadows drawn only outside the shape (inverted mask). Menus (the top bar's, Help, context, the rail's and floating bar's popovers,
+  dropdowns) are not frosted: `Glass { frosted: false }` is a solid card, so nothing behind a menu shows through it.
 * Responsive: `window.width <= 900` switches to the compact layout (52px rail, panel and inspector as sheets over the grid, menus as a bottom
   sheet); the bar drops labels below 1080px of grid width and groups below 860/640.
 * Fractional font sizes (10.5, 11.5 ...) go through `pointSize` (`UiState.pt()`), which assumes 96 dpi; the base font is Inter, falling back to
   Segoe UI, with tabular numerals.
+
+## Top bar menus
+
+The File, Review, View and AI buttons open `TopMenus.qml`; Help opens `HelpMenu.qml`. A row runs a command by the palette's id through `runCommand` in `Main.qml` (the palette, the menus and the F5 key share it) or is dimmed with a toast saying it is not connected.
+Which rows are real: docs/qml_unwired.md, section "Top bar menus". Tests: `tests/test_qml_shell_menubar.py`.
+
+## Library page
+
+`library_nav.py` (`LibraryNavModel`, the context property `libraryNav`) feeds the side panel's Library page from what the Widgets app uses: the `folders/favorites` and `folders/recent_opened` settings keys, `DriveListModel` for the drives and `scanner.scan_child_folders` for the tree
+(one level at a time, on a worker thread). The shell reopens the last folder and the photo you were on (the Widgets keys `window/last_folder` and `view/folder_state`). Clicking a drive, a favorite or a folder opens it in the grid; the rail's Open folder pin, Ctrl+O and the palette open the folder dialog. `--mock` shows the mockup's sample page.
+What is and is not real: docs/qml_unwired.md, section "Side panel". Tests: `tests/test_qml_shell_library.py`.
+
+## Popout
+
+Enter, Space, a double click, the rail's Open preview pin, the palette's Open Preview and the photo menu's Open show the photo in `preview.FullScreenPreview`, the Widgets app's own full-screen viewer, in its own window. `popout.py` (`PopoutHost`)
+builds it, hands it the grid's photos, steps and preloads, feeds its filmstrip from the shell's thumbnail cache and writes its decisions and ratings back to the photo model. The shell runs on a `QApplication` for this.
+Closing the viewer puts the grid on the photo it ended on. No editor starts from it yet. What is and is not connected: docs/qml_unwired.md, section "Popout". Tests: `tests/test_qml_shell_popout.py`.
+
+## Histogram
+
+The inspector's histogram (the box on the preview, and the Quality tab's red, green and blue) shows the selected photo's own counts. `histograms.py` (`HistogramService`, the context property `histograms`) counts a 512 px read of the photo with the Widgets app's `review_tools.build_histogram_stats`
+on one worker thread, skips photos the person has already flipped past, and keeps the result per photo and modification time; `Histogram.qml` draws it. Note for QML authors: do not name a property `data` on an Item, it is the default property that holds the item's children.
+What is and is not real: docs/qml_unwired.md, section "Inspector". Tests: `tests/test_qml_shell_histograms.py`.
+
+## Inspector: Quality and AI
+
+The Quality tab's four checks are measured on the photo itself: `inspection.py` (`InspectionService`, the context property `inspection`) runs the Widgets app's `build_inspection_stats` on a 1200 px read of the photo, on the same one-thread worker as the histogram (`photo_jobs.py`:
+photos you flip past are skipped, results are kept per photo and modification time), and only while the Quality or AI tab is showing. The AI tab reads the folder's saved AI report (`ai_scores.py`, `AiScores`, the context property `aiScores`: the Widgets app's `ranked_clusters_export.csv`, parsed by `ai_results.load_ai_bundle` on a worker thread when a folder opens) and
+gives the grid its AI scores (-1 for a photo with none). `Inspector.qml` draws what `inspection.get(path)` and `aiScores.get(path)` answer; the mockup's twelve sample photos carry ready-made answers of the same shape (`inspector_sample.py`).
+What is and is not real: docs/qml_unwired.md, section "Inspector". Tests: `tests/test_qml_shell_inspector_data.py`.
 
 ## Window frame
 
@@ -85,7 +116,7 @@ What is real and what is not: docs/qml_unwired.md, section "Collections, best-of
 ## Cull window and AI Center
 
 `CullWindow.qml`, `AiCenterWindow.qml`, `CullMini.qml`; model `cull_model.py` (the Analyze chip opens it). Mockup `scripts/qml_parity/cull.dc.html` with `harness_cull.html` (`?scene=cu-prep` and the others listed in docs/qml_unwired.md);
-in the shell `--ui "cullScene=cu-review"`. Flagged frames draw a reason badge and are dimmed in the grid (`cull.gridFlag(path)`). **The analysis is scripted**; see docs/qml_unwired.md, section "Cull window and AI Center". Tests: `tests/test_qml_shell_cull.py`.
+in the shell `--ui "cullScene=cu-review"`. Flagged frames draw a reason badge and are dimmed in the grid (`cull.gridFlag(path)`). **The analysis is scripted**, but the AI Center is real in the app: `ai_center.py` looks at what is installed on this PC (runtime, graphics card, Visual C++, the three models) and its buttons install, repair and remove them with the Widgets app's own code (`--mock` and the tests keep the mockup's scripted one; `tests/test_qml_shell_ai_center.py` uses a fake PC, nothing is downloaded). See docs/qml_unwired.md, section "Cull window and AI Center". Tests: `tests/test_qml_shell_cull.py`.
 
 ## Context menus and toasts
 
@@ -120,10 +151,10 @@ three inspector tabs, the bar's menus, closed panels, three densities, and 1100/
 Full list: `docs/qml_unwired.md`. In short:
 
 
-Popout wiring (Enter/Space/double-click -> `openRequested`), decisions and ratings persisted to the catalog (the shell shows sample values for
-real folders), drag and drop, multi-select, zoom, compare, PhotoCraft/AI integration, the frameless window's system shadow and snap layouts (`docs/qml_unwired.md`), high-DPI checks, Windows/GPU
+The editor on E (the popout itself is connected, see below), decisions and ratings persisted to the catalog (the shell shows sample values for
+real folders), drag and drop, multi-select, compare in the grid, PhotoCraft/AI integration, the frameless window's system shadow and snap layouts (`docs/qml_unwired.md`), high-DPI checks, Windows/GPU
 testing (everything above was verified headlessly with a software renderer), `topAligned` switch UI, bundling the Inter font.
 
 ## Tests
 
-`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py`, `tests/test_qml_shell_pocketdrop.py`, `tests/test_qml_shell_handoff.py`, `tests/test_qml_shell_collections.py`, `tests/test_qml_shell_cull.py`, `tests/test_qml_shell_menu.py`, `tests/test_qml_shell_reference.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
+`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py`, `tests/test_qml_shell_pocketdrop.py`, `tests/test_qml_shell_handoff.py`, `tests/test_qml_shell_collections.py`, `tests/test_qml_shell_cull.py`, `tests/test_qml_shell_menu.py`, `tests/test_qml_shell_reference.py`, `tests/test_qml_shell_popout.py`, `tests/test_qml_shell_library.py`, `tests/test_qml_shell_layout.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.

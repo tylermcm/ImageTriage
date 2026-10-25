@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Shapes
+import QtQuick.Dialogs
 
 // New / Edit Collection: a name, a mark (a colour ring or a library icon with a tint), "New winners go here" and the hints table.
 Backdrop {
@@ -11,14 +12,15 @@ Backdrop {
     property string color: ""
     property string icon: ""
     property bool winners: false
-    property int tab: 0                                  // 0 colour, 1 icon
+    property int tab: 0                                  // 0 icon (the first and the default), 1 colour
     readonly property var colors: collections.colors()
     readonly property var icons: collections.icons()
     readonly property string iconPath: icon !== "" ? collections.iconPathOf(icon) : ""
     readonly property string problem: name.trim() !== "" ? collections.nameProblem(name, UiState.collDlgId) : ""
     readonly property bool valid: name.trim() !== "" && problem === ""
+    readonly property bool customColor: { if (color === "") return false; for (var i = 0; i < colors.length; ++i) if (colors[i].value === color) return false; return true }   // picked with More…
     readonly property string previewText: {
-        var cname = "No color"
+        var cname = color === "" ? "No color" : "Custom color"
         for (var i = 0; i < colors.length; ++i) if (colors[i].value === color) cname = colors[i].label
         if (icon === "") return cname
         var lbl = ""
@@ -33,8 +35,9 @@ Backdrop {
         } else {
             name = UiState.collName; color = ""; icon = ""; winners = true
         }
-        tab = UiState.collDlgTab === "icon" || icon !== "" ? 1 : 0
-        if (tab === 1 && icon === "") icon = "mountain"
+        // Icons come first and are the default; a collection that has a colour and no icon opens on Color, and so does the hook `collDlgTab=color`
+        tab = icon === "" && (UiState.collDlgTab === "color" || (editing && color !== "")) ? 1 : 0
+        if (tab === 0 && icon === "") icon = "mountain"
         nameField.input.cursorPosition = name.length
     }
     onShownChanged: { if (shown) { load(); forceActiveFocus() } }
@@ -50,6 +53,15 @@ Backdrop {
     }
     onDismissed: close()
     Keys.onReturnPressed: commit()
+
+    // More…: the system's colour picker. What it returns is stored like any other colour of a collection (a #rrggbb string).
+    ColorDialog {
+        id: colorDialog
+        objectName: "collColorDialog"
+        title: "Choose a color"
+        selectedColor: root.color !== "" ? root.color : theme.accent
+        onAccepted: root.color = selectedColor.toString()
+    }
 
     component Lbl: Text { height: 16.8; verticalAlignment: Text.AlignVCenter; color: theme.fg2; font.pixelSize: 12 }
     component Swatch: Item {
@@ -93,19 +105,20 @@ Backdrop {
                 }
             }
             Item { width: 1; height: 8 }
-            Seg { width: parent.width; height: 32; labels: ["Color", "Icon"]; fill: true; current: root.tab; showExtras: false
-                  onActivated: (i) => { root.tab = i; if (i === 0) root.icon = ""; else if (root.icon === "") root.icon = "mountain" } }
+            Seg { objectName: "collMarkTabs"; width: parent.width; height: 32; labels: ["Icon", "Color"]; fill: true; current: root.tab; showExtras: false
+                  onActivated: (i) => { root.tab = i; if (i === 1) root.icon = ""; else if (root.icon === "") root.icon = "mountain" } }
             // colour tab
-            Item { visible: root.tab === 0; width: 1; height: 8 }
-            Row { visible: root.tab === 0; spacing: 6
+            Item { visible: root.tab === 1; width: 1; height: 8 }
+            Row { visible: root.tab === 1; spacing: 6
                 Repeater { model: root.colors; delegate: Swatch { required property var modelData; value: modelData.value; on: root.color === modelData.value
                                                                   onPicked: root.color = modelData.value
                                                                   Accessible.name: modelData.label } }
-                SButton { text: "More…"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter }
+                Swatch { visible: root.customColor; value: root.color; on: true; onPicked: colorDialog.open(); Accessible.name: "Custom color" }
+                SButton { objectName: "collMoreColors"; text: "More…"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: colorDialog.open() }
             }
             // icon tab
-            Item { visible: root.tab === 1; width: 1; height: 8 }
-            Grid { visible: root.tab === 1; columns: 8; rowSpacing: 4; columnSpacing: 4; width: parent.width
+            Item { visible: root.tab === 0; width: 1; height: 8 }
+            Grid { visible: root.tab === 0; columns: 8; rowSpacing: 4; columnSpacing: 4; width: parent.width
                 Repeater { model: root.icons
                     delegate: Item {
                         id: tile
@@ -119,23 +132,14 @@ Backdrop {
                         Accessible.role: Accessible.Button; Accessible.name: tile.modelData.label; Accessible.checked: tile.on
                     }
                 }
-                Item {   // "+": bring your own icon (not connected yet)
-                    id: addTile
-                    width: (col.width - 28) / 8; height: 40
-                    Rectangle { anchors.fill: parent; radius: 10; color: Qt.alpha(theme.lift, ah.hovered ? 0.08 : 0) }
-                    Shape { anchors.fill: parent; preferredRendererType: Shape.CurveRenderer
-                        ShapePath { strokeColor: theme.line; strokeWidth: 1; fillColor: "transparent"; strokeStyle: ShapePath.DashLine; dashPattern: [3, 3]; PathSvg { path: Icons.rect(0.5, 0.5, addTile.width - 1, 39, 10) } } }
-                    Icon { anchors.centerIn: parent; name: "plus"; size: 20; strokeWidth: 1.7; color: theme.fg3 }
-                    HoverHandler { id: ah; cursorShape: Qt.PointingHandCursor }
-                    Accessible.role: Accessible.Button; Accessible.name: "Add your own icon"
-                }
             }
-            Item { visible: root.tab === 1; width: 1; height: 9 }
-            Row { visible: root.tab === 1; spacing: 8; height: 26
+            Item { visible: root.tab === 0; width: 1; height: 9 }
+            Row { visible: root.tab === 0; spacing: 8; height: 26
                 Lbl { anchors.verticalCenter: parent.verticalCenter; text: "Tint" }
                 Repeater { model: root.colors; delegate: Swatch { required property var modelData; value: modelData.value; ring: 15; cell: 26; on: root.color === modelData.value
                                                                   onPicked: root.color = modelData.value
                                                                   Accessible.name: modelData.label } }
+                Swatch { visible: root.customColor; value: root.color; ring: 15; cell: 26; on: true; onPicked: colorDialog.open(); Accessible.name: "Custom color" }
             }
             Item { width: 1; height: 16 }
             Item {

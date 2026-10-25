@@ -6,12 +6,31 @@ import QtQuick.Effects
 Rectangle {
     id: rail
     property int row: 0                  // the grid's current row (what Accept / Reject act on)
-    width: UiState.compact ? 52 : 72
+    // Icon-only destinations, as the Widgets rail (docs/nav_rail_label_clipping.md, option 4): "Collections" and "PocketDrop" are wider than any
+    // button the rail can afford, and the pinned buttons below have no text either. The names are the hover tooltips. true brings the labels back.
+    readonly property bool showLabels: false
+    width: UiState.compact ? 52 : (showLabels ? 72 : 64)
     readonly property real btnW: width - 10
-    readonly property real btnH: UiState.compact ? 48 : 56
+    readonly property real btnH: UiState.compact ? 48 : (showLabels ? 56 : 44)
     readonly property real pitch: btnH + 8
-    readonly property real pinSize: UiState.compact ? 36 : 40
     color: theme.s1
+
+    // The pinned buttons live between the destinations and the settings button, which keeps the bottom of the rail. They are 40 px when they
+    // fit, a little smaller (down to 30) when the window is short, and when even that is not enough the mouse wheel scrolls them.
+    readonly property real gearSize: UiState.compact ? 36 : 40
+    readonly property real pinsTop: 10 + 4 * pitch
+    readonly property real pinsAvail: Math.max(0, height - pinsTop - gearSize - 18)
+    readonly property int pinCount: { var n = 0; for (var k in UiState.pins) { if (UiState.pins[k]) ++n } return n }
+    readonly property real pinFit: Math.max(30, Math.min(UiState.compact ? 36 : 40, (pinsAvail - 21 - 4 * pinCount) / (pinCount + 1)))
+    Binding { target: UiState; property: "railPin"; value: rail.pinFit }
+    property real scrollY: 0
+    readonly property real maxScroll: Math.max(0, lower.height - pinsAvail)
+    onMaxScrollChanged: scrollY = Math.min(scrollY, maxScroll)
+    WheelHandler {
+        target: null; enabled: rail.maxScroll > 0
+        onWheel: (event) => { rail.scrollY = Math.max(0, Math.min(rail.maxScroll, rail.scrollY - event.angleDelta.y / 2)) }
+    }
+    Item { id: pinsClip; objectName: "pinsClip"; y: rail.pinsTop; width: 360; height: rail.pinsAvail; clip: true }   // wide so the tooltips beside the buttons are not cut, short so nothing reaches the settings button
     Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: theme.lineSoft }
 
     readonly property var dests: [
@@ -47,12 +66,17 @@ Rectangle {
             }
             Column {
                 anchors.centerIn: parent; spacing: 4
-                Icon { anchors.horizontalCenter: parent.horizontalCenter; name: modelData.i; size: 22; color: on ? theme.accentFg : theme.fg }
+                Icon { anchors.horizontalCenter: parent.horizontalCenter; name: modelData.i; size: rail.showLabels || UiState.compact ? 22 : 24; color: on ? theme.accentFg : theme.fg }
                 // the mockup's `.app button{font:inherit;color:inherit}` outranks `.rb`, so the labels render at 13px regular in the full text colour
-                Text { visible: !UiState.compact; anchors.horizontalCenter: parent.horizontalCenter; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData.t; font.pixelSize: 13; color: on ? theme.accentFg : theme.fg }
+                Text { visible: rail.showLabels && !UiState.compact; anchors.horizontalCenter: parent.horizontalCenter; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData.t; font.pixelSize: 13; color: on ? theme.accentFg : theme.fg }
             }
-            HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: UiState.tab = modelData.k }
+            Tip { id: tip; text: on ? "Hide " + modelData.t : modelData.t; show: false }
+            Timer { id: tipDelay; interval: 350; onTriggered: tip.show = hover.hovered }
+            HoverHandler {
+                id: hover; cursorShape: Qt.PointingHandCursor
+                onHoveredChanged: { if (hovered) tipDelay.restart(); else { tipDelay.stop(); tip.show = false } }
+            }
+            TapHandler { onTapped: UiState.tab = on ? "" : modelData.k }      // the page that is open: hides the panel, leaving the rail; any tab brings it back
             Accessible.role: Accessible.Button
             Accessible.name: modelData.t
         }
@@ -60,13 +84,14 @@ Rectangle {
 
     Column {
         id: lower
-        y: 10 + 4 * rail.pitch
-        anchors.horizontalCenter: parent.horizontalCenter; anchors.horizontalCenterOffset: -0.5
+        parent: pinsClip
+        x: (rail.width - width) / 2 - 0.5
+        y: -rail.scrollY
         spacing: 4
 
         Item { width: 40; height: 9; Rectangle { anchors.centerIn: parent; width: 28; height: 1; radius: 1; color: Qt.alpha(theme.lift, 0.20) } }
 
-        RailButton { visible: UiState.pins.open; icon: "openFolder"; tip: "Open folder" }
+        RailButton { visible: UiState.pins.open; icon: "openFolder"; tip: "Open folder"; onClicked: UiState.openFolderRequested() }
         RailButton { visible: UiState.pins.undo; icon: "undo"; tip: "Undo" }
         RailButton {
             visible: UiState.pins.review; icon: "check"; tip: "Review"; menu: true; on: reviewMenu.opened
@@ -161,7 +186,7 @@ Rectangle {
             }
         }
         RailButton { visible: UiState.pins.compare; icon: "compare"; tip: "Compare photos"; on: UiState.compare; onClicked: UiState.compare = !UiState.compare }
-        RailButton { visible: UiState.pins.preview; icon: "eye"; tip: "Open preview" }
+        RailButton { visible: UiState.pins.preview; icon: "eye"; tip: "Open preview"; onClicked: popout.open(rail.row) }
         RailButton { visible: UiState.pins.ladder; icon: "ladder"; tip: "Winner ladder" }
         RailButton { visible: UiState.pins.rename; icon: "tag"; tip: "Rename selection"; onClicked: UiState.batchMode = "rename" }
         RailButton { visible: UiState.pins.convert; icon: "convert"; tip: "Resize and convert"; onClicked: UiState.batchMode = "resize" }
@@ -210,7 +235,8 @@ Rectangle {
 
     RailButton {
         anchors.horizontalCenter: parent.horizontalCenter; anchors.horizontalCenterOffset: -0.5
-        y: Math.max(lower.y + lower.height + 8, rail.height - 10 - height)    // margin-top: auto: bottom of the rail, or right after the content when that overflows
+        y: rail.height - 10 - height                                           // always the bottom of the rail; the pinned buttons above it shrink or scroll
+        size: rail.gearSize
         icon: "settings"; tip: "Settings"; on: UiState.settingsOpen; onClicked: UiState.settingsOpen = true
     }
 }

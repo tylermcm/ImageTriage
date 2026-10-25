@@ -58,6 +58,18 @@ Item {
             contentHeight: libCol.implicitHeight + 24; clip: true; boundsBehavior: Flickable.StopAtBounds
             opacity: on ? 1 : 0; visible: opacity > 0.01
             Behavior on opacity { NumberAnimation { duration: 250 } }
+            // Scrolls the folder that was just opened into view, once per opened folder (its row may appear only when its parent has been listed).
+            property string revealed: ""
+            function reveal(item) {
+                if (libraryNav.openPath === "" || revealed === libraryNav.openPath) return
+                revealed = libraryNav.openPath
+                Qt.callLater(function () {
+                    if (item === null) return
+                    var y = item.mapToItem(lib.contentItem, 0, 0).y
+                    if (y < lib.contentY || y + item.height > lib.contentY + lib.height)
+                        lib.contentY = Math.max(0, Math.min(Math.max(0, lib.contentHeight - lib.height), y - lib.height / 3))
+                })
+            }
             Column {
                 id: libCol; width: parent.width; topPadding: 12
                 Stag { active: lib.on; n: 0
@@ -65,36 +77,82 @@ Item {
                         x: 12; width: parent.width - 24; height: 32; radius: 9; color: theme.base; border.color: fieldIn.activeFocus ? theme.accent : theme.lineSoft
                         Row { anchors.verticalCenter: parent.verticalCenter; x: 10; spacing: 8
                             Icon { name: "search"; size: 18; color: theme.fg3; anchors.verticalCenter: parent.verticalCenter }
-                            TextInput { id: fieldIn; width: 200; color: theme.fg; font.pixelSize: 13; clip: true; anchors.verticalCenter: parent.verticalCenter
+                            TextInput { id: fieldIn; width: 200; color: theme.fg; font.pixelSize: 13; clip: true; anchors.verticalCenter: parent.verticalCenter; selectByMouse: true
+                                onTextEdited: libraryNav.setQuery(text)
                                 Text { visible: !parent.text && !parent.activeFocus; text: "Find a folder"; color: theme.fg3; font: parent.font }
                                 Accessible.name: "Find a folder" }
                         }
                     }
                 }
-                Stag { active: lib.on; n: 1; Column { width: parent.width
+                Stag { active: lib.on; n: 1; visible: libraryNav.favoritesModel.count > 0; Column { width: parent.width
                     SectionLabel { caption: "Favorites" }
-                    PanelRow { icon: "star"; text: "Wedding 2026"; count: "1,284" }
-                    PanelRow { icon: "star"; text: "Client selects"; count: "212" } } }
-                Stag { active: lib.on; n: 2; Column { width: parent.width
+                    Repeater {
+                        model: libraryNav.favoritesModel
+                        delegate: PanelRow {
+                            id: fav
+                            required property string folder
+                            required property string title
+                            required property string photos
+                            required property bool here
+                            icon: "star"; text: title; count: photos; current: here
+                            TapHandler { onTapped: libraryNav.openFolder(fav.folder) }
+                            TapHandler { acceptedButtons: Qt.RightButton; onTapped: libMenu.show(fav, fav.folder) }
+                            Accessible.role: Accessible.Button; Accessible.name: title
+                        }
+                    } } }
+                Stag { active: lib.on; n: 2; visible: libraryNav.drivesModel.count > 0; Column { width: parent.width
                     SectionLabel { caption: "Drives" }
                     Repeater {
-                        model: [{ n: "Photos (D:)", s: "612 GB free of 2 TB", v: 0.70 }, { n: "Cards (E:)", s: "41 GB free of 256 GB", v: 0.84 }]
+                        model: libraryNav.drivesModel
                         delegate: Item {
-                            required property var modelData
+                            id: dr
+                            required property string folder
+                            required property string title
+                            required property string detail
+                            required property real ratio
                             width: libCol.width; height: 43.2          // 6 + 18.2 line + 7 + 4 meter + 8
-                            Text { x: 16; y: 6; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData.n; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
-                            Text { anchors.right: parent.right; anchors.rightMargin: 16; y: 6; text: modelData.s; color: theme.fg3; font.pointSize: UiState.pt(11) }
-                            Meter { x: 16; y: 31.2; width: parent.width - 32; value: modelData.v; stops: ["#4cbd88", "#e6ac3d", "#ef6856"] }
+                            Rectangle { anchors.fill: parent; color: Qt.alpha(theme.lift, drHover.hovered ? 0.05 : 0) }
+                            Text { x: 16; y: 6; height: 18.2; verticalAlignment: Text.AlignVCenter; text: dr.title; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
+                            Text { anchors.right: parent.right; anchors.rightMargin: 16; y: 6; text: dr.detail; color: theme.fg3; font.pointSize: UiState.pt(11) }
+                            Meter { x: 16; y: 31.2; width: parent.width - 32; value: dr.ratio; stops: ["#4cbd88", "#e6ac3d", "#ef6856"] }
+                            HoverHandler { id: drHover; cursorShape: Qt.PointingHandCursor }
+                            TapHandler { onTapped: libraryNav.openFolder(dr.folder) }
+                            Accessible.role: Accessible.Button; Accessible.name: title
                         }
                     } } }
                 Stag { active: lib.on; n: 3; Column { width: parent.width
                     SectionLabel { caption: "Folders" }
-                    PanelRow { icon: "chevR"; text: "2025"; count: "8,410" }
-                    PanelRow { icon: "chevDown"; text: "2026"; count: "3,902" }
-                    PanelRow { icon: "chevR"; text: "January"; count: "640"; indent: 18 }
-                    PanelRow { icon: "chevDown"; text: "Georgia trip"; count: "1,284"; indent: 18 }
-                    PanelRow { icon: "library"; text: photos.leafName || "Kutaisi"; count: String(photos.total); indent: 36; current: true }
-                    PanelRow { icon: "library"; text: "Tbilisi"; count: "402"; indent: 36 } } }
+                    PanelRow { visible: libraryNav.treeStatus !== ""; text: libraryNav.treeStatus; muted: true; interactive: false }
+                    Repeater {
+                        model: libraryNav.treeModel
+                        delegate: PanelRow {
+                            id: fr
+                            required property string folder
+                            required property string title
+                            required property string photos
+                            required property int depth
+                            required property string glyph
+                            required property bool here
+                            required property bool canOpen
+                            icon: glyph; text: title; count: photos; indent: depth * 18; current: here
+                            // the chevron opens or closes the folder in the tree, the rest of the row shows its photos
+                            TapHandler { onTapped: (point) => { if (fr.canOpen && point.position.x < 16 + fr.indent + 24) libraryNav.toggle(fr.folder); else libraryNav.openFolder(fr.folder) } }
+                            TapHandler { acceptedButtons: Qt.RightButton; onTapped: libMenu.show(fr, fr.folder) }
+                            Component.onCompleted: if (here) lib.reveal(fr)
+                            onCurrentChanged: if (current) lib.reveal(fr)
+                            Accessible.role: Accessible.Button; Accessible.name: title
+                        }
+                    } } }
+            }
+            Popover {   // right click on a favorite or a folder
+                id: libMenu; name: "libmenu"; placement: 2
+                property string path: ""
+                property bool fav: false
+                function show(item, folder) { path = folder; fav = libraryNav.isFavorite(folder); parent = item; UiState.menu = "libmenu" }
+                PopItem { label: "Open"; icon: "openFolder"; onClicked: { libraryNav.openFolder(libMenu.path); libMenu.close() } }
+                PopItem { label: libMenu.fav ? "Remove from Favorites" : "Add to Favorites"; icon: "star"
+                          onClicked: { if (libMenu.fav) libraryNav.removeFavorite(libMenu.path); else libraryNav.addFavorite(libMenu.path); libMenu.close() } }
+                PopItem { label: "Show in File Explorer"; icon: "library"; onClicked: { libraryNav.reveal(libMenu.path); libMenu.close() } }
             }
         }
 
@@ -306,7 +364,7 @@ Item {
                 NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 170 }
                 NumberAnimation { property: "scale"; from: 0.95; to: 1; duration: 320; easing.type: Easing.OutBack; easing.overshoot: 1.6 } } }
             exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: 110 } }
-            background: Glass { sourceItem: panel.Window.contentItem; radius: 14; tint: Qt.alpha(theme.s2, 0.92); saturation: 0.4; shadowAlphaA: 0.7; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16 }
+            background: Glass { radius: 14; frosted: false; tint: theme.s2; shadowAlphaA: 0.7; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16 }
             component MItem: Item {
                 id: mi
                 property string label; property bool off: false; property bool danger: false; property bool tick: false

@@ -128,3 +128,26 @@ def test_the_real_store_round_trips(qapp, tmp_path, monkeypatch):
     assert store.layoutWidth("panel", 300) == 300
     store.setLayoutWidth("panel", 377)
     assert SettingsModel(memory=False, parent=qapp).layoutWidth("panel", 300) == 377
+
+
+def test_clicking_the_open_tab_on_the_rail_hides_the_panel_and_any_tab_brings_it_back(qapp, tmp_path):
+    engine, window, warnings = open_window(qapp, tmp_path, "")
+    first, second = 42 + 10 + 22, 42 + 10 + 52 + 22                     # the centres of the Library and Faces buttons: below the 42 px bar, 10 px in, a pitch of 52
+    x = 32
+
+    def click(y):
+        QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(x, y))
+        pump(qapp, 0.9)
+
+    assert window.property("panelTarget") == 300                        # Library is open
+    click(first)                                                         # Library again: only the rail is left
+    assert window.property("panelTarget") == 0
+    click(first)                                                         # and back
+    assert window.property("panelTarget") == 300
+    click(second)                                                        # another tab switches the page, it does not hide
+    assert window.property("panelTarget") == 300
+    click(second)
+    assert window.property("panelTarget") == 0
+    click(first)                                                         # any tab opens the panel again
+    assert window.property("panelTarget") == 300
+    close(qapp, engine, window)

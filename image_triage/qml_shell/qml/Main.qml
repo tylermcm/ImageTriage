@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Window
+import QtQuick.Dialogs
 
 Window {
     id: win
@@ -132,7 +133,7 @@ Window {
                     SButton { anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; text: "Add All to Collection\u2026"; variant: "primary"; h: 28; hpad: 11; radius: 9
                               onClicked: { UiState.collPickerQuery = ""; UiState.collPicker = true } }
                 }
-                PhotoGrid { id: grid; onContextRequested: (kind, row, x, y) => ctxHost.show(kind, row, x, y, ""); y: head.height + addBar.height; width: parent.width; height: parent.height - head.height - addBar.height; overlay: floatBar }
+                PhotoGrid { id: grid; onContextRequested: (kind, row, x, y) => ctxHost.show(kind, row, x, y, ""); onOpenRequested: (row) => popout.open(row); y: head.height + addBar.height; width: parent.width; height: parent.height - head.height - addBar.height; overlay: floatBar }
                 FloatingBar {
                     id: floatBar
                     sourceItem: grid.view
@@ -158,6 +159,8 @@ Window {
                 z: win.compact ? 30 : 0
                 row: grid.view.currentIndex
                 onStep: (d) => { grid.view.currentIndex = Math.max(0, Math.min(photos.shown - 1, grid.view.currentIndex + d)) }
+                onAnalyze: win.runCommand("ai.analyze")
+                onPick: (r) => { grid.view.currentIndex = r }
             }
             SideResizer {   // the edge between the side panel and the grid
                 objectName: "panelResizer"
@@ -236,6 +239,7 @@ Window {
         function onUiRequest(what, arg) {
             if (what === "share") sidePanel.shareToPhone("sel")
             else if (what === "showDrop") UiState.tab = "drop"
+            else if (what === "open") popout.open(arg)
             else if (what === "batch") UiState.batchMode = arg
             else if (what === "newCollection") { UiState.collDlgId = ""; UiState.collDlg = "new" }
             else if (what === "review") cull.reviewFrame(arg)
@@ -252,6 +256,10 @@ Window {
             else if (what === "coll" || what === "faces" || what === "drop") UiState.tab = what
         }
     }
+    Connections {   // the popout was put away: the grid goes to the photo it ended on and takes the keyboard back
+        target: popout
+        function onClosed(row) { grid.view.currentIndex = row; win.requestActivate(); grid.view.forceActiveFocus() }
+    }
     Connections { target: UiState; function onRequestRowChanged() { if (UiState.requestRow >= 0) { grid.view.currentIndex = UiState.requestRow; UiState.requestRow = -1 } } }
     CommandPalette { id: commandPalette; sourceItem: appContent }
     Shortcut { sequence: "Ctrl+,"; onActivated: UiState.settingsOpen = !UiState.settingsOpen }
@@ -263,31 +271,72 @@ Window {
     Shortcut { sequence: "Ctrl+Shift+C"; onActivated: UiState.batchMode = "convert" }
     Shortcut { sequence: "Ctrl+Alt+B"; onActivated: UiState.bestOfOpen = true }
     Shortcut { sequence: "Ctrl+K"; onActivated: { if (UiState.paletteOpen) UiState.paletteOpen = false; else UiState.openPalette("main") } }
+    Shortcut { sequence: "Ctrl+O"; onActivated: UiState.openFolderRequested() }
 
-    // The commands the shell can carry out today; every other command in the palette is listed but does nothing yet (docs/qml_unwired.md).
-    Connections {
-        target: cmdPalette
-        function onExecuted(id) {
-            if (id === "file.workflow_settings") UiState.settingsOpen = true
-            else if (id.indexOf("appearance.") === 0) { settings.set("theme", id.slice(11)); settings.save() }
-            else if (id.indexOf("sort.") === 0) { UiState.sort = id.slice(5); photos.setSort(UiState.sort) }
-            else if (id === "workflow.handoff_builder") UiState.handoffOpen = true
-            else if (id === "workflow.best_of") UiState.bestOfOpen = true
-            else if (id === "library.create_collection") { UiState.collDlgId = ""; UiState.collDlg = "new" }
-            else if (id === "library.add_selected_to_collection") grid.addToCollection()
-            else if (id === "ai.people") UiState.peopleOpen = true
-            else if (id === "tools.batch_rename" || id === "edit.rename_selection") UiState.batchMode = "rename"
-            else if (id === "tools.batch_resize") UiState.batchMode = "resize"
-            else if (id === "tools.batch_convert") UiState.batchMode = "convert"
-            else if (id === "search.advanced_filters" || id === "search.save_current") UiState.filtersOpen = true
-            else if (id === "search.clear_filters") { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters(); advFilters.clearApplied() }
-            else if (id === "review.compare_mode") UiState.compare = !UiState.compare
-            else if (id === "window.reset_layout") { UiState.tab = "lib"; UiState.insp = true }
-            else if (id === "review.accept_selection") photos.setDecision(grid.view.currentIndex, "win")
-            else if (id === "review.reject_selection") photos.setDecision(grid.view.currentIndex, "rej")
-            else if (id === "review.keep_selection") photos.setDecision(grid.view.currentIndex, "keep")
-        }
+    // Open a folder: the rail's Open folder pin, Ctrl+O and the palette ask; the Library page's drives, favorites and tree open folders themselves
+    FolderDialog {
+        id: folderDialog
+        title: "Choose a folder"
+        currentFolder: libraryNav.folderUrl
+        onAccepted: libraryNav.openUrl(selectedFolder.toString())
     }
+    Connections { target: UiState; function onOpenFolderRequested() { folderDialog.open() } }
+    Connections { target: photos; function onFolderChanged() { grid.view.currentIndex = 0 } }
+
+    // Session memory: the photo the person is on is saved a moment after it changes and when the window closes; opening the folder again puts the grid
+    // back on it (library_nav.py, the Widgets' own keys).
+    function savePositionNow() { var d = photos.get(grid.view.currentIndex); if (d && d.path) libraryNav.savePosition(d.path) }
+    Timer { id: positionTimer; interval: 700; onTriggered: win.savePositionNow() }
+    Connections { target: grid.view; function onCurrentIndexChanged() { positionTimer.restart() } }
+    Connections { target: libraryNav; function onPositionRestored(row) { grid.view.currentIndex = row; grid.view.positionViewAtIndex(row, GridView.Center) } }
+    onClosing: win.savePositionNow()
+
+    // The commands the shell can carry out today, by the palette's command ids (the top bar's menus use the same ones). The palette lists every
+    // other command too and then does nothing; the menus say they are not connected yet (docs/qml_unwired.md).
+    function runCommand(id) {
+        if (id === "file.workflow_settings") UiState.settingsOpen = true
+        else if (id.indexOf("appearance.") === 0) { settings.set("theme", id.slice(11)); settings.save() }
+        else if (id.indexOf("sort.") === 0) { UiState.sort = id.slice(5); photos.setSort(UiState.sort) }
+        else if (id === "workflow.handoff_builder") UiState.handoffOpen = true
+        else if (id === "workflow.best_of") UiState.bestOfOpen = true
+        else if (id === "library.create_collection") { UiState.collDlgId = ""; UiState.collDlg = "new" }
+        else if (id === "library.add_selected_to_collection") grid.addToCollection()
+        else if (id === "ai.people") UiState.peopleOpen = true
+        else if (id === "tools.batch_rename" || id === "edit.rename_selection") UiState.batchMode = "rename"
+        else if (id === "tools.batch_resize") UiState.batchMode = "resize"
+        else if (id === "tools.batch_convert") UiState.batchMode = "convert"
+        else if (id === "search.advanced_filters" || id === "search.save_current") UiState.filtersOpen = true
+        else if (id === "search.clear_filters") { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters(); advFilters.clearApplied() }
+        else if (id === "file.open_folder") UiState.openFolderRequested()
+        else if (id === "review.compare_mode") UiState.compare = !UiState.compare
+        else if (id === "review.open_preview") popout.open(grid.view.currentIndex)
+        else if (id === "window.reset_layout") { UiState.tab = "lib"; UiState.insp = true }
+        else if (id === "review.accept_selection") photos.setDecision(grid.view.currentIndex, "win")
+        else if (id === "review.reject_selection") photos.setDecision(grid.view.currentIndex, "rej")
+        else if (id === "review.keep_selection") photos.setDecision(grid.view.currentIndex, "keep")
+        else if (id === "file.refresh_folder") { if (libraryNav.openPath !== "") libraryNav.openFolder(libraryNav.openPath) }
+        else if (id === "file.reveal_folder") libraryNav.reveal(libraryNav.openPath)
+        else if (id === "file.browse_library") reference.open("lib")
+        else if (id === "file.exit") win.close()
+        else if (id === "workflow.share_to_phone") { pocketDrop.refreshLibrary(grid.view.currentIndex); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
+        else if (id === "review.clear_decision") photos.setDecision(grid.view.currentIndex, "")
+        else if (id.indexOf("review.rate.") === 0) photos.setRating(grid.view.currentIndex, Number(id.slice(12)))
+        else if (id === "review.reveal") libraryNav.revealFile(photos.get(grid.view.currentIndex).path || "")
+        else if (id === "view.names") UiState.showNames = !UiState.showNames
+        else if (id === "view.badges") UiState.showBadges = !UiState.showBadges
+        else if (id === "view.inspector") UiState.insp = !UiState.insp
+        else if (id === "view.panel") UiState.tab = UiState.tab === "" ? "lib" : ""
+        else if (id === "view.hidden") { settings.set("hidden", settings.value("hidden") !== true); settings.save(); libraryNav.refresh() }
+        else if (id.indexOf("view.dens.") === 0) UiState.dens = id.slice(10)
+        else if (id.indexOf("view.filter.") === 0) { UiState.filter = id.slice(12); photos.setFilter(UiState.filter) }
+        else if (id.indexOf("view.fmt.") === 0) { UiState.fmt = id.slice(9); photos.setFormat(UiState.fmt) }
+        else if (id === "ai.analyze") cull.openCull()
+        else if (id === "ai.center") cull.openCenter()
+        else if (id.indexOf("recent:") === 0) libraryNav.openFolder(id.slice(7))
+    }
+    Connections { target: cmdPalette; function onExecuted(id) { win.runCommand(id) } }
+    TopMenus { id: topMenus; onRun: (id) => win.runCommand(id) }
+    Shortcut { sequence: "F5"; onActivated: win.runCommand("file.refresh_folder") }
     Connections { target: UiState; function onCompareChanged() { cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off") } }
     Component.onCompleted: {
         cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off")

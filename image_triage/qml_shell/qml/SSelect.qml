@@ -34,7 +34,7 @@ Item {
     TapHandler { onTapped: menu.opened ? menu.close() : menu.open() }
 
     Popover {
-        id: menu; placement: 2; minWidth: sel.width - 14; tintAlpha: 0.92; maxHeight: sel.menuMax - 14
+        id: menu; placement: 2; minWidth: sel.width - 14; maxHeight: sel.menuMax - 14
         Repeater {
             model: sel.options
             delegate: Item {

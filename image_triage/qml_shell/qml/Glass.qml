@@ -2,9 +2,12 @@ import QtQuick
 import QtQuick.Effects
 
 // Frosted glass: blurs whatever `sourceItem` (the grid) draws behind this item, tints it, and rounds the corners.
+// With `frosted: false` it is a solid card instead (the tint at full strength, nothing captured or blurred): the menus use that, so what is
+// behind a menu never shows through it, not even in the frames before the blur has caught up.
 Item {
     id: glass
     property Item sourceItem
+    property bool frosted: true
     property real radius: 20
     property color tint: Qt.alpha(theme.s1, 0.72)
     property int blurRadius: 64
@@ -54,8 +57,8 @@ Item {
     ShaderEffectSource {
         id: ses
         x: -glass.pad; y: -glass.pad; width: glass.width + glass.pad * 2; height: glass.height + glass.pad * 2
-        sourceItem: glass.sourceItem
-        live: true
+        sourceItem: glass.frosted ? glass.sourceItem : null
+        live: glass.frosted
         recursive: false
         sourceRect: {
             if (!glass.sourceItem) return Qt.rect(0, 0, 0, 0);
@@ -65,6 +68,7 @@ Item {
         visible: false
     }
     MultiEffect {
+        visible: glass.frosted
         x: -glass.pad; y: -glass.pad; width: glass.width + glass.pad * 2; height: glass.height + glass.pad * 2
         source: ses
         blurEnabled: true; blur: 1.0; blurMax: glass.blurRadius; saturation: glass.saturation
@@ -72,6 +76,6 @@ Item {
         maskEnabled: true; maskSource: maskItem
         maskThresholdMin: 0.5; maskSpreadAtMin: 1.0
     }
-    Rectangle { anchors.fill: parent; radius: glass.radius; color: glass.tint; border.color: Qt.alpha(theme.lift, 0.11); border.width: 1 }
+    Rectangle { anchors.fill: parent; radius: glass.radius; color: glass.frosted ? glass.tint : Qt.alpha(glass.tint, 1); border.color: Qt.alpha(theme.lift, 0.11); border.width: 1 }
     // (the mockup's inset 0 1px 0 highlight sits under the translucent ::before, so it is invisible and is not drawn)
 }

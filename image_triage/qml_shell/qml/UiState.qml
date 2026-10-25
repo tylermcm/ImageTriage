@@ -53,7 +53,7 @@ QtObject {
     // collections, faces, best-of, tag people (test hooks: collDlg, collDlgId, collDlgTab, collName, collMenu, collPicker, cldrop, peopleSel ...)
     property string collDlg: ""             // "" closed, "new" or "edit"
     property string collDlgId: ""
-    property string collDlgTab: "color"
+    property string collDlgTab: "icon"
     property string collName: ""            // test hook: name typed into the dialog
     property string collMenu: ""            // id of the collection whose menu is open ("" none)
     property bool collPicker: false
@@ -70,6 +70,11 @@ QtObject {
     property string faceQuery: ""
     property int requestRow: -1             // a window asks the grid to move to this row (Show in grid)
     property bool compact: false         // window <= 900px: narrow rail, panel and inspector float over the grid (the mockup's phone layout)
+    property string topMenu: ""             // the open top-bar menu: file, review, view or ai ("" none; Help has its own, in `reference`)
+    property real topMenuX: 0               // where it drops from
+    property int topSub: -1                 // the row of that menu whose fly-out shows
+    signal openFolderRequested()            // the rail's Open folder pin, Ctrl+O and the palette: Main.qml shows the folder dialog
+    property real railPin: 40              // the size of the rail's pinned buttons (Rail.qml shrinks it when the window is short)
     property var pins: ({
         open: true, undo: true, review: true, view: true, filters: true, accept: true, reject: true,
         sort: false, columns: false, rename: false, compare: false, preview: false, ladder: false, convert: false, share: false,

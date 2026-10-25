@@ -29,7 +29,8 @@ NAMES = ["DSC_4201", "DSC_4203", "DSC_4207", "DSC_4210", "DSC_4214", "DSC_4219",
 
 @pytest.fixture(scope="module")
 def qapp():
-    return QCoreApplication.instance() or QGuiApplication([])
+    from PySide6.QtWidgets import QApplication   # the shell is a widgets application: the popout is a Widgets window
+    return QCoreApplication.instance() or QApplication([])
 
 
 def pump(app, seconds=0.2):
@@ -150,11 +151,19 @@ def test_what_only_the_window_can_do_is_requested(ctx):
 
 def test_what_is_not_connected_says_so_and_changes_nothing(ctx):
     menu, toasts, photos, *_ = ctx
-    for key in ("del", "mv:copy", "with:default", "open"):
+    for key in ("del", "mv:copy", "with:default"):
         menu.openPhoto(0)
         menu.act(key)
         assert toasts.items[-1]["kind"] == "warn" and "connected yet" in toasts.items[-1]["title"], key
     assert photos.get(0)["decision"] == "" and photos.shown == len(NAMES)
+
+
+def test_open_asks_the_window_for_the_popout_and_says_nothing_else(ctx):
+    menu, toasts, photos, collections, cull, requests = ctx
+    shown = len(toasts.items)
+    menu.openPhoto(1)
+    menu.act("open")
+    assert requests[-1] == ("open", 1) and len(toasts.items) == shown
 
 
 def test_a_flagged_frame_has_its_banner_and_restore(qapp, ctx):

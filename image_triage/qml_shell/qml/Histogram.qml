@@ -1,18 +1,48 @@
 import QtQuick
 import QtQuick.Shapes
 
-// A three-channel histogram drawn from path data (a stand-in for the real per-photo histogram).
+// The histogram of a photo: its brightness (on the preview), or its red, green and blue (`three`, on the Quality tab). The counts come from
+// histograms.py, the Widgets app's own counting, for the photo at `path`; until they arrive (or if the photo cannot be read) nothing is drawn.
 Item {
     id: h
-    property color c1: three ? Qt.rgba(160 / 255, 170 / 255, 190 / 255, 0.4) : Qt.rgba(1, 1, 1, 0.35)
-    property color c2: Qt.rgba(90 / 255, 150 / 255, 1.0, three ? 0.55 : 0.5)
-    property color c3: Qt.rgba(80 / 255, 200 / 255, 140 / 255, 0.45)
+    property string path: ""
     property bool three: false
+    property color luma: Qt.rgba(1, 1, 1, 0.42)
+    property color red: Qt.rgba(235 / 255, 100 / 255, 100 / 255, 0.42)
+    property color green: Qt.rgba(80 / 255, 200 / 255, 140 / 255, 0.42)
+    property color blue: Qt.rgba(90 / 255, 150 / 255, 1.0, 0.5)
+    property var counts: ({ ready: false })
+    readonly property bool has: counts.ready === true
+    readonly property string summary: has ? counts.summary : ""
+
+    function refresh() {
+        if (path === "" || !visible) { counts = ({ ready: false }); return }
+        counts = histograms.get(path)
+        if (!counts.ready) histograms.request(path)
+    }
+    onPathChanged: refresh()
+    onVisibleChanged: if (visible) refresh()
+    Component.onCompleted: refresh()
+    Connections { target: histograms; function onReady(p) { if (p === h.path) h.refresh() } }
+
+    // the 64 counts as a closed outline, as SVG path text, in a 100 x 40 box (the baseline at 40, a full bar 2 units from the top)
+    function outline(bins) {
+        var n = bins ? bins.length : 0
+        if (n === 0) return ""
+        var d = "M0 40"
+        for (var i = 0; i < n; ++i) d += "L" + ((i + 0.5) * 100 / n).toFixed(2) + " " + (40 - bins[i] * 38).toFixed(2)
+        return d + "L100 40z"
+    }
+
     Shape {
+        visible: h.has
         width: 100; height: 40; preferredRendererType: Shape.CurveRenderer
         transform: Scale { xScale: h.width / 100; yScale: h.height / 40 }
-        ShapePath { strokeColor: "transparent"; fillColor: h.c1; PathSvg { path: "M0 40L0 34C8 30 14 22 22 18C30 14 36 22 44 16C52 10 58 6 66 12C74 18 82 26 100 34L100 40z" } }
-        ShapePath { strokeColor: "transparent"; fillColor: h.c2; PathSvg { path: "M0 40L0 36C10 34 18 26 28 22C38 18 46 14 56 18C66 22 78 30 100 36L100 40z" } }
-        ShapePath { strokeColor: "transparent"; fillColor: h.three ? h.c3 : "transparent"; PathSvg { path: "M0 40L0 38C14 36 24 30 34 26C46 22 56 24 68 28C80 32 90 36 100 38L100 40z" } }
+        ShapePath { strokeColor: "transparent"; fillColor: h.three ? h.red : h.luma; PathSvg { path: h.outline(h.three ? h.counts.r : h.counts.luma) } }
+        ShapePath { strokeColor: "transparent"; fillColor: h.three ? h.green : "transparent"; PathSvg { path: h.three ? h.outline(h.counts.g) : "" } }
+        ShapePath { strokeColor: "transparent"; fillColor: h.three ? h.blue : "transparent"; PathSvg { path: h.three ? h.outline(h.counts.b) : "" } }
     }
+    Accessible.role: Accessible.Graphic
+    Accessible.name: "Histogram of the selected photo"
+    Accessible.description: h.summary
 }

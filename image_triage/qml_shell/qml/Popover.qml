@@ -6,7 +6,6 @@ import QtQuick.Controls
 Popup {
     id: pop
     property int placement: 0            // 0: above the button, 1: to the right of it, 2: below it, right edges aligned (dropdowns)
-    property real tintAlpha: 0.88
     property real shadowAlpha: 0.7
     property bool alignBottom: false     // placement 1 only: grow upward from the button's bottom edge
     property string name: ""            // the id UiState.menu uses for this menu (one menu open at a time)
@@ -43,10 +42,10 @@ Popup {
             NumberAnimation { property: "scale"; to: 0.97; duration: 110 }
         }
     }
-    // the mockup's .pop: backdrop blur(22px) saturate(1.4) under an 88% tint, shadow 0 24px 48px -16px rgba(0,0,0,.7)
+    // the mockup's .pop, but solid: a menu is read, so nothing behind it shows through (shadow 0 24px 48px -16px rgba(0,0,0,.7))
     background: Glass {
-        sourceItem: pop.parent ? pop.parent.Window.contentItem : null
-        radius: pop.placement === 2 ? 14 : 16; tint: Qt.alpha(theme.s2, pop.tintAlpha); saturation: 0.4
+        frosted: false; tint: theme.s2
+        radius: pop.placement === 2 ? 14 : 16
         shadowAlphaA: pop.shadowAlpha; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16
     }
     contentItem: Flickable {

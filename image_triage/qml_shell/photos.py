@@ -1,7 +1,7 @@
 """The photo list the QML grid shows: real files from the existing scanner, with decision, rating and sort/filter state.
 
-Decisions, ratings and AI scores are sample data for now (derived from the file name so they are stable between runs); the shape
-(roles, filtering, sorting, counts) is what the real stores will plug into.
+Decisions and ratings are not read from the decision store yet (a real folder starts with none); a photo's AI score is -1 until the folder's saved
+AI report has been read (`ai_scores.py` calls `rescore`). The shape (roles, filtering, sorting, counts) is what the real stores plug into.
 """
 from __future__ import annotations
 
@@ -14,10 +14,22 @@ from PySide6.QtCore import Property, QAbstractListModel, QByteArray, QModelIndex
 
 from ..formats import RAW_SUFFIXES
 from ..scanner import scan_folder
+from .inspector_sample import sample_ai, sample_measured
 
-PathRole, NameRole, ExtRole, RawRole, DecisionRole, RatingRole, AiRole = (Qt.ItemDataRole.UserRole + n for n in range(1, 8))
+PathRole, NameRole, ExtRole, RawRole, DecisionRole, RatingRole, AiRole, TitleRole = (Qt.ItemDataRole.UserRole + n for n in range(1, 9))
 
 _DECISIONS = ("", "keep", "win", "rej", "rev", "", "keep", "")  # weights by position
+
+
+def _title(row: dict) -> str:
+    """The file name without its extension: the grid shows the format as a tag, so the name does not repeat it (R.bmp -> R)."""
+    name, ext = row["name"], "." + str(row.get("ext", "")).lower()
+    stem = name[: -len(ext)] if len(ext) > 1 and name.lower().endswith(ext) else name
+    return stem or name                  # a file that is nothing but its extension keeps its name
+
+
+def _path_key(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path))
 
 
 def _sample(name: str) -> tuple[str, int, int]:
@@ -48,7 +60,7 @@ class PhotoModel(QAbstractListModel):
     folderChanged = Signal()
     scopeChanged = Signal()
     loadingChanged = Signal()
-    _loaded = Signal(list, str)
+    _loaded = Signal(list, str, int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -61,6 +73,7 @@ class PhotoModel(QAbstractListModel):
         self._adv: dict | None = None      # the advanced-filters dialog's part of the query: {"decisions", "min_rating", "file"}
         self._folder = ""
         self._loading = False
+        self._load_token = 0                # the newest loadFolder request: an older scan that finishes later is dropped
         self._revision = 0
         self._loaded.connect(self._apply_loaded)
         self._mock: dict[str, dict] = {}
@@ -68,12 +81,14 @@ class PhotoModel(QAbstractListModel):
         self._scope_kind = ""           # "" (the folder), "collection", "winners", "person" or "best": what the grid is limited to
         self._scope_id = ""
         self._scope_pred = None
+        self._row_of_path: dict[str, int] | None = None     # path -> shown row; made when first asked for, dropped on every rebuild
+        self._row_of_key: dict[str, int] | None = None      # the same by normalised path (case and slashes), for paths another program wrote
 
     # -- model ------------------------------------------------------------------------------------------------------------
     def roleNames(self) -> dict:
         return {
             PathRole: QByteArray(b"path"), NameRole: QByteArray(b"name"), ExtRole: QByteArray(b"ext"), RawRole: QByteArray(b"isRaw"),
-            DecisionRole: QByteArray(b"decision"), RatingRole: QByteArray(b"rating"), AiRole: QByteArray(b"ai"),
+            DecisionRole: QByteArray(b"decision"), RatingRole: QByteArray(b"rating"), AiRole: QByteArray(b"ai"), TitleRole: QByteArray(b"title"),
         }
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -87,6 +102,8 @@ class PhotoModel(QAbstractListModel):
             return row["path"]
         if role == NameRole:
             return row["name"]
+        if role == TitleRole:
+            return _title(row)
         if role == ExtRole:
             return row["ext"]
         if role == RawRole:
@@ -102,10 +119,11 @@ class PhotoModel(QAbstractListModel):
     # -- loading -----------------------------------------------------------------------------------------------------------
     @Slot(str)
     def loadFolder(self, folder: str) -> None:
-        if self._loading:
-            return
-        self._loading = True
-        self.loadingChanged.emit()
+        self._load_token += 1               # a click on another folder while one is still being read wins
+        token = self._load_token
+        if not self._loading:
+            self._loading = True
+            self.loadingChanged.emit()
 
         def work() -> None:
             try:
@@ -115,13 +133,15 @@ class PhotoModel(QAbstractListModel):
             rows = []
             for record in records:
                 suffix = Path(record.path).suffix.lower()
-                decision, rating, ai = _sample(record.name)
+                # Nothing is rated or decided until the user does it (the decision store is not read yet: docs/qml_unwired.md), and nothing
+                # has an AI score (-1) until the folder's saved AI report is read
+                decision, rating, ai = "", 0, -1
                 rows.append({
                     "path": record.path, "name": record.name, "ext": suffix.lstrip(".").upper() or "FILE",
                     "raw": suffix in RAW_SUFFIXES, "decision": decision, "rating": rating, "ai": ai,
-                    "companions": tuple(record.companion_paths),
+                    "companions": tuple(record.companion_paths), "record": record,
                 })
-            self._loaded.emit(rows, folder)
+            self._loaded.emit(rows, folder, token)
 
         threading.Thread(target=work, name="qml-scan", daemon=True).start()
 
@@ -136,7 +156,9 @@ class PhotoModel(QAbstractListModel):
         self._mock_path = "Photos (D:) / 2026 / Georgia trip"
         self._apply_loaded(rows, "Kutaisi, Georgia")
 
-    def _apply_loaded(self, rows: list, folder: str) -> None:
+    def _apply_loaded(self, rows: list, folder: str, token: int = -1) -> None:
+        if token != -1 and token != self._load_token:
+            return                          # superseded by a newer loadFolder: that one reports when it is done
         self._all = rows
         if folder != self._folder:
             self._scope_kind, self._scope_id, self._scope_pred = "", "", None      # a collection or person is not a folder: opening one leaves it
@@ -181,6 +203,7 @@ class PhotoModel(QAbstractListModel):
             rows.sort(key=lambda r: order.get(r["decision"], 3))
         self.beginResetModel()
         self._rows = rows
+        self._row_of_path = self._row_of_key = None
         self.endResetModel()
         self.countsChanged.emit()
         self._bump()
@@ -271,7 +294,8 @@ class PhotoModel(QAbstractListModel):
 
     @Slot(int, result="QVariantMap")
     def get(self, row: int) -> dict:
-        """Everything the inspector shows for one row (sample capture data, derived from the name so it is stable)."""
+        """Everything the inspector shows for one row: the row, its position, and sample capture data derived from the name so it is stable.
+        The Quality and AI tabs are not here (`inspection` and `aiScores` answer those) except for the mockup's twelve photos."""
         if not 0 <= row < len(self._rows):
             return {}
         item = self._rows[row]
@@ -279,13 +303,50 @@ class PhotoModel(QAbstractListModel):
         shutter = ("1/125", "1/250", "1/500", "1/800", "1/1250")[h % 5]
         aperture = ("f/4", "f/5.6", "f/8", "f/9", "f/11")[(h >> 4) % 5]
         iso = (100, 100, 200, 400, 800)[(h >> 8) % 5]
-        focus = 45 + (h >> 11) % 55
         detail = dict(item, isRaw=item["raw"], position=row + 1, count=len(self._rows), exposure=f"{shutter} \u00b7 {aperture} \u00b7 ISO {iso}",
                     focal=("24 mm", "35 mm", "50 mm", "70 mm")[(h >> 14) % 4], captured=f"2026-05-14 {8 + (h >> 17) % 10:02d}:{(h >> 20) % 60:02d}",
-                    focus=focus, expo=("Balanced", "Balanced", "Bright", "Dark")[(h >> 22) % 4], noise=("Low", "Low", "Medium")[(h >> 24) % 3],
                     camera="Nikon Z 6", lens="24-70 mm f/4 S", pixels="6048 \u00d7 4024")
-        detail.update(self._mock.get(item["name"], {}))
+        mock = self._mock.get(item["name"])
+        if mock:
+            group = [{"path": self._rows[(row + n) % len(self._rows)]["path"], "row": (row + n) % len(self._rows), "current": n == 0} for n in range(4)]
+            detail.update(mock, measured=sample_measured(mock["focus"], mock["expo"], mock["noise"]),
+                          aiCall=sample_ai(item["ai"], item["decision"], mock["focus"], mock["expo"], group))
+        detail.pop("record", None)           # a Python object: QML has no use for it
         return detail
+
+    def all_rows(self) -> list[dict]:
+        """Every photo of the open folder, shown or not (the list itself: do not change it)."""
+        return self._all
+
+    def folder_dir(self) -> str:
+        """The folder on the disk the shown photos were read from ("" for the mockup's sample page)."""
+        return "" if self._mock else self._folder
+
+    def rescore(self, score_of) -> None:
+        """Give every photo its AI score: `score_of(row)` is 0..100, or None for a photo the AI has not scored (it gets -1)."""
+        for row in self._all:
+            value = score_of(row)
+            row["ai"] = -1 if value is None else int(value)
+        if self._sort == "ai":
+            self._rebuild()
+        elif self._rows:
+            self.dataChanged.emit(self.index(0), self.index(len(self._rows) - 1), [AiRole])
+            self._bump()
+
+    def row_at(self, row: int) -> dict | None:
+        """The shown row `row` as the model holds it (path, name, decision, rating, and the scanner's `record` for real folders)."""
+        return self._rows[row] if 0 <= row < len(self._rows) else None
+
+    def row_for_path(self, path: str) -> int:
+        """Where `path` is among the shown photos, or -1 (a path written with other slashes or capitals still finds its photo)."""
+        if self._row_of_path is None:
+            self._row_of_path = {r["path"]: i for i, r in enumerate(self._rows)}
+        row = self._row_of_path.get(path)
+        if row is not None:
+            return row
+        if self._row_of_key is None:
+            self._row_of_key = {_path_key(r["path"]): i for i, r in enumerate(self._rows)}
+        return self._row_of_key.get(_path_key(path), -1)
 
     # -- properties for the bar and header ---------------------------------------------------------------------------------
     def _count(self, decision: str) -> int:

@@ -20,6 +20,7 @@ import threading
 import time
 
 from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, QUrl, Signal, Slot
+from PySide6.QtGui import QImage
 
 from .. import memtrace
 from ..cache import DiskThumbnailCache, ThumbnailKey
@@ -28,6 +29,21 @@ from ..perf import perf_logger
 
 _JOBS = memtrace.jobs("qml.thumbnail.decode")
 BUCKET_ASPECT = 2 / 3
+STRIP = 0.30                      # the bottom share of a thumbnail that a card's name, stars and format tag are drawn over
+
+
+def strip_luma(image: QImage) -> float:
+    """The mean brightness (0 black to 1 white, sRGB luma) of the bottom strip of `image`."""
+    height = image.height()
+    top = min(height - 1, int(height * (1 - STRIP)))
+    small = image.copy(0, top, image.width(), height - top).scaled(16, 4, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    small = small.convertToFormat(QImage.Format.Format_RGB32)
+    total = 0.0
+    for y in range(small.height()):
+        for x in range(small.width()):
+            pixel = small.pixel(x, y)
+            total += 0.2126 * ((pixel >> 16) & 255) + 0.7152 * ((pixel >> 8) & 255) + 0.0722 * (pixel & 255)
+    return total / (small.width() * small.height() * 255.0)
 
 
 class _Task(QRunnable):
@@ -52,6 +68,7 @@ class ThumbService(QObject):
         self._lock = threading.Lock()
         self._wanted: dict[str, int] = {}      # path -> how many delegates currently want a thumbnail of it
         self._queued: set[ThumbnailKey] = set()
+        self._tones: dict[str, float] = {}      # cache file -> brightness of its bottom strip (the file name changes when the photo does)
 
     @staticmethod
     def size_for(bucket: int) -> QSize:
@@ -85,6 +102,36 @@ class ThumbService(QObject):
         # Newest request first: what is on screen now, not what was scrolled past.
         self.pool.start(_Task(self, key), int(time.monotonic() * 1000) & 0x7FFFFFFF)
         return ""
+
+    @Slot(str, int, result=float)
+    def tone(self, path: str, bucket: int) -> float:
+        """How bright the bottom of the photo's cached thumbnail is, 0 (black) to 1 (white), or -1 while there is none. The card draws its
+        name, stars and format tag over that strip and picks light or dark ink by this, so they can be read on a white photo too."""
+        key = self._key(path, bucket)
+        if key is None:
+            return -1.0
+        target = self.disk._file_path(key)
+        name = str(target)
+        known = self._tones.get(name)
+        if known is not None:
+            return known
+        if not target.exists():
+            return -1.0
+        image = QImage(name)
+        if image.isNull() or image.height() < 2:
+            return -1.0
+        if len(self._tones) > 50000:
+            self._tones.clear()
+        value = self._tones[name] = strip_luma(image)
+        return value
+
+    def cached_file(self, path: str, bucket: int) -> str:
+        """The cached thumbnail's file if it exists, else "" (nothing is queued; `url` does that)."""
+        key = self._key(path, bucket)
+        if key is None:
+            return ""
+        target = self.disk._file_path(key)
+        return str(target) if target.exists() else ""
 
     @Slot(str)
     def unwant(self, path: str) -> None:

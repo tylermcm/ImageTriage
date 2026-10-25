@@ -1,6 +1,7 @@
 import QtQuick
 
-// AI Center: what the cull needs on this computer (runtime, graphics card, models), the defaults, and recent runs. Model: cull_model.py.
+// AI Center: what the cull needs on this computer (runtime, graphics card, models), the defaults, and recent runs. Model: cull_model.py, which in the
+// app gets every state and every button's work from ai_center.py (what is really installed, and the Widgets app's own installers).
 Backdrop {
     id: root
     objectName: "aiCenterWindow"
@@ -9,6 +10,19 @@ Backdrop {
     onDismissed: cull.close()
     z: 107
     function dotColor(k) { return k === "ok" ? theme.win : k === "bad" ? theme.rej : theme.rev }
+    // a model row's button: cancel what is running, ask before deleting a ranker, otherwise install or repair
+    function modelPressed(m) {
+        if (m.busy) { cull.cancelSetup(); return }
+        if (m.confirm) { var t = cull.removeText(m.key); removeCard.key = m.key; removeCard.title = t.title; removeCard.body = t.body; removeCard.open(); return }
+        cull.modelAction(m.key)
+    }
+    // the runtime's button: cancel, or say what will be downloaded first (it is gigabytes) and ask
+    function runtimePressed() {
+        if (c.rtInstalling) { cull.cancelSetup(); return }
+        var p = cull.setupPlan(); setupCard.title = p.title; setupCard.body = p.body; setupCard.confirmText = p.confirm; setupCard.open()
+    }
+    ConfirmCard { id: removeCard; objectName: "aiRemoveCard"; property string key; confirmText: "Remove"; cancelText: "Cancel"; onAccepted: cull.modelAction(removeCard.key) }
+    ConfirmCard { id: setupCard; objectName: "aiSetupCard"; cancelText: "Cancel"; onAccepted: cull.setupRuntime() }
     component Card: Rectangle { radius: 14; color: theme.s1; border.color: theme.lineSoft }
     component H3: Text { height: 13; verticalAlignment: Text.AlignVCenter; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
     component Status: Row { property string tone; property string label; spacing: 6; anchors.verticalCenter: parent ? parent.verticalCenter : undefined
@@ -52,12 +66,12 @@ Backdrop {
                     H3 { text: "ENGINE"; width: parent.width }
                     Item { width: 1; height: 9 }
                     Row2 { iconPath: "M7 7h10v10H7zM4 9h3M4 15h3M17 9h3M17 15h3M9 4v3M15 4v3M9 17v3M15 17v3"; title: "AI runtime"; tone: root.c.rtDot; state: root.c.rtState; desc: root.c.rtDesc; busy: root.c.rtInstalling; pct: root.c.rtPct; step: root.c.rtStep
-                        SButton { text: root.c.rtBtn; variant: root.c.rtPrimary ? "primary" : "normal"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: root.c.rtInstalling ? cull.cancelSetup() : cull.setupRuntime() } }
+                        SButton { objectName: "aiRuntimeButton"; visible: root.c.rtBtnShow !== false; text: root.c.rtBtn; variant: root.c.rtPrimary ? "primary" : "normal"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: root.runtimePressed() } }
                     Item { width: 1; height: 8 }
                     Row2 { iconPath: "M4 5h16v10H4zM9 19h6M12 15v4"; title: "Graphics card"; tone: root.c.gpuDot; state: root.c.gpuState; desc: root.c.gpuDesc }
                     Item { visible: root.c.vcShow; width: 1; height: 8 }
                     Row2 { visible: root.c.vcShow; iconPath: "M12 8v5M12 16.5v.01M10.3 3.9L2.4 18a2 2 0 001.7 3h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"; title: "Windows needs a newer Visual C++ runtime"; tone: "bad"; state: ""
-                        desc: "Found " + root.c.vcFound + ". The AI runtime needs 14.40 or newer and fails to start without it."
+                        desc: "Found " + root.c.vcFound + ". The AI runtime needs " + (root.c.vcNeeded || "14.40") + " or newer and fails to start without it."
                         SButton { text: "Get the update"; variant: "primary"; h: 28; hpad: 11; radius: 9; onClicked: Qt.openUrlExternally("https://aka.ms/vs/17/release/vc_redist.x64.exe") }
                         SButton { text: "Check again"; h: 28; hpad: 11; radius: 9; onClicked: cull.recheckRuntime() } }
                     Item { width: 1; height: 16 }
@@ -66,8 +80,9 @@ Backdrop {
                     Repeater { model: root.c.models
                         delegate: Item { required property var modelData; width: col.width; height: mr.height + 8
                             Row2 { id: mr; iconPath: modelData.key === "face" ? "M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6zM12 14.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" : modelData.key === "quality" ? "M5 19V10M12 19V5M19 19v-7" : "M12 3.5l1.8 4.7 4.7 1.8-4.7 1.8L12 16.5l-1.8-4.7L5.5 10l4.7-1.8z"
-                                title: modelData.name; tone: modelData.on ? "ok" : "warn"; state: modelData.on ? "Installed" : "Not installed"; desc: modelData.desc
-                                SButton { text: modelData.on ? (modelData.key === "face" ? "Repair" : "Remove") : "Install"; variant: modelData.on ? "normal" : "primary"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: cull.toggleModel(modelData.key) } } } }
+                                title: modelData.name; tone: modelData.tone; state: modelData.state; desc: modelData.desc; busy: modelData.busy; pct: modelData.pct; step: modelData.step
+                                SButton { objectName: "aiModelButton-" + modelData.key; text: modelData.btn; variant: modelData.primary ? "primary" : "normal"; enabled: !modelData.locked
+                                          h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: root.modelPressed(modelData) } } } }
                     Item { width: 1; height: 8 }
                     H3 { text: "DEFAULTS"; width: parent.width }
                     Item { width: 1; height: 9 }
@@ -82,8 +97,8 @@ Backdrop {
                             Text { text: "How strict by default"; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
                             Text { text: "The Cull window starts here. You can change it for any run."; color: theme.fg3; font.pointSize: UiState.pt(12.5) } }
                         Seg { anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; width: 240; height: 38; fill: true; showExtras: false; labels: ["Careful", "Balanced", "Strict"]
-                              current: { var s = cull.view.sens; for (var i = 0; i < s.length; ++i) if (s[i].on) return i; return 1 }
-                              onActivated: (i) => cull.setSens(cull.view.sens[i].key) } }
+                              current: { var s = cull.view.sens, d = root.c.defSens || ""; for (var i = 0; i < s.length; ++i) if (s[i].key === d) return i; return 1 }
+                              onActivated: (i) => cull.setDefaultSens(cull.view.sens[i].key) } }
                     Item { width: 1; height: 16 }
                     H3 { text: "RECENT RUNS"; width: parent.width }
                     Item { width: 1; height: 9 }

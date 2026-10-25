@@ -16,6 +16,7 @@ RailButton 1.0 RailButton.qml
 Rail 1.0 Rail.qml
 Stag 1.0 Stag.qml
 TopBar 1.0 TopBar.qml
+TopMenus 1.0 TopMenus.qml
 WindowEdges 1.0 WindowEdges.qml
 StatusBar 1.0 StatusBar.qml
 Meter 1.0 Meter.qml

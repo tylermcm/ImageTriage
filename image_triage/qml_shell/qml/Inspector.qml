@@ -4,6 +4,7 @@ import QtQuick.Shapes
 // The inspector: one continuous column (no boxes) with a sliding three-way tab control. Overview, Quality, AI.
 Item {
     id: insp
+    objectName: "inspector"
     property int row: 0
     property int tab: 0
     property real fullW: 352
@@ -11,7 +12,38 @@ Item {
     readonly property var cur: { void photos.revision; void insp.row; return photos.get(insp.row) }
     readonly property bool has: cur && cur.path !== undefined
     signal step(int delta)
+    signal analyze()                     // the AI tab's button, for a folder with no saved AI results
+    signal pick(int row)                 // a photo of the AI group was clicked
     clip: true
+
+    // What the Quality and AI tabs show. `facts` is the photo measured (inspection.py, only while one of those tabs is showing); `aiInfo` is the AI's verdict on it
+    // from the folder's saved report (ai_scores.py). The mockup's sample photos carry both ready-made.
+    readonly property string curPath: has ? cur.path : ""
+    property var facts: ({ ready: false })
+    readonly property var aiInfo: { void photos.revision; void aiScores.revision; return !has ? ({ has: false, state: "none" }) : (cur.aiCall !== undefined ? cur.aiCall : aiScores.get(curPath)) }
+    readonly property var checkRows: {
+        if (facts.ready) return facts.checks
+        var text = !has ? "" : facts.failed ? "Couldn\u2019t read this photo" : "Measuring\u2026"
+        return !has ? [] : ["Focus", "Exposure", "Noise", "Motion blur"].map(function (n) { return { name: n, text: text, value: 0, tone: -1 } })
+    }
+    readonly property var whyRows: {                // the AI's reasons, then what was measured
+        var out = []
+        if (aiInfo.has) for (var i = 0; i < aiInfo.reasons.length; ++i) out.push(aiInfo.reasons[i])
+        if (facts.ready) for (var j = 0; j < facts.reasons.length; ++j) out.push(facts.reasons[j])
+        return out
+    }
+    function refreshFacts() {
+        if (!has) { facts = ({ ready: false }); return }
+        if (cur.measured !== undefined) { facts = cur.measured; return }
+        if (tab === 0) { facts = ({ ready: false }); return }                       // nothing is measured while the Overview is showing
+        facts = inspection.get(curPath)
+        if (!facts.ready && !facts.failed) inspection.request(curPath)
+    }
+    function esc(text) { return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;") }
+    onCurPathChanged: refreshFacts()
+    onTabChanged: refreshFacts()
+    Component.onCompleted: refreshFacts()
+    Connections { target: inspection; function onReady(p) { if (p === insp.curPath) insp.refreshFacts() } }
 
     Rectangle { anchors.fill: parent; color: theme.s2 }
     Rectangle { anchors.left: parent.left; width: 1; height: parent.height; color: theme.lineSoft }
@@ -66,7 +98,7 @@ Item {
                     Rectangle { anchors.fill: parent; color: theme.base }
                     ThumbImage { anchors.fill: parent; bucket: 800; path: insp.has ? insp.cur.path : "" }
                     Rectangle { x: 10; y: parent.height - 54; width: 112; height: 44; radius: 9; color: Qt.rgba(0, 0, 0, 0.45)
-                        Histogram { anchors.fill: parent; anchors.margins: 5 } }
+                        Histogram { objectName: "histogramPreview"; anchors.fill: parent; anchors.margins: 5; path: insp.has ? insp.cur.path : "" } }
                 }
                 Item {
                     width: parent.width; height: 176.2
@@ -151,7 +183,7 @@ Item {
             opacity: on ? 1 : 0; visible: opacity > 0.01
             transform: Translate { y: quality.on ? 0 : 8; Behavior on y { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } } }
             Behavior on opacity { NumberAnimation { duration: 250 } }
-            function tone(v) { return v >= 70 ? ["#0fb89a", theme.win] : v >= 50 ? ["#e6ac3d", theme.rev] : ["#ef6856", theme.rej] }
+            function tone(t) { return t === 0 ? ["#0fb89a", theme.win] : t === 1 ? ["#e6ac3d", theme.rev] : t === 2 ? ["#ef6856", theme.rej] : [theme.fg3] }
             Column {
                 id: qCol; width: parent.width
                 Item {
@@ -160,17 +192,13 @@ Item {
                     Text { x: 16; y: 14; height: 13; verticalAlignment: Text.AlignVCenter; text: "TECHNICAL CHECKS"; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
                     Column { id: checks; x: 16; y: 37; width: parent.width - 32
                         Repeater {
-                            model: insp.has ? [
-                                ["Focus", insp.cur.focus >= 70 ? "Sharp" : insp.cur.focus >= 50 ? "Slightly soft" : "Soft", insp.cur.focus],
-                                ["Exposure", insp.cur.expo, ({ Balanced: 88, Bright: 55, Dark: 48 })[insp.cur.expo]],
-                                ["Noise", insp.cur.noise, ({ Low: 90, Medium: 60 })[insp.cur.noise]],
-                                ["Motion blur", "None detected", 96]] : []
+                            model: insp.checkRows
                             delegate: Item {
                                 required property var modelData
                                 width: checks.width; height: 43.2          // 18.2 + 5 + 6, then 14 below
-                                Text { y: 0; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[0]; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
-                                Text { anchors.right: parent.right; y: 0; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[1]; color: theme.fg2; font.pixelSize: 13 }
-                                Meter { y: 23.2; width: parent.width; height: 6; value: modelData[2] / 100; threshold: 0.6; spanTrack: false; stops: quality.tone(modelData[2]) }
+                                Text { y: 0; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData.name; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
+                                Text { anchors.right: parent.right; y: 0; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData.text; color: modelData.tone < 0 ? theme.fg3 : theme.fg2; font.pixelSize: 13 }
+                                Meter { y: 23.2; width: parent.width; height: 6; value: modelData.value / 100; threshold: 0.6; spanTrack: false; stops: quality.tone(modelData.tone) }
                             }
                         }
                     }
@@ -181,8 +209,7 @@ Item {
                     Text { x: 16; y: 14; height: 13; verticalAlignment: Text.AlignVCenter; text: "HISTOGRAM"; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
                     RoundClip { x: 16; y: 37; width: parent.width - 32; height: 84; radius: 10
                         Rectangle { anchors.fill: parent; color: theme.base }
-                        Histogram { anchors.fill: parent; three: true }
-                        Accessible.name: "Histogram of the selected photo"; Accessible.role: Accessible.Graphic }
+                        Histogram { objectName: "histogramQuality"; anchors.fill: parent; three: true; path: insp.has ? insp.cur.path : "" } }
                 }
             }
         }
@@ -191,7 +218,7 @@ Item {
         Flickable {
             id: ai
             readonly property bool on: insp.tab === 2
-            property real shown: on && insp.has ? insp.cur.ai / 100 : 0
+            property real shown: on && insp.aiInfo.has ? insp.aiInfo.score / 100 : 0
             Behavior on shown { NumberAnimation { duration: 1000; easing.type: Easing.OutCubic } }
             y: head.height; width: parent.width; height: parent.height - head.height
             contentHeight: aiCol.implicitHeight + 24; clip: true; boundsBehavior: Flickable.StopAtBounds
@@ -219,53 +246,68 @@ Item {
                                 PathSvg { path: Icons.circle(48, 48, 48) + Icons.circle(48, 48, 39) }
                             }
                         }
-                        Text { anchors.centerIn: parent; text: insp.has ? String(insp.cur.ai) : ""; color: theme.fg; font.pixelSize: 28; font.weight: Font.DemiBold; font.letterSpacing: -0.84 }
+                        Text { anchors.centerIn: parent; text: !insp.has ? "" : insp.aiInfo.has ? String(insp.aiInfo.score) : insp.aiInfo.state === "loading" ? "\u2026" : "\u2013"
+                               color: insp.aiInfo.has ? theme.fg : theme.fg3; font.pixelSize: 28; font.weight: Font.DemiBold; font.letterSpacing: -0.84 }
                     }
                     Column {
                         x: 128; anchors.verticalCenter: ringBox.verticalCenter; width: parent.width - 144; spacing: 3
-                        Text { height: 19; verticalAlignment: Text.AlignVCenter; text: !insp.has ? "" : insp.cur.decision === "rej" ? "Reject" : insp.cur.ai >= 85 ? "Winner candidate" : insp.cur.ai >= 65 ? "Keep" : "Review"; color: theme.fg; font.pixelSize: 15; font.weight: Font.DemiBold }
-                        Text { height: 18.2; verticalAlignment: Text.AlignVCenter; text: !insp.has ? "" : insp.cur.ai >= 85 ? "High confidence" : insp.cur.ai >= 65 ? "Medium confidence" : "Low confidence, take a look"; color: theme.fg2; font.pixelSize: 13 }
+                        Text { width: parent.width; height: 19; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight; color: theme.fg; font.pixelSize: 15; font.weight: Font.DemiBold
+                               text: !insp.has ? "" : insp.aiInfo.has ? insp.aiInfo.call : insp.aiInfo.state === "loading" ? "Looking for AI results" : insp.aiInfo.state === "missing" ? "Not scored" : "Not analyzed yet" }
+                        Text { width: parent.width; verticalAlignment: Text.AlignVCenter; wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight; color: theme.fg2; font.pixelSize: 13
+                               text: !insp.has ? "" : insp.aiInfo.has ? insp.aiInfo.line : insp.aiInfo.state === "loading" ? "" : insp.aiInfo.state === "missing" ? "This photo isn\u2019t in the folder\u2019s AI results." : "Analyze the folder to score its photos." }
+                        Item { visible: insp.has && !insp.aiInfo.has && insp.aiInfo.state !== "loading"; width: 1; height: 8 }
+                        SButton { objectName: "aiAnalyzeButton"; visible: insp.has && !insp.aiInfo.has && insp.aiInfo.state !== "loading"; text: "Analyze folder\u2026"; h: 28; onClicked: insp.analyze() }
                     }
                 }
                 Item {
                     width: parent.width; height: 14 + 13 + 10 + whyCol.implicitHeight + 14 + 2     // padding, heading, gap, list, padding, two borders
                     Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
-                    Text { x: 16; y: 15; height: 13; verticalAlignment: Text.AlignVCenter; text: "WHY"; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
+                    Text { x: 16; y: 15; height: 13; verticalAlignment: Text.AlignVCenter; text: insp.aiInfo.has ? "WHY" : "WHAT WE MEASURED"; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
                     Column { id: whyCol; x: 16; y: 38; width: parent.width - 32; spacing: 2
                         Repeater {
-                            model: insp.has ? [
-                                [insp.cur.focus >= 70, insp.cur.focus >= 70 ? "Subject is sharp." : "Focus is a little soft.", "Focus score " + insp.cur.focus + " of 100."],
-                                [insp.cur.expo === "Balanced", insp.cur.expo + " exposure.", insp.cur.expo === "Bright" ? "Highlights close to clipping." : "Highlights well protected."],
-                                [true, "Strong composition.", "Horizon and subject sit on thirds."]] : []
+                            model: insp.whyRows
                             delegate: Item {
                                 required property var modelData
                                 width: whyCol.width; height: why.implicitHeight + 14
-                                readonly property color tone: modelData[0] ? theme.win : theme.rev
+                                readonly property color tone: modelData.good ? theme.win : theme.rev
                                 Rectangle { x: 0; y: 8; width: 16; height: 16; radius: 8; color: Qt.alpha(parent.tone, 0.22)
-                                    Item { x: 5; y: 3; width: 5.6; height: 8.6; rotation: 45
+                                    Item { visible: modelData.good; x: 5; y: 3; width: 5.6; height: 8.6; rotation: 45
                                         Rectangle { x: 4; width: 1.6; height: 8.6; color: tone }
-                                        Rectangle { y: 7; width: 5.6; height: 1.6; color: tone } } }
+                                        Rectangle { y: 7; width: 5.6; height: 1.6; color: tone } }
+                                    Rectangle { visible: !modelData.good; x: 7.2; y: 3.4; width: 1.6; height: 5.8; radius: 0.8; color: tone }       // "!" for a finding that is not good
+                                    Rectangle { visible: !modelData.good; x: 7.2; y: 10.4; width: 1.6; height: 1.6; radius: 0.8; color: tone } }
                                 Text { id: why; x: 26; y: 8; width: parent.width - 26; wrapMode: Text.WordWrap; textFormat: Text.StyledText; color: theme.fg2; font.pixelSize: 13; lineHeight: 18.2; lineHeightMode: Text.FixedHeight
-                                    text: "<font color='" + theme.fg + "'>" + modelData[1] + "</font> " + modelData[2] }
+                                    text: "<font color='" + theme.fg + "'>" + insp.esc(modelData.head) + "</font> " + insp.esc(modelData.detail) }
                             }
                         }
+                        Text { visible: insp.has && insp.whyRows.length === 0; width: whyCol.width; height: 32; verticalAlignment: Text.AlignVCenter; color: theme.fg3; font.pixelSize: 13
+                               text: insp.facts.failed ? "This photo couldn\u2019t be read." : "Measuring this photo\u2026" }
                     }
                 }
                 Item {
-                    width: parent.width; height: 103.3
+                    objectName: "aiGroup"
+                    visible: insp.aiInfo.has && insp.aiInfo.group !== undefined && insp.aiInfo.group.length > 1
+                    width: parent.width; height: visible ? 103.3 : 0
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
                     Text { x: 16; y: 14; height: 13; verticalAlignment: Text.AlignVCenter; text: "IN THIS GROUP"; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
+                    Text { visible: insp.has && insp.cur.aiCall === undefined; anchors.right: parent.right; anchors.rightMargin: 16; y: 14; height: 13; verticalAlignment: Text.AlignVCenter    // the mockup's sample group has no count
+                           text: insp.aiInfo.has ? insp.aiInfo.size + " photos" : ""; color: theme.fg3; font.pointSize: UiState.pt(10.5) }
                     Row { x: 16; y: 37; spacing: 4
-                        Repeater { model: 4
+                        Repeater { model: insp.aiInfo.has && insp.aiInfo.group !== undefined ? insp.aiInfo.group : []
                             delegate: Item {
+                                required property var modelData
                                 required property int index
+                                objectName: "aiGroupPhoto-" + index
+                                readonly property bool shown: modelData.row >= 0           // the photo is among the ones the grid shows (a filter may hide it)
                                 width: (insp.fullW - 32 - 12) / 4; height: width * 2 / 3
-                                readonly property var it: { void photos.revision; return photos.get((insp.row + index) % Math.max(1, photos.shown)) }
-                                Rectangle { visible: index === 0; x: -2; y: -2; width: parent.width + 4; height: parent.height + 4; radius: 8; color: theme.accent }   // box-shadow spread
-                                RoundClip { anchors.fill: parent; radius: 6; opacity: index === 0 ? 1 : 0.55
+                                Rectangle { visible: modelData.current; x: -2; y: -2; width: parent.width + 4; height: parent.height + 4; radius: 8; color: theme.accent }   // box-shadow spread
+                                RoundClip { anchors.fill: parent; radius: 6; opacity: modelData.current ? 1 : shown ? 0.55 : 0.3
                                     Rectangle { anchors.fill: parent; color: theme.s3 }
-                                    ThumbImage { anchors.fill: parent; bucket: 160; path: it && it.path ? it.path : "" } }
+                                    ThumbImage { anchors.fill: parent; bucket: 160; path: modelData.path } }
+                                HoverHandler { enabled: shown && !modelData.current; cursorShape: Qt.PointingHandCursor }
+                                TapHandler { enabled: shown && !modelData.current; onTapped: insp.pick(modelData.row) }
+                                Accessible.role: Accessible.Button; Accessible.name: modelData.current ? "This photo" : "Another photo of the group"
                             }
                         }
                     }

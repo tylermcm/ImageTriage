@@ -294,10 +294,13 @@ class ReferenceModel(QObject):
     def _help_view(self) -> dict:
         q = self._hq.strip().lower()
 
+        def blocks_of(topic: dict):
+            return C.settings_guide() if topic["id"] == "settings" else topic["blocks"]      # the Settings topic is written from the real settings
+
         def hits(topic: dict) -> int:
             if not q:
                 return 0
-            return sum(1 for block in topic["blocks"] if q in _blocks_text(block).lower())
+            return sum(1 for block in blocks_of(topic) if q in _blocks_text(block).lower())
 
         def match(topic: dict) -> bool:
             return not q or q in topic["title"].lower() or q in topic["lead"].lower() or hits(topic) > 0
@@ -320,7 +323,7 @@ class ReferenceModel(QObject):
         about = bool(cur and cur.get("about"))
         return {
             "query": self._hq, "topics": rows, "kind": "none" if cur is None else "about" if about else "article",
-            "title": cur["title"] if cur else "", "lead": cur["lead"] if cur else "", "blocks": list(cur["blocks"]) if cur and not about else [],
+            "title": cur["title"] if cur else "", "lead": cur["lead"] if cur else "", "blocks": list(blocks_of(cur)) if cur and not about else [],
             "version": _version(), "upColor": upd[0], "upTitle": upd[1], "upBody": upd[2], "upBtn": upd[3], "upPrimary": upd[4],
             "links": [dict(link) for link in C.ABOUT_LINKS],
         }

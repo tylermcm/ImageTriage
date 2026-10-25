@@ -81,6 +81,30 @@ TOPICS = (
     {"id": "about", "title": "About Image Triage", "icon": ICON["about"], "about": True, "sepBefore": True, "lead": "", "blocks": ()},
 )
 
+def settings_guide() -> tuple:
+    """The Settings topic's article, written from the settings schema itself (`settings_model.build_schema`) so it lists every setting that exists,
+    under the page it is on, with the same words as the Settings window. Built once."""
+    global _SETTINGS_GUIDE
+    if _SETTINGS_GUIDE is None:
+        from .settings_model import build_schema
+
+        blocks = [_p("Everything Image Triage lets you change is in one window: press Ctrl+, or the gear at the bottom of the left rail. Search at the top left finds a setting by "
+                     "what it does. Changes are kept when you press Save, and a dot beside a page means it has changes you have not saved. This guide lists every page and "
+                     "what each setting does.")]
+        for section in build_schema(()):
+            blocks.append(_h(section.name))
+            blocks.append(_p(section.intro))
+            for group in section.groups:
+                for row in group.rows:
+                    if row.type != "keys" and row.desc:
+                        blocks.append(_p(f"{row.label}: {row.desc}"))
+        blocks.append(_btn("Open Settings", "settings"))
+        _SETTINGS_GUIDE = tuple(blocks)
+    return _SETTINGS_GUIDE
+
+
+_SETTINGS_GUIDE: tuple | None = None
+
 ABOUT_LINKS = (
     {"id": "notes", "t": "Release notes", "d": ICON["note"]},
     {"id": "report", "t": "Report a problem", "d": ICON["warn"]},

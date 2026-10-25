@@ -2,8 +2,10 @@
 
 What is real here: the wording and the rules the cull follows (reason names, thresholds and their measured defaults from
 `cascade.model.CascadeSettings`, the CPU-ranking warning from `cascade.launch`), the ranking-on-CPU setting (`ai/cascade_rank_on_cpu`),
-and rejecting frames (the grid's own decision). What is **Sample**: the analysis itself (a scripted run that flags frames by a hash
-of their names, nothing is measured), the AI runtime / graphics card / model states and their "installing", and recent runs.
+rejecting frames (the grid's own decision), and everything the AI Center shows about this PC: whether the AI runtime is installed and starts, the
+graphics card, the Visual C++ runtime and the three models, and the buttons that install, repair and remove them (`ai_center.py`). What is **Sample**:
+the analysis itself (a scripted run that flags frames by a hash of their names, nothing is measured). In `--mock` and the tests the AI Center is
+the mockup's scripted one.
 See docs/qml_unwired.md, section "Cull window and AI Center".
 """
 from __future__ import annotations
@@ -12,10 +14,15 @@ import zlib
 
 from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 
+from ..ai_setup_plan import format_mb
 from ..app_identity import user_settings
+from ..cascade.launch import CPU_SECONDS_PER_FRAME_FAST, CPU_SECONDS_PER_FRAME_LAPTOP
 from ..cascade.model import CascadeSettings
+from ..cascade.rankers.spec import MANIQA, QREALIGN
+from .ai_center import STATE_WORDS, AiCenterBackend
 
 CPU_KEY = "ai/cascade_rank_on_cpu"
+SENS_KEY = "ai/cascade_default_strictness"          # new, the shell's: how strict the Cull window starts (the Widgets app has no such choice)
 _D = CascadeSettings()
 # Measured defaults ("Balanced"); the other two are presets around them.
 PRESETS = {
@@ -59,13 +66,21 @@ class CullModel(QObject):
     changed = Signal()
     gridChanged = Signal()
 
-    def __init__(self, photos, memory: bool = False, parent: QObject | None = None) -> None:
+    def __init__(self, photos, memory: bool = False, parent: QObject | None = None, ai: AiCenterBackend | None = None) -> None:
         super().__init__(parent)
         self._photos = photos
         self._memory = memory
         self._settings = None if memory else user_settings()
         cpu = False if memory else bool(self._settings.value(CPU_KEY, False, type=bool))
         self._s = self._defaults(cpu)
+        sens = "balanced" if memory else str(self._settings.value(SENS_KEY, "balanced", str))
+        if sens in PRESETS:
+            self._s.update(sens=sens, vals=dict(PRESETS[sens]))
+        self._ai = None if memory else (ai or AiCenterBackend(parent=self))     # what is really installed; None means the mockup's scripted AI Center
+        self._ai_state: dict | None = None
+        if self._ai is not None:                  # until the first look at the machine nothing is assumed (the scripted defaults say "installed")
+            self._ai_state = self._ai.state()
+            self._s.update(rt="checking", faceOk=False, gpu=False, vcOld=False, models={"quality": False, "appeal": False})
         self._flags: dict[str, str] = {}
         self._stacks: list[list[dict]] = []
         self._times: dict[str, str] = {}
@@ -78,11 +93,22 @@ class CullModel(QObject):
         self._view: dict = {}
         self._rev = 0
         self._rebuild()
+        if self._ai is not None:
+            self._ai.changed.connect(self._on_ai)
+            self._ai.refresh()
+
+    def _on_ai(self) -> None:
+        """What the machine really has changed (or an install moved on): the Cull window and the AI Center follow."""
+        a = self._ai.state()
+        self._ai_state = a
+        m = a["models"]
+        self._set(rt=a["rt"], rtp=a["pct"] / 100, vcOld=a["vcOld"], gpu=a["gpuUsable"], faceOk=m["face"]["state"] == "ready",
+                  models={"quality": m["quality"]["state"] == "ready", "appeal": m["appeal"]["state"] == "ready"})
 
     @staticmethod
     def _defaults(cpu: bool = False) -> dict:
         return {"window": "", "page": "prep", "sens": "balanced", "vals": dict(PRESETS["balanced"]), "tune": False, "eyes": True, "rank": False,
-                "cpuAsk": False, "cpuDefault": cpu, "rt": "ready", "rtp": 0.0, "vcOld": False, "gpu": False, "models": {"quality": True, "appeal": False},
+                "cpuAsk": False, "cpuDefault": cpu, "rt": "ready", "rtp": 0.0, "vcOld": False, "gpu": False, "faceOk": True, "models": {"quality": True, "appeal": False},
                 "stage": 0, "p": 0.0, "running": False, "done": False, "hidden": False, "ranked": False, "filter": "all", "sel": "", "restored": {},
                 "act": "reject", "inc": {r: True for r in REJECTS}, "applied": None, "runs": True, "back": False, "eyesRan": False}
 
@@ -189,7 +215,7 @@ class CullModel(QObject):
         cnt = lambda r: sum(1 for _row, x in flagged if x == r)
         apply_ids = self._apply_ids()
         rt_ready = s["rt"] == "ready"
-        eyes_on = rt_ready and s["eyes"]
+        eyes_on = rt_ready and s["faceOk"] and s["eyes"]
         rank_has = s["models"]["quality"] and s["models"]["appeal"]
         secs = max(2, round(n * 0.25))
         v = s["vals"]
@@ -208,10 +234,13 @@ class CullModel(QObject):
                      if rank_has else "Suggests the strongest frames in each stack. The Appeal model is not installed yet. ") + \
                     ("Graphics card found: about 1 second per frame." if s["gpu"] else "No usable graphics card, so it is slow: 7 seconds to over a minute per frame.")
         rt_desc = {"ready": "Finds blinks in group shots with a face model that runs on this PC, about 40 ms per frame. Cheap, so it runs whenever the AI runtime is set up.",
-                   "missing": "Needs the AI runtime, a one-time download of about a minute. The cleanup works without it.", "installing": "Setting up the AI runtime…",
-                   "error": "The AI runtime could not be set up."}[s["rt"]]
+                   "missing": "Needs the AI runtime, a one-time download. The cleanup works without it.", "installing": "Setting up the AI runtime…",
+                   "error": "The AI runtime could not be set up.", "checking": "Looking at what is installed…"}[s["rt"]]
+        if rt_ready and not s["faceOk"]:
+            rt_desc = "The face model is not installed yet (about 4 MB). Install it in the AI Center and the eyes check runs."
         rtp = round(s["rtp"] * 100)
-        rt_step = ("Downloading the Python runtime" if s["rtp"] < 0.3 else "Installing packages" if s["rtp"] < 0.75 else "Checking that it starts") + f" · {rtp}%"
+        rt_step = (self._ai_state["step"] if self._ai_state is not None else
+                   ("Downloading the Python runtime" if s["rtp"] < 0.3 else "Installing packages" if s["rtp"] < 0.75 else "Checking that it starts") + f" · {rtp}%")
         est = secs + (2 if eyes_on else 0) + (round(n * (0.8 if s["gpu"] else 7) * 0.4) if s["rank"] and (s["gpu"] or s["cpuDefault"]) and rank_has else 0)
         est_text = f"About {est} seconds for {n} photos" + (", eyes check included" if eyes_on else "") + ("" if s["rank"] else ". Ranking is off")
         stage_right = lambda i: "Done" if s["stage"] > i else (f"{round(s['p'] * n)} of {n}" if s["stage"] == i else ("Skipped" if i == 2 and not eyes_on else ""))
@@ -221,7 +250,9 @@ class CullModel(QObject):
         cur_stage = STAGES[min(3, s["stage"])]
         notes = []
         if not eyes_on:
-            notes.append("The eyes-closed check is switched off for this run." if rt_ready else "The eyes-closed check was skipped: the AI runtime is not set up. The cleanup runs without it.")
+            notes.append("The eyes-closed check is switched off for this run." if rt_ready and s["faceOk"] else
+                         "The eyes-closed check was skipped: the face model is not installed. The cleanup runs without it." if rt_ready else
+                         "The eyes-closed check was skipped: the AI runtime is not set up. The cleanup runs without it.")
         if not s["rank"]:
             notes.append("Ranking is off. Cleanup and stacks only.")
         # review
@@ -280,7 +311,7 @@ class CullModel(QObject):
             "window": s["window"], "page": page, "title": titles[page][0], "sub": titles[page][1], "folder": folder,
             "steps": [{"n": i + 1, "label": lab, "sub": sub, "state": "done" if (page == "done" and i == 3) or i < idx else ("cur" if i == idx else "")} for i, (lab, sub) in enumerate(steps)],
             "centerDot": "ok" if rt_ready else ("bad" if s["rt"] == "error" else "warn"),
-            "centerText": {"ready": "Ready", "missing": "Not set up", "installing": "Installing…", "error": "Needs attention"}[s["rt"]],
+            "centerText": {"ready": "Ready", "missing": "Not set up", "installing": "Installing…", "error": "Needs attention", "checking": "Checking…"}[s["rt"]],
             "eyes": {"on": eyes_on, "desc": rt_desc}, "rt": {"state": s["rt"], "pct": rtp, "step": rt_step,
                 "errTitle": "Windows needs a newer Visual C++ runtime",
                 "errBody": "The AI runtime could not start. This PC has Visual C++ 14.36 (2023); it needs 14.40 or newer. Install the latest x64 Redistributable, then check again."},
@@ -298,27 +329,95 @@ class CullModel(QObject):
             "applyNote": "Nothing is deleted. You can undo this." if s["act"] != "none" else "Nothing will change.",
             "doneTitle": done_title, "doneBody": done_body, "canUndo": bool(applied),
             "mini": s["running"] and s["hidden"] and s["window"] == "", "miniLine": f"{cur_stage} · {round(s['p'] * n)} of {n}",
-            "center": {"rtDot": "ok" if rt_ready else ("bad" if s["rt"] == "error" else "warn"), "rtState": {"ready": "Installed", "missing": "Not set up", "installing": "Installing…", "error": "Needs attention"}[s["rt"]],
+            "center": self._center(s, rt_ready, rtp, rt_step, flagged, applied) if self._ai_state is not None else {"rtDot": "ok" if rt_ready else ("bad" if s["rt"] == "error" else "warn"), "rtState": {"ready": "Installed", "missing": "Not set up", "installing": "Installing…", "error": "Needs attention", "checking": "Checking…"}[s["rt"]],
                        "rtInstalling": s["rt"] == "installing", "rtPct": rtp, "rtStep": rt_step,
                        "rtDesc": {"ready": "Python 3.13 with the packages the cull needs. It lives in Image Triage’s own folder and can be removed at any time.",
                                   "missing": "The cleanup works without it. The eyes-closed check and ranking need it: a one-time download of about a minute.", "installing": "Setting up…",
                                   "error": "It was installed but does not start on this PC."}[s["rt"]],
-                       "rtBtn": "Cancel" if s["rt"] == "installing" else ("Set up AI" if s["rt"] == "missing" else "Repair"), "rtPrimary": s["rt"] == "missing",
+                       "rtBtn": "Cancel" if s["rt"] == "installing" else ("Set up AI" if s["rt"] == "missing" else "Repair"), "rtPrimary": s["rt"] == "missing", "rtBtnShow": True,
                        "gpuDot": "ok" if s["gpu"] else "warn", "gpuState": "Found" if s["gpu"] else "Not found",
                        "gpuDesc": "NVIDIA GeForce RTX 4070. Ranking takes about 1 second per frame." if s["gpu"] else "Ranking would run on the CPU: 7 seconds to over a minute per frame. The cleanup and the eyes check do not need a graphics card.",
-                       "vcShow": s["vcOld"], "vcFound": "Visual C++ 14.36 (2023)",
-                       "models": [{"key": "face", "name": "Face model (eyes-closed check)", "icon": "eye", "on": rt_ready, "desc": "MediaPipe face landmarks. Runs on the CPU."},
-                                  {"key": "quality", "name": "Quality ranker", "icon": "bars", "on": s["models"]["quality"], "desc": "Scores technical quality. Downloaded on first use."},
-                                  {"key": "appeal", "name": "Appeal ranker", "icon": "spark", "on": s["models"]["appeal"], "desc": "Scores how appealing a frame is. Downloaded on first use; best with a graphics card."}],
-                       "cpu": s["cpuDefault"], "runs": self._runs(flagged, applied) if s["runs"] else [], "noRuns": not s["runs"]},
+                       "vcShow": s["vcOld"], "vcFound": "Visual C++ 14.36 (2023)", "vcNeeded": "14.40",
+                       "models": [self._sample_model(k, name, on, desc) for k, name, on, desc in (
+                           ("face", "Face model (eyes-closed check)", rt_ready, "MediaPipe face landmarks. Runs on the CPU."),
+                           ("quality", "Quality ranker", s["models"]["quality"], "Scores technical quality. Downloaded on first use."),
+                           ("appeal", "Appeal ranker", s["models"]["appeal"], "Scores how appealing a frame is. Downloaded on first use; best with a graphics card."))],
+                       "cpu": s["cpuDefault"], "defSens": s["sens"], "runs": self._runs(flagged, applied) if s["runs"] else [], "noRuns": not s["runs"]},
         }
         self._rev += 1
         self.changed.emit()
         self.gridChanged.emit()
 
+    def _center(self, s: dict, rt_ready: bool, rtp: int, rt_step: str, flagged, applied) -> dict:
+        """The AI Center for this PC: every state, size and sentence comes from `ai_center.AiCenterBackend.state()`."""
+        a = self._ai_state
+        rt = a["rt"]
+        gpu_s = round(MANIQA.seconds_per_frame_gpu + QREALIGN.seconds_per_frame_gpu)
+        if a["gpuUsable"]:
+            gpu_desc = f"{a['gpuName']}. Ranking takes about {gpu_s} second{'s' if gpu_s != 1 else ''} per frame."
+            gpu_tone = "ok"
+        elif a["gpuFound"] and a["variant"] == "cpu":
+            gpu_desc = f"{a['gpuName']} was found, but the installed AI runtime is the CPU build, so ranking runs on the CPU. Repair the runtime to add the graphics card build."
+            gpu_tone = "warn"
+        elif a["gpuFound"]:
+            gpu_desc = f"{a['gpuName']}. Set up AI installs the build that uses it, and ranking takes about {gpu_s} second{'s' if gpu_s != 1 else ''} per frame."
+            gpu_tone = "ok"
+        else:
+            gpu_desc = (f"Ranking would run on the CPU: {CPU_SECONDS_PER_FRAME_FAST} seconds to over a minute per frame. "
+                        "The cleanup and the eyes check do not need a graphics card.")
+            gpu_tone = "warn"
+        python = a["python"]
+        rt_desc = {"ready": f"Python {python} with the packages the cull needs. It lives in Image Triage’s own folder and can be removed at any time.",
+                   "missing": "The cleanup works without it. The eyes-closed check and ranking need it: a one-time download that Set up AI shows the size of first.",
+                   "installing": "Setting up. What was already downloaded is kept if you cancel.",
+                   "error": a["error"] or "It was installed but does not start on this PC." if not a["vcOld"] else
+                            f"It was installed but does not start: this PC has Visual C++ {a['vcFound']} and the runtime needs 14.40 or newer.",
+                   "checking": "Looking at what is installed…"}[rt]
+        models = []
+        for key, name, desc in (
+                ("face", "Face model (eyes-closed check)", "MediaPipe face landmarks. Runs on the CPU."),
+                ("quality", "Quality ranker", "Scores technical quality (MANIQA)."),
+                ("appeal", "Appeal ranker", "Scores how appealing a frame is (Q-ReAlign). Best with a graphics card.")):
+            m = a["models"][key]
+            size = format_mb(m["mb"]) if m["mb"] else ""
+            ready = m["state"] == "ready"
+            if m["busy"]:
+                state, tone = m["verb"] + "…", "warn"
+            elif m["error"]:
+                state, tone = "Failed", "bad"
+            else:
+                state, tone = STATE_WORDS.get(m["state"], "Not installed"), "ok" if ready else ("warn" if m["state"] == "missing" else "bad")
+            text = desc + (f" {size}." if size and key == "face" else (f" {size}, downloaded when you install it." if size else ""))
+            if m["error"]:
+                text = m["error"]
+            elif not ready and m["state"] not in ("missing",) and m["problem"]:
+                text = m["problem"] + " Repair downloads it again."
+            elif key == "face" and rt != "ready" and ready:
+                text += " It runs once the AI runtime is set up."
+            models.append({"key": key, "name": name, "on": ready, "desc": text, "state": state, "tone": tone, "size": size,
+                           "btn": "Cancel" if m["busy"] else ("Try again" if m["error"] else ("Install" if m["state"] == "missing" else ("Repair" if (not ready or key == "face") else "Remove"))),
+                           "primary": not m["busy"] and (m["state"] == "missing" or bool(m["error"])), "busy": m["busy"], "pct": m["pct"], "step": m["step"],
+                           "confirm": ready and key != "face" and not m["busy"], "locked": a["busy"] and not m["busy"]})
+        return {"rtDot": {"ready": "ok", "error": "bad"}.get(rt, "warn"),
+                "rtState": {"ready": "Installed", "missing": "Not set up", "installing": "Installing…", "error": "Needs attention", "checking": "Checking…"}[rt],
+                "rtInstalling": rt == "installing", "rtPct": a["pct"], "rtStep": a["step"], "rtDesc": rt_desc,
+                "rtBtn": "Cancel" if rt == "installing" else ("Set up AI" if rt == "missing" else "Repair"), "rtPrimary": rt == "missing", "rtBtnShow": rt != "checking" and not (a["busy"] and rt != "installing"),
+                "gpuDot": "ok" if gpu_tone == "ok" else "warn", "gpuState": "Found" if a["gpuFound"] else "Not found", "gpuDesc": gpu_desc,
+                "vcShow": a["vcOld"], "vcFound": f"Visual C++ {a['vcFound']}", "vcNeeded": "14.40",
+                "models": models, "cpu": s["cpuDefault"], "defSens": s["sens"] if self._settings is None else str(self._settings.value(SENS_KEY, "balanced", str)),
+                "runs": self._runs(flagged, applied) if s["runs"] else [], "noRuns": not s["runs"] or not self._runs(flagged, applied)}
+
+    @staticmethod
+    def _sample_model(key: str, name: str, on: bool, desc: str) -> dict:
+        """A model row of the scripted AI Center, in the shape the real one has."""
+        return {"key": key, "name": name, "on": on, "desc": desc, "state": "Installed" if on else "Not installed", "tone": "ok" if on else "warn",
+                "btn": ("Repair" if key == "face" else "Remove") if on else "Install", "primary": not on, "busy": False, "pct": 0, "step": "", "confirm": on and key != "face"}
+
     def _runs(self, flagged, applied) -> list[dict]:
         cur = {"folder": self._photos.folderName or "This folder", "when": "Today", "frames": len(self._rows()), "flagged": len(flagged) if self._s["done"] else 0,
                "did": (f"Applied: {len(applied['ids'])} marked Rejects" if applied else ("Waiting for you" if self._s["done"] else "Not run yet")), "current": True}
+        if self._ai is not None:                  # the real AI Center: only the run made in this window, not invented earlier ones
+            return [cur] if self._s["done"] or applied else []
         return [cur, {"folder": "Georgia trip / Batumi", "when": "Yesterday", "frames": 188, "flagged": 23, "did": "Restored 4, rejected 19", "current": False},
                 {"folder": "Wedding 2026", "when": "Mon 12 Oct", "frames": 1284, "flagged": 142, "did": "Marked 131 as Rejects", "current": False}]
 
@@ -400,11 +499,59 @@ class CullModel(QObject):
             self._settings.setValue(CPU_KEY, on)
         self._set(cpuDefault=on)
 
-    # -- setting up the runtime (scripted) ----------------------------------------------------------------------------------------
+    @Slot(str)
+    def setDefaultSens(self, key: str) -> None:
+        """The AI Center's "How strict by default": kept for the next run, and the Cull window moves to it too."""
+        if key in PRESETS:
+            if self._settings is not None:
+                self._settings.setValue(SENS_KEY, key)
+            self.setSens(key)
+
+    # -- the AI runtime and the models: real in the app (ai_center.py), scripted in --mock and the tests -------------------------------
+    @Slot(result="QVariantMap")
+    def setupPlan(self) -> dict:
+        """The words of the card that asks before the AI runtime is downloaded: what it is, and how big."""
+        repair = self._s["rt"] in ("ready", "error")
+        if self._ai is None:
+            mb, gpu = 2900, False
+        else:
+            plan = self._ai.runtime_plan()
+            mb, gpu = plan["mb"], plan["variant"] == "gpu"
+        size = format_mb(mb)
+        build = "the build that uses your graphics card" if gpu else "the CPU build"
+        if repair:
+            return {"title": "Repair the AI runtime?", "confirm": "Repair", "body": f"This installs it again from scratch: a download of about {size} ({build}, with PyTorch). Your photos, "
+                                                                                    "decisions and results are not touched, and the runtime you have now stays until the new one works."}
+        return {"title": "Set up AI?", "confirm": "Download and set up", "body": f"This downloads about {size} ({build}, with PyTorch for the ranking models, and the face model for the eyes check) "
+                                                                               "and installs it in Image Triage’s own folder. Nothing is uploaded, and you can remove it at any time."}
+
     @Slot()
     def setupRuntime(self) -> None:
+        if self._ai is not None:
+            if self._s["rt"] in ("ready", "error"):
+                self._ai.repairRuntime()
+            else:
+                self._ai.setupRuntime()
+            return
         self._set(rt="installing", rtp=0.0)
         self._install.start()
+
+    @Slot(str)
+    def modelAction(self, key: str) -> None:
+        """A model row's button: install, repair or remove (the real ones), or the mockup's scripted toggle."""
+        if self._ai is not None:
+            self._ai.modelAction(key)
+        else:
+            self.toggleModel(key)
+
+    def _model_removal_text(self, key: str) -> dict:
+        """What the confirm card says before a ranker's files are deleted."""
+        row = next((m for m in self._view.get("center", {}).get("models", []) if m["key"] == key), None)
+        return {"title": f"Remove the {row['name'] if row else 'model'}?", "body": f"This deletes its files from this PC{' and frees ' + row['size'] if row and row.get('size') else ''}. Your photos are not touched, and you can install it again any time."}
+
+    @Slot(str, result="QVariantMap")
+    def removeText(self, key: str) -> dict:
+        return self._model_removal_text(key)
 
     def _install_tick(self) -> None:
         p = self._s["rtp"] + 0.06
@@ -416,11 +563,17 @@ class CullModel(QObject):
 
     @Slot()
     def cancelSetup(self) -> None:
+        if self._ai is not None:
+            self._ai.cancel()
+            return
         self._install.stop()
         self._set(rt="missing", rtp=0.0)
 
     @Slot()
     def recheckRuntime(self) -> None:
+        if self._ai is not None:
+            self._ai.recheck()
+            return
         self._set(rt="ready", vcOld=False)
 
     @Slot(str)
@@ -434,6 +587,12 @@ class CullModel(QObject):
 
     @Slot()
     def clearRuns(self) -> None:
+        """Clear all results. In the app that forgets what this window found and applied (the frames you rejected stay rejected: your decisions are not results)."""
+        if self._ai is not None:
+            self._timer.stop()
+            self._flags = {}
+            self._set(runs=False, done=False, running=False, applied=None, restored={}, sel="", stage=0, p=0.0, page="prep", ranked=False)
+            return
         self._set(runs=False)
 
     # -- the run (scripted) ------------------------------------------------------------------------------------------------------
@@ -441,7 +600,7 @@ class CullModel(QObject):
     def start(self) -> None:
         s = self._s
         self._build_stacks()
-        self._set(page="run", running=True, done=False, stage=0, p=0.0, hidden=False, restored={}, applied=None, ranked=s["rank"], eyesRan=s["rt"] == "ready" and s["eyes"], sel="", filter="all")
+        self._set(page="run", running=True, done=False, stage=0, p=0.0, hidden=False, restored={}, applied=None, ranked=s["rank"], eyesRan=s["rt"] == "ready" and s["faceOk"] and s["eyes"], sel="", filter="all")
         self._timer.start()
 
     def _tick(self) -> None:

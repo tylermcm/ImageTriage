@@ -4,19 +4,19 @@
 > nothing behind its buttons. It was built UI first, on purpose, and the connecting work is deferred, not forgotten. Do not treat any
 > control as working unless this file marks it **Real**. A control that is missing from this file has not been checked either way.
 >
-> Planned order once the UI is done: (1) popout (`FullScreenPreview`, opened from the shell, kept as a separate Widgets window),
-> (2) editor on E (PhotoCraft host, with the validation protocol in `docs/photocraft_handoff.md`), (3) decisions, ratings and folder
-> loading written to the real stores, (4) the menus, the dialogs listed below, then the settings that nothing reads yet.
+> Planned order once the UI is done: (1) popout (`FullScreenPreview`, opened from the shell, kept as a separate Widgets window) **done,
+> see "Popout" below**, (2) editor on E (PhotoCraft host, with the validation protocol in `docs/photocraft_handoff.md`), (3) decisions,
+> ratings and folder loading written to the real stores, (4) the menus, the dialogs listed below, then the settings that nothing reads yet.
 > Whoever wires something must change its row here in the same commit.
 
 ## Windows and dialogs not built or not connected
 
 | Window | In the QML shell | Opens from |
 |---|---|---|
-| Popout / preview (`preview.py`) | not connected (stays a Widgets window) | Enter, Space, double-click, Open preview |
+| Popout / preview (`preview.py`) | **connected** (the Widgets viewer as it is, in its own window; see "Popout" below); no editor from it yet, decisions are still in memory | Enter, Space, double-click, Open preview, palette, photo menu |
 | Editor (PhotoCraft host) | not connected | E, Open in editor |
 | Settings | built, storage connected, most values not applied | gear, Ctrl+, |
-| Command palette | built, 23 of 53 commands run | Ctrl K |
+| Command palette | built, 25 of 53 commands run | Ctrl K |
 | Filter dialog and saved presets | built; applies decision, rating and RAW / JPEG only (see below) | Filters menu, palette |
 | Batch rename, resize, convert | built; **applying is not connected, no file changes** (see below) | Rename and Resize pins, palette, Ctrl+Shift+R / E / C |
 | PocketDrop page of the side panel | built; runs PocketDrop's own engine once `pocketdrop.dll` is rebuilt (see the PocketDrop section) | PocketDrop button, Share to phone, phone icon in Collections |
@@ -40,7 +40,7 @@ shell reacts to it yet.
 
 | Piece | How |
 |---|---|
-| Folder contents | `scanner.scan_folder` through `PhotoModel.loadFolder` (command line `--folder` only) |
+| Folder contents | `scanner.scan_folder` through `PhotoModel.loadFolder` (the Library page, the Open folder dialog, or `--folder`; a newer request replaces one still being read) |
 | Thumbnails | `ThumbService` generates with `load_image_for_display` and stores in the app's disk thumbnail cache (`cache.DiskThumbnailCache`), shown as `file://` URLs |
 | Settings values | `SettingsModel` reads and writes the **same `QSettings` store and keys** as `window.MainWindow` (`app_identity.user_settings()`), same defaults and limits (checked by `tests/test_qml_shell_settings.py` against the window's constants) |
 | Shortcut overrides | `ui.shortcuts.load_shortcut_overrides` / `save_shortcut_overrides` and `SHORTCUT_REGISTRY` |
@@ -53,19 +53,21 @@ shell reacts to it yet.
 | Element | Status | To connect |
 |---|---|---|
 | Brand icon | Visual | |
-| File / Review / View / AI | Visual (hover only, no menus) | the Widgets menu bar actions (`main_window_actions`) |
+| File, Review, View, AI | **Real menus** (`TopMenus.qml`; moving along the bar switches the open menu; Esc or a click below the bar closes). Each row runs the command the palette would (same ids, `Main.qml` `runCommand`) or is dimmed and says it is not connected yet. See "Top bar menus" below. They are hidden in the compact layout (900 px and narrower), as in the mockup | the Widgets entries marked not connected; the Widgets menus Edit, Library, Workflow, Tools and Settings have no button in the bar, their entries are spread over these four |
 | Help | **Real**: opens the Help menu (Help, Keyboard shortcuts, Browse Library, File associations, Check for updates, About) | |
 | Command search field, Ctrl K | Real (opens the command palette, see below) | |
 | Sun button | Real (sets and saves the appearance between Slate and Light) | |
 | Inspector button | Memory (`UiState.insp`, not remembered) | persist in `window/state` |
 | Side panel and inspector width | **Real**: drag the edge (double click resets); remembered in the settings store | |
-| Minimize / maximize / close | Real. The window is frameless and the bar is its title bar: drag moves it, double click maximizes, edges and corners resize (`WindowEdges.qml`) | the system drop shadow and rounded corners, Windows 11 snap layouts on the maximize button, dragging a maximized window to restore it |
+| Minimize / maximize / close | Real (`tests/test_qml_shell_window_buttons.py` clicks them). The window is frameless and the bar is its title bar: drag moves it, double click maximizes, edges and corners resize (`WindowEdges.qml`) | the system drop shadow and rounded corners, Windows 11 snap layouts on the maximize button, dragging a maximized window to restore it |
 
 ### Rail
 | Element | Status | To connect |
 |---|---|---|
-| Library, Faces, Collections, PocketDrop | Memory (switch the panel page) | |
-| Open folder, New folder | Visual | folder dialog and `folder_ops_controller`; today only `--folder` loads a folder |
+| Library, Faces, Collections, PocketDrop | Memory (switch the panel page). **Clicking the open one again hides the panel** and leaves the rail (its tooltip says "Hide Library"); any of them brings the panel back; the open page is not remembered between runs. **Icon-only** with the name as a tooltip (docs/nav_rail_label_clipping.md, option 4: "Collections" and "PocketDrop" did not fit); `Rail.showLabels` brings the labels back | |
+| The pinned buttons and the settings button | The pins shrink (40 down to 30 px) in a short window and the wheel scrolls them when they still do not fit; the settings button always keeps the bottom of the rail | |
+| Open folder | **Real**: the folder dialog (also Ctrl+O and the palette's Open Folder) | |
+| New folder | Visual | `folder_ops_controller` |
 | Undo | Visual | the undo stack (`file_ops`, window `_undo_stack`) |
 | Review menu (winner / keep / reject / clear) | Memory (decisions on the in-memory model) | `decision_store` per session |
 | View menu (filenames, badges) | Memory (also not saved) | `view/*` keys |
@@ -73,7 +75,8 @@ shell reacts to it yet.
 | Accept / Reject buttons | Memory | `decision_store`, move/delete via `file_ops` and the delete mode |
 | Sort, Columns menus | Memory (sort and density work on the model) | `view/columns`, details sort keys |
 | Share to phone | Real (opens PocketDrop with the current photo added) | |
-| Compare, Open preview, Winner ladder, Rename, Resize and convert, Open in editor, Keyboard shortcuts | Visual (Compare toggles a flag nothing reads) | `compare` mode, `preview` popout, `batch_rename_controller`, `export_jobs_controller`, `handoff_controller`/PocketDrop, PhotoCraft host |
+| Open preview | **Real** (opens the popout on the photo the grid is on) | |
+| Compare, Winner ladder, Rename, Resize and convert, Open in editor, Keyboard shortcuts | Visual (Compare toggles a flag nothing reads; the popout has its own Compare on C) | `compare` mode, winner ladder, `batch_rename_controller`, `export_jobs_controller`, `handoff_controller`/PocketDrop, PhotoCraft host |
 | Command palette pin | Real (opens the palette) | |
 | Rename and Resize and convert pins | Real (open the batch window) | |
 | "+" customise pinned buttons | Memory (pins are not saved between runs) | `workspace/toolbar_items`, `workspace/bar_state` |
@@ -82,8 +85,10 @@ shell reacts to it yet.
 ### Side panel
 | Page | Status | To connect |
 |---|---|---|
-| Library: search field | Visual | folder filter |
-| Library: Favorites, Drives (names, sizes), Folders tree | Sample (the tree does not navigate) | `drive_list_model`, `load_favorites`, recent folders, the real folder tree and its expansion rules (`view/single_drive_expansion`, `view/show_hidden_folders`) |
+| Library: Drives | **Real**: the Widgets `DriveListModel` (drive letters from the OS, each asked on a background thread, so a dead network drive never freezes the window), label, free space of total and the meter. A click shows that drive's photos and puts the tree on it | |
+| Library: Favorites | **Real**: the Widgets key `folders/favorites`, so both front ends share the list; right click to Add to or Remove from Favorites; a favorite provably gone from a local drive is not listed (it stays saved). The count shows once the folder has been opened this session | |
+| Library: Folders tree | **Real**: the folders of the open folder's drive, listed one level at a time on a worker thread (`scanner.scan_child_folders`, hidden ones per `view/show_hidden_folders`); the way down to the open folder is opened and scrolled into view; the chevron opens or closes a folder, the row opens it in the grid (a folder with no folders gets the folder icon once it has been listed); right click: Open, Favorites, Show in File Explorer. Opening a folder is remembered in the Widgets key `folders/recent_opened` | `view/single_drive_expansion` is not read (the tree is always one drive); a folder with thousands of sub-folders builds every row (no virtual list); counts are not made in the background, only for folders opened this session; no drag and drop, rename, delete or new folder from the tree |
+| Library: search field | **Real**: narrows the favorites and the folders the tree has loaded so far (a folder inside one that is closed is not searched) | search of unopened folders |
 | Faces: search, people list, All people…, scoping the grid to a person | Real when the open folder has a face index (the Widgets index file), Sample in `--mock`; see the collections section. The face index block shows the sample 86 % in `--mock` and a plain count otherwise (no scan progress yet) | `face_index` progress |
 | Collections: Winners, collection rows, +, menu, phone icon, dragging onto the PocketDrop button | Real (see the collections section). Winners opens the winners of the open folder only (the mockup says "every shoot": there is no library-wide decision store to read yet) | decision store across folders |
 | PocketDrop | **Real** with the rebuilt native module, otherwise Sample; see the PocketDrop section below | |
@@ -91,9 +96,12 @@ shell reacts to it yet.
 ### Grid
 | Element | Status | To connect |
 |---|---|---|
-| Decisions, ratings, AI scores on cards | Sample (derived from a hash of the file name) in folders, mockup values in `--mock` | `decision_store`, catalog, `ai_results` |
+| Decisions and ratings on cards | **Start empty** for a folder read from disk (unrated, no decision: nothing is invented); what you set lives in memory and is lost when the folder is closed. `--mock` shows the mockup's values | read and write the Widgets `decision_store` (step 3 of the plan), so ratings and decisions already made in the Widgets app appear |
+| AI scores (the grid's "AI score" sort, the inspector's ring) | **Real when the folder has a saved AI report**: the photo's percentile in its folder, the number the Widgets badge shows (`ai_scores.py`). A photo with no score is -1, and sorts last. Nothing else on a card shows it (the AI badges are not drawn, see "AI tags on cards") | the report is read when a folder opens; an analysis finishing does not refresh it yet (`aiScores.reload()` is the hook) |
+| The name on a card | **Real**: the file name without its extension (the format is the tag beside the stars); the inspector, menus and toasts still use the full name | |
+| The ink on a card (name, stars, format tag) | **Real**: light ink on a dark scrim, or dark ink on a light one when the bottom strip of the photo is bright (`ThumbService.tone` measures the cached thumbnail, only for the card shown; a rejected or flagged photo is measured as dimmed). Unknown until the thumbnail exists, then the usual look | the threshold (0.6 of sRGB luma) is a judgement, tune it on real shoots; a strip that is half bright and half dark gets one answer for the whole strip |
 | W / K / X / U / 1-5 keys | Memory | the shortcut registry (the shell binds fixed keys, not the user's overrides) |
-| Enter / Space / double-click | `openRequested(row)` is emitted and **nothing listens** | the popout (`preview.py`, `FullScreenPreview`) in its own window |
+| Enter / Space / double-click | **Real**: open the popout (`popout.py`), see "Popout" below | |
 | Selection | One cell only; no multi-select, range select, rubber band | `records_view`, selection model |
 | Drag and drop out of or into the grid | None | `dragdrop_controller` |
 | Context menu | Built (see the Context menus and toasts section); multi-select menus do not exist (one selected cell) | `context_menu_controller` |
@@ -106,11 +114,11 @@ shell reacts to it yet.
 ### Inspector
 | Element | Status | To connect |
 |---|---|---|
-| File name, "RAW + JPG", pixel size, camera, lens, exposure, focal length, capture time | Sample (hash derived) except the name and extension | `metadata.py` / EXIF reader |
-| Histogram | Sample (a fixed drawing) | real histogram from the preview image |
+| File name, "RAW + JPG", pixel size, camera, lens, exposure, focal length, capture time | Sample (hash derived) except the name and extension; **the pixel size beside the name is also made up**, so it can disagree with the real measurements on the Quality tab | `metadata.py` / EXIF reader |
+| Histogram (the box on the preview, and the Quality tab's) | **Real**: the selected photo's own counts, from `review_tools.build_histogram_stats` (the Widgets app's counting) on a 512 px read of the photo (a RAW is counted from its embedded preview), folded to 64 bars, on a worker thread (`histograms.py`) and cached per photo and modification time. The preview box is brightness; the Quality tab's is red, green and blue. Nothing is drawn until the counts arrive, or if the photo cannot be read | the bars are scaled by the tallest one, ignoring the pure black and pure white ends so a clipped photo does not flatten the rest; the Widgets app's exposure sentence is on the box as its accessible description only; no clipping warnings or probe |
 | Decision buttons, stars | Memory | `decision_store` |
-| Quality tab (focus, exposure, noise, motion blur) | Sample | `ai_results`, inspection stats in `preview.py` |
-| AI tab: score ring, verdict, reasons, "in this group" | Sample (group is the next three photos) | `ai_results`, `ai_why`, burst groups |
+| Quality tab (focus, exposure, noise, motion blur) | **Real**: the Widgets app's own `review_tools.build_inspection_stats` on the photo read at up to 1200 px (the embedded preview for a RAW), on a worker thread and only while the Quality or AI tab is showing (`inspection.py`, cached per photo and modification time). Focus and exposure use the cut-offs `ai_why` pins; the words are the Widgets readout's. "Inconclusive" when too few regions have texture to judge focus. A photo that cannot be read says so | the Widgets app measures its preview picture, which may be a different size than this one, so a score can differ by a few points; no neighbour prefetch, so the first look at a photo shows "Measuring..." for a moment |
+| AI tab: score ring, verdict, reasons, "in this group" | **Real for a folder with a saved AI report** (the `ranked_clusters_export.csv` the Widgets app writes, read with `ai_results.load_ai_bundle`): the ring is the folder percentile, the call is the bucket label ("Likely winner", "Needs review", ...), the reasons are `ai_why`'s (the AI's own sentences and its flags) followed by what was measured, and "in this group" is the photo's AI cluster, ranked, a click going to that photo. A folder with no report shows "Not analyzed yet", the measured findings under "What we measured", and an Analyze folder button (the Cull window, whose analysis is scripted). A photo that is not in the report says so | the shell cannot produce a report itself (the Analyze button is scripted), so this shows what the Widgets app analyzed; the group is the AI's cluster, not the burst grouping of `review_intelligence`; the Widgets app's catalog cache of the report is not used (the CSV is parsed on every folder open); the sample photos of `--mock` keep the mockup's numbers |
 | Previous / next | Real on the model | |
 
 ### Floating bar
@@ -130,7 +138,7 @@ shell reacts to it yet.
 
 ### Window and application
 - No saved window geometry or open tab (`window/geometry`, `window/state`); the panel and inspector widths are saved, and the window always starts maximized.
-- No folder session restore (`view/restore_folder_position`), recent folders, favorites.
+- **Session memory is real**: the shell reopens the folder that was open when it was closed (the Widgets key `window/last_folder`, unless `--folder` is given) and puts the grid back on the photo the person was on (`current` in `view/folder_state`, per folder; "Reopen folders where I left off" turns the photo part off). The photo is saved a moment after it changes and when the window closes. Not remembered: the open side panel tab, the inspector, the window's size and place, the grid's scroll position, filters, and the sort order (the Widgets app's own `sort` and `scroll` in that key are left as they are). Recent folders are recorded for the Widgets app and shown in the File menu.
 - No startup tasks: update check, catalog refresh, PhotoCraft prestart, AI setup prompt.
 - No application menu, tray, file associations, single-instance handoff, crash/diagnostics hooks (`app_logging`).
 - The Inter font is expected from the system. It is not bundled; on a machine without it the fallback is Segoe UI, and text metrics differ.
@@ -148,7 +156,7 @@ a test), shortcuts come from the shortcut registry with the user's overrides, an
 |---|---|---|
 | Search, ranking, highlight, recents, keyboard (up, down, Enter, Esc), mouse | Real | |
 | Command list | Partly real | 53 of the Widgets palette's ids, titles and keywords (`palette_model.py`). Left out: per-collection, per-saved-search, per-recipe, per-panel, per-sort and per-column commands, and the AI state filters, which need live window state |
-| Commands that run something | 23 of 53 | Settings, Advanced Filters and Save Current Search (both open the filters window), Rename Image, Batch Rename, Batch Resize and Batch Convert (all open the batch window), the three themes (Slate, Light, Midnight), sort by name and by AI score, Clear Filters, Compare, Reset Layout, Deliver / Handoff Builder (opens its window), Best-of-Set Auto Assembly, Create Virtual Collection, Add Selection To Collection and People (open their windows), Mark Winner, Reject, Move To _keep (this one only sets the Keep decision). Every other command is listed, can be chosen and is remembered as recent, **and then does nothing** |
+| Commands that run something | 25 of 53 | Settings, Open Folder, Open Preview (the popout), Advanced Filters and Save Current Search (both open the filters window), Rename Image, Batch Rename, Batch Resize and Batch Convert (all open the batch window), the three themes (Slate, Light, Midnight), sort by name and by AI score, Clear Filters, Compare, Reset Layout, Deliver / Handoff Builder (opens its window), Best-of-Set Auto Assembly, Create Virtual Collection, Add Selection To Collection and People (open their windows), Mark Winner, Reject, Move To _keep (this one only sets the Keep decision). Every other command is listed, can be chosen and is remembered as recent, **and then does nothing** |
 | On / Off tag | Compare only | The Widgets palette shows On or Off for ten toggles (zen, bursts, auto advance, performance logging ...); the shell has none of those states. In the demo data they are fixed |
 | "Current view" tag | Not shown | needs the grid / details view state |
 | Preview Commands and Zen Commands | Model only | the palette can show them (`UiState.paletteContext`), nothing opens it from the popout or zen mode: neither exists in the shell |
@@ -207,11 +215,13 @@ control *does* once saved:
 | UI gamma | Yes | No | the Reset button sets 1.00 |
 | Card style | Yes | No | the Widgets app restricts the allowed styles on small displays (`display_controller`); the shell offers all three |
 | Free smooth scrolling | Yes | No | the grid always scrolls with Qt's default |
-| Preview preload | Yes | No | no popout yet |
+| Preview preload | Yes | **Yes** (read by the popout when it is built, so a change applies after a restart) | |
 | Editor browsing, editor on demand, starts open, prestart, Camera Raw first | Yes | No | no PhotoCraft host in the shell. The "starts open" row is greyed when "on demand" is off, as in the dialog |
-| Advance after Accept or Reject | Yes | No | |
+| Advance after Accept or Reject | Yes | **In the popout only** (read when it is built); the grid's own keys do not advance | |
 | Group burst sequences, Stack similar burst frames | Yes | No | |
-| Show hidden folders, one branch expanded, watch folder, reopen where I left off | Yes | No | the tree and watcher do not exist in the shell |
+| Show hidden folders | Yes | **Yes**: the Library page's folder tree lists them, and the View menu switch reloads it | |
+| Reopen folders where I left off | Yes | **Yes**: the grid goes back to the photo (and the shell reopens the last folder) | the open tab and window place are not remembered |
+| One branch expanded, watch folder | Yes | No | the tree is always one drive, and there is no folder watcher |
 | Catalog cache | Yes | No | |
 | Catalog summary | n/a | **Sample** text | the Widgets dialog shows `scan.catalog_debug_summary()` |
 | AI batch size, detailed progress, CPU ranking | Yes | No | |
@@ -223,7 +233,7 @@ control *does* once saved:
 Also not done in the settings window:
 - **Cancel / Esc after a save**: Save keeps the window open ("All changes saved"); Cancel then closes without undoing the save (it only discards unsaved edits). The Widgets dialog's OK closes.
 - The title bar's minimize glyph is decorative; the window cannot be dragged or resized (it is an overlay in the main window, by design: that is what makes the blur live).
-- "Open the settings guide" does nothing; the version line shows `image_triage._version` (and a demo string in `--mock` mode), not PhotoCraft's version.
+- "Open the settings guide" opens Help on the **Settings guide**, an article written from the settings schema itself (every setting under its page, in the Settings window's own words, and searchable in Help); in a window too short for the whole help block only that link stays and the section list scrolls above it. The version line shows `image_triage._version` (and a demo string in `--mock` mode), not PhotoCraft's version.
 - Keyboard: Tab order is the declaration order with no focus ring styling beyond Qt's default; arrow keys do not move through the section list.
 - The Widgets dialog remembers its size and position (`dialogs/geometry`); the overlay always opens centred.
 - The Widgets "Reset" semantics per section differ: here Reset to defaults resets the visible section to the **documented defaults** and marks the rows unsaved.
@@ -281,8 +291,10 @@ collection badge in `PhotoGrid.qml`; models `collections_model.py`, `people_mode
 | Piece | Status | To connect |
 |---|---|---|
 | Collections: create, rename, colour, delete, add and remove photos, "New winners go here" | **Real**: `library_store.LibraryStore` (`library.sqlite3`) and the Widgets settings key `collections/also_add_to`, so the Widgets app sees the same collections. Names follow the Widgets dialog's rules | |
-| Collection icons (23 icons and a tint) | **Stored beside the Widgets data** (settings key `collections/icons`, id to icon); the Widgets app ignores them and shows its colour only | the store's schema (a column) |
-| "More…" colour button, "+" (your own icon), Export… in the collection menu | **Visual** | colour picker, icon import, `export` of a collection |
+| Collection icons (24 icons and a tint; the Icon tab is first and the default, and a new collection starts with the Landscape icon) | **Stored beside the Widgets data** (settings key `collections/icons`, id to icon); the Widgets app ignores them and shows its colour only | the store's schema (a column) |
+| "More…" colour button | **Real**: the system colour picker; the colour chosen is stored like any other (a #rrggbb string) and shows as an extra swatch | |
+| Export… in the collection menu | **Visual** | `export` of a collection |
+| "+" (your own icon) | Removed: the tile is now a 24th icon (Places) | icon import |
 | Opening a collection / Winners / a person / a shortlist | Real, as a view of the open folder: the grid shows the members that are in the folder being viewed. Photos of the collection that live in other folders are counted (the sidebar's number) but not shown. "Winners" is the open folder's winners, not "every shoot" | multi-folder grid, catalog |
 | W also adds to the collecting collection, B adds the photo you are on (or opens the picker when none collects) | Real | the shortcut registry (fixed keys here) |
 | Add All bar, Add All to Collection… picker, Recent first | Real (adds everything the grid shows) | |
@@ -312,9 +324,11 @@ in the shell `--ui "cullScene=cu-review"` (the same names).
 | "Rank on the CPU" default in AI Center | **Real**: the Widgets settings key `ai/cascade_rank_on_cpu` | |
 | **The analysis** (stages, progress, which frames are flagged, the numbers in the detail panel) | **Sample**: a scripted run; frames are flagged by a hash of their names (the mockup's five in `--mock`), stacks are fixed-size groups, metrics are the mockup's constants. Nothing is measured | `cascade.folder` / `CascadeRunTask` (stacks, pass 1, blink), progress and cancel from the task |
 | Frames you marked as winners are never flagged | Real rule | |
-| AI runtime, graphics card, models (installed, installing, Repair, Remove, Install), the Visual C++ message | **Sample states**; "Set up AI" runs a scripted install, the Visual C++ link opens the real Microsoft download | `ai_env`, `ai_model_store`, `ai_platform` (VC++ version check), hardware detection |
+| AI Center: the AI runtime, graphics card, Visual C++ runtime and the three models (face landmarker, MANIQA, Q-ReAlign) | **Real in the app** (`ai_center.py`; the mockup's scripted states in `--mock` and the tests). Detection: `ai_runtime_packages.load_ai_runtime_installation_status` (installed, with PyTorch), `ai_platform.nvidia_gpu_name` and `vc_runtime_version`, `ai_model_store.bundle_status` (size, pinned revision, file digests); it looks again after every job and on "Check again". A graphics card only counts when the GPU build of the runtime is installed. | the runtime "starts" check is the Visual C++ version, not an import of PyTorch (that runs inside the installer) |
+| AI Center buttons | **Real**: Set up AI and Repair run the Widgets installer (`packaging/ai_runtime_installer.py`, the same process Set Up AI runs) after a card that says the size, then install the face model; Install, Repair and Remove on a model use `ai_model_store.install_bundle` / `repair_bundle` / `uninstall_bundle` (hash checked, resumable, cancellable, a card asks before a ranker is deleted); one job at a time, in the background, with one honest percent (`ai_setup_progress.SetupProgress`); a failure says why and the next try clears it; Cancel keeps what was downloaded | the model licences are unverified for commercial use (`docs/ai_v5_model_hosting.md`); nothing has been downloaded by whoever wrote this: the tests use a fake |
+| How strict by default (AI Center) | **Real**: kept in the new key `ai/cascade_default_strictness`, and the Cull window starts there | the Careful and Strict presets are still invented |
 | Ranking and its "1st choice" marks | **Sample** (marks the first unflagged frame of a stack) | the ranker workers (`cascade/rankers`) |
-| Recent runs table | **Sample** (the current run plus two invented rows) | per-folder cached results |
+| Recent runs table | In the app: only the run made in this window (the analysis is scripted, so there is nothing real to list from earlier days); `--mock` keeps the mockup's two sample rows. **Clear all results** forgets what the window found and applied (rejected frames stay rejected) | a table of runs saved with each folder, once the analysis is real |
 | Reject (Apply > Mark as Rejects), Undo, Restore, Keep both | **Real**: the grid's own Reject decision, with Undo | |
 | **Move to the recycle bin** | **Not connected**: choosing it marks the frames as Rejects and says so | `file_ops` recycle bin, with paired files |
 | Show in grid | Real (moves the grid to that frame) | |
@@ -336,12 +350,50 @@ in the shell `--ui "cullScene=cu-review"` (the same names).
 | Show in File Explorer, Show folder in File Explorer | **Real** (`shell_actions`, Qt) | |
 | Refresh folder, Sort by, View (names, badges, size), Clear filters | **Real** (sort goes through the photo model) | |
 | Flagged banner: Why was it flagged? / Restore | **Real** (opens the Cull review at that frame; restoring un-flags it, with Undo) | the cull results are Sample |
-| **Open (Space), Open in editor (E)** | **Not connected**: asks the window, nothing listens; a toast says so | the popout, the PhotoCraft host |
+| Open (Space) | **Real**: opens the popout on that photo | |
+| **Open in editor (E)** | **Not connected**: asks the window, nothing listens; a toast says so | the PhotoCraft host |
 | **Open with…, Copy or move…** | **Not connected**: a toast says so (the recent destinations listed are Sample) | `shell_actions.open_with_default`, `file_ops`, recent destinations |
 | **Delete** | **Not connected**: a toast says so and nothing changes | recycle bin (`file_ops`), Undo |
 | Multi-photo menu, Photoshop entry, "Send to" actions, AI group entries | not offered (no multi-select, Photoshop is inside Open with, the new cull has no AI groups) | multi-select |
 | Toasts (up to three, 6 seconds, Undo / Show / Open settings buttons) | **Real** component; used by the menu only so far (the other windows do not raise toasts yet) | other actions |
 | "Open settings" and "Learn more" toast buttons from the mockup | Only in the mockup's samples | |
+
+## Popout
+
+`popout.py` (`PopoutHost`, the context property `popout`) opens the Widgets app's own full-screen viewer, `preview.FullScreenPreview`, from the grid. The viewer is the one `window.MainWindow` uses, unchanged, in its own window
+(the shell is therefore a `QApplication` now); the host does what `PreviewController` does for it, without the 53 `MainWindow` attributes that controller reaches into. Built 1.5 s after the window is up (as the Widgets app defers it) so the first Space is not slow.
+Tests: `tests/test_qml_shell_popout.py`.
+
+| Piece | Status | To connect |
+|---|---|---|
+| Opens from Enter, Space, double click, the rail's Open preview pin, the palette's Open Preview, the photo menu's Open | **Real** | |
+| Showing the photo, zoom, loupe, focus assist, FITS, edited-variant discovery, the info line and every key of the viewer | **Real** (the viewer's own code) | |
+| Stepping with the arrows and the filmstrip, the preload of the neighbours (`preview/preload_batch_size`, ahead first) | **Real** | |
+| Filmstrip thumbnails | **Real** (the shell's thumbnail cache, 192 x 128 files, asked for once and drawn when ready); its status dots follow Winner and Reject | the "in the active collection" bars are not drawn |
+| W, X, K and 0 to 5 in the viewer | **Real**: the photo model's decision and rating (the same in-memory sample data as the grid, so nothing is stored). W also adds to the collection that collects winners, B adds the photo to it (the picker is not offered here: with no collecting collection B does nothing). Advance after Accept or Reject is the setting | the decision store (step 3 of the plan) |
+| C (Compare) | **Real**: the viewer's own, showing the next photos beside the one open (as many as its count box says); auto bracket grouping is not connected, so a bracket is not picked as a group | `bursts` |
+| Where it opens | The screen the main window is on | |
+| After closing | The grid moves to the photo the popout ended on, as the Widgets app does; it is not told at every step | |
+| **E, Open in PhotoCraft** | **Not connected**: the viewer is told no editor exists, so E does nothing and browsing is the viewer alone | step 2 of the plan, `PreviewController`'s PhotoCraft half |
+| **Delete, M (move), T (tag)** | **Not connected**: the viewer asks, nothing listens (there is no toast over a full-screen window) | recycle bin and `file_ops`, tags |
+| Photoshop button | Disabled ("not found") | `shell_actions.open_in_photoshop` |
+| Preview Commands (the viewer's Command button) | **Not connected** | the palette lives in the main window, a different OS window |
+| Winner Ladder, the collections menu (right click on the viewer) | **Not connected** | `start_winner_ladder`, `catalog.populate_collections_menu` |
+| AI result, review summary and workflow lines in the viewer, colour profile (`apply_display_profile`), the shell's theme (it keeps the Widgets viewer's dark look) | Not given to it | `ai_results`, display profile, theme |
+
+## Top bar menus
+
+`TopMenus.qml`, one card (and a fly-out beside it) under the File, Review, View and AI buttons, in the Help menu's look; Help keeps `HelpMenu.qml`. Rows are built in `build()` from the Widgets menu bar (`ui/menus.py`).
+Tests: `tests/test_qml_shell_menubar.py`.
+
+| Menu | Real | Not connected (dimmed, a toast says so) |
+|---|---|---|
+| File | Open Folder (also Ctrl+O), recent folders (the Widgets key, newest five), Refresh Folder (F5), Show in File Explorer, Browse Library, Batch Rename, Resize and Convert (their windows; applying is still not connected), Deliver / Handoff Builder, Share to Phone, Settings, Exit | New Folder (and Empty Recycle Bin, not listed) |
+| Review | Open Preview, Mark Winner, Keep, Reject, Clear Decision, Rating 1 to 5 and none (in memory), Rename Selection, Add to Collection, New Collection, Show in File Explorer | Winner Ladder, Move, Delete, Open in Photoshop, Open in Editor |
+| View | Appearance (the ten modes), Thumbnail Size, Sort By, Show Photos (decision, RAW / JPG, Advanced Filters, Clear), Filenames, Decision Badges, Inspector, Side Panel, Show Hidden Folders (the Widgets setting, reloads the tree), Reset Layout | the Widgets' Columns, Details view, Zen mode, Burst groups and stacks, Compare mode, Auto-advance switches (not listed) |
+| AI | Analyze Folder (the cull window, whose analysis is scripted), AI Center, People, Best-of-Set Auto Assembly | Re-rank AI Culling, Sort into Semantic Folders, Next AI Pick (the Widgets' other AI entries are not listed) |
+
+The keys shown beside a row are the shell's own fixed keys or the registry's defaults, not the user's overrides (see "Grid").
 
 ## Tooling that is not part of the product
 - `--mock`, `--set`, `--ui`, `--click`, `--hover`, `--grab` are test hooks of `python -m image_triage.qml_shell`.
@@ -364,7 +416,7 @@ in the shell `--ui "refScene=hlp-start"` (the same names). `--mock` and the test
 | About: Release notes, Report a problem | **Real** (the default browser: the release's notes URL when the check found one, otherwise the repository's releases / new issue page) | |
 | About: Open the log folder | **Real** (`perf.performance_log_dir()`); in `--mock` a toast says it is sample data | |
 | About: **Licences and credits** | **Not connected**: a toast says so | a licences page (the LICENSE file and `docs/ai_model_licence_audit.md` hold the text) |
-| About: icon | `app_icon-v3.png` (the new icon, drawn from `scripts/icon_art/`) | |
+| About: icon | `app_icon-v4.png`: the mark in the top left of the bar, drawn by `scripts/icon_art/render.py` (it is also the window and taskbar icon of the shell, and the .ico the Widgets app and the installer use) | |
 | Keyboard shortcuts: the list | **Real, curated**: the shell's own keys plus the registry actions it has; a row tied to a registry action shows the key the user set (`ui/shortcuts.load_shortcut_overrides`) in blue | the shell binds fixed keys, not the user's overrides (also noted under Grid) |
 | Keyboard shortcuts: search | Real (matches the action, the category and an exact key name) | |
 | Change shortcuts in Settings | Opens the Settings window (the shortcuts section of the settings window is itself a sample list) | the registry editor |

@@ -217,8 +217,7 @@ class MenuModel(QObject):
             self.uiRequest.emit("share", row)
             t.push("info", f"Added {name} to PocketDrop", "Scan the code on your phone to download it.", "Show", lambda: self.uiRequest.emit("showDrop", 0))
         elif key == "open":
-            self.uiRequest.emit("open", row)
-            self._not_connected("Opening a photo")
+            self.uiRequest.emit("open", row)          # the popout (Main.qml hands it to `popout`)
         elif key == "edit":
             self.uiRequest.emit("edit", row)
             self._not_connected("The editor")
