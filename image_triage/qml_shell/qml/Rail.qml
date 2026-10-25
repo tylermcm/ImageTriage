@@ -92,7 +92,7 @@ Rectangle {
         Item { width: 40; height: 9; Rectangle { anchors.centerIn: parent; width: 28; height: 1; radius: 1; color: Qt.alpha(theme.lift, 0.20) } }
 
         RailButton { visible: UiState.pins.open; icon: "openFolder"; tip: "Open folder"; onClicked: UiState.openFolderRequested() }
-        RailButton { visible: UiState.pins.undo; icon: "undo"; tip: "Undo" }
+        RailButton { visible: UiState.pins.undo; icon: "undo"; tip: "Undo"; opacity: photos.canUndo ? 1 : 0.45; onClicked: UiState.undoRequested() }
         RailButton {
             visible: UiState.pins.review; icon: "check"; tip: "Review"; menu: true; on: reviewMenu.opened
             onClicked: UiState.setMenu("review")

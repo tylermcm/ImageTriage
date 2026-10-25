@@ -317,6 +317,7 @@ Window {
         else if (id === "file.refresh_folder") { if (libraryNav.openPath !== "") libraryNav.openFolder(libraryNav.openPath) }
         else if (id === "file.reveal_folder") libraryNav.reveal(libraryNav.openPath)
         else if (id === "file.browse_library") reference.open("lib")
+        else if (id === "edit.undo") { var what = photos.undo(); toasts.show(what !== "" ? "success" : "info", what !== "" ? "Undid the " + what : "Nothing to undo", "") }
         else if (id === "file.exit") win.close()
         else if (id === "workflow.share_to_phone") { pocketDrop.refreshLibrary(grid.view.currentIndex); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
         else if (id === "review.clear_decision") photos.setDecision(grid.view.currentIndex, "")
@@ -337,6 +338,8 @@ Window {
     Connections { target: cmdPalette; function onExecuted(id) { win.runCommand(id) } }
     TopMenus { id: topMenus; onRun: (id) => win.runCommand(id) }
     Shortcut { sequence: "F5"; onActivated: win.runCommand("file.refresh_folder") }
+    Shortcut { sequence: "Ctrl+Z"; onActivated: win.runCommand("edit.undo") }
+    Connections { target: UiState; function onUndoRequested() { win.runCommand("edit.undo") } }
     Connections { target: UiState; function onCompareChanged() { cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off") } }
     Component.onCompleted: {
         cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off")

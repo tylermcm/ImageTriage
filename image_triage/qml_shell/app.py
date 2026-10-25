@@ -97,6 +97,11 @@ def main(argv: list[str] | None = None) -> int:
     menu = MenuModel(photos, collections, cull, toasts, memory=bool(args.mock), parent=app)
     pocket_drop = PocketDropModel(photos, memory=bool(args.mock), parent=app, collections=collections)
     reference = ReferenceModel(photos, toasts, memory=bool(args.mock), parent=app)
+    if not args.mock:
+        from .decision_bridge import DecisionBridge
+
+        decisions = DecisionBridge(photos, toasts=toasts, parent=app)
+        app.aboutToQuit.connect(decisions.flush)
     app.aboutToQuit.connect(batch.cleanup)
     app.aboutToQuit.connect(pocket_drop.shutdown)
 

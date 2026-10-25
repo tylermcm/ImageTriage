@@ -5,6 +5,7 @@ import QtQuick
 QtObject {
     property string tab: "lib"          // "" = side panel closed
     property bool insp: true
+    signal undoRequested()                  // the rail's Undo button: Main runs the Undo command
     property real panelW: 300               // widths the user dragged the side panel and the inspector to (Main clamps them to what fits)
     property real inspW: 352
     readonly property real panelMin: 260    // narrower than this the library rows, faces and PocketDrop cards would clip

@@ -6,14 +6,14 @@
 >
 > Planned order once the UI is done: (1) popout (`FullScreenPreview`, opened from the shell, kept as a separate Widgets window) **done,
 > see "Popout" below**, (2) editor on E (PhotoCraft host, with the validation protocol in `docs/photocraft_handoff.md`), (3) decisions,
-> ratings and folder loading written to the real stores, (4) the menus, the dialogs listed below, then the settings that nothing reads yet.
+> ratings (**done**) and folder loading written to the real stores, (4) the menus, the dialogs listed below, then the settings that nothing reads yet.
 > Whoever wires something must change its row here in the same commit.
 
 ## Windows and dialogs not built or not connected
 
 | Window | In the QML shell | Opens from |
 |---|---|---|
-| Popout / preview (`preview.py`) | **connected** (the Widgets viewer as it is, in its own window; see "Popout" below); no editor from it yet, decisions are still in memory | Enter, Space, double-click, Open preview, palette, photo menu |
+| Popout / preview (`preview.py`) | **connected** (the Widgets viewer as it is, in its own window; see "Popout" below); no editor from it yet, decisions and ratings are saved to the decision store | Enter, Space, double-click, Open preview, palette, photo menu |
 | Editor (PhotoCraft host) | not connected | E, Open in editor |
 | Settings | built, storage connected, most values not applied | gear, Ctrl+, |
 | Command palette | built, 25 of 53 commands run | Ctrl K |
@@ -68,11 +68,11 @@ shell reacts to it yet.
 | The pinned buttons and the settings button | The pins shrink (40 down to 30 px) in a short window and the wheel scrolls them when they still do not fit; the settings button always keeps the bottom of the rail | |
 | Open folder | **Real**: the folder dialog (also Ctrl+O and the palette's Open Folder) | |
 | New folder | Visual | `folder_ops_controller` |
-| Undo | Visual | the undo stack (`file_ops`, window `_undo_stack`) |
-| Review menu (winner / keep / reject / clear) | Memory (decisions on the in-memory model) | `decision_store` per session |
+| Undo (rail button, Ctrl+Z, palette) | **Real for decisions and ratings** (up to 200 steps in the open folder, saved again as they are undone); file operations (delete, move) have no undo yet | the undo stack (`file_ops`, window `_undo_stack`) for files |
+| Review menu (winner / keep / reject / clear) | **Real**: saved to the Widgets decision store (see the Grid section) | |
 | View menu (filenames, badges) | Memory (also not saved) | `view/*` keys |
 | Filters menu (rating, format, clear) | Memory ("Advanced filters…" opens the filters window, see below) | `filtering` |
-| Accept / Reject buttons | Memory | `decision_store`, move/delete via `file_ops` and the delete mode |
+| Accept / Reject buttons | **Real** as decisions (saved); they do not move or delete files | move/delete via `file_ops` and the delete mode |
 | Sort, Columns menus | Memory (sort and density work on the model) | `view/columns`, details sort keys |
 | Share to phone | Real (opens PocketDrop with the current photo added) | |
 | Open preview | **Real** (opens the popout on the photo the grid is on) | |
@@ -96,11 +96,11 @@ shell reacts to it yet.
 ### Grid
 | Element | Status | To connect |
 |---|---|---|
-| Decisions and ratings on cards | **Start empty** for a folder read from disk (unrated, no decision: nothing is invented); what you set lives in memory and is lost when the folder is closed. `--mock` shows the mockup's values | read and write the Widgets `decision_store` (step 3 of the plan), so ratings and decisions already made in the Widgets app appear |
+| Decisions and ratings on cards | **Real**: read from the Widgets decision store when a folder opens (`decision_bridge.py`: the same `DecisionStore`, the session named by the "Profile preset" setting) and saved a moment after every change through the Widgets' own `AnnotationPersistenceQueue` (the database row and the XMP sidecar). A photo that was never decided starts empty; a file that changed since it was decided (size or time) loses its saved decision, as in the Widgets app. Winner is the store's winner flag, Reject its reject flag, **Keep is the tag `keep`** (the Widgets' Keep moves a file to a _keep folder, which this is not; other tags, the Photoshop flag and the review round are left alone). `--mock` shows the mockup's values and saves nothing | a Winners scope across folders (`DecisionStore.winner_paths`) |
 | AI scores (the grid's "AI score" sort, the inspector's ring) | **Real when the folder has a saved AI report**: the photo's percentile in its folder, the number the Widgets badge shows (`ai_scores.py`). A photo with no score is -1, and sorts last. Nothing else on a card shows it (the AI badges are not drawn, see "AI tags on cards") | the report is read when a folder opens; an analysis finishing does not refresh it yet (`aiScores.reload()` is the hook) |
 | The name on a card | **Real**: the file name without its extension (the format is the tag beside the stars); the inspector, menus and toasts still use the full name | |
 | The ink on a card (name, stars, format tag) | **Real**: light ink on a dark scrim, or dark ink on a light one when the bottom strip of the photo is bright (`ThumbService.tone` measures the cached thumbnail, only for the card shown; a rejected or flagged photo is measured as dimmed). Unknown until the thumbnail exists, then the usual look | the threshold (0.6 of sRGB luma) is a judgement, tune it on real shoots; a strip that is half bright and half dark gets one answer for the whole strip |
-| W / K / X / U / 1-5 keys | Memory | the shortcut registry (the shell binds fixed keys, not the user's overrides) |
+| W / K / X / U / 1-5 keys | **Real** (saved, see above) | the shell binds fixed keys, not the user's overrides (the shortcut registry) |
 | Enter / Space / double-click | **Real**: open the popout (`popout.py`), see "Popout" below | |
 | Selection | One cell only; no multi-select, range select, rubber band | `records_view`, selection model |
 | Drag and drop out of or into the grid | None | `dragdrop_controller` |
@@ -116,7 +116,7 @@ shell reacts to it yet.
 |---|---|---|
 | File name, "RAW + JPG", pixel size, camera, lens, exposure, focal length, capture time | Sample (hash derived) except the name and extension; **the pixel size beside the name is also made up**, so it can disagree with the real measurements on the Quality tab | `metadata.py` / EXIF reader |
 | Histogram (the box on the preview, and the Quality tab's) | **Real**: the selected photo's own counts, from `review_tools.build_histogram_stats` (the Widgets app's counting) on a 512 px read of the photo (a RAW is counted from its embedded preview), folded to 64 bars, on a worker thread (`histograms.py`) and cached per photo and modification time. The preview box is brightness; the Quality tab's is red, green and blue. Nothing is drawn until the counts arrive, or if the photo cannot be read | the bars are scaled by the tallest one, ignoring the pure black and pure white ends so a clipped photo does not flatten the rest; the Widgets app's exposure sentence is on the box as its accessible description only; no clipping warnings or probe |
-| Decision buttons, stars | Memory | `decision_store` |
+| Decision buttons, stars | **Real** (saved) | |
 | Quality tab (focus, exposure, noise, motion blur) | **Real**: the Widgets app's own `review_tools.build_inspection_stats` on the photo read at up to 1200 px (the embedded preview for a RAW), on a worker thread and only while the Quality or AI tab is showing (`inspection.py`, cached per photo and modification time). Focus and exposure use the cut-offs `ai_why` pins; the words are the Widgets readout's. "Inconclusive" when too few regions have texture to judge focus. A photo that cannot be read says so | the Widgets app measures its preview picture, which may be a different size than this one, so a score can differ by a few points; no neighbour prefetch, so the first look at a photo shows "Measuring..." for a moment |
 | AI tab: score ring, verdict, reasons, "in this group" | **Real for a folder with a saved AI report** (the `ranked_clusters_export.csv` the Widgets app writes, read with `ai_results.load_ai_bundle`): the ring is the folder percentile, the call is the bucket label ("Likely winner", "Needs review", ...), the reasons are `ai_why`'s (the AI's own sentences and its flags) followed by what was measured, and "in this group" is the photo's AI cluster, ranked, a click going to that photo. A folder with no report shows "Not analyzed yet", the measured findings under "What we measured", and an Analyze folder button (the Cull window, whose analysis is scripted). A photo that is not in the report says so | the shell cannot produce a report itself (the Analyze button is scripted), so this shows what the Widgets app analyzed; the group is the AI's cluster, not the burst grouping of `review_intelligence`; the Widgets app's catalog cache of the report is not used (the CSV is parsed on every folder open); the sample photos of `--mock` keep the mockup's numbers |
 | Previous / next | Real on the model | |
@@ -370,7 +370,7 @@ Tests: `tests/test_qml_shell_popout.py`.
 | Showing the photo, zoom, loupe, focus assist, FITS, edited-variant discovery, the info line and every key of the viewer | **Real** (the viewer's own code) | |
 | Stepping with the arrows and the filmstrip, the preload of the neighbours (`preview/preload_batch_size`, ahead first) | **Real** | |
 | Filmstrip thumbnails | **Real** (the shell's thumbnail cache, 192 x 128 files, asked for once and drawn when ready); its status dots follow Winner and Reject | the "in the active collection" bars are not drawn |
-| W, X, K and 0 to 5 in the viewer | **Real**: the photo model's decision and rating (the same in-memory sample data as the grid, so nothing is stored). W also adds to the collection that collects winners, B adds the photo to it (the picker is not offered here: with no collecting collection B does nothing). Advance after Accept or Reject is the setting | the decision store (step 3 of the plan) |
+| W, X, K and 0 to 5 in the viewer | **Real**: the photo model's decision and rating (the grid's own, so saved to the decision store). W also adds to the collection that collects winners, B adds the photo to it (the picker is not offered here: with no collecting collection B does nothing). Advance after Accept or Reject is the setting | the decision store (step 3 of the plan) |
 | C (Compare) | **Real**: the viewer's own, showing the next photos beside the one open (as many as its count box says); auto bracket grouping is not connected, so a bracket is not picked as a group | `bursts` |
 | Where it opens | The screen the main window is on | |
 | After closing | The grid moves to the photo the popout ended on, as the Widgets app does; it is not told at every step | |

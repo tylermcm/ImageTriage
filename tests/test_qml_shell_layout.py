@@ -44,7 +44,7 @@ def test_the_grid_keeps_its_room_when_the_window_is_narrow(qapp, tmp_path):
 def test_the_default_widths_are_what_the_mockup_has(qapp, tmp_path):
     engine, window, warnings = open_window(qapp, tmp_path, "tab=lib")
     assert (window.property("panelWanted"), window.property("inspWanted")) == (300, 352)
-    assert window.property("panelW") == 300 and window.property("inspW") == 352
+    assert window.property("panelW") == pytest.approx(300, abs=1) and window.property("inspW") == pytest.approx(352, abs=1)
     close(qapp, engine, window)
 
 

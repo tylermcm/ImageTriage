@@ -1,7 +1,8 @@
 """The photo list the QML grid shows: real files from the existing scanner, with decision, rating and sort/filter state.
 
-Decisions and ratings are not read from the decision store yet (a real folder starts with none); a photo's AI score is -1 until the folder's saved
-AI report has been read (`ai_scores.py` calls `rescore`). The shape (roles, filtering, sorting, counts) is what the real stores plug into.
+A real folder's decisions and ratings come from the Widgets decision store through `set_annotation_loader` (decision_bridge.py), and every change is
+announced on `annotationChanged` so the bridge can save it; `undo` steps back through the changes made in this folder. A photo's AI score is -1 until
+the folder's saved AI report has been read (`ai_scores.py` calls `rescore`).
 """
 from __future__ import annotations
 
@@ -60,11 +61,15 @@ class PhotoModel(QAbstractListModel):
     folderChanged = Signal()
     scopeChanged = Signal()
     loadingChanged = Signal()
+    annotationChanged = Signal(object)      # a row's decision or rating changed (the row dict, with its scanner record): save it
+    undoChanged = Signal()
     _loaded = Signal(list, str, int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._all: list[dict] = []
+        self._annotation_loader = None      # fn(records) -> {path: {"decision", "rating", "annotation"}}, called off the UI thread
+        self._history: list[dict] = []      # what undo steps back through: {"path", "decision": (before, after), "rating": (before, after)}
         self._rows: list[dict] = []
         self._filter = "all"
         self._min_rate = 0
@@ -130,16 +135,23 @@ class PhotoModel(QAbstractListModel):
                 records = [r for r in scan_folder(folder) if not r.is_folder]
             except Exception:
                 records = []
+            saved: dict = {}
+            if self._annotation_loader is not None and records:
+                try:
+                    saved = self._annotation_loader(records)
+                except Exception:                      # an unreadable store: the folder opens with nothing decided
+                    saved = {}
             rows = []
             for record in records:
                 suffix = Path(record.path).suffix.lower()
-                # Nothing is rated or decided until the user does it (the decision store is not read yet: docs/qml_unwired.md), and nothing
-                # has an AI score (-1) until the folder's saved AI report is read
-                decision, rating, ai = "", 0, -1
+                # What the decision store holds for the photo (nothing is rated or decided until the user does it), and no AI score (-1)
+                # until the folder's saved AI report is read
+                mine = saved.get(record.path) or {}
+                decision, rating, ai = mine.get("decision", ""), mine.get("rating", 0), -1
                 rows.append({
                     "path": record.path, "name": record.name, "ext": suffix.lstrip(".").upper() or "FILE",
                     "raw": suffix in RAW_SUFFIXES, "decision": decision, "rating": rating, "ai": ai,
-                    "companions": tuple(record.companion_paths), "record": record,
+                    "companions": tuple(record.companion_paths), "record": record, "annotation": mine.get("annotation"),
                 })
             self._loaded.emit(rows, folder, token)
 
@@ -162,6 +174,9 @@ class PhotoModel(QAbstractListModel):
         self._all = rows
         if folder != self._folder:
             self._scope_kind, self._scope_id, self._scope_pred = "", "", None      # a collection or person is not a folder: opening one leaves it
+        if folder != self._folder:
+            self._history = []
+            self.undoChanged.emit()
         self._folder = folder
         self._loading = False
         self._rebuild()
@@ -267,26 +282,65 @@ class PhotoModel(QAbstractListModel):
         self._filter, self._min_rate, self._fmt, self._adv = "all", 0, "all", None
         self._rebuild()
 
+    def set_annotation_loader(self, loader) -> None:
+        """`loader(records)` returns {path: {"decision", "rating", "annotation"}} for the photos the decision store knows; it runs on the scan thread."""
+        self._annotation_loader = loader
+
+    def _record_change(self, target: dict, decision: tuple, rating: tuple) -> None:
+        if decision[0] == decision[1] and rating[0] == rating[1]:
+            return
+        self._history.append({"path": target["path"], "decision": decision, "rating": rating})
+        del self._history[:-200]
+        self.undoChanged.emit()
+        if target.get("record") is not None:
+            self.annotationChanged.emit(target)
+
     @Slot(int, str)
     def setDecision(self, row: int, decision: str) -> None:
         if not 0 <= row < len(self._rows):
             return
         target = self._rows[row]
-        target["decision"] = "" if target["decision"] == decision else decision
+        before = target["decision"]
+        target["decision"] = "" if before == decision else decision
         index = self.index(row)
         self.dataChanged.emit(index, index, [DecisionRole])
         self.countsChanged.emit()
         self._bump()
+        self._record_change(target, (before, target["decision"]), (target["rating"],) * 2)
 
     @Slot(int, int)
     def setRating(self, row: int, value: int) -> None:
         if not 0 <= row < len(self._rows):
             return
         target = self._rows[row]
-        target["rating"] = 0 if target["rating"] == value else value
+        before = target["rating"]
+        target["rating"] = 0 if before == value else value
         index = self.index(row)
         self.dataChanged.emit(index, index, [RatingRole])
         self._bump()
+        self._record_change(target, (target["decision"],) * 2, (before, target["rating"]))
+
+    canUndo = Property(bool, lambda self: bool(self._history), notify=undoChanged)
+
+    @Slot(result=str)
+    def undo(self) -> str:
+        """Step back the last decision or rating change made in this folder; returns what it undid ("" when there is nothing to undo)."""
+        while self._history:
+            step = self._history.pop()
+            target = next((r for r in self._all if r["path"] == step["path"]), None)
+            if target is None:
+                continue                           # the photo is gone (moved or deleted): its change cannot be taken back
+            target["decision"], target["rating"] = step["decision"][0], step["rating"][0]
+            self._rebuild()
+            self.countsChanged.emit()
+            self._bump()
+            self.undoChanged.emit()
+            if target.get("record") is not None:
+                self.annotationChanged.emit(target)
+            what = "decision" if step["decision"][0] != step["decision"][1] else "rating"
+            return f"{what} of {target['name']}"
+        self.undoChanged.emit()
+        return ""
 
     def _bump(self) -> None:
         self._revision += 1
@@ -311,7 +365,8 @@ class PhotoModel(QAbstractListModel):
             group = [{"path": self._rows[(row + n) % len(self._rows)]["path"], "row": (row + n) % len(self._rows), "current": n == 0} for n in range(4)]
             detail.update(mock, measured=sample_measured(mock["focus"], mock["expo"], mock["noise"]),
                           aiCall=sample_ai(item["ai"], item["decision"], mock["focus"], mock["expo"], group))
-        detail.pop("record", None)           # a Python object: QML has no use for it
+        detail.pop("record", None)           # Python objects: QML has no use for them
+        detail.pop("annotation", None)
         return detail
 
     def all_rows(self) -> list[dict]:

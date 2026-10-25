@@ -133,6 +133,10 @@ Mockup `scripts/qml_parity/help.dc.html` with `harness_help.html`; in the shell 
 `HandoffWindow.qml` and `TransferCards.qml`, models `handoff_model.py` and `transfer_model.py`. Mockup: `scripts/qml_parity/handoff.dc.html` (`?ho=1&hrecipe=saved:wedding_handoff`, `?tx=confirm|progress|done&txk=copy|move|wf&txp=0.42`);
 in the shell `--ui "handoffOpen=true;hoRecipe=saved:wedding_handoff"` and `--ui "txState=progress;txKind=copy;txP=0.42"`. Running a recipe is not connected (docs/qml_unwired.md).
 
+## Decisions, ratings and Undo
+
+`decision_bridge.py` reads a folder's decisions and ratings from the Widgets decision store when it opens and saves every change a moment later (database row and XMP sidecar, through `AnnotationPersistenceQueue`). `PhotoModel` announces each change on `annotationChanged`, keeps the last 200 changes of the folder and steps back through them on Ctrl+Z, the rail's Undo button or the palette's Undo. Winner and Reject are the store's flags; **Keep is the tag `keep`**. Tests: `tests/test_qml_shell_decisions.py`.
+
 ## Resolution and scaling
 
 Every size is in device-independent pixels. Qt multiplies by the screen's scale (Windows "Scale", Linux `QT_SCALE_FACTOR`/compositor scale), and
