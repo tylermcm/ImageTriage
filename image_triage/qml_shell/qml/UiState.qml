@@ -5,6 +5,9 @@ import QtQuick
 QtObject {
     property string tab: "lib"          // "" = side panel closed
     property bool insp: true
+    property bool zen: false            // Zen mode: the side panel and the inspector put away, and put back when it ends
+    property string zenTab: "lib"
+    property bool zenInsp: true
     signal undoRequested()                  // the rail's Undo button: Main runs the Undo command
     property real panelW: 300               // widths the user dragged the side panel and the inspector to (Main clamps them to what fits)
     property real inspW: 352

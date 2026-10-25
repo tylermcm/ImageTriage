@@ -112,6 +112,20 @@ class AiScores(QObject):
             return find_ai_result_for_record(bundle, record, preferred_path=path)
         return bundle.result_for_path(path)
 
+    @Slot(int, result=int)
+    def nextTopPick(self, current: int) -> int:
+        """The next photo after row `current` (wrapping round) that the AI called a top pick, or -1 (no results, or none shown): "Next AI Top Pick"."""
+        if self._bundle is None:
+            return -1
+        count = self._photos.rowCount()
+        for offset in range(1, count + 1):
+            row = (current + offset) % count
+            item = self._photos.row_at(row)
+            result = self._result_for(self._bundle, item["path"], item.get("record")) if item else None
+            if result is not None and getattr(result, "is_top_pick", False):
+                return row
+        return -1
+
     @Slot(str, result="QVariantMap")
     def get(self, path: str) -> dict:
         if self._state == "loading":

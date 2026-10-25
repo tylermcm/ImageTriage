@@ -347,6 +347,18 @@ Window {
         else if (id === "ai.analyze") cull.openCull()
         else if (id === "ai.center") cull.openCenter()
         else if (id.indexOf("recent:") === 0) libraryNav.openFolder(id.slice(7))
+        else if (id === "help.keyboard_help") reference.toggleHelp()
+        else if (id === "help.about") reference.openAbout(false)
+        else if (id === "help.check_updates") reference.openAbout(true)
+        else if (id === "workflow.keyboard_shortcuts") reference.open("keys")
+        else if (id === "review.reveal_in_explorer") libraryNav.revealFile(photos.get(grid.view.currentIndex).path || "")
+        else if (id === "library.browse_catalog") reference.open("lib")
+        else if (id === "ai.workflow_center") cull.openCenter()
+        else if (id === "ai.run_pipeline") cull.openCull()
+        else if (id === "ai.apply_culling") cull.openReview()
+        else if (id === "ai.next_top_pick") { var tp = aiScores.nextTopPick(grid.view.currentIndex); if (tp >= 0) { grid.view.currentIndex = tp; grid.view.positionViewAtIndex(tp, GridView.Contain) } else toasts.show("info", "No AI top picks in this view", "Run the AI analysis first, or clear the filters.") }
+        else if (id === "review.auto_advance") { settings.set("autoAdvance", settings.value("autoAdvance") !== true); settings.save(); cmdPalette.setState("review.auto_advance", settings.value("autoAdvance") === true ? "On" : "Off") }
+        else if (id === "view.zen_mode") { UiState.zen = !UiState.zen; cmdPalette.setState("view.zen_mode", UiState.zen ? "On" : "Off") }
     }
     Connections { target: cmdPalette; function onExecuted(id) { win.runCommand(id) } }
     TopMenus { id: topMenus; onRun: (id) => win.runCommand(id) }
@@ -354,9 +366,12 @@ Window {
     Shortcut { sequence: "Ctrl+Z"; enabled: !popout.isOpen; onActivated: win.runCommand("edit.undo") }
     Shortcut { sequence: "Delete"; enabled: !popout.isOpen; onActivated: win.runCommand("review.delete_selection") }
     Connections { target: UiState; function onUndoRequested() { win.runCommand("edit.undo") } }
+    Connections { target: UiState; function onZenChanged() { if (UiState.zen) { UiState.zenTab = UiState.tab; UiState.zenInsp = UiState.insp; UiState.tab = ""; UiState.insp = false } else { UiState.tab = UiState.zenTab; UiState.insp = UiState.zenInsp } } }
     Connections { target: UiState; function onCompareChanged() { cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off") } }
     Component.onCompleted: {
         cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off")
+        cmdPalette.setState("review.auto_advance", settings.value("autoAdvance") === true ? "On" : "Off")
+        cmdPalette.setState("view.zen_mode", "Off")
         UiState.panelW = settings.layoutWidth("panel", 300); UiState.inspW = settings.layoutWidth("inspector", 352)
     }
 
