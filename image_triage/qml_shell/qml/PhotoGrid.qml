@@ -172,7 +172,7 @@ Item {
                     x: 8; y: cell.flag.label !== undefined ? 34 : 8; width: 22; height: 22
                     Rectangle { x: -1; y: -1; width: 24; height: 24; radius: 12; color: Qt.rgba(1, 1, 1, 0.08) }
                     Rectangle { anchors.fill: parent; radius: 11; color: Qt.rgba(10 / 255, 12 / 255, 16 / 255, 0.6) }
-                    CollMark { anchors.centerIn: parent; color: collMark.mark.color || ""; iconPath: collMark.mark.iconPath || ""; ring: 11; iconSize: 13 }
+                    CollMark { anchors.centerIn: parent; anchors.alignWhenCentered: false; color: collMark.mark.color || ""; iconPath: collMark.mark.iconPath || ""; ring: 11; iconSize: 13 }
                 }
                 Item {
                     // decision badge: a 22px disc with a 3px 40% black ring outside it (box-shadow), glyph drawn like the mockup's CSS

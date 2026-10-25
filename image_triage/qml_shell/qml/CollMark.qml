@@ -12,17 +12,21 @@ Item {
     implicitWidth: iconPath !== "" ? iconSize : ring
     implicitHeight: implicitWidth
     width: implicitWidth; height: implicitHeight
-    Rectangle {
+    Shape {   // a vector ring, not a bordered Rectangle: that one is snapped to whole pixels, which put a 11px ring half a pixel off the middle of its 22px disc
         visible: mk.iconPath === "" && mk.color !== ""
-        anchors.centerIn: parent; width: mk.ring; height: mk.ring; radius: mk.ring / 2; color: "transparent"; border.width: 2.2; border.color: mk.color
+        anchors.centerIn: parent; anchors.alignWhenCentered: false; width: mk.ring; height: mk.ring; preferredRendererType: Shape.CurveRenderer
+        ShapePath {
+            strokeColor: mk.color; strokeWidth: 2.2; fillColor: "transparent"
+            PathSvg { path: Icons.circle(mk.ring / 2, mk.ring / 2, mk.ring / 2 - 1.1) }
+        }
     }
     Shape {
         visible: mk.iconPath === "" && mk.color === ""
-        anchors.centerIn: parent; width: mk.ring; height: mk.ring; preferredRendererType: Shape.CurveRenderer
+        anchors.centerIn: parent; anchors.alignWhenCentered: false; width: mk.ring; height: mk.ring; preferredRendererType: Shape.CurveRenderer
         ShapePath {
             strokeColor: Qt.alpha(theme.fg3, 0.75); strokeWidth: 1.4; fillColor: "transparent"; strokeStyle: ShapePath.DashLine; dashPattern: [2, 2]
             PathSvg { path: Icons.circle(mk.ring / 2, mk.ring / 2, mk.ring / 2 - 0.7) }
         }
     }
-    Icon { visible: mk.iconPath !== ""; anchors.centerIn: parent; size: mk.iconSize; strokeWidth: 1.8; path: mk.iconPath; color: mk.color !== "" ? mk.color : theme.fg2 }
+    Icon { visible: mk.iconPath !== ""; anchors.centerIn: parent; anchors.alignWhenCentered: false; size: mk.iconSize; strokeWidth: 1.8; path: mk.iconPath; color: mk.color !== "" ? mk.color : theme.fg2 }
 }
