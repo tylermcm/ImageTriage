@@ -1,6 +1,7 @@
 """The inspector's Quality and AI tabs: the photo measured (`inspection.py`), and the AI's verdict read from the folder's saved report (`ai_scores.py`)."""
-from __future__ import os
-import annotations
+from __future__ import annotations
+
+import os
 
 import csv
 import functools
