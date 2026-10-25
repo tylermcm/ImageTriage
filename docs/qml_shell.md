@@ -116,7 +116,7 @@ What is real and what is not: docs/qml_unwired.md, section "Collections, best-of
 ## Cull window and AI Center
 
 `CullWindow.qml`, `AiCenterWindow.qml`, `CullMini.qml`; model `cull_model.py` (the Analyze chip opens it). Mockup `scripts/qml_parity/cull.dc.html` with `harness_cull.html` (`?scene=cu-prep` and the others listed in docs/qml_unwired.md);
-in the shell `--ui "cullScene=cu-review"`. Flagged frames draw a reason badge and are dimmed in the grid (`cull.gridFlag(path)`). **The analysis is scripted**, but the AI Center is real in the app: `ai_center.py` looks at what is installed on this PC (runtime, graphics card, Visual C++, the three models) and its buttons install, repair and remove them with the Widgets app's own code (`--mock` and the tests keep the mockup's scripted one; `tests/test_qml_shell_ai_center.py` uses a fake PC, nothing is downloaded). See docs/qml_unwired.md, section "Cull window and AI Center". Tests: `tests/test_qml_shell_cull.py`.
+in the shell `--ui "cullScene=cu-review"`. Flagged frames draw a reason badge and are dimmed in the grid (`cull.gridFlag(path)`). **The analysis is real for photos from a folder** (`cull_real.py` runs the Widgets' `CascadeRunTask`; tests `tests/test_qml_shell_cull_real.py`); `--mock` keeps the script. The AI Center is real in the app: `ai_center.py` looks at what is installed on this PC (runtime, graphics card, Visual C++, the three models) and its buttons install, repair and remove them with the Widgets app's own code (`--mock` and the tests keep the mockup's scripted one; `tests/test_qml_shell_ai_center.py` uses a fake PC, nothing is downloaded). See docs/qml_unwired.md, section "Cull window and AI Center". Tests: `tests/test_qml_shell_cull.py`.
 
 ## Context menus and toasts
 

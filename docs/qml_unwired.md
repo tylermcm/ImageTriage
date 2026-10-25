@@ -23,7 +23,7 @@
 | Deliver / Handoff Builder | built; recipes real, **running is not connected** (see its section) | Ctrl Alt H, palette |
 | Move / Copy To Folder cards, handoff progress and done cards | built; a handoff run drives them with real progress (a single photo's move or copy does not use them, see below); `--mock` and the `txState` hook play a script | |
 | Collections (new / edit dialog, picker, menu), best-of, Tag People | built; collections **real** (the Widgets library store), people real with a face index, best-of real planner with few signals (see its section) | Collections tab (+, menu, right-click), Add All bar, B, Faces tab (All people…), Ctrl Alt B, palette |
-| Cull window (prepare, progress, review, apply) and AI Center (setup, models, defaults, recent runs) | built, **the analysis is scripted: nothing is measured** (see its section) | Analyze button |
+| Cull window (prepare, progress, review, apply) and AI Center (setup, models, defaults, recent runs) | built, **the analysis is real for photos from a folder** (see its section) | Analyze button |
 | Photo menu, folder menu and toasts | built; some entries say "not connected yet" (see their section) | right click on a photo or on empty grid space |
 | Help, shortcuts guide, catalog, file associations, splash | **Built** (see the Help, shortcuts, library, file types and splash section) | |
 
@@ -126,7 +126,7 @@ shell reacts to it yet.
 |---|---|---|
 | Review, View, Sort menus; All / Winners / Keep / Rejected; size buttons | Memory (same as the rail) | as above |
 | Counts next to the filters | Real on the loaded folder | |
-| Analyze button | Visual: a 2.6 second timer fakes "analyzing" and "AI ready" | `ai_run_controller`, `ai_workflow_center` |
+| Analyze button | **Real**: opens the Cull window, whose run is the Widgets' own analysis | |
 
 ### Status bar
 | Element | Status |
@@ -322,17 +322,17 @@ in the shell `--ui "cullScene=cu-review"` (the same names).
 | Wording, reasons (Eyes closed, Soft, Clipped, Blown out, Near-duplicate), the three strictness presets, the fine-tune values | Real wording; Balanced is the cascade's measured `CascadeSettings` (`tests` check it). Careful and Strict are **invented presets** around it | review on other genres (plan, risks) |
 | The CPU-ranking warning and its timings | Real text (`cascade.launch`) | |
 | "Rank on the CPU" default in AI Center | **Real**: the Widgets settings key `ai/cascade_rank_on_cpu` | |
-| **The analysis** (stages, progress, which frames are flagged, the numbers in the detail panel) | **Sample**: a scripted run; frames are flagged by a hash of their names (the mockup's five in `--mock`), stacks are fixed-size groups, metrics are the mockup's constants. Nothing is measured | `cascade.folder` / `CascadeRunTask` (stacks, pass 1, blink), progress and cancel from the task |
+| **The analysis** (stages, progress, which frames are flagged, the numbers in the detail panel) | **Real** for photos read from a folder (`cull_real.py`, `cascade.task.CascadeRunTask`, the Widgets app's own Analyze run on a worker thread): it reads capture times and previews, finds bursts and stacks, flags blinks, soft, clipped and blown-out frames and near-duplicates, and (when the AI runtime and a GPU, or the CPU switch, allow) runs the eyes check and the two rankers. The window's fine-tune values are passed to the cascade (`CascadeSettings`, and the eyes-closed threshold through `CascadeRunSettings.blink_threshold`, a small addition to the Widgets code; the Widgets app always uses 0.6). The detail panel shows the cascade's own sentence for the frame and its place in its stack; the invented numbers ("31%", "0.82") are only in `--mock`. Frames marked as winners are never flagged. `--mock` and the sample photos keep the scripted run | a per-frame measurements table (the cascade keeps only roles, flags and a sentence) |
 | Frames you marked as winners are never flagged | Real rule | |
 | AI Center: the AI runtime, graphics card, Visual C++ runtime and the three models (face landmarker, MANIQA, Q-ReAlign) | **Real in the app** (`ai_center.py`; the mockup's scripted states in `--mock` and the tests). Detection: `ai_runtime_packages.load_ai_runtime_installation_status` (installed, with PyTorch), `ai_platform.nvidia_gpu_name` and `vc_runtime_version`, `ai_model_store.bundle_status` (size, pinned revision, file digests); it looks again after every job and on "Check again". A graphics card only counts when the GPU build of the runtime is installed. | the runtime "starts" check is the Visual C++ version, not an import of PyTorch (that runs inside the installer) |
 | AI Center buttons | **Real**: Set up AI and Repair run the Widgets installer (`packaging/ai_runtime_installer.py`, the same process Set Up AI runs) after a card that says the size, then install the face model; Install, Repair and Remove on a model use `ai_model_store.install_bundle` / `repair_bundle` / `uninstall_bundle` (hash checked, resumable, cancellable, a card asks before a ranker is deleted); one job at a time, in the background, with one honest percent (`ai_setup_progress.SetupProgress`); a failure says why and the next try clears it; Cancel keeps what was downloaded | the model licences are unverified for commercial use (`docs/ai_v5_model_hosting.md`); nothing has been downloaded by whoever wrote this: the tests use a fake |
 | How strict by default (AI Center) | **Real**: kept in the new key `ai/cascade_default_strictness`, and the Cull window starts there | the Careful and Strict presets are still invented |
-| Ranking and its "1st choice" marks | **Sample** (marks the first unflagged frame of a stack) | the ranker workers (`cascade/rankers`) |
-| Recent runs table | In the app: only the run made in this window (the analysis is scripted, so there is nothing real to list from earlier days); `--mock` keeps the mockup's two sample rows. **Clear all results** forgets what the window found and applied (rejected frames stay rejected) | a table of runs saved with each folder, once the analysis is real |
+| Ranking and its "1st choice" marks | **Real** when the rankers ran: the frame the cascade ranked first in its stack (`pick`); without rankers no frame is marked, as in the Widgets app. `--mock` marks the first unflagged frame | |
+| Recent runs table | In the app: only the run made in this window (the report saved beside a folder keeps one run, not a history); `--mock` keeps the mockup's two sample rows. **Clear all results** forgets what the window found and applied (rejected frames stay rejected) | a table of runs saved with each folder, once the analysis is real |
 | Reject (Apply > Mark as Rejects), Undo, Restore, Keep both | **Real**: the grid's own Reject decision, with Undo | |
-| **Move to the recycle bin** | **Not connected**: choosing it marks the frames as Rejects and says so | `file_ops` recycle bin, with paired files |
+| **Move to the recycle bin** | **Real** for photos from a folder (`file_actions.trashPaths`: the Widgets' safe trash, each file with its RAW or JPEG partner and sidecars, one toast and one Undo; also Undo on the done page). On sample photos it marks Rejects and says so | |
 | Show in grid | Real (moves the grid to that frame) | |
-| Results saved with the folder / reopened later | Not connected (kept in memory for this session) | catalog migration 9 (`cascade_role`, `triggered_tags`) |
+| Results saved with the folder / reopened later | **Real**: a run writes the Widgets' report beside the folder (`ranked_clusters_export.csv` with each frame's role, flags and sentence) and opening the folder again reads it back, so the flags, stacks and picks return and the inspector's AI tab fills in after a run. Reports written by the Widgets app's older culler have no cascade roles and show nothing here | catalog migration 9 (a catalog copy) |
 | Cull on `--mock` | Starts from the mockup's flags; scenes reset those frames to undecided | |
 
 ## Context menus and toasts

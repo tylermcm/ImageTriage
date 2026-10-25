@@ -10,6 +10,7 @@ See docs/qml_unwired.md, section "Cull window and AI Center".
 """
 from __future__ import annotations
 
+import time
 import zlib
 
 from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
@@ -20,6 +21,7 @@ from ..cascade.launch import CPU_SECONDS_PER_FRAME_FAST, CPU_SECONDS_PER_FRAME_L
 from ..cascade.model import CascadeSettings
 from ..cascade.rankers.spec import MANIQA, QREALIGN
 from .ai_center import STATE_WORDS, AiCenterBackend
+from .cull_real import CullRun, outcomes_from_bundle, outcomes_from_result, reason_of, stacks_of
 
 CPU_KEY = "ai/cascade_rank_on_cpu"
 SENS_KEY = "ai/cascade_default_strictness"          # new, the shell's: how strict the Cull window starts (the Widgets app has no such choice)
@@ -65,11 +67,21 @@ def _fmt(key: str, v: int) -> str:
 class CullModel(QObject):
     changed = Signal()
     gridChanged = Signal()
+    runFinished = Signal()              # a real analysis has written its report: the inspector's AI tab reads it again
+    _savedLoaded = Signal(int, object)
 
-    def __init__(self, photos, memory: bool = False, parent: QObject | None = None, ai: AiCenterBackend | None = None) -> None:
+    def __init__(self, photos, memory: bool = False, parent: QObject | None = None, ai: AiCenterBackend | None = None, toasts=None, files=None) -> None:
         super().__init__(parent)
         self._photos = photos
         self._memory = memory
+        self._toasts = toasts
+        self._files = files                       # file_actions.FileActions: "move them to the recycle bin"
+        self._real = False                        # the results on screen are the cascade's own (a run, or a report saved with the folder), not the script's
+        self._outcomes: dict = {}
+        self._picks: set[str] = set()
+        self._t0 = 0.0
+        self._token = 0
+        self._run = None
         self._settings = None if memory else user_settings()
         cpu = False if memory else bool(self._settings.value(CPU_KEY, False, type=bool))
         self._s = self._defaults(cpu)
@@ -96,6 +108,14 @@ class CullModel(QObject):
         if self._ai is not None:
             self._ai.changed.connect(self._on_ai)
             self._ai.refresh()
+        if not memory:
+            self._run = CullRun(self)
+            self._run.stage.connect(self._run_stage)
+            self._run.finished.connect(self._run_finished)
+            self._run.failed.connect(self._run_failed)
+            self._run.cancelled.connect(self._run_cancelled)
+            self._savedLoaded.connect(self._saved_arrived)
+            photos.folderChanged.connect(self._folder_changed)
 
     def _on_ai(self) -> None:
         """What the machine really has changed (or an install moved on): the Cull window and the AI Center follow."""
@@ -150,6 +170,15 @@ class CullModel(QObject):
                 out[r["path"]] = reason
         self._flags = out
 
+    def _eta_text(self, s: dict, secs: int) -> str:
+        if not self._real:
+            return f"about {max(1, round((4 - s['stage'] - s['p']) * secs / 4))} s left"
+        done = (s["stage"] + s["p"]) / 4
+        if done < 0.05:
+            return "working out the time left"
+        left = (time.monotonic() - self._t0) * (1 - done) / done
+        return f"about {int(left // 60)} min {int(left % 60):02d} s left" if left >= 90 else f"about {max(1, round(left))} s left"
+
     def _active_flags(self) -> list[tuple[dict, str]]:
         s = self._s
         by_path = {r["path"]: r for r in self._rows()}
@@ -195,6 +224,10 @@ class CullModel(QObject):
         return self.flagFor(path)
 
     def _reason_text(self, path: str, reason: str) -> dict:
+        if self._real:
+            o = self._outcomes.get(path)
+            rows = [("Stack", f"{o.stack_size} frame{'s' if o.stack_size != 1 else ''}"), ("Place in its stack", str(o.stack_rank))] if o else []
+            return {"why": o.summary if o else "", "rows": [{"k": k, "v": x} for k, x in rows]}
         v = self._s["vals"]
         why = {"blink": f"Eyes closed on the main face. Its blink score is 0.82 and frames are flagged from {v['blink'] / 100:.2f}. Dimmed, not removed.",
                "soft": f"Centre sharpness is 31% of the sharpest frame in its stack; frames are flagged below {v['soft']}%. Dimmed, not removed.",
@@ -276,7 +309,7 @@ class CullModel(QObject):
                     on = bool(reason) and not s["restored"].get(x["path"])
                     frames.append({"path": x["path"], "name": x["name"], "flagged": on, "badge": REASONS[reason][0] if on else "", "color": REASONS[reason][1] if on else "",
                                    "restored": bool(reason) and not on, "sel": s["sel"] == x["path"],
-                                   "rank": "1st choice" if s["ranked"] and len(st) > 1 and not on and firsts and x["path"] == firsts[0] else ""})
+                                   "rank": "1st choice" if ((x["path"] in self._picks and not on) if self._real else (s["ranked"] and len(st) > 1 and not on and bool(firsts) and x["path"] == firsts[0])) else ""})
                 stacks_out.append({"title": f"Stack {si + 1}", "meta": f"{len(st)} {'frame' if len(st) == 1 else 'frames'}" + (f" · {self._frame_time(st[0]['path'])}" if self._frame_time(st[0]['path']) else ""), "frames": frames})
                 shown += 1
                 if shown >= 300:
@@ -292,17 +325,19 @@ class CullModel(QObject):
             det = {"has": True, "path": sel["path"], "flagged": on, "color": REASONS[reason][1] if on else "", "name": sel["name"],
                    "title": sel["name"] + " · " + (lab if on else ("Restored" if reason else "Looks fine")),
                    "why": info["why"] if on else ("You restored this frame. It is no longer flagged or dimmed." if reason else
-                                                  "No rule flagged this frame." + (" It is the suggested first choice of its stack. Nothing is selected for you." if s["ranked"] else "")),
+                                                  (self._outcomes[sel["path"]].summary if self._real and sel["path"] in self._outcomes else "No rule flagged this frame.")
+                                                  + (" It is the suggested first choice of its stack. Nothing is selected for you." if (sel["path"] in self._picks if self._real else s["ranked"]) else "")),
                    "rows": info["rows"] + [{"k": "Stack", "v": f"{si + 1} of {len(self._stacks)}"}, {"k": "Taken", "v": self._frame_time(sel["path"])}],
                    "canRestore": bool(reason), "restoreLabel": "Flag again" if s["restored"].get(sel["path"]) else ("Keep both" if reason == "duplicate" else "Restore")}
         groups = [{"key": r, "label": REASONS[r][0], "color": REASONS[r][1], "n": cnt(r), "why": GROUP_WHY[r], "on": bool(s["inc"].get(r)),
                    "thumbs": [row["path"] for row, x in flagged if x == r][:4]} for r in REJECTS if cnt(r)]
         applied = s["applied"]
-        done_title = "Nothing was changed" if not applied else f"{len(applied['ids'])} frames marked as Rejects"
-        done_body = ("They are marked red in the grid and listed under Rejected. Your winners were not touched."
-                     + (" Moving files to the recycle bin is not connected yet, so they were rejected instead." if applied and applied["act"] == "bin" else ""))
+        done_title = "Nothing was changed" if not applied else (f"{len(applied['ids'])} frames moved to the recycle bin" if applied["act"] == "bin" and self._real and self._files is not None else f"{len(applied['ids'])} frames marked as Rejects")
+        binned = bool(applied) and applied["act"] == "bin" and self._real and self._files is not None
+        done_body = ("They are in the program’s recycle bin; Undo brings them back. Your winners were not touched." if binned else "They are marked red in the grid and listed under Rejected. Your winners were not touched."
+                     + (" Moving files to the recycle bin is not connected yet, so they were rejected instead." if applied and applied["act"] == "bin" and not (self._real and self._files is not None) else ""))
         opts = [{"key": "reject", "label": "Mark them as Rejects", "desc": "Sets their decision to Reject. The files stay where they are, and Ctrl+Z undoes it.", "rec": True},
-                {"key": "bin", "label": "Move them to the recycle bin", "desc": "Moves each file, with its paired RAW or JPG and sidecars, to the program’s recycle bin. You can restore them from there. (Not connected yet: they are marked as Rejects.)", "rec": False},
+                {"key": "bin", "label": "Move them to the recycle bin", "desc": "Moves each file, with its paired RAW or JPG and sidecars, to the program’s recycle bin. You can restore them from there." + ("" if self._real and self._files is not None else " (Not connected yet: they are marked as Rejects.)"), "rec": False},
                 {"key": "none", "label": "Keep them as flags only", "desc": "Nothing changes on disk or in your decisions. They stay dimmed in the grid.", "rec": False}]
         for o in opts:
             o["on"] = s["act"] == o["key"]
@@ -320,12 +355,12 @@ class CullModel(QObject):
             "tuneOpen": s["tune"], "tuneLabel": "Hide fine-tuning" if s["tune"] else "Fine-tune",
             "tunes": [{"key": k, "label": lab, "help": h, "min": lo, "max": hi, "raw": v[k], "val": _fmt(k, v[k])} for k, lab, h, lo, hi in TUNES],
             "estimate": est_text, "stages": stages, "runLine": f"{cur_stage} · {round(s['p'] * n)} of {n}", "runPct": run_pct,
-            "runEta": f"about {max(1, round((4 - s['stage'] - s['p']) * secs / 4))} s left", "notes": notes,
+            "runEta": self._eta_text(s, secs), "notes": notes,
             "tiles": [{"n": n, "l": "Frames"}, {"n": len(self._stacks), "l": "Stacks"}, {"n": sum(cnt(r) for r in REJECTS), "l": "Flagged"}, {"n": cnt("duplicate"), "l": "Near-duplicates"}],
             "chips": chips, "stacks": stacks_out, "noRows": s["filter"] != "all" and cnt(s["filter"]) == 0, "det": det,
             "revNote": "Ranking suggestions are marked 1st choice. Nothing is selected for you." if s["ranked"] else "Cleanup only. Turn on ranking in Run again to get suggestions.",
             "applyCount": n_ap, "opts": opts, "groups": groups,
-            "applyLabel": f"Mark {n_ap} as Rejects" if s["act"] in ("reject", "bin") else "Keep as flags",
+            "applyLabel": (f"Move {n_ap} to the recycle bin" if s["act"] == "bin" and self._real and self._files is not None else f"Mark {n_ap} as Rejects") if s["act"] in ("reject", "bin") else "Keep as flags",
             "applyNote": "Nothing is deleted. You can undo this." if s["act"] != "none" else "Nothing will change.",
             "doneTitle": done_title, "doneBody": done_body, "canUndo": bool(applied),
             "mini": s["running"] and s["hidden"] and s["window"] == "", "miniLine": f"{cur_stage} · {round(s['p'] * n)} of {n}",
@@ -590,7 +625,7 @@ class CullModel(QObject):
         """Clear all results. In the app that forgets what this window found and applied (the frames you rejected stay rejected: your decisions are not results)."""
         if self._ai is not None:
             self._timer.stop()
-            self._flags = {}
+            self._flags, self._outcomes, self._picks, self._stacks, self._real = {}, {}, set(), [], False
             self._set(runs=False, done=False, running=False, applied=None, restored={}, sel="", stage=0, p=0.0, page="prep", ranked=False)
             return
         self._set(runs=False)
@@ -599,6 +634,10 @@ class CullModel(QObject):
     @Slot()
     def start(self) -> None:
         s = self._s
+        if self._run is not None and any(r.get("record") is not None for r in self._photos.all_rows()):
+            self._start_real()
+            return
+        self._real = False
         self._build_stacks()
         self._set(page="run", running=True, done=False, stage=0, p=0.0, hidden=False, restored={}, applied=None, ranked=s["rank"], eyesRan=s["rt"] == "ready" and s["faceOk"] and s["eyes"], sel="", filter="all")
         self._timer.start()
@@ -621,8 +660,121 @@ class CullModel(QObject):
             return
         self._set(stage=st, p=p)
 
+
+    # -- the real run: the Widgets app's cascade ---------------------------------------------------------------------------------
+    def _ranking_decision(self):
+        """Which of the eyes check and the two rankers run: the Widgets' own rule (`cascade.launch.decide_ranking`) with what this window's switches say."""
+        from dataclasses import replace
+
+        from ..cascade.launch import decide_ranking
+
+        s = self._s
+        a = self._ai_state or {}
+        device = ("cuda" if s["gpu"] else "cpu") if s["rt"] == "ready" else None
+        decision = decide_ranking(device, bool(s["rank"] and not s["gpu"]), quality_installed=bool(s["models"]["quality"]), appeal_installed=bool(s["models"]["appeal"]))
+        if not (s["rank"] and decision.use_rankers):
+            decision = decision.without_ranking(decision.note if s["rank"] else "")
+        if not (s["eyes"] and s["faceOk"]):
+            decision = replace(decision, use_blink=False)
+        return replace(decision, ask_cpu_confirmation=False)          # this window asked already
+
+    def _protected_paths(self) -> list[str]:
+        """Frames already marked as winners are never flagged (the cascade keeps them, with all their files)."""
+        out = []
+        for r in self._photos.all_rows():
+            if r["decision"] == "win":
+                out.append(r["path"])
+                out.extend(r.get("companions", ()))
+        return out
+
+    def _start_real(self) -> None:
+        s = self._s
+        v = s["vals"]
+        cascade = CascadeSettings(split_jump=v["split"], duplicate_distance=v["dup"], soft_ratio=v["soft"] / 100, clip_floor=v["clip"] / 100, blown_out=v["blown"] / 100)
+        records = [r["record"] for r in self._photos.all_rows() if r.get("record") is not None]
+        decision = self._ranking_decision()
+        self._real, self._outcomes, self._picks, self._flags, self._stacks = True, {}, set(), {}, []
+        self._token += 1
+        self._t0 = time.monotonic()
+        self._set(page="run", running=True, done=False, stage=0, p=0.0, hidden=False, restored={}, applied=None, ranked=decision.use_rankers,
+                  eyesRan=decision.use_blink, sel="", filter="all")
+        try:
+            self._run.start(folder=self._photos.folder_dir(), records=records, cascade=cascade, blink_threshold=v["blink"] / 100, decision=decision,
+                            protected=self._protected_paths())
+        except Exception as exc:
+            self._run_failed(str(exc))
+
+    def _run_stage(self, stage: int, fraction: float) -> None:
+        if self._s["running"]:
+            self._set(stage=stage, p=fraction)
+
+    def _run_finished(self, result, eyes: bool, ranked: bool) -> None:
+        if result is None:
+            self._run_failed("The analysis gave no result.")
+            return
+        s = self._s
+        self._apply_outcomes(outcomes_from_result(result))
+        first = next((r for r, _x in self._active_flags()), None)
+        self._set(running=False, done=True, stage=4, p=1.0, page=s["page"] if s["hidden"] else "rev", sel=first["path"] if first else "", ranked=ranked, eyesRan=eyes)
+        self.runFinished.emit()
+        if self._toasts is not None and s["hidden"]:
+            self._toasts.push("success", "The analysis has finished", f"{len(self._active_flags())} frames are flagged.", "Review", self.openCull)
+
+    def _run_failed(self, message: str) -> None:
+        self._real = False
+        self._set(running=False, done=False, page="prep", hidden=False, stage=0, p=0.0)
+        if self._toasts is not None:
+            self._toasts.push("error", "The analysis could not finish", message)
+
+    def _run_cancelled(self) -> None:
+        self._real = False
+        self._set(running=False, done=False, page="prep", hidden=False, stage=0, p=0.0)
+
+    def _apply_outcomes(self, outcomes: dict) -> None:
+        """What the cascade decided becomes the window's flags, stacks and suggestions."""
+        rows = self._rows()
+        self._outcomes = outcomes
+        self._flags = {path: reason for path, o in outcomes.items() if (reason := reason_of(o))}
+        self._picks = {path for path, o in outcomes.items() if o.role == "pick"}
+        self._stacks = stacks_of(rows, outcomes)
+        self._times = {}
+        self._real = True
+
+    # -- results saved with the folder -------------------------------------------------------------------------------------------
+    def _folder_changed(self) -> None:
+        """A folder was opened: forget the last folder's results and look for ones saved beside this folder."""
+        if self._s["running"]:
+            self._run.cancel()
+        self._token += 1
+        token = self._token
+        self._real, self._outcomes, self._picks, self._flags, self._stacks = False, {}, set(), {}, []
+        self._set(done=False, running=False, page="prep", restored={}, applied=None, sel="", filter="all", ranked=False, stage=0, p=0.0)
+        folder = self._photos.folder_dir()
+        rows = list(self._photos.all_rows())
+        if not folder or not rows:
+            return
+
+        import threading
+
+        def work() -> None:
+            from .ai_scores import load_bundle
+
+            bundle = load_bundle(folder)
+            self._savedLoaded.emit(token, outcomes_from_bundle(bundle, rows) if bundle is not None else {})
+
+        threading.Thread(target=work, name="qml-cull-saved", daemon=True).start()
+
+    def _saved_arrived(self, token: int, outcomes: dict) -> None:
+        if token != self._token or self._s["running"] or not outcomes:
+            return
+        self._apply_outcomes(outcomes)
+        self._set(done=True, page="prep", stage=4, p=1.0, ranked=any(o.ranked for o in outcomes.values()), eyesRan=any("blink" in o.flags for o in outcomes.values()))
+
     @Slot()
     def cancelRun(self) -> None:
+        if self._run is not None and self._run.running:
+            self._run.cancel()                          # the window goes back to Prepare when the run says it has stopped
+            return
         self._timer.stop()
         self._set(running=False, page="prep", hidden=False, stage=0, p=0.0)
 
@@ -685,6 +837,10 @@ class CullModel(QObject):
         if s["act"] == "none":
             self._set(page="rev")
             return
+        if s["act"] == "bin" and self._files is not None and self._real:
+            entry = self._files.trashPaths(ids, "the analysis's flagged frames")      # one step on the undo list, with its toast
+            self._set(applied={"ids": ids, "prev": {}, "act": "bin", "entry": entry}, page="done")
+            return
         prev = {}
         for i in range(self._photos.shown):
             d = self._photos.get(i)
@@ -698,6 +854,10 @@ class CullModel(QObject):
     def undo(self) -> None:
         a = self._s["applied"]
         if not a:
+            return
+        if a.get("act") == "bin" and a.get("entry"):
+            self._photos.undo_entry(a["entry"])
+            self._set(applied=None, page="rev")
             return
         for i in range(self._photos.shown):
             d = self._photos.get(i)

@@ -20,7 +20,7 @@ from ..ai_workflow import AIWorkflowPaths
 from ..brackets import BracketDetector
 from ..metadata import load_capture_metadata
 from ..models import ImageRecord
-from .blink import BlinkScoreCache, is_blink
+from .blink import BLINK_THRESHOLD, BlinkScoreCache, is_blink
 from .export import build_rows, write_export
 from .extract import FeatureCache, extract_features
 from .faces import FaceCache, FaceFinding
@@ -71,6 +71,7 @@ class _Cancelled(RuntimeError):
 class CascadeRunSettings:
     cascade: CascadeSettings = field(default_factory=CascadeSettings)
     max_workers: int | None = None
+    blink_threshold: float = BLINK_THRESHOLD  # eyes-closed score from which a frame is flagged (the Widgets app always uses the default)
 
 
 class CascadeRunTask(QRunnable):
@@ -316,7 +317,7 @@ class CascadeRunTask(QRunnable):
                 pass
         self.blink_checked = True
         return [
-            replace(f, features=replace(f.features, blink=is_blink(scores.get(f.path, 0.0))))
+            replace(f, features=replace(f.features, blink=is_blink(scores.get(f.path, 0.0), self.settings.blink_threshold)))
             if f.features is not None and f.bracket_id is None
             else f
             for f in frames

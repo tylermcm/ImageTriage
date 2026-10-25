@@ -169,6 +169,65 @@ class FileActions(QObject):
         entry["id"] = self._photos.push_undo(f"delete of {record.name}", lambda: self._undo_delete(record, tuple(moves), annotation, recycle))
         self._toast("success", f"Deleted {record.name}", "It is in the safe trash.", "Undo", lambda: self._photos.undo_entry(entry["id"]))
 
+    @Slot("QVariantList", str, result=int)
+    def trashPaths(self, paths, why: str = "") -> int:
+        """Move these photos (with their companions) to the safe trash as one step: one toast, one Undo. Returns the undo step's id (0 when nothing moved)."""
+        wanted = {os.path.normcase(os.path.normpath(str(p))) for p in paths}
+        rows = [r for r in self._photos.all_rows() if os.path.normcase(os.path.normpath(r["path"])) in wanted and r.get("record") is not None]
+        if not rows:
+            return 0
+        recycle = self._recycle(self._photos.folder_dir())
+        root = recycle.recycle_root_for_folder()
+        moved: list[tuple] = []                                   # (record, moves, annotation)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            for row in rows:
+                moves = []
+                for source in record_paths(row["record"]):
+                    if os.path.exists(source):
+                        target = unique_destination(str(root), Path(source).name)
+                        shutil.move(source, target)
+                        moves.append(FileMove(source_path=source, target_path=target))
+                moved.append((row["record"], tuple(moves), row.get("annotation")))
+        except OSError as exc:
+            for _record, moves, _a in moved:                      # put back everything already moved
+                for done in reversed(moves):
+                    try:
+                        shutil.move(done.target_path, done.source_path)
+                    except OSError:
+                        pass
+            self._toast("error", "Could not move them to the recycle bin", str(exc))
+            return 0
+        recycle.remember_recycle_origins(tuple(m for _r, moves, _a in moved for m in moves))
+        for record, _moves, _a in moved:
+            if not self._memory:
+                try:
+                    self._store().delete_annotation(session_id(), record.path)
+                except Exception:
+                    pass
+        self._photos.remove_paths([record.path for record, _m, _a in moved])
+        entry = {}
+        entry["id"] = self._photos.push_undo(f"move of {len(moved)} photos to the recycle bin", lambda: self._undo_trash(moved, recycle))
+        self._toast("success", f"Moved {len(moved)} photo{'s' if len(moved) != 1 else ''} to the recycle bin", "Undo brings them back.", "Undo", lambda: self._photos.undo_entry(entry["id"]))
+        return entry["id"]
+
+    def _undo_trash(self, moved: list, recycle) -> bool:
+        try:
+            for _record, moves, _a in moved:
+                for move in moves:
+                    Path(move.source_path).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(move.target_path, move.source_path)
+        except OSError as exc:
+            self._toast("error", "Could not bring them back", str(exc))
+            return False
+        recycle.forget_recycle_origins(tuple(m.target_path for _r, moves, _a in moved for m in moves))
+        for record, _moves, annotation in moved:
+            if annotation is not None and not annotation.is_empty:
+                self._store().save_annotation(session_id(), record, annotation)
+        self._photos.reload()
+        self._toast("success", f"Brought back {len(moved)} photo{'s' if len(moved) != 1 else ''}")
+        return True
+
     def _undo_delete(self, record, moves: tuple[FileMove, ...], annotation, recycle) -> bool:
         try:
             for move in moves:
