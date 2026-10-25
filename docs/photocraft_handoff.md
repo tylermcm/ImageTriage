@@ -1,5 +1,48 @@
 # PhotoCraft handoff
 
+## Upstream v0.16.0 merged on a scratch branch — 2026-10-25 (not promoted)
+
+Upstream cut a release, so this is the one merge for it: `d95fdf318` (v0.10.0) to
+`b1794c6e0` (v0.16.0, 3115 commits), merged into `codex/image-triage-integration`
+(`0988078e4`) on **`scratch/upstream-merge-2026-10-25`**: merge commit `dcac9b1df`,
+then post-merge fixes `d18743cd9`. Pushed to the fork (`tylermcm/photocraft`) as that
+branch only. `codex/image-triage-integration` is still `0988078e4` on the fork and
+in the checkout; nothing is promoted, and nothing went to storytold.
+
+31 textual conflicts, decided per file (the merge commit message has the list):
+upstream's clap `launch_args` (the host's `--hosted` and `--raw-workspace` declared
+there); upstream's off-thread Camera Raw preview (`ProxyJob`, `request_render`,
+`poll_render`) replaces the fork's preview worker, which is deleted, and
+`ProxyJob::run` calls `raw_recipe::apply`, the one definition shared with the recipe
+render; the section "before" (`preview_without`), RawOpen fields, proxy-ahead,
+swap-in-place and the workspace panels stay as host behaviour; upstream's 16-bit and
+colour-managed GPU tile conversions are taken (the fork's duplicate lookup-table
+path is dropped); `control` keeps `app.bind`, `app.render` and `app.stash` and takes
+upstream's `app.save`; `i18n/mod.rs` is upstream's and the 20 `.tsv` catalogs are the
+union of both sides with no key lost; the engine presets test is upstream's.
+
+After the merge, compile and test fixes only: `developed_document` and `describe`
+arguments, the `json!` recursion limit in `control`, `RowGestures.curve`, the moved
+`hue_color`, the proxy `Arc` types, the `ImportOptions` callback and `RawOpen`
+fields. The Camera Raw workspace tests wait for the asynchronous preview, and Super
+Resolution is a recipe setting here (toggled and restored in its test). Four clippy
+lints of the 1.99 toolchain in fork files were fixed.
+
+Validated on the isolated target dir `target/merge-v0.16.0` (the known-good
+executables under `target/release` and `target/acr18` were not rebuilt):
+
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `camera_raw_workspace`: 11 passed. Earlier in the merge: engine presets 79, app
+  binaries 172 and app usage 8 passed.
+
+**Not done:** the Image Triage handoff checks against the candidate
+`target/merge-v0.16.0/debug/photocraft.exe` (persistent filmstrip navigation,
+stash/restore, native Save and grid propagation, closed-tab reopen, hidden startup,
+theme and resize, fullscreen, shutdown and process cleanup), and a full
+`cargo test --workspace` in the final state. A merge without textual conflicts is
+not proof of compatibility, so the candidate stays unpromoted until those pass.
+Run it with `IMAGE_TRIAGE_PHOTOCRAFT_EXE` pointing at the candidate.
+
 ## Local Image Triage testing — 2026-10-17
 
 Owner requested the new Camera Raw UI inside Image Triage for local testing,
