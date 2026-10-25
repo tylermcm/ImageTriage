@@ -149,9 +149,9 @@ def test_what_only_the_window_can_do_is_requested(ctx):
     assert toasts.items[-1]["title"] == "Added DSC_4207 to PocketDrop" or any("PocketDrop" in t["title"] for t in toasts.items)
 
 
-def test_what_is_not_connected_says_so_and_changes_nothing(ctx):
+def test_what_is_not_connected_says_so_and_changes_nothing(ctx):   # delete, copy and move are real now (test_qml_shell_files.py)
     menu, toasts, photos, *_ = ctx
-    for key in ("del", "mv:copy", "with:default"):
+    for key in ("with:default",):
         menu.openPhoto(0)
         menu.act(key)
         assert toasts.items[-1]["kind"] == "warn" and "connected yet" in toasts.items[-1]["title"], key

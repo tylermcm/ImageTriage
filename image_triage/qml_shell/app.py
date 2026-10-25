@@ -38,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     from .batch_model import BatchModel
     from .bestof_model import BestOfModel
     from .cull_model import CullModel
+    from .file_actions import FileActions
     from .menu_model import MenuModel, ToastModel
     from .collections_model import CollectionsModel
     from .ai_scores import AiScores
@@ -94,7 +95,8 @@ def main(argv: list[str] | None = None) -> int:
     best_of = BestOfModel(photos, parent=app)
     cull = CullModel(photos, memory=bool(args.mock), parent=app)
     toasts = ToastModel(parent=app)
-    menu = MenuModel(photos, collections, cull, toasts, memory=bool(args.mock), parent=app)
+    files = FileActions(photos, toasts, memory=bool(args.mock), parent=app)
+    menu = MenuModel(photos, collections, cull, toasts, memory=bool(args.mock), parent=app, files=files)
     pocket_drop = PocketDropModel(photos, memory=bool(args.mock), parent=app, collections=collections)
     reference = ReferenceModel(photos, toasts, memory=bool(args.mock), parent=app)
     if not args.mock:
@@ -130,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     context.setContextProperty("cull", cull)
     context.setContextProperty("toasts", toasts)
     context.setContextProperty("ctxMenu", menu)
+    context.setContextProperty("fileActions", files)
     context.setContextProperty("reference", reference)
     context.setContextProperty("handoff", handoff)
     context.setContextProperty("transfers", transfers)
@@ -139,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     context.setContextProperty("aiScores", AiScores(photos, memory=bool(args.mock), parent=app))
     library_nav = LibraryNavModel(photos, memory=bool(args.mock), persist=not args.grab, parent=app)
     context.setContextProperty("libraryNav", library_nav)
-    popout = PopoutHost(photos, thumbs, collections, prebuild=not args.grab, parent=app)
+    popout = PopoutHost(photos, thumbs, collections, prebuild=not args.grab, parent=app, files=files)
     app.aboutToQuit.connect(popout.shutdown)
     context.setContextProperty("popout", popout)
     context.setContextProperty("startup", args.ui)

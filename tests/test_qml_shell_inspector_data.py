@@ -1,5 +1,6 @@
 """The inspector's Quality and AI tabs: the photo measured (`inspection.py`), and the AI's verdict read from the folder's saved report (`ai_scores.py`)."""
-from __future__ import annotations
+from __future__ import os
+import annotations
 
 import csv
 import functools
@@ -210,6 +211,7 @@ def test_the_group_lists_its_members_with_the_photo_among_them(qapp, tmp_path):
     assert [g["row"] >= 0 for g in scores.get(path("D"))["group"]] == [True, False, False, True]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="paths differ by capitals only on Windows (os.path.normcase)")
 def test_a_path_written_with_other_slashes_and_capitals_still_finds_its_photo(qapp, tmp_path):
     folder = make_folder(tmp_path)
     photos, scores = opened(qapp, folder)

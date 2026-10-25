@@ -137,6 +137,10 @@ in the shell `--ui "handoffOpen=true;hoRecipe=saved:wedding_handoff"` and `--ui 
 
 `decision_bridge.py` reads a folder's decisions and ratings from the Widgets decision store when it opens and saves every change a moment later (database row and XMP sidecar, through `AnnotationPersistenceQueue`). `PhotoModel` announces each change on `annotationChanged`, keeps the last 200 changes of the folder and steps back through them on Ctrl+Z, the rail's Undo button or the palette's Undo. Winner and Reject are the store's flags; **Keep is the tag `keep`**. Tests: `tests/test_qml_shell_decisions.py`.
 
+## Delete, move and copy
+
+`file_actions.py` (`fileActions`) runs the Widgets app's file rules on a photo's whole bundle: Delete (safe trash with undo, system trash, or for good inside a "recycle bin" folder), Move to folder, Copy to folder and the recent destinations. The photo menu, the Delete key, the palette and the full-screen viewer's Delete and M use it; a move or delete is on the Ctrl+Z list and in the toast's Undo button. Tests: `tests/test_qml_shell_files.py`.
+
 ## Resolution and scaling
 
 Every size is in device-independent pixels. Qt multiplies by the screen's scale (Windows "Scale", Linux `QT_SCALE_FACTOR`/compositor scale), and

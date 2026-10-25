@@ -21,7 +21,7 @@
 | Batch rename, resize, convert | built; **applying is not connected, no file changes** (see below) | Rename and Resize pins, palette, Ctrl+Shift+R / E / C |
 | PocketDrop page of the side panel | built; runs PocketDrop's own engine once `pocketdrop.dll` is rebuilt (see the PocketDrop section) | PocketDrop button, Share to phone, phone icon in Collections |
 | Deliver / Handoff Builder | built; recipes real, **running is not connected** (see its section) | Ctrl Alt H, palette |
-| Move / Copy To Folder cards, handoff progress and done cards | built, **scripted: nothing is transferred**; nothing opens the Move / Copy cards yet except a handoff run | Run workflow |
+| Move / Copy To Folder cards, handoff progress and done cards | built, **scripted: nothing is transferred**; the handoff run opens them; a single photo's move or copy does not use them (see below) | Run workflow |
 | Collections (new / edit dialog, picker, menu), best-of, Tag People | built; collections **real** (the Widgets library store), people real with a face index, best-of real planner with few signals (see its section) | Collections tab (+, menu, right-click), Add All bar, B, Faces tab (All people…), Ctrl Alt B, palette |
 | Cull window (prepare, progress, review, apply) and AI Center (setup, models, defaults, recent runs) | built, **the analysis is scripted: nothing is measured** (see its section) | Analyze button |
 | Photo menu, folder menu and toasts | built; some entries say "not connected yet" (see their section) | right click on a photo or on empty grid space |
@@ -68,11 +68,11 @@ shell reacts to it yet.
 | The pinned buttons and the settings button | The pins shrink (40 down to 30 px) in a short window and the wheel scrolls them when they still do not fit; the settings button always keeps the bottom of the rail | |
 | Open folder | **Real**: the folder dialog (also Ctrl+O and the palette's Open Folder) | |
 | New folder | Visual | `folder_ops_controller` |
-| Undo (rail button, Ctrl+Z, palette) | **Real for decisions and ratings** (up to 200 steps in the open folder, saved again as they are undone); file operations (delete, move) have no undo yet | the undo stack (`file_ops`, window `_undo_stack`) for files |
+| Undo (rail button, Ctrl+Z, palette) | **Real** for decisions, ratings, deletes and moves (up to 200 steps in the open folder, saved again as they are undone); a copy and the batch tools have none | the undo stack (`file_ops`, window `_undo_stack`) for files |
 | Review menu (winner / keep / reject / clear) | **Real**: saved to the Widgets decision store (see the Grid section) | |
 | View menu (filenames, badges) | Memory (also not saved) | `view/*` keys |
 | Filters menu (rating, format, clear) | Memory ("Advanced filters…" opens the filters window, see below) | `filtering` |
-| Accept / Reject buttons | **Real** as decisions (saved); they do not move or delete files | move/delete via `file_ops` and the delete mode |
+| Accept / Reject buttons | **Real** as decisions (saved); they do not move or delete files (Delete does) | |
 | Sort, Columns menus | Memory (sort and density work on the model) | `view/columns`, details sort keys |
 | Share to phone | Real (opens PocketDrop with the current photo added) | |
 | Open preview | **Real** (opens the popout on the photo the grid is on) | |
@@ -280,7 +280,7 @@ down to a 690 px tall window (checked at 900, 800 and 720 px tall); below that i
 | **Run workflow** | **Not connected.** It opens the cards below; no file is exported, copied, moved or archived | `workflows.export` (`build_workflow_export_plan`, `WorkflowExportTask`), bundle copy / move / archive in `file_ops` and `archive_ops`, as a background job with the status bar |
 | Recipe that moves bundles asks "Run destructive workflow?" first | Real wording and rule | |
 | Move / Copy confirm, progress, done cards; "Include paired RAW/JPEG and sidecar files"; Cancel; Open destination | Cards and wording follow the mockup; the progress is **scripted** (6 s, a made-up speed), Include paired is remembered only on the card, Open destination opens the folder only if it exists | `file_ops` transfer jobs, `transfer_dialogs.confirm_transfer` rules (count of 2 or more gets a completion card) |
-| Opening Move / Copy To Folder, To Recent Destination | Nothing opens them yet (Review menu, palette and shortcuts are Visual) | menus, palette ids `review.move_selection` ... |
+| Opening Move / Copy To Folder, To Recent Destination | **Real, without the cards**: Copy to folder / Move to folder (the photo menu's Copy or move, a folder dialog), Move Selection in the palette, and the recent destinations (`folders/recent_destinations`, the Widgets' list) move the photo at once, with a toast and Undo; the Widgets' progress cards are not used for a single photo | multi-photo moves with the progress cards |
 | Ctrl Alt H, palette "Deliver / Handoff Builder" | Real (open the window) | |
 
 ## Collections, best-of and Tag People
@@ -352,8 +352,9 @@ in the shell `--ui "cullScene=cu-review"` (the same names).
 | Flagged banner: Why was it flagged? / Restore | **Real** (opens the Cull review at that frame; restoring un-flags it, with Undo) | the cull results are Sample |
 | Open (Space) | **Real**: opens the popout on that photo | |
 | **Open in editor (E)** | **Not connected**: asks the window, nothing listens; a toast says so | the PhotoCraft host |
-| **Open with…, Copy or move…** | **Not connected**: a toast says so (the recent destinations listed are Sample) | `shell_actions.open_with_default`, `file_ops`, recent destinations |
-| **Delete** | **Not connected**: a toast says so and nothing changes | recycle bin (`file_ops`), Undo |
+| **Open with…** | **Not connected**: a toast says so | `shell_actions.open_with_default` |
+| **Copy to folder…, Move to folder…, Recent** | **Real** (`file_actions.py`: the bundle with its RAW or JPEG companion and sidecars, a name already taken gets `_1`, a saved decision follows a moved photo; a move can be undone, a copy cannot, as in the Widgets app). Moving into the folder the photo is in is refused | multi-select |
+| **Delete (Del)** | **Real** (`file_actions.py`, the Widgets' rules): Safe Trash moves the bundle to the recycle folder and can be undone (Ctrl+Z or the toast), System Trash uses the system trash and asks before deleting for good if the system refuses, a file inside a "recycle bin" folder is deleted for good after a question. The setting is "Delete behavior". The saved decision is dropped and comes back with an undo | |
 | Multi-photo menu, Photoshop entry, "Send to" actions, AI group entries | not offered (no multi-select, Photoshop is inside Open with, the new cull has no AI groups) | multi-select |
 | Toasts (up to three, 6 seconds, Undo / Show / Open settings buttons) | **Real** component; used by the menu only so far (the other windows do not raise toasts yet) | other actions |
 | "Open settings" and "Learn more" toast buttons from the mockup | Only in the mockup's samples | |
@@ -375,7 +376,8 @@ Tests: `tests/test_qml_shell_popout.py`.
 | Where it opens | The screen the main window is on | |
 | After closing | The grid moves to the photo the popout ended on, as the Widgets app does; it is not told at every step | |
 | **E, Open in PhotoCraft** | **Not connected**: the viewer is told no editor exists, so E does nothing and browsing is the viewer alone | step 2 of the plan, `PreviewController`'s PhotoCraft half |
-| **Delete, M (move), T (tag)** | **Not connected**: the viewer asks, nothing listens (there is no toast over a full-screen window) | recycle bin and `file_ops`, tags |
+| **Delete, M (move)** | **Real** (the same `file_actions.py`; the move asks for a folder in a Widgets dialog, and the viewer then shows the photo that took its place or closes when none is left) | |
+| **T (tag)** | **Not connected**: the viewer asks, nothing listens | tags |
 | Photoshop button | Disabled ("not found") | `shell_actions.open_in_photoshop` |
 | Preview Commands (the viewer's Command button) | **Not connected** | the palette lives in the main window, a different OS window |
 | Winner Ladder, the collections menu (right click on the viewer) | **Not connected** | `start_winner_ladder`, `catalog.populate_collections_menu` |

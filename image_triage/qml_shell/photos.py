@@ -69,6 +69,7 @@ class PhotoModel(QAbstractListModel):
         super().__init__(parent)
         self._all: list[dict] = []
         self._annotation_loader = None      # fn(records) -> {path: {"decision", "rating", "annotation"}}, called off the UI thread
+        self._next_undo_id = 0
         self._history: list[dict] = []      # what undo steps back through: {"path", "decision": (before, after), "rating": (before, after)}
         self._rows: list[dict] = []
         self._filter = "all"
@@ -322,11 +323,37 @@ class PhotoModel(QAbstractListModel):
 
     canUndo = Property(bool, lambda self: bool(self._history), notify=undoChanged)
 
+    def push_undo(self, label: str, undo_fn) -> int:
+        """Add a step that is not a decision or a rating (a delete, a move): `undo_fn()` takes it back and returns True when it did. Returns the step's id."""
+        self._next_undo_id += 1
+        self._history.append({"id": self._next_undo_id, "label": label, "call": undo_fn})
+        del self._history[:-200]
+        self.undoChanged.emit()
+        return self._next_undo_id
+
+    def undo_entry(self, entry_id: int) -> bool:
+        """Take back one specific step (a toast's Undo button), wherever it is in the history."""
+        for i, step in enumerate(self._history):
+            if step.get("id") == entry_id:
+                del self._history[i]
+                self.undoChanged.emit()
+                return bool(step["call"]())
+        return False
+
     @Slot(result=str)
     def undo(self) -> str:
-        """Step back the last decision or rating change made in this folder; returns what it undid ("" when there is nothing to undo)."""
+        """Step back the last change made in this folder (a decision, a rating, a delete or a move); returns what it undid ("" when there is nothing)."""
         while self._history:
             step = self._history.pop()
+            self.undoChanged.emit()
+            if "call" in step:
+                try:
+                    done = bool(step["call"]())
+                except OSError:
+                    done = False
+                if done:
+                    return step["label"]
+                continue
             target = next((r for r in self._all if r["path"] == step["path"]), None)
             if target is None:
                 continue                           # the photo is gone (moved or deleted): its change cannot be taken back
@@ -334,13 +361,28 @@ class PhotoModel(QAbstractListModel):
             self._rebuild()
             self.countsChanged.emit()
             self._bump()
-            self.undoChanged.emit()
             if target.get("record") is not None:
                 self.annotationChanged.emit(target)
             what = "decision" if step["decision"][0] != step["decision"][1] else "rating"
             return f"{what} of {target['name']}"
-        self.undoChanged.emit()
         return ""
+
+    def remove_paths(self, paths) -> None:
+        """Take photos out of the list (they were deleted or moved away) without reading the folder again."""
+        gone = {_path_key(p) for p in paths}
+        self._all = [r for r in self._all if _path_key(r["path"]) not in gone]
+        self._history = [h for h in self._history if "call" in h or _path_key(h["path"]) not in gone]
+        self._row_of_path = self._row_of_key = None
+        self._rebuild()
+        self.countsChanged.emit()
+        self._bump()
+        self.undoChanged.emit()
+
+    @Slot()
+    def reload(self) -> None:
+        """Read the open folder again (after files came back or went away)."""
+        if self._folder and not self._mock:
+            self.loadFolder(self._folder)
 
     def _bump(self) -> None:
         self._revision += 1

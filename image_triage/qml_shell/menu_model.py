@@ -2,8 +2,7 @@
 
 Real: the decision (Winner, Keep, Reject), Collections (the library store, see collections_model), Copy path / file name / folder path
 (the clipboard), Show in File Explorer, Refresh folder, Sort, Share to phone, Rename / Resize / Convert (open the batch window), and
-Restore / Why for a frame the cull flagged. Not connected yet (they say so in a toast): Open, Open in editor, Open with, Copy or move,
-Delete. See docs/qml_unwired.md, section "Context menus and toasts".
+Restore / Why for a frame the cull flagged. Copy to / Move to folder, the recent destinations and Delete are real (file_actions.py). Not connected yet (they say so in a toast): Open in editor, Open with. See docs/qml_unwired.md, section "Context menus and toasts".
 """
 from __future__ import annotations
 
@@ -82,13 +81,21 @@ class ToastModel(QObject):
         self.changed.emit()
 
 
+def _recent_label(path: str) -> str:
+    parts = [p for p in str(path).replace("\\", "/").split("/") if p]
+    return " / ".join(parts[-2:]) if parts else str(path)
+
+
 class MenuModel(QObject):
     changed = Signal()
     uiRequest = Signal(str, "QVariant")                 # what only the window can do: "share", "batch", "newCollection", "review", "open", "edit", "clearFilters", "view", "sort"
 
-    def __init__(self, photos, collections, cull, toasts: ToastModel, memory: bool = False, parent: QObject | None = None) -> None:
+    def __init__(self, photos, collections, cull, toasts: ToastModel, memory: bool = False, parent: QObject | None = None, files=None) -> None:
         super().__init__(parent)
         self._photos, self._collections, self._cull, self._toasts, self._memory = photos, collections, cull, toasts, memory
+        self._files = files                             # file_actions.FileActions (delete, move, copy); None in tests that do not need it
+        if files is not None:
+            files.recentChanged.connect(self._build)
         self._kind = ""
         self._row = -1
         self._sub = ""
@@ -98,6 +105,9 @@ class MenuModel(QObject):
     view = Property("QVariantMap", lambda self: self._view, notify=changed)
 
     # -- helpers ------------------------------------------------------------------------------------------------------------------
+    def _recent(self) -> list[str]:
+        return self._files.recent() if self._files is not None else []
+
     def _detail(self) -> dict:
         return self._photos.get(self._row) if self._kind == "photo" else {}
 
@@ -150,8 +160,10 @@ class MenuModel(QObject):
                     sub.append({"kind": "row", "key": "coll:" + c["id"], "label": c["name"], "tick": self._in_collection(c["id"], path), "color": c["color"], "iconPath": c["iconPath"], "mark": True})
                 sub += [SEP, self._row_item("coll:new", "New collection…", "plus")]
             elif self._sub == "mv":
-                sub = [self._row_item("mv:copy", "Copy to folder…", "move"), self._row_item("mv:move", "Move to folder…", "folder"), SEP, {"kind": "head", "label": "Recent"},
-                       self._row_item("mv:r1", "Delivery / Album", "folder"), self._row_item("mv:r2", "Georgia trip / Picks", "folder")]
+                sub = [self._row_item("mv:copy", "Copy to folder…", "move"), self._row_item("mv:move", "Move to folder…", "folder")]
+                recent = self._recent()
+                if recent:
+                    sub += [SEP, {"kind": "head", "label": "Recent"}] + [self._row_item(f"mv:r{i}", _recent_label(d), "folder") for i, d in enumerate(recent)]
         elif self._kind == "folder":
             st = self._state
             items = [self._row_item("refresh", "Refresh folder", "refresh", kbd="F5"), self._row_item("clear", "Clear filters", "funnel", off=not st.get("filtered")), SEP,
@@ -223,8 +235,13 @@ class MenuModel(QObject):
             self._not_connected("The editor")
         elif key.startswith("with:"):
             self._not_connected("Open with")
-        elif key.startswith("mv:"):
-            self._not_connected("Copy or move")
+        elif key in ("mv:copy", "mv:move"):
+            self.uiRequest.emit("chooseDest", f"{key[3:]}:{row}")       # the window asks for the folder, then calls files.copyRow / moveRow
+        elif key.startswith("mv:r"):
+            recent = self._recent()
+            index = int(key[4:]) if key[4:].isdigit() else -1
+            if self._files is not None and 0 <= index < len(recent):
+                self._files.moveRow(row, recent[index])
         elif key in ("rename", "resize", "convert"):
             self.uiRequest.emit("batch", key)
         elif key == "coll:new":
@@ -250,7 +267,8 @@ class MenuModel(QObject):
 
                 reveal_in_file_explorer(path)
         elif key == "del":
-            t.push("warn", "Deleting isn’t connected yet", "Nothing was changed. The file is where it was.")
+            if self._files is not None:
+                self._files.deleteRow(row)
         elif key == "flagwhy":
             self.uiRequest.emit("review", path)
         elif key == "flagrestore":

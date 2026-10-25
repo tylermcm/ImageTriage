@@ -32,8 +32,9 @@ class PopoutHost(QObject):
     openChanged = Signal()
     closed = Signal(int)      # the viewer was put away on this row of the grid
 
-    def __init__(self, photos, thumbs, collections=None, *, prebuild: bool = True, parent: QObject | None = None) -> None:
+    def __init__(self, photos, thumbs, collections=None, *, prebuild: bool = True, parent: QObject | None = None, files=None) -> None:
         super().__init__(parent)
+        self._files = files                                  # file_actions.FileActions: the viewer's Delete and M keys
         self._photos = photos
         self._thumbs = thumbs
         self._collections = collections
@@ -115,6 +116,8 @@ class PopoutHost(QObject):
         preview.keep_requested.connect(lambda path: self._decide(path, "keep"))
         preview.rating_requested.connect(self._rate)
         preview.collect_requested.connect(self._collect)
+        preview.delete_requested.connect(self._delete)
+        preview.move_requested.connect(self._move)
         preview.closed.connect(self._viewer_closed)
         preview.set_photoshop_available(False)
         preview.set_photocraft_available(False)           # no editor from here yet: the key does nothing and browsing is the viewer alone
@@ -193,6 +196,43 @@ class PopoutHost(QObject):
                 return                                          # at the first or last photo: nothing to show
         self._row = target
         self._show(target)
+
+    # -- delete and move made in the viewer -------------------------------------------------------------------------------
+    def _file_action(self, path: str, action) -> None:
+        """Run a file action on the photo `path` (a FileActions call taking the grid's row), then show the photo that took its place."""
+        if self._files is None:
+            return
+        row = self._photos.row_for_path(path)
+        if row < 0:
+            return
+        before = self._photos.shown
+        from PySide6.QtWidgets import QMessageBox
+
+        # a question (delete for good) is asked over the full-screen viewer, not in the window behind it
+        self._files.asker = lambda title, body, confirm: QMessageBox.question(self._preview, title, body) == QMessageBox.StandardButton.Yes
+        try:
+            action(row)
+        finally:
+            self._files.asker = None
+        if self._photos.shown >= before:
+            return                                                # nothing went away (it failed, or the question was answered no)
+        if self._photos.shown == 0:
+            self._preview.close()
+            return
+        self._row = min(row, self._photos.shown - 1)
+        self._show(self._row)
+
+    def _delete(self, path: str) -> None:
+        self._file_action(path, self._files.deleteRow if self._files is not None else None)
+
+    def _move(self, path: str) -> None:
+        if self._files is None:
+            return
+        from PySide6.QtWidgets import QFileDialog
+
+        folder = QFileDialog.getExistingDirectory(self._preview, "Move to folder", self._photos.folder_dir())
+        if folder:
+            self._file_action(path, lambda row: self._files.moveRow(row, folder))
 
     # -- compare ----------------------------------------------------------------------------------------------------------
     def _compare_mode_changed(self, enabled: bool) -> None:

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Window
 import QtQuick.Dialogs
+import QtQuick.Dialogs
 
 Window {
     id: win
@@ -203,6 +204,14 @@ Window {
         onRejected: pocketDrop.confirmRisk(false, false)
     }
     ConfirmCard { id: infoCard; confirmText: "OK" }
+    // delete, move and copy (file_actions.py): the folder to move or copy to, and the questions it may ask (delete for good)
+    property string destMode: "move"
+    property int destRow: -1
+    function chooseDestination(mode, row) { destMode = mode; destRow = row; destDialog.title = mode === "copy" ? "Copy to folder" : "Move to folder"; destDialog.open() }
+    FolderDialog { id: destDialog; onAccepted: { var path = selectedFolder.toString().replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/"); if (win.destMode === "copy") fileActions.copyRow(win.destRow, path); else fileActions.moveRow(win.destRow, path) } }
+    property string fileQuestion: ""
+    ConfirmCard { id: fileCard; cancelText: "Cancel"; onAccepted: fileActions.answer(win.fileQuestion, true); onRejected: fileActions.answer(win.fileQuestion, false) }
+    Connections { target: fileActions; function onConfirmRequested(id, title, body, confirm) { win.fileQuestion = id; fileCard.title = title; fileCard.body = body; fileCard.confirmText = confirm; fileCard.open() } }
     Connections { target: pocketDrop; function onRiskChanged() { if (pocketDrop.riskPending) riskCard.open() } }
     Connections { target: pocketDrop; function onAlertRequested(title, message) { infoCard.title = title; infoCard.body = message; infoCard.open() } }
     Connections {   // the still frames of the drag need the photos for the stacked thumbnails
@@ -246,6 +255,7 @@ Window {
             else if (what === "clearFilters") { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters(); advFilters.clearApplied() }
             else if (what === "view") { if (arg === "view:names") UiState.showNames = !UiState.showNames; else if (arg === "view:badges") UiState.showBadges = !UiState.showBadges; else UiState.dens = arg.slice(5) }
             else if (what === "sort") UiState.sort = arg
+            else if (what === "chooseDest") win.chooseDestination(String(arg).split(":")[0], Number(String(arg).split(":")[1]))
         }
     }
     Connections {   // a button in a help article opens a tab or a window of the shell
@@ -317,6 +327,8 @@ Window {
         else if (id === "file.refresh_folder") { if (libraryNav.openPath !== "") libraryNav.openFolder(libraryNav.openPath) }
         else if (id === "file.reveal_folder") libraryNav.reveal(libraryNav.openPath)
         else if (id === "file.browse_library") reference.open("lib")
+        else if (id === "review.delete_selection") fileActions.deleteRow(grid.view.currentIndex)
+        else if (id === "review.move_selection") chooseDestination("move", grid.view.currentIndex)
         else if (id === "edit.undo") { var what = photos.undo(); toasts.show(what !== "" ? "success" : "info", what !== "" ? "Undid the " + what : "Nothing to undo", "") }
         else if (id === "file.exit") win.close()
         else if (id === "workflow.share_to_phone") { pocketDrop.refreshLibrary(grid.view.currentIndex); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
@@ -339,6 +351,7 @@ Window {
     TopMenus { id: topMenus; onRun: (id) => win.runCommand(id) }
     Shortcut { sequence: "F5"; onActivated: win.runCommand("file.refresh_folder") }
     Shortcut { sequence: "Ctrl+Z"; onActivated: win.runCommand("edit.undo") }
+    Shortcut { sequence: "Delete"; onActivated: win.runCommand("review.delete_selection") }
     Connections { target: UiState; function onUndoRequested() { win.runCommand("edit.undo") } }
     Connections { target: UiState; function onCompareChanged() { cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off") } }
     Component.onCompleted: {
