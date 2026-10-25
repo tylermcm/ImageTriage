@@ -18,7 +18,7 @@ from test_qml_shell import pump, qapp  # noqa: F401  (the same application fixtu
 @pytest.fixture(autouse=True)
 def clean_settings():
     settings = user_settings()
-    for key in (FAVORITES_KEY, RECENT_KEY, library_nav.SHOW_HIDDEN_KEY, library_nav.LAST_FOLDER_KEY, library_nav.RESTORE_POSITION_KEY, library_nav.FOLDER_STATE_KEY):
+    for key in (FAVORITES_KEY, RECENT_KEY, library_nav.SHOW_HIDDEN_KEY, library_nav.SINGLE_BRANCH_KEY, library_nav.WATCH_KEY, library_nav.LAST_FOLDER_KEY, library_nav.RESTORE_POSITION_KEY, library_nav.FOLDER_STATE_KEY):
         settings.remove(key)
     yield
     for key in (FAVORITES_KEY, RECENT_KEY, library_nav.SHOW_HIDDEN_KEY, library_nav.LAST_FOLDER_KEY, library_nav.RESTORE_POSITION_KEY, library_nav.FOLDER_STATE_KEY):
@@ -111,6 +111,93 @@ def test_a_chevron_opens_and_closes_a_folder_and_lists_it_once(qapp, nav, librar
     nav.toggle(str(library / "2026"))                                    # opened again: no second listing
     assert [r["name"] for r in nav.tree] == ["2025", "2026", "Georgia"]
     assert [p for p in listed if p.endswith("2026")] == [str(library / "2026")]
+
+
+def names(model):
+    return [r["name"] for r in model.tree]
+
+
+def test_opening_a_folder_closes_the_opened_folders_beside_it(qapp, nav, library):
+    nav.openFolder(str(library))
+    until(qapp, lambda: len(nav.tree) == 2)
+    nav.toggle(str(library / "2025"))
+    until(qapp, lambda: names(nav) == ["2025", "Trip", "Wedding", "2026"])
+    nav.toggle(str(library / "2025" / "Trip"))
+    until(qapp, lambda: "Day1" in names(nav))
+    nav.toggle(str(library / "2026"))                                    # the Widgets default: one branch per level
+    until(qapp, lambda: "Georgia" in names(nav))
+    assert names(nav) == ["2025", "2026", "Georgia"]                     # 2025 and what was open below it are closed
+
+
+def test_with_the_setting_off_both_branches_stay_open(qapp, nav, library):
+    user_settings().setValue(library_nav.SINGLE_BRANCH_KEY, False)
+    nav.openFolder(str(library))
+    until(qapp, lambda: len(nav.tree) == 2)
+    nav.toggle(str(library / "2025"))
+    nav.toggle(str(library / "2026"))
+    until(qapp, lambda: "Georgia" in names(nav) and "Wedding" in names(nav))
+    assert names(nav) == ["2025", "Trip", "Wedding", "2026", "Georgia"]
+
+
+def test_the_way_to_the_open_folder_stays_open(qapp, nav, library):
+    nav.openFolder(str(library / "2025" / "Trip" / "Day1"))
+    until(qapp, lambda: "Day1" in names(nav))
+    nav.toggle(str(library / "2026"))
+    until(qapp, lambda: "Georgia" in names(nav))
+    assert names(nav) == ["2025", "Trip", "Day1", "Day2", "Wedding", "2026", "Georgia"]    # 2025 and Trip lead to the open folder: they stay
+
+
+def photos_loaded(qapp, nav, count):
+    until(qapp, lambda: not nav.photos.loading and nav.photos.total == count)
+
+
+def test_a_file_that_appears_in_the_open_folder_is_picked_up(qapp, nav, library, monkeypatch):
+    from PIL import Image
+
+    monkeypatch.setattr(library_nav, "WATCH_DELAY_MS", 100)
+    nav._watch_timer.setInterval(100)
+    day = library / "2025" / "Trip" / "Day1"
+    nav.openFolder(str(day))
+    photos_loaded(qapp, nav, 3)
+    assert nav._watcher.directories() == [str(day)] or [p.replace("\\", "/") for p in nav._watcher.directories()] == [str(day).replace("\\", "/")]
+    Image.new("RGB", (32, 24), (200, 10, 10)).save(day / "IMG_99.jpg")             # something else wrote a file
+    photos_loaded(qapp, nav, 4)
+    (day / "IMG_99.jpg").unlink()
+    photos_loaded(qapp, nav, 3)
+
+
+def test_the_watch_is_off_when_the_setting_is_off_and_moves_with_the_folder(qapp, nav, library):
+    user_settings().setValue(library_nav.WATCH_KEY, False)
+    nav.openFolder(str(library / "2026" / "Georgia"))
+    photos_loaded(qapp, nav, 2)
+    assert nav._watcher.directories() == []
+    user_settings().setValue(library_nav.WATCH_KEY, True)
+    nav.openFolder(str(library / "2025" / "Trip" / "Day1"))
+    photos_loaded(qapp, nav, 3)
+    assert len(nav._watcher.directories()) == 1 and nav._watcher.directories()[0].replace("\\", "/").endswith("Day1")
+
+
+def test_reading_the_folder_again_keeps_the_grid_on_the_photo(qapp, nav, library):
+    day = library / "2025" / "Trip" / "Day1"
+    nav.openFolder(str(day))
+    photos_loaded(qapp, nav, 3)
+    moved = []
+    nav.positionRestored.connect(moved.append)
+    nav.savePosition(str(day / "IMG_02.jpg"))                                       # the person is on the last photo
+    nav.refreshFolder()
+    until(qapp, lambda: moved)
+    assert moved == [nav.photos.row_for_path(str(day / "IMG_02.jpg"))] and moved[0] == 2
+
+
+def test_a_folder_the_person_has_left_is_not_refreshed_into_view(qapp, nav, library):
+    nav.openFolder(str(library / "2026" / "Georgia"))
+    photos_loaded(qapp, nav, 2)
+    nav.savePosition(str(library / "2026" / "Georgia" / "IMG_01.jpg"))
+    nav.openFolder(str(library / "2025" / "Trip" / "Day1"))
+    photos_loaded(qapp, nav, 3)
+    nav.refreshFolder()                                                              # the last photo was in the other folder: not used
+    assert nav._pending_current == ""
+    photos_loaded(qapp, nav, 3)
 
 
 def test_a_folder_with_no_folders_in_it_gets_the_folder_icon(qapp, nav, library):

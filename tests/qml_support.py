@@ -7,6 +7,8 @@ from image_triage.qml_shell.menu_model import MenuModel, ToastModel
 from image_triage.qml_shell.pocketdrop_model import PocketDropModel
 from image_triage.qml_shell.people_model import PeopleModel
 from image_triage.qml_shell.ai_scores import AiScores
+from image_triage.qml_shell.capture import CaptureService
+from image_triage.qml_shell.ui_memory import UiMemory
 from image_triage.qml_shell.histograms import HistogramService
 from image_triage.qml_shell.inspection import InspectionService
 from image_triage.qml_shell.library_nav import LibraryNavModel
@@ -39,4 +41,5 @@ def collection_models(photos, qapp):
     return (("reference", ReferenceModel(photos, toasts, memory=True, parent=qapp)), ("collections", collections), ("people", PeopleModel(photos, memory=True, parent=qapp)), ("bestOf", BestOfModel(photos, parent=qapp)), ("cull", cull), ("toasts", toasts), ("fileActions", files), ("ctxMenu", MenuModel(photos, collections, cull, toasts, memory=True, parent=qapp, files=files)),
             ("pocketDrop", PocketDropModel(photos, memory=True, parent=qapp, collections=collections)), ("popout", popout),
             ("libraryNav", LibraryNavModel(photos, memory=True, parent=qapp)), ("histograms", HistogramService(loader=lambda path: None, parent=qapp)),
-            ("inspection", InspectionService(loader=lambda path: None, parent=qapp)), ("aiScores", AiScores(photos, memory=True, parent=qapp)))
+            ("inspection", InspectionService(loader=lambda path: None, parent=qapp)), ("captureData", CaptureService(loader=lambda path: None, parent=qapp)), ("aiScores", AiScores(photos, memory=True, parent=qapp)),
+            ("uiMemory", UiMemory(memory=True, parent=qapp)))

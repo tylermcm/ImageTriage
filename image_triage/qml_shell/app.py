@@ -43,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     from .menu_model import MenuModel, ToastModel
     from .collections_model import CollectionsModel
     from .ai_scores import AiScores
+    from .capture import CaptureService
+    from .filter_match import FilterMatcher
+    from .ui_memory import UiMemory
     from .histograms import HistogramService
     from .inspection import InspectionService
     from .library_nav import LibraryNavModel
@@ -121,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
     settings.previewChanged.connect(apply_theme)
     app.styleHints().colorSchemeChanged.connect(lambda *_: apply_theme())      # Auto follows the system's light or dark when it changes
     apply_theme()
+    if not args.mock:
+        settings.apply_ai_scoring()                              # the cull sliders and the base score weight, as the Widgets app pushes them at start
     if not args.mock and settings.value("perfLog") is True:
         from ..perf import perf_logger
 
@@ -150,9 +155,13 @@ def main(argv: list[str] | None = None) -> int:
     context.setContextProperty("thumbs", thumbs)
     context.setContextProperty("histograms", HistogramService(parent=app))
     context.setContextProperty("inspection", InspectionService(parent=app))
+    context.setContextProperty("captureData", CaptureService(parent=app))
     ai_scores = AiScores(photos, memory=bool(args.mock), parent=app)
+    photos.set_matcher(FilterMatcher(ai_result=ai_scores.result_for_row, parent=app))          # what the Advanced filters ask beyond decision, rating and RAW or JPEG
+    settings.aiScoringChanged.connect(ai_scores.reload)           # a saved report is classified as it is read: read it again with the new sliders
     cull.runFinished.connect(ai_scores.reload)          # an analysis has just written its report: the inspector reads it
     context.setContextProperty("aiScores", ai_scores)
+    context.setContextProperty("uiMemory", UiMemory(memory=bool(args.mock or args.grab), parent=app))     # the interface as it was left; headless checks start from the defaults
     library_nav = LibraryNavModel(photos, memory=bool(args.mock), persist=not args.grab, parent=app)
     context.setContextProperty("libraryNav", library_nav)
     if args.widgets_popout:

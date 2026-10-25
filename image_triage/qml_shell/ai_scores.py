@@ -126,6 +126,10 @@ class AiScores(QObject):
                 return row
         return -1
 
+    def result_for_row(self, row: dict):
+        """The saved report's `AIImageResult` for a photo of the grid (its row), or None: what the Advanced filters' AI states ask."""
+        return self._result_for(self._bundle, row["path"], row.get("record"))
+
     @Slot(str, result="QVariantMap")
     def get(self, path: str) -> dict:
         if self._state == "loading":

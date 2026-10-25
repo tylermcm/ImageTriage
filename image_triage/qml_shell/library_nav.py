@@ -19,7 +19,7 @@ import shutil
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Property, QAbstractListModel, QByteArray, QModelIndex, QObject, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QAbstractListModel, QByteArray, QFileSystemWatcher, QModelIndex, QObject, Qt, QTimer, QUrl, Signal, Slot
 
 from .. import path_policy
 from ..app_identity import user_settings
@@ -27,6 +27,9 @@ from ..app_identity import user_settings
 FAVORITES_KEY = "folders/favorites"
 RECENT_KEY = "folders/recent_opened"
 SHOW_HIDDEN_KEY = "view/show_hidden_folders"
+SINGLE_BRANCH_KEY = "view/single_drive_expansion"
+WATCH_KEY = "catalog/watch_current_folder"
+WATCH_DELAY_MS = 900                 # the Widgets app waits this long after a change, so a copy of many files is read once
 RECENT_LIMIT = 12
 LAST_FOLDER_KEY = "window/last_folder"                  # the Widgets keys: both front ends reopen the same folder, on the same photo
 RESTORE_POSITION_KEY = "view/restore_folder_position"
@@ -136,6 +139,16 @@ class LibraryNavModel(QObject):
         self._counts: dict[str, int] = {}                      # photos in a folder, known once it has been opened
         self._sizes: dict[str, tuple[int, int]] = {}           # drive -> (free, total) bytes, as the last probe saw them
         self._query = ""
+        self._last_photo = ""                                  # the photo the grid was last on, for reading the folder again where the person is
+        self._watcher: QFileSystemWatcher | None = None
+        self._watch_timer: QTimer | None = None
+        if not memory:
+            self._watcher = QFileSystemWatcher(self)
+            self._watch_timer = QTimer(self)
+            self._watch_timer.setSingleShot(True)
+            self._watch_timer.setInterval(WATCH_DELAY_MS)
+            self._watcher.directoryChanged.connect(lambda _path: self._watch_timer.start())
+            self._watch_timer.timeout.connect(self._watched_change)
         self._listed.connect(self._apply_listed)
         # what the page's Repeaters show (role names are not PanelRow's own property names: icon, text, count, current)
         self._fav_rows = _RowsModel({"folder": "path", "title": "name", "photos": "count", "here": "current"}, self)
@@ -330,6 +343,41 @@ class LibraryNavModel(QObject):
         self._remember_last_folder(path)
         self._pending_current = self._saved_position(path)
         self._photos.loadFolder(path)
+        self._watch(path)
+        self.changed.emit()
+
+    # -- watching the open folder (the Widgets setting "Refresh the open folder when files change on disk") --------------------
+    def _watching(self) -> bool:
+        return self._settings is not None and bool(self._settings.value(WATCH_KEY, True, bool))
+
+    def _watch(self, folder: str) -> None:
+        """Watch `folder` (a local one: a network or removable drive is not watched, as in the Widgets app) when the setting is on."""
+        if self._watcher is None:
+            return
+        old = self._watcher.directories()
+        if old:
+            self._watcher.removePaths(old)
+        if self._watch_timer is not None:
+            self._watch_timer.stop()
+        if folder and self._watching() and os.path.isdir(folder) and path_policy.is_plain_local(folder):
+            self._watcher.addPath(folder)
+
+    def _watched_change(self) -> None:
+        if not self._open or not self._watching():
+            return
+        if self._photos.loading:
+            self._watch_timer.start(450)                        # a read is still going: look again once it is done
+        elif not path_policy.confirmed_missing(self._open):
+            self.refreshFolder()
+
+    @Slot()
+    def refreshFolder(self) -> None:
+        """Read the open folder again (F5, and a change on disk), keeping the grid on the photo the person is on."""
+        if not self._open or self._memory:
+            return
+        if self._last_photo and _key(os.path.dirname(self._last_photo)) == _key(self._open):
+            self._pending_current = self._last_photo
+        self._photos.loadFolder(self._open)
         self.changed.emit()
 
     # -- session memory: the last folder, and the photo the person was on --------------------------------------------------
@@ -371,6 +419,7 @@ class LibraryNavModel(QObject):
         """Remember `photo` as where the person is in the open folder. Called as they move (after a pause) and when the window closes."""
         if not photo:
             return
+        self._last_photo = photo
         if self._memory or self._settings is None:
             self.saved = (self._open, photo)
             return
@@ -409,9 +458,28 @@ class LibraryNavModel(QObject):
         if key in self._expanded:
             del self._expanded[key]
         else:
+            if self._one_branch():
+                self._close_siblings(path)
             self._expanded[key] = path
             self._list(path)
         self.changed.emit()
+
+    def _one_branch(self) -> bool:
+        """The Widgets setting "Keep only one branch expanded per level" (`view/single_drive_expansion`, on by default)."""
+        return self._settings is not None and bool(self._settings.value(SINGLE_BRANCH_KEY, True, bool))
+
+    def _close_siblings(self, path: str) -> None:
+        """Opening a folder closes the opened folders beside it, and what is below them, unless they are on the way to the open folder."""
+        parent = _key(os.path.dirname(path))
+        way, here = set(), self._open
+        while here:
+            way.add(_key(here))
+            above = os.path.dirname(here)
+            here = above if above != here else ""
+        for key, opened in list(self._expanded.items()):
+            if _key(os.path.dirname(opened)) == parent and key != _key(path) and key not in way:
+                for below in [k for k in self._expanded if k == key or k.startswith(key + os.sep)]:
+                    del self._expanded[below]
 
     @Slot(str)
     def reveal(self, path: str) -> None:

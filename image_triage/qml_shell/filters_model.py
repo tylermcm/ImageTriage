@@ -26,6 +26,7 @@ from ..filtering import (
     serialize_saved_filter_preset,
 )
 from ..models import FilterMode
+from .filter_match import rest_of, undecidable
 
 SAVED_KEY = "filters/saved_queries"
 
@@ -287,10 +288,12 @@ class FiltersModel(QObject):
             if allowed is not None:
                 narrow(allowed)
         file = {FileTypeFilter.RAW: "raw", FileTypeFilter.JPEG: "jpeg"}.get(query.file_type)
-        return {"decisions": decisions, "min_rating": query.min_rating, "file": file}
+        return {"decisions": decisions, "min_rating": query.min_rating, "file": file, "rest": rest_of(query)}      # rest: what filter_match decides for photos read from a folder
 
-    @staticmethod
-    def unsupportedCount(query: RecordFilterQuery) -> int:
+    def unsupportedCount(self, query: RecordFilterQuery) -> int:
+        """How many set filters are kept in the query but not applied: for photos read from a folder only what `filter_match` cannot decide, for the sample page's what its model cannot."""
+        if self._photos.has_records():
+            return undecidable(query)
         n = 0
         n += query.quick_filter not in _SUPPORTED_QUICK
         n += query.file_type not in _SUPPORTED_FILE

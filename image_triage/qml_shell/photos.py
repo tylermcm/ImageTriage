@@ -78,7 +78,8 @@ class PhotoModel(QAbstractListModel):
         self._min_rate = 0
         self._fmt = "all"
         self._sort = "name"
-        self._adv: dict | None = None      # the advanced-filters dialog's part of the query: {"decisions", "min_rating", "file"}
+        self._adv: dict | None = None      # the advanced-filters dialog's part of the query: {"decisions", "min_rating", "file", "rest"} (rest: filter_match.rest_of(query))
+        self._matcher = None               # decides the rest of a query for the photos read from a folder (filter_match.FilterMatcher)
         self._folder = ""
         self._loading = False
         self._load_token = 0                # the newest loadFolder request: an older scan that finishes later is dropped
@@ -187,6 +188,9 @@ class PhotoModel(QAbstractListModel):
             self.undoChanged.emit()
         self._folder = folder
         self._loading = False
+        if self._matcher is not None:
+            self._matcher.forget()                                   # what was read for the last folder's photos is dropped
+        self._read_for_query()
         self._rebuild()
         self.loadingChanged.emit()
         self.folderChanged.emit()
@@ -232,19 +236,41 @@ class PhotoModel(QAbstractListModel):
         self._bump()
 
     # -- advanced filters (filters_model.py) -------------------------------------------------------------------------------
-    @staticmethod
-    def _advanced_ok(row: dict, adv: dict | None) -> bool:
+    def _advanced_ok(self, row: dict, adv: dict | None) -> bool:
         if not adv:
             return True
         if adv["decisions"] is not None and row["decision"] not in adv["decisions"]:
             return False
         if row["rating"] < adv["min_rating"]:
             return False
+        rest = adv.get("rest")
+        if rest is not None and self._matcher is not None and row.get("record") is not None:
+            return self._matcher.matches(row, rest)                  # a photo read from a folder: the Widgets' own rule decides the file type too (a RAW's JPEG, a PNG)
         return adv["file"] is None or (row["raw"] if adv["file"] == "raw" else not row["raw"])
+
+    def set_matcher(self, matcher) -> None:
+        """Hand over what decides the part of an Advanced filters query that is not decision, rating and RAW/JPEG (filter_match.py)."""
+        self._matcher = matcher
+        matcher.changed.connect(self.refilter)
+
+    def has_records(self) -> bool:
+        """Were these photos read from a folder (so a query can be decided on them), rather than being the sample page's?"""
+        return any(r.get("record") is not None for r in self._all[:1])
+
+    def refilter(self) -> None:
+        """Decide the applied Advanced filters again (the capture data or the AI report they need has arrived)."""
+        if self._adv:
+            self._rebuild()
 
     def apply_advanced(self, spec: dict | None) -> None:
         self._adv = spec
+        self._read_for_query()
         self._rebuild()
+
+    def _read_for_query(self) -> None:
+        rest = (self._adv or {}).get("rest")
+        if rest is not None and rest.requires_metadata and self._matcher is not None:
+            self._matcher.need_metadata(self._all)
 
     def count_matching(self, spec: dict | None) -> int:
         """How many of the folder's photos the dialog's filters keep (the rail's and bar's own filters are not counted)."""
@@ -510,20 +536,16 @@ class PhotoModel(QAbstractListModel):
 
     @Slot(int, result="QVariantMap")
     def get(self, row: int) -> dict:
-        """Everything the inspector shows for one row: the row, its position, and sample capture data derived from the name so it is stable.
-        The Quality and AI tabs are not here (`inspection` and `aiScores` answer those) except for the mockup's twelve photos."""
+        """Everything the inspector shows for one row: the row and its position. The capture data, the Quality and the AI tab are not here (`captureData`,
+        `inspection` and `aiScores` answer those) except for the mockup's twelve photos, which carry theirs."""
         if not 0 <= row < len(self._rows):
             return {}
         item = self._rows[row]
-        h = zlib.crc32(item["name"].encode("utf-8", "replace"))
-        shutter = ("1/125", "1/250", "1/500", "1/800", "1/1250")[h % 5]
-        aperture = ("f/4", "f/5.6", "f/8", "f/9", "f/11")[(h >> 4) % 5]
-        iso = (100, 100, 200, 400, 800)[(h >> 8) % 5]
-        detail = dict(item, isRaw=item["raw"], position=row + 1, count=len(self._rows), exposure=f"{shutter} \u00b7 {aperture} \u00b7 ISO {iso}",
-                    focal=("24 mm", "35 mm", "50 mm", "70 mm")[(h >> 14) % 4], captured=f"2026-05-14 {8 + (h >> 17) % 10:02d}:{(h >> 20) % 60:02d}",
-                    camera="Nikon Z 6", lens="24-70 mm f/4 S", pixels="6048 \u00d7 4024")
+        detail = dict(item, isRaw=item["raw"], position=row + 1, count=len(self._rows))
         mock = self._mock.get(item["name"])
         if mock:
+            detail["capture"] = {"ready": True, "camera": "Nikon Z 6", "lens": "24-70 mm f/4 S", "exposure": mock["exposure"], "focal": mock["focal"],
+                                 "captured": mock["captured"], "pixels": "6048 \u00d7 4024"}
             group = [{"path": self._rows[(row + n) % len(self._rows)]["path"], "row": (row + n) % len(self._rows), "current": n == 0} for n in range(4)]
             detail.update(mock, measured=sample_measured(mock["focus"], mock["expo"], mock["noise"]),
                           aiCall=sample_ai(item["ai"], item["decision"], mock["focus"], mock["expo"], group))
@@ -544,7 +566,7 @@ class PhotoModel(QAbstractListModel):
         for row in self._all:
             value = score_of(row)
             row["ai"] = -1 if value is None else int(value)
-        if self._sort == "ai":
+        if self._sort == "ai" or self._adv:                         # the order, or what an applied filter keeps, may follow the scores
             self._rebuild()
         elif self._rows:
             self.dataChanged.emit(self.index(0), self.index(len(self._rows) - 1), [AiRole])

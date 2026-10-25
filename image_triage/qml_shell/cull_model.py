@@ -10,6 +10,7 @@ See docs/qml_unwired.md, section "Cull window and AI Center".
 """
 from __future__ import annotations
 
+import threading
 import time
 import zlib
 
@@ -69,6 +70,7 @@ class CullModel(QObject):
     gridChanged = Signal()
     runFinished = Signal()              # a real analysis has written its report: the inspector's AI tab reads it again
     _savedLoaded = Signal(int, object)
+    _timesLoaded = Signal(int, object)
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None, ai: AiCenterBackend | None = None, toasts=None, files=None) -> None:
         super().__init__(parent)
@@ -96,6 +98,8 @@ class CullModel(QObject):
         self._flags: dict[str, str] = {}
         self._stacks: list[list[dict]] = []
         self._times: dict[str, str] = {}
+        self._times_started = False                  # a real folder's capture times are being read (or have been): once per set of stacks
+        self._times_gen = 0
         self._timer = QTimer(self)
         self._timer.setInterval(120)
         self._timer.timeout.connect(self._tick)
@@ -115,6 +119,7 @@ class CullModel(QObject):
             self._run.failed.connect(self._run_failed)
             self._run.cancelled.connect(self._run_cancelled)
             self._savedLoaded.connect(self._saved_arrived)
+            self._timesLoaded.connect(self._times_arrived)
             photos.folderChanged.connect(self._folder_changed)
 
     def _on_ai(self) -> None:
@@ -137,15 +142,42 @@ class CullModel(QObject):
         return self._photos.collect()
 
     def _frame_time(self, path: str) -> str:
-        if not self._times:
-            for i in range(self._photos.shown):
-                d = self._photos.get(i)
-                self._times[d["path"]] = str(d.get("captured", ""))[11:]
+        """When a frame was taken, "HH:MM": the sample page's invented times, or (for a real folder) the capture times read from the files
+        on a worker thread, which the page picks up when they have arrived (blank until then)."""
+        if self._memory:
+            if not self._times:
+                for i in range(self._photos.shown):
+                    d = self._photos.get(i)
+                    self._times[d["path"]] = str(d.get("capture", {}).get("captured", ""))[11:]
+            return self._times.get(path, "")
+        if not self._times_started:
+            self._times_started = True
+            self._times_gen += 1
+            generation, paths = self._times_gen, [r["path"] for r in self._rows()]
+
+            def work() -> None:
+                from ..metadata import load_capture_metadata
+
+                found: dict[str, str] = {}
+                for p in paths:
+                    try:
+                        found[p] = load_capture_metadata(p).captured_at[11:]
+                    except Exception:
+                        found[p] = ""
+                self._timesLoaded.emit(generation, found)
+
+            threading.Thread(target=work, name="qml-cull-times", daemon=True).start()
         return self._times.get(path, "")
+
+    def _times_arrived(self, generation: int, found: dict) -> None:
+        if generation == self._times_gen:
+            self._times = found
+            self._rebuild()
 
     def _build_stacks(self) -> None:
         rows = self._rows()
         self._times = {}
+        self._times_started = False
         stacks, i, n = [], 0, 0
         while i < len(rows):
             size = _STACK_SIZES[n % len(_STACK_SIZES)]
@@ -738,6 +770,7 @@ class CullModel(QObject):
         self._picks = {path for path, o in outcomes.items() if o.role == "pick"}
         self._stacks = stacks_of(rows, outcomes)
         self._times = {}
+        self._times_started = False
         self._real = True
 
     # -- results saved with the folder -------------------------------------------------------------------------------------------

@@ -40,10 +40,20 @@ Item {
         if (!facts.ready && !facts.failed) inspection.request(curPath)
     }
     function esc(text) { return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;") }
-    onCurPathChanged: refreshFacts()
+    // The photo's camera, lens, exposure, capture time and pixel size (capture.py), read for every photo; the mockup's sample photos carry theirs.
+    property var cap: ({ ready: false })
+    function refreshCapture() {
+        if (!has) { cap = ({ ready: false }); return }
+        if (cur.capture !== undefined) { cap = cur.capture; return }
+        cap = captureData.get(curPath)
+        if (!cap.ready && !cap.failed) captureData.request(curPath)
+    }
+    function capText(key) { return !cap.ready ? (cap.failed ? "\u2014" : "\u2026") : (cap[key] ? cap[key] : "\u2014") }
+    onCurPathChanged: { refreshFacts(); refreshCapture() }
     onTabChanged: refreshFacts()
-    Component.onCompleted: refreshFacts()
+    Component.onCompleted: { refreshFacts(); refreshCapture() }
     Connections { target: inspection; function onReady(p) { if (p === insp.curPath) insp.refreshFacts() } }
+    Connections { target: captureData; function onReady(p) { if (p === insp.curPath) insp.refreshCapture() } }
 
     Rectangle { anchors.fill: parent; color: theme.s2 }
     Rectangle { anchors.left: parent.left; width: 1; height: parent.height; color: theme.lineSoft }
@@ -66,7 +76,7 @@ Item {
                     Text { width: parent.width; height: 17; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight; text: insp.has ? (insp.cur.name.indexOf(".") >= 0 ? insp.cur.name : insp.cur.name + "." + insp.cur.ext) : "No photo"
                            color: theme.fg; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: -0.14 }
                     Item { width: 1; height: 4 }
-                    Text { height: 13; verticalAlignment: Text.AlignVCenter; text: insp.has ? (insp.cur.isRaw ? "RAW + JPG" : insp.cur.ext) + " \u00b7 " + insp.cur.pixels : ""; color: theme.fg3; font.pointSize: UiState.pt(10.8333) }
+                    Text { height: 13; verticalAlignment: Text.AlignVCenter; text: !insp.has ? "" : (insp.cur.isRaw && (insp.cur.companions === undefined || insp.cur.companions.length > 0) ? "RAW + JPG" : insp.cur.ext) + (insp.cap.ready && insp.cap.pixels ? " \u00b7 " + insp.cap.pixels : ""); color: theme.fg3; font.pointSize: UiState.pt(10.8333) }
                 }
                 Row {
                     anchors.right: parent.right; spacing: 8; height: 35.2
@@ -161,7 +171,7 @@ Item {
                     Column {
                         x: 16; y: 37; spacing: 7
                         Repeater {
-                            model: insp.has ? [["Camera", insp.cur.camera], ["Lens", insp.cur.lens], ["Exposure", insp.cur.exposure], ["Focal length", insp.cur.focal], ["Captured", insp.cur.captured], ["Pixels", insp.cur.pixels]] : []
+                            model: insp.has ? [["Camera", insp.capText("camera")], ["Lens", insp.capText("lens")], ["Exposure", insp.capText("exposure")], ["Focal length", insp.capText("focal")], ["Captured", insp.capText("captured")], ["Pixels", insp.capText("pixels")]] : []
                             delegate: Row {
                                 required property var modelData
                                 spacing: 12

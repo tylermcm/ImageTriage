@@ -24,6 +24,24 @@ AI_DISPUTE = (2, 5, 3)       # min, max, default
 AI_KEEP_TOP = (1, 50, 10)
 AI_REVIEW_BAND = (0, 30, 10)
 AI_BASE_WEIGHT = (0, 100, 65)
+_AI_SCORING_ROWS = ("keepTop", "reviewBand", "baseWeight")
+KEYPAD_MODIFIER = 0x20000000        # Qt.KeypadModifier: set for a key on the number pad, and not part of a chord
+
+# The registry shortcuts the shell carries out through Main.qml's runCommand: registry id -> the shell's command id (the palette's). Their keys (the
+# defaults, or what Settings > Shortcuts saved) are bound live; the grid's and the viewer's own keys ask `keyIs` instead.
+BOUND_ACTIONS = (
+    ("open_folder", "file.open_folder"), ("refresh_folder", "file.refresh_folder"), ("workflow_settings", "file.workflow_settings"),
+    ("undo", "edit.undo"), ("rename_selection", "edit.rename_selection"), ("batch_rename_selection", "tools.batch_rename"),
+    ("batch_resize_selection", "tools.batch_resize"), ("batch_convert_selection", "tools.batch_convert"), ("handoff_builder", "workflow.handoff_builder"),
+    ("share_to_phone", "workflow.share_to_phone"), ("best_of_set_auto_assembly", "workflow.best_of"), ("delete_selection", "review.delete_selection"),
+    ("move_selection", "review.move_selection"), ("clear_filters", "search.clear_filters"), ("open_ai_workflow_center", "ai.workflow_center"),
+)
+# Keys the shell binds itself and the registry has no row for: a shortcut changed to one of them is refused, as two rows on one chord are.
+FIXED_KEYS = {
+    "Ctrl+A": "Select all photos", "Ctrl+/": "Keyboard shortcuts", "F1": "Help", "Esc": "Close", "Return": "Open the photo", "Space": "Open the photo",
+    "U": "Clear the decision", "I": "Show or hide the inspector", "Left": "Previous photo", "Right": "Next photo", "Up": "Photo above", "Down": "Photo below",
+    "Home": "First photo", "End": "Last photo", "1": "Rate 1 star", "2": "Rate 2 stars", "3": "Rate 3 stars", "4": "Rate 4 stars", "5": "Rate 5 stars",
+}
 PHASH_HAMMING_MAX = 64
 
 APPEARANCE_MODES = (
@@ -227,6 +245,8 @@ class SettingsModel(QObject):
     revisionChanged = Signal()      # any value, dirty flag or mode changed: bindings re-read
     savedChanged = Signal()
     previewChanged = Signal()       # theme, accent or contrast moved (the window behind is the live preview)
+    aiScoringChanged = Signal()     # the Likely winners, Review band or Base score weight sliders were saved with a new value
+    shortcutsChanged = Signal()     # the saved shortcuts changed: the keys the shell bound are read again
     closeRequested = Signal()
 
     def __init__(self, memory: bool = False, parent=None) -> None:
@@ -247,6 +267,8 @@ class SettingsModel(QObject):
         self._revision = 0
         self._saved = False
         self._conflict = ""
+        self._effective: dict = {}          # registry id -> the chord in force (the saved override, else the default); "" for none
+        self._shortcut_revision = 0
         self.load()
 
     # -- window layout (not a settings row: the widths of the side panel and the inspector, remembered between runs) ------------------
@@ -316,6 +338,7 @@ class SettingsModel(QObject):
             self._store["accent"] = 0          # the mockup shows the blue swatch chosen
         self._vals = {f.id: self._read(f) for f in self._fields.values() if f.type != "text"}
         self._init = dict(self._vals)
+        self._rebuild_effective()
         self._revision += 1
         self.revisionChanged.emit()
         self.previewChanged.emit()
@@ -341,18 +364,42 @@ class SettingsModel(QObject):
             if not self._memory:
                 from ..ui.shortcuts import save_shortcut_overrides
                 save_shortcut_overrides(overrides)
+            self._rebuild_effective()
+            self._shortcut_revision += 1
+            self.shortcutsChanged.emit()
         if not self._memory:
             self._qs.sync()
             if self._vals.get("perfLog") != self._init.get("perfLog"):
                 from ..perf import perf_logger
 
                 perf_logger().set_enabled(bool(self._vals.get("perfLog")), reason="settings")      # the Widgets app starts or stops the logger as it is switched
+            if any(self._vals.get(i) != self._init.get(i) for i in _AI_SCORING_ROWS):
+                self.apply_ai_scoring()
+                self.aiScoringChanged.emit()
         self._init = dict(self._vals)
         self._saved = True
         self._revision += 1
         self.revisionChanged.emit()
         self.savedChanged.emit()
         return True
+
+    def apply_ai_scoring(self) -> None:
+        """Push the Likely winners and Review band sliders into the classifier and the Base score weight into the workflow, as the Widgets app
+        does when it starts and when the dialog is saved (`settings_controller.apply_cull_thresholds_to_classifier`, `apply_base_score_blend_to_workflow`).
+        A saved AI report is classified when it is read, so `aiScoringChanged` makes the shell read it again."""
+        from ..ai_results import set_cull_thresholds
+        from ..aiculler_workflow import set_base_score_blend_weight
+
+        def clamped(fid: str, limits: tuple) -> int:
+            try:
+                return max(limits[0], min(limits[1], int(self._vals.get(fid, limits[2]))))
+            except (TypeError, ValueError):
+                return limits[2]
+
+        keeper = max(0.0, 100.0 - clamped("keepTop", AI_KEEP_TOP))
+        reject = max(0.0, keeper - clamped("reviewBand", AI_REVIEW_BAND))
+        set_cull_thresholds(keeper_percentile=keeper, reject_percentile=reject)
+        set_base_score_blend_weight(clamped("baseWeight", AI_BASE_WEIGHT) / 100.0)
 
     @Slot()
     def discard(self) -> None:
@@ -482,6 +529,34 @@ class SettingsModel(QObject):
             return ""
         return QKeySequence(key | modifiers).toString(QKeySequence.SequenceFormat.PortableText)
 
+    @staticmethod
+    def _portable(text: str) -> str:
+        return QKeySequence(text).toString(QKeySequence.SequenceFormat.PortableText) if text else ""
+
+    def _rebuild_effective(self) -> None:
+        """The chord in force for each registry row: what Settings > Shortcuts saved, else the Widgets default."""
+        defaults = {row[0]: row[2] for row in _shortcut_registry()}                  # the real registry's defaults, also while the sample page shows its short list
+        defaults.update({f.id[2:]: f.default or "" for f in self._fields.values() if f.type == "keys"})
+        self._effective = {action: self._portable(self._overrides.get(action, default)) for action, default in defaults.items()}
+
+    @Slot(str, result=str)
+    def seq(self, action: str) -> str:
+        """The shortcut in force for a registry row ("" for none); QML bindings read `shortcutRevision` first so they follow a save."""
+        return self._effective.get(action, "")
+
+    @Slot(str, int, int, result=bool)
+    def keyIs(self, action: str, key: int, modifiers: int) -> bool:
+        """Is this key press the shortcut in force for `action`? The grid's and the viewer's own keys ask this instead of naming a key."""
+        want = self._effective.get(action, "")
+        return bool(want) and want == self.chord(key, modifiers & ~KEYPAD_MODIFIER)
+
+    @Property("QVariantList", notify=shortcutsChanged)
+    def shortcutBindings(self):
+        """[{cmd, seq}] for every shortcut the shell carries out (BOUND_ACTIONS) that has a chord: what Main.qml binds."""
+        return [{"cmd": cmd, "seq": self._effective[action]} for action, cmd in BOUND_ACTIONS if self._effective.get(action)]
+
+    shortcutRevision = Property(int, lambda self: self._shortcut_revision, notify=shortcutsChanged)
+
     def _conflicts(self) -> str:
         seen: dict = {}
         for fid, f in self._fields.items():
@@ -490,6 +565,12 @@ class SettingsModel(QObject):
             chord = (self._vals.get(fid) or "").strip()
             if not chord:
                 continue
+            fixed = FIXED_KEYS.get(self._portable(chord))
+            if fixed and chord != (f.default or ""):              # a row changed onto a key the shell binds itself (a default the row already had is not a change)
+                self._conflict = f"{chord} is used by the shell for “{fixed}” and cannot also be {f.label}"
+                self._revision += 1
+                self.revisionChanged.emit()
+                return self._conflict
             if chord in seen:
                 self._conflict = f"{chord} is used by both {self._fields[seen[chord]].label} and {f.label}"
                 self._revision += 1

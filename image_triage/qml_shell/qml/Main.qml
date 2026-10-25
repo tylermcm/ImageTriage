@@ -1,4 +1,5 @@
 import QtQuick
+import QtQml
 import QtQuick.Window
 import QtQuick.Dialogs
 import QtQuick.Dialogs
@@ -273,16 +274,26 @@ Window {
     }
     Connections { target: UiState; function onRequestRowChanged() { if (UiState.requestRow >= 0) { grid.view.currentIndex = UiState.requestRow; UiState.requestRow = -1 } } }
     CommandPalette { id: commandPalette; sourceItem: appContent }
-    Shortcut { sequence: "Ctrl+,"; onActivated: UiState.settingsOpen = !UiState.settingsOpen }
     Shortcut { sequence: "F1"; onActivated: reference.toggleHelp() }
     Shortcut { sequence: "Ctrl+/"; onActivated: reference.toggleKeys() }
-    Shortcut { sequence: "Ctrl+Alt+H"; onActivated: UiState.handoffOpen = !UiState.handoffOpen }
-    Shortcut { sequence: "Ctrl+Shift+R"; onActivated: UiState.batchMode = "rename" }
-    Shortcut { sequence: "Ctrl+Shift+E"; onActivated: UiState.batchMode = "resize" }
-    Shortcut { sequence: "Ctrl+Shift+C"; onActivated: UiState.batchMode = "convert" }
-    Shortcut { sequence: "Ctrl+Alt+B"; onActivated: UiState.bestOfOpen = true }
-    Shortcut { sequence: "Ctrl+K"; onActivated: { if (UiState.paletteOpen) UiState.paletteOpen = false; else UiState.openPalette("main") } }
-    Shortcut { sequence: "Ctrl+O"; onActivated: UiState.openFolderRequested() }
+    Shortcut { sequence: { void settings.shortcutRevision; return settings.seq("open_command_palette") }
+               onActivated: { if (UiState.paletteOpen) UiState.paletteOpen = false; else UiState.openPalette("main") } }
+    // The shortcuts the shell carries out, as Settings > Shortcuts has them (the Widgets defaults until one is changed): one Shortcut per row of settings.shortcutBindings.
+    // The grid's and the viewer's own keys (W, K, X, B ...) ask settings.keyIs where they are pressed.
+    function runShortcut(cmd) {
+        if (cmd === "file.workflow_settings") UiState.settingsOpen = !UiState.settingsOpen          // the settings and handoff windows toggle, as their keys always did
+        else if (cmd === "workflow.handoff_builder") UiState.handoffOpen = !UiState.handoffOpen
+        else win.runCommand(cmd)
+    }
+    Instantiator {
+        model: settings.shortcutBindings
+        delegate: Shortcut {
+            required property var modelData
+            sequence: modelData.seq
+            enabled: !(popout.isOpen && (modelData.cmd === "edit.undo" || modelData.cmd === "review.delete_selection"))
+            onActivated: win.runShortcut(modelData.cmd)
+        }
+    }
 
     // Open a folder: the rail's Open folder pin, Ctrl+O and the palette ask; the Library page's drives, favorites and tree open folders themselves
     FolderDialog {
@@ -325,7 +336,7 @@ Window {
         else if (id === "review.accept_selection") photos.setDecision(grid.view.currentIndex, "win")
         else if (id === "review.reject_selection") photos.setDecision(grid.view.currentIndex, "rej")
         else if (id === "review.keep_selection") photos.setDecision(grid.view.currentIndex, "keep")
-        else if (id === "file.refresh_folder") { if (libraryNav.openPath !== "") libraryNav.openFolder(libraryNav.openPath) }
+        else if (id === "file.refresh_folder") { win.savePositionNow(); libraryNav.refreshFolder() }
         else if (id === "file.reveal_folder") libraryNav.reveal(libraryNav.openPath)
         else if (id === "file.browse_library") reference.open("lib")
         else if (id === "review.delete_selection") fileActions.deleteRow(grid.view.currentIndex)
@@ -363,14 +374,49 @@ Window {
     }
     Connections { target: cmdPalette; function onExecuted(id) { win.runCommand(id) } }
     TopMenus { id: topMenus; onRun: (id) => win.runCommand(id) }
-    Shortcut { sequence: "F5"; onActivated: win.runCommand("file.refresh_folder") }
-    Shortcut { sequence: "Ctrl+Z"; enabled: !popout.isOpen; onActivated: win.runCommand("edit.undo") }
-    Shortcut { sequence: "Delete"; enabled: !popout.isOpen; onActivated: win.runCommand("review.delete_selection") }
+    Shortcut { sequence: "Delete"; enabled: !popout.isOpen; onActivated: win.runCommand("review.delete_selection") }      // Delete Selection has no default key in the registry: this one stays
     Connections { target: UiState; function onUndoRequested() { win.runCommand("edit.undo") } }
     Connections { target: collections; function onExportRequested() { UiState.handoffOpen = true } }
     Connections { target: UiState; function onZenChanged() { if (UiState.zen) { UiState.zenTab = UiState.tab; UiState.zenInsp = UiState.insp; UiState.tab = ""; UiState.insp = false } else { UiState.tab = UiState.zenTab; UiState.insp = UiState.zenInsp } } }
     Connections { target: UiState; function onCompareChanged() { cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off") } }
+    // ---- what the person left the interface like, put back (ui_memory.py): the rail tab, the inspector, thumbnail size, sort, names and badges, the rail's pins ----
+    property bool interfaceRestored: false
+    readonly property var interfaceNow: ({ tab: UiState.tab, inspector: UiState.insp, density: UiState.dens, sort: UiState.sort, names: UiState.showNames, badges: UiState.showBadges, pins: UiState.pins })   // a test hook: what the interface is like
+    function restoreInterface() {
+        var tab = uiMemory.get("tab", UiState.tab)
+        if (tab === "" || UiState.tabs.indexOf(tab) >= 0) UiState.tab = tab
+        var inspector = uiMemory.get("inspector", UiState.insp)
+        if (typeof inspector === "boolean") UiState.insp = inspector
+        var density = uiMemory.get("density", UiState.dens)
+        if (["s", "m", "l"].indexOf(density) >= 0) UiState.dens = density
+        var sort = uiMemory.get("sort", UiState.sort)
+        if (["name", "ai", "rating", "decision"].indexOf(sort) >= 0) { UiState.sort = sort; photos.setSort(sort) }
+        var names = uiMemory.get("names", UiState.showNames)
+        if (typeof names === "boolean") UiState.showNames = names
+        var badges = uiMemory.get("badges", UiState.showBadges)
+        if (typeof badges === "boolean") UiState.showBadges = badges
+        var pins = uiMemory.get("pins", null)
+        if (pins !== null && typeof pins === "object") {
+            var merged = Object.assign({}, UiState.pins)
+            for (var name in merged) if (typeof pins[name] === "boolean") merged[name] = pins[name]      // a pin this version does not know is ignored
+            UiState.pins = merged
+        }
+        interfaceRestored = true
+    }
+    // not while zen mode has put the panels away, nor in a narrow window (its sheets start closed whatever was left open)
+    function remember(name, value) { if (interfaceRestored && !UiState.zen && !UiState.compact) uiMemory.set(name, value) }
+    Connections {
+        target: UiState
+        function onTabChanged() { win.remember("tab", UiState.tab) }
+        function onInspChanged() { win.remember("inspector", UiState.insp) }
+        function onDensChanged() { win.remember("density", UiState.dens) }
+        function onSortChanged() { win.remember("sort", UiState.sort) }
+        function onShowNamesChanged() { win.remember("names", UiState.showNames) }
+        function onShowBadgesChanged() { win.remember("badges", UiState.showBadges) }
+        function onPinsChanged() { win.remember("pins", UiState.pins) }
+    }
     Component.onCompleted: {
+        win.restoreInterface()
         cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off")
         cmdPalette.setState("review.auto_advance", settings.value("autoAdvance") === true ? "On" : "Off")
         cmdPalette.setState("view.zen_mode", "Off")

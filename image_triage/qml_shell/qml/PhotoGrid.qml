@@ -67,15 +67,16 @@ Item {
         Keys.onPressed: (e) => {
             var k = e.key;
             var shift = (e.modifiers & Qt.ShiftModifier) !== 0, ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
-            if (ctrl && k === Qt.Key_A) photos.selectAll();
+            if (settings.keyIs("accept_selection", k, e.modifiers)) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") for (var i = 0; i < rows.length; ++i) collections.addSelection(collections.activeId, rows[i]); advance(rows) }
+            else if (settings.keyIs("collect_at_cursor", k, e.modifiers)) root.addToCollection();
+            else if (settings.keyIs("keep_at_cursor", k, e.modifiers)) photos.setDecisionMany(pick(), "keep");
+            else if (settings.keyIs("reject_selection", k, e.modifiers)) { var xr = pick(); photos.setDecisionMany(xr, "rej"); advance(xr) }
+            else if (settings.keyIs("open_preview", k, e.modifiers)) root.openRequested(currentIndex);
+            else if (ctrl && k === Qt.Key_A) photos.selectAll();
             else if (ctrl) return;
             else if (shift && (k === Qt.Key_Left || k === Qt.Key_Right || k === Qt.Key_Up || k === Qt.Key_Down))
                 stepTo(currentIndex + (k === Qt.Key_Left ? -1 : k === Qt.Key_Right ? 1 : k === Qt.Key_Up ? -root.cols : root.cols), true);
             else if (k === Qt.Key_Escape && photos.picked > 0) photos.clearSelection();
-            else if (k === Qt.Key_W) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") for (var i = 0; i < rows.length; ++i) collections.addSelection(collections.activeId, rows[i]); advance(rows) }
-            else if (k === Qt.Key_B) root.addToCollection();
-            else if (k === Qt.Key_K) photos.setDecisionMany(pick(), "keep");
-            else if (k === Qt.Key_X) { var xr = pick(); photos.setDecisionMany(xr, "rej"); advance(xr) }
             else if (k === Qt.Key_U) photos.setDecisionMany(pick(), "");
             else if (k >= Qt.Key_1 && k <= Qt.Key_5) photos.setRatingMany(pick(), k - Qt.Key_0);
             else if (k === Qt.Key_I) UiState.insp = !UiState.insp;

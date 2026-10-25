@@ -117,6 +117,42 @@ def test_save_writes_the_real_keys_and_discard_restores(qapp, store):
     assert SettingsModel().value("keepTop") == 20          # a new session sees it
 
 
+@pytest.fixture
+def scoring_globals():
+    """The classifier's and the workflow's module-level settings, put back after a test changes them."""
+    from image_triage import ai_results, aiculler_workflow
+
+    before = (ai_results._SINGLETON_KEEPER_PERCENTILE_THRESHOLD, ai_results._SINGLETON_REJECT_PERCENTILE_THRESHOLD, aiculler_workflow._BASE_SCORE_BLEND_WEIGHT)
+    yield ai_results, aiculler_workflow
+    ai_results.set_cull_thresholds(keeper_percentile=before[0], reject_percentile=before[1])
+    aiculler_workflow.set_base_score_blend_weight(before[2])
+
+
+def test_the_cull_sliders_reach_the_classifier_when_saved_and_at_start(qapp, store, scoring_globals):
+    ai_results, workflow = scoring_globals
+    m = SettingsModel()
+    seen = []
+    m.aiScoringChanged.connect(lambda: seen.append(True))
+    m.set("keepTop", 20)
+    m.set("reviewBand", 5)
+    m.set("baseWeight", 40)
+    assert m.save() and seen == [True]
+    # Keep top 20 % is a keeper percentile of 80, the review band sits just below it (the Widgets app's own arithmetic)
+    assert ai_results._SINGLETON_KEEPER_PERCENTILE_THRESHOLD == 80.0 and ai_results._SINGLETON_REJECT_PERCENTILE_THRESHOLD == 75.0
+    assert workflow._BASE_SCORE_BLEND_WEIGHT == 0.4
+    ai_results.set_cull_thresholds(keeper_percentile=1.0, reject_percentile=0.0)
+    SettingsModel().apply_ai_scoring()                                      # a new session: what the app does as it starts
+    assert ai_results._SINGLETON_KEEPER_PERCENTILE_THRESHOLD == 80.0 and ai_results._SINGLETON_REJECT_PERCENTILE_THRESHOLD == 75.0
+
+
+def test_saving_something_else_does_not_reread_the_ai_report(qapp, store, scoring_globals):
+    m = SettingsModel()
+    seen = []
+    m.aiScoringChanged.connect(lambda: seen.append(True))
+    m.set("autoAdvance", False)
+    assert m.save() and seen == []
+
+
 def test_dependent_rows_and_reset_section(qapp, store):
     m = SettingsModel()
     assert m.enabled("hamming")

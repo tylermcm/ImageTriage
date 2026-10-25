@@ -59,6 +59,9 @@ FocusScope {
     function toggleLoupe() { loupe = !loupe; zoomed = loupe }
 
     Keys.onPressed: (e) => {
+        if (!opening && (settings.keyIs("accept_selection", e.key, e.modifiers) || settings.keyIs("keep_at_cursor", e.key, e.modifiers) || settings.keyIs("reject_selection", e.key, e.modifiers))) {
+            decide(settings.keyIs("accept_selection", e.key, e.modifiers) ? "win" : settings.keyIs("keep_at_cursor", e.key, e.modifiers) ? "keep" : "rej"); e.accepted = true; return
+        }
         if (e.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) {
             if (e.key === Qt.Key_Z && (e.modifiers & Qt.ControlModifier)) { popout.undo(); e.accepted = true }
             return
@@ -72,9 +75,6 @@ FocusScope {
         else if (k === Qt.Key_Right || k === Qt.Key_D || k === Qt.Key_Down || k === Qt.Key_PageDown) step(1)
         else if (k === Qt.Key_Home) go(0)
         else if (k === Qt.Key_End) go(photos.rowCount() - 1)
-        else if (k === Qt.Key_W) decide("win")
-        else if (k === Qt.Key_K) decide("keep")
-        else if (k === Qt.Key_X) decide("rej")
         else if (k === Qt.Key_U) { if (curDec !== "") decide(curDec) }
         else if (k >= Qt.Key_1 && k <= Qt.Key_5) popout.rate(row, k - Qt.Key_0)
         else if (k === Qt.Key_Z) toggleZoom()
