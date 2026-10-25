@@ -218,6 +218,23 @@ class MenuModel(QObject):
         if not self._memory:
             QGuiApplication.clipboard().setText(text)
 
+    def _open_with(self, how: str, path: str, name: str) -> None:
+        """Open the photo in the system's default app, or ask the system which app (the Widgets app's `shell_actions`)."""
+        if self._memory:
+            self._toasts.push("info", f"Would open {name}", "Not done while the sample data is on.")
+            return
+        from .. import shell_actions
+
+        try:
+            if how == "default":
+                shell_actions.open_with_default(path)
+            elif how == "other":
+                shell_actions.open_with_dialog(path)
+            else:
+                return
+        except OSError as exc:
+            self._toasts.push("error", f"Could not open {name}", str(exc))
+
     def _not_connected(self, what: str) -> None:
         self._toasts.push("warn", f"{what} isn’t connected yet", "Nothing was changed.")
 
@@ -246,7 +263,7 @@ class MenuModel(QObject):
             self.uiRequest.emit("edit", row)
             self._not_connected("The editor")
         elif key.startswith("with:"):
-            self._not_connected("Open with")
+            self._open_with(key[5:], path, name)
         elif key in ("mv:copy", "mv:move"):
             self.uiRequest.emit("chooseDest", f"{key[3:]}:{row}")       # the window asks for the folder, then calls files.copyRow / moveRow
         elif key.startswith("mv:r"):

@@ -383,10 +383,10 @@ Item {
                 Item { width: parent.width; height: 13; Rectangle { x: 4; y: 6; width: parent.width - 8; height: 1; color: theme.lineSoft } }
                 MItem { label: "Open collection"; off: cmenu.inside; onClicked: collections.open(cmenu.cid) }
                 MItem { label: "Edit\u2026"; onClicked: { UiState.collDlgId = cmenu.cid; UiState.collDlg = "edit" } }
-                MItem { label: "Add selection here"; off: cmenu.inside; onClicked: collections.addSelection(cmenu.cid, UiState.selRow) }
+                MItem { label: "Add selection here"; off: cmenu.inside; onClicked: { var rows = photos.selectionRows(UiState.selRow); for (var i = 0; i < rows.length; ++i) collections.addSelection(cmenu.cid, rows[i]) } }
                 MItem { label: "Add all " + photos.shown + " visible here"; off: cmenu.inside; onClicked: collections.addVisible(cmenu.cid) }
                 MItem { label: "New winners go here"; tick: cmenu.c.id !== undefined && cmenu.cid === collections.activeId; onClicked: collections.toggleActive(cmenu.cid) }
-                MItem { label: "Export\u2026" }
+                MItem { label: "Export\u2026"; onClicked: collections.exportCollection(cmenu.cid) }
                 Item { width: parent.width; height: 13; Rectangle { x: 4; y: 6; width: parent.width - 8; height: 1; color: theme.lineSoft } }
                 MItem { label: "Remove selection from collection"; off: !cmenu.inside; onClicked: collections.removeSelection(cmenu.cid, UiState.selRow) }
                 MItem { label: "Delete collection\u2026"; danger: true; onClicked: { delCard.cid = cmenu.cid; delCard.open() } }

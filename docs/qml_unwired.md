@@ -294,7 +294,7 @@ collection badge in `PhotoGrid.qml`; models `collections_model.py`, `people_mode
 | Collections: create, rename, colour, delete, add and remove photos, "New winners go here" | **Real**: `library_store.LibraryStore` (`library.sqlite3`) and the Widgets settings key `collections/also_add_to`, so the Widgets app sees the same collections. Names follow the Widgets dialog's rules | |
 | Collection icons (24 icons and a tint; the Icon tab is first and the default, and a new collection starts with the Landscape icon) | **Stored beside the Widgets data** (settings key `collections/icons`, id to icon); the Widgets app ignores them and shows its colour only | the store's schema (a column) |
 | "More…" colour button | **Real**: the system colour picker; the colour chosen is stored like any other (a #rrggbb string) and shows as an extra swatch | |
-| Export… in the collection menu | **Visual** | `export` of a collection |
+| Export… in the collection menu | **Real**: shows the collection in the grid and opens the Deliver / Handoff Builder, whose scope is the photos shown (or the ones picked) | |
 | "+" (your own icon) | Removed: the tile is now a 24th icon (Places) | icon import |
 | Opening a collection / Winners / a person / a shortlist | Real, as a view of the open folder: the grid shows the members that are in the folder being viewed. Photos of the collection that live in other folders are counted (the sidebar's number) but not shown. "Winners" is the open folder's winners, not "every shoot" | multi-folder grid, catalog |
 | W also adds to the collecting collection, B adds the photo you are on (or opens the picker when none collects) | Real | the shortcut registry (fixed keys here) |
@@ -353,7 +353,7 @@ in the shell `--ui "cullScene=cu-review"` (the same names).
 | Flagged banner: Why was it flagged? / Restore | **Real** (opens the Cull review at that frame; restoring un-flags it, with Undo) | the cull results are Sample |
 | Open (Space) | **Real**: opens the popout on that photo | |
 | **Open in editor (E)** | **Not connected**: asks the window, nothing listens; a toast says so | the PhotoCraft host |
-| **Open with…** | **Not connected**: a toast says so | `shell_actions.open_with_default` |
+| **Open with…** | **Real**: Default app opens the photo with the system's default app, Choose another app… asks the system which (`shell_actions.open_with_default` / `open_with_dialog`; a refusal is a toast). The Photoshop entry stays greyed (not found). With the sample data it only says what it would do | |
 | **Copy to folder…, Move to folder…, Recent** | **Real** (`file_actions.py`: the bundle with its RAW or JPEG companion and sidecars, a name already taken gets `_1`, a saved decision follows a moved photo; a move can be undone, a copy cannot, as in the Widgets app). Moving into the folder the photo is in is refused | multi-select |
 | **Delete (Del)** | **Real** (`file_actions.py`, the Widgets' rules): Safe Trash moves the bundle to the recycle folder and can be undone (Ctrl+Z or the toast), System Trash uses the system trash and asks before deleting for good if the system refuses, a file inside a "recycle bin" folder is deleted for good after a question. The setting is "Delete behavior". The saved decision is dropped and comes back with an undo | |
 | Multi-photo menu, Photoshop entry, "Send to" actions, AI group entries | not offered (no multi-select, Photoshop is inside Open with, the new cull has no AI groups) | multi-select |
@@ -421,7 +421,7 @@ in the shell `--ui "refScene=hlp-start"` (the same names). `--mock` and the test
 | About: **Download** (a newer version) | **Not connected**: a toast says so | `help_update_controller` (download, verify the SHA-256, install, restart) |
 | About: Release notes, Report a problem | **Real** (the default browser: the release's notes URL when the check found one, otherwise the repository's releases / new issue page) | |
 | About: Open the log folder | **Real** (`perf.performance_log_dir()`); in `--mock` a toast says it is sample data | |
-| About: **Licences and credits** | **Not connected**: a toast says so | a licences page (the LICENSE file and `docs/ai_model_licence_audit.md` hold the text) |
+| About: **Licences and credits** | **Real**: opens the LICENSE file that sits next to the app (the checkout's root, the frozen bundle or the executable's folder); a toast says when it is not there | the licence audit (`docs/ai_model_licence_audit.md`) is not shown, and there is no credits page |
 | About: icon | `app_icon-v4.png`: the mark in the top left of the bar, drawn by `scripts/icon_art/render.py` (it is also the window and taskbar icon of the shell, and the .ico the Widgets app and the installer use) | |
 | Keyboard shortcuts: the list | **Real, curated**: the shell's own keys plus the registry actions it has; a row tied to a registry action shows the key the user set (`ui/shortcuts.load_shortcut_overrides`) in blue | the shell binds fixed keys, not the user's overrides (also noted under Grid) |
 | Keyboard shortcuts: search | Real (matches the action, the category and an exact key name) | |

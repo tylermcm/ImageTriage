@@ -65,6 +65,7 @@ def icon_path(key: str) -> str:
 
 class CollectionsModel(QObject):
     revisionChanged = Signal()
+    exportRequested = Signal()              # open the Deliver / Handoff Builder on the collection that was just opened
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -316,6 +317,13 @@ class CollectionsModel(QObject):
                  "iconPath": r["iconPath"]} for r in sorted(self._rows, key=order)]
 
     # -- opening one, and the badge on its photos -------------------------------------------------------------------------------------
+    @Slot(str)
+    def exportCollection(self, cid: str) -> None:
+        """The collection menu's Export...: show the collection, then the Deliver / Handoff Builder takes the photos the grid shows."""
+        if cid in self._members:
+            self.open(cid)
+            self.exportRequested.emit()
+
     @Slot(str)
     def open(self, cid: str) -> None:
         keys = self._members.get(cid)

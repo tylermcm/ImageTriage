@@ -367,6 +367,7 @@ Window {
     Shortcut { sequence: "Ctrl+Z"; enabled: !popout.isOpen; onActivated: win.runCommand("edit.undo") }
     Shortcut { sequence: "Delete"; enabled: !popout.isOpen; onActivated: win.runCommand("review.delete_selection") }
     Connections { target: UiState; function onUndoRequested() { win.runCommand("edit.undo") } }
+    Connections { target: collections; function onExportRequested() { UiState.handoffOpen = true } }
     Connections { target: UiState; function onZenChanged() { if (UiState.zen) { UiState.zenTab = UiState.tab; UiState.zenInsp = UiState.insp; UiState.tab = ""; UiState.insp = false } else { UiState.tab = UiState.zenTab; UiState.insp = UiState.zenInsp } } }
     Connections { target: UiState; function onCompareChanged() { cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off") } }
     Component.onCompleted: {

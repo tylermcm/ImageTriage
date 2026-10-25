@@ -149,13 +149,37 @@ def test_what_only_the_window_can_do_is_requested(ctx):
     assert toasts.items[-1]["title"] == "Added DSC_4207 to PocketDrop" or any("PocketDrop" in t["title"] for t in toasts.items)
 
 
-def test_what_is_not_connected_says_so_and_changes_nothing(ctx):   # delete, copy and move are real now (test_qml_shell_files.py)
+def test_open_with_the_sample_data_only_says_what_it_would_do(ctx):
     menu, toasts, photos, *_ = ctx
-    for key in ("with:default",):
+    for key in ("with:default", "with:other"):
         menu.openPhoto(0)
         menu.act(key)
-        assert toasts.items[-1]["kind"] == "warn" and "connected yet" in toasts.items[-1]["title"], key
+        assert toasts.items[-1]["title"] == "Would open DSC_4201", key
     assert photos.get(0)["decision"] == "" and photos.shown == len(NAMES)
+
+
+def test_open_with_hands_the_photo_to_the_system(qapp, photos, monkeypatch):
+    from image_triage import shell_actions
+
+    opened = []
+    monkeypatch.setattr(shell_actions, "open_with_default", lambda path: opened.append(("default", path)))
+    monkeypatch.setattr(shell_actions, "open_with_dialog", lambda path: opened.append(("dialog", path)))
+    toasts = ToastModel(parent=qapp)
+    menu = MenuModel(photos, CollectionsModel(photos, memory=True, parent=qapp), CullModel(photos, memory=True, parent=qapp), toasts, memory=False, parent=qapp)
+    menu.openPhoto(2)
+    menu.act("with:default")
+    menu.openPhoto(2)
+    menu.act("with:other")
+    path = photos.row_at(2)["path"]
+    assert opened == [("default", path), ("dialog", path)]
+
+    def refuse(_path):
+        raise OSError("no app")
+
+    monkeypatch.setattr(shell_actions, "open_with_default", refuse)
+    menu.openPhoto(2)
+    menu.act("with:default")
+    assert toasts.items[-1]["kind"] == "error" and "Could not open DSC_4207" in toasts.items[-1]["title"]
 
 
 def test_open_asks_the_window_for_the_popout_and_says_nothing_else(ctx):

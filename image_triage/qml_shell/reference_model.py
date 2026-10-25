@@ -288,8 +288,27 @@ class ReferenceModel(QObject):
                 folder = performance_log_dir()
                 folder.mkdir(parents=True, exist_ok=True)
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
-        else:
-            self._toast("warn", "Licences and credits isn’t connected yet", "The licence text is in the LICENSE file next to the app.")
+        elif link == "licences":
+            licence = self._licence_file()
+            if licence is None:
+                self._toast("warn", "The LICENSE file was not found", "It is meant to sit next to the app.")
+            elif self._memory:
+                self._toast("info", "Opens the LICENSE file", "Not done while the sample data is on.")
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(licence)))
+
+    @staticmethod
+    def _licence_file():
+        """The LICENSE text that ships with the app: next to the package (a checkout or an installed copy), or in the frozen bundle."""
+        import sys
+        from pathlib import Path
+
+        roots = [Path(__file__).resolve().parents[2], Path(getattr(sys, "_MEIPASS", "")) if getattr(sys, "_MEIPASS", "") else None, Path(sys.executable).parent]
+        for root in filter(None, roots):
+            for name in ("LICENSE", "LICENSE.txt", "LICENSE.md"):
+                if (root / name).is_file():
+                    return root / name
+        return None
 
     def _help_view(self) -> dict:
         q = self._hq.strip().lower()

@@ -233,3 +233,22 @@ def test_windows_load_without_qml_errors(qapp, photos, startup):
     pump(qapp, 0.8)
     assert not [w for w in warnings if any(k in w for k in ("TypeError", "ReferenceError", "is not a type", "Unable to assign", "non-existent", "Binding loop"))], warnings
     window.close()
+
+
+def test_exporting_a_collection_shows_it_and_asks_for_the_handoff_builder(qapp):
+    from image_triage.qml_shell.collections_model import CollectionsModel
+    from image_triage.qml_shell.photos import PhotoModel
+    from test_qml_shell import rows
+
+    photos = PhotoModel(parent=qapp)
+    photos.setRows(rows(6), "/p")
+    collections = CollectionsModel(photos, memory=True, parent=qapp)
+    cid = collections.save("", "Picks", "#ee719e", "", False)
+    collections.addSelection(cid, 1)
+    collections.addSelection(cid, 3)
+    asked = []
+    collections.exportRequested.connect(lambda: asked.append(True))
+    collections.exportCollection("no-such-collection")
+    assert not asked
+    collections.exportCollection(cid)
+    assert asked == [True] and photos.shown == 2 and photos.scopeKind == "collection"

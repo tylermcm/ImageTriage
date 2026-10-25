@@ -187,8 +187,14 @@ def test_links_open_the_right_places(qapp, ref, monkeypatch):
     ref.openLink("report")
     ref.openLink("notes")
     assert opened[0].endswith("/issues/new") and opened[1].endswith("/releases")
+    ref.openLink("licences")                                  # the sample data: it only says what it would do
+    assert ref.toasts.items[-1]["title"] == "Opens the LICENSE file" and len(opened) == 2
+    ref._memory = False
     ref.openLink("licences")
-    assert "isn\u2019t connected" in ref.toasts.items[-1]["title"]
+    assert opened[-1].endswith("/LICENSE") and opened[-1].startswith("file:")
+    monkeypatch.setattr(type(ref), "_licence_file", staticmethod(lambda: None))
+    ref.openLink("licences")
+    assert ref.toasts.items[-1]["title"] == "The LICENSE file was not found"
 
 
 # ---- the shortcuts guide --------------------------------------------------------------------------------------------------------
