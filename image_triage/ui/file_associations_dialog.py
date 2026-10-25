@@ -41,7 +41,7 @@ from ..file_associations import (
 from ..formats import FITS_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES
 
 
-_APP_ICON_PATH = Path(__file__).resolve().parent / "assets" / "app_icon-v3.png"
+_APP_ICON_PATH = Path(__file__).resolve().parent / "assets" / "app_icon-v4.png"
 
 _FILE_TYPE_NAMES = {
     ".3fr": "Hasselblad RAW File", ".ari": "ARRI RAW Image", ".arw": "Sony RAW File",

@@ -9,8 +9,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-APP_ICON_WINDOWS_PATH = ROOT / "build_assets" / "icons" / "image_triage-v3.ico"
-APP_ICON_LINUX_PATH = ROOT / "build_assets" / "icons" / "image_triage-v3.png"
+APP_ICON_WINDOWS_PATH = ROOT / "build_assets" / "icons" / "image_triage-v4.ico"
+APP_ICON_LINUX_PATH = ROOT / "build_assets" / "icons" / "image_triage-v4.png"
 CLI_CULLER_PACKAGE_ROOT = ROOT / "aiculler"
 AI_SITE_PACKAGES_STAGE_ROOT = ROOT / "build_assets" / "ai_site_packages"
 AI_STDLIB_STAGE_ROOT = ROOT / "build_assets" / "ai_stdlib"
@@ -101,8 +101,8 @@ class FreezeAssetLayout:
                 "lib/image_triage/ui/assets/splash_background-v8.png",
             ),
             (
-                str(ROOT / "image_triage" / "ui" / "assets" / "app_icon-v3.ico"),
-                "lib/image_triage/ui/assets/app_icon-v3.ico",
+                str(ROOT / "image_triage" / "ui" / "assets" / "app_icon-v4.ico"),
+                "lib/image_triage/ui/assets/app_icon-v4.ico",
             ),
             (
                 str(ROOT / "image_triage" / "ui" / "assets" / "checkbox_check.png"),

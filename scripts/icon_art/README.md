@@ -1,10 +1,14 @@
 # App icon source
 
-`icon.svg` is the app icon (an aperture in an amber-to-orange gradient on a near-black tile); `icon_small.svg` is the same with thicker blades,
-used for the 32 px and smaller frames so they stay readable. `render.js` writes every size as a PNG:
+The app icon is the mark in the top left of the QML shell (`image_triage/qml_shell/qml/TopBar.qml`): a rounded square filled with a conical
+gradient from the accent colour through a lavender and back. `render.py` draws it with the same numbers (corner radius a third of the side,
+the gradient centred and starting at 210 degrees, stops at 0, 0.5 and 1) in the default dark theme's accent, and writes every file that
+carries it:
 
-    NODE_PATH=$(npm root -g) node render.js OUTDIR
+    python scripts/icon_art/render.py          # image_triage/ui/assets/app_icon-v4.{ico,png}, build_assets/icons/image_triage-v4.{ico,png},
+                                               # website/assets/image-triage-icon.png and scripts/qml_parity/help_icon.png
+    python scripts/icon_art/render.py OUTDIR   # only the frames (icon_<px>.png), to look at
 
-The files in the app are built from those frames with Pillow (`Image.save(..., format="ICO", sizes=..., append_images=...)` so each size keeps
-its own render rather than being scaled down): `image_triage/ui/assets/app_icon-v3.{ico,png}`, `build_assets/icons/image_triage-v3.{ico,png}`
-and `website/assets/image-triage-icon.png`. Bump the version in the file names when the icon changes.
+Each size of the .ico keeps its own render (16 to 256 px) rather than being scaled down from a big one. Bump `VERSION` in `render.py` when the
+icon changes (the file names carry it, and `freeze_support.py`, `image_triage/main.py`, `ui/file_associations_dialog.py` and `HelpWindow.qml`
+name the files), and delete the old ones. The previous icon, an amber aperture on a dark tile (v3), is in the git history.
