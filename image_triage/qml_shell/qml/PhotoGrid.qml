@@ -55,6 +55,8 @@ Item {
         }
         property int anchorIndex: 0       // where a Shift+click or Shift+arrow range starts: the last photo picked on its own
         function pick() { return photos.selectionRows(currentIndex) }
+        // "Advance after Accept or Reject" (the Widgets setting): on one photo, W and X go on to the next; on a pick they stay
+        function advance(rows) { if (rows.length === 1 && settings.value("autoAdvance") === true && currentIndex < count - 1) { photos.clearSelection(); currentIndex = currentIndex + 1; anchorIndex = currentIndex } }
         function stepTo(target, extend) {
             target = Math.max(0, Math.min(count - 1, target))
             if (extend) photos.selectRange(anchorIndex, target)
@@ -70,10 +72,10 @@ Item {
             else if (shift && (k === Qt.Key_Left || k === Qt.Key_Right || k === Qt.Key_Up || k === Qt.Key_Down))
                 stepTo(currentIndex + (k === Qt.Key_Left ? -1 : k === Qt.Key_Right ? 1 : k === Qt.Key_Up ? -root.cols : root.cols), true);
             else if (k === Qt.Key_Escape && photos.picked > 0) photos.clearSelection();
-            else if (k === Qt.Key_W) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") for (var i = 0; i < rows.length; ++i) collections.addSelection(collections.activeId, rows[i]) }
+            else if (k === Qt.Key_W) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") for (var i = 0; i < rows.length; ++i) collections.addSelection(collections.activeId, rows[i]); advance(rows) }
             else if (k === Qt.Key_B) root.addToCollection();
             else if (k === Qt.Key_K) photos.setDecisionMany(pick(), "keep");
-            else if (k === Qt.Key_X) photos.setDecisionMany(pick(), "rej");
+            else if (k === Qt.Key_X) { var xr = pick(); photos.setDecisionMany(xr, "rej"); advance(xr) }
             else if (k === Qt.Key_U) photos.setDecisionMany(pick(), "");
             else if (k >= Qt.Key_1 && k <= Qt.Key_5) photos.setRatingMany(pick(), k - Qt.Key_0);
             else if (k === Qt.Key_I) UiState.insp = !UiState.insp;

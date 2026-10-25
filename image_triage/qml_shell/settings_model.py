@@ -343,6 +343,10 @@ class SettingsModel(QObject):
                 save_shortcut_overrides(overrides)
         if not self._memory:
             self._qs.sync()
+            if self._vals.get("perfLog") != self._init.get("perfLog"):
+                from ..perf import perf_logger
+
+                perf_logger().set_enabled(bool(self._vals.get("perfLog")), reason="settings")      # the Widgets app starts or stops the logger as it is switched
         self._init = dict(self._vals)
         self._saved = True
         self._revision += 1
@@ -439,6 +443,30 @@ class SettingsModel(QObject):
         return ""
 
     _catalog_text = _DEMO_CATALOG
+
+    @Slot()
+    def readCatalogSummary(self) -> None:
+        """Fill the Catalog summary row from the Widgets app's catalog (`catalog.CatalogRepository.stats`, the lines `scan_controller.catalog_debug_summary` writes)."""
+        if self._memory:
+            return
+        try:
+            from ..catalog import CatalogRepository, catalog_cache_env_override
+
+            stats = CatalogRepository().stats()
+            override = catalog_cache_env_override()
+            enabled = bool(self._vals.get("catalogCache", True)) if override is None else override
+            lines = [f"Catalog cache reads: {'Enabled' if enabled else 'Disabled'}" + (" (environment override)" if override is not None else ""),
+                     f"Folder watch: {'Enabled' if self._vals.get('watch', True) else 'Disabled'}"]
+            if stats.error_message:
+                lines.append(f"Catalog error: {stats.error_message}")
+            else:
+                lines += [f"Indexed folders: {stats.folder_count}", f"Indexed image bundles: {stats.record_count}",
+                          f"Cached review features: {stats.feature_count}"]
+                if stats.last_indexed_at:
+                    lines.append(f"Last indexed: {stats.last_indexed_at}")
+        except Exception as exc:                          # a catalog that cannot be opened says so instead of showing sample numbers
+            lines = [f"The catalog could not be read: {exc}"]
+        self.setCatalogSummary("", "\n".join(lines))
 
     @Slot(str, str)
     def setCatalogSummary(self, _unused: str, text: str) -> None:

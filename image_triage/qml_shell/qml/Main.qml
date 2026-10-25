@@ -358,6 +358,7 @@ Window {
         else if (id === "ai.apply_culling") cull.openReview()
         else if (id === "ai.next_top_pick") { var tp = aiScores.nextTopPick(grid.view.currentIndex); if (tp >= 0) { grid.view.currentIndex = tp; grid.view.positionViewAtIndex(tp, GridView.Contain) } else toasts.show("info", "No AI top picks in this view", "Run the AI analysis first, or clear the filters.") }
         else if (id === "review.auto_advance") { settings.set("autoAdvance", settings.value("autoAdvance") !== true); settings.save(); cmdPalette.setState("review.auto_advance", settings.value("autoAdvance") === true ? "On" : "Off") }
+        else if (id === "tools.performance_logging") { settings.set("perfLog", settings.value("perfLog") !== true); settings.save(); cmdPalette.setState("tools.performance_logging", settings.value("perfLog") === true ? "On" : "Off") }
         else if (id === "view.zen_mode") { UiState.zen = !UiState.zen; cmdPalette.setState("view.zen_mode", UiState.zen ? "On" : "Off") }
     }
     Connections { target: cmdPalette; function onExecuted(id) { win.runCommand(id) } }
@@ -372,6 +373,7 @@ Window {
         cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off")
         cmdPalette.setState("review.auto_advance", settings.value("autoAdvance") === true ? "On" : "Off")
         cmdPalette.setState("view.zen_mode", "Off")
+        cmdPalette.setState("tools.performance_logging", settings.value("perfLog") === true ? "On" : "Off")
         UiState.panelW = settings.layoutWidth("panel", 300); UiState.inspW = settings.layoutWidth("inspector", 352)
     }
 

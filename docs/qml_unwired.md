@@ -205,12 +205,12 @@ control *does* once saved:
 | Setting | Saved to the real store | Applied by the shell | Notes |
 |---|---|---|---|
 | Profile preset | Yes (`workflow/session`) | No | The list is a fixed demo list (Default, Wedding, Sports, Travel); the real list is `decision_store.list_sessions()` plus saved workflow presets. "Save preset" does nothing. New profile names cannot be typed (the Widgets dialog's combo is editable) |
-| Delete behavior | Yes | No | |
+| Delete behavior | Yes | **Yes**: `file_actions.py` reads it on every delete (safe trash, or the system trash with a question when that fails) | |
 | Check for app updates on startup | Yes | No (no update check in the shell) | |
-| Log detailed performance timings | Yes | No | the Widgets app also starts or stops the logger when this changes (`handle_performance_logging_toggled`) |
+| Log detailed performance timings | Yes | **Yes**: saving it starts or stops `perf.perf_logger` as the Widgets app does, it is switched on at startup when it was left on, and the palette's Performance Logging command toggles it | the "open the log folder" action and the status-bar message |
 | Show AI tags on cards | Yes | No | |
 | Apply edits before sending to PocketDrop | Yes | No | |
-| Theme | Yes | **Yes, live** (preview while editing, reverted by Cancel) | "Auto" follows the system colour scheme at startup only, not when it changes |
+| Theme | Yes | **Yes, live** (preview while editing, reverted by Cancel) | "Auto" follows the system light or dark **live**, also when it changes while the app runs |
 | Accent colour, Text contrast | Yes, **new keys** `view/accent_hue`, `view/text_contrast` | **Yes, live** | shell-only features; the Widgets app ignores them |
 | Interface size | Yes | No | |
 | UI gamma | Yes | No | the Reset button sets 1.00 |
@@ -218,13 +218,13 @@ control *does* once saved:
 | Free smooth scrolling | Yes | No | the grid always scrolls with Qt's default |
 | Preview preload | Yes | **Yes** (read by the popout when it is built, so a change applies after a restart) | |
 | Editor browsing, editor on demand, starts open, prestart, Camera Raw first | Yes | No | no PhotoCraft host in the shell. The "starts open" row is greyed when "on demand" is off, as in the dialog |
-| Advance after Accept or Reject | Yes | **In the popout only** (read when it is built); the grid's own keys do not advance | |
+| Advance after Accept or Reject | Yes | **Yes**: in the popout and in the grid (W and X on a single photo go on to the next; with several picked they stay), and the palette's Auto Advance toggles it | |
 | Group burst sequences, Stack similar burst frames | Yes | No | |
 | Show hidden folders | Yes | **Yes**: the Library page's folder tree lists them, and the View menu switch reloads it | |
 | Reopen folders where I left off | Yes | **Yes**: the grid goes back to the photo (and the shell reopens the last folder) | the open tab and window place are not remembered |
 | One branch expanded, watch folder | Yes | No | the tree is always one drive, and there is no folder watcher |
 | Catalog cache | Yes | No | |
-| Catalog summary | n/a | **Sample** text | the Widgets dialog shows `scan.catalog_debug_summary()` |
+| Catalog summary | n/a | **Real**: the catalog's own numbers (`catalog.CatalogRepository.stats`: folders, image bundles, review features, when it was last indexed) read when the window opens, or the reason it could not be read; `--mock` keeps the sample text | the Widgets dialog's "current load" and review-cache lines (they need the window's scan state) |
 | AI batch size, detailed progress, CPU ranking | Yes | No | |
 | Likely winners, Review band, Dispute weight, Base score weight | Yes (clamped to the Widgets limits) | No | the Widgets app pushes the cull thresholds into the classifier on save (`apply_cull_thresholds_to_classifier`, `apply_base_score_blend_to_workflow`); the shell does not |
 | Cull breakdown line | n/a | Real (computed from the two sliders; the Widgets dialog also clamps the band so winners + review <= 100) | |

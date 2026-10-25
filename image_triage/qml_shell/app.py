@@ -119,7 +119,12 @@ def main(argv: list[str] | None = None) -> int:
         theme.applyMode(settings.themeMode, ACCENTS[index][1] if 0 <= index < len(ACCENTS) else -1, settings.contrast, system_dark)
 
     settings.previewChanged.connect(apply_theme)
+    app.styleHints().colorSchemeChanged.connect(lambda *_: apply_theme())      # Auto follows the system's light or dark when it changes
     apply_theme()
+    if not args.mock and settings.value("perfLog") is True:
+        from ..perf import perf_logger
+
+        perf_logger().set_enabled(True, reason="startup")       # as the Widgets app does when the setting was left on
     if args.light:
         theme.light = True
     engine = QQmlApplicationEngine()

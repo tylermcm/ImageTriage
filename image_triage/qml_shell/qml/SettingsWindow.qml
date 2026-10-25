@@ -29,7 +29,7 @@ FocusScope {
     function open() { UiState.settingsOpen = true; root.forceActiveFocus() }
     function openGuide() { reference.setQuery(""); reference.setTopic("settings"); reference.open("help") }       // the Help window's Settings guide, over this window
     function cancel() { settings.discard(); UiState.settingsOpen = false; UiState.settingsQuery = ""; root.recording = "" }
-    onShownChanged: if (shown) { forceActiveFocus() }
+    onShownChanged: if (shown) { settings.readCatalogSummary(); forceActiveFocus() }
     Keys.onEscapePressed: root.cancel()
 
     // the dimmed, blurred application
