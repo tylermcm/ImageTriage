@@ -39,3 +39,10 @@ thumbnails, which come from Image Triage's own thumbnail cache rather than the b
 `help.dc.html` with `harness_help.html` (`?scene=hlp-start|hlp-search|hlp-cull|hlp-trouble|hlp-about|hlp-about-new|hm-open|sk-main|sk-search|lib-results|lib-search|lib-empty|fa-main|fa-none|fa-other-os|sp-start|sp-mid|sp-end`);
 the shell shows the same scene with `--ui "refScene=hlp-start"`. `help_splash.jpg` and `help_icon.png` are the mockup's splash and icon (the splash is a downscale of the artwork that was current when it was drawn).
 The sample library, sample file-type states and the "2.4.0 available" text are invented for the mockup.
+
+## The popout viewer
+
+`viewer.dc.html` is the mockup of `qml/Viewer.qml` and `harness_viewer.html` renders it (same stand-in runtime; photos in `./img`). Scenes: `?scene=view|winner|zoom|focus|loupe|far|tall|short|flagged|collect|loading|noedit|opening|zen`.
+The mockup has 36 photos (the 12 sample ones three times, so the filmstrip fills the screen); to compare with `--mock` (12 photos) patch the
+copy as `scripts/qml_parity/viewer.dc.html` is patched in the history of this file: `c < 3` to `c < 1`, `Math.min(36` to `Math.min(12`, and the start state to the sample photos' decisions.
+The shell side: `python -m image_triage.qml_shell --mock DIR --size 1440x900 --ui "vwScene=view;vwRow=1" --grab out.png` (`vwFh=210` for the tall strip).

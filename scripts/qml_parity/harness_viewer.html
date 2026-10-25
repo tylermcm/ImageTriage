@@ -1,0 +1,55 @@
+<!doctype html><html><head><meta charset="utf-8"><title>ref</title></head><body style="margin:0;background:#0e0f11"><div id="root"></div>
+<script>
+class DCLogic{ setState(p){ this.state=Object.assign({},this.state,p); window.__render(); } }
+(async()=>{
+ const txt=await (await fetch('viewer.dc.html')).text();
+ const doc=new DOMParser().parseFromString(txt,'text/html');
+ const dc=doc.querySelector('x-dc'); const helm=dc.querySelector('helmet');
+ for(const n of [...helm.children]) document.head.appendChild(n.cloneNode(true)); helm.remove();
+ const code=doc.querySelector('script[data-dc-script]').textContent;
+ const Comp=new Function('DCLogic',code+';return Component;')(DCLogic);
+ const inst=new Comp(); inst.props={topAlign:'current',palPos:'float',pdMode:new URLSearchParams(location.search).get('pdmode')||'wifi',pdState:new URLSearchParams(location.search).get('pdstate')||'ready',pdActivity:new URLSearchParams(location.search).get('pdact')||'none',pdList:new URLSearchParams(location.search).get('pdlist')||'mixed',pdFlow:'none',scene:new URLSearchParams(location.search).get('scene')||'collections'};
+ const q=new URLSearchParams(location.search);
+ if(q.get('light'))inst.state.light=true;
+ if(q.get('tab')!==null&&q.get('tab')!=='')inst.state.tab=q.get('tab');
+ if(q.get('insp')==='0')inst.state.insp=false;
+ if(q.get('ho')){inst.state.ho=true; if(q.get('hrecipe')){inst.state.hrecipe=q.get('hrecipe');const id=q.get('hrecipe');const rec=id.startsWith('builtin:')?inst.hBuiltin().find(r=>'builtin:'+r.key===id):inst.state.hsaved.find(r=>'saved:'+r.key===id); if(rec)inst.state.hv=Object.assign({},inst.state.hv,rec.v);}
+  if(q.get('hset')){q.get('hset').split(';').forEach(kv=>{const i=kv.indexOf(':');inst.state.hv[kv.slice(0,i)]=kv.slice(i+1)==='true'?true:kv.slice(i+1)==='false'?false:kv.slice(i+1);});}
+  if(q.get('hopen'))inst.state.hopen=q.get('hopen');}
+ if(q.get('tx')){inst.state.tx=q.get('tx');inst.state.txKind=q.get('txk')||'copy';inst.state.txMove=q.get('txm')==='1';inst.state.txp=+(q.get('txp')||0);}
+ if(q.get('bt')){inst.state.bt=q.get('bt');
+  if(q.get('bset')){q.get('bset').split(';').forEach(kv=>{const i=kv.indexOf(':');const k=kv.slice(0,i),val=kv.slice(i+1);inst.state.bv[k]=(val==='true'?true:val==='false'?false:(['start','step','pad'].includes(k)?+val:val));});}
+  if(q.get('bopen'))inst.state.bopen=q.get('bopen');}
+ if(q.get('flt')){inst.state.flt=true;inst.state.fapplied=JSON.stringify(inst.state.fv);
+  if(q.get('fsel')){const m={b0:{ftype:'RAW',review:'Unreviewed'},b1:{ai:'Top Picks',review:'Unreviewed'}};const v=m[q.get('fsel')]||{};inst.state.fv=Object.assign({},inst.state.fv,v);inst.state.fsel=q.get('fsel');inst.state.fapplied=JSON.stringify(inst.state.fv);}
+  if(q.get('fset')){q.get('fset').split(';').forEach(kv=>{const [k,val]=kv.split(':');inst.state.fv[k]=(k==='rating'||k==='conf')?+val:val;});}
+  if(q.get('fopen'))inst.state.fopen=q.get('fopen'); if(q.get('fsave')!==null){inst.state.fsaving=true;inst.state.fname=q.get('fsave');} if(q.get('fdel'))inst.state.fdelAsk=q.get('fdel');}
+ if(q.get('pal')){inst.state.pal=true;inst.state.palQ=q.get('q')||'';inst.state.palI=+(q.get('pi')||0);inst.state.palCtx=q.get('ctx')||'main';}
+ if(q.get('lib')==='1'){inst.state.pd=Object.assign({},inst.state.pd,{lib:true});}
+ if(q.get('menu')==='1'){inst.state.pd=Object.assign({},inst.state.pd,{menu:true});}
+ let handlers=[];
+ const get=(o,p)=>{p=p.trim(); if(p==='true')return true; if(p==='false')return false; return p.split('.').reduce((a,k)=>a==null?a:a[k],o);};
+ const sub=(str,scope)=>str.replace(/\{\{([^}]+)\}\}/g,(m,p)=>{const v=get(scope,p); if(typeof v==='function'){handlers.push(v);return 'h'+(handlers.length-1);} return v==null?'':String(v);});
+ function expand(node,scope,out){
+   if(node.nodeType===3){out.appendChild(document.createTextNode(sub(node.textContent,scope)));return;}
+   if(node.nodeType!==1)return;
+   const tag=node.tagName.toLowerCase();
+   if(tag==='sc-for'){const arr=get(scope,node.getAttribute('list').replace(/[{}]/g,''))||[];const as=node.getAttribute('as');
+     arr.forEach((it,i)=>{const sc=Object.assign({},scope,{[as]:it,$index:i});[...node.childNodes].forEach(c=>expand(c,sc,out));});return;}
+   if(tag==='sc-if'){const v=get(scope,node.getAttribute('value').replace(/[{}]/g,''));if(v)[...node.childNodes].forEach(c=>expand(c,scope,out));return;}
+   const el=node.namespaceURI?document.createElementNS(node.namespaceURI,node.localName):document.createElement(tag);
+   for(const a of node.attributes){ if(a.name.startsWith('hint-'))continue; {let val=sub(a.value,scope); if(a.name==='src'){const ids=['7d698a0453e28d9c2767f6b10dd76c87','f2e6c93bbf0459c2c3be8003e1f5f325','f0faf2816f320e475f9c4d7f1969bb03','ea11d26076a8a3ec543f5c8d8a0e9acb','5c4ef6410af89cdde0d3d4a5fea42d68','9767a1153ba602c1ef72ac61f3ea9ff5','fbba1e228e631ff3adc90ef6b5a7397d','28c2b78e0160d139da99f4552bd22db4','c6ce0a4c32aa5fda90d28507d3dfdfcc','0cc57c8b2dd041420e73b67dd1ea3f57','2fba87e0b54cf455b01439e46da3bb31','f59c40f9723d0b7352e16f3c3f2dcf71'];const m=/_blob\/([0-9a-f]+)/.exec(val);if(m)val='img/p'+String(ids.indexOf(m[1])+1).padStart(2,'0')+'.jpg';} el.setAttribute(a.name,val);} }
+   [...node.childNodes].forEach(c=>expand(c,scope,el)); out.appendChild(el);
+ }
+ const tpl=dc;
+ window.__render=()=>{
+  handlers=[]; const vals=inst.renderVals(); const root=document.getElementById('root'); root.innerHTML='';
+  [...tpl.childNodes].forEach(c=>expand(c,vals,root));
+  root.querySelectorAll('*').forEach(el=>{for(const a of [...el.attributes]){const m=/^on(click|input|keydown|mousedown)$/i.exec(a.name);
+    if(m&&/^h\d+$/.test(a.value)){const f=handlers[+a.value.slice(1)];el.removeAttribute(a.name);el.addEventListener(m[1].toLowerCase(),e=>f(e));}}});
+  if(new URLSearchParams(location.search).get('fscroll')){const e=document.querySelector('.fsc');if(e)e.scrollTop=+new URLSearchParams(location.search).get('fscroll');}
+  document.title='ready'; if(window.__inst.componentDidMount&&!window.__m){window.__m=1;window.__inst.componentDidMount();}
+ };
+ window.__inst=inst; window.__render();
+})();
+</script></body></html>

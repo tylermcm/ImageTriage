@@ -177,7 +177,7 @@ def test_the_preload_asks_for_the_neighbours_ahead_first(qapp, photos, host):
     assert asked and asked[-1][0] == path_of(photos, 2) and asked[-1][1] == path_of(photos, 3)
 
 
-def test_the_window_opens_the_popout_and_takes_the_row_back(qapp, tmp_path):
+def test_the_window_opens_the_viewer_and_takes_the_row_back(qapp, tmp_path):
     engine, window, warnings = _load_main(qapp, tmp_path)
     popout = engine.rootContext().contextProperty("popout")
     photos = engine.rootContext().contextProperty("photos")
@@ -187,8 +187,8 @@ def test_the_window_opens_the_popout_and_takes_the_row_back(qapp, tmp_path):
     grid.setProperty("currentIndex", 2)
     popout.open(2)                                                # what Enter, Space and a double click send
     assert popout.property("isOpen")
-    popout.preview().navigation_requested.emit(3)
-    popout.preview().close()
+    popout.step(3)
+    popout.close()
     pump(qapp, 0.3)
     assert grid.property("currentIndex") == 5                     # the grid is on the photo the viewer ended on
     assert not [w for w in warnings if "ReferenceError" in w or "TypeError" in w or "is not a type" in w], warnings

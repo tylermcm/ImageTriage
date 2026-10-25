@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Image Triage popout preview</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#08090a}
+@keyframes pop{from{opacity:0;transform:translateY(6px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes sheen{from{background-position:-200% 0}to{background-position:200% 0}}
+@keyframes bar{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
+
+.pv{
+  --base:oklch(0.165 0.006 265); --lift:white; --accent:oklch(0.70 0.15 255);
+  --accent-fg:color-mix(in oklch,var(--accent) 70%,white);
+  --s1:color-mix(in oklch,var(--base),var(--lift) 3.5%);
+  --s2:color-mix(in oklch,var(--base),var(--lift) 6.5%);
+  --s3:color-mix(in oklch,var(--base),var(--lift) 11%);
+  --line:color-mix(in oklch,var(--base),var(--lift) 15%);
+  --line-soft:color-mix(in oklch,var(--base),var(--lift) 9%);
+  --fg:color-mix(in oklch,var(--base),var(--lift) 90%);
+  --fg2:color-mix(in oklch,var(--base),var(--lift) 67%);
+  --fg3:color-mix(in oklch,var(--base),var(--lift) 58%);
+  --win:#3fb97a; --keep:#4b8ff0; --rev:#e0b04a; --rej:#e5635b; --star:#f0b84a;
+  --glass:color-mix(in oklch,oklch(0.13 0.006 265) 74%,transparent);
+  --ease:cubic-bezier(.22,.9,.24,1);
+  --fh:120px;position:relative;height:100vh;height:100dvh;min-height:560px;overflow:hidden;background:oklch(0.105 0.004 265);color:var(--fg);
+  font:13px/1.4 Inter,"Segoe UI",system-ui,sans-serif;font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased;user-select:none;
+}
+.pv *{box-sizing:border-box}
+:where(.pv) button{font:inherit;color:inherit;cursor:pointer;border:0;background:none;padding:0}
+.pv :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.pv svg{display:block;flex:none}
+.ic{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.ic.sm{width:15px;height:15px}
+kbd{font:500 10px Inter,system-ui;color:var(--fg3);border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:0 5px;line-height:15px;background:color-mix(in oklch,var(--base),var(--lift) 4%)}
+
+/* stage */
+.stage{position:absolute;inset:0;display:flex;padding:64px 24px calc(var(--fh) + 88px);transition:padding .35s var(--ease)}
+.pv.zen .stage{padding:16px}
+.ph{position:relative;flex:1;min-width:0;min-height:0;overflow:hidden}
+.ph img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;border-radius:3px;box-shadow:0 20px 60px rgba(0,0,0,.55);transition:transform .35s var(--ease),filter .4s;transform-origin:var(--ox,50%) var(--oy,50%)}
+.pv.z100 .ph img{transform:scale(2.3);box-shadow:none;border-radius:0}
+.pv.load .ph img{filter:blur(14px) saturate(.8);transform:scale(1.01)}
+.pv.dim .ph img{opacity:.38}
+.ph .peak{position:absolute;pointer-events:none;opacity:0;transition:opacity .25s}
+.pv.focusOn .peak{opacity:1}
+.peak{inset:0;margin:auto;width:var(--pw,100%);height:var(--ph,100%)}
+.peak i{position:absolute;border-radius:50%;background:repeating-linear-gradient(115deg,transparent 0 3px,var(--pk,#ff3b6b) 3px 5px,transparent 5px 9px);-webkit-mask:radial-gradient(closest-side,#000 40%,transparent 100%);mask:radial-gradient(closest-side,#000 55%,transparent 100%)}
+.spin{position:absolute;inset:0;margin:auto;width:34px;height:34px;border-radius:50%;border:2.5px solid color-mix(in oklch,var(--fg) 25%,transparent);border-top-color:var(--fg);animation:spin .8s linear infinite;display:none}
+.pv.load .spin{display:block}
+.loadnote{position:absolute;left:50%;top:calc(50% + 34px);transform:translateX(-50%);font-size:12px;color:var(--fg);text-shadow:0 1px 6px #000;display:none}
+.pv.load .loadnote{display:block}
+
+/* top bar */
+.top{position:absolute;left:0;right:0;top:0;height:76px;padding:14px 18px 0;display:flex;align-items:flex-start;gap:12px;background:linear-gradient(rgba(0,0,0,.62),transparent);transition:opacity .3s,transform .3s var(--ease);z-index:4}
+.pv.zen .top,.pv.zen .bottom,.pv.zen .edge,.pv.zen .zoom,.pv.zen .hint{opacity:0;pointer-events:none}
+.pv.zen .top{transform:translateY(-12px)}
+.back{display:flex;align-items:center;gap:7px;height:34px;padding:0 12px 0 9px;border-radius:10px;background:var(--glass);backdrop-filter:blur(14px);border:1px solid var(--line-soft);color:var(--fg);font-weight:500}
+.back:hover{background:color-mix(in oklch,var(--glass),var(--lift) 8%)}
+.title{display:flex;flex-direction:column;justify-content:center;height:34px;min-width:0}
+.title b{font-weight:600;font-size:14px;letter-spacing:.1px}
+.title span{font-size:11.5px;color:var(--fg3);white-space:nowrap}
+.title span em{font-style:normal;color:var(--fg2)}
+.grow{flex:1}
+.chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:8px;background:var(--glass);backdrop-filter:blur(14px);border:1px solid var(--line-soft);font-size:11.5px;color:var(--fg2);white-space:nowrap}
+.chip b{color:var(--fg);font-weight:500}
+.chip.a{color:var(--accent-fg);border-color:color-mix(in oklch,var(--accent) 45%,transparent)}
+.tdot{width:7px;height:7px;border-radius:50%;background:var(--rev)}
+.ib{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;background:var(--glass);backdrop-filter:blur(14px);border:1px solid var(--line-soft);color:var(--fg2);transition:background .15s,color .15s}
+.ib:hover{color:var(--fg);background:color-mix(in oklch,var(--glass),var(--lift) 8%)}
+.ib.on{color:var(--accent-fg);border-color:color-mix(in oklch,var(--accent) 50%,transparent);background:color-mix(in oklch,var(--accent) 18%,var(--glass))}
+.cnt{display:flex;align-items:center;height:34px;border-radius:10px;background:var(--glass);backdrop-filter:blur(14px);border:1px solid var(--line-soft);overflow:hidden}
+.cnt button{width:30px;height:100%;display:grid;place-items:center;color:var(--fg2)}
+.cnt button:hover{background:color-mix(in oklch,var(--glass),var(--lift) 10%);color:var(--fg)}
+.cnt span{padding:0 6px;font-size:12px;min-width:56px;text-align:center;color:var(--fg)}
+.cnt span i{font-style:normal;color:var(--fg3)}
+
+/* edges */
+.edge{position:absolute;top:76px;bottom:calc(var(--fh) + 88px);width:84px;display:flex;align-items:center;z-index:3;opacity:0;transition:opacity .2s}
+.pv:hover .edge{opacity:1}
+.edge.l{left:0;justify-content:flex-start;padding-left:18px}
+.edge.r{right:0;justify-content:flex-end;padding-right:18px}
+.pv.snap .edge{opacity:1}
+.edge button{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:var(--glass);backdrop-filter:blur(14px);border:1px solid var(--line-soft);color:var(--fg)}
+.edge button:hover{background:color-mix(in oklch,var(--glass),var(--lift) 12%)}
+.edge button[disabled]{opacity:.3;cursor:default}
+
+/* bottom */
+.bottom{position:absolute;left:0;right:0;bottom:0;padding:0;display:flex;flex-direction:column;align-items:center;gap:12px;background:linear-gradient(transparent,rgba(0,0,0,.7) 55%);transition:opacity .3s,transform .3s var(--ease);z-index:4}
+.bar{display:flex;align-items:center;gap:6px;padding:6px;border-radius:16px;background:var(--glass);backdrop-filter:blur(18px) saturate(1.2);border:1px solid var(--line);box-shadow:0 14px 40px rgba(0,0,0,.5)}
+.sep{width:1px;height:26px;background:var(--line);margin:0 5px}
+.dec{display:flex;align-items:center;gap:7px;height:38px;padding:0 13px 0 11px;border-radius:11px;background:color-mix(in oklch,var(--base),var(--lift) 6%);border:1px solid var(--line-soft);color:var(--fg);font-weight:500;transition:background .15s,border-color .15s,transform .12s}
+.dec:hover{background:color-mix(in oklch,var(--base),var(--lift) 12%)}
+.dec:active{transform:scale(.97)}
+.dec kbd{margin-left:2px}
+.dec.win .ic{color:var(--win)} .dec.keep .ic{color:var(--keep)} .dec.rej .ic{color:var(--rej)}
+.dec.win.on{background:color-mix(in oklch,var(--win) 24%,var(--base));border-color:color-mix(in oklch,var(--win) 70%,transparent)}
+.dec.keep.on{background:color-mix(in oklch,var(--keep) 24%,var(--base));border-color:color-mix(in oklch,var(--keep) 70%,transparent)}
+.dec.rej.on{background:color-mix(in oklch,var(--rej) 24%,var(--base));border-color:color-mix(in oklch,var(--rej) 70%,transparent)}
+.stars{display:flex;gap:1px;padding:0 4px}
+.stars button{width:26px;height:34px;display:grid;place-items:center;color:var(--fg3)}
+.stars button .ic{width:17px;height:17px}
+.stars button.on{color:var(--star)} .stars button.on .ic{fill:var(--star)}
+.stars button:hover{color:var(--star)}
+.tb{display:grid;place-items:center;width:38px;height:38px;border-radius:11px;color:var(--fg2);position:relative}
+.tb:hover{background:color-mix(in oklch,var(--base),var(--lift) 10%);color:var(--fg)}
+.tb.on{color:var(--accent-fg);background:color-mix(in oklch,var(--accent) 20%,transparent)}
+.tb[data-k]::after{content:attr(data-k);position:absolute;right:2px;bottom:1px;font:500 8.5px Inter;color:var(--fg3);opacity:.9}
+.edit{display:flex;align-items:center;gap:8px;height:38px;padding:0 14px 0 12px;border-radius:11px;background:var(--accent);color:oklch(0.16 0.02 255);font-weight:600;border:1px solid color-mix(in oklch,var(--accent),white 25%);box-shadow:0 0 0 0 color-mix(in oklch,var(--accent) 40%,transparent);transition:filter .15s,box-shadow .2s,transform .12s}
+.edit:hover{filter:brightness(1.08);box-shadow:0 6px 22px color-mix(in oklch,var(--accent) 38%,transparent)}
+.edit:active{transform:scale(.98)}
+.edit kbd{color:oklch(0.16 0.02 255);border-color:color-mix(in oklch,oklch(0.16 0.02 255) 35%,transparent);background:rgba(255,255,255,.28)}
+.edit.off{background:color-mix(in oklch,var(--base),var(--lift) 8%);color:var(--fg3);border-color:var(--line-soft);box-shadow:none;cursor:default;filter:none}
+.edit.off kbd{color:var(--fg3);border-color:var(--line);background:transparent}
+
+/* filmstrip */
+.strip{position:relative;width:100%;height:var(--fh);overflow:hidden;background:color-mix(in oklch,oklch(0.13 0.006 265) 88%,transparent);border-top:1px solid var(--line-soft)}
+.grip{position:absolute;left:0;right:0;top:-5px;height:14px;z-index:30;cursor:ns-resize;display:grid;place-items:center;touch-action:none}
+.grip i{width:44px;height:4px;border-radius:2px;background:var(--line);transition:background .15s,width .15s}
+.grip:hover i,.pv.rs .grip i{background:var(--fg3);width:60px}
+.pv.rs{cursor:ns-resize}
+.pv.rs .track,.pv.rs .fs{transition:none}
+.track{position:absolute;left:50%;top:0;bottom:0;display:flex;align-items:center;gap:7px;padding-top:8px;transform:translateX(var(--tx));transition:transform .55s var(--ease)}
+.fs{position:relative;flex:none;width:var(--tw);height:var(--th);border-radius:7px;overflow:hidden;opacity:calc(.5 + var(--l)*.5);border:2px solid transparent;transform:translateY(calc(var(--l)*var(--lu)*-1));transition:opacity .45s,transform .55s var(--ease),border-color .2s;transition-delay:calc(var(--dd)*18ms)}
+.fs img{width:100%;height:100%;object-fit:cover;display:block}
+.fs:hover{opacity:1}
+.fs.cur{border-color:var(--fg);box-shadow:0 10px 24px rgba(0,0,0,.55)}
+.fs .d{position:absolute;right:4px;top:4px;width:9px;height:9px;border-radius:50%;border:1.5px solid rgba(0,0,0,.55)}
+.fs .d.win{background:var(--win)} .fs .d.keep{background:var(--keep)} .fs .d.rej{background:var(--rej)}
+.fs.rejd img{filter:grayscale(.9) brightness(.6)}
+.fs .fl{position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--rev)}
+.fs .n{position:absolute;left:4px;bottom:3px;font-size:9px;font-weight:600;text-shadow:0 1px 2px #000;color:#fff;opacity:0}
+.fs.cur .n,.fs:hover .n{opacity:1}
+.hint{position:absolute;right:20px;bottom:calc(var(--fh) + 26px);font-size:11.5px;color:var(--fg3);display:flex;gap:10px;align-items:center;z-index:5}
+.zoom{position:absolute;left:20px;bottom:calc(var(--fh) + 16px);z-index:5;display:flex;align-items:center;height:30px;border-radius:9px;background:var(--glass);backdrop-filter:blur(14px);border:1px solid var(--line-soft);overflow:hidden}
+.zoom button{height:100%;padding:0 11px;font-size:12px;color:var(--fg2)}
+.zoom button.on{background:color-mix(in oklch,var(--accent) 22%,transparent);color:var(--accent-fg)}
+.zoom button:hover{color:var(--fg)}
+.zoom i{width:1px;height:16px;background:var(--line)}
+
+/* zoom minimap */
+.mini{position:absolute;right:20px;bottom:calc(var(--fh) + 100px);width:150px;height:100px;border-radius:9px;overflow:hidden;border:1px solid var(--line);background:#000;z-index:5;box-shadow:0 10px 30px rgba(0,0,0,.5);display:none}
+.pv.z100 .mini{display:block}
+.mini img{width:100%;height:100%;object-fit:cover;opacity:.7}
+.mini i{position:absolute;left:34%;top:30%;width:40%;height:42%;border:1.5px solid var(--fg);border-radius:3px;box-shadow:0 0 0 999px rgba(0,0,0,.45)}
+
+/* flagged banner / toast / menu */
+.banner{position:absolute;left:50%;top:74px;transform:translateX(-50%);z-index:7;display:flex;align-items:center;gap:12px;padding:8px 8px 8px 14px;border-radius:12px;background:color-mix(in oklch,var(--rev) 15%,oklch(0.15 0.006 265));border:1px solid color-mix(in oklch,var(--rev) 55%,transparent);box-shadow:0 12px 34px rgba(0,0,0,.5);animation:pop .3s var(--ease);font-size:12.5px;white-space:nowrap}
+.banner b{font-weight:600} .banner span{color:var(--fg2)}
+.banner button{height:28px;padding:0 11px;border-radius:8px;background:color-mix(in oklch,var(--base),var(--lift) 12%);border:1px solid var(--line);font-weight:500}
+.banner button:hover{background:color-mix(in oklch,var(--base),var(--lift) 20%)}
+.toast{position:absolute;left:50%;bottom:calc(var(--fh) + 84px);transform:translateX(-50%);z-index:8;display:flex;align-items:center;gap:10px;height:38px;padding:0 8px 0 13px;border-radius:12px;background:oklch(0.22 0.008 265);border:1px solid var(--line);box-shadow:0 12px 34px rgba(0,0,0,.55);animation:pop .3s var(--ease);font-size:12.5px;white-space:nowrap}
+.toast .ic{width:16px;height:16px}
+.toast button{height:26px;padding:0 9px;border-radius:7px;color:var(--accent-fg);font-weight:500}
+.toast button:hover{background:color-mix(in oklch,var(--base),var(--lift) 12%)}
+.pop{position:absolute;z-index:9;left:50%;bottom:calc(var(--fh) + 52px);margin-left:var(--mx,-60px);width:248px;border-radius:14px;background:oklch(0.2 0.007 265);border:1px solid var(--line);box-shadow:0 18px 50px rgba(0,0,0,.6);padding:6px;animation:pop .22s var(--ease)}
+.pop h5{margin:6px 10px 6px;font-size:10.5px;letter-spacing:.9px;text-transform:uppercase;color:var(--fg3);font-weight:600}
+.pop .r{display:flex;align-items:center;gap:10px;width:100%;height:34px;padding:0 10px;border-radius:9px;text-align:left}
+.pop .r:hover{background:color-mix(in oklch,var(--base),var(--lift) 11%)}
+.pop .r .sw{width:12px;height:12px;border-radius:4px}
+.pop .r .ck{margin-left:auto;color:var(--accent-fg)}
+.pop .r.new{color:var(--accent-fg)}
+.pop hr{border:0;border-top:1px solid var(--line-soft);margin:5px 4px}
+.scrim{position:absolute;inset:0;z-index:8}
+
+/* opening the editor */
+.open{position:absolute;inset:0;z-index:20;display:none;background:oklch(0.105 0.004 265 / .9);backdrop-filter:blur(6px);align-items:center;justify-content:center;flex-direction:column;gap:18px;animation:fade .25s}
+.pv.opening .open{display:flex}
+.open .logo{width:62px;height:62px;border-radius:17px;display:grid;place-items:center;background:linear-gradient(145deg,color-mix(in oklch,var(--accent),white 12%),color-mix(in oklch,var(--accent),black 35%));color:#fff;box-shadow:0 14px 40px color-mix(in oklch,var(--accent) 35%,transparent)}
+.open .logo svg{width:32px;height:32px}
+.open h3{margin:0;font-size:17px;font-weight:600}
+.open p{margin:-10px 0 0;color:var(--fg3);font-size:12.5px}
+.open .track{width:220px;height:4px;border-radius:2px;background:color-mix(in oklch,var(--base),var(--lift) 12%);overflow:hidden;position:relative}
+.open .track i{position:absolute;left:0;top:0;bottom:0;width:40%;border-radius:2px;background:var(--accent);animation:bar 1.2s ease-in-out infinite}
+.open button{height:30px;padding:0 12px;border-radius:8px;color:var(--fg2);border:1px solid var(--line)}
+.open button:hover{color:var(--fg)}
+.pv.opening .stage .ph img{transform:scale(1.03)}
+</style>
+</helmet>
+
+<div class="pv {{v.cls}}" style="{{v.fhv}}">
+  <!-- photo -->
+  <div class="stage">
+    <div class="ph" style="--ox:{{v.ox}};--oy:{{v.oy}}">
+      <img src="{{cur.src}}" alt="{{cur.name}}">
+      <div class="peak" style="--pk:{{v.pk}}"><i style="left:14%;top:20%;width:46%;height:52%"></i><i style="left:58%;top:48%;width:24%;height:30%"></i></div>
+      <div class="spin"></div><div class="loadnote">Loading full resolution…</div>
+    </div>
+  </div>
+
+  <!-- top -->
+  <div class="top">
+    <button class="back" aria-label="Back to the grid" onClick="{{close}}"><svg class="ic sm" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>Library <kbd>Esc</kbd></button>
+    <div class="title"><b>{{cur.name}}</b><span>Georgia trip <em>›</em> Kutaisi · {{cur.sub}}</span></div>
+    <div class="grow"></div>
+    <sc-if value="{{cur.flagged}}" hint-placeholder-val="{{ false }}"><span class="chip"><i class="tdot"></i>Flagged by Cull</span></sc-if>
+    <span class="chip"><b>{{cur.ext}}</b>{{cur.size}}</span>
+    <div class="cnt"><button aria-label="Previous photo" onClick="{{prev}}"><svg class="ic sm" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button><span>{{cur.pos}} <i>/ {{cur.total}}</i></span><button aria-label="Next photo" onClick="{{next}}"><svg class="ic sm" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button></div>
+    <button class="ib" aria-label="Hide the controls" onClick="{{toggleZen}}" title="Hide controls (H)"><svg class="ic" viewBox="0 0 24 24"><path d="M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4"/></svg></button>
+    <button class="ib" aria-label="Close" onClick="{{close}}"><svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+
+  <!-- edges -->
+  <div class="edge l"><button aria-label="Previous photo" onClick="{{prev}}" disabled="{{cur.first}}"><svg class="ic" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button></div>
+  <div class="edge r"><button aria-label="Next photo" onClick="{{next}}" disabled="{{cur.last}}"><svg class="ic" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button></div>
+
+  <sc-if value="{{b.show}}" hint-placeholder-val="{{ false }}">
+    <div class="banner"><svg class="ic sm" viewBox="0 0 24 24" style="color:var(--rev)"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg><b>Cull flagged this as {{b.reason}}</b><span>It's in the Cull bin, not rejected yet.</span><button onClick="{{b.restore}}">Keep it</button><button onClick="{{b.reject}}">Reject</button></div>
+  </sc-if>
+
+  <!-- bottom -->
+  <div class="bottom">
+    <div class="bar" role="toolbar" aria-label="Review">
+      <button class="dec win {{d.win}}" aria-pressed="{{d.winP}}" onClick="{{d.setWin}}"><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 017-2.6A4 4 0 0119 10c0 5.6-7 10-7 10z"/></svg>Winner <kbd>W</kbd></button>
+      <button class="dec keep {{d.keep}}" aria-pressed="{{d.keepP}}" onClick="{{d.setKeep}}"><svg class="ic sm" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>Keep <kbd>K</kbd></button>
+      <button class="dec rej {{d.rej}}" aria-pressed="{{d.rejP}}" onClick="{{d.setRej}}"><svg class="ic sm" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>Reject <kbd>X</kbd></button>
+      <i class="sep"></i>
+      <div class="stars" role="group" aria-label="Rating">
+        <sc-for list="{{stars}}" as="s"><button class="{{s.cls}}" aria-label="{{s.label}}" onClick="{{s.pick}}"><svg class="ic" viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.8 6.8 19.6l1-5.8-4.3-4.1 5.9-.8z"/></svg></button></sc-for>
+      </div>
+      <i class="sep"></i>
+      <button class="tb {{t.focus}}" data-k="F" aria-label="Focus assist" title="Focus assist (F, Shift+F colour)" onClick="{{t.toggleFocus}}"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg></button>
+      <button class="tb {{t.loupe}}" data-k="L" aria-label="Loupe" title="Loupe (L)" onClick="{{t.toggleLoupe}}"><svg class="ic" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5M10.5 8v5M8 10.5h5"/></svg></button>
+      <button class="tb" data-k="M" aria-label="Move to a folder" title="Move to… (M)" onClick="{{t.noop}}"><svg class="ic" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2.2h8a2 2 0 012 2V17a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M10 13h5M13 11l2 2-2 2"/></svg></button>
+      <button class="tb" data-k="T" aria-label="Tag" title="Tag (T)" onClick="{{t.noop}}"><svg class="ic" viewBox="0 0 24 24"><path d="M3.5 12.2V4.5h7.7l9 9a1.6 1.6 0 010 2.3l-5 5a1.6 1.6 0 01-2.3 0z"/><circle cx="8" cy="9" r="1.2"/></svg></button>
+      <button class="tb {{t.coll}}" data-k="G" aria-label="Add to a collection" title="Add to a collection (G)" onClick="{{t.toggleColl}}"><svg class="ic" viewBox="0 0 24 24"><rect x="7" y="3.5" width="13" height="13" rx="2"/><path d="M4 8v10.5A1.5 1.5 0 005.5 20H16M13.5 7.5v5M11 10h5"/></svg></button>
+      <button class="tb" data-k="Del" aria-label="Delete" title="Move to the Recycle Bin (Delete)" onClick="{{t.noop}}"><svg class="ic" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V4.8h5V7M6.5 7l.8 12h9.4l.8-12M10 11v5M14 11v5"/></svg></button>
+      <i class="sep"></i>
+      <button class="edit {{e.cls}}" aria-label="{{e.label}}" title="{{e.title}}" onClick="{{e.open}}"><svg class="ic" viewBox="0 0 24 24"><path d="M4 20l1-4.2L16.6 4.2a2 2 0 012.8 0l.4.4a2 2 0 010 2.8L8.2 19z"/><path d="M14.5 6.4l3.1 3.1"/></svg>{{e.text}} <kbd>E</kbd></button>
+    </div>
+    <div class="strip" role="listbox" aria-label="Photos in this folder"><button class="grip" aria-label="Resize the filmstrip. Drag, or use the up and down arrow keys." title="Drag to resize the filmstrip" onMouseDown="{{resizeStart}}" onKeyDown="{{resizeKey}}"><i></i></button><div class="track">
+      <sc-for list="{{strip}}" as="f"><button class="fs {{f.cls}}" style="--l:{{f.l}};--dd:{{f.dd}};z-index:{{f.z}}" aria-label="{{f.name}}" onClick="{{f.pick}}"><img src="{{f.src}}" alt=""><i class="d {{f.dec}}"></i><span class="n">{{f.n}}</span><sc-if value="{{f.flag}}" hint-placeholder-val="{{ false }}"><i class="fl"></i></sc-if></button></sc-for>
+    </div></div>
+  </div>
+
+  <!-- zoom + hints -->
+  <div class="zoom"><button class="{{z.fit}}" onClick="{{z.setFit}}">Fit <kbd>0</kbd></button><i></i><button class="{{z.full}}" onClick="{{z.setFull}}">100% <kbd>Z</kbd></button></div>
+  <div class="mini"><img src="{{cur.src}}" alt=""><i></i></div>
+  <div class="hint"><span><kbd>←</kbd> <kbd>→</kbd> step</span><span><kbd>Space</kbd> close</span></div>
+
+  <!-- collections popover -->
+  <sc-if value="{{coll.show}}" hint-placeholder-val="{{ false }}">
+    <div class="scrim" onClick="{{t.toggleColl}}"></div>
+    <div class="pop" style="--mx:{{coll.mx}}px" role="menu">
+      <h5>Add {{cur.name}} to…</h5>
+      <sc-for list="{{coll.rows}}" as="r"><button class="r" role="menuitemcheckbox" aria-checked="{{r.on}}" onClick="{{r.pick}}"><i class="sw" style="background:{{r.color}}"></i>{{r.name}}<sc-if value="{{r.on}}" hint-placeholder-val="{{ false }}"><svg class="ic sm ck" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></sc-if></button></sc-for>
+      <hr><button class="r new" onClick="{{t.toggleColl}}"><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New collection…</button>
+    </div>
+  </sc-if>
+
+  <!-- toast -->
+  <sc-if value="{{toast.show}}" hint-placeholder-val="{{ false }}">
+    <div class="toast" role="status"><svg class="ic" viewBox="0 0 24 24" style="color:{{toast.color}}"><path d="{{toast.d}}"/></svg>{{toast.text}}<button onClick="{{toast.undo}}">Undo</button></div>
+  </sc-if>
+
+  <!-- opening the editor -->
+  <div class="open" role="status" aria-live="polite">
+    <div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5l3 8.5M20.5 12l-8.500 3M12 20.5L9 12M3.5 12l8.500-3"/></svg></div>
+    <h3>Opening {{cur.name}} in PhotoCraft…</h3>
+    <p>Your decisions here are saved. Closing the editor brings you back to this photo.</p>
+    <div class="track"><i></i></div>
+    <button onClick="{{e.cancel}}">Cancel <kbd>Esc</kbd></button>
+  </div>
+</div>
+</x-dc>
+
+<script type="text/x-dc" data-dc-script data-props='{"scene":{"editor":"enum","options":["view","winner","zoom","focus","loupe","far","tall","short","flagged","collect","loading","noedit","opening","zen","reject"],"default":"view"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  state = { sel: 14, fh: 120, dec: { 15: 'keep', 19: 'win', 18: 'rej' }, rate: { 14: 4, 15: 5, 19: 4 }, zoom: false, focus: false, loupe: false, zen: false, load: false, opening: false, coll: false, cin: { 0: true }, toast: null, flagged: { 18: 'blurry' }, noedit: false, pk: 0 };
+
+  photos() {
+    const u = ['7d698a0453e28d9c2767f6b10dd76c87','f2e6c93bbf0459c2c3be8003e1f5f325','f0faf2816f320e475f9c4d7f1969bb03','ea11d26076a8a3ec543f5c8d8a0e9acb','5c4ef6410af89cdde0d3d4a5fea42d68','9767a1153ba602c1ef72ac61f3ea9ff5','fbba1e228e631ff3adc90ef6b5a7397d','28c2b78e0160d139da99f4552bd22db4','c6ce0a4c32aa5fda90d28507d3dfdfcc','0cc57c8b2dd041420e73b67dd1ea3f57','2fba87e0b54cf455b01439e46da3bb31','f59c40f9723d0b7352e16f3c3f2dcf71'].map((id) => '/_blob/' + id);
+    const meta = [
+      ['DSC_4201', 'NEF', 74, 71, 'Balanced', 'Low', '1/500 · f/8 · ISO 100', '35 mm', '07:42'],
+      ['DSC_4203', 'NEF', 91, 88, 'Balanced', 'Low', '1/800 · f/8 · ISO 100', '50 mm', '08:05'],
+      ['DSC_4207', 'NEF', 93, 90, 'Balanced', 'Low', '1/640 · f/9 · ISO 100', '24 mm', '08:31'],
+      ['DSC_4210', 'JPG', 58, 52, 'Dark', 'Medium', '1/125 · f/4 · ISO 400', '70 mm', '09:02'],
+      ['DSC_4214', 'NEF', 80, 83, 'Balanced', 'Low', '1/400 · f/8 · ISO 100', '28 mm', '09:20'],
+      ['DSC_4219', 'JPG', 41, 38, 'Bright', 'Low', '1/1000 · f/5.6 · ISO 100', '35 mm', '09:48'],
+      ['DSC_4222', 'NEF', 88, 86, 'Balanced', 'Low', '1/320 · f/8 · ISO 100', '24 mm', '10:12'],
+      ['DSC_4226', 'NEF', 84, 79, 'Balanced', 'Low', '1/200 · f/6.3 · ISO 200', '40 mm', '10:40'],
+      ['DSC_4231', 'NEF', 69, 64, 'Bright', 'Medium', '1/160 · f/5.6 · ISO 800', '70 mm', '11:03'],
+      ['DSC_4236', 'JPG', 63, 60, 'Balanced', 'Low', '1/1250 · f/8 · ISO 100', '24 mm', '11:30'],
+      ['DSC_4240', 'NEF', 95, 92, 'Balanced', 'Low', '1/500 · f/8 · ISO 100', '35 mm', '12:08'],
+      ['DSC_4244', 'NEF', 86, 82, 'Balanced', 'Low', '1/400 · f/9 · ISO 100', '24 mm', '12:36']
+    ];
+    const out = [];
+    for (let c = 0; c < 3; c++) meta.forEach((m, j) => out.push({ id: out.length + 1, src: u[j], name: 'DSC_' + (parseInt(m[0].slice(4), 10) + c * 50), ext: m[1], ai: m[2], focus: m[3], expo: m[4], noise: m[5], exposure: m[6], focal: m[7], time: m[8] }));
+    return out;
+  }
+
+  applyScene(sc) {
+    const base = { sel: 14, fh: 120, dec: { 15: 'keep', 19: 'win', 18: 'rej' }, rate: { 14: 4, 15: 5, 19: 4 }, zoom: false, focus: false, loupe: false, zen: false, load: false, opening: false, coll: false, cin: { 0: true }, toast: null, flagged: { 18: 'blurry' }, noedit: false };
+    const O = {
+      view: {}, winner: { sel: 19, toast: { k: 'win', text: 'DSC_4272 marked Winner' } }, zoom: { zoom: true }, focus: { focus: true }, loupe: { loupe: true, zoom: true },
+      far: { sel: 30 }, tall: { fh: 210 }, short: { fh: 84 }, flagged: { sel: 18 }, collect: { coll: true }, loading: { load: true, sel: 20 }, noedit: { noedit: true },
+      opening: { opening: true }, zen: { zen: true }, reject: { sel: 16, dec: { 15: 'keep', 19: 'win', 18: 'rej', 16: 'rej' }, toast: { k: 'rej', text: 'DSC_4260 rejected' } }
+    };
+    Object.assign(this.state, base, O[sc] || {});
+  }
+
+  setFh(h) { this.setState({ fh: Math.max(84, Math.min(260, Math.round(h))) }); }
+  resizeStart(e) {
+    e.preventDefault(); const y0 = e.clientY, h0 = this.state.fh; this.setState({ rs: true });
+    const mv = (ev) => this.setFh(h0 + (y0 - ev.clientY));
+    const up = () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); this.setState({ rs: false }); };
+    window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
+  }
+  go(n) { const t = Math.min(36, Math.max(1, n)); if (t !== this.state.sel) this.setState({ sel: t, load: false, zoom: false, loupe: false, toast: null }); }
+  setDec(k) { const s = this.state; const id = s.sel; const was = s.dec[id] === k; const dec = Object.assign({}, s.dec); if (was) delete dec[id]; else dec[id] = k; const name = this.photos()[id - 1].name; this.setState({ dec, toast: was ? null : { k, text: name + (k === 'win' ? ' marked Winner' : k === 'keep' ? ' kept' : ' rejected') } }); }
+  setRate(n) { const s = this.state; const rate = Object.assign({}, s.rate); if (rate[s.sel] === n) delete rate[s.sel]; else rate[s.sel] = n; this.setState({ rate }); }
+  openEditor() { if (this.state.noedit) return; this.setState({ opening: true }); }
+
+  componentDidMount() {
+    try {
+      window.addEventListener('keydown', (e) => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        const k = e.key; const s = this.state;
+        if (k === 'Escape') { if (s.opening) this.setState({ opening: false }); else if (s.coll) this.setState({ coll: false }); else this.setState({ toast: { k: 'info', text: 'Back to the grid (mockup)' } }); return; }
+        if (s.opening) return;
+        if (k === 'ArrowLeft' || k === 'a') { this.go(s.sel - 1); }
+        else if (k === 'ArrowRight' || k === 'd') { this.go(s.sel + 1); }
+        else if (k === 'w') this.setDec('win'); else if (k === 'k') this.setDec('keep'); else if (k === 'x') this.setDec('rej');
+        else if (k >= '1' && k <= '5') this.setRate(+k);
+        else if (k === 'f') this.setState({ focus: !s.focus });
+        else if (k === 'z' || k === '1') this.setState({ zoom: !s.zoom });
+        else if (k === '0') this.setState({ zoom: false });
+        else if (k === 'l') this.setState({ loupe: !s.loupe, zoom: !s.loupe });
+        else if (k === 'g') this.setState({ coll: !s.coll });
+        else if (k === 'h') this.setState({ zen: !s.zen });
+        else if (k === 'e' || k === 'E') this.openEditor();
+      });
+    } catch (err) {}
+  }
+
+  hist(seed) {
+    const pts = []; for (let i = 0; i <= 40; i++) { const x = i / 40; const y = 0.55 * Math.exp(-Math.pow((x - (0.32 + seed * 0.05)) / 0.18, 2)) + 0.4 * Math.exp(-Math.pow((x - (0.72 - seed * 0.04)) / 0.12, 2)) + 0.08 + 0.06 * Math.sin(i * 1.7 + seed); pts.push((x * 200).toFixed(1) + ' ' + (62 - Math.min(0.95, y) * 56).toFixed(1)); }
+    return 'M0 64 L' + pts.join(' L') + ' L200 64 Z';
+  }
+
+  renderVals() {
+    const s = this.state;
+    if (this._scene !== this.props.scene) { this._scene = this.props.scene; this.applyScene(this.props.scene || 'view'); }
+    const on = (c) => (c ? 'on' : '');
+    const P = this.photos(); const N = P.length;
+    const p = P[s.sel - 1];
+    const dec = (id) => s.dec[id] || '';
+    const tone = (v) => (v >= 70 ? '' : v >= 50 ? 'mid' : 'low');
+    const lvl = { Balanced: 88, Dark: 46, Bright: 56 }, nz = { Low: 90, Medium: 55, High: 25 };
+    const ex = p.exposure.split(' · ');
+    const flagged = s.flagged[s.sel];
+    const verdictSub = p.ai >= 88 ? 'Sharp, well exposed. Best of its stack.' : p.ai >= 70 ? 'Solid. A close second in its stack.' : p.ai >= 55 ? 'Usable, but softer than its neighbours.' : 'Soft and poorly exposed. Probably a reject.';
+    const cur = {
+      src: p.src, name: p.name + '.' + p.ext, ext: p.ext, size: p.ext === 'NEF' ? '31.4 MB' : '9.8 MB', sub: (p.ext === 'NEF' ? 'RAW + JPG' : 'JPG') + ' · 6048 × 4024',
+      pos: s.sel, total: N, first: s.sel === 1, last: s.sel === N, flagged: !!flagged, ai: p.ai, focus: p.focus, expoPct: lvl[p.expo], noisePct: nz[p.noise],
+      verdict: p.ai >= 88 ? 'Top pick' : p.ai >= 70 ? 'Strong candidate' : p.ai >= 55 ? 'Average' : 'Weak', verdictSub,
+      shutter: ex[0], aperture: ex[1], iso: ex[2].replace('ISO ', ''), focal: p.focal, time: p.time, hist: this.hist(s.sel % 5),
+      focusTone: tone(p.focus), focusText: p.focus >= 70 ? 'Sharp' : p.focus >= 50 ? 'Slightly soft' : 'Soft',
+      expo: p.expo, expoTone: p.expo === 'Balanced' ? '' : 'mid', noise: p.noise, noiseTone: p.noise === 'Low' ? '' : p.noise === 'Medium' ? 'mid' : 'low'
+    };
+    const cls = [s.rs ? 'rs' : '', s.zen ? 'zen' : '', s.zoom ? 'z100' : '', s.focus ? 'focusOn' : '', s.load ? 'load' : '', s.opening ? 'opening' : '', flagged ? 'flag' : ''].filter(Boolean).join(' ');
+    const th = Math.round((s.fh - 16) / 1.25), tw = Math.round(th * 1.5), tx = -((s.sel - 1) * (tw + 7) + tw / 2);
+    const v = { fhv: '--fh:' + s.fh + 'px;--th:' + th + 'px;--tw:' + tw + 'px;--tx:' + tx + 'px;--lu:' + Math.round(th * 0.1) + 'px', idx: s.sel - 1, cls, ox: s.loupe ? '36%' : '50%', oy: s.loupe ? '42%' : '50%', pk: ['#ff3b6b', '#35e0a1', '#ffd23c'][s.pk % 3] };
+
+    const stars = [1, 2, 3, 4, 5].map((n) => ({ cls: on((s.rate[s.sel] || 0) >= n), label: n + (n === 1 ? ' star' : ' stars'), pick: () => this.setRate(n) }));
+    const strip = P.map((q, i) => ({ cls: [q.id === s.sel ? 'cur' : '', dec(q.id) === 'rej' ? 'rejd' : ''].filter(Boolean).join(' '), name: q.name, src: q.src, dec: dec(q.id), n: q.id, flag: !!s.flagged[q.id], l: Math.abs(i + 1 - s.sel) === 0 ? 1 : Math.abs(i + 1 - s.sel) === 1 ? 0.4 : 0, dd: Math.abs(i + 1 - s.sel), z: 20 - Math.abs(i + 1 - s.sel), pick: () => this.go(q.id) }));
+
+
+    const d = { win: on(dec(s.sel) === 'win'), keep: on(dec(s.sel) === 'keep'), rej: on(dec(s.sel) === 'rej'), winP: dec(s.sel) === 'win' ? 'true' : 'false', keepP: dec(s.sel) === 'keep' ? 'true' : 'false', rejP: dec(s.sel) === 'rej' ? 'true' : 'false', setWin: () => this.setDec('win'), setKeep: () => this.setDec('keep'), setRej: () => this.setDec('rej') };
+    const e = s.noedit
+      ? { cls: 'off', text: 'Edit', label: 'Edit in PhotoCraft (not installed)', title: 'PhotoCraft is not installed. Install it from Settings › Editor.', open: () => {}, cancel: () => {} }
+      : { cls: '', text: 'Edit in PhotoCraft', label: 'Edit in PhotoCraft', title: 'Open this photo in PhotoCraft (E)', open: () => this.openEditor(), cancel: () => this.setState({ opening: false }) };
+    const colls = [['Georgia highlights', '#e0b04a'], ['Print shortlist', '#4b8ff0'], ['Portfolio', '#3fb97a'], ['Client picks', '#c06ad8']];
+    const coll = { show: s.coll, mx: 130, rows: colls.map((c, i) => ({ name: c[0], color: c[1], on: !!s.cin[i], pick: () => { const cin = Object.assign({}, s.cin); if (cin[i]) delete cin[i]; else cin[i] = true; this.setState({ cin }); } })) };
+    const b = flagged ? { show: true, reason: flagged, restore: () => { const f = Object.assign({}, s.flagged); delete f[s.sel]; this.setState({ flagged: f }); this.setDec('keep'); }, reject: () => { const f = Object.assign({}, s.flagged); delete f[s.sel]; this.setState({ flagged: f }); this.setDec('rej'); } } : { show: false, reason: '', restore: () => {}, reject: () => {} };
+    const tk = s.toast ? { win: ['#3fb97a', 'M12 20s-7-4.4-7-10a4 4 0 017-2.6A4 4 0 0119 10c0 5.6-7 10-7 10z'], keep: ['#4b8ff0', 'M5 12.5l4.5 4.5L19 7.5'], rej: ['#e5635b', 'M6 6l12 12M18 6L6 18'], info: ['#9aa0aa', 'M12 8h.01M11 12h1v4h1'] }[s.toast.k] : ['', ''];
+    const toast = { show: !!s.toast, color: tk[0], d: tk[1], text: s.toast ? s.toast.text : '', undo: () => this.setState({ toast: null }) };
+    return {
+      v, cur, stars, strip, d, e, coll, b, toast,
+      t: { focus: on(s.focus), loupe: on(s.loupe), coll: on(s.coll), toggleFocus: () => this.setState({ focus: !s.focus }), toggleLoupe: () => this.setState({ loupe: !s.loupe, zoom: !s.loupe }), toggleColl: () => this.setState({ coll: !s.coll }), noop: () => {} },
+      z: { fit: on(!s.zoom), full: on(s.zoom), setFit: () => this.setState({ zoom: false, loupe: false }), setFull: () => this.setState({ zoom: true }) },
+      prev: () => this.go(s.sel - 1), next: () => this.go(s.sel + 1),
+      close: () => this.setState({ toast: { k: 'info', text: 'Back to the grid (mockup)' } }),
+      resizeStart: (e) => this.resizeStart(e), resizeKey: (e) => { if (e.key === 'ArrowUp') { e.preventDefault(); this.setFh(s.fh + 16); } else if (e.key === 'ArrowDown') { e.preventDefault(); this.setFh(s.fh - 16); } },
+      toggleZen: () => this.setState({ zen: !s.zen })
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -42,9 +42,12 @@ What is and is not real: docs/qml_unwired.md, section "Side panel". Tests: `test
 
 ## Popout
 
-Enter, Space, a double click, the rail's Open preview pin, the palette's Open Preview and the photo menu's Open show the photo in `preview.FullScreenPreview`, the Widgets app's own full-screen viewer, in its own window. `popout.py` (`PopoutHost`)
-builds it, hands it the grid's photos, steps and preloads, feeds its filmstrip from the shell's thumbnail cache and writes its decisions and ratings back to the photo model. The shell runs on a `QApplication` for this.
-Closing the viewer puts the grid on the photo it ended on. No editor starts from it yet. What is and is not connected: docs/qml_unwired.md, section "Popout". Tests: `tests/test_qml_shell_popout.py`.
+Enter, Space, a double click, the rail's Open preview pin, the palette's Open Preview and the photo menu's Open show the photo in `qml/Viewer.qml`, drawn over the whole main window
+(mockup: `scripts/qml_parity/viewer.dc.html`): the photo at full size, a top bar with the folder and the counter, a floating action bar (Winner, Keep, Reject, stars, focus assist,
+loupe, move, tag, collections, delete and **Edit in PhotoCraft**) and a full-width filmstrip that keeps the photo you are on in the middle, with a grip on its top edge to make it taller or shorter. `viewer_host.py`
+(`ViewerHost`, `popout`) reads the picture (a plain JPEG from its own file, anything else on a worker thread), reads the neighbours ahead, and does the decisions, ratings, collections and Delete through the models the grid uses.
+The Widgets app's own viewer is still there behind `--widgets-popout` (`popout.py`). Closing puts the grid on the photo it ended on. No editor starts from it yet. What is and is not connected:
+docs/qml_unwired.md, section "Popout". Tests: `tests/test_qml_shell_viewer.py` (and `tests/test_qml_shell_popout.py` for the Widgets host).
 
 ## Histogram
 
@@ -165,4 +168,4 @@ testing (everything above was verified headlessly with a software renderer), `to
 
 ## Tests
 
-`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py`, `tests/test_qml_shell_pocketdrop.py`, `tests/test_qml_shell_handoff.py`, `tests/test_qml_shell_collections.py`, `tests/test_qml_shell_cull.py`, `tests/test_qml_shell_menu.py`, `tests/test_qml_shell_reference.py`, `tests/test_qml_shell_popout.py`, `tests/test_qml_shell_library.py`, `tests/test_qml_shell_layout.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.
+`tests/test_qml_shell.py`, `tests/test_qml_shell_settings.py`, `tests/test_qml_shell_palette.py`, `tests/test_qml_shell_filters.py` and `tests/test_qml_shell_batch.py`, `tests/test_qml_shell_pocketdrop.py`, `tests/test_qml_shell_handoff.py`, `tests/test_qml_shell_collections.py`, `tests/test_qml_shell_cull.py`, `tests/test_qml_shell_menu.py`, `tests/test_qml_shell_reference.py`, `tests/test_qml_shell_popout.py`, `tests/test_qml_shell_viewer.py`, `tests/test_qml_shell_library.py`, `tests/test_qml_shell_layout.py` (theme contrast, model, thumbnails, headless load) and `scripts/memtrace_*` for memory.

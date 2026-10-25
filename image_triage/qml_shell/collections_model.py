@@ -287,6 +287,12 @@ class CollectionsModel(QObject):
     def addVisible(self, cid: str) -> int:
         return self._add(cid, self._rows_for(None, True))
 
+    @Slot(str, int, result=bool)
+    def hasRow(self, cid: str, row: int) -> bool:
+        """Is the photo on this row of the grid in the collection?"""
+        item = self._photos.row_at(row)
+        return item is not None and self._key(item["path"], item["name"]) in self._members.get(cid, ())
+
     @Slot(str, int)
     def removeSelection(self, cid: str, row: int) -> None:
         rows = [r for r in self._rows_for(row, False) if r]

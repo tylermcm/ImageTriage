@@ -13,7 +13,7 @@
 
 | Window | In the QML shell | Opens from |
 |---|---|---|
-| Popout / preview (`preview.py`) | **connected** (the Widgets viewer as it is, in its own window; see "Popout" below); no editor from it yet, decisions and ratings are saved to the decision store | Enter, Space, double-click, Open preview, palette, photo menu |
+| Popout / preview (`qml/Viewer.qml`, `viewer_host.py`) | **connected** (a viewer drawn by the shell; the Widgets viewer is behind `--widgets-popout`; see "Popout" below); no editor from it yet, decisions and ratings are saved to the decision store | Enter, Space, double-click, Open preview, palette, photo menu |
 | Editor (PhotoCraft host) | not connected | E, Open in editor |
 | Settings | built, storage connected, most values not applied | gear, Ctrl+, |
 | Command palette | built, 25 of 53 commands run | Ctrl K |
@@ -361,27 +361,30 @@ in the shell `--ui "cullScene=cu-review"` (the same names).
 
 ## Popout
 
-`popout.py` (`PopoutHost`, the context property `popout`) opens the Widgets app's own full-screen viewer, `preview.FullScreenPreview`, from the grid. The viewer is the one `window.MainWindow` uses, unchanged, in its own window
-(the shell is therefore a `QApplication` now); the host does what `PreviewController` does for it, without the 53 `MainWindow` attributes that controller reaches into. Built 1.5 s after the window is up (as the Widgets app defers it) so the first Space is not slow.
-Tests: `tests/test_qml_shell_popout.py`.
+`viewer_host.py` (`ViewerHost`, the context property `popout`) and `qml/Viewer.qml` are the popout: one photo at full size over the whole main window, an
+action bar and a full-width filmstrip (mockup: `scripts/qml_parity/viewer.dc.html`). It replaces the Widgets viewer, which is kept behind
+`--widgets-popout` (`popout.py`, `PopoutHost`, tests in `tests/test_qml_shell_popout.py`). The viewer is always dark whatever the theme is; only the
+accent follows it. Tests: `tests/test_qml_shell_viewer.py`.
 
 | Piece | Status | To connect |
 |---|---|---|
 | Opens from Enter, Space, double click, the rail's Open preview pin, the palette's Open Preview, the photo menu's Open | **Real** | |
-| Showing the photo, zoom, loupe, focus assist, FITS, edited-variant discovery, the info line and every key of the viewer | **Real** (the viewer's own code) | |
-| Stepping with the arrows and the filmstrip, the preload of the neighbours (`preview/preload_batch_size`, ahead first) | **Real** | |
-| Filmstrip thumbnails | **Real** (the shell's thumbnail cache, 192 x 128 files, asked for once and drawn when ready); its status dots follow Winner and Reject | the "in the active collection" bars are not drawn |
-| W, X, K and 0 to 5 in the viewer | **Real**: the photo model's decision and rating (the grid's own, so saved to the decision store). W also adds to the collection that collects winners, B adds the photo to it (the picker is not offered here: with no collecting collection B does nothing). Advance after Accept or Reject is the setting | the decision store (step 3 of the plan) |
-| C (Compare) | **Real**: the viewer's own, showing the next photos beside the one open (as many as its count box says); auto bracket grouping is not connected, so a bracket is not picked as a group | `bursts` |
-| Where it opens | The screen the main window is on | |
-| After closing | The grid moves to the photo the popout ended on, as the Widgets app does; it is not told at every step | |
-| **E, Open in PhotoCraft** | **Not connected**: the viewer is told no editor exists, so E does nothing and browsing is the viewer alone | step 2 of the plan, `PreviewController`'s PhotoCraft half |
-| **Delete, M (move)** | **Real** (the same `file_actions.py`; the move asks for a folder in a Widgets dialog, and the viewer then shows the photo that took its place or closes when none is left) | |
-| **T (tag)** | **Not connected**: the viewer asks, nothing listens | tags |
-| Photoshop button | Disabled ("not found") | `shell_actions.open_in_photoshop` |
-| Preview Commands (the viewer's Command button) | **Not connected** | the palette lives in the main window, a different OS window |
-| Winner Ladder, the collections menu (right click on the viewer) | **Not connected** | `start_winner_ladder`, `catalog.populate_collections_menu` |
-| AI result, review summary and workflow lines in the viewer, colour profile (`apply_display_profile`), the shell's theme (it keeps the Widgets viewer's dark look) | Not given to it | `ai_results`, display profile, theme |
+| The photo | **Real**: a JPEG, PNG, WebP, BMP or GIF is shown from its own file; anything else (RAW, TIFF, PSD...) is read with the Widgets app's `imaging.load_image_for_display` on a worker thread (the embedded preview for a RAW) and shown from a temporary JPEG, removed at quit. The grid's thumbnail, blurred, with a spinner and "Loading full resolution..." shows until it is there. A photo that cannot be read says why | FITS stretch settings and the display colour profile are not given to it; edited variants (`discover_edited_paths`) and "show the saved edit" are not shown |
+| Stepping (arrows, A and D, PgUp and PgDn, Home, End, the edge arrows, the counter's arrows, a click on the filmstrip) and the preload of the neighbours (`preview/preload_batch_size`, ahead first) | **Real** | |
+| The filmstrip | **Real**: the shell's thumbnails of every photo the grid shows, the photo you are on always in the middle of the screen, the two beside it lifted a little (a parabola of the distance, the lift following in turn). The strip's height is dragged on the grip at its top edge (or the grip's up and down keys), 84 to 260 px, and kept (`viewer/strip_height`); a taller strip has bigger thumbnails and fewer of them | the status dots show the decision only (not the "in the active collection" bar) |
+| Winner, Keep, Reject (W, K, X, or the buttons), U clears, 1 to 5 and the stars | **Real**: the photo model's own decision and rating (so saved to the decision store and undoable with Ctrl+Z or the toast's Undo). W also adds the photo to the collection that collects winners; Winner and Reject move on to the next photo when `view/auto_advance` is on (the Widgets setting) | the keys differ from the Widgets viewer in one place: 1 to 5 rate here (1 was "100% zoom" there; Z does that) |
+| B (or the collections button) | **Real**: a list of the collections with a tick for those the photo is in; a click adds or removes it. "New collection..." opens the collection dialog (the photo is not added by it) | |
+| Delete, M (move) | **Real** (`file_actions.py`; the move asks for a folder in the shell's folder dialog, and the viewer shows the photo that took its place or closes when none is left) | |
+| Z, 0 and the Fit / 100% pill | **Real**: 100% shows the photo's own pixels (a RAW's embedded preview may be smaller than the sensor), drag to pan, a thumbnail map shows where you are. L, the loupe, is 100% that follows the pointer | the loupe's zoom steps (Alt+L) and the Widgets viewer's other zoom levels |
+| F, focus assist (and Shift+F for the colour) | **Real**: the Widgets app's `review_tools.build_focus_assist_image` on the photo read at up to 2400 px, shown in place of the photo; the on/off and colour are the viewer's own settings keys (`preview/focus_assist_*`) | strength and dim-background have no control here |
+| Cull's flag | **Real** when an analysis has run: a "Flagged by Cull" chip, the banner with the reason and **Keep it** (restores the frame and keeps it) or **Reject**, and a bar on the frame's thumbnail | |
+| H (hide the controls), the toast | **Real** | |
+| **E, Edit in PhotoCraft** | **Not connected**: the button looks ready and says so in a toast; the "Opening in PhotoCraft" screen exists (`--ui "vwScene=opening"`) and nothing starts it. The greyed "PhotoCraft is not installed" look (`vwScene=noedit`) is drawn but nothing decides it yet | step 2 of the plan, `PreviewController`'s PhotoCraft half |
+| **T (tag)** | **Not connected**: a toast says so | tags |
+| Compare (C), the Winner Ladder, Preview Commands, the Photoshop button, the collections right-click menu, the AI result and review summary lines | **Dropped** from this viewer (compare was left out of the design on purpose); the Widgets viewer behind `--widgets-popout` still has them | |
+| Full-screen | The viewer fills the main window (which opens maximised); there is no separate full-screen window and no second-monitor choice | |
+| Check hooks | `--ui "vwScene=view\|zoom\|loupe\|focus\|collect\|zen\|opening\|loading\|noedit\|flagged;vwRow=1;vwFh=210"` opens the viewer in the mockup's scene | |
+| What was compared with the mockup | view, collect, tall, short, zen, opening, noedit and loading, against `viewer.dc.html` in Chromium on the mockup's 12 photos. The mockup's zoom scene scales the picture by 2.3 and its focus scene draws pretend shapes; here zoom is 100% and focus is the real edge map, so those two are not pixel comparisons. Nothing here was run on Windows or with a GPU | |
 
 ## Top bar menus
 

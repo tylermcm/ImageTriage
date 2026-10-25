@@ -208,9 +208,9 @@ Window {
     property string destMode: "move"
     property int destRow: -1
     function chooseDestination(mode, row) { destMode = mode; destRow = row; destDialog.title = mode === "copy" ? "Copy to folder" : "Move to folder"; destDialog.open() }
-    FolderDialog { id: destDialog; onAccepted: { var path = selectedFolder.toString().replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/"); if (win.destMode === "copy") fileActions.copyRow(win.destRow, path); else fileActions.moveRow(win.destRow, path) } }
+    FolderDialog { id: destDialog; onAccepted: { var path = selectedFolder.toString().replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/"); if (win.destMode === "copy") fileActions.copyRow(win.destRow, path); else fileActions.moveRow(win.destRow, path); viewer.refocus() } onRejected: viewer.refocus() }
     property string fileQuestion: ""
-    ConfirmCard { id: fileCard; cancelText: "Cancel"; onAccepted: fileActions.answer(win.fileQuestion, true); onRejected: fileActions.answer(win.fileQuestion, false) }
+    ConfirmCard { id: fileCard; cancelText: "Cancel"; onAccepted: { fileActions.answer(win.fileQuestion, true); viewer.refocus() } onRejected: { fileActions.answer(win.fileQuestion, false); viewer.refocus() } }
     Connections { target: fileActions; function onConfirmRequested(id, title, body, confirm) { win.fileQuestion = id; fileCard.title = title; fileCard.body = body; fileCard.confirmText = confirm; fileCard.open() } }
     Connections { target: pocketDrop; function onRiskChanged() { if (pocketDrop.riskPending) riskCard.open() } }
     Connections { target: pocketDrop; function onAlertRequested(title, message) { infoCard.title = title; infoCard.body = message; infoCard.open() } }
@@ -241,6 +241,7 @@ Window {
     ShortcutsWindow { id: shortcutsWindow; sourceItem: appContent }
     LibraryWindow { id: libraryWindow; sourceItem: appContent }
     FileAssocWindow { id: fileAssocWindow; sourceItem: appContent }
+    Viewer { id: viewer; onMoveRequested: (r) => win.chooseDestination("move", r) }
     ContextMenu { id: ctxHost }
     Toasts { }
     Connections {
@@ -350,8 +351,8 @@ Window {
     Connections { target: cmdPalette; function onExecuted(id) { win.runCommand(id) } }
     TopMenus { id: topMenus; onRun: (id) => win.runCommand(id) }
     Shortcut { sequence: "F5"; onActivated: win.runCommand("file.refresh_folder") }
-    Shortcut { sequence: "Ctrl+Z"; onActivated: win.runCommand("edit.undo") }
-    Shortcut { sequence: "Delete"; onActivated: win.runCommand("review.delete_selection") }
+    Shortcut { sequence: "Ctrl+Z"; enabled: !popout.isOpen; onActivated: win.runCommand("edit.undo") }
+    Shortcut { sequence: "Delete"; enabled: !popout.isOpen; onActivated: win.runCommand("review.delete_selection") }
     Connections { target: UiState; function onUndoRequested() { win.runCommand("edit.undo") } }
     Connections { target: UiState; function onCompareChanged() { cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off") } }
     Component.onCompleted: {
