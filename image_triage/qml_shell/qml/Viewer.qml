@@ -32,6 +32,8 @@ FocusScope {
     readonly property var info: popout.info
     readonly property var flag: { if (!cull) return ({}); void cull.view; if (UiState.vwScene === "flagged") return ({ label: "Blurry", color: "#e0b04a" }); return row >= 0 ? popout.flagFor(row) : ({}) }
     readonly property bool loading: slow || popout.loading
+    readonly property bool barOff: popout.barHidden === true         // the action bar is put away (Tab, or the arrow at its end)
+    readonly property real bh: barOff ? 0 : 64                       // what the bar and its gap take above the filmstrip
     readonly property real dpr: Screen.devicePixelRatio
     readonly property int filmCenterRow: film.indexAt(film.contentX + film.width / 2, film.height / 2)     // which thumbnail is in the middle of the strip
 
@@ -75,7 +77,7 @@ FocusScope {
         if (opening) { if (k === Qt.Key_Escape) opening = false; e.accepted = true; return }
         e.accepted = true
         if (k === Qt.Key_Escape) { if (collOpen) collOpen = false; else close() }
-        else if (k === Qt.Key_Space) close()
+        else if (k === Qt.Key_Tab) popout.setBarHidden(!barOff)
         else if (k === Qt.Key_Left || k === Qt.Key_A || k === Qt.Key_Up || k === Qt.Key_PageUp) step(-1)
         else if (k === Qt.Key_Right || k === Qt.Key_D || k === Qt.Key_Down || k === Qt.Key_PageDown) step(1)
         else if (k === Qt.Key_Home) go(0)
@@ -95,6 +97,10 @@ FocusScope {
         else e.accepted = false
     }
 
+    // Space closes the viewer wherever the focus is. A held key repeats, and the repeats used to land on the grid the viewer had just
+    // handed the focus back to (where Space opens a photo), so the viewer closed and reopened.
+    Shortcut { sequence: "Space"; context: Qt.WindowShortcut; autoRepeat: false; enabled: v.shown && !v.opening; onActivated: v.close() }
+
     // test hook: --ui "vwScene=zoom" opens the viewer on the photo `vwRow` and sets the scene the mockup calls by that name
     Connections {
         target: UiState
@@ -112,6 +118,7 @@ FocusScope {
         zen = s === "zen"; zoomed = s === "zoom" || s === "loupe"; loupe = s === "loupe"; collOpen = s === "collect"
         opening = s === "opening"; slow = s === "loading"
         if (s === "focus" && !popout.assistOn) popout.toggleAssist()
+        if (s === "baroff") popout.setBarHidden(true)
     }
 
     // ---- the stage ----
@@ -120,7 +127,7 @@ FocusScope {
         id: stage
         anchors.fill: parent
         anchors.leftMargin: v.zen ? 16 : 24; anchors.rightMargin: v.zen ? 16 : 24
-        anchors.topMargin: v.zen ? 16 : 64; anchors.bottomMargin: v.zen ? 16 : v.fh + 88
+        anchors.topMargin: v.zen ? 16 : 64; anchors.bottomMargin: v.zen ? 16 : v.fh + 24 + v.bh
         Behavior on anchors.leftMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         Behavior on anchors.rightMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         Behavior on anchors.topMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
@@ -200,7 +207,7 @@ FocusScope {
     Item {
         id: mini
         visible: v.zoomed; z: 5
-        x: parent.width - 20 - width; y: parent.height - (v.fh + 100) - height
+        x: parent.width - 20 - width; y: parent.height - (v.fh + 36 + v.bh) - height
         width: 150; height: 100
         Rectangle { anchors.fill: parent; radius: 9; color: "black"; border.color: v.cLine; layer.enabled: true
             layer.effect: MultiEffect { shadowEnabled: true; shadowColor: Qt.rgba(0, 0, 0, 0.5); shadowBlur: 0.6; shadowVerticalOffset: 10 } }
@@ -306,7 +313,7 @@ FocusScope {
             required property int index
             readonly property bool isLeft: index === 0
             readonly property bool atEnd: isLeft ? v.row <= 0 : v.row >= photos.rowCount() - 1
-            x: isLeft ? 18 : v.width - 18 - width; y: 76 + (v.height - (v.fh + 88) - 76) / 2 - height / 2
+            x: isLeft ? 18 : v.width - 18 - width; y: 76 + (v.height - (v.fh + 24 + v.bh) - 76) / 2 - height / 2
             width: 44; height: 44; z: 3
             opacity: over.hovered && !v.zen ? (atEnd ? 0.3 : 1) : 0
             Behavior on opacity { NumberAnimation { duration: 200 } }
@@ -356,6 +363,9 @@ FocusScope {
         // the action bar
         Item {
             id: bar
+            opacity: v.barOff ? 0 : 1; enabled: !v.barOff
+            Behavior on opacity { NumberAnimation { duration: 220 } }
+            transform: Translate { y: v.barOff ? 14 : 0; Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } } }
             y: 0; height: 52; width: barRow.implicitWidth + 12; x: (parent.width - width) / 2
             Glass { anchors.fill: parent; frosted: false; radius: 16; tint: v.cCard; shadowOffsetA: 14; shadowBlurA: 40; shadowAlphaA: 0.5; shadowInset: 6; shadowAlphaB: 0 }
             Rectangle { anchors.fill: parent; radius: 16; color: "transparent"; border.color: v.cLine }
@@ -458,7 +468,35 @@ FocusScope {
                     HoverTip { tip: edit.can ? "Open this photo in PhotoCraft (E)" : "PhotoCraft is not installed. Install it from Settings › Editor."; hovered: eh2.hovered }
                     Accessible.role: Accessible.Button; Accessible.name: edit.can ? "Edit in PhotoCraft" : "Edit in PhotoCraft (not connected)"
                 }
+                Item { width: 11; height: 40; Rectangle { anchors.centerIn: parent; width: 1; height: 26; color: v.cLine } }
+                Item {   // put the bar away
+                    id: hideBtn
+                    width: 30; height: 38; y: 1
+                    Rectangle { anchors.fill: parent; radius: 11; color: hb.hovered ? v.cHover : "transparent" }
+                    Icon { anchors.centerIn: parent; path: "M6 9l6 6 6-6"; size: 16; strokeWidth: 1.8; color: hb.hovered ? v.cFg : v.cFg2 }
+                    HoverHandler { id: hb; cursorShape: Qt.PointingHandCursor }
+                    TapHandler { onTapped: popout.setBarHidden(true) }
+                    HoverTip { tip: "Hide this bar (Tab)"; hovered: hb.hovered }
+                    Accessible.role: Accessible.Button; Accessible.name: "Hide the action bar"
+                }
             }
+        }
+
+        // while the bar is away, a small tab in its place brings it back
+        Item {
+            id: showTab
+            objectName: "barTab"
+            visible: opacity > 0.01
+            opacity: v.barOff && !v.zen ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: 220 } }
+            width: 46; height: 22; x: (parent.width - width) / 2; y: 28
+            Glass { anchors.fill: parent; frosted: false; radius: 11; tint: v.cCard; shadowOffsetA: 6; shadowBlurA: 16; shadowAlphaA: 0.4; shadowInset: 3; shadowAlphaB: 0 }
+            Rectangle { anchors.fill: parent; radius: 11; color: sb.hovered ? Qt.alpha(v.cHover, 0.6) : "transparent"; border.color: v.cLine }
+            Icon { anchors.centerIn: parent; path: "M6 15l6-6 6 6"; size: 14; strokeWidth: 1.8; color: sb.hovered ? v.cFg : v.cFg2 }
+            HoverHandler { id: sb; cursorShape: Qt.PointingHandCursor }
+            TapHandler { enabled: v.barOff; onTapped: popout.setBarHidden(false) }
+            HoverTip { tip: "Show the action bar (Tab)"; hovered: sb.hovered }
+            Accessible.role: Accessible.Button; Accessible.name: "Show the action bar"
         }
 
         // the filmstrip: full width, the photo you are on in the middle, the two beside it lifted a little
@@ -577,7 +615,7 @@ FocusScope {
         readonly property var t: popout.toast
         visible: !!t.text; z: 8
         width: trow.implicitWidth + 21; height: 38
-        x: (parent.width - width) / 2; y: parent.height - (v.fh + 84) - height
+        x: (parent.width - width) / 2; y: parent.height - (v.fh + 20 + v.bh) - height
         readonly property color tone: t.kind === "win" ? theme.win : t.kind === "keep" ? theme.keep : t.kind === "rej" ? theme.rej : "#9aa0aa"
         onTChanged: { if (t.text) { opacity = 0; scale = 0.97; enter.restart() } }
         ParallelAnimation { id: enter

@@ -367,7 +367,7 @@ in the shell `--ui "cullScene=cu-review"` (the same names).
 
 `viewer_host.py` (`ViewerHost`, the context property `popout`) and `qml/Viewer.qml` are the popout: one photo at full size over the whole main window, an
 action bar and a full-width filmstrip (mockup: `scripts/qml_parity/viewer.dc.html`). It replaces the Widgets viewer, which is kept behind
-`--widgets-popout` (`popout.py`, `PopoutHost`, tests in `tests/test_qml_shell_popout.py`). The viewer follows the active theme (surfaces, lines, text, accent); on a dark theme its stage and glass sit a step darker than the grid, on Light they are light. Tests: `tests/test_qml_shell_viewer.py`.
+`--widgets-popout` (`popout.py`, `PopoutHost`, tests in `tests/test_qml_shell_popout.py`). The viewer follows the active theme (surfaces, lines, text, accent); on a dark theme its stage and glass sit a step darker than the grid, on Light they are light. The action bar can be put away with Tab or the arrow at its end (a small tab in its place brings it back; the photo takes the room; remembered in `viewer/action_bar_hidden`). Space closes the viewer through a window shortcut that ignores key auto-repeat (the repeats used to reach the grid, where Space opens a photo, and reopened it); the grid ignores repeats too. Tests: `tests/test_qml_shell_viewer.py`.
 
 | Piece | Status | To connect |
 |---|---|---|

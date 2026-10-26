@@ -322,3 +322,27 @@ def test_the_viewer_follows_the_active_theme(shell, qapp):
         stage[mode] = viewer.property("cStage")
         assert viewer.property("cFg") == theme.fg and viewer.property("cLine") == theme.line
     assert stage["slate"].lightnessF() < theme.base.lightnessF() and stage["light"].lightnessF() > 0.9      # darker than the grid on a dark theme, light on Light
+
+
+def test_tab_puts_the_action_bar_away_and_brings_it_back_and_the_photo_gets_the_room(shell, qapp):
+    engine, window, model, popout, warnings = shell
+    viewer = window.findChild(QObject, "viewer")
+    popout.open(2)
+    pump(qapp, 0.6)
+    assert not popout.barHidden and viewer.property("bh") == 64
+    QTest.keyClick(window, Qt.Key_Tab)
+    pump(qapp, 0.5)
+    assert popout.barHidden and viewer.property("bh") == 0
+    assert window.findChild(QObject, "barTab").property("visible")           # the tab that brings it back
+    QTest.keyClick(window, Qt.Key_Tab)
+    pump(qapp, 0.5)
+    assert not popout.barHidden and not window.findChild(QObject, "barTab").property("visible")
+
+
+def test_space_closes_the_viewer_and_a_held_space_does_not_reopen_it(shell, qapp):
+    engine, window, model, popout, warnings = shell
+    popout.open(2)
+    pump(qapp, 0.6)
+    QTest.keyClick(window, Qt.Key_Space)
+    pump(qapp, 0.4)
+    assert not popout.isOpen

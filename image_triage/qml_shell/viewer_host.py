@@ -35,6 +35,7 @@ PRELOAD_INTERVAL_MS = 120
 TOAST_MS = 3200
 STRIP_MIN, STRIP_MAX, STRIP_DEFAULT = 84, 260, 120
 STRIP_KEY = "viewer/strip_height"
+BAR_HIDDEN_KEY = "viewer/action_bar_hidden"
 ASSIST_ON_KEY, ASSIST_COLOR_KEY = "preview/focus_assist_enabled", "preview/focus_assist_color"
 PRELOAD_KEY, ADVANCE_KEY = "preview/preload_batch_size", "view/auto_advance"
 DECISION_WORDS = {"win": "marked Winner", "keep": "kept", "rej": "rejected"}
@@ -72,6 +73,7 @@ class ViewerHost(QObject):
     assistChanged = Signal()
     toastChanged = Signal()
     stripChanged = Signal()
+    barChanged = Signal()
     closed = Signal(int)                       # the viewer was put away on this row of the grid
     _done = Signal(str, str, str, str, int, int, str)
 
@@ -97,6 +99,7 @@ class ViewerHost(QObject):
         self._pool = QThreadPool()
         self._pool.setMaxThreadCount(2)
         self._strip = self._read_int(STRIP_KEY, STRIP_DEFAULT, STRIP_MIN, STRIP_MAX)
+        self._bar_hidden = self._read_bool(BAR_HIDDEN_KEY, False)
         self._assist_on = self._read_bool(ASSIST_ON_KEY, False)
         self._assist_color = self._read_str(ASSIST_COLOR_KEY, "red")
         self._toast: dict = {}
@@ -139,6 +142,7 @@ class ViewerHost(QObject):
     row = Property(int, lambda self: self._row, notify=rowChanged)
     canEdit = Property(bool, lambda self: True, constant=True)           # PhotoCraft is there to be opened (False would grey the button)
     editorConnected = Property(bool, lambda self: False, constant=True)  # nothing starts the editor from here yet: the button and E say so
+    barHidden = Property(bool, lambda self: self._bar_hidden, notify=barChanged)
     stripHeight = Property(int, lambda self: self._strip, notify=stripChanged)
     toast = Property("QVariantMap", lambda self: self._toast, notify=toastChanged)
     assistOn = Property(bool, lambda self: self._assist_on, notify=assistChanged)
@@ -446,6 +450,14 @@ class ViewerHost(QObject):
     @Slot()
     def saveStripHeight(self) -> None:
         self._write(STRIP_KEY, self._strip)
+
+    # -- the action bar can be put away (Tab, or the arrow at its end); the choice is remembered ---------------------------
+    @Slot(bool)
+    def setBarHidden(self, hidden: bool) -> None:
+        if bool(hidden) != self._bar_hidden:
+            self._bar_hidden = bool(hidden)
+            self._write(BAR_HIDDEN_KEY, self._bar_hidden)
+            self.barChanged.emit()
 
     # -- deciding, rating, collecting, deleting ------------------------------------------------------------------------------
     @Slot(int, str)

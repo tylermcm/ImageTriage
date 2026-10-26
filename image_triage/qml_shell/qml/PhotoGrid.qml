@@ -122,7 +122,7 @@ Item {
             else if (settings.keyIs("collect_at_cursor", k, e.modifiers)) root.addToCollection();
             else if (settings.keyIs("keep_at_cursor", k, e.modifiers)) photos.setDecisionMany(pick(), "keep");
             else if (settings.keyIs("reject_selection", k, e.modifiers)) { var xr = pick(); photos.setDecisionMany(xr, "rej"); advance(xr) }
-            else if (settings.keyIs("open_preview", k, e.modifiers)) root.openCurrent();
+            else if (settings.keyIs("open_preview", k, e.modifiers)) { if (!e.isAutoRepeat) root.openCurrent() }
             else if (ctrl && k === Qt.Key_A) photos.selectAll();
             else if (ctrl) return;
             else if (shift && (k === Qt.Key_Left || k === Qt.Key_Right || k === Qt.Key_Up || k === Qt.Key_Down))
@@ -131,7 +131,7 @@ Item {
             else if (k === Qt.Key_U) photos.setDecisionMany(pick(), "");
             else if (k >= Qt.Key_1 && k <= Qt.Key_5) photos.setRatingMany(pick(), k - Qt.Key_0);
             else if (k === Qt.Key_I) UiState.insp = !UiState.insp;
-            else if (k === Qt.Key_Return || k === Qt.Key_Space) root.openCurrent();
+            else if (k === Qt.Key_Return || k === Qt.Key_Space) { if (!e.isAutoRepeat) root.openCurrent() }
             else return;
             e.accepted = true;
         }
