@@ -13,6 +13,8 @@ Item {
     height: size
     Shape {
         width: 24; height: 24
+        readonly property var ink: root.path === "" && Icons.inkOffset[root.name] ? Icons.inkOffset[root.name] : [0, 0]
+        x: -ink[0] * root.size / 24; y: -ink[1] * root.size / 24
         scale: root.size / 24
         transformOrigin: Item.TopLeft
         preferredRendererType: Shape.CurveRenderer

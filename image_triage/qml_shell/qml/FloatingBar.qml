@@ -78,8 +78,8 @@ Item {
             id: sizes
             visible: bar.sizeSwitch
             icons: ["densS", "densM", "densL"]; padH: 9
-            current: UiState.dens === "s" ? 0 : UiState.dens === "m" ? 1 : 2
-            onActivated: (i) => { UiState.dens = ["s", "m", "l"][i] }
+            current: [9, 4, 1].indexOf(UiState.cols)      // small, medium, large: 9, 4 and 1 columns
+            onActivated: (i) => { UiState.cols = [9, 4, 1][i] }
         }
         Rectangle { width: 1; height: 22; y: 7; color: theme.line }
         AiChip { id: ai }

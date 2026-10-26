@@ -10,5 +10,4 @@ Rectangle {
         Text { text: (photos.picked > 0 ? photos.picked : 1) + " selected"; color: theme.fg3; font.pointSize: UiState.pt(11.5); visible: !UiState.compact }
         Text { text: photos.loading ? "Reading folder…" : "Thumbnails ready"; color: theme.fg3; font.pointSize: UiState.pt(11.5) }
     }
-    Text { anchors.right: parent.right; anchors.rightMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: "Sample data"; color: theme.fg3; font.pointSize: UiState.pt(11.5) }
 }

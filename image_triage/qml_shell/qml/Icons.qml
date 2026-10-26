@@ -13,15 +13,21 @@ QtObject {
 
     readonly property string folder: "M3.5 7.5a2 2 0 012-2h4l2 2.5h7a2 2 0 012 2v7.5a2 2 0 01-2 2h-13a2 2 0 01-2-2z"
     readonly property string star: "M12 4l2.4 5 5.4.6-4 3.7 1.1 5.4L12 16l-4.9 2.7L8.2 13.3l-4-3.7 5.4-.6z"
-    readonly property string gear: "M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"
+    readonly property string gear: "M 19.4 15a 1.65 1.65 0 0 0 .33 1.82l .06 .06a 2 2 0 0 1 0 2.83a 2 2 0 0 1 -2.83 0l -.06 -.06a 1.65 1.65 0 0 0 -1.82 -.33a 1.65 1.65 0 0 0 -1 1.51V 21a 2 2 0 0 1 -2 2a 2 2 0 0 1 -2 -2v -.09A 1.65 1.65 0 0 0 9 19.4a 1.65 1.65 0 0 0 -1.82 .33l -.06 .06a 2 2 0 0 1 -2.83 0a 2 2 0 0 1 0 -2.83l .06 -.06a 1.65 1.65 0 0 0 .33 -1.82a 1.65 1.65 0 0 0 -1.51 -1H 3a 2 2 0 0 1 -2 -2a 2 2 0 0 1 2 -2h .09A 1.65 1.65 0 0 0 4.6 9a 1.65 1.65 0 0 0 -.33 -1.82l -.06 -.06a 2 2 0 0 1 0 -2.83a 2 2 0 0 1 2.83 0l .06 .06a 1.65 1.65 0 0 0 1.82 .33H 9a 1.65 1.65 0 0 0 1 -1.51V 3a 2 2 0 0 1 2 -2a 2 2 0 0 1 2 2v .09a 1.65 1.65 0 0 0 1 1.51a 1.65 1.65 0 0 0 1.82 -.33l .06 -.06a 2 2 0 0 1 2.83 0a 2 2 0 0 1 0 2.83l -.06 .06a 1.65 1.65 0 0 0 -.33 1.82V 9a 1.65 1.65 0 0 0 1.51 1H 21a 2 2 0 0 1 2 2a 2 2 0 0 1 -2 2h -.09a 1.65 1.65 0 0 0 -1.51 1z"
 
-    readonly property var paths: ({
+    // Where each icon's ink sits relative to the middle of its 24 x 24 box (measured from the rendered paths), so Icon can centre it: a folder or
+    // a chevron drawn off-centre in its box looked off-centre in its button.
+    readonly property var inkOffset: ({ library: [0.0, 0.5], collections: [0.0, 0.5], search: [0.25, 0.25], chevL: [-0.5, 0.0], chevR: [0.5, 0.0], chevUp: [0.0, -1.0], chevDown: [0.0, 1.0], check: [0.0, -0.25], star: [0.0, -0.65], undo: [-0.25, 0.25], openFolder: [0.0, 0.5], funnel: [0.0, 0.65], ladder: [0.0, 0.75], tag: [-0.25, 1.25], editor: [0.0, -0.55], palette: [0.0, 0.25], newfolder: [0.0, 0.5], spark: [1.4, 0.3], heart: [0.0, 0.98], people: [-0.25, 0.0], bars: [0.0, 0.5] })
+
+    readonly property var rawPaths: ({
         library: folder,
         faces: circle(12, 12, 8.5) + circle(9, 10.5, 0.6) + circle(15, 10.5, 0.6) + "M8.8 14.5c1 1.3 2.2 1.9 3.2 1.9s2.2-.6 3.2-1.9",
         collections: "M12 4l8.5 4.5L12 13 3.5 8.5z" + "M3.5 12.5L12 17l8.5-4.5M3.5 16.5L12 21l8.5-4.5",
         pocketdrop: rect(7, 3.5, 10, 17, 2.5) + "M12 8.5v5M9.8 11.2L12 8.5l2.2 2.7",
         settings: circle(12, 12, 3) + gear,
         search: circle(11, 11, 6.5) + "M16 16l4 4",
+        lock: "M7 11V8a5 5 0 0110 0v3M5 11h14v10H5zM12 15v2", unlock: "M7 11V8a5 5 0 019.6-2M5 11h14v10H5zM12 15v2",
+        arrowUp: "M12 19V5M6 11l6-6 6 6",
         chevL: "M14.5 6l-6 6 6 6", chevR: "M9.5 6l6 6-6 6", chevUp: "M6 14l6-6 6 6", chevDown: "M6 10l6 6 6-6",
         check: "M4.5 12.5l4.5 4.5 10.5-10.5", x: "M6 6l12 12M18 6L6 18", minus: "M5 12h14", sliders: "M4 7h10M18 7h2M4 17h2M10 17h10" + circle(16, 7, 2) + circle(8, 17, 2), plus: "M12 5v14M5 12h14",
         star: star,
@@ -54,4 +60,29 @@ QtObject {
         people: "M16 11a3 3 0 100-6 3 3 0 000 6zM8 12a3 3 0 100-6 3 3 0 000 6zM2.5 19c.4-2.6 2.6-4.2 5.5-4.2s5.1 1.6 5.5 4.2M14 15.2c.7-.3 1.4-.4 2-.4 2.5 0 4.5 1.5 5 4",
         bars: "M7 19v-6M12 19V6M17 19v-9"
     })
+
+    // Qt's SVG path reader mis-reads arc flags written without a separator ("a2 2 0 012-2" means flags 0 and 1, then 2 and -2), which bent the gear
+    // and the folder. Every path is rewritten once with explicit commands and spaced flags before it is drawn.
+    function spaced(d) {
+        var counts = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7, Z: 0 }
+        var num = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?/i
+        var i = 0, cmd = "", out = []
+        function skip() { while (i < d.length && (d[i] === " " || d[i] === ",")) ++i }
+        function read() { skip(); var m = num.exec(d.slice(i)); i += m[0].length; return m[0] }
+        function flag() { skip(); return d[i++] }
+        while (true) {
+            skip()
+            if (i >= d.length) break
+            if (/[a-zA-Z]/.test(d[i])) cmd = d[i++]
+            var up = cmd.toUpperCase()
+            if (up === "Z") { out.push(cmd); continue }
+            var a = []
+            if (up === "A") a = [read(), read(), read(), flag(), flag(), read(), read()]
+            else for (var k = 0; k < counts[up]; ++k) a.push(read())
+            out.push(cmd + " " + a.join(" "))
+            if (cmd === "M") cmd = "L"; else if (cmd === "m") cmd = "l"
+        }
+        return out.join("")
+    }
+    readonly property var paths: { var o = {}; for (var k in rawPaths) o[k] = spaced(rawPaths[k]); return o }
 }

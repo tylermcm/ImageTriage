@@ -63,8 +63,20 @@ class FaceStackAnalyzer:
         if self._ranker is None:
             from .cascade.rankers import faces_ranker
 
-            self._ranker = faces_ranker(device="cpu", cancel_check=self._cancel_check)
+            self._ranker = faces_ranker(device=self._worker_device(), cancel_check=self._cancel_check)
         return self._ranker
+
+    @staticmethod
+    def _worker_device() -> str:
+        """The face finder runs on the CPU when the CPU runtime is installed. With only the GPU runtime installed an explicit CPU request has no profile
+        to run in (select_runtime never lends out the GPU profile for one), so the worker is started on the GPU profile instead."""
+        try:
+            from .ai_runtime_packages import load_ai_runtime_installation_status
+
+            installed = set(load_ai_runtime_installation_status().installed_variants)
+        except Exception:
+            return "cpu"
+        return "cpu" if (not installed or "cpu" in installed) else "cuda"
 
     def close(self) -> None:
         ranker, self._ranker = self._ranker, None

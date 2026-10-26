@@ -233,6 +233,14 @@ class BlinkEngine:
         return frame_blink_score(faces)
 
 
+def _overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    """Intersection over the smaller box, so a face found again at another size still counts as the same one."""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return (ix * iy) / smaller if smaller > 0 else 0.0
+
+
 class FacesEngine:
     """Finds the prominent faces in a frame (landmarker) and embeds each (AdaFace). ``score`` is the face count; ``detail`` is what the People index stores.
 
@@ -272,30 +280,57 @@ class FacesEngine:
             landmarker.close()
 
     def detail(self, path: str) -> dict:
-        from ..blink import MIN_FACE_AREA, eyes_closed, face_area
-        from ..faces import align_crop, five_points, landmark_box, preprocess
+        from ..blink import eyes_closed, face_area
+        from ..faces import PEOPLE_MIN_FACE_AREA, align_crop, five_points, landmark_box, preprocess
 
         image = load_image(path, FACES_LONG_EDGE)
-        pixels = self.np.ascontiguousarray(self.np.asarray(image))
-        result = self.landmarker.detect(self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=pixels))
         width, height = image.size
+        # The landmarker's own face detector looks at the whole frame shrunk to a small square, so a face under a few percent of the frame width is
+        # invisible to it (a couple photographed from a few metres off). The frame is therefore searched whole, then in grids of overlapping parts of
+        # three sizes, each shrunk less than the whole. Only frames the person filter flagged get here, so the extra looks are for photos of people.
+        windows = [(0, 0, width, height)]
+        if min(width, height) >= 480:
+            for size, count in ((0.6, 3), (0.4, 4), (0.27, 5)):
+                part_w, part_h = int(width * size), int(height * size)
+                for row in range(count):
+                    for col in range(count):
+                        left = int(col * (width - part_w) / (count - 1))
+                        top = int(row * (height - part_h) / (count - 1))
+                        windows.append((left, top, left + part_w, top + part_h))
+        found = []
+        for left, top, right, bottom in windows:
+            part = image if (right - left, bottom - top) == (width, height) else image.crop((left, top, right, bottom))
+            part_width, part_height = part.size
+            pixels = self.np.ascontiguousarray(self.np.asarray(part))
+            result = self.landmarker.detect(self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=pixels))
+            for index, landmarks in enumerate(result.face_landmarks or []):
+                points = [(p.x, p.y) for p in landmarks]
+                area = face_area(points) * (part_width * part_height) / (width * height)    # as a share of the whole frame
+                if area < PEOPLE_MIN_FACE_AREA:  # a smaller face is a bystander
+                    continue
+                shapes = {c.category_name: float(c.score) for c in (result.face_blendshapes[index] if result.face_blendshapes else [])}
+                try:
+                    crop = align_crop(part, five_points(points, part_width, part_height))
+                except ValueError:  # degenerate landmarks: no usable face here
+                    continue
+                x0, y0, x1, y1 = landmark_box(points)
+                box = ((left + x0 * part_width) / width, (top + y0 * part_height) / height, (left + x1 * part_width) / width, (top + y1 * part_height) / height)
+                found.append((area, box, crop, shapes))
+        # the same face turns up in the whole frame and in two or more parts: keep the largest view of each
+        found.sort(key=lambda item: -item[0])
+        kept = []
+        for area, box, crop, shapes in found:
+            if any(_overlap(box, other[1]) > 0.35 for other in kept):
+                continue
+            kept.append((area, box, crop, shapes))
         faces = []
-        for index, landmarks in enumerate(result.face_landmarks or []):
-            points = [(p.x, p.y) for p in landmarks]
-            area = face_area(points)
-            if area < MIN_FACE_AREA:  # a smaller face is a background person: skipped here exactly as for the blink check
-                continue
-            shapes = {c.category_name: float(c.score) for c in (result.face_blendshapes[index] if result.face_blendshapes else [])}
-            try:
-                crop = align_crop(image, five_points(points, width, height))
-            except ValueError:  # degenerate landmarks: no usable face here
-                continue
+        for area, box, crop, shapes in kept[:FACES_MAX]:
             vector = self.recognizer.run(None, {self.input_name: preprocess(crop)})[0][0]
             norm = float(self.np.linalg.norm(vector))
             vector = vector / norm if norm > 0 else vector
             closed = eyes_closed(shapes)
             faces.append({
-                "box": [round(v, 5) for v in landmark_box(points)],
+                "box": [round(v, 5) for v in box],
                 "area": round(area, 5),
                 "embedding": [round(float(v), 6) for v in vector],
                 "eyes_closed": None if closed is None else round(closed, 4),

@@ -49,7 +49,7 @@ Item {
         }
         if (name === "review") {
             return [
-                mr("Open Preview", "review.open_preview", "Space", "eye"), mo("Winner Ladder", "", "ladder"),
+                mr("Open Preview", "review.open_preview", "Space", "eye"),
                 ms(), mr("Mark Winner", "review.accept_selection", "W", "star"), mr("Keep", "review.keep_selection", "K", "check"),
                 mr("Reject", "review.reject_selection", "X", "x"), mr("Clear Decision", "review.clear_decision", "U", "minus"),
                 mf("Rating", "star", [mr("1 star", "review.rate.1", "1"), mr("2 stars", "review.rate.2", "2"), mr("3 stars", "review.rate.3", "3"),
@@ -63,7 +63,8 @@ Item {
             var shows = [["All photos", "all"], ["Winners", "win"], ["Keep", "keep"], ["Rejects", "rej"]], fmts = [["RAW and JPG", "all"], ["RAW only", "raw"], ["JPG only", "jpg"]]
             return [
                 mf("Appearance", "sun", modes.map(function (m) { return mt(m[0], "appearance." + m[1], function () { return settings.themeMode === m[1] }) })),
-                mf("Thumbnail Size", "view", sizes.map(function (m) { return mt(m[0], "view.dens." + m[1], function () { return UiState.dens === m[1] }) })),
+                mf("Thumbnail Size", "view", sizes.map(function (m) { return mt(m[0], "view.dens." + m[1], function () { return UiState.cols === 0 && UiState.dens === m[1] }) })),
+                mf("Columns", "view", [1, 2, 3, 4, 5, 6, 7, 8, 9].map(function (n) { return mt(n + (n === 1 ? " column" : " columns"), "view.cols." + n, function () { return UiState.cols === n }) })),
                 mf("Sort By", "sort", sorts.map(function (m) { return mt(m[0], "sort." + m[1], function () { return UiState.sort === m[1] }) })),
                 mf("Show Photos", "funnel", shows.map(function (m) { return mt(m[0], "view.filter." + m[1], function () { return UiState.filter === m[1] }) })
                     .concat([ms()], fmts.map(function (m) { return mt(m[0], "view.fmt." + m[1], function () { return UiState.fmt === m[1] }) }),

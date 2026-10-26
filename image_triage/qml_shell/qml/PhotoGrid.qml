@@ -6,8 +6,26 @@ import QtQuick.Shapes
 Item {
     id: root
     property alias view: gv
+    // The grid's list is the open folder's child folders first, then its photos (GridModel). Everything outside this file speaks in photo
+    // rows, so `row` is the current photo's row (-1 while a folder card is current) and `nf` is how many folder cards come first.
+    readonly property int nf: gridModel.folders
+    property int row: -1
+    onRowChanged: if (gv.currentIndex !== row + nf) gv.currentIndex = row + nf
+    Connections { target: gv; function onCurrentIndexChanged() { root.row = gv.currentIndex - root.nf } }
+    onNfChanged: row = gv.currentIndex - nf
+    // The list is rebuilt (a scope or filter change, a refresh) and the number of folder cards in front can change with it: stay on the same photo,
+    // not the same position in the list, or the current photo slips by the difference. (`gridModel.folders` is read directly: `nf` follows a moment later.)
+    property int keepRow: -1
+    Connections {
+        target: gridModel
+        function onModelAboutToBeReset() { root.keepRow = root.row }
+        function onModelReset() { if (root.keepRow >= 0) gv.currentIndex = root.keepRow + gridModel.folders }
+    }
     readonly property int minCell: UiState.dens === "s" ? 150 : UiState.dens === "m" ? 230 : 340
-    readonly property int cols: Math.max(1, Math.floor(gv.width / (minCell + 2)))   // auto-fill: n tracks of min width plus (n-1) gaps
+    readonly property int cols: UiState.cols > 0 ? UiState.cols : Math.max(1, Math.floor(gv.width / (minCell + 2)))   // auto-fill: n tracks of min width plus (n-1) gaps
+    // One thumbnail size per density, not per cell width: opening a panel or resizing the window changes the cells' width, and a size that
+    // followed it asked for a new set of thumbnails (decoded from the originals) for every card on screen each time.
+    readonly property int cellBucket: bucket(Math.ceil((UiState.cols > 0 ? Math.min(Screen.width, 2000) * 0.75 / UiState.cols : minCell * 1.5) * Screen.devicePixelRatio))
     property int bottomSpace: 132
     property Item overlay                // something floating over the grid (the bar): taps inside it are not the grid's
     signal openRequested(int row)
@@ -15,8 +33,15 @@ Item {
 
     // B: the photo you are on goes into the collection that collects (or, when there is none, you choose one)
     function addToCollection() {
-        if (collections.activeId !== "") collections.addSelection(collections.activeId, gv.currentIndex)
+        if (root.row < 0) return
+        if (collections.activeId !== "") collections.addSelection(collections.activeId, root.row)
         else { UiState.collPickerQuery = ""; UiState.collPicker = true }
+    }
+
+    // Return, Space and a double click: a folder card opens that folder, a photo opens in the viewer
+    function openCurrent() {
+        if (gv.currentIndex < root.nf) { if (gv.currentItem) libraryNav.openFolder(gv.currentItem.path) }
+        else root.openRequested(root.row)
     }
 
     function blocked(scenePoint) {
@@ -40,10 +65,10 @@ Item {
         focus: true
         keyNavigationEnabled: true
         boundsBehavior: Flickable.StopAtBounds
-        model: photos
+        model: gridModel
         cellWidth: width / root.cols
         cellHeight: (cellWidth - 2) * 2 / 3 + 2   // a 3:2 card plus the 2px gutter
-        cacheBuffer: cellHeight * 3
+        cacheBuffer: cellHeight * 2
         bottomMargin: root.bottomSpace
         reuseItems: true
         highlightFollowsCurrentItem: false
@@ -53,16 +78,42 @@ Item {
             contentItem: Rectangle { implicitWidth: 6; radius: 3; color: Qt.alpha(theme.fg, 0.28) }
             background: Item {}
         }
+        // The wheel. Qt's own step is a fraction of a row. "Use free smooth scrolling" (Settings, Navigation and preview) scrolls pixel by pixel,
+        // a notch being 150 px, or 0.65 of a card once the cards are bigger than that (never a whole row, which would look like the
+        // snapping mode); without it a notch snaps by whole rows, two with many columns, one with few. Both ease over a moment. A touchpad keeps
+        // the distance its own gesture reports.
+        NumberAnimation { id: wheelEase; target: gv; property: "contentY"; duration: 140; easing.type: Easing.OutCubic }
+        WheelHandler {
+            target: null
+            onWheel: (e) => {
+                var notches = e.angleDelta.y / 120
+                var from = wheelEase.running ? wheelEase.to : gv.contentY
+                var low = gv.originY, high = Math.max(low, gv.originY + gv.contentHeight - gv.height + gv.bottomMargin)
+                var to
+                if (e.pixelDelta.y !== 0) to = from - e.pixelDelta.y
+                else if (settings.value("smooth") === true) to = from - notches * Math.max(150, gv.cellHeight * 0.65)
+                else {
+                    var rows = Math.round((from - low) / gv.cellHeight) - Math.sign(notches) * Math.max(1, Math.round(Math.abs(notches))) * (root.cols >= 7 ? 2 : 1)
+                    to = low + rows * gv.cellHeight
+                }
+                wheelEase.stop()
+                wheelEase.from = gv.contentY
+                wheelEase.to = Math.max(low, Math.min(high, to))
+                wheelEase.start()
+                e.accepted = true
+            }
+        }
         property int anchorIndex: 0       // where a Shift+click or Shift+arrow range starts: the last photo picked on its own
-        function pick() { return photos.selectionRows(currentIndex) }
+        function pick() { return root.row < 0 ? [] : photos.selectionRows(root.row) }
         // "Advance after Accept or Reject" (the Widgets setting): on one photo, W and X go on to the next; on a pick they stay
         function advance(rows) { if (rows.length === 1 && settings.value("autoAdvance") === true && currentIndex < count - 1) { photos.clearSelection(); currentIndex = currentIndex + 1; anchorIndex = currentIndex } }
         function stepTo(target, extend) {
             target = Math.max(0, Math.min(count - 1, target))
-            if (extend) photos.selectRange(anchorIndex, target)
+            if (extend) { target = Math.max(root.nf, target); photos.selectRange(Math.max(0, anchorIndex - root.nf), target - root.nf) }
             else { photos.clearSelection(); anchorIndex = target }
             currentIndex = target
-            positionViewAtIndex(target, GridView.Contain)
+            if (target < root.cols) positionViewAtBeginning()      // the first row: show the folder cards above it too
+            else positionViewAtIndex(target, GridView.Contain)
         }
         Keys.onPressed: (e) => {
             var k = e.key;
@@ -71,7 +122,7 @@ Item {
             else if (settings.keyIs("collect_at_cursor", k, e.modifiers)) root.addToCollection();
             else if (settings.keyIs("keep_at_cursor", k, e.modifiers)) photos.setDecisionMany(pick(), "keep");
             else if (settings.keyIs("reject_selection", k, e.modifiers)) { var xr = pick(); photos.setDecisionMany(xr, "rej"); advance(xr) }
-            else if (settings.keyIs("open_preview", k, e.modifiers)) root.openRequested(currentIndex);
+            else if (settings.keyIs("open_preview", k, e.modifiers)) root.openCurrent();
             else if (ctrl && k === Qt.Key_A) photos.selectAll();
             else if (ctrl) return;
             else if (shift && (k === Qt.Key_Left || k === Qt.Key_Right || k === Qt.Key_Up || k === Qt.Key_Down))
@@ -80,7 +131,7 @@ Item {
             else if (k === Qt.Key_U) photos.setDecisionMany(pick(), "");
             else if (k >= Qt.Key_1 && k <= Qt.Key_5) photos.setRatingMany(pick(), k - Qt.Key_0);
             else if (k === Qt.Key_I) UiState.insp = !UiState.insp;
-            else if (k === Qt.Key_Return || k === Qt.Key_Space) root.openRequested(currentIndex);
+            else if (k === Qt.Key_Return || k === Qt.Key_Space) root.openCurrent();
             else return;
             e.accepted = true;
         }
@@ -100,16 +151,17 @@ Item {
             required property int rating
             required property int ai
             required property bool selected
+            required property bool isFolder
             width: GridView.view.cellWidth
             height: GridView.view.cellHeight
             readonly property bool current: GridView.isCurrentItem
-            readonly property var flag: { void cull.flagRev; return cull.gridFlag(cell.path) || ({}) }
+            readonly property var flag: { void cull.flagRev; return cell.isFolder ? ({}) : (cull.gridFlag(cell.path) || ({})) }
             readonly property bool hot: hover.hovered || current
             // Contrast. The name, stars and format tag are drawn over the bottom strip of the photo, whatever it is: its brightness
             // (thumbs.tone, measured on the cached thumbnail, only for the card that shows them) decides between light ink on a dark scrim
             // and dark ink on a light one. A rejected or flagged photo is drawn dimmed, so it is measured the way it is shown.
             readonly property real surfaceLuma: 0.2126 * theme.s2.r + 0.7152 * theme.s2.g + 0.0722 * theme.s2.b
-            readonly property real tone: { void img.rev; void img.bucket; return cell.hot ? thumbs.tone(cell.path, img.bucket) : -1 }
+            readonly property real tone: { void img.rev; void img.bucket; return cell.hot && !cell.isFolder ? thumbs.tone(cell.path, img.bucket) : -1 }
             readonly property real shownTone: tone < 0 ? -1 : tone * img.imageOpacity + (1 - img.imageOpacity) * surfaceLuma
             readonly property bool bright: shownTone > 0.6
 
@@ -121,18 +173,45 @@ Item {
                 ThumbImage {
                     id: img
                     anchors.fill: parent
-                    path: cell.path
-                    bucket: root.bucket(Math.ceil(cell.width * Screen.devicePixelRatio))
+                    path: cell.isFolder ? "" : cell.path
+                    bucket: root.cellBucket
                     imageOpacity: cell.decision === "rej" || cell.flag.label !== undefined ? 0.38 : 1
                     desaturate: cell.decision === "rej" ? 0.75 : (cell.flag.label !== undefined ? 0.7 : 0)
-                    scale: hover.hovered ? 1.04 : 1
+                    scale: hover.hovered && !cell.isFolder ? 1.04 : 1
                     Behavior on scale { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
+                }
+                Item {   // a folder: the flat folder from the old grid (ui/prototype_style.folder_icon_pixmap) at 55% of the card, its name under it, both centred
+                    visible: cell.isFolder
+                    anchors.fill: parent
+                    readonly property real edge: Math.max(40, Math.min(width, height) * 0.55)
+                    readonly property real nameSize: Math.max(13, Math.min(20, width * 0.058))
+                    readonly property real groupTop: (height - edge - 10 - nameSize * 1.5) / 2
+                    property int summaryRev: 0
+                    Connections { target: photos; function onFolderSummaryReady(p) { if (p === cell.path) parent.summaryRev++ } }
+                    Rectangle { anchors.fill: parent; color: theme.s3; opacity: hover.hovered ? 1 : 0; Behavior on opacity { NumberAnimation { duration: 150 } } }
+                    Icon {
+                        x: (parent.width - parent.edge) / 2; y: parent.groupTop
+                        path: "M2.4 19.2V6.24h7.2l2.16 2.64h9.84V19.2z"; size: parent.edge; filled: true; strokeWidth: 2.04; color: "#d3b15b"
+                    }
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter; y: parent.groupTop + parent.edge + 10
+                        width: parent.width - 24; horizontalAlignment: Text.AlignHCenter; elide: Text.ElideMiddle
+                        text: cell.name; color: theme.fg; font.pixelSize: parent.nameSize
+                    }
+                    Rectangle {   // what is in it, bottom left, on hover (the strip the photo cards use)
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 38
+                        opacity: hover.hovered ? 1 : 0; Behavior on opacity { NumberAnimation { duration: 200 } }
+                        gradient: Gradient { GradientStop { position: 0; color: "transparent" } GradientStop { position: 1; color: "#b8000000" } }
+                        Text { anchors.left: parent.left; anchors.leftMargin: 9; anchors.bottom: parent.bottom; anchors.bottomMargin: 7
+                               text: { void parent.parent.summaryRev; return cell.isFolder && hover.hovered ? (photos.folderSummary(cell.path) || "Counting…") : "" }
+                               color: "white"; font.pointSize: UiState.pt(11) }
+                    }
                 }
                 Rectangle {
                     // the name / stars / format strip: padding 22 9 7, 11.5px text, a 0.72 black ramp
                     anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                     height: 45.1
-                    opacity: cell.hot ? 1 : 0
+                    opacity: cell.hot && !cell.isFolder ? 1 : 0
                     Behavior on opacity { NumberAnimation { duration: 200 } }
                     gradient: Gradient { GradientStop { position: 0; color: cell.bright ? "#00ffffff" : "transparent" } GradientStop { position: 1; color: cell.bright ? "#d9ffffff" : "#b8000000" } }
                     Text {
@@ -168,7 +247,7 @@ Item {
                 }
                 Item {   // the collection that collects new winners: a small dark disc with its mark, on photos that are in it
                     id: collMark
-                    readonly property var mark: { void collections.revision; void photos.scopeKind; return collections.markFor(cell.path, cell.name) }
+                    readonly property var mark: { void collections.revision; void photos.scopeKind; return cell.isFolder ? ({}) : collections.markFor(cell.path, cell.name) }
                     visible: UiState.showBadges && mark.name !== undefined
                     x: 8; y: cell.flag.label !== undefined ? 34 : 8; width: 22; height: 22
                     Rectangle { x: -1; y: -1; width: 24; height: 24; radius: 12; color: Qt.rgba(1, 1, 1, 0.08) }
@@ -218,16 +297,31 @@ Item {
             TapHandler {   // a click: this photo alone
                 acceptedModifiers: Qt.NoModifier
                 onTapped: (point) => { if (root.blocked(point.scenePosition)) return; photos.clearSelection(); gv.currentIndex = cell.index; gv.anchorIndex = cell.index; gv.forceActiveFocus() }
-                onDoubleTapped: (point) => { if (!root.blocked(point.scenePosition)) root.openRequested(cell.index) }
+                onDoubleTapped: (point) => { if (root.blocked(point.scenePosition)) return; if (cell.isFolder) libraryNav.openFolder(cell.path); else root.openRequested(cell.index - root.nf) }
             }
             TapHandler {   // Ctrl+click: add it to the pick or take it out
                 acceptedModifiers: Qt.ControlModifier
-                onTapped: (point) => { if (root.blocked(point.scenePosition)) return; photos.toggleSelected(cell.index, gv.currentIndex); gv.currentIndex = cell.index; gv.anchorIndex = cell.index; gv.forceActiveFocus() }
+                onTapped: (point) => { if (root.blocked(point.scenePosition) || cell.isFolder) return; photos.toggleSelected(cell.index - root.nf, Math.max(0, gv.currentIndex - root.nf)); gv.currentIndex = cell.index; gv.anchorIndex = cell.index; gv.forceActiveFocus() }
             }
             TapHandler {   // Shift+click: everything from the last photo picked on its own to this one
                 acceptedModifiers: Qt.ShiftModifier
-                onTapped: (point) => { if (root.blocked(point.scenePosition)) return; photos.selectRange(gv.anchorIndex, cell.index); gv.currentIndex = cell.index; gv.forceActiveFocus() }
+                onTapped: (point) => { if (root.blocked(point.scenePosition) || cell.isFolder) return; photos.selectRange(Math.max(0, gv.anchorIndex - root.nf), cell.index - root.nf); gv.currentIndex = cell.index; gv.forceActiveFocus() }
             }
+        }
+    }
+    Column {   // nothing to show: say why, instead of an empty grid
+        anchors.centerIn: parent
+        anchors.verticalCenterOffset: -root.bottomSpace / 3
+        spacing: 10
+        visible: photos.shown === 0 && !photos.loading && photos.subfolders.length === 0
+        Icon { anchors.horizontalCenter: parent.horizontalCenter; name: photos.folderPath === "" ? "library" : (photos.total > 0 ? "funnel" : "view"); size: 52; strokeWidth: 1.2; color: theme.fg3 }
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg2; font.pointSize: UiState.pt(14); font.weight: Font.Medium
+            text: photos.folderPath === "" ? "Choose a folder to start triaging images" : (photos.total > 0 ? "No photos match the filters" : "No photos in this folder")
+        }
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg3; font.pointSize: UiState.pt(11.5)
+            text: photos.folderPath === "" ? "Pick a drive or folder in the Library on the left." : (photos.total > 0 ? "Clear the filters from the bar below to see them." : "It has no supported images and no folders. Pick another from the Library.")
         }
     }
     MouseArea {   // right click: the photo's menu, or the folder's menu on empty space (left clicks pass through to the cells)
@@ -235,7 +329,7 @@ Item {
         onPressed: (m) => {
             var idx = gv.indexAt(m.x - gv.x + gv.contentX, m.y - gv.y + gv.contentY)
             var p = mapToItem(null, m.x, m.y)
-            if (idx >= 0) { gv.currentIndex = idx; gv.forceActiveFocus(); root.contextRequested("photo", idx, p.x, p.y) }
+            if (idx >= root.nf) { gv.currentIndex = idx; gv.forceActiveFocus(); root.contextRequested("photo", idx - root.nf, p.x, p.y) }
             else root.contextRequested("folder", -1, p.x, p.y)
         }
     }

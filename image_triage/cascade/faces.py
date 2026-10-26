@@ -18,13 +18,16 @@ import numpy as np
 
 from .blink import MIN_FACE_AREA
 
-__all__ = ["ALIGNED_SIZE", "EMBEDDING_DIM", "FACE_MODEL_TAG", "FaceCache", "FaceFinding", "MIN_FACE_AREA", "align_crop", "five_points", "preprocess", "similarity_transform"]
+__all__ = ["ALIGNED_SIZE", "EMBEDDING_DIM", "FACE_MODEL_TAG", "FaceCache", "FaceFinding", "MIN_FACE_AREA", "PEOPLE_MIN_FACE_AREA", "align_crop", "five_points", "preprocess", "similarity_transform"]
 
 ALIGNED_SIZE = 112
 EMBEDDING_DIM = 512
 # Names the recognizer for everything stored with its vectors (``image_faces.identity_model``, the cache). A different recognizer is a different space: change this
 # and every stored vector is ignored until the folder is scanned again.
-FACE_MODEL_TAG = "adaface:ir50"
+FACE_MODEL_TAG = "adaface:ir50+tiles"   # +tiles: small faces are found by looking at overlapping parts of the frame too (the first version missed them)
+# The People index keeps smaller faces than the blink check does: a couple standing a few metres away is the subject of the photo even when each face is half a percent
+# of the frame. Only a face under this share of the frame is a bystander.
+PEOPLE_MIN_FACE_AREA = 0.003
 
 # The standard 112 x 112 five-point template the recognizer was trained on: eye (image left), eye (image right), nose tip, mouth corner (image left), mouth corner (image right).
 TEMPLATE = np.array(

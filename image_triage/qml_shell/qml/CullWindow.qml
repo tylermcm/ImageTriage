@@ -12,8 +12,8 @@ Backdrop {
     onDismissed: cull.close()
     z: 106
 
-    readonly property real winW: Math.min(940, width - 64)
-    readonly property real winH: Math.min(640, height - 72)
+    readonly property real winW: Math.min(1180, width - 64)
+    readonly property real winH: Math.min(780, height - 72)
 
     component Lbl: Text { color: theme.fg2; font.pixelSize: 13 }
     component H3: Text { property alias title: h.text; id: h; height: 13; verticalAlignment: Text.AlignVCenter; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
@@ -37,7 +37,7 @@ Backdrop {
         id: win
         shown: root.shown
         width: root.winW; height: root.winH
-        x: (parent.width - width) / 2; y: 44
+        x: (parent.width - width) / 2; y: (parent.height - height) / 2
         RoundClip {
             anchors.fill: parent; anchors.margins: 1; radius: 15
             // ---- the rail ----
@@ -133,7 +133,7 @@ Backdrop {
                                 Rectangle { x: 14; y: 13; width: 36; height: 36; radius: 11; color: root.v.eyes.on ? Qt.tint(theme.s2, Qt.alpha(theme.accent, 0.14)) : theme.s2; border.color: theme.lineSoft
                                     Icon { anchors.centerIn: parent; path: "M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6zM12 14.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM4 4l16 16"; size: 19; color: root.v.eyes.on ? theme.accentFg : theme.fg2 } }
                                 Column { id: j2t; x: 64; y: 13; width: parent.width - 64 - 14 - 14 - (root.v.rt.state === "missing" ? 78 : 38); spacing: 2
-                                    Text { text: "Eyes-closed check"; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
+                                    Text { text: "Face and eyes-closed check"; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
                                     Text { width: parent.width; text: root.v.eyes.desc; wrapMode: Text.WordWrap; color: theme.fg3; font.pointSize: UiState.pt(12.5); lineHeight: 18.1; lineHeightMode: Text.FixedHeight }
                                     Item { visible: root.v.rt.state === "installing"; width: parent.width; height: 28
                                         Rectangle { y: 10; width: parent.width; height: 5; radius: 2.5; color: theme.s3
@@ -144,11 +144,20 @@ Backdrop {
                                             Text { text: root.v.rt.errTitle; color: theme.fg; font.pointSize: UiState.pt(12.5); font.weight: Font.Medium }
                                             Text { width: parent.width; text: root.v.rt.errBody; wrapMode: Text.WordWrap; color: theme.fg2; font.pixelSize: 12; lineHeight: 18; lineHeightMode: Text.FixedHeight; bottomPadding: 6 }
                                             Row { spacing: 8
-                                                SButton { text: "Get the update"; h: 28; hpad: 11; radius: 9; onClicked: Qt.openUrlExternally("https://aka.ms/vs/17/release/vc_redist.x64.exe") }
+                                                SButton { visible: root.v.rt.errVc; text: "Get the update"; h: 28; hpad: 11; radius: 9; onClicked: Qt.openUrlExternally("https://aka.ms/vs/17/release/vc_redist.x64.exe") }
                                                 SButton { text: "Check again"; h: 28; hpad: 11; radius: 9; onClicked: cull.recheckRuntime() } } } } }
                                 Item { anchors.right: parent.right; anchors.rightMargin: 14; y: 13; width: 70; height: 36
                                     SButton { visible: root.v.rt.state === "missing"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "Set up AI"; variant: "primary"; h: 28; hpad: 11; radius: 9; onClicked: cull.setupRuntime() }
                                     SSwitch { visible: root.v.rt.state === "ready"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; checked: root.v.eyes.on; onToggled: cull.toggleEyes() } } }
+                            Item { width: 1; height: 8 }
+                            // job: semantic search
+                            Card { id: j4; width: parent.width; height: Math.max(j4t.implicitHeight, 36) + 26
+                                Rectangle { x: 14; y: 13; width: 36; height: 36; radius: 11; color: root.v.semantic.on ? Qt.tint(theme.s2, Qt.alpha(theme.accent, 0.14)) : theme.s2; border.color: theme.lineSoft
+                                    Icon { anchors.centerIn: parent; name: "search"; size: 19; color: root.v.semantic.on ? theme.accentFg : theme.fg2 } }
+                                Column { id: j4t; x: 64; y: 13; width: parent.width - 64 - 14 - 14 - 38; spacing: 2
+                                    Text { text: "Semantic search"; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
+                                    Text { width: parent.width; text: root.v.semantic.desc; wrapMode: Text.WordWrap; color: theme.fg3; font.pointSize: UiState.pt(12.5); lineHeight: 18.1; lineHeightMode: Text.FixedHeight } }
+                                SSwitch { visible: root.v.rt.state === "ready"; anchors.right: parent.right; anchors.rightMargin: 14; y: 13 + (36 - height) / 2; checked: root.v.semantic.on; onToggled: cull.toggleSemantic() } }
                             Item { width: 1; height: 8 }
                             // job: ranking
                             Card { id: j3; width: parent.width; height: Math.max(j3t.implicitHeight, 36) + 26
@@ -228,12 +237,12 @@ Backdrop {
                             visible: root.page === "rev"; width: parent.width; spacing: 0
                             Row { spacing: 8
                                 Repeater { model: root.v.tiles
-                                    delegate: Card { required property var modelData; width: (rev.width - 24) / 4; height: 64
+                                    delegate: Card { required property var modelData; width: (rev.width - 8 * (root.v.tiles.length - 1)) / root.v.tiles.length; height: 64
                                         Column { x: 13; y: 11; spacing: 3
                                             Text { text: modelData.n; color: theme.fg; font.pixelSize: 21; font.weight: Font.DemiBold; font.letterSpacing: -0.4 }
                                             Text { text: modelData.l; color: theme.fg3; font.pixelSize: 12 } } } } }
                             Item { width: 1; height: 14 }
-                            Flow { width: parent.width; spacing: 6
+                            Flow { id: chipFlow; width: parent.width; spacing: 6
                                 Repeater { model: root.v.chips
                                     delegate: Rectangle { id: chip; required property var modelData; height: 28; width: crow.implicitWidth + 22; radius: 14; color: modelData.on ? theme.s3 : (chh.hovered ? theme.s2 : theme.s1); border.width: modelData.on ? 1.5 : 1; border.color: modelData.on ? theme.accent : theme.lineSoft
                                         Row { id: crow; x: 11; anchors.verticalCenter: parent.verticalCenter; spacing: 7
@@ -244,9 +253,10 @@ Backdrop {
                                         TapHandler { onTapped: cull.setFilter(chip.modelData.key) }
                                         Accessible.role: Accessible.Button; Accessible.name: chip.modelData.label } } }
                             Item { width: 1; height: 12 }
-                            Item { id: split; width: parent.width; height: Math.max(stk.height, detail.height)
-                                Column { id: stk; width: parent.width - 262 - 16; spacing: 8
-                                    Repeater { model: root.v.stacks
+                            // the stacks scroll in a list of their own that only builds the cards on screen (hundreds of stacks, each with its pictures, built at once made scrolling crawl and
+                            // queued every thumbnail ahead of the one you picked); the detail card stays put beside it
+                            Item { id: split; width: parent.width; height: Math.max(320, body.height - 18 - 64 - 14 - chipFlow.height - 12)
+                                ListView { id: stk; width: parent.width - 262 - 16; height: parent.height; spacing: 8; clip: true; cacheBuffer: 500; boundsBehavior: Flickable.StopAtBounds; model: root.v.stacks
                                         delegate: Card { id: sk; required property var modelData; width: stk.width; height: 34 + fl.height + 11
                                             Row { x: 13; y: 8; spacing: 8; height: 20
                                                 Text { text: sk.modelData.title; color: theme.fg; font.pixelSize: 12; font.weight: Font.DemiBold; anchors.verticalCenter: parent.verticalCenter }
@@ -268,7 +278,7 @@ Backdrop {
                                                             Text { id: rs; anchors.centerIn: parent; text: "Restored"; color: "white"; font.pointSize: UiState.pt(10.5); font.weight: Font.Medium } }
                                                         HoverHandler { cursorShape: Qt.PointingHandCursor }
                                                         TapHandler { onTapped: cull.pick(fr.modelData.path) }
-                                                        Accessible.role: Accessible.Button; Accessible.name: fr.modelData.name + (fr.modelData.flagged ? ", flagged " + fr.modelData.badge : "") } } } } }
+                                                        Accessible.role: Accessible.Button; Accessible.name: fr.modelData.name + (fr.modelData.flagged ? ", flagged " + fr.modelData.badge : "") } } } }
                                     Text { visible: root.v.noRows; width: parent.width; topPadding: 26; horizontalAlignment: Text.AlignHCenter; text: "Nothing here. Every frame with this flag has been restored."; color: theme.fg3; font.pointSize: UiState.pt(12.5) } }
                                 Card { id: detail; x: parent.width - 262; width: 262; height: dcol.implicitHeight + 24
                                     Column { id: dcol; x: 12; y: 12; width: parent.width - 24; spacing: 0
@@ -326,7 +336,7 @@ Backdrop {
                                     TapHandler { onTapped: cull.toggleInc(gp.modelData.key) }
                                     HoverHandler { cursorShape: Qt.PointingHandCursor }
                                     Accessible.role: Accessible.CheckBox; Accessible.checked: modelData.on; Accessible.name: modelData.label } }
-                            Text { width: parent.width; topPadding: 8; text: "Frames you marked as winners are never touched. Near-duplicates are only suggestions, so they are not part of this."; wrapMode: Text.WordWrap; color: theme.fg3; font.pointSize: UiState.pt(12.5); lineHeight: 18.75; lineHeightMode: Text.FixedHeight }
+                            Text { width: parent.width; topPadding: 8; text: "Frames you marked as winners are never touched. Near-duplicates are only suggestions, so they stay off until you turn them on."; wrapMode: Text.WordWrap; color: theme.fg3; font.pointSize: UiState.pt(12.5); lineHeight: 18.75; lineHeightMode: Text.FixedHeight }
                         }
                         // -------- done --------
                         Column {

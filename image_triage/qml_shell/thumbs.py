@@ -29,6 +29,7 @@ from ..perf import perf_logger
 
 _JOBS = memtrace.jobs("qml.thumbnail.decode")
 BUCKET_ASPECT = 2 / 3
+BUCKETS = (160, 240, 360, 540, 800)   # the sizes PhotoGrid.bucket() asks for
 STRIP = 0.30                      # the bottom share of a thumbnail that a card's name, stars and format tag are drawn over
 
 
@@ -59,8 +60,9 @@ class _Task(QRunnable):
 
 class ThumbService(QObject):
     ready = Signal(str)
+    painted = Signal()                     # a card's picture finished loading (the launch splash waits for the first few)
 
-    def __init__(self, disk: DiskThumbnailCache | None = None, workers: int = 3, parent: QObject | None = None) -> None:
+    def __init__(self, disk: DiskThumbnailCache | None = None, workers: int = 6, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.disk = disk or DiskThumbnailCache()
         self.pool = QThreadPool()
@@ -68,19 +70,53 @@ class ThumbService(QObject):
         self._lock = threading.Lock()
         self._wanted: dict[str, int] = {}      # path -> how many delegates currently want a thumbnail of it
         self._queued: set[ThumbnailKey] = set()
+        self._stats: dict[str, tuple[int, int]] = {}      # normalised path -> (modified_ns, size), from the folder listings (see prime_folder)
         self._tones: dict[str, float] = {}      # cache file -> brightness of its bottom strip (the file name changes when the photo does)
 
     @staticmethod
     def size_for(bucket: int) -> QSize:
         return QSize(bucket, max(1, round(bucket * BUCKET_ASPECT)))
 
-    def _key(self, path: str, bucket: int) -> ThumbnailKey | None:
+    @staticmethod
+    def _norm(path: str) -> str:
+        return os.path.normcase(os.path.normpath(path))
+
+    def prime_folder(self, folder: str) -> None:
+        """Read every file's modified time and size from one listing of ``folder`` (called on the scan thread). ``_key`` then needs no
+        ``os.stat`` of its own, which on a network share cost ~2 ms a photo, on the GUI thread, every time a card was built."""
+        from ..scanner import normalize_filesystem_path
+
+        found: dict[str, tuple[int, int]] = {}
+        base = normalize_filesystem_path(folder)       # the scanner records photos under this spelling (a mapped drive becomes its share)
         try:
-            stat = os.stat(path)
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            info = entry.stat(follow_symlinks=False)
+                            found[self._norm(os.path.join(base, entry.name))] = (info.st_mtime_ns, info.st_size)
+                    except OSError:
+                        continue
         except OSError:
-            return None
+            return
+        with self._lock:
+            if len(self._stats) > 60000:
+                self._stats.clear()
+            self._stats.update(found)
+
+    def _key(self, path: str, bucket: int) -> ThumbnailKey | None:
+        norm = self._norm(path)
+        known = self._stats.get(norm)
+        if known is None:
+            try:
+                info = os.stat(path)
+            except OSError:
+                return None
+            known = (info.st_mtime_ns, info.st_size)
+            with self._lock:
+                self._stats[norm] = known
         size = self.size_for(bucket)
-        return ThumbnailKey(path=path, modified_ns=stat.st_mtime_ns, file_size=stat.st_size, width=size.width(), height=size.height())
+        return ThumbnailKey(path=path, modified_ns=known[0], file_size=known[1], width=size.width(), height=size.height())
 
     @Slot(str, int, result=str)
     def url(self, path: str, bucket: int) -> str:
@@ -94,13 +130,23 @@ class ThumbService(QObject):
         if target.exists():
             return QUrl.fromLocalFile(str(target)).toString()
         with self._lock:
-            if key in self._queued:
-                return ""
+            fresh = key not in self._queued
             self._queued.add(key)
-        if _JOBS is not None:
-            _JOBS.queued()
-        # Newest request first: what is on screen now, not what was scrolled past.
-        self.pool.start(_Task(self, key), int(time.monotonic() * 1000) & 0x7FFFFFFF)
+        if fresh:
+            if _JOBS is not None:
+                _JOBS.queued()
+            # Newest request first: what is on screen now, not what was scrolled past.
+            self.pool.start(_Task(self, key), int(time.monotonic() * 1000) & 0x7FFFFFFF)
+        return self._stand_in(path, bucket, key)
+
+    def _stand_in(self, path: str, bucket: int, key: ThumbnailKey) -> str:
+        """The nearest size already cached, shown until the one asked for is made: changing the thumbnail size would otherwise blank
+        every card until its new size had been decoded (seconds, on a NAS), and the cell redraws sharp when ``ready`` arrives."""
+        for other in sorted((b for b in BUCKETS if b != bucket), key=lambda b: abs(b - bucket)):
+            size = self.size_for(other)
+            candidate = self.disk._file_path(ThumbnailKey(path=path, modified_ns=key.modified_ns, file_size=key.file_size, width=size.width(), height=size.height()))
+            if candidate.exists():
+                return QUrl.fromLocalFile(str(candidate)).toString()
         return ""
 
     @Slot(str, int, result=float)
@@ -132,6 +178,10 @@ class ThumbService(QObject):
             return ""
         target = self.disk._file_path(key)
         return str(target) if target.exists() else ""
+
+    @Slot()
+    def notePainted(self) -> None:
+        self.painted.emit()
 
     @Slot(str)
     def unwant(self, path: str) -> None:

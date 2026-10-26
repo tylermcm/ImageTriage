@@ -18,6 +18,11 @@ QtObject {
     property string menu: ""            // "" or the id of the open popover
     property string filter: "all"
     property string dens: "m"
+    property var railOrder: ["palette", "openFolder", "undo", "view", "funnel", "sort", "columns", "compare", "convert", "editor", "check", "accept", "reject", "tag", "newfolder", "pocketdrop", "eye", "keyboard"]   // the default order; the order the rail's pinned buttons and the floating bar's buttons are shown in (ids; DragReorder)
+    property var barOrder: []
+    property var destOrder: []            // the order of the four destinations at the top of the rail
+    property int cols: 0                  // a fixed number of columns, 1 to 9; 0 lets the thumbnail size (dens) decide how many fit
+    function setDens(d) { cols = 0; dens = d }
     property int minRate: 0
     property string fmt: "all"
     property string sort: "name"
@@ -83,10 +88,10 @@ QtObject {
     signal openFolderRequested()            // the rail's Open folder pin, Ctrl+O and the palette: Main.qml shows the folder dialog
     property real railPin: 40              // the size of the rail's pinned buttons (Rail.qml shrinks it when the window is short)
     property var pins: ({
-        open: true, undo: true, review: true, view: true, filters: true, accept: true, reject: true,
-        sort: false, columns: false, rename: false, compare: false, preview: false, ladder: false, convert: false, share: false,
-        editor: false, newfolder: false, palette: false, shortcuts: false
+        open: true, undo: true, view: true, filters: true, sort: true, columns: true, compare: true, convert: true, editor: true, palette: true,
+        review: false, accept: false, reject: false, rename: false, preview: false, share: false, newfolder: false, shortcuts: false
     })
+    property bool pinsLocked: false       // locked: the pinned buttons cannot be switched on or off in the "+" menu, and nothing on the rail can be dragged
     function openPalette(context) { paletteContext = context || "main"; paletteQuery = ""; paletteSel = 0; paletteOpen = true }
     function togglePin(name) { var p = Object.assign({}, pins); p[name] = !p[name]; pins = p; }
     function setMenu(name) { menu = (menu === name) ? "" : name; }

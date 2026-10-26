@@ -28,6 +28,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
+    if sys.platform == "win32":
+        # Qt loads QML plugins with an altered search path that ignores os.add_dll_directory, so plugins such as
+        # QtQuick.Dialogs and QtQuick.Shapes cannot find the Qt6*.dll beside them in PySide6 and fail to load.
+        import ctypes
+        import importlib.util
+
+        spec = importlib.util.find_spec("PySide6")
+        if spec and spec.origin:
+            ctypes.windll.kernel32.SetDllDirectoryW(str(Path(spec.origin).parent))
 
     from PySide6.QtCore import Q_ARG, QCoreApplication, QMetaObject, QTimer, QUrl
     from PySide6.QtGui import QGuiApplication
@@ -54,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     from .viewer_host import ViewerHost
     from .filters_model import FiltersModel
     from .palette_model import PaletteModel
-    from .photos import PhotoModel
+    from .photos import GridModel, PhotoModel
     from .reference_model import ReferenceModel
     from .handoff_model import HandoffModel
     from .pocketdrop_model import PocketDropModel
@@ -134,9 +143,12 @@ def main(argv: list[str] | None = None) -> int:
         theme.light = True
     engine = QQmlApplicationEngine()
     thumbs = ThumbService(parent=app)
+    photos.set_after_scan(thumbs.prime_folder)
     context = engine.rootContext()
     context.setContextProperty("theme", theme)
     context.setContextProperty("photos", photos)
+    gridModel = GridModel(photos, parent=app)
+    context.setContextProperty("gridModel", gridModel)
     context.setContextProperty("settings", settings)
     context.setContextProperty("cmdPalette", palette)
     context.setContextProperty("advFilters", adv_filters)
@@ -200,6 +212,8 @@ def main(argv: list[str] | None = None) -> int:
         window.setPosition(area.x() + (area.width() - width) // 2, area.y() + (area.height() - height) // 2)
     QMetaObject.invokeMethod(window, "applyStartup", Q_ARG("QVariant", width))
     if not (args.size or args.grab or args.mock):
+        if splash:
+            window.setOpacity(0.0)                        # it builds out of sight behind the splash and is shown whole (see `reveal`)
         window.showMaximized()                            # the real app opens maximised; headless checks keep their exact size
     for pair in filter(None, args.set.split(";")):
         key, _, raw = pair.partition("=")
@@ -210,21 +224,47 @@ def main(argv: list[str] | None = None) -> int:
         library_nav.openFolder(args.folder)                # loads it, and puts the Library page's tree on its drive
     else:
         library_nav.restoreLastFolder()                    # no folder asked for: the one that was open when the app was closed, on the photo that was current
+    def reveal() -> None:
+        window.setOpacity(1.0)
+        reference.splashHide()
+
     if splash:
+        # The splash stays until the first folder's photos are in the grid, so the window appears whole instead of an empty grid filling in later.
         if library_nav.openPath and not args.mock:
-            reference.splashShow("Reading your folder\u2026", 70)
+            reference.splashShow("Reading your folder…", 70)
 
             def folder_done() -> None:
-                if not photos.loading:
-                    reference.splashShow("Ready", 100)
-                    QTimer.singleShot(250, reference.splashHide)
-                    photos.loadingChanged.disconnect(folder_done)
+                if photos.loading:
+                    return
+                photos.loadingChanged.disconnect(folder_done)
+                reference.splashShow("Ready", 100)
+                # The photos are in the model, but the cards still have to be built and their pictures loaded: hold the splash until the first
+                # screenful of pictures is up (or a moment passes), so the grid is there when the splash goes.
+                need = [min(photos.shown, 8)]
+                hidden = []
+
+                def hide() -> None:
+                    if not hidden:
+                        hidden.append(True)
+                        thumbs.painted.disconnect(painted)
+                        reveal()
+
+                def painted() -> None:
+                    need[0] -= 1
+                    if need[0] <= 0:
+                        QTimer.singleShot(120, hide)
+
+                if need[0] > 0:
+                    thumbs.painted.connect(painted)
+                    QTimer.singleShot(2500, hide)
+                else:
+                    QTimer.singleShot(250, reveal)
 
             photos.loadingChanged.connect(folder_done)
-            QTimer.singleShot(15000, reference.splashHide)         # never leave it up if the folder never answers
+            QTimer.singleShot(15000, reveal)         # never leave it up if the folder never answers
         else:
             reference.splashShow("Ready", 100)
-            QTimer.singleShot(250, reference.splashHide)
+            QTimer.singleShot(250, reveal)
 
     if args.grab:
         def grab() -> None:

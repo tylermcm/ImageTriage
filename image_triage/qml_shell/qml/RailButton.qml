@@ -8,6 +8,7 @@ Item {
     property string tip
     property bool menu: false
     property bool on: false
+    property string dragId: icon        // the pinned buttons can be dragged into another order (DragReorder)
     property color hoverColor: theme.fg
     default property alias extra: holder.data
     signal clicked()
@@ -34,7 +35,7 @@ Item {
         onHoveredChanged: { if (hovered) delay.restart(); else { delay.stop(); tip.show = false } }
     }
     TapHandler { id: press; onTapped: { tip.show = false; b.clicked() } }
-    Item { id: holder; anchors.fill: parent }
+    Item { id: holder; anchors.fill: parent; DragReorder { orderName: "rail" } }
     Accessible.role: Accessible.Button
     Accessible.name: b.tip
 }
