@@ -7,7 +7,7 @@ opening, not Photoshop's Camera Raw Filter. The previously selected target was
 18.4; the owner confirmed matching these 18.6 screenshots instead. No further
 access to the reference application is required to begin.
 
-Originals remain in `C:/Users/user00/Downloads/Mobile Devices/`. They have not
+Originals remain in `C:/Users/developer/Downloads/Mobile Devices/`. They have not
 been committed or turned into product assets. A local JSON manifest records the
 original dimensions and SHA-256 of all 19 files in the chat's visualization folder.
 The screenshot filenames below identify references, not test fixtures to ship.

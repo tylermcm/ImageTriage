@@ -1195,7 +1195,7 @@ def _legacy_aiculler_root() -> Path:
         userprofile = os.environ.get("USERPROFILE", "").strip()
         if userprofile:
             return Path(userprofile) / "Documents" / "GitHub" / "CLI-Culler"
-        return Path("C:/Users/user0/Documents/GitHub/CLI-Culler")
+        return Path(tempfile.gettempdir()) / "image_triage" / "CLI-Culler"
 
 
 def aiculler_runtime_available() -> bool:

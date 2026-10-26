@@ -197,9 +197,9 @@ class SemanticPeopleSearchTests(unittest.TestCase):
                 store.close()
 
     def test_parse_search_query_extracts_known_people_and_keeps_semantic_terms(self) -> None:
-        parsed = parse_search_query("photos of Claire and me at a restaurant", known_people=("Claire",), self_name="owner")
+        parsed = parse_search_query("photos of Claire and me at a restaurant", known_people=("Claire",), self_name="Alex")
 
-        self.assertEqual(("Claire", "owner"), parsed.people)
+        self.assertEqual(("Claire", "Alex"), parsed.people)
         self.assertEqual("restaurant", parsed.semantic_text)
 
     def test_filename_match_score_handles_natural_terms_without_a_mode_switch(self) -> None:

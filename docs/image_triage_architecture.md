@@ -13,47 +13,47 @@ Image Triage is a desktop Qt application that stays folder-first:
 
 The main entry point is:
 
-- [main.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/main.py)
+- [main.py](../image_triage/main.py)
 
 The main coordinator is:
 
-- [window.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/window.py)
+- [window.py](../image_triage/window.py)
 
 ## 2. Core Data Flow
 
 ### Folder review path
 
 1. The user opens a folder.
-2. [scanner.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/scanner.py) builds `ImageRecord` bundles.
-3. [catalog/repository.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/catalog/repository.py) may hydrate cached records first.
-4. [grid.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/grid.py) renders the bundle grid and requests thumbnails.
-5. [preview.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/preview.py) renders focused inspection views.
-6. [decision_store.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/decision_store.py) and XMP helpers persist review state.
+2. [scanner.py](../image_triage/scanner.py) builds `ImageRecord` bundles.
+3. [catalog/repository.py](../image_triage/catalog/repository.py) may hydrate cached records first.
+4. [grid.py](../image_triage/grid.py) renders the bundle grid and requests thumbnails.
+5. [preview.py](../image_triage/preview.py) renders focused inspection views.
+6. [decision_store.py](../image_triage/decision_store.py) and XMP helpers persist review state.
 
 ### Review intelligence path
 
-1. [review_intelligence.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/review_intelligence.py) computes duplicate/similarity groupings.
-2. [review_workflows.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/review_workflows.py) derives burst recommendations and taste-profile adjustments.
-3. Cached results are stored in [catalog/repository.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/catalog/repository.py) so large folders can reopen without recomputing everything.
+1. [review_intelligence.py](../image_triage/review_intelligence.py) computes duplicate/similarity groupings.
+2. [review_workflows.py](../image_triage/review_workflows.py) derives burst recommendations and taste-profile adjustments.
+3. Cached results are stored in [catalog/repository.py](../image_triage/catalog/repository.py) so large folders can reopen without recomputing everything.
 
 ### AI culling path
 
-1. [aiculler_workflow.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/aiculler_workflow.py) shells out to the in-repo [aiculler package](C:/Users/user0/OneDrive/Documents/Playground/aiculler/cli.py) for ingest, semantic grouping, adapter training, and ranking.
-2. [ai_results.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/ai_results.py) loads ranked AI output back into app-native structures.
-3. [ai_workflow_center.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/ai_workflow_center.py) presents the active operator workflow.
-4. [ai_workflow.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/ai_workflow.py) resolves the managed AI runtime/model/device settings and owns the per-folder `.image_triage_ai` layout; [ai_training.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/ai_training.py) handles label collection, ranker training/evaluation, and reusable training pools. (The older, separately-packaged `AICullingPipeline/` backend these once supported has been decommissioned and removed.)
+1. [aiculler_workflow.py](../image_triage/aiculler_workflow.py) shells out to the in-repo [aiculler package](../aiculler/cli.py) for ingest, semantic grouping, adapter training, and ranking.
+2. [ai_results.py](../image_triage/ai_results.py) loads ranked AI output back into app-native structures.
+3. [ai_workflow_center.py](../image_triage/ai_workflow_center.py) presents the active operator workflow.
+4. [ai_workflow.py](../image_triage/ai_workflow.py) resolves the managed AI runtime/model/device settings and owns the per-folder `.image_triage_ai` layout; [ai_training.py](../image_triage/ai_training.py) handles label collection, ranker training/evaluation, and reusable training pools. (The older, separately-packaged `AICullingPipeline/` backend these once supported has been decommissioned and removed.)
 
 ### Workflow / handoff path
 
 1. Recipes and presets live in:
-   - [workflows/models.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/workflows/models.py)
+   - [workflows/models.py](../image_triage/workflows/models.py)
 2. Export planning/execution lives in:
-   - [workflows/export.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/workflows/export.py)
+   - [workflows/export.py](../image_triage/workflows/export.py)
 3. Best-of shortlist planning lives in:
-   - [workflows/best_of.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/workflows/best_of.py)
+   - [workflows/best_of.py](../image_triage/workflows/best_of.py)
 4. Persistence and path helpers live in:
-   - [workflows/storage.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/workflows/storage.py)
-   - [workflows/paths.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/workflows/paths.py)
+   - [workflows/storage.py](../image_triage/workflows/storage.py)
+   - [workflows/paths.py](../image_triage/workflows/paths.py)
 
 ## 3. Caching Layers
 
@@ -72,21 +72,21 @@ The catalog cache is the durable backend cache. It replaced the old JSON folder 
 
 If you are trying to follow behavior end to end, start here:
 
-- [window.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/window.py): the `MainWindow` god object, being incrementally decomposed into controllers (see below). Still owns most shared state and the methods not yet extracted.
-- [grid.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/grid.py): record tiles, selection, zoom, visible thumbnail work
-- [preview.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/preview.py): detailed image inspection and preview controls
-- [library_store.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/library_store.py): virtual collections and cross-folder library state
-- [catalog/repository.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/catalog/repository.py): persistent cache and query surface
+- [window.py](../image_triage/window.py): the `MainWindow` god object, being incrementally decomposed into controllers (see below). Still owns most shared state and the methods not yet extracted.
+- [grid.py](../image_triage/grid.py): record tiles, selection, zoom, visible thumbnail work
+- [preview.py](../image_triage/preview.py): detailed image inspection and preview controls
+- [library_store.py](../image_triage/library_store.py): virtual collections and cross-folder library state
+- [catalog/repository.py](../image_triage/catalog/repository.py): persistent cache and query surface
 
 `MainWindow` is being split into feature controllers, each holding only a `window`
 back-reference (no state of its own) and instantiated once in `MainWindow.__init__`:
 
-- [catalog_controller.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/catalog_controller.py) (`CatalogController`, `self._catalog`): catalog roots, refresh, virtual collections
-- [record_ops_controller.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/record_ops_controller.py) (`RecordOpsController`, `self._record_ops`): move/copy/delete/rename and undo
-- [records_repository.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/records_repository.py) (`RecordsRepository`, `self._records_repo`): owns the loaded-record list itself
-- [records_view_controller.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/records_view_controller.py) (`RecordsViewController`, `self._records_view`): folder scanning, the records-view rebuild pipeline, filter/search state, saved presets, and unified/semantic/face search
-- [command_palette_controller.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/command_palette_controller.py) (`CommandPaletteController`, `self._command_palette`): the `Ctrl+K` command palette
-- [folder_ops_controller.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/folder_ops_controller.py), [recycle_bin_controller.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/recycle_bin_controller.py), [batch_rename_controller.py](C:/Users/user0/OneDrive/Documents/Playground/image_triage/batch_rename_controller.py): narrower slices of the same kind
+- [catalog_controller.py](../image_triage/catalog_controller.py) (`CatalogController`, `self._catalog`): catalog roots, refresh, virtual collections
+- [record_ops_controller.py](../image_triage/record_ops_controller.py) (`RecordOpsController`, `self._record_ops`): move/copy/delete/rename and undo
+- [records_repository.py](../image_triage/records_repository.py) (`RecordsRepository`, `self._records_repo`): owns the loaded-record list itself
+- [records_view_controller.py](../image_triage/records_view_controller.py) (`RecordsViewController`, `self._records_view`): folder scanning, the records-view rebuild pipeline, filter/search state, saved presets, and unified/semantic/face search
+- [command_palette_controller.py](../image_triage/command_palette_controller.py) (`CommandPaletteController`, `self._command_palette`): the `Ctrl+K` command palette
+- [folder_ops_controller.py](../image_triage/folder_ops_controller.py), [recycle_bin_controller.py](../image_triage/recycle_bin_controller.py), [batch_rename_controller.py](../image_triage/batch_rename_controller.py): narrower slices of the same kind
 
 `MainWindow` keeps a one-line delegate method for every externally-called method
 name that moved, so QAction slots, signal connections, and existing tests never

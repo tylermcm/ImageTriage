@@ -70,7 +70,7 @@ for widgets on pages they never opened (`panel.mask_stack`, `panel.remove_spot_l
 >=3.11`, and `QApplication([])` dies there with `0xC0000409` and no traceback, which
 looks exactly like a code crash but is not. `py -3.13` cannot launch (WindowsApps alias
 restriction). The only working entry point is
-`C:\Users\user0\AppData\Local\Microsoft\WindowsApps\pythonw3.13.exe`, which is
+`C:\Users\developer\AppData\Local\Microsoft\WindowsApps\pythonw3.13.exe`, which is
 windowless, so output must be redirected from inside the script:
 
 ```python

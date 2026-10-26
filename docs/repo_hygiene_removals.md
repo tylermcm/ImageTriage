@@ -1,6 +1,6 @@
 # Repo hygiene: verified removal candidates (WI-2.2)
 
-Everything below was checked on 2026-09-26 by searching `image_triage/`, `scripts/`, `packaging/`, `tests/`, `.github/`, the root build scripts and the docs. **Nothing has been deleted.** File removal is yours to run; each command uses a literal path from the repo root `C:\Users\user0\OneDrive\Documents\Playground`. Run them from there. Commit afterwards, and run `py -3.13 -m pytest tests/test_freeze_support.py` to confirm packaging is unaffected.
+Everything below was checked on 2026-09-26 by searching `image_triage/`, `scripts/`, `packaging/`, `tests/`, `.github/`, the root build scripts and the docs. **Nothing has been deleted.** File removal is yours to run; each command uses a literal path from the repo root `C:\Users\developer\OneDrive\Documents\Playground`. Run them from there. Commit afterwards, and run `py -3.13 -m pytest tests/test_freeze_support.py` to confirm packaging is unaffected.
 
 ## A. Tracked files, safe to remove (0 references anywhere)
 
@@ -39,10 +39,10 @@ git rm "minus_sign.png" "sidebar_icons.zip" "sidebar_icons_2.zip" "ssh_err.txt" 
 To review the screenshots first, then remove them:
 
 ```powershell
-Get-ChildItem -Path "C:\Users\user0\OneDrive\Documents\Playground" -Filter "_tmp_*.png" -File | Measure-Object
-Get-ChildItem -Path "C:\Users\user0\OneDrive\Documents\Playground" -Filter "_tmp_*.png" -File | Remove-Item
-Remove-Item "C:\Users\user0\OneDrive\Documents\Playground\ES50_EScan2_67810_AM.exe"
-Remove-Item -Recurse "C:\Users\user0\OneDrive\Documents\Playground\image_triage\engine"
+Get-ChildItem -Path "C:\Users\developer\OneDrive\Documents\Playground" -Filter "_tmp_*.png" -File | Measure-Object
+Get-ChildItem -Path "C:\Users\developer\OneDrive\Documents\Playground" -Filter "_tmp_*.png" -File | Remove-Item
+Remove-Item "C:\Users\developer\OneDrive\Documents\Playground\ES50_EScan2_67810_AM.exe"
+Remove-Item -Recurse "C:\Users\developer\OneDrive\Documents\Playground\image_triage\engine"
 ```
 
 ## D. Left alone deliberately

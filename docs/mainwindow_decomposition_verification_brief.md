@@ -33,7 +33,7 @@ the `MainWindow` decomposition is complete or verified.
 
 **Image Triage** is a Windows desktop application for photographers ("culling": going through hundreds of photos and
 marking winners and rejects). It is written in **Python 3.13 with PySide6 (Qt 6)**. Repository root:
-`C:\Users\user0\OneDrive\Documents\Playground`, branch `codex/ui-ux-polish`. The application package is `image_triage/`;
+`C:\Users\developer\OneDrive\Documents\Playground`, branch `codex/ui-ux-polish`. The application package is `image_triage/`;
 tests are in `tests/` (pytest).
 
 The application has one top-level window class, `MainWindow`, in `image_triage/window.py`. An earlier engineering audit
@@ -362,7 +362,7 @@ Environment note: on this machine plain `python` is 3.9 and cannot run the app (
 with the Windows Store Python 3.13 through a wrapper that captures output and prints `__EXIT__=<code>` at the end:
 
 ```
-"C:/Users/user0/AppData/Local/Microsoft/WindowsApps/pythonw3.13.exe" scripts/run313.py <logfile> pytest -p no:cacheprovider tests -v
+"C:/Users/developer/AppData/Local/Microsoft/WindowsApps/pythonw3.13.exe" scripts/run313.py <logfile> pytest -p no:cacheprovider tests -v
 ```
 
 Then read `<logfile>`. Gates run fine on 3.9:

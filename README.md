@@ -86,8 +86,8 @@ bash packaging/install_linux.sh
 That script will:
 
 - create `.linux_build_venv`
-- install the AppImage build dependencies from [packaging/linux-build-requirements.txt](/Users/user0/OneDrive/Documents/Playground/packaging/linux-build-requirements.txt)
-- run [setup_linux.py](/Users/user0/OneDrive/Documents/Playground/setup_linux.py) to build the AppImage
+- install the AppImage build dependencies from [packaging/linux-build-requirements.txt](packaging/linux-build-requirements.txt)
+- run [setup_linux.py](setup_linux.py) to build the AppImage
 - install the result under `~/.local/opt/ImageTriage`
 - create a launcher at `~/.local/bin/image-triage`
 - create a desktop entry under `~/.local/share/applications`
@@ -104,11 +104,11 @@ Useful options:
 - `--install-dir PATH`: change the install target
 - `--no-desktop`: skip desktop entry creation
 
-GitHub Actions also builds an AppImage artifact on pull requests, pushes to `main`, and manual runs through [build-linux-appimage.yml](/C:/Users/user0/OneDrive/Documents/Playground/.github/workflows/build-linux-appimage.yml). Pushing a matching `v*` tag builds the same AppImage and uploads it to that GitHub Release.
+GitHub Actions also builds an AppImage artifact on pull requests, pushes to `main`, and manual runs through [build-linux-appimage.yml](.github/workflows/build-linux-appimage.yml). Pushing a matching `v*` tag builds the same AppImage and uploads it to that GitHub Release.
 
-The Linux build and the Windows MSI now share the same AI runtime staging logic through [freeze_support.py](/Users/user0/OneDrive/Documents/Playground/freeze_support.py), so both package types bundle the same helper launchers and Python-side AI dependencies. The legacy `AICullingPipeline` engine is no longer part of either package.
+The Linux build and the Windows MSI now share the same AI runtime staging logic through [freeze_support.py](freeze_support.py), so both package types bundle the same helper launchers and Python-side AI dependencies. The legacy `AICullingPipeline` engine is no longer part of either package.
 
-The active CLI-Culler source lives in the in-repo [aiculler package](/Users/user0/OneDrive/Documents/Playground/aiculler) and is the default AI culler implementation used by the app. CLIP/TOPIQ weights remain outside git; set `IMAGE_TRIAGE_AICULLER_MODEL_ROOT` to point at a local `models` directory when the defaults do not apply.
+The active CLI-Culler source lives in the in-repo [aiculler package](aiculler) and is the default AI culler implementation used by the app. CLIP/TOPIQ weights remain outside git; set `IMAGE_TRIAGE_AICULLER_MODEL_ROOT` to point at a local `models` directory when the defaults do not apply.
 
 On first launch, the app offers to download its AI models into:
 
