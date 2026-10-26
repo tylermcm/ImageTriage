@@ -8,6 +8,7 @@ Item {
     id: glass
     property Item sourceItem
     property bool frosted: true
+    property bool outline: true        // the 1px light edge around the tint; the floating bar has none
     property real radius: 20
     property color tint: Qt.alpha(theme.s1, 0.72)
     property int blurRadius: 64
@@ -52,7 +53,7 @@ Item {
         x: -glass.pad; y: -glass.pad; width: glass.width + glass.pad * 2; height: glass.height + glass.pad * 2
         layer.enabled: true
         visible: false
-        Rectangle { x: glass.pad; y: glass.pad; width: glass.width; height: glass.height; radius: glass.radius }
+        Rectangle { x: glass.pad + 1; y: glass.pad + 1; width: glass.width - 2; height: glass.height - 2; radius: Math.max(0, glass.radius - 1) }      // a pixel inside the tint's edge: the blurred rim never shows outside it
     }
     ShaderEffectSource {
         id: ses
@@ -76,6 +77,6 @@ Item {
         maskEnabled: true; maskSource: maskItem
         maskThresholdMin: 0.5; maskSpreadAtMin: 1.0
     }
-    Rectangle { anchors.fill: parent; radius: glass.radius; color: glass.frosted ? glass.tint : Qt.alpha(glass.tint, 1); border.color: Qt.alpha(theme.lift, 0.11); border.width: 1 }
+    Rectangle { anchors.fill: parent; radius: glass.radius; color: glass.frosted ? glass.tint : Qt.alpha(glass.tint, 1); border.color: Qt.alpha(theme.lift, 0.11); border.width: glass.outline ? 1 : 0 }
     // (the mockup's inset 0 1px 0 highlight sits under the translucent ::before, so it is invisible and is not drawn)
 }

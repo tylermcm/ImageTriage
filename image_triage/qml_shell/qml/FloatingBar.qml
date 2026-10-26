@@ -18,7 +18,7 @@ Item {
     width: Math.min(content.implicitWidth + 12, avail - 24)
     height: 48
 
-    Glass { anchors.fill: parent; sourceItem: bar.sourceItem; radius: 20 }
+    Glass { anchors.fill: parent; sourceItem: bar.sourceItem; radius: 20; outline: false }
 
     Flickable {
         // whatever still does not fit (very narrow windows) is clipped and scrolls sideways instead of hanging out of the glass
