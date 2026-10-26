@@ -17,7 +17,7 @@ Not audited in depth (so nothing below should be read as clearing them): the edi
 **Where the checklist overstates the result.**
 - *A1 ("god object closed in full") is not true.* `MainWindow` is still a 19,000-line, 976-method, 526-attribute class. The 28 `_init_*` phases are a verbatim split of the old 1,300-line `__init__`. The controllers are code moves, not ownership moves: `records_view_controller.py` makes 826 private-attribute accesses to 202 distinct window attributes, and 98 window attributes are written from controllers. 137 of the 976 methods are pure forwarding delegates. This is a reorganisation of the god object, not its decomposition.
 - *A3 is incorrectly completed.* The checklist says `CODEBASE_REVIEW.md` no longer exists. It is tracked at the repo root, along with six other stale plan documents.
-- *T7 (test isolation) is incomplete.* `tests/test_ai_health.py` writes to the real `C:\Users\user0\.image-triage\AI` because `ai_paths` derives its root from `USERPROFILE`, which the sandbox does not redirect.
+- *T7 (test isolation) is incomplete.* `tests/test_ai_health.py` writes to the real `C:\Users\developer\.image-triage\AI` because `ai_paths` derives its root from `USERPROFILE`, which the sandbox does not redirect.
 
 **The remediation introduced real, reachable crashes that no test covers.** These come from deleting or renaming things while leaving callers behind:
 - The first-run **"Set Up AI"** accept path raises `NameError` (`semantic_missing`).
@@ -224,7 +224,7 @@ Seven root plan/handoff documents, four `*-sandbox.ps1`, `sandboxes/` (15 files 
 
 ### I-02 Test runs write to the real user profile
 - **Severity:** Medium · **Confidence:** Confirmed
-- `ai_paths.default_managed_ai_root()` uses `USERPROFILE`; `conftest.py` does not redirect it. `tests/test_ai_health.py` run alone changed the mtime of `C:\Users\user0\.image-triage\AI` (15:59:24 → 16:13:52), via `ai_health.py:536` (`mkdir(managed_logs_root())`).
+- `ai_paths.default_managed_ai_root()` uses `USERPROFILE`; `conftest.py` does not redirect it. `tests/test_ai_health.py` run alone changed the mtime of `C:\Users\developer\.image-triage\AI` (15:59:24 → 16:13:52), via `ai_health.py:536` (`mkdir(managed_logs_root())`).
 - This is how the earlier pollution of the label store happened (a hand-rolled bypass). WI-3.6 fixed the cause; no test asserts the protection.
 - **Next action:** Fix (`monkeypatch.setenv('USERPROFILE', …)` in the sandbox plus one guard test that every store's default path is under the sandbox).
 

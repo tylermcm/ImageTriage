@@ -8,6 +8,7 @@ Item {
     property bool showLabel: true
     property bool caret: false
     property bool open: false
+    property string dragId: icon        // the bar's buttons can be dragged into another order (DragReorder)
     default property alias menuContent: holder.data
     signal clicked()
     implicitHeight: 36
@@ -34,7 +35,7 @@ Item {
     }
     HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
     TapHandler { id: press; onTapped: btn.clicked() }
-    Item { id: holder; anchors.fill: parent }
+    Item { id: holder; anchors.fill: parent; DragReorder { horizontal: true; orderName: "bar" } }
     Accessible.role: Accessible.Button
     Accessible.name: btn.label !== "" ? btn.label : btn.icon
 }

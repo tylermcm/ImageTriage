@@ -13,6 +13,7 @@ Rectangle {
     readonly property real btnW: width - 10
     readonly property real btnH: UiState.compact ? 48 : (showLabels ? 56 : 44)
     readonly property real pitch: btnH + 8
+    readonly property real spacing: 8                  // between the destinations (DragReorder reads it)
     color: theme.s1
 
     // The pinned buttons live between the destinations and the settings button, which keeps the bottom of the rail. They are 40 px when they
@@ -37,16 +38,22 @@ Rectangle {
         { k: "lib", t: "Library", i: "library" }, { k: "faces", t: "Faces", i: "faces" },
         { k: "coll", t: "Collections", i: "collections" }, { k: "drop", t: "PocketDrop", i: "pocketdrop" }
     ]
-    readonly property int tabIndex: Math.max(0, UiState.tabs.indexOf(UiState.tab))
+    // where a destination sits (0 to 3): its place in the order the user dragged them into, else the order above
+    function slotOf(k) {
+        var saved = UiState.destOrder || [], keys = dests.map(function (d) { return d.k })
+        keys = keys.map(function (key, i) { var r = saved.indexOf(key); return { key: key, rank: r < 0 ? 100 + i : r } }).sort(function (a, b) { return a.rank - b.rank }).map(function (e) { return e.key })
+        return Math.max(0, keys.indexOf(k))
+    }
+    readonly property int tabIndex: slotOf(UiState.tab)
     // true when a point in window coordinates is over the PocketDrop destination (a dragged collection waits there for its page to open)
     function overDrop(gx, gy) {
         var p = rail.mapFromItem(null, gx, gy)
-        return p.x >= 4.5 && p.x <= 4.5 + btnW && p.y >= 10 + 3 * pitch && p.y <= 10 + 3 * pitch + btnH
+        return p.x >= 4.5 && p.x <= 4.5 + btnW && p.y >= 10 + slotOf("drop") * pitch && p.y <= 10 + slotOf("drop") * pitch + btnH
     }
 
     AccentPill {
         id: pill
-        x: 5; width: rail.btnW; height: rail.btnH; radius: 14
+        x: 4.5; width: rail.btnW; height: rail.btnH; radius: 14
         y: 10 + rail.tabIndex * rail.pitch
         opacity: UiState.tab === "" ? 0 : 1
         Behavior on y { SpringAnimation { spring: 3.4; damping: 0.22; epsilon: 0.25 } }
@@ -59,6 +66,8 @@ Rectangle {
             required property var modelData
             x: 4.5; y: 10 + index * rail.pitch; width: rail.btnW; height: rail.btnH
             readonly property bool on: UiState.tab === modelData.k
+            readonly property string dragId: modelData.k          // the four can be dragged into another order (DragReorder)
+            DragReorder { button: parent; orderName: "dest" }
             Rectangle {   // a collection is being dragged over PocketDrop: accent ring that pulses
                 visible: modelData.k === "drop" && UiState.pdRailHot; anchors.fill: parent; radius: 14; color: Qt.alpha(theme.accent, 0.18)
                 border.width: 2; border.color: theme.accent
@@ -114,6 +123,36 @@ Rectangle {
                 PopHeader { caption: "On each thumbnail" }
                 PopItem { label: "Filenames"; mode: "switch"; checked: UiState.showNames; onClicked: UiState.showNames = !UiState.showNames }
                 PopItem { label: "Decision badges"; mode: "switch"; checked: UiState.showBadges; onClicked: UiState.showBadges = !UiState.showBadges }
+                PopDivider {}
+                PopHeader { caption: "Thumbnail size" }
+                Repeater {
+                    model: [["s", "Small"], ["m", "Medium"], ["l", "Large"]]
+                    delegate: PopItem {
+                        required property var modelData
+                        label: modelData[1]; mode: "tick"; checked: UiState.cols === 0 && UiState.dens === modelData[0]
+                        onClicked: UiState.setDens(modelData[0])
+                    }
+                }
+                PopDivider {}
+                PopHeader { caption: "Columns" }
+                Row {
+                    spacing: 3; leftPadding: 4; bottomPadding: 4
+                    Repeater {
+                        model: 9
+                        delegate: Rectangle {
+                            id: chip
+                            required property int index
+                            readonly property bool on: UiState.cols === index + 1
+                            width: 25; height: 28; radius: 8
+                            color: on ? Qt.alpha(theme.accent, 0.2) : Qt.alpha(theme.lift, chipHover.hovered ? 0.1 : 0)
+                            border.color: on ? Qt.alpha(theme.accent, 0.6) : "transparent"
+                            Text { anchors.centerIn: parent; text: chip.index + 1; font.pixelSize: 13; font.weight: chip.on ? Font.DemiBold : Font.Normal; color: chip.on ? theme.accentFg : theme.fg2 }
+                            HoverHandler { id: chipHover; cursorShape: Qt.PointingHandCursor }
+                            TapHandler { onTapped: UiState.cols = chip.index + 1 }
+                            Accessible.role: Accessible.Button; Accessible.name: (chip.index + 1) + " columns"
+                        }
+                    }
+                }
             }
         }
         RailButton {
@@ -179,15 +218,24 @@ Rectangle {
                     model: [["s", "Small"], ["m", "Medium"], ["l", "Large"]]
                     delegate: PopItem {
                         required property var modelData
-                        label: modelData[1]; mode: "tick"; checked: UiState.dens === modelData[0]
-                        onClicked: UiState.dens = modelData[0]
+                        label: modelData[1]; mode: "tick"; checked: UiState.cols === 0 && UiState.dens === modelData[0]
+                        onClicked: UiState.setDens(modelData[0])
+                    }
+                }
+                PopDivider {}
+                PopHeader { caption: "Columns" }
+                Repeater {
+                    model: 9
+                    delegate: PopItem {
+                        required property int index
+                        label: (index + 1) + (index === 0 ? " column" : " columns"); mode: "tick"; checked: UiState.cols === index + 1
+                        onClicked: UiState.cols = index + 1
                     }
                 }
             }
         }
         RailButton { visible: UiState.pins.compare; icon: "compare"; tip: "Compare photos"; on: UiState.compare; onClicked: UiState.compare = !UiState.compare }
         RailButton { visible: UiState.pins.preview; icon: "eye"; tip: "Open preview"; onClicked: popout.open(rail.row) }
-        RailButton { visible: UiState.pins.ladder; icon: "ladder"; tip: "Winner ladder" }
         RailButton { visible: UiState.pins.rename; icon: "tag"; tip: "Rename selection"; onClicked: UiState.batchMode = "rename" }
         RailButton { visible: UiState.pins.convert; icon: "convert"; tip: "Resize and convert"; onClicked: UiState.batchMode = "resize" }
         RailButton {   // opens PocketDrop with the current photo added
@@ -202,24 +250,40 @@ Rectangle {
         Item { width: 1; height: 4 }   // the customise button sits 8px below the last pin, the pins 4px apart
         RailButton {
             id: add
-            icon: "plus"; tip: "Customize pinned buttons"; on: pinMenu.opened
+            icon: "plus"; dragId: ""; tip: "Customize pinned buttons"; on: pinMenu.opened
             onClicked: UiState.setMenu("pins")
             Popover {
                 id: pinMenu; name: "pins"; placement: 1; alignBottom: true; minWidth: 250; maxHeight: Math.max(240, rail.Window.height - 140)
+                // it grows upward from the button's bottom edge, so it may be no taller than the room above that edge (the window's top is where it was cut off)
+                Connections { target: pinMenu; function onAboutToShow() { pinMenu.maxHeight = Math.max(160, add.mapToItem(null, 0, add.height).y - 12) } }
                 PopHeader { caption: "Pinned buttons" }
                 Text {
                     width: parent.width - 20; x: 10; wrapMode: Text.WordWrap; bottomPadding: 6
                     text: "The toolbar's actions, kept under the destinations. Press a switch to pin or unpin."
                     color: theme.fg3; font.pixelSize: 12
                 }
-                PopHeader { caption: "Menus" }
+                Item {   // "Menus" with the lock across from it: locked, the pins cannot be switched and the rail's buttons cannot be dragged
+                    width: parent.width; height: 23
+                    PopHeader { caption: "Menus" }
+                    Item {
+                        id: lockBtn
+                        anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
+                        width: 26; height: 22
+                        Rectangle { anchors.fill: parent; radius: 7; color: UiState.pinsLocked ? Qt.alpha(theme.accent, 0.16) : Qt.alpha(theme.lift, lockHover.hovered ? 0.1 : 0) }
+                        Icon { anchors.centerIn: parent; name: UiState.pinsLocked ? "lock" : "unlock"; size: 15; strokeWidth: 1.7; color: UiState.pinsLocked ? theme.accentFg : theme.fg2 }
+                        HoverHandler { id: lockHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: UiState.pinsLocked = !UiState.pinsLocked }
+                        Tip { text: UiState.pinsLocked ? "Unlock the rail" : "Lock the rail"; show: lockHover.hovered; leftSide: true }
+                        Accessible.role: Accessible.CheckBox; Accessible.checked: UiState.pinsLocked; Accessible.name: "Lock the pinned buttons"
+                    }
+                }
                 Repeater { model: [["review", "Review"], ["view", "View"], ["filters", "Filters"], ["sort", "Sort"], ["columns", "Columns"]]; delegate: pinRow }
                 PopHeader { caption: "Selection" }
                 Repeater { model: [["accept", "Accept selection"], ["reject", "Reject selection"], ["rename", "Rename selection"]]; delegate: pinRow }
                 PopHeader { caption: "Files" }
                 Repeater { model: [["open", "Open folder"], ["newfolder", "New folder"], ["undo", "Undo"], ["convert", "Resize and convert"], ["share", "Share to phone"]]; delegate: pinRow }
                 PopHeader { caption: "Tools" }
-                Repeater { model: [["compare", "Compare photos"], ["preview", "Open preview"], ["ladder", "Winner ladder"], ["editor", "Open in editor"], ["palette", "Command palette"], ["shortcuts", "Keyboard shortcuts"]]; delegate: pinRow }
+                Repeater { model: [["compare", "Compare photos"], ["preview", "Open preview"], ["editor", "Open in editor"], ["palette", "Command palette"], ["shortcuts", "Keyboard shortcuts"]]; delegate: pinRow }
             }
         }
     }
@@ -229,7 +293,8 @@ Rectangle {
         PopItem {
             required property var modelData
             label: modelData[1]; mode: "switch"; checked: UiState.pins[modelData[0]]
-            onClicked: UiState.togglePin(modelData[0])
+            opacity: UiState.pinsLocked ? 0.55 : 1
+            onClicked: { if (!UiState.pinsLocked) UiState.togglePin(modelData[0]) }
         }
     }
 
@@ -237,6 +302,6 @@ Rectangle {
         anchors.horizontalCenter: parent.horizontalCenter; anchors.horizontalCenterOffset: -0.5
         y: rail.height - 10 - height                                           // always the bottom of the rail; the pinned buttons above it shrink or scroll
         size: rail.gearSize
-        icon: "settings"; tip: "Settings"; on: UiState.settingsOpen; onClicked: UiState.settingsOpen = true
+        icon: "settings"; dragId: ""; tip: "Settings"; on: UiState.settingsOpen; onClicked: UiState.settingsOpen = true
     }
 }

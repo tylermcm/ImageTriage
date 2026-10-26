@@ -10,6 +10,9 @@ Item {
     width: 300; height: col.implicitHeight + 24
     Shadow { anchors.fill: parent; radius: 14; offsetA: 24; insetA: 16; blurA: 48; alphaA: 0.7 }
     Rectangle { anchors.fill: parent; radius: 14; color: Qt.alpha(theme.s2, 0.96); border.color: Qt.alpha(theme.lift, 0.11) }
+    // the card takes every click and scroll that lands on it: without this they went through to the grid under it (a folder card opened, and the cull with it)
+    MouseArea { anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.AllButtons; onWheel: (w) => { w.accepted = true } }
+    HoverHandler { blocking: true }
     Column { id: col; x: 14; y: 12; width: parent.width - 28; spacing: 0
         Row { spacing: 8; height: 20
             Icon { name: "spark"; size: 15; strokeWidth: 1.8; color: theme.accentFg; anchors.verticalCenter: parent.verticalCenter }

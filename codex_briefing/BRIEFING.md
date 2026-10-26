@@ -1,19 +1,19 @@
 # Briefing: Camera Raw–first browsing for Image Triage + PhotoCraft
 
 Written 2026-10-09 for a second opinion. Facts are marked **verified** (I ran or read it), **estimate**
-(my judgement, not measured) or **not tested**. The owner is owner (GitHub `tylermcm`). Pronouns: they/them.
+(my judgement, not measured) or **not tested**. The project owner uses the GitHub handle `tylermcm`.
 
 ## 1. Goal
 
 Image Triage is a fast photo-culling app (PySide6/Qt, Windows) built to replace IrfanView; speed is its
-whole identity. owner wants this workflow:
+whole identity. The owner wants this workflow:
 
 1. Scroll through photos quickly with the filmstrip, each shown **inside a Camera Raw-style editor**
    (not the full editor), and make adjustments there.
 2. From there, open the photo in the **full editor** (PhotoCraft), edit, save.
 3. Closing the file returns to the **same photo in Camera Raw with the filmstrip**, ready for the next.
 
-### Non-negotiable constraints (from owner, verbatim in spirit)
+### Non-negotiable constraints (from the owner, verbatim in spirit)
 * Speed first. **Target < 100 ms from navigation input to the photo on screen; hard ceiling 200 ms.**
   UI thread never blocks. Any design that sacrifices this is rejected outright.
 * No buttons / manual steps to load or save anything; no mode switch.
@@ -23,15 +23,15 @@ whole identity. owner wants this workflow:
 * Edits autostash; nothing requires a manual save.
 * Background decode / preload / cache are fine if they never delay navigation; cancel stale work at once.
 * The trigger for loading the full editable RAW must not be a button or mode. (I chose dwell + click.)
-* owner wants **both** "Camera Raw image area only" (default) and "whole editor" variants as a setting,
+* The owner wants **both** "Camera Raw image area only" (default) and "whole editor" variants as a setting,
   so the choice can be kept or collapsed later without rework.
 
 ## 2. Repos and branches
 
-| Repo | Path (owner's PC) | Branch | State |
+| Repo | Path (the owner's PC) | Branch | State |
 |---|---|---|---|
-| Image Triage | `C:\Users\owner\Documents\ImageTriage` (main checkout, branch `main`) | the feature is on `remove-builtin-editor` + my branch `camera-raw-first-nav` | **uncommitted**, in a git worktree inside the Claude session's temp folder |
-| PhotoCraft fork | `C:\Users\owner\Documents\photocraft` | `codex/image-triage-integration` (tracks `origin` = `tylermcm/photocraft`) | **uncommitted** |
+| Image Triage | `C:\Users\developer\Documents\ImageTriage` (main checkout, branch `main`) | the feature is on `remove-builtin-editor` + my branch `camera-raw-first-nav` | **uncommitted**, in a git worktree inside the Claude session's temp folder |
+| PhotoCraft fork | `C:\Users\developer\Documents\photocraft` | `codex/image-triage-integration` (tracks `origin` = `tylermcm/photocraft`) | **uncommitted** |
 
 * `remove-builtin-editor` (Image Triage, `a4caa3a` when I started) removed the built-in editor; PhotoCraft
   (a Rust/egui Photoshop-like editor, workspace of `photocraft-*` crates, MIT/Apache) is now embedded in
@@ -69,7 +69,7 @@ whole identity. owner wants this workflow:
   take 4–23 s; edits in the first 500 ms on a preview were lost.
 * Target cameras: Nikon Z7 / Z7 II NEF. Compressed NEFs go through an Image Triage adapter (rawpy →
   undeveloped sensor DNG) because PhotoCraft's decoder couldn't unpack them; upstream has since added a
-  compressed-NEF decoder (#1310), not yet adopted. owner has **no RAW files on this PC**.
+  compressed-NEF decoder (#1310), not yet adopted. The owner has **no RAW files on this PC**.
 
 ## 4. What I built (all **verified** as stated)
 
@@ -116,7 +116,7 @@ First navigation after the popout opens: 150–225 ms (window opening cold).
 ### Verification
 * 51 new Python tests + related existing files: 211 passed; the 5 failures in `test_preview_right_click.py`
   fail identically on the untouched branch (10 environment-related baseline failures in the full suite).
-  The whole 1,700-test suite was **not** re-run after the final changes (owner asked for targeted runs).
+  The whole 1,700-test suite was **not** re-run after the final changes (the owner asked for targeted runs).
 * Rust: 6 new `photocraft-io` tests, 11 `ui-egui` tests; clippy clean for touched crates.
 * `scripts/check_photocraft_handoff.py` against the rebuilt release binary: **passed** (hidden start, embed,
   switch/return in same process, native + menu Save, closed-tab reopen, 5 themes, cleanup, originals
@@ -149,7 +149,7 @@ Facts from reading `photocraft/crates/ui-egui/src/camera_raw_ui.rs` (1,367 lines
 
 **Option 1 — dedicated Camera Raw program (my lean).** Add `apps/photocraft-camera-raw` to the PhotoCraft
 workspace: a minimal app that links the *same crates* (no copy-paste, so upstream merges keep working;
-license is MIT/Apache and it's owner's fork), opens one document and shows the Camera Raw dialog filling the
+license is MIT/Apache and it's the owner's fork), opens one document and shows the Camera Raw dialog filling the
 whole window using the embed-viewport path. No menus/panels/tools → should start faster. Image Triage embeds
 it in the popout next to the filmstrip as one persistent process (as it does PhotoCraft now). Flow: browse
 and adjust in Camera Raw, settings stash to the same `.pcraft` sidecar; "Open in full editor" saves and opens

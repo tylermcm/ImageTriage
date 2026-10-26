@@ -6,8 +6,10 @@ import QtQuick.Effects
 Item {
     id: chip
     property real angle: 0
+    property real idleAngle: 0           // the idle gradient turns slowly
     implicitHeight: 36
     implicitWidth: row.implicitWidth + 25
+    NumberAnimation on idleAngle { running: cull.aiState === 0 && chip.visible; from: 0; to: 360; duration: 7000; loops: Animation.Infinite }
     NumberAnimation on angle { running: cull.aiState === 1; from: 0; to: 360; duration: 2200; loops: Animation.Infinite }
 
     // ::after: the same conic ramp, inset 3px, blurred 12px, half opacity, behind the chip while it analyzes
@@ -32,6 +34,23 @@ Item {
         }
     }
     Rectangle { anchors.fill: parent; radius: 14; color: theme.s3 }
+    Shape {   // idle ("Analyze"): a slowly turning conic-gradient outline at half opacity; it gives way to the ring while analyzing and to the green one when done
+        anchors.fill: parent
+        preferredRendererType: Shape.CurveRenderer
+        opacity: cull.aiState === 0 ? 0.5 : 0
+        Behavior on opacity { NumberAnimation { duration: 350 } }
+        ShapePath {
+            fillRule: ShapePath.OddEvenFill; strokeColor: "transparent"
+            fillGradient: ConicalGradient {
+                centerX: chip.width / 2; centerY: chip.height / 2; angle: 90 - chip.idleAngle
+                GradientStop { position: 0.0; color: theme.accent }
+                GradientStop { position: 0.33; color: "#d58ae8" }
+                GradientStop { position: 0.66; color: "#3ec7c0" }
+                GradientStop { position: 1.0; color: theme.accent }
+            }
+            PathSvg { path: Icons.rect(0, 0, chip.width, chip.height, 14) + Icons.rect(1.5, 1.5, chip.width - 3, chip.height - 3, 12.5) }
+        }
+    }
     Shape {
         id: ring
         anchors.fill: parent

@@ -177,7 +177,7 @@ The package boundaries are understandable, but the control flow is too centraliz
 4. Avoid calling `grid.set_items()` for metadata-only changes; update only the affected rows or derived labels.
 5. Add cancellation support to long-running jobs instead of showing non-cancelable progress dialogs.
 6. Replace character-by-character subprocess reads in `ai_workflow.py` with line-based streaming.
-7. Replace hardcoded AI defaults such as `C:\Users\user0\...` with explicit configuration or first-run setup.
+7. Replace hardcoded AI defaults such as `C:\Users\developer\...` with explicit configuration or first-run setup.
 8. Add a contributor check script that validates Python version and optional dependencies up front.
 
 ## Medium-Term Refactors

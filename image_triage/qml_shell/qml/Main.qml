@@ -15,7 +15,7 @@ Window {
 
     readonly property bool compact: width <= 900          // the mockup's @media (max-width: 900px)
     Binding { target: UiState; property: "compact"; value: win.compact }
-    Binding { target: UiState; property: "selRow"; value: grid.view.currentIndex }
+    Binding { target: UiState; property: "selRow"; value: grid.row }
     // a collection dragged over the PocketDrop button opens that page after a moment
     readonly property bool railHot: UiState.pdSim ? UiState.tab !== "drop" : UiState.pdDragging && rail.overDrop(UiState.pdGhostX, UiState.pdGhostY)
     Binding { target: UiState; property: "pdRailHot"; value: win.railHot }
@@ -31,6 +31,19 @@ Window {
     readonly property real inspTarget: UiState.insp ? inspWanted : 0
     property real panelW: panelTarget
     property real inspW: inspTarget
+    // The grid's layout width. It is the width the grid will have once the panels stop, except while one slides: then it is the wider of that and
+    // the width before, so the grid is never narrower than the space it fills (no gap beside the panel) and its cells neither rescale nor reflow
+    // until the slide is over. The panel moving over (or away from) it is the whole animation.
+    readonly property real settledGridW: shell.width - rail.width - panelTarget - inspTarget
+    readonly property bool sliding: panelW !== panelTarget || inspW !== inspTarget
+    property real slideW: 0                                          // the layout width held while a panel slides (set as the slide starts)
+    readonly property real gridW: sliding ? slideW : settledGridW    // so the grid always ends up at the settled width, whatever happened on the way
+    onSlidingChanged: if (sliding) slideW = Math.max(settledGridW, main.width)
+    // Which edge the grid follows while a panel slides: the left panel pushes it by its left edge, the inspector by its right edge (the grid is
+    // wider than the space it has for the moment, and the part that does not fit is clipped), so each panel carries the grid with it.
+    property bool pinRight: false
+    onInspTargetChanged: pinRight = true
+    onPanelTargetChanged: pinRight = false
     Behavior on panelW { enabled: !win.resizing; NumberAnimation { duration: 600; easing.type: Easing.OutQuint } }
     Behavior on inspW { enabled: !win.resizing; NumberAnimation { duration: 600; easing.type: Easing.OutQuint } }
 
@@ -44,7 +57,7 @@ Window {
             id: shell
             y: top.height; width: parent.width; height: parent.height - top.height - status.height
 
-            Rail { id: rail; z: 25; height: parent.height; row: grid.view.currentIndex }
+            Rail { id: rail; z: 25; height: parent.height; row: grid.row }
             SidePanel {
                 id: sidePanel
                 // wide: a column that animates its width; compact: a 320px sheet that slides in over the grid
@@ -74,7 +87,7 @@ Window {
                     readonly property string kind: { void photos.scopeKind; return photos.scopeKind }
                     readonly property var col: { void collections.revision; void photos.scopeId; return kind === "collection" ? collections.get(photos.scopeId) : ({}) }
                     readonly property var person: { void people.revision; void photos.scopeId; return kind === "person" ? people.card(photos.scopeId) : ({}) }
-                    width: parent.width; height: 44; color: theme.base
+                    width: parent.width; height: 44; color: theme.base; z: 5      // above the grid, so the tips under its buttons are not hidden by it
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
                     component Chip: Rectangle { property alias label: cl.text; height: 18.5; width: cl.implicitWidth + 16; radius: 10; color: theme.s2; border.color: theme.lineSoft
                                                 Text { id: cl; anchors.centerIn: parent; color: theme.fg2; font.pixelSize: 11; font.weight: Font.Medium } }
@@ -84,9 +97,32 @@ Window {
                                            HoverHandler { id: bh; cursorShape: Qt.PointingHandCursor }
                                            TapHandler { onTapped: parent.clicked() }
                                            Accessible.role: Accessible.Button; Accessible.name: bl.text }
+                    Row {   // Back, Forward and Up one folder, at the left of the folder's name
+                        id: navRow
+                        visible: head.kind === ""
+                        anchors.verticalCenter: parent.verticalCenter; x: 10; spacing: 2
+                        Repeater {
+                            model: [{ i: "chevL", tip: "Back", on: libraryNav.canBack, go: 0 }, { i: "chevR", tip: "Forward", on: libraryNav.canForward, go: 1 },
+                                    { i: "arrowUp", tip: "Up one folder", on: libraryNav.canUp, go: 2 }]
+                            delegate: Item {
+                                id: nb
+                                required property var modelData
+                                width: 28; height: 28
+                                opacity: modelData.on ? 1 : 0.32
+                                Rectangle { anchors.fill: parent; radius: 9; color: Qt.alpha(theme.lift, nbh.hovered && nb.modelData.on ? 0.1 : 0) }
+                                Icon { anchors.centerIn: parent; name: nb.modelData.i; size: 16; strokeWidth: 1.8; color: theme.fg }
+                                HoverHandler { id: nbh; cursorShape: nb.modelData.on ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                                TapHandler { enabled: nb.modelData.on; onTapped: { if (nb.modelData.go === 0) libraryNav.goBack(); else if (nb.modelData.go === 1) libraryNav.goForward(); else libraryNav.goUp() } }
+                                Tip { id: nbt; text: nb.modelData.tip; show: false; below: true }
+                                Timer { id: nbd; interval: 400; onTriggered: nbt.show = nbh.hovered }
+                                Connections { target: nbh; function onHoveredChanged() { if (nbh.hovered) nbd.restart(); else { nbd.stop(); nbt.show = false } } }
+                                Accessible.role: Accessible.Button; Accessible.name: modelData.tip
+                            }
+                        }
+                    }
                     Row {   // the folder
                         visible: head.kind === ""
-                        anchors.verticalCenter: parent.verticalCenter; x: 14; spacing: 10
+                        anchors.verticalCenter: parent.verticalCenter; x: 10 + navRow.width + 10; spacing: 10
                         Text { text: photos.folderName || "Open a folder"; color: theme.fg; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: -0.14 }
                         Text { visible: !win.compact; text: photos.folderPath; color: theme.fg3; font.pixelSize: 13; width: Math.min(implicitWidth, Math.max(0, main.width - 330 - x)); elide: Text.ElideRight }
                     }
@@ -110,7 +146,7 @@ Window {
                     Row {
                         anchors.verticalCenter: parent.verticalCenter; anchors.right: parent.right; anchors.rightMargin: 14; spacing: 10
                         HBtn { visible: head.kind !== ""; text: "Back to folder"; onClicked: collections.closeScope() }
-                        HBtn { visible: head.kind === "collection"; text: "Remove selection"; onClicked: collections.removeSelection(photos.scopeId, grid.view.currentIndex) }
+                        HBtn { visible: head.kind === "collection"; text: "Remove selection"; onClicked: collections.removeSelection(photos.scopeId, grid.row) }
                         Rectangle {
                             height: 24; width: shown.implicitWidth + 31; radius: 12; color: theme.s2; border.color: theme.lineSoft
                             Row { anchors.centerIn: parent; spacing: 6
@@ -135,12 +171,19 @@ Window {
                     SButton { anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; text: "Add All to Collection\u2026"; variant: "primary"; h: 28; hpad: 11; radius: 9
                               onClicked: { UiState.collPickerQuery = ""; UiState.collPicker = true } }
                 }
-                PhotoGrid { id: grid; onContextRequested: (kind, row, x, y) => ctxHost.show(kind, row, x, y, ""); onOpenRequested: (row) => popout.open(row); y: head.height + addBar.height; width: parent.width; height: parent.height - head.height - addBar.height; overlay: floatBar }
+                // The grid is laid out for the width it will have once the panels stop, and a panel sliding in moves or covers it: cells that
+                // rescaled every frame made the GridView re-lay-out and recycle its delegates, and the thumbnails flashed as they did.
+                Item {
+                    y: head.height + addBar.height; width: parent.width; height: parent.height - head.height - addBar.height; clip: true
+                    PhotoGrid { id: grid; onContextRequested: (kind, row, x, y) => ctxHost.show(kind, row, x, y, ""); onOpenRequested: (row) => popout.open(row)
+                                x: !win.compact && win.pinRight ? Math.min(0, main.width - win.gridW) : 0
+                                width: win.compact ? parent.width : win.gridW; height: parent.height; overlay: floatBar }
+                }
                 FloatingBar {
                     id: floatBar
                     sourceItem: grid.view
                     avail: main.width
-                    row: grid.view.currentIndex
+                    row: grid.row
                     anchors.horizontalCenter: parent.horizontalCenter
                     anchors.bottom: parent.bottom; anchors.bottomMargin: win.compact ? 12 : 20
                 }
@@ -159,10 +202,10 @@ Window {
                 Behavior on x { enabled: win.compact; NumberAnimation { duration: 550; easing.type: Easing.OutQuint } }
                 width: win.compact ? sheetW : win.inspW; height: parent.height
                 z: win.compact ? 30 : 0
-                row: grid.view.currentIndex
-                onStep: (d) => { grid.view.currentIndex = Math.max(0, Math.min(photos.shown - 1, grid.view.currentIndex + d)) }
+                row: grid.row
+                onStep: (d) => { grid.row = Math.max(0, Math.min(photos.shown - 1, grid.row + d)) }
                 onAnalyze: win.runCommand("ai.analyze")
-                onPick: (r) => { grid.view.currentIndex = r }
+                onPick: (r) => { grid.row = r }
             }
             SideResizer {   // the edge between the side panel and the grid
                 objectName: "panelResizer"
@@ -255,7 +298,7 @@ Window {
             else if (what === "newCollection") { UiState.collDlgId = ""; UiState.collDlg = "new" }
             else if (what === "review") cull.reviewFrame(arg)
             else if (what === "clearFilters") { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters(); advFilters.clearApplied() }
-            else if (what === "view") { if (arg === "view:names") UiState.showNames = !UiState.showNames; else if (arg === "view:badges") UiState.showBadges = !UiState.showBadges; else UiState.dens = arg.slice(5) }
+            else if (what === "view") { if (arg === "view:names") UiState.showNames = !UiState.showNames; else if (arg === "view:badges") UiState.showBadges = !UiState.showBadges; else UiState.setDens(arg.slice(5)) }
             else if (what === "sort") UiState.sort = arg
             else if (what === "chooseDest") win.chooseDestination(String(arg).split(":")[0], Number(String(arg).split(":")[1]))
         }
@@ -270,9 +313,9 @@ Window {
     }
     Connections {   // the popout was put away: the grid goes to the photo it ended on and takes the keyboard back
         target: popout
-        function onClosed(row) { grid.view.currentIndex = row; win.requestActivate(); grid.view.forceActiveFocus() }
+        function onClosed(row) { grid.row = row; win.requestActivate(); grid.view.forceActiveFocus() }
     }
-    Connections { target: UiState; function onRequestRowChanged() { if (UiState.requestRow >= 0) { grid.view.currentIndex = UiState.requestRow; UiState.requestRow = -1 } } }
+    Connections { target: UiState; function onRequestRowChanged() { if (UiState.requestRow >= 0) { grid.row = UiState.requestRow; UiState.requestRow = -1 } } }
     CommandPalette { id: commandPalette; sourceItem: appContent }
     Shortcut { sequence: "F1"; onActivated: reference.toggleHelp() }
     Shortcut { sequence: "Ctrl+/"; onActivated: reference.toggleKeys() }
@@ -303,14 +346,14 @@ Window {
         onAccepted: libraryNav.openUrl(selectedFolder.toString())
     }
     Connections { target: UiState; function onOpenFolderRequested() { folderDialog.open() } }
-    Connections { target: photos; function onFolderChanged() { grid.view.currentIndex = 0 } }
+    Connections { target: photos; function onFolderChanged() { grid.row = 0 } }
 
     // Session memory: the photo the person is on is saved a moment after it changes and when the window closes; opening the folder again puts the grid
     // back on it (library_nav.py, the Widgets' own keys).
-    function savePositionNow() { var d = photos.get(grid.view.currentIndex); if (d && d.path) libraryNav.savePosition(d.path) }
+    function savePositionNow() { var d = photos.get(grid.row); if (d && d.path) libraryNav.savePosition(d.path) }
     Timer { id: positionTimer; interval: 700; onTriggered: win.savePositionNow() }
     Connections { target: grid.view; function onCurrentIndexChanged() { positionTimer.restart() } }
-    Connections { target: libraryNav; function onPositionRestored(row) { grid.view.currentIndex = row; grid.view.positionViewAtIndex(row, GridView.Center) } }
+    Connections { target: libraryNav; function onPositionRestored(row) { grid.row = row; grid.view.positionViewAtIndex(row + grid.nf, GridView.Center) } }
     onClosing: win.savePositionNow()
 
     // The commands the shell can carry out today, by the palette's command ids (the top bar's menus use the same ones). The palette lists every
@@ -331,28 +374,29 @@ Window {
         else if (id === "search.clear_filters") { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters(); advFilters.clearApplied() }
         else if (id === "file.open_folder") UiState.openFolderRequested()
         else if (id === "review.compare_mode") UiState.compare = !UiState.compare
-        else if (id === "review.open_preview") popout.open(grid.view.currentIndex)
+        else if (id === "review.open_preview") popout.open(grid.row)
         else if (id === "window.reset_layout") { UiState.tab = "lib"; UiState.insp = true }
-        else if (id === "review.accept_selection") photos.setDecision(grid.view.currentIndex, "win")
-        else if (id === "review.reject_selection") photos.setDecision(grid.view.currentIndex, "rej")
-        else if (id === "review.keep_selection") photos.setDecision(grid.view.currentIndex, "keep")
+        else if (id === "review.accept_selection") photos.setDecision(grid.row, "win")
+        else if (id === "review.reject_selection") photos.setDecision(grid.row, "rej")
+        else if (id === "review.keep_selection") photos.setDecision(grid.row, "keep")
         else if (id === "file.refresh_folder") { win.savePositionNow(); libraryNav.refreshFolder() }
         else if (id === "file.reveal_folder") libraryNav.reveal(libraryNav.openPath)
         else if (id === "file.browse_library") reference.open("lib")
-        else if (id === "review.delete_selection") fileActions.deleteRow(grid.view.currentIndex)
-        else if (id === "review.move_selection") chooseDestination("move", grid.view.currentIndex)
+        else if (id === "review.delete_selection") fileActions.deleteRow(grid.row)
+        else if (id === "review.move_selection") chooseDestination("move", grid.row)
         else if (id === "edit.undo") { var what = photos.undo(); toasts.show(what !== "" ? "success" : "info", what !== "" ? "Undid the " + what : "Nothing to undo", "") }
         else if (id === "file.exit") win.close()
-        else if (id === "workflow.share_to_phone") { pocketDrop.refreshLibrary(grid.view.currentIndex); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
-        else if (id === "review.clear_decision") photos.setDecision(grid.view.currentIndex, "")
-        else if (id.indexOf("review.rate.") === 0) photos.setRating(grid.view.currentIndex, Number(id.slice(12)))
-        else if (id === "review.reveal") libraryNav.revealFile(photos.get(grid.view.currentIndex).path || "")
+        else if (id === "workflow.share_to_phone") { pocketDrop.refreshLibrary(grid.row); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
+        else if (id === "review.clear_decision") photos.setDecision(grid.row, "")
+        else if (id.indexOf("review.rate.") === 0) photos.setRating(grid.row, Number(id.slice(12)))
+        else if (id === "review.reveal") libraryNav.revealFile(photos.get(grid.row).path || "")
         else if (id === "view.names") UiState.showNames = !UiState.showNames
         else if (id === "view.badges") UiState.showBadges = !UiState.showBadges
         else if (id === "view.inspector") UiState.insp = !UiState.insp
         else if (id === "view.panel") UiState.tab = UiState.tab === "" ? "lib" : ""
         else if (id === "view.hidden") { settings.set("hidden", settings.value("hidden") !== true); settings.save(); libraryNav.refresh() }
-        else if (id.indexOf("view.dens.") === 0) UiState.dens = id.slice(10)
+        else if (id.indexOf("view.dens.") === 0) UiState.setDens(id.slice(10))
+        else if (id.indexOf("view.cols.") === 0) UiState.cols = Number(id.slice(10))
         else if (id.indexOf("view.filter.") === 0) { UiState.filter = id.slice(12); photos.setFilter(UiState.filter) }
         else if (id.indexOf("view.fmt.") === 0) { UiState.fmt = id.slice(9); photos.setFormat(UiState.fmt) }
         else if (id === "ai.analyze") cull.openCull()
@@ -362,12 +406,12 @@ Window {
         else if (id === "help.about") reference.openAbout(false)
         else if (id === "help.check_updates") reference.openAbout(true)
         else if (id === "workflow.keyboard_shortcuts") reference.open("keys")
-        else if (id === "review.reveal_in_explorer") libraryNav.revealFile(photos.get(grid.view.currentIndex).path || "")
+        else if (id === "review.reveal_in_explorer") libraryNav.revealFile(photos.get(grid.row).path || "")
         else if (id === "library.browse_catalog") reference.open("lib")
         else if (id === "ai.workflow_center") cull.openCenter()
         else if (id === "ai.run_pipeline") cull.openCull()
         else if (id === "ai.apply_culling") cull.openReview()
-        else if (id === "ai.next_top_pick") { var tp = aiScores.nextTopPick(grid.view.currentIndex); if (tp >= 0) { grid.view.currentIndex = tp; grid.view.positionViewAtIndex(tp, GridView.Contain) } else toasts.show("info", "No AI top picks in this view", "Run the AI analysis first, or clear the filters.") }
+        else if (id === "ai.next_top_pick") { var tp = aiScores.nextTopPick(grid.row); if (tp >= 0) { grid.row = tp; grid.view.positionViewAtIndex(tp + grid.nf, GridView.Contain) } else toasts.show("info", "No AI top picks in this view", "Run the AI analysis first, or clear the filters.") }
         else if (id === "review.auto_advance") { settings.set("autoAdvance", settings.value("autoAdvance") !== true); settings.save(); cmdPalette.setState("review.auto_advance", settings.value("autoAdvance") === true ? "On" : "Off") }
         else if (id === "tools.performance_logging") { settings.set("perfLog", settings.value("perfLog") !== true); settings.save(); cmdPalette.setState("tools.performance_logging", settings.value("perfLog") === true ? "On" : "Off") }
         else if (id === "view.zen_mode") { UiState.zen = !UiState.zen; cmdPalette.setState("view.zen_mode", UiState.zen ? "On" : "Off") }
@@ -389,6 +433,14 @@ Window {
         if (typeof inspector === "boolean") UiState.insp = inspector
         var density = uiMemory.get("density", UiState.dens)
         if (["s", "m", "l"].indexOf(density) >= 0) UiState.dens = density
+        var railOrder = uiMemory.get("railOrder", []), barOrder = uiMemory.get("barOrder", [])
+        if (Array.isArray(railOrder) && railOrder.length) UiState.railOrder = railOrder      // none saved: the default order stays
+        if (Array.isArray(barOrder)) UiState.barOrder = barOrder
+        if (uiMemory.get("pinsLocked", false) === true) UiState.pinsLocked = true
+        var destOrder = uiMemory.get("destOrder", [])
+        if (Array.isArray(destOrder)) UiState.destOrder = destOrder
+        var columns = uiMemory.get("columns", UiState.cols)
+        if (typeof columns === "number" && columns >= 0 && columns <= 9) UiState.cols = Math.floor(columns)
         var sort = uiMemory.get("sort", UiState.sort)
         if (["name", "ai", "rating", "decision"].indexOf(sort) >= 0) { UiState.sort = sort; photos.setSort(sort) }
         var names = uiMemory.get("names", UiState.showNames)
@@ -410,10 +462,12 @@ Window {
         function onTabChanged() { win.remember("tab", UiState.tab) }
         function onInspChanged() { win.remember("inspector", UiState.insp) }
         function onDensChanged() { win.remember("density", UiState.dens) }
+        function onColsChanged() { win.remember("columns", UiState.cols) }
         function onSortChanged() { win.remember("sort", UiState.sort) }
         function onShowNamesChanged() { win.remember("names", UiState.showNames) }
         function onShowBadgesChanged() { win.remember("badges", UiState.showBadges) }
         function onPinsChanged() { win.remember("pins", UiState.pins) }
+        function onPinsLockedChanged() { win.remember("pinsLocked", UiState.pinsLocked) }
     }
     Component.onCompleted: {
         win.restoreInterface()
@@ -428,10 +482,11 @@ Window {
     // test hook `--ui key=value;...` applies UiState settings so layouts can be checked headlessly.
     property string pendingScope: ""
     property string pendingCull: ""
+    Timer { id: sceneTimer; property string scene; interval: 800; onTriggered: cull.scene(scene) }   // after the folder's own reset of the cull (a test hook)
     property string pendingCtx: ""
     // the hook `scope=winners|c:<id>|p:<id>` waits for the photos to be loaded (opening a folder resets the view's scope)
     function applyScope() {
-        if (pendingCull !== "" && photos.total > 0) { var cs = pendingCull; pendingCull = ""; cull.scene(cs) }
+        if (pendingCull !== "" && photos.total > 0) { sceneTimer.scene = pendingCull; pendingCull = ""; sceneTimer.restart() }
         if (pendingCtx !== "" && photos.total > 0) { var cx = pendingCtx; pendingCtx = ""; var r = ctxMenu.scene(cx); if (r.kind) ctxHost.show(r.kind, r.row, r.x, r.y, r.sub) }
         if (pendingScope === "" || photos.total === 0) return
         var sc = pendingScope; pendingScope = ""
@@ -454,7 +509,7 @@ Window {
                 var kv = parts[i].split("=");
                 if (kv.length !== 2) continue;
                 var v = kv[1] === "true" ? true : kv[1] === "false" ? false : (kv[1] === "" || isNaN(Number(kv[1])) ? kv[1] : Number(kv[1]));
-                if (kv[0] === "inspTab") insp.tab = v; else if (kv[0] === "sel") grid.view.currentIndex = v
+                if (kv[0] === "inspTab") insp.tab = v; else if (kv[0] === "sel") grid.row = v
                 else if (["pdMode", "pdState", "pdActivity", "pdList"].indexOf(kv[0]) >= 0) sample[kv[0]] = String(v)
                 else if (kv[0] === "hoRecipe") handoffRecipe = String(kv[1])
                 else if (kv[0] === "scope") scope = String(kv[1])

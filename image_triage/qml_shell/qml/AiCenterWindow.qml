@@ -50,7 +50,7 @@ Backdrop {
     DialogCard {
         shown: root.shown
         width: Math.min(760, root.width - 64); height: Math.min(680, root.height - 72)
-        x: (parent.width - width) / 2; y: 44
+        x: (parent.width - width) / 2; y: (parent.height - height) / 2
         RoundClip {
             anchors.fill: parent; radius: 16
             Column { id: hd; x: 26; y: 20; width: parent.width - 52

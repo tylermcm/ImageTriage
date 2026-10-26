@@ -28,7 +28,7 @@
   "results": [
     {
       "model": "Current CLIP ViT-L/14",
-      "root": "C:\\Users\\user0\\AppData\\Local\\image_triage_ai_cache\\models\\CLI-Culler\\Clip\\clip-vit-large-patch14",
+      "root": "C:\\Users\\developer\\AppData\\Local\\image_triage_ai_cache\\models\\CLI-Culler\\Clip\\clip-vit-large-patch14",
       "provider": "CPUExecutionProvider",
       "threads": 4,
       "model_bytes": 1713609925,
@@ -74,7 +74,7 @@
     },
     {
       "model": "TinyCLIP ViT-8M/16 Text-3M",
-      "root": "C:\\Users\\user0\\OneDrive\\Documents\\Playground\\sandboxes\\tinyclip_benchmark\\models\\tinyclip-vit-8m-16-text-3m",
+      "root": "C:\\Users\\developer\\OneDrive\\Documents\\Playground\\sandboxes\\tinyclip_benchmark\\models\\tinyclip-vit-8m-16-text-3m",
       "provider": "CPUExecutionProvider",
       "threads": 4,
       "model_bytes": 97637598,

@@ -490,3 +490,84 @@ def test_opening_a_super_resolution_recipe_needs_an_editor_that_knows_it(support
             bridge.require_super_resolution_support(camera_raw, False)
     bridge.require_super_resolution_support({"recipe": {"cameraRaw": {"superResolution": False}}}, False)
     bridge.require_super_resolution_support(None, False)
+
+
+# --- local masks (Camera Raw Masking) --------------------------------------------------------------------------------------------
+
+GRADIENT = {"name": "Sky", "shape": {"type": "linear", "x0": 0.5, "y0": 0.1, "x1": 0.5, "y1": 0.6}, "adjust": {"exposure": -0.7}}
+RADIAL = {"shape": {"type": "radial", "cx": 0.4, "cy": 0.5, "rx": 0.2, "ry": 0.3, "angle": 15, "feather": 40}, "adjust": {"saturation": 25}, "amount": 70, "invert": True}
+RASTER = {"shape": {"type": "raster", "w": 3, "h": 2, "data": "AAD/AQ=="}, "adjust": {"shadows": 30}}
+
+
+def masks_state(masks):
+    return bridge.classify_recipe({"version": 1, "cameraRaw": {"masks": masks}})[0]
+
+
+def test_masks_in_a_recipe_are_checked_strictly():
+    assert masks_state([GRADIENT, RADIAL, RASTER]) == bridge.RECIPE_EDITED
+    assert masks_state([]) == bridge.RECIPE_IDENTITY
+    for bad in (
+        "no", [GRADIENT] * 17, [{"shape": {"type": "mystery"}}], [{**GRADIENT, "bogus": 1}], [{**GRADIENT, "amount": 140}], [{**GRADIENT, "adjust": {"exposure": 9}}],
+        [{**GRADIENT, "adjust": {"nonsense": 1}}], [{**GRADIENT, "enabled": "yes"}], [{**GRADIENT, "name": "x" * 65}],
+        [{"shape": {"type": "linear", "x0": float("nan"), "y0": 0, "x1": 1, "y1": 1}}], [{"shape": {"type": "linear", "x0": 0, "y0": 0, "x1": 1}}],
+        [{"shape": {"type": "radial", "cx": 0.5, "cy": 0.5, "rx": -1, "ry": 0.2, "angle": 0, "feather": 0}}],
+        [{"shape": {"type": "raster", "w": 0, "h": 2, "data": "AAAA"}}], [{"shape": {"type": "raster", "w": 3, "h": 2, "data": "abc"}}],
+    ):
+        assert masks_state(bad) == bridge.RECIPE_INVALID, bad
+
+
+def test_a_mask_that_changes_nothing_is_not_an_edit():
+    for quiet in ({**GRADIENT, "enabled": False}, {**GRADIENT, "amount": 0}, {**GRADIENT, "adjust": {}}, {**GRADIENT, "adjust": {"exposure": 0}}):
+        assert masks_state([quiet]) == bridge.RECIPE_IDENTITY, quiet
+    assert masks_state([GRADIENT]) == bridge.RECIPE_EDITED
+    assert masks_state([{**GRADIENT, "enabled": False}, GRADIENT]) == bridge.RECIPE_EDITED
+
+
+@pytest.mark.parametrize("supported", [False, True])
+def test_masks_render_requires_their_own_capability(photo, supported):
+    recipe(photo, {"masks": [GRADIENT]}, identity=True)
+    original = bridge.recipe_path(photo).read_bytes()
+    proc = editor(photo)
+    proc.control.camera_raw_finishing_supported = True
+    proc.control.camera_raw_calibration_supported = True
+    proc.control.camera_raw_masks_supported = supported
+    result = render.FullRenderService(lambda: proc).request(photo)
+    assert result.outcome == (render.RENDERED if supported else render.FAILED)
+    assert bool(proc.requests) is supported
+    if supported:
+        assert proc.requests[0]["recipe"]["cameraRaw"]["masks"] == [GRADIENT]
+        result.release()
+    assert bridge.recipe_path(photo).read_bytes() == original
+
+
+def test_opening_a_recipe_with_masks_needs_an_editor_that_knows_them():
+    camera_raw = {"recipe": {"cameraRaw": {"masks": [GRADIENT]}}}
+    bridge.require_masks_support(camera_raw, True)
+    with pytest.raises(bridge.PhotoCraftCompatibilityError):
+        bridge.require_masks_support(camera_raw, False)
+    bridge.require_masks_support({"recipe": {"cameraRaw": {"masks": []}}}, False)  # none: nothing to lose
+    bridge.require_masks_support(None, False)
+
+
+def test_range_masks_are_accepted_and_bad_ones_are_not():
+    from image_triage import photocraft_bridge as pb
+
+    good = [{"shape": {"type": "colorRange", "color": [0.2, 0.3, 0.4], "range": 40, "smooth": 20}, "adjust": {"exposure": 1.0}},
+            {"shape": {"type": "luminanceRange", "low": 0.1, "high": 0.6, "smooth": 10}, "adjust": {"exposure": -1.0}}]
+    assert pb._masks_valid(good)
+    for shape in ({"type": "colorRange", "color": [0.2, 0.3], "range": 40, "smooth": 20},
+                  {"type": "colorRange", "color": [0.2, 0.3, 9], "range": 40, "smooth": 20},
+                  {"type": "luminanceRange", "low": 0.7, "high": 0.6, "smooth": 10},
+                  {"type": "luminanceRange", "low": 0.1, "high": 0.6},
+                  {"type": "blob"}):
+        assert not pb._masks_valid([{"shape": shape}]), shape
+
+
+def test_combined_mask_parts_are_validated():
+    from image_triage import photocraft_bridge as pb
+
+    base = {"type": "luminanceRange", "low": 0.1, "high": 0.6, "smooth": 10}
+    ok = [{"shape": base, "adjust": {"exposure": 1.0}, "parts": [{"op": "subtract", "shape": {"type": "linear", "x0": 0.5, "y0": 0.2, "x1": 0.5, "y1": 0.8}, "invert": True}]}]
+    assert pb._masks_valid(ok)
+    for parts in ([{"op": "xor", "shape": base}], [{"shape": {"type": "blob"}}], [{"op": "add", "extra": 1}], "nope", [{}] * 9):
+        assert not pb._masks_valid([{"shape": base, "parts": parts}]), parts

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import csv
 import importlib
 import json
@@ -402,7 +403,7 @@ def install_ai_runtime(
                 if exit_code != 0:
                     raise RuntimeError(
                         f"AI runtime install failed for {ai_runtime_variant_label(variant)} "
-                        f"(exit code {exit_code}). The existing runtime was not changed."
+                        f"(exit code {exit_code}). The existing runtime was not changed.{_pip_failure_detail()}"
                     )
                 profile_status = _profile_status(
                     directories,
@@ -619,12 +620,32 @@ def _gpu_torchvision_version_spec() -> str:
 def _default_pip_runner(args: list[str], cwd: Path) -> int:
     if getattr(sys, "frozen", False):
         return _run_embedded_pip(args, cwd)
-    process = subprocess.run(
+    # pip's output is passed on as it arrives, and its last lines are kept: an install that fails with just "exit code 2" says nothing
+    # about why, and the reason is in what pip printed (a hash that does not match, a wheel it cannot find, an option it does not know).
+    _PIP_TAIL.clear()
+    process = subprocess.Popen(
         [sys.executable, "-m", "pip", *args],
         cwd=str(cwd),
         text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        errors="replace",
     )
-    return int(process.returncode)
+    assert process.stdout is not None
+    for line in process.stdout:
+        print(line, end="", flush=True)
+        if line.strip():
+            _PIP_TAIL.append(line.rstrip())
+    return int(process.wait())
+
+
+_PIP_TAIL: collections.deque[str] = collections.deque(maxlen=8)
+
+
+def _pip_failure_detail() -> str:
+    """The last lines pip printed, for the message of a failed install (empty when there are none)."""
+    lines = [line for line in _PIP_TAIL if line.strip()]
+    return (" pip said: " + " | ".join(lines[-4:])[-700:]) if lines else ""
 
 
 def _run_embedded_pip(args: list[str], cwd: Path) -> int:

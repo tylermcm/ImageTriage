@@ -202,7 +202,48 @@ def scan_child_folders(folder: str, *, include_hidden: bool = False) -> list[Ima
     return sort_records(records, SortMode.NAME)
 
 
-def _has_editor_session(image_path: str) -> bool:
+class _EditHints:
+    """Which photos of a folder can have edit data, from two directory listings instead of five round trips per photo.
+
+    Everything ``session_has_edits`` looks for sits under the folder's hidden edit root, keyed by the photo's file name, or (a legacy
+    session) beside the photo as ``<name>.edit.json``. Listing the root once rules most photos out without touching the disk again, which
+    on a network share is the difference between seconds and tens of seconds for a few thousand photos.
+    """
+
+    def __init__(self, folder: str) -> None:
+        self.folder = os.path.normcase(os.path.normpath(folder))
+        self.legacy: set[str] = set()                  # names ending in .edit.json found in the folder while it was listed
+        self._root: set[str] | None = None
+
+    def _root_names(self) -> set[str]:
+        if self._root is None:
+            try:
+                with os.scandir(os.path.join(self.folder, EDIT_STORAGE_ROOT_NAME)) as entries:
+                    self._root = {entry.name.casefold() for entry in entries}
+            except OSError:
+                self._root = set()
+        return self._root
+
+    def may_have_edits(self, image_path: str) -> bool:
+        if os.path.normcase(os.path.dirname(os.path.normpath(image_path))) != self.folder:
+            return True                               # a photo from another folder (a sibling RAW directory): ask the long way
+        from .photo_terminal.session import default_session_path
+
+        name = os.path.basename(image_path)
+        session = default_session_path(Path(image_path)).name.casefold()
+        root = self._root_names()
+        return (
+            session in root
+            or session in self.legacy
+            or (name + ".pcraft").casefold() in root
+            or (name + ".cameraraw.json").casefold() in root
+            or (name + ".cameraraw.json.bad").casefold() in root
+        )
+
+
+def _has_editor_session(image_path: str, hints: "_EditHints | None" = None) -> bool:
+    if hints is not None and not hints.may_have_edits(image_path):
+        return False
     """Whether ``image_path`` has a built-in-editor session with real edits.
 
     Deferred import: ``edit_storage`` imports ``EDIT_STORAGE_ROOT_NAME`` from
@@ -238,9 +279,12 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
     root_files: list[ScannedFile] = []
     paired_jpegs: dict[str, list[ScannedFile]] = {}
     nested_edit_files: list[ScannedFile] = []
+    hints = _EditHints(folder)
 
     with os.scandir(folder) as entries:
         for entry in entries:
+            if entry.name.casefold().endswith(".edit.json"):
+                hints.legacy.add(entry.name.casefold())
             if is_image_file_candidate(entry.name):
                 try:
                     scanned = to_scanned_file(entry, IMAGE_SUFFIXES, include_stat=include_stat, parent_folder=folder)
@@ -383,7 +427,7 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
                     companion_paths=companions,
                     edited_paths=tuple(item.path for item in edit_files),
                     variants=stack_variants,
-                    has_editor_session=_has_editor_session(raw.path),
+                    has_editor_session=_has_editor_session(raw.path, hints),
                 )
             )
 
@@ -415,7 +459,7 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
                 modified_ns=max([primary.modified_ns, *[item.modified_ns for item in edit_files]]),
                 edited_paths=tuple(item.path for item in edit_files),
                 variants=stack_variants,
-                has_editor_session=_has_editor_session(primary.path),
+                has_editor_session=_has_editor_session(primary.path, hints),
             )
         )
     return records

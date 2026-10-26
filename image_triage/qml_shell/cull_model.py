@@ -47,8 +47,10 @@ REASONS = {
     "duplicate": ("Near-duplicate", "#6fb1d8", False),
 }
 REJECTS = ("blink", "soft", "clipped", "blown_out")
+APPLIABLE = REJECTS + ("duplicate",)      # what the Apply page can act on: the problems, and the near-duplicates (off until chosen, they are only suggestions)
 GROUP_WHY = {"blink": "A blink on the main face", "soft": "Much softer than the best frame of the stack",
-             "clipped": "Many more clipped pixels than its stack-mates", "blown_out": "Mostly pure white or black"}
+             "clipped": "Many more clipped pixels than its stack-mates", "blown_out": "Mostly pure white or black",
+             "duplicate": "Almost identical to a better frame in its stack. Only a suggestion, so it is off until you turn it on"}
 # What --mock flags (the mockup's names); other folders are flagged by a hash of the name.
 _MOCK_FLAGS = {"DSC_4207": "clipped", "DSC_4210": "soft", "DSC_4219": "blown_out", "DSC_4226": "blink", "DSC_4236": "duplicate"}
 _STACK_SIZES = (1, 2, 3, 2, 2, 2)
@@ -129,13 +131,15 @@ class CullModel(QObject):
         m = a["models"]
         self._set(rt=a["rt"], rtp=a["pct"] / 100, vcOld=a["vcOld"], gpu=a["gpuUsable"], faceOk=m["face"]["state"] == "ready",
                   models={"quality": m["quality"]["state"] == "ready", "appeal": m["appeal"]["state"] == "ready"})
+        if a["gpuUsable"] and not self._s["rankTouched"] and not self._s["rank"]:
+            self._set(rank=True)                        # a graphics card was found: ranking is cheap, so it starts on (until the person has chosen)
 
     @staticmethod
     def _defaults(cpu: bool = False) -> dict:
-        return {"window": "", "page": "prep", "sens": "balanced", "vals": dict(PRESETS["balanced"]), "tune": False, "eyes": True, "rank": False,
+        return {"window": "", "page": "prep", "sens": "balanced", "vals": dict(PRESETS["balanced"]), "tune": False, "eyes": True, "semantic": True, "rank": False, "rankTouched": False,
                 "cpuAsk": False, "cpuDefault": cpu, "rt": "ready", "rtp": 0.0, "vcOld": False, "gpu": False, "faceOk": True, "models": {"quality": True, "appeal": False},
                 "stage": 0, "p": 0.0, "running": False, "done": False, "hidden": False, "ranked": False, "filter": "all", "sel": "", "restored": {},
-                "act": "reject", "inc": {r: True for r in REJECTS}, "applied": None, "runs": True, "back": False, "eyesRan": False}
+                "act": "reject", "inc": {**{r: True for r in REJECTS}, "duplicate": False}, "applied": None, "runs": True, "back": False, "eyesRan": False}
 
     # -- helpers -----------------------------------------------------------------------------------------------------------------
     def _rows(self) -> list[dict]:
@@ -217,7 +221,7 @@ class CullModel(QObject):
         return [(by_path[p], r) for p, r in self._flags.items() if p in by_path and not s["restored"].get(p)]
 
     def _apply_ids(self) -> list[str]:
-        return [r["path"] for r, reason in self._active_flags() if reason in REJECTS and self._s["inc"].get(reason)]
+        return [r["path"] for r, reason in self._active_flags() if reason in APPLIABLE and self._s["inc"].get(reason)]
 
     def flagFor(self, path: str) -> dict:
         reason = self._flags.get(path)
@@ -298,7 +302,7 @@ class CullModel(QObject):
         rank_desc = ("Suggests the strongest one or two frames in each stack, using two AI models for quality and appeal. They are suggestions only: nothing is selected for you. "
                      if rank_has else "Suggests the strongest frames in each stack. The Appeal model is not installed yet. ") + \
                     ("Graphics card found: about 1 second per frame." if s["gpu"] else "No usable graphics card, so it is slow: 7 seconds to over a minute per frame.")
-        rt_desc = {"ready": "Finds blinks in group shots with a face model that runs on this PC, about 40 ms per frame. Cheap, so it runs whenever the AI runtime is set up.",
+        rt_desc = {"ready": "Finds the faces in each frame and checks whether anyone has their eyes closed, with a face model that runs on this PC, about 40 ms per frame. Cheap, so it runs whenever the AI runtime is set up.",
                    "missing": "Needs the AI runtime, a one-time download. The cleanup works without it.", "installing": "Setting up the AI runtime…",
                    "error": "The AI runtime could not be set up.", "checking": "Looking at what is installed…"}[s["rt"]]
         if rt_ready and not s["faceOk"]:
@@ -362,7 +366,7 @@ class CullModel(QObject):
                    "rows": info["rows"] + [{"k": "Stack", "v": f"{si + 1} of {len(self._stacks)}"}, {"k": "Taken", "v": self._frame_time(sel["path"])}],
                    "canRestore": bool(reason), "restoreLabel": "Flag again" if s["restored"].get(sel["path"]) else ("Keep both" if reason == "duplicate" else "Restore")}
         groups = [{"key": r, "label": REASONS[r][0], "color": REASONS[r][1], "n": cnt(r), "why": GROUP_WHY[r], "on": bool(s["inc"].get(r)),
-                   "thumbs": [row["path"] for row, x in flagged if x == r][:4]} for r in REJECTS if cnt(r)]
+                   "thumbs": [row["path"] for row, x in flagged if x == r][:4]} for r in APPLIABLE if cnt(r)]
         applied = s["applied"]
         done_title = "Nothing was changed" if not applied else (f"{len(applied['ids'])} frames moved to the recycle bin" if applied["act"] == "bin" and self._real and self._files is not None else f"{len(applied['ids'])} frames marked as Rejects")
         binned = bool(applied) and applied["act"] == "bin" and self._real and self._files is not None
@@ -379,16 +383,21 @@ class CullModel(QObject):
             "steps": [{"n": i + 1, "label": lab, "sub": sub, "state": "done" if (page == "done" and i == 3) or i < idx else ("cur" if i == idx else "")} for i, (lab, sub) in enumerate(steps)],
             "centerDot": "ok" if rt_ready else ("bad" if s["rt"] == "error" else "warn"),
             "centerText": {"ready": "Ready", "missing": "Not set up", "installing": "Installing…", "error": "Needs attention", "checking": "Checking…"}[s["rt"]],
-            "eyes": {"on": eyes_on, "desc": rt_desc}, "rt": {"state": s["rt"], "pct": rtp, "step": rt_step,
-                "errTitle": "Windows needs a newer Visual C++ runtime",
-                "errBody": "The AI runtime could not start. This PC has Visual C++ 14.36 (2023); it needs 14.40 or newer. Install the latest x64 Redistributable, then check again."},
+            "eyes": {"on": eyes_on, "desc": rt_desc},
+            "semantic": {"on": s["semantic"] and rt_ready, "desc": (
+                "Reads every photo once with a small image model on this PC, so you can search the folder in plain words afterwards "
+                "(\"red lanterns\", \"a dog on a beach\"). It runs in the background after the cleanup and does not hold up the review."
+                if rt_ready else "Needs the AI runtime, a one-time download.")},
+            "rt": {"state": s["rt"], "pct": rtp, "step": rt_step,
+                **self._rt_error()},
             "rank": {"on": s["rank"], "desc": rank_desc, "canSetup": not rank_has, "ask": s["cpuAsk"]},
             "sens": [{"key": k, "label": k.capitalize(), "on": s["sens"] == k} for k in ("careful", "balanced", "strict")], "sensText": SENS_TEXT[s["sens"]],
             "tuneOpen": s["tune"], "tuneLabel": "Hide fine-tuning" if s["tune"] else "Fine-tune",
             "tunes": [{"key": k, "label": lab, "help": h, "min": lo, "max": hi, "raw": v[k], "val": _fmt(k, v[k])} for k, lab, h, lo, hi in TUNES],
             "estimate": est_text, "stages": stages, "runLine": f"{cur_stage} · {round(s['p'] * n)} of {n}", "runPct": run_pct,
             "runEta": self._eta_text(s, secs), "notes": notes,
-            "tiles": [{"n": n, "l": "Frames"}, {"n": len(self._stacks), "l": "Stacks"}, {"n": sum(cnt(r) for r in REJECTS), "l": "Flagged"}, {"n": cnt("duplicate"), "l": "Near-duplicates"}],
+            "tiles": [{"n": n, "l": "Frames"}, {"n": len(self._stacks), "l": "Stacks"}, {"n": sum(cnt(r) for r in REJECTS), "l": "Flagged"}, {"n": cnt("duplicate"), "l": "Near-duplicates"},
+                      self._people_tile()],
             "chips": chips, "stacks": stacks_out, "noRows": s["filter"] != "all" and cnt(s["filter"]) == 0, "det": det,
             "revNote": "Ranking suggestions are marked 1st choice. Nothing is selected for you." if s["ranked"] else "Cleanup only. Turn on ranking in Run again to get suggestions.",
             "applyCount": n_ap, "opts": opts, "groups": groups,
@@ -414,6 +423,116 @@ class CullModel(QObject):
         self._rev += 1
         self.changed.emit()
         self.gridChanged.emit()
+
+    def _people_tile(self) -> dict:
+        """How many people the folder's face index holds, and how many faces they come from: the way to tell whether face detection did anything.
+        Read from the same database the People page uses (the Widgets app's folder database); 0 when the folder has no face index yet."""
+        folder = self._photos.folder_dir() if self._real else ""
+        people = faces = 0
+        if folder and self._s["done"]:
+            try:
+                import sqlite3
+
+                from ..aiculler_workflow import aiculler_db_path, build_aiculler_workflow_paths
+                from ..people_search import list_person_clusters
+
+                db = aiculler_db_path(build_aiculler_workflow_paths(folder, resolve=False))
+                stamp = (str(db), db.stat().st_mtime_ns) if db.exists() else None
+                cached = getattr(self, "_people_cache", None)
+                if stamp is not None and cached is not None and cached[0] == stamp:
+                    people, faces = cached[1]
+                elif stamp is not None:
+                    connection = sqlite3.connect(str(db), timeout=2)
+                    try:
+                        clusters = list(list_person_clusters(connection))
+                    finally:
+                        connection.close()
+                    people, faces = len(clusters), sum(c.face_count for c in clusters)
+                    self._people_cache = (stamp, (people, faces))
+            except Exception:
+                people = faces = 0
+        looking = getattr(self, "_face_task", None) is not None or getattr(self, "_semantic_task", None) is not None
+        return {"n": people, "l": "People" + (f" · {faces} faces" if faces else (" · looking…" if looking else ""))}
+
+    @staticmethod
+    def _clip_files():
+        """The search model's graph and tokenizer where the model store put them (the managed install), or (None, None) when it is not installed.
+        (`default_aiculler_runtime` points at an older cache folder and cannot be used to find them.)"""
+        try:
+            from ..ai_model import resolve_aiculler_clip_model_installation
+
+            folder = resolve_aiculler_clip_model_installation().install_dir
+            graph, tokenizer = folder / "onnx" / "model.onnx", folder / "tokenizer.json"
+            return (graph, tokenizer) if graph.exists() and tokenizer.exists() else (None, None)
+        except Exception:
+            return None, None
+
+    def _semantic_finished(self, folder: str, token: int, indexed: int, ready_total: int) -> None:
+        """The folder is indexed: the face pass reuses those embeddings (a cheap person pre-filter), then finds and clusters the faces."""
+        if token != getattr(self, "_semantic_token", -1):
+            return
+        self._semantic_task = None
+        if getattr(self, "_face_wanted", False):
+            self._start_face(folder)
+
+    def _start_face(self, folder: str) -> None:
+        try:
+            from pathlib import Path
+
+            from PySide6.QtCore import QThreadPool
+
+            from ..aiculler_workflow import aiculler_db_path, build_aiculler_workflow_paths
+            from ..face_index import FaceFolderIndexTask
+            from ..face_stack import face_cache_path
+
+            paths = build_aiculler_workflow_paths(folder, resolve=False)
+            db = aiculler_db_path(paths)
+            text_model, tokenizer = self._clip_files()
+            if not db.exists() or text_model is None:
+                return
+            previous = getattr(self, "_face_task", None)
+            if previous is not None:
+                previous.cancel()
+            self._face_token = getattr(self, "_face_token", 0) + 1
+            task = FaceFolderIndexTask(
+                folder=folder, token=self._face_token, db_path=db, clip_text_model=text_model, clip_tokenizer=tokenizer,
+                clip_fallback_text_model=None, device="auto", face_cache_path=face_cache_path(paths.artifacts_dir),
+            )
+            task.signals.finished.connect(self._face_finished)
+            task.signals.failed.connect(self._extras_failed)
+            self._face_task = task
+            if getattr(self, "_face_pool", None) is None:
+                self._face_pool = QThreadPool()
+                self._face_pool.setMaxThreadCount(1)
+            self._face_pool.start(task)
+            self._rebuild()                         # the People tile says it is looking
+        except Exception:
+            self._face_task = None
+
+    def _face_finished(self, folder: str, token: int, faces_indexed: int, people_count: int) -> None:
+        if token != getattr(self, "_face_token", -1):
+            return
+        self._face_task = None
+        self._people_cache = None
+        self._rebuild()                             # the People tile now counts them
+
+    def _extras_failed(self, folder: str, token: int, message: str) -> None:
+        self._semantic_task = None
+        self._face_task = None
+        self._rebuild()
+
+    def _rt_error(self) -> dict:
+        """The runtime's failure card. On a real PC it says what this PC has (the Visual C++ complaint only when the Visual C++ runtime really is
+        too old, and the runtime's own error otherwise); the scripted sample keeps its fixed wording."""
+        a = self._ai_state
+        if a is None:
+            return {"errVc": True, "errTitle": "Windows needs a newer Visual C++ runtime",
+                    "errBody": "The AI runtime could not start. This PC has Visual C++ 14.36 (2023); it needs 14.40 or newer. Install the latest x64 Redistributable, then check again."}
+        if a["vcOld"]:
+            return {"errVc": True, "errTitle": "Windows needs a newer Visual C++ runtime",
+                    "errBody": f"The AI runtime could not start. This PC has Visual C++ {a['vcFound']}; it needs 14.40 or newer. Install the latest x64 Redistributable, then check again."}
+        return {"errVc": False, "errTitle": "The AI runtime could not start",
+                "errBody": a["error"] or "It was installed but does not start on this PC. Repair reinstalls it; the AI Center shows what failed."}
 
     def _center(self, s: dict, rt_ready: bool, rtp: int, rt_step: str, flagged, applied) -> dict:
         """The AI Center for this PC: every state, size and sentence comes from `ai_center.AiCenterBackend.state()`."""
@@ -530,6 +649,7 @@ class CullModel(QObject):
     @Slot()
     def toggleRank(self) -> None:
         s = self._s
+        s["rankTouched"] = True
         if s["rank"]:
             self._set(rank=False)
         elif not s["gpu"] and not s["cpuDefault"]:
@@ -537,8 +657,13 @@ class CullModel(QObject):
         else:
             self._set(rank=True)
 
+    @Slot()
+    def toggleSemantic(self) -> None:
+        self._set(semantic=not self._s["semantic"])
+
     @Slot(bool)
     def answerCpu(self, yes: bool) -> None:
+        self._s["rankTouched"] = True
         self._set(rank=yes, cpuAsk=False)
 
     @Slot(str)
@@ -735,6 +860,49 @@ class CullModel(QObject):
                             protected=self._protected_paths())
         except Exception as exc:
             self._run_failed(str(exc))
+            return
+        if (s["semantic"] or s["eyes"]) and s["rt"] == "ready":
+            self._face_wanted = bool(s["eyes"] and s["faceOk"])
+            self._start_semantic(records)
+
+    def _start_semantic(self, records: list) -> None:
+        """Semantic search for the folder: the Widgets app's own background indexer (TinyCLIP embeddings into the folder's aiculler database), started
+        beside the cull. Best effort: without the runtime or the image model it stays quiet, and filename search remains the fallback."""
+        folder = self._photos.folder_dir()
+        if not folder or not records:
+            return
+        try:
+            from pathlib import Path
+
+            from PySide6.QtCore import QThreadPool
+
+            from ..aiculler_workflow import aiculler_db_path, build_aiculler_workflow_paths
+            from ..semantic_index import SEMANTIC_EMBEDDING_DIM, SemanticFolderIndexTask, compute_semantic_model_identity
+
+            model, _tokenizer = self._clip_files()
+            if model is None:
+                return
+            fallback = None
+            identity = compute_semantic_model_identity(model, embedding_dim=SEMANTIC_EMBEDDING_DIM, fallback_model=fallback)
+            previous = getattr(self, "_semantic_task", None)
+            if previous is not None:
+                previous.cancel()
+            self._semantic_token = getattr(self, "_semantic_token", 0) + 1
+            task = SemanticFolderIndexTask(
+                folder=folder, token=self._semantic_token, records=tuple(records),
+                db_path=aiculler_db_path(build_aiculler_workflow_paths(folder, resolve=False)),
+                clip_vision_model=model, clip_fallback_model=fallback, model_identity=identity,
+                device="auto", expected_dim=SEMANTIC_EMBEDDING_DIM,
+            )
+            self._semantic_task = task
+            task.signals.finished.connect(self._semantic_finished)
+            task.signals.failed.connect(self._extras_failed)
+            if getattr(self, "_semantic_pool", None) is None:
+                self._semantic_pool = QThreadPool()
+                self._semantic_pool.setMaxThreadCount(1)
+            self._semantic_pool.start(task)
+        except Exception:
+            pass                                    # the cull itself is not affected
 
     def _run_stage(self, stage: int, fraction: float) -> None:
         if self._s["running"]:

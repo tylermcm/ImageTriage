@@ -2,7 +2,7 @@
 
 Run this by hand before and after any risky work item (Phase 3 onward, and any release). It covers what the automated suite cannot: a real display, a NAS, and feel. Use a **copy** of a folder of about 30 photos (include at least one RAW+JPEG pair and one folder on the NAS). Note the result of each step.
 
-Baseline numbers (headless, synthetic, from `tests/perf_baselines.py`) are stored outside the repo in `C:\Users\user0\ImageTriage-baselines\`. The interactive timings below have no headless equivalent; write yours down the first time so later runs have something to compare with.
+Baseline numbers (headless, synthetic, from `tests/perf_baselines.py`) are stored outside the repo in `C:\Users\developer\ImageTriage-baselines\`. The interactive timings below have no headless equivalent; write yours down the first time so later runs have something to compare with.
 
 | # | Step | Expected | Result / time |
 |---|---|---|---|

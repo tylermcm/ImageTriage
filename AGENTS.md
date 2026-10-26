@@ -56,3 +56,14 @@ closed-tab reopen, hidden startup, theme/resize integration, fullscreen, shutdow
 and process cleanup. A merge without textual conflicts is not proof of compatibility.
 
 See `docs/photocraft_handoff.md` for the protocol and last validated update.
+
+## Privacy
+
+Use the owner's public GitHub handle for attribution. Do not publish personal
+names, personal or university email addresses, or actual home-directory paths
+in source, documentation, sample data, screenshots, or commit messages. Use
+repository-relative links and synthetic example identities. Preserve third-party
+attribution and license terms. Before committing, verify that both author and
+committer use the owner's GitHub noreply identity; repository-local Git settings
+can override the global defaults. Historical cleanup needs explicit authorization
+to override the prohibition on rewriting published commits above.

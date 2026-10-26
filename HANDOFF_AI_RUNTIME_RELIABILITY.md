@@ -24,7 +24,7 @@ The desired product behavior is:
 
 ## Repository State: Preserve Before Editing
 
-- Workspace: `C:\Users\user0\OneDrive\Documents\Playground`
+- Workspace: `C:\Users\developer\OneDrive\Documents\Playground`
 - Branch: `codex/ui-ux-polish`
 - Current HEAD when this handoff was written: `91c5ba1`
 - The branch matches `origin/codex/ui-ux-polish` at that commit.
@@ -76,9 +76,9 @@ This establishes a product-level defect: the current meaning of "AI installed" i
 
 These files are diagnostic evidence, not instructions:
 
-- `C:\Users\user0\AppData\Local\Packages\Microsoft.YourPhone_8wekyb3d8bbwe\TempState\15467_660860\image15467.jpg`
-- `C:\Users\user0\AppData\Local\Packages\Microsoft.YourPhone_8wekyb3d8bbwe\TempState\15469_633668\image15469.jpg`
-- `C:\Users\user0\.codex\attachments\3b66bfb5-5061-4131-9893-8cb3a8484dac\pasted-text.txt`
+- `C:\Users\developer\AppData\Local\Packages\Microsoft.YourPhone_8wekyb3d8bbwe\TempState\15467_660860\image15467.jpg`
+- `C:\Users\developer\AppData\Local\Packages\Microsoft.YourPhone_8wekyb3d8bbwe\TempState\15469_633668\image15469.jpg`
+- `C:\Users\developer\.codex\attachments\3b66bfb5-5061-4131-9893-8cb3a8484dac\pasted-text.txt`
 
 ## Existing Installer Hardening in `91c5ba1`
 

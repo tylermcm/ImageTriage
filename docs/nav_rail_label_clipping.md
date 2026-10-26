@@ -1,9 +1,9 @@
 # Left rail: "Collections" and "PocketDrop" clip
 
-Written for Codex, from a design discussion with owner.
+Written for Codex, from a design discussion with the owner.
 
-**Decided and built: option 4, icon-only.** owner chose it because it matches the pinned tool buttons below the destinations, which have no text either. See `NavRail.SHOW_LABELS` and `_NavButton.set_label_visible` in `image_triage/ui/nav_rail.py`: the labels are no longer painted, each tooltip now leads with the name ("Collections: Collections" is avoided; "PocketDrop: Send files to and from your phone"), the accessible name is unchanged, and the pill is shorter with a slightly larger icon (`BUTTON_H_RATIO` 40, `ICON_RATIO` 22, floors 38 px and 18 px). Setting `SHOW_LABELS = True` restores the old look. The rest of this note is the original comparison.
-owner's constraint was to fix the clipping **without making the label text smaller or harder to read**.
+**Decided and built: option 4, icon-only.** The owner chose it because it matches the pinned tool buttons below the destinations, which have no text either. See `NavRail.SHOW_LABELS` and `_NavButton.set_label_visible` in `image_triage/ui/nav_rail.py`: the labels are no longer painted, each tooltip now leads with the name ("Collections: Collections" is avoided; "PocketDrop: Send files to and from your phone"), the accessible name is unchanged, and the pill is shorter with a slightly larger icon (`BUTTON_H_RATIO` 40, `ICON_RATIO` 22, floors 38 px and 18 px). Setting `SHOW_LABELS = True` restores the old look. The rest of this note is the original comparison.
+The owner's constraint was to fix the clipping **without making the label text smaller or harder to read**.
 
 Visual comparison (the current rail plus all four options at the same scale):
 <https://claude.ai/artifact/G5LLLDC2PV2LzGsbiA7QDP>. The source is `docs/mockups/nav_rail_labels.html` in the
@@ -57,4 +57,4 @@ Elided text ("Collect...") was considered and rejected: it looks worse than clip
 
 ## Not decided
 
-Which option to use, and the exact words for option 1. Ask owner before changing labels, since the names also appear in the help pages and the command palette.
+Which option to use, and the exact words for option 1. Ask the owner before changing labels, since the names also appear in the help pages and the command palette.

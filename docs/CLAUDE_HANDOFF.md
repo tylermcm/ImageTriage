@@ -6,8 +6,8 @@ User wants a usable local testing checkpoint and continuation by Claude. Both re
 use `codex/image-triage-integration`. User authorized pushing everything to their
 forks; no upstream PR, force push, release or default-editor promotion.
 
-Local host: `C:/Users/user0/OneDrive/Documents/Playground`
-Local editor: `C:/Users/user0/Documents/photocraft`
+Local host: `C:/Users/developer/OneDrive/Documents/Playground`
+Local editor: `C:/Users/developer/Documents/photocraft`
 Forks: https://github.com/tylermcm/ImageTriage and https://github.com/tylermcm/photocraft.
 PhotoCraft remote names differ from AGENTS examples: origin=user fork,
 upstream=storytold. Never push to upstream.
@@ -15,11 +15,11 @@ upstream=storytold. Never push to upstream.
 ## Usable development build
 
 ```powershell
-& "C:/Users/user0/OneDrive/Documents/Playground/scripts/test_camera_raw.ps1" -EditorBuild acr-main-adjustments
+& "C:/Users/developer/OneDrive/Documents/Playground/scripts/test_camera_raw.ps1" -EditorBuild acr-main-adjustments
 ```
 
 Open photo in popout, press E. Candidate lives at
-`C:/Users/user0/Documents/photocraft/target/acr-main-adjustments/debug/photocraft.exe`.
+`C:/Users/developer/Documents/photocraft/target/acr-main-adjustments/debug/photocraft.exe`.
 SHA256 `cac833711778b15699ccac589a30e1cb1ad2fbf3ad88ac0933b261b0fc0f1097`.
 The existing default `acr-settings-menu` and known-good target/debug executable are
 preserved. Build binaries and target/ are local, not committed to Git.
@@ -72,7 +72,7 @@ Proof images and metadata are in PhotoCraft `docs/handoff/2026-10-18-main-adjust
 They are real offscreen native captures; captures precede the final small SDR
 point-selection clamp fix, covered by the final algorithm regression and Mixer tests.
 Detailed logs/proof remain locally under
-`C:/Users/user0/.codex/visualizations/2026/10/17/01a14901-444b-7781-b5e6-48730a8f5183/acr-filmstrip`.
+`C:/Users/developer/.codex/visualizations/2026/10/17/01a14901-444b-7781-b5e6-48730a8f5183/acr-filmstrip`.
 
 Full real-file corpus attempt blocked: no local photocraft-corpus authoring checkout.
 Live hosted gates still pending: persistent filmstrip navigation, automatic stash/

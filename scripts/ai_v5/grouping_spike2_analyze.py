@@ -120,11 +120,11 @@ def main() -> None:
                          ("DINOv2 CLS cosine", feats["cos_cls"]), ("DINOv2 patch-mean cosine", feats["cos_mean"])):
         print(f"  {label:26s} {auc(y, score):.3f}   hard pairs {auc(y[part == 'pair'], score[part == 'pair']):.3f}   steps {auc(y[part == 'step'], score[part == 'step']):.3f}")
 
-    print("\nLeave-one-album-out AUROC (pooled / hard pairs / sequence steps / Alaska-Lamont only / owner only):")
+    print("\nLeave-one-album-out AUROC (pooled / hard pairs / sequence steps / secondary photographer only / primary photographer only):")
     for name, p in oof.items():
         s_pair, s_step = part == "pair", part == "step"
-        lam, ty = photog == "lamont", photog == "owner"
-        print(f"  {name:48s} {auc(y, p):.3f}  {auc(y[s_pair], p[s_pair]):.3f}  {auc(y[s_step], p[s_step]):.3f}  {auc(y[lam], p[lam]):.3f}  {auc(y[ty], p[ty]):.3f}")
+        secondary, primary = photog == "photographer_b", photog == "photographer_a"
+        print(f"  {name:48s} {auc(y, p):.3f}  {auc(y[s_pair], p[s_pair]):.3f}  {auc(y[s_step], p[s_step]):.3f}  {auc(y[secondary], p[secondary]):.3f}  {auc(y[primary], p[primary]):.3f}")
 
     print("\nPaired bootstrap of AUROC differences (95% interval):")
     comparisons = [

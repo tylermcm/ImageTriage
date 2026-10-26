@@ -12,14 +12,27 @@ Item {
     readonly property int status: img.status
     property int rev: 0
     property string asked: ""
+    property url shown                   // the last picture that finished loading: stays up while the next size (or stand-in) loads, so a size change does not flash blank
 
     function release() { if (asked !== "") { thumbs.unwant(asked); asked = "" } }
     Component.onDestruction: release()
-    onPathChanged: { release(); rev++ }
+    onPathChanged: { release(); shown = ""; rev++ }
 
+    Image {
+        anchors.fill: parent
+        source: t.shown
+        asynchronous: true
+        sourceSize: Qt.size(t.bucket, Math.round(t.bucket * 2 / 3))
+        fillMode: t.fillMode
+        visible: img.status !== Image.Ready && status === Image.Ready
+        opacity: t.imageOpacity
+        layer.enabled: t.desaturate > 0
+        layer.effect: MultiEffect { saturation: -t.desaturate }
+    }
     Image {
         id: img
         anchors.fill: parent
+        onStatusChanged: if (status === Image.Ready) { t.shown = source; thumbs.notePainted() }
         source: { void t.rev; void t.bucket; if (t.path === "") return ""; t.asked = t.path; return thumbs.url(t.path, t.bucket) }
         sourceSize: Qt.size(t.bucket, Math.round(t.bucket * 2 / 3))
         asynchronous: true

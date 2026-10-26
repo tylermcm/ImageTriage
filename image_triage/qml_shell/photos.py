@@ -11,13 +11,14 @@ import threading
 import zlib
 from pathlib import Path
 
-from PySide6.QtCore import Property, QAbstractListModel, QByteArray, QModelIndex, Qt, Signal, Slot
+from PySide6.QtCore import Property, QAbstractListModel, QObject, QByteArray, QModelIndex, Qt, Signal, Slot
 
 from ..formats import RAW_SUFFIXES
-from ..scanner import scan_folder
+from ..formats import is_image_file_candidate
+from ..scanner import scan_child_folders, scan_folder
 from .inspector_sample import sample_ai, sample_measured
 
-PathRole, NameRole, ExtRole, RawRole, DecisionRole, RatingRole, AiRole, TitleRole, SelectedRole = (Qt.ItemDataRole.UserRole + n for n in range(1, 10))
+PathRole, NameRole, ExtRole, RawRole, DecisionRole, RatingRole, AiRole, TitleRole, SelectedRole, FolderRole = (Qt.ItemDataRole.UserRole + n for n in range(1, 11))
 
 _DECISIONS = ("", "keep", "win", "rej", "rev", "", "keep", "")  # weights by position
 
@@ -59,6 +60,8 @@ class PhotoModel(QAbstractListModel):
     countsChanged = Signal()
     revisionChanged = Signal()
     folderChanged = Signal()
+    subfoldersChanged = Signal()
+    folderSummaryReady = Signal(str)
     scopeChanged = Signal()
     loadingChanged = Signal()
     annotationChanged = Signal(object)      # a row's decision or rating changed (the row dict, with its scanner record): save it
@@ -69,6 +72,10 @@ class PhotoModel(QAbstractListModel):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._all: list[dict] = []
+        self._subfolders: list[dict] = []   # the open folder's child folders, shown as cards above its photos
+        self._found_folders: dict[int, list[dict]] = {}
+        self._summaries: dict[str, str] = {}
+        self._after_scan = None             # fn(folder), run on the scan thread beside the scan (the thumbnail service reads its file stats)
         self._annotation_loader = None      # fn(records) -> {path: {"decision", "rating", "annotation"}}, called off the UI thread
         self._next_undo_id = 0
         self._history: list[dict] = []      # what undo steps back through: {"path", "decision": (before, after), "rating": (before, after)}
@@ -137,10 +144,20 @@ class PhotoModel(QAbstractListModel):
             self.loadingChanged.emit()
 
         def work() -> None:
+            primer = None
+            if self._after_scan is not None:
+                primer = threading.Thread(target=self._after_scan, args=(folder,), name="qml-prime", daemon=True)
+                primer.start()
+            try:
+                self._found_folders[token] = [{"name": f.name, "path": f.path} for f in scan_child_folders(folder)]
+            except Exception:
+                self._found_folders[token] = []
             try:
                 records = [r for r in scan_folder(folder) if not r.is_folder]
             except Exception:
                 records = []
+            if primer is not None:
+                primer.join()
             saved: dict = {}
             if self._annotation_loader is not None and records:
                 try:
@@ -186,6 +203,11 @@ class PhotoModel(QAbstractListModel):
         if folder != self._folder:
             self._history = []
             self.undoChanged.emit()
+        if token != -1:
+            self._subfolders = self._found_folders.pop(token, [])
+        else:
+            self._subfolders = []
+        self._summaries = {k: v for k, v in self._summaries.items() if os.path.dirname(k) == folder} if folder != self._folder else self._summaries
         self._folder = folder
         self._loading = False
         if self._matcher is not None:
@@ -193,6 +215,7 @@ class PhotoModel(QAbstractListModel):
         self._read_for_query()
         self._rebuild()
         self.loadingChanged.emit()
+        self.subfoldersChanged.emit()
         self.folderChanged.emit()
 
     def setRows(self, rows: list[dict], folder: str = "") -> None:
@@ -210,11 +233,25 @@ class PhotoModel(QAbstractListModel):
         self._scope_kind, self._scope_id, self._scope_pred = kind, ident, predicate
         self._rebuild()
         self.scopeChanged.emit()
+        self.subfoldersChanged.emit()
+
+    def _filtered(self) -> bool:
+        """A filter (Winners, Keep, Rejected, a minimum rating, a file type or the advanced filters) is narrowing the grid."""
+        return self._filter != "all" or self._min_rate > 0 or self._fmt != "all" or bool(self._adv)
+
+    def _filter_ok(self, decision: str) -> bool:
+        """The bar's Keep filter is everything that was not rejected (winners, keeps and frames nobody decided on): what is left after a cull marks its
+        rejects. The other filters match their own decision."""
+        if self._filter == "all":
+            return True
+        if self._filter == "keep":
+            return decision != "rej"
+        return decision == self._filter
 
     def _rebuild(self) -> None:
         rows = [
             r for r in self._scoped()
-            if (self._filter == "all" or r["decision"] == self._filter)
+            if self._filter_ok(r["decision"])
             and r["rating"] >= self._min_rate
             and (self._fmt == "all" or (r["raw"] if self._fmt == "raw" else not r["raw"]))
             and self._advanced_ok(r, self._adv)
@@ -233,6 +270,7 @@ class PhotoModel(QAbstractListModel):
         self._row_of_path = self._row_of_key = None
         self.endResetModel()
         self.countsChanged.emit()
+        self.subfoldersChanged.emit()
         self._bump()
 
     # -- advanced filters (filters_model.py) -------------------------------------------------------------------------------
@@ -315,6 +353,42 @@ class PhotoModel(QAbstractListModel):
     def clearFilters(self) -> None:
         self._filter, self._min_rate, self._fmt, self._adv = "all", 0, "all", None
         self._rebuild()
+
+    @Slot(str, result=str)
+    def folderSummary(self, path: str) -> str:
+        """"42 photos, 3 folders" for a child folder, or "" until it has been counted (on a thread; ``folderSummaryReady`` says when)."""
+        known = self._summaries.get(path)
+        if known is not None:
+            return known
+        self._summaries[path] = ""
+
+        def count() -> None:
+            photos = folders = 0
+            try:
+                with os.scandir(path) as entries:
+                    for entry in entries:
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                folders += 1
+                            elif is_image_file_candidate(entry.name):
+                                photos += 1
+                        except OSError:
+                            continue
+            except OSError:
+                self._summaries[path] = "Unavailable"
+                self.folderSummaryReady.emit(path)
+                return
+            parts = [f"{photos} photo{'s' if photos != 1 else ''}"] if photos or not folders else []
+            if folders:
+                parts.append(f"{folders} folder{'s' if folders != 1 else ''}")
+            self._summaries[path] = ", ".join(parts)
+            self.folderSummaryReady.emit(path)
+
+        threading.Thread(target=count, name="qml-folder-count", daemon=True).start()
+        return ""
+
+    def set_after_scan(self, fn) -> None:
+        self._after_scan = fn
 
     def set_annotation_loader(self, loader) -> None:
         """`loader(records)` returns {path: {"decision", "rating", "annotation"}} for the photos the decision store knows; it runs on the scan thread."""
@@ -597,9 +671,67 @@ class PhotoModel(QAbstractListModel):
     scopeId = Property(str, lambda self: self._scope_id, notify=scopeChanged)
     shown = Property(int, lambda self: len(self._rows), notify=countsChanged)
     winCount = Property(int, lambda self: self._count("win"), notify=countsChanged)
-    keepCount = Property(int, lambda self: self._count("keep"), notify=countsChanged)
+    keepCount = Property(int, lambda self: sum(1 for r in self._scoped() if r["decision"] != "rej"), notify=countsChanged)   # what the Keep filter shows: everything not rejected
     rejCount = Property(int, lambda self: self._count("rej"), notify=countsChanged)
     loading = Property(bool, lambda self: self._loading, notify=loadingChanged)
+    subfolders = Property(list, lambda self: [] if self._scope_kind or self._filtered() else list(self._subfolders), notify=subfoldersChanged)   # folders are not photos: none while a scope or a filter is on
     folderName = Property(str, lambda self: os.path.basename(self._folder.rstrip("/\\")) or self._folder, notify=folderChanged)
     leafName = Property(str, lambda self: "Kutaisi" if self._mock else os.path.basename(self._folder.rstrip("/\\")), notify=folderChanged)
     folderPath = Property(str, lambda self: self._mock_path or self._folder, notify=folderChanged)
+
+
+class GridModel(QAbstractListModel):
+    """What the grid shows: the open folder's child folders first, then its photos, in one list so they fill the grid side by side.
+
+    The photo rows are the PhotoModel's own, shifted by the number of folders (``folders``); everything else in the shell keeps asking the
+    PhotoModel for photo rows, and the grid does the shifting (PhotoGrid.row / PhotoGrid.nf)."""
+
+    foldersChanged = Signal()
+
+    def __init__(self, photos: PhotoModel, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._photos = photos
+        self._n = 0
+        photos.modelAboutToBeReset.connect(self.beginResetModel)
+        photos.modelReset.connect(self._reset)
+        photos.dataChanged.connect(self._changed)
+
+    def _folders(self) -> list[dict]:
+        return self._photos.subfolders
+
+    def _reset(self) -> None:
+        self._n = len(self._folders())
+        self.endResetModel()
+        self.foldersChanged.emit()
+
+    def _changed(self, top: QModelIndex, bottom: QModelIndex, roles) -> None:
+        if self._n + self._photos.rowCount() != self.rowCount():
+            return                                      # a reset is on its way
+        self.dataChanged.emit(self.index(top.row() + self._n), self.index(bottom.row() + self._n), roles)
+
+    def roleNames(self) -> dict:
+        names = dict(self._photos.roleNames())
+        names[FolderRole] = QByteArray(b"isFolder")
+        return names
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else self._n + self._photos.rowCount()
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        row = index.row()
+        if row >= self._n:
+            if role == FolderRole:
+                return False
+            return self._photos.data(self._photos.index(row - self._n), role)
+        folder = self._folders()[row] if row < len(self._folders()) else {"name": "", "path": ""}
+        if role in (PathRole,):
+            return folder["path"]
+        if role in (NameRole, TitleRole):
+            return folder["name"]
+        if role == FolderRole:
+            return True
+        return {ExtRole: "", RawRole: False, DecisionRole: "", RatingRole: 0, AiRole: -1, SelectedRole: False}.get(role)
+
+    folders = Property(int, lambda self: self._n, notify=foldersChanged)

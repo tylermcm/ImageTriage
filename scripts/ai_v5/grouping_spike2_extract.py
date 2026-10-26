@@ -99,7 +99,9 @@ def process(job: tuple[int, str, str]) -> dict | None:
             "index": index, "path": path, "ts": timestamp(info), "iso": info["iso"], "exposure_s": info["exposure_s"],
             "fnumber": info["fnumber"], "focal": info["focal_length"], "bias": info["exposure_bias"], "mode": info["exposure_mode"],
             "model": info["model"], "phash": phash64(small), "phash_norm": phash64(normalised), "dhash": dhash, "hist": hist.astype(np.float32), "gray64": small64, "rgb": rgb, "rgb_hi": rgb_hi,
-            "photographer": "lamont" if "lamont" in path.lower() else "owner",
+            "photographer": "photographer_b" if (os.environ.get(
+                "IMAGE_TRIAGE_SECONDARY_PHOTOGRAPHER_MARKER"
+            ) or "photographer_b").casefold() in path.casefold() else "photographer_a",
             "portrait": im.height > im.width,
         }
     except Exception:

@@ -270,7 +270,7 @@ matched rawpy's original NEF decode element-for-element in all four. Calibration
 default crop (16,8,8256,5504), original/sensor retention and native-format
 round-trip passed. Downloads match the repository's SHA-256 checksums.
 Provenance and results are under
-`C:/Users/user00/.codex/visualizations/2026/10/08/photocraft-raw/`.
+`C:/Users/developer/.codex/visualizations/2026/10/08/photocraft-raw/`.
 
 Release observations: 24 MP ordinary import 563 ms, RAW-smart import 544 ms,
 cached-sensor redevelopment 515 ms. The four 45 MP Nikon samples imported in

@@ -132,6 +132,9 @@ class LibraryNavModel(QObject):
         self._settings = None if memory else user_settings(self)
         self._mem_favorites: list[str] = []
         self._open = ""                                        # the folder the grid shows
+        self._back: list[str] = []                             # the folders opened before this one, newest last (the header's Back)
+        self._forward: list[str] = []                          # the folders Back stepped away from (Forward)
+        self._stepping = False                                 # Back, Forward or Up is opening a folder: that is not a new step in the history
         self._root = ""                                        # the drive (or share) the tree is rooted at: the open folder's
         self._expanded: dict[str, str] = {}                   # the folders the tree has open: key -> path
         self._children: dict[str, list[tuple[str, str]]] = {}  # key -> [(name, path)]
@@ -319,6 +322,46 @@ class LibraryNavModel(QObject):
             return "No folder matches"
         return ""
 
+    # -- Back, Forward and Up (the header's buttons) -----------------------------------------------------------------------
+    def _parent_folder(self) -> str:
+        if not self._open:
+            return ""
+        parent = os.path.dirname(self._open.rstrip("\\/"))
+        return parent if parent and _key(parent) != _key(self._open) else ""
+
+    @Slot()
+    def goBack(self) -> None:
+        while self._back:
+            target = self._back.pop()
+            if _key(target) == _key(self._open) or path_policy.confirmed_missing(target):
+                continue
+            self._forward.append(self._open)
+            self._step_to(target)
+            return
+
+    @Slot()
+    def goForward(self) -> None:
+        while self._forward:
+            target = self._forward.pop()
+            if _key(target) == _key(self._open) or path_policy.confirmed_missing(target):
+                continue
+            self._back.append(self._open)
+            self._step_to(target)
+            return
+
+    @Slot()
+    def goUp(self) -> None:
+        parent = self._parent_folder()
+        if parent:
+            self.openFolder(parent)             # a step like any other: Back returns to where Up left
+
+    def _step_to(self, path: str) -> None:
+        self._stepping = True
+        try:
+            self.openFolder(path)
+        finally:
+            self._stepping = False
+
     # -- opening a folder --------------------------------------------------------------------------------------------------
     @Slot(str)
     def openFolder(self, path: str) -> None:
@@ -326,6 +369,10 @@ class LibraryNavModel(QObject):
         path = os.path.normpath(path.strip()) if path and path.strip() else ""
         if not path or path.startswith("sample:") or path_policy.confirmed_missing(path):
             return
+        if self._open and _key(self._open) != _key(path) and not self._stepping:
+            self._back.append(self._open)
+            del self._back[:-100]
+            self._forward.clear()
         self._open = path
         self._root = os.path.normpath(self._drive_root(path) or path)
         self._expanded = {}
@@ -569,5 +616,8 @@ class LibraryNavModel(QObject):
     tree = Property("QVariantList", lambda self: self._tree_rows(), notify=changed)
     treeStatus = Property(str, lambda self: self._tree_status(), notify=changed)
     openPath = Property(str, lambda self: self._open, notify=changed)
+    canBack = Property(bool, lambda self: bool(self._back), notify=changed)
+    canForward = Property(bool, lambda self: bool(self._forward), notify=changed)
+    canUp = Property(bool, lambda self: bool(self._parent_folder()), notify=changed)
     recentFolders = Property("QVariantList", lambda self: self._recent_view(), notify=changed)
     folderUrl = Property(str, lambda self: QUrl.fromLocalFile(self._open).toString() if self._open else "", notify=changed)

@@ -48,7 +48,15 @@ def kept(path="C:/photos/.edits/a.nef.superres.png"):
     return fr.RenderResult(fr.RENDERED, path=path, format="png", width=20, height=10, depth=8, temporary=False)
 
 
+class NoWarmer:
+    ticks = 0
+
+    def tick(self):
+        self.ticks += 1
+
+
 def runner(render, **kw):
+    kw.setdefault("warmer", NoWarmer())  # never load real models from a test
     return hj.HostJobRunner(render=render, clock=Clock(), spawn_thread=sync, **kw)
 
 
@@ -145,3 +153,87 @@ def test_a_broken_editor_never_raises_from_poll():
             raise OSError("connection closed")
 
     assert runner(lambda *a, **k: kept()).poll(proc(Broken())) is False
+
+
+# --- subject masks (BiRefNet) ----------------------------------------------------------------------------------------------------
+
+def mask_pending(tmp_path, job_id=9, make_input=True):
+    source = tmp_path / "in.png"
+    if make_input:
+        source.write_bytes(b"png")
+    return {"id": job_id, "kind": hj.KIND_SUBJECT_MASK, "input": str(source), "output": str(tmp_path / "out.png")}
+
+
+def test_a_subject_mask_request_is_claimed_run_and_finished(tmp_path):
+    lane = Lane(mask_pending(tmp_path))
+    seen = {}
+
+    def fake(source, output, on_progress, cancel):
+        seen.update(source=source, output=output)
+        on_progress("Loading subject model...")
+        on_progress("Finding subject...")
+
+    assert runner(lambda *a, **k: kept(), subject_mask=fake).poll(proc(lane)) is True
+    assert lane.of("claim") == [9]
+    assert str(seen["source"]) == str(tmp_path / "in.png") and str(seen["output"]) == str(tmp_path / "out.png")
+    assert lane.of("progress")[-1]["id"] == 9
+    assert lane.of("finish") == [{"id": 9, "ok": True, "message": "Subject found."}]
+
+
+def test_a_subject_mask_without_a_picture_fails_in_the_popup_and_runs_nothing(tmp_path):
+    lane = Lane(mask_pending(tmp_path, make_input=False))
+
+    def never(*a, **k):
+        raise AssertionError("must not run")
+
+    assert runner(lambda *a, **k: kept(), subject_mask=never).poll(proc(lane)) is False
+    (finish,) = lane.of("finish")
+    assert finish["ok"] is False and "picture" in finish["message"]
+
+
+def test_a_failed_subject_mask_says_why_and_a_cancel_is_quiet(tmp_path):
+    from image_triage import subject_mask_service as sm
+
+    def broken(*a, **k):
+        raise sm.SubjectMaskError("model_missing", "The subject model is not installed.", "Run Set Up AI.")
+
+    lane = Lane(mask_pending(tmp_path))
+    runner(lambda *a, **k: kept(), subject_mask=broken).poll(proc(lane))
+    assert lane.of("finish") == [{"id": 9, "ok": False, "message": "The subject model is not installed. Run Set Up AI."}]
+
+    def cancelled(*a, **k):
+        raise sm.SubjectMaskError("cancelled", "Cancelled")
+
+    lane = Lane(mask_pending(tmp_path))
+    runner(lambda *a, **k: kept(), subject_mask=cancelled).poll(proc(lane))
+    assert lane.of("finish")[0]["message"] == "Cancelled"
+
+
+def test_scene_and_people_requests_run_their_own_function_and_say_done(tmp_path):
+    for kind, name in ((hj.KIND_SCENE_MASKS, "scene"), (hj.KIND_PEOPLE_MASKS, "people")):
+        source = tmp_path / "in.png"
+        source.write_bytes(b"png")
+        lane = Lane({"id": 4, "kind": kind, "input": str(source), "output": str(tmp_path / "manifest.json")})
+        seen = []
+
+        def fake(label):
+            def run(src, out, on_progress, cancel):
+                seen.append((label, str(out)))
+                on_progress("Analyzing...")
+            return run
+
+        kw = {"scene_masks": fake("scene"), "people_masks": fake("people"), "subject_mask": fake("subject")}
+        assert runner(lambda *a, **k: kept(), **kw).poll(proc(lane)) is True
+        assert seen == [(name, str(tmp_path / "manifest.json"))]
+        assert lane.of("finish") == [{"id": 4, "ok": True, "message": "Done."}]
+
+
+def test_every_poll_ticks_the_model_warmer_even_with_nothing_to_do():
+    warmer = NoWarmer()
+    lane = Lane()
+    r = hj.HostJobRunner(render=lambda *a, **k: kept(), clock=Clock(), spawn_thread=sync, warmer=warmer)
+    r.poll(proc(lane))
+    r.poll(proc(lane))
+    assert warmer.ticks == 2
+    r.poll(proc(lane, supported=False))
+    assert warmer.ticks == 2, "an editor that cannot be asked for anything is not warmed for"

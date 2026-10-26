@@ -1,5 +1,49 @@
 # PhotoCraft handoff
 
+## 2026-10-26: consolidate current Image Triage remote branches locally
+
+Fetched all origin branches. Merged `origin/codex/image-triage-integration`
+(`f48790f`) and `origin/main` (`fdf8d71`) into local `qml-shell` (`b098c26`).
+The corpus branch `origin/ccr-7e0ce324-weramf` is already included. Preserved the
+Windows QML startup fix and its fresh-process regression test. The incoming
+alternative DLL setup overlapped that fix; retained the tested
+`os.add_dll_directory` implementation and verified Dialogs and Shapes imports.
+
+Validation: startup plus mask-service tests 83 passed; combined shell loaded
+offscreen and produced a 960x640 capture. Broader selected suite: 172 passed,
+59 failed. Incoming code and tests contain existing mismatches (including the
+missing `photocraft_bridge.require_masks_support`, host-job constructor arguments,
+and changed QML model expectations); direct QML test loaders also bypass the app's
+Windows DLL setup. Affected incoming files match the remote branch. This pull is
+not a claim of full compatibility. No push or hosted editor promotion.
+
+## 2026-10-26: pull qml-shell and the prepared PhotoCraft release merge
+
+Fetched Image Triage origin and both PhotoCraft remotes successfully. Checked out
+Image Triage `qml-shell` at `b098c26`; `main` and its separate privacy commit remain
+preserved. Fast-forwarded local PhotoCraft `codex/image-triage-integration` from
+`0988078e4` to `d18743cd9`, exactly matching the fork's prepared
+`scratch/upstream-merge-2026-10-25` branch documented below. No new merge or
+conflict resolution was performed. The fork's integration ref remains unchanged.
+
+The prepared merge advances integrated upstream from `d95fdf318` to `b1794c6e0`
+(v0.16.0). Fetched upstream main remains `59cb4c49b`, 455 commits beyond our
+upstream ancestry; integration has 81 exclusive commits. Latest version tag is
+still v0.16.0. A fresh `merge-tree --write-tree --name-only HEAD origin/main`
+reports 34 conflicted files: engine `lens_cmds.rs`; I/O `camera_raw_xmp.rs`; raw
+`lib.rs`; UI `Cargo.toml`, `camera_raw_preview_ui.rs`, `camera_raw_scope_ui.rs`,
+`camera_raw_ui.rs`, `control.rs`, `gpu_canvas.rs`, `lib.rs`, `widgets.rs`; 20 UI
+translation catalogs (cs, de, el, es, fr, hu, id, it, ja, ko, nl, pl, pt-br, ru,
+sr, tr, uk, vi, zh-hans, zh-hant); UI integration tests `camera_raw_histogram.rs`
+and `camera_raw_localization.rs`; and `docs/control-protocol.md`. This is a broad
+conflict surface involving Camera Raw rendering, recipes and host control.
+Post-release upstream merging is deferred under the release policy.
+
+Verified both pulled trees match their source refs and PhotoCraft is clean.
+No new tests, build, live handoff checks, executable promotion or push. Prior
+validation and outstanding candidate gates are recorded below; existing hosted
+executables were preserved.
+
 ## Upstream v0.16.0 merged on a scratch branch — 2026-10-25 (not promoted)
 
 Upstream cut a release, so this is the one merge for it: `d95fdf318` (v0.10.0) to
@@ -104,7 +148,7 @@ restoring the original ordinary debug executable and timestamp before launching
 Both checkouts are on `codex/image-triage-integration`. Host fast-forwarded
 `d2d0f08` to fetched `27b8bb3` (handoff documentation only); pre-existing
 `main.py`, Qt logging, strategy/plan and screenshot changes are preserved.
-Companion is `C:/Users/user0/Documents/photocraft`; the literal `../photocraft`
+Companion is `C:/Users/developer/Documents/photocraft`; the literal `../photocraft`
 beside this OneDrive host checkout does not exist. Its remote names differ from
 the protocol examples: `upstream` is storytold, `origin` is tylermcm's fork.
 
@@ -160,7 +204,7 @@ Known-good `target/release/photocraft.exe` SHA256:
 Owner's `%APPDATA%/Photocraft/preferences.json` starting SHA256:
 `C9BD660D82FA1772B6881A02AEBD145792EF57F141A02395BDD6C11E5AFEF46E`.
 Logs/scripts are under
-`C:/Users/user0/.codex/visualizations/2026/10/17/01a14901-444b-7781-b5e6-48730a8f5183`.
+`C:/Users/developer/.codex/visualizations/2026/10/17/01a14901-444b-7781-b5e6-48730a8f5183`.
 
 Preview build passed in **5m10s**. Launched via the companion PS1 using the
 synthetic color fixture and separate preview profile; running PID **18464**.
@@ -534,7 +578,7 @@ performance. GPU crate tests and GPU/compose Clippy remain to be run after that
 runner; they were added after its argument list was selected. No candidate
 executable has been promoted. Logs and
 the isolated desktop runners are in
-`C:/Users/owner/.codex/visualizations/2026/10/15/01a13d25-9afa-7c50-8c2e-28d668c0d556/audit_validation`.
+`C:/Users/developer/.codex/visualizations/2026/10/15/01a13d25-9afa-7c50-8c2e-28d668c0d556/audit_validation`.
 
 ## 2026-10-14 continuation — validation in progress
 
@@ -1157,7 +1201,7 @@ bands on several threads; `app.stash` encodes the project and its preview concur
 - Uncommitted and unrelated here: the `qt_logging` work in `main.py`.
 
 **Build and run on this machine.** Rust stable 1.99 via rustup; clone at
-`C:\Users\user0\Documents\photocraft`; `cargo build --release -p photocraft`; set
+`C:\Users\developer\Documents\photocraft`; `cargo build --release -p photocraft`; set
 `IMAGE_TRIAGE_PHOTOCRAFT_EXE` to `...\target\release\photocraft.exe` and fully restart
 Image Triage (a running session keeps its old PhotoCraft process).
 
@@ -1695,7 +1739,7 @@ native-format round-trip. Release 24 MP RAW-smart import was 544 ms versus 563 m
 ordinary import; real 45 MP imports were about 1–1.2 s. Native projects are roughly
 419–458 MB and the standalone save/load/export check peaked at 2.2–2.4 GiB RSS.
 Provenance and measurements live under
-`C:/Users/user00/.codex/visualizations/2026/10/08/photocraft-raw/`.
+`C:/Users/developer/.codex/visualizations/2026/10/08/photocraft-raw/`.
 
 Live checks passed with a small sensor DNG, a 24 MP DNG, and full-resolution Z7
 and Z7 II NEFs. They verify coalesced source previews, periodic autosave retaining
@@ -1834,7 +1878,7 @@ checks; old-project compatibility exposed the Save race and has not passed on
 the corrected build yet.
 
 Artifacts and validation logs are under
-`C:/Users/user00/.codex/visualizations/2026/10/08/upstream-652b972`.
+`C:/Users/developer/.codex/visualizations/2026/10/08/upstream-652b972`.
 The remaining-workspace runner there uses the compiled Cargo artifact list and
 serial execution for GPU-backed tests. About 53 GiB of disposable debug
 incremental cache accumulated; reclaim it before further large builds if space
@@ -2182,7 +2226,7 @@ or full handoff/parity validation claim. Known-good hosted executable preserved.
 ## 2026-10-17 - Native ACR filmstrip work in progress
 
 Both checkouts remain on `codex/image-triage-integration`. Actual companion is
-`C:/Users/user0/Documents/photocraft`; its configured `upstream` is storytold and
+`C:/Users/developer/Documents/photocraft`; its configured `upstream` is storytold and
 `origin` is tylermcm. Both fetches succeeded. Previously fetched upstream
 `5f65579ecb44047c2a619036c18ff273202e1389` advanced to
 `efa1edd079b259b0b1f77b835151ee904437a231`. The earlier deferred upstream base
@@ -2843,10 +2887,10 @@ settings. Unsupported PSD adjustments fail explicitly. Older hosted editors and
 RAW-recipe renderers are rejected when these new settings would otherwise be lost.
 Processing is independently implemented; Adobe pixel-output parity is not claimed.
 
-Candidate: C:/Users/user0/Documents/photocraft/target/acr-main-adjustments/debug/photocraft.exe
+Candidate: C:/Users/developer/Documents/photocraft/target/acr-main-adjustments/debug/photocraft.exe
 SHA256: cac833711778b15699ccac589a30e1cb1ad2fbf3ad88ac0933b261b0fc0f1097
 Test launch (user initiated):
-`& "C:/Users/user0/OneDrive/Documents/Playground/scripts/test_camera_raw.ps1" -EditorBuild acr-main-adjustments`
+`& "C:/Users/developer/OneDrive/Documents/Playground/scripts/test_camera_raw.ps1" -EditorBuild acr-main-adjustments`
 Open a photo in the popout and press E. Launcher default remains acr-settings-menu.
 No desktop launch, release build, push, PR or default promotion was performed.
 Both checkouts remain on codex/image-triage-integration; existing edits preserved.
@@ -2862,7 +2906,7 @@ algorithm/engine avoid local optimized compiler stalls; repository profiles unch
 Full real-file corpus attempt blocked by missing local photocraft-corpus checkout.
 
 Offscreen native processing proof and metadata:
-C:/Users/user0/.codex/visualizations/2026/10/17/01a14901-444b-7781-b5e6-48730a8f5183/acr-filmstrip/main-adjustments-proof
+C:/Users/developer/.codex/visualizations/2026/10/17/01a14901-444b-7781-b5e6-48730a8f5183/acr-filmstrip/main-adjustments-proof
 Captures precede the final small SDR picker-selection clamp fix (covered by regression).
 Known-good target/debug and acr-settings-menu executables retained and hash verified.
 Live hosted navigation, stash/restore, native Save/grid propagation, closed-tab reopen,
@@ -2901,7 +2945,7 @@ completion applies to the three features requested here, not the entire window.
 * Not done: clippy, `cargo xtask layers|wasm`, a rebuilt hosted executable, and the live Image Triage handoff gates (persistent
   filmstrip navigation, stash/restore, native Save and grid propagation, closed-tab reopen, hidden startup, theme/resize,
   fullscreen, shutdown/process cleanup). Keep the known-good hosted executable until those pass.
-* Candidate build of merge `99cdc8b4`: `C:/Users/user00/Documents/photocraft/target/merge-d95fdf31/release/photocraft.exe`
+* Candidate build of merge `99cdc8b4`: `C:/Users/developer/Documents/photocraft/target/merge-d95fdf31/release/photocraft.exe`
   (`cargo build --release -p photocraft -j 4`, own target dir, 15m56s). PE subsystem = GUI (2), so no console window (the
   `windows_subsystem` attribute in `main.rs` only applies without debug assertions; dev builds show a console).
   SHA256 f89342ebc8735edff6ae0403348ded82e9a2513cc9280527ef2e7f604bc90000. Not promoted; known-good executables untouched.
