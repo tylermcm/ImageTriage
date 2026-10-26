@@ -109,6 +109,12 @@ Build the Windows dll with `native/pocketdrop/build_windows.bat`; `tests/test_qm
 
 ## Collections, best-of and people
 
+In the Faces sidebar, right-click a person to name or rename them in the menu,
+show their photos, clear their name, hide them, or open Tag People. Hidden people
+can be restored with "Undo hide person" until changing folders. Double-click the
+portrait to open the centered Tag People window with that person selected.
+Single-clicking still toggles the person's photo filter.
+
 `SidePanel.qml` (Collections and Faces pages, the collection menu), `CollectionDialog.qml`, `CollectionPicker.qml`, `BestOfDialog.qml`, `TagPeopleWindow.qml`; models `collections_model.py` (the Widgets `LibraryStore`),
 `people_model.py` (the face index) and `bestof_model.py` (the Widgets planner). The grid can show "a view of the folder": `PhotoModel.set_scope(kind, id, predicate)` filters the loaded rows, the header and the Add All bar follow `photos.scopeKind`.
 Mockup: `scripts/qml_parity/collections.dc.html` with `harness_collections.html` (`?scene=new|edit|icons|name-error|picker|menu|viewing|winners|addbar|empty|bestof|faces|faces-none|person|people|people-selected|people-undo|people-unnamed`);

@@ -402,19 +402,19 @@ FocusScope {
                 }
                 Item { width: 11; height: 40; Rectangle { anchors.centerIn: parent; width: 1; height: 26; color: v.cLine } }
                 Repeater {
-                    model: [{ id: "focus", k: "F", tip: "Focus assist (F, Shift+F colour)", p: "M12 9a3 3 0 100 6 3 3 0 000-6zM12 3v3M12 18v3M3 12h3M18 12h3" },
-                            { id: "loupe", k: "L", tip: "Loupe (L)", p: "M10.5 4.5a6 6 0 100 12 6 6 0 000-12zM15 15l5 5M10.5 8v5M8 10.5h5" },
-                            { id: "move", k: "M", tip: "Move to… (M)", p: "M3 7a2 2 0 012-2h4l2 2.2h8a2 2 0 012 2V17a2 2 0 01-2 2H5a2 2 0 01-2-2zM10 13h5M13 11l2 2-2 2" },
-                            { id: "tag", k: "T", tip: "Tag (T)", p: "M3.5 12.2V4.5h7.7l9 9a1.6 1.6 0 010 2.3l-5 5a1.6 1.6 0 01-2.3 0zM8 7.8a1.2 1.2 0 100 2.4 1.2 1.2 0 000-2.4z" },
-                            { id: "coll", k: "B", tip: "Add to a collection (B)", p: "M9 3.5h9a2 2 0 012 2v9a2 2 0 01-2 2H9a2 2 0 01-2-2v-9a2 2 0 012-2zM4 8v10.5A1.5 1.5 0 005.5 20H16M13.5 7.5v5M11 10h5" },
-                            { id: "del", k: "Del", tip: "Move to the Recycle Bin (Delete)", p: "M4.5 7h15M9.5 7V4.8h5V7M6.5 7l.8 12h9.4l.8-12M10 11v5M14 11v5" }]
+                    model: [{ id: "focus", k: "F", tip: "Focus assist (F, Shift+F colour)", icon: "focusAssist" },
+                            { id: "loupe", k: "L", tip: "Loupe (L)", icon: "loupe" },
+                            { id: "move", k: "M", tip: "Move to… (M)", icon: "movePhoto" },
+                            { id: "tag", k: "T", tip: "Tag (T)", icon: "photoTag" },
+                            { id: "coll", k: "B", tip: "Add to a collection (B)", icon: "addCollection" },
+                            { id: "del", k: "Del", tip: "Move to the Recycle Bin (Delete)", icon: "trash" }]
                     delegate: Item {
                         id: tb
                         required property var modelData
                         readonly property bool on: modelData.id === "focus" ? popout.assistOn : modelData.id === "loupe" ? v.loupe : modelData.id === "coll" ? v.collOpen : false
                         width: 38; height: 38; y: 1
                         Rectangle { anchors.fill: parent; radius: 11; color: tb.on ? Qt.alpha(theme.accent, 0.2) : th.hovered ? "#202124" : "transparent" }
-                        Icon { anchors.centerIn: parent; path: tb.modelData.p; size: 18; color: tb.on ? theme.accentFg : th.hovered ? v.cFg : v.cFg2 }
+                        Icon { anchors.horizontalCenter: parent.horizontalCenter; y: 5; name: tb.modelData.icon; size: 20; strokeWidth: 1.7; color: tb.on ? theme.accentFg : th.hovered ? v.cFg : v.cFg2 }
                         Text { x: parent.width - width - 2; y: parent.height - height - 1; text: tb.modelData.k; color: v.cFg3; opacity: 0.9; font.pointSize: UiState.pt(8.5); font.weight: Font.Medium }
                         HoverHandler { id: th; cursorShape: Qt.PointingHandCursor }
                         TapHandler {

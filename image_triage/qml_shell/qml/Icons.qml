@@ -58,7 +58,13 @@ QtObject {
         heart: "M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0112 7.4a4.3 4.3 0 017.5 2.4C19.5 15.4 12 20 12 20z",
         more: "M5 12h.01M12 12h.01M19 12h.01",
         people: "M16 11a3 3 0 100-6 3 3 0 000 6zM8 12a3 3 0 100-6 3 3 0 000 6zM2.5 19c.4-2.6 2.6-4.2 5.5-4.2s5.1 1.6 5.5 4.2M14 15.2c.7-.3 1.4-.4 2-.4 2.5 0 4.5 1.5 5 4",
-        bars: "M7 19v-6M12 19V6M17 19v-9"
+        bars: "M7 19v-6M12 19V6M17 19v-9",
+        focusAssist: "M8 4H5a1 1 0 0 0 -1 1v3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1 -1 1h-3M8 20H5a1 1 0 0 1 -1 -1v-3" + circle(12, 12, 3),
+        loupe: circle(10.5, 10.5, 6.5) + "M15.2 15.2L20 20M10.5 7.5v6M7.5 10.5h6",
+        movePhoto: "M3 8V6a1 1 0 0 1 1 -1h5l2 3h9a1 1 0 0 1 1 1v9a1 1 0 0 1 -1 1H4a1 1 0 0 1 -1 -1V8zM8 13h8M13 10l3 3 -3 3",
+        photoTag: "M4 4h7l9 9a1.4 1.4 0 0 1 0 2l-5 5a1.4 1.4 0 0 1 -2 0l-9 -9V4z" + circle(8, 8, 1),
+        addCollection: rect(8, 4, 12, 12, 2) + "M4 8v10a2 2 0 0 0 2 2h10M14 7v6M11 10h6",
+        trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1 -13M10 10.5v6M14 10.5v6"
     })
 
     // Qt's SVG path reader mis-reads arc flags written without a separator ("a2 2 0 012-2" means flags 0 and 1, then 2 and -2), which bent the gear

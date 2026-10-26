@@ -40,7 +40,7 @@ Backdrop {
     Item {
         id: win
         width: root.winW; height: root.winH
-        x: (parent.width - width) / 2; y: 60
+        anchors.centerIn: parent
         scale: root.shown ? 1 : 0.96
         Behavior on scale { NumberAnimation { duration: 320; easing.type: Easing.OutBack; easing.overshoot: 1.4 } }
         Shadow { anchors.fill: parent; radius: 14; offsetA: 48; insetA: 24; blurA: 64; multA: 3; alphaA: 0.85; offsetB: 12; insetB: 12; blurB: 24; alphaB: 0.5 }

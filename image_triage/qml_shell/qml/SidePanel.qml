@@ -9,6 +9,81 @@ Item {
     property real fullW: 300
     readonly property real p: Math.max(0, Math.min(1, width / fullW))
     clip: true
+    property var hiddenPeople: []
+
+    function openPersonWindow(pid) {
+        UiState.peopleQuery = ""
+        UiState.peopleFilter = "all"
+        UiState.peopleSel = pid
+        UiState.peopleOpen = true
+    }
+    Connections {
+        target: photos
+        function onFolderChanged() { panel.hiddenPeople = []; personMenu.close() }
+    }
+
+    Popover {
+        id: personMenu
+        objectName: "sidebarPersonMenu"
+        name: "sidebarPerson"; placement: 1; minWidth: 234
+        property string pid: ""
+        property string draft: ""
+        property bool editing: false
+        property real rowY: 0
+        readonly property var person: { void people.revision; return people.card(pid) }
+        x: panel.width + 6
+        y: Math.max(8, Math.min(rowY, panel.height - height - 8))
+        function show(item, ident) {
+            pid = ident
+            draft = people.card(ident).name || ""
+            editing = false
+            rowY = item.mapToItem(panel, 0, 0).y
+            UiState.menu = name
+        }
+        function rename() {
+            editing = true
+            personName.input.forceActiveFocus()
+            personName.input.selectAll()
+        }
+        function saveName() {
+            if (!draft.trim()) return
+            var ident = pid, text = draft
+            close()
+            people.name(ident, text)
+        }
+        PopHeader { caption: personMenu.person.name || "Unnamed person" }
+        Column {
+            visible: personMenu.editing
+            width: parent.width; spacing: 8
+            FInput {
+                id: personName; objectName: "sidebarPersonName"
+                x: 6; width: parent.width - 12; placeholder: "Person's name"
+                text: personMenu.draft
+                onEdited: (value) => personMenu.draft = value
+                input.onAccepted: personMenu.saveName()
+            }
+            Row {
+                x: 6; spacing: 6
+                SButton { objectName: "sidebarPersonSave"; text: "Save name"; enabled: personMenu.draft.trim() !== ""; variant: "primary"; h: 30; onClicked: personMenu.saveName() }
+                SButton { text: "Cancel"; h: 30; onClicked: personMenu.close() }
+            }
+            Item { width: 1; height: 4 }
+        }
+        PopItem { objectName: "sidebarPersonRename"; visible: !personMenu.editing; label: personMenu.person.name ? "Rename…" : "Name person…"; icon: "editor"; onClicked: personMenu.rename() }
+        PopItem { objectName: "sidebarPersonPhotos"; label: "Show photos"; icon: "view"; onClicked: { var pid = personMenu.pid; personMenu.close(); people.openPerson(pid) } }
+        PopItem { label: "Open Tag People…"; icon: "people"; onClicked: { personMenu.close(); panel.openPersonWindow(personMenu.pid) } }
+        PopItem { objectName: "sidebarPersonClear"; visible: !!personMenu.person.name; label: "Clear name"; icon: "minus"; onClicked: { var pid = personMenu.pid; personMenu.close(); people.clearNames([pid]) } }
+        PopDivider {}
+        PopItem {
+            objectName: "sidebarPersonHide"; label: "Hide person"; icon: "eye"
+            onClicked: {
+                var pid = personMenu.pid
+                personMenu.close()
+                if (photos.scopeKind === "person" && photos.scopeId === pid) collections.closeScope()
+                panel.hiddenPeople = people.ignore([pid])
+            }
+        }
+    }
 
     // Hands a Library entry (a collection key such as "col:album") to PocketDrop and shows its page.
     function shareToPhone(key) {
@@ -187,6 +262,7 @@ Item {
                         delegate: Item {
                             id: fr
                             required property var modelData
+                            objectName: "sidebarPerson_" + modelData.id
                             readonly property bool cur: { void photos.scopeKind; return photos.scopeKind === "person" && photos.scopeId === modelData.id }
                             width: faces.width; height: 50
                             Rectangle { anchors.fill: parent; color: fr.cur ? Qt.alpha(theme.accent, 0.13) : Qt.alpha(theme.lift, fh.hovered ? 0.05 : 0) }
@@ -195,13 +271,30 @@ Item {
                             Text { x: 64; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 64 - 52; elide: Text.ElideRight; text: fr.modelData.name || "Unnamed"; color: fr.modelData.name ? theme.fg : theme.fg3; font.pixelSize: 13 }
                             Text { anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: fr.modelData.count; color: theme.fg3; font.pixelSize: 11 }
                             HoverHandler { id: fh; cursorShape: Qt.PointingHandCursor }
-                            TapHandler { onTapped: { if (fr.cur) collections.closeScope(); else people.openPerson(fr.modelData.id) } }
+                            MouseArea {
+                                anchors.fill: parent; acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                onClicked: (mouse) => {
+                                    if (mouse.button === Qt.RightButton) personMenu.show(fr, fr.modelData.id)
+                                    else if (fr.cur) collections.closeScope()
+                                    else people.openPerson(fr.modelData.id)
+                                }
+                                onDoubleClicked: (mouse) => {
+                                    if (mouse.button === Qt.LeftButton && mouse.x >= 16 && mouse.x <= 52 && mouse.y >= 7 && mouse.y <= 43)
+                                        panel.openPersonWindow(fr.modelData.id)
+                                }
+                            }
                             Accessible.role: Accessible.Button; Accessible.name: (fr.modelData.name || "Unnamed face") + ", " + fr.modelData.count + " photos"
                         }
                     }
                     Text { visible: faces.rows.length === 0; x: 16; width: parent.width - 32; topPadding: 6; bottomPadding: 6; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
                            color: theme.fg3; font.pointSize: UiState.pt(12.5); lineHeight: 18; lineHeightMode: Text.FixedHeight
                            text: { void faces.rev; return people.emptyText() } }
+                    PopItem {
+                        objectName: "sidebarPersonUndo"
+                        visible: panel.hiddenPeople.length > 0
+                        label: "Undo hide person"; icon: "undo"
+                        onClicked: { people.restore(panel.hiddenPeople); panel.hiddenPeople = [] }
+                    }
                     Item {
                         visible: faces.rows.length > 0; width: parent.width; height: 40
                         Rectangle { anchors.fill: parent; color: Qt.alpha(theme.lift, ah.hovered ? 0.05 : 0) }
