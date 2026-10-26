@@ -141,7 +141,6 @@ class ViewerHost(QObject):
     qml = Property(bool, lambda self: True, constant=True)               # the shell draws it (the Widgets host has no such property)
     row = Property(int, lambda self: self._row, notify=rowChanged)
     canEdit = Property(bool, lambda self: True, constant=True)           # PhotoCraft is there to be opened (False would grey the button)
-    editorConnected = Property(bool, lambda self: False, constant=True)  # nothing starts the editor from here yet: the button and E say so
     barHidden = Property(bool, lambda self: self._bar_hidden, notify=barChanged)
     stripHeight = Property(int, lambda self: self._strip, notify=stripChanged)
     toast = Property("QVariantMap", lambda self: self._toast, notify=toastChanged)

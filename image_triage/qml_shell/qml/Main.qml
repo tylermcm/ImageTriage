@@ -303,6 +303,7 @@ Window {
     LibraryWindow { id: libraryWindow; sourceItem: appContent }
     FileAssocWindow { id: fileAssocWindow; sourceItem: appContent }
     Viewer { id: viewer; onMoveRequested: (r) => win.chooseDestination("move", r) }
+    EditorStage { id: editorStage }
     ContextMenu { id: ctxHost }
     Toasts { }
     Connections {

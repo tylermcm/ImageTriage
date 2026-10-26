@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     from .library_nav import LibraryNavModel
     from .people_model import PeopleModel
     from .popout import PopoutHost
+    from .editor_host import EditorHost
     from .viewer_host import ViewerHost
     from .filters_model import FiltersModel
     from .palette_model import PaletteModel
@@ -188,6 +189,9 @@ def main(argv: list[str] | None = None) -> int:
         popout = ViewerHost(photos, thumbs, collections, files=files, cull=cull, toasts=toasts, memory=bool(args.mock or args.grab), parent=app)
     app.aboutToQuit.connect(popout.shutdown)
     context.setContextProperty("popout", popout)
+    editor = EditorHost(memory=bool(args.mock or args.grab), parent=app)
+    app.aboutToQuit.connect(editor.shutdown)
+    context.setContextProperty("editor", editor)
     context.setContextProperty("startup", args.ui)
     engine.addImportPath(str(QML_DIR))
     if args.size:
@@ -212,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     window = roots[-1]
     pocket_drop.setWindowHandle(int(window.winId()))
     popout.setWindow(window)
+    editor.setWindow(window)
     window.setWidth(width)
     window.setHeight(height)
     if not args.size:

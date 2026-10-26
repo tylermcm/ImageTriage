@@ -14,7 +14,7 @@
 | Window | In the QML shell | Opens from |
 |---|---|---|
 | Popout / preview (`qml/Viewer.qml`, `viewer_host.py`) | **connected** (a viewer drawn by the shell; the Widgets viewer is behind `--widgets-popout`; see "Popout" below); no editor from it yet, decisions and ratings are saved to the decision store | Enter, Space, double-click, Open preview, palette, photo menu |
-| Editor (PhotoCraft host) | not connected | E, Open in editor |
+| Editor (PhotoCraft host) | **groundwork connected, not validated** (see "Editor" below): E or the Edit button starts the hosted editor, opens the photo and puts its window in the shell; closing saves a changed photo. Needs a Windows run against a real build | E, Open in editor |
 | Settings | built, storage connected, most values not applied | gear, Ctrl+, |
 | Command palette | built, 42 of 53 commands run | Ctrl K |
 | Filter dialog and saved presets | built; applies decision, rating and RAW / JPEG only (see below) | Filters menu, palette |
@@ -355,7 +355,7 @@ in the shell `--ui "cullScene=cu-review"` (the same names).
 | Refresh folder, Sort by, View (names, badges, size), Clear filters | **Real** (sort goes through the photo model) | |
 | Flagged banner: Why was it flagged? / Restore | **Real** (opens the Cull review at that frame; restoring un-flags it, with Undo) | the cull results are Sample |
 | Open (Space) | **Real**: opens the popout on that photo | |
-| **Open in editor (E)** | **Not connected**: asks the window, nothing listens; a toast says so | the PhotoCraft host |
+| **Open in editor (E)** | **Groundwork connected** (see "Editor"): starts the hosted editor and opens the photo in it | the rest of the Widgets host's behaviour, and a Windows validation |
 | **Open with…** | **Real**: Default app opens the photo with the system's default app, Choose another app… asks the system which (`shell_actions.open_with_default` / `open_with_dialog`; a refusal is a toast). The Photoshop entry stays greyed (not found). With the sample data it only says what it would do | |
 | **Copy to folder…, Move to folder…, Recent** | **Real** (`file_actions.py`: the bundle with its RAW or JPEG companion and sidecars, a name already taken gets `_1`, a saved decision follows a moved photo; a move can be undone, a copy cannot, as in the Widgets app). Moving into the folder the photo is in is refused | multi-select |
 | **Delete (Del)** | **Real** (`file_actions.py`, the Widgets' rules): Safe Trash moves the bundle to the recycle folder and can be undone (Ctrl+Z or the toast), System Trash uses the system trash and asks before deleting for good if the system refuses, a file inside a "recycle bin" folder is deleted for good after a question. The setting is "Delete behavior". The saved decision is dropped and comes back with an undo | |
@@ -388,6 +388,26 @@ action bar and a full-width filmstrip (mockup: `scripts/qml_parity/viewer.dc.htm
 | Full-screen | The viewer fills the main window (which opens maximised); there is no separate full-screen window and no second-monitor choice | |
 | Check hooks | `--ui "vwScene=view\|zoom\|loupe\|focus\|collect\|zen\|opening\|loading\|noedit\|flagged;vwRow=1;vwFh=210"` opens the viewer in the mockup's scene | |
 | What was compared with the mockup | view, collect, tall, short, zen, opening, noedit and loading, against `viewer.dc.html` in Chromium on the mockup's 12 photos. The mockup's zoom scene scales the picture by 2.3 and its focus scene draws pretend shapes; here zoom is 100% and focus is the real edge map, so those two are not pixel comparisons. Nothing here was run on Windows or with a GPU | |
+
+## Editor
+
+`editor_host.py` (`EditorHost`, context property `editor`), `qml/EditorStage.qml`, `Viewer.qml` (`openEditor`), tests in `tests/test_qml_shell_editor.py`.
+Built on the same `photocraft_bridge` as the Widgets host: **E or the Edit in PhotoCraft button** starts the editor hidden (`--hosted`,
+`launch_photocraft(idle=True)`, rooted at the photo's folder, its edit-storage folder as the write root), opens the photo (`app.open`, replacing),
+raises its priority, puts its native window inside the shell's window below a 44px bar of ours (**Back to photo**) and keeps it running for the next
+photo. **Back to photo** saves a changed photo (`session.inspect` dirty, then `app.save`), hides the window and returns to the popout on the same
+photo. A different folder starts a fresh editor (the editor reads one folder). Failures (no executable, a build that is not compatible, an open that
+breaks) show as a toast in the popout and leave the editor idle. The sample page (`--mock`) only plays the Opening in PhotoCraft screen.
+**What is verified:** the lifecycle and the window placement against a fake PhotoCraft and a fake window mover (8 tests), the stage's geometry, the
+button and key. **What is not, and needs a Windows machine with a hosted build** (`scripts/check_photocraft_handoff.py` and the protocol in
+`docs/photocraft_handoff.md`): the real launch, the embed and resize of the native window (`WindowMover`), focus (the editor window takes keys, so Esc
+does not come back to the popout yet: only the Back button does), theme and resize, fullscreen, shutdown and process cleanup.
+**Not ported from `preview_controller.py` (the Widgets host's behaviour)**: save before switching photos and the automatic stash and restore, the
+persistent filmstrip in the editor, autosave and the full-size render after a pause, the Camera Raw workspace (`--raw-workspace`, `camera_raw`
+open spec, the prefetch of the next raw, the render manifest), the editor's theme following ours (`theme_synced`), idle prestart at startup, closed-tab
+reopen, `PhotoCraftSuperseded` (a newer photo asked for while one is opening), the compatibility retry across companion executables beyond
+`launch_photocraft`'s own, and the Settings > Editor rows (editor on demand, starts open, prestart). Hosting a window under QML also means nothing of
+ours can be drawn over the editor.
 
 ## Top bar menus
 

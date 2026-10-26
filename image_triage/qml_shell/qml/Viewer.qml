@@ -21,7 +21,7 @@ FocusScope {
     property bool zoomed: false
     property bool loupe: false
     property bool collOpen: false
-    property bool opening: false          // the "Opening in PhotoCraft" screen (nothing starts it yet: the editor is not connected)
+    property bool opening: false          // the "Opening in PhotoCraft" screen (set while PhotoCraft starts and opens the photo)
     property bool slow: false             // the loading look held on (checks only)
     readonly property int row: popout.row
     readonly property int fh: popout.stripHeight
@@ -61,7 +61,17 @@ FocusScope {
     function go(r) { zoomed = false; loupe = false; popout.go(r) }
     function step(n) { go(popout.row + n) }
     function decide(d) { popout.decide(row, d) }
-    function editor() { if (popout.canEdit && UiState.vwScene !== "noedit") popout.notice("The editor isn’t connected to this window yet") }
+    function openEditor() {
+        if (!popout.canEdit || UiState.vwScene === "noedit") return
+        if (!editor.available) { popout.notice("PhotoCraft is not installed. Install it from Settings › Editor."); return }
+        if (curPath !== "") { opening = true; editor.openPath(curPath) }
+    }
+    Connections {
+        target: editor
+        function onOpened() { v.opening = false }
+        function onFailed(message) { v.opening = false; popout.notice(message) }
+        function onClosed() { v.opening = false; v.refocus() }
+    }
     function toggleZoom() { zoomed = !zoomed; if (!zoomed) loupe = false }
     function toggleLoupe() { loupe = !loupe; zoomed = loupe }
 
@@ -93,7 +103,7 @@ FocusScope {
         else if (k === Qt.Key_M) moveRequested(row)
         else if (k === Qt.Key_T) popout.notice("Tagging isn’t connected to this window yet")
         else if (k === Qt.Key_Delete) popout.delete(row)
-        else if (k === Qt.Key_E) editor()
+        else if (k === Qt.Key_E) openEditor()
         else e.accepted = false
     }
 
@@ -451,7 +461,7 @@ FocusScope {
                 Item { width: 11; height: 40; Rectangle { anchors.centerIn: parent; width: 1; height: 26; color: v.cLine } }
                 Item {   // Edit in PhotoCraft: the one accent button
                     id: edit
-                    readonly property bool can: popout.canEdit && UiState.vwScene !== "noedit"
+                    readonly property bool can: popout.canEdit && editor.available && UiState.vwScene !== "noedit"
                     width: eRow.implicitWidth + 26; height: 38; y: 1
                     scale: ep.pressed && can ? 0.98 : 1
                     Rectangle { anchors.fill: parent; radius: 11
@@ -464,7 +474,7 @@ FocusScope {
                             Rectangle { anchors.fill: parent; radius: 5; color: edit.can ? Qt.rgba(1, 1, 1, 0.28) : "transparent"; border.color: edit.can ? Qt.alpha(theme.onAccent, 0.35) : v.cLine }
                             Text { id: ekt; anchors.centerIn: parent; text: "E"; color: edit.can ? theme.onAccent : v.cFg3; font.pixelSize: 10; font.weight: Font.Medium } } }
                     HoverHandler { id: eh2; cursorShape: edit.can ? Qt.PointingHandCursor : Qt.ArrowCursor }
-                    TapHandler { id: ep; onTapped: v.editor() }
+                    TapHandler { id: ep; onTapped: v.openEditor() }
                     HoverTip { tip: edit.can ? "Open this photo in PhotoCraft (E)" : "PhotoCraft is not installed. Install it from Settings › Editor."; hovered: eh2.hovered }
                     Accessible.role: Accessible.Button; Accessible.name: edit.can ? "Edit in PhotoCraft" : "Edit in PhotoCraft (not connected)"
                 }

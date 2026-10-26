@@ -291,12 +291,13 @@ def test_the_keys_step_decide_rate_and_close(shell, qapp):
     assert not popout.isOpen
 
 
-def test_the_editor_key_says_it_is_not_connected_yet(shell, qapp):
+def test_the_editor_key_starts_the_opening_screen(shell, qapp):
     engine, window, model, popout, warnings = shell
     popout.open(0)
     pump(qapp, 0.5)
     QTest.keyClick(window, Qt.Key.Key_E)
-    assert "editor" in popout.toast["text"] and not popout.editorConnected
+    pump(qapp, 0.3)
+    assert window.findChild(QObject, "viewer").property("opening")          # the sample page's editor only plays the opening screen
 
 
 def test_the_filmstrip_keeps_the_photo_you_are_on_in_the_middle(shell, qapp):
