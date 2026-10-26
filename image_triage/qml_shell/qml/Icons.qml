@@ -20,6 +20,7 @@ QtObject {
     readonly property var inkOffset: ({ library: [0.0, 0.5], collections: [0.0, 0.5], search: [0.25, 0.25], chevL: [-0.5, 0.0], chevR: [0.5, 0.0], chevUp: [0.0, -1.0], chevDown: [0.0, 1.0], check: [0.0, -0.25], star: [0.0, -0.65], undo: [-0.25, 0.25], openFolder: [0.0, 0.5], funnel: [0.0, 0.65], ladder: [0.0, 0.75], tag: [-0.25, 1.25], editor: [0.0, -0.55], palette: [0.0, 0.25], newfolder: [0.0, 0.5], spark: [1.4, 0.3], heart: [0.0, 0.98], people: [-0.25, 0.0], bars: [0.0, 0.5] })
 
     readonly property var rawPaths: ({
+        moreDots: circle(5, 12, 1.5) + circle(12, 12, 1.5) + circle(19, 12, 1.5),      // the rail's "..." button: three real dots, bolder than the stroke-only dots of `more`
         library: folder,
         faces: circle(12, 12, 8.5) + circle(9, 10.5, 0.6) + circle(15, 10.5, 0.6) + "M8.8 14.5c1 1.3 2.2 1.9 3.2 1.9s2.2-.6 3.2-1.9",
         collections: "M12 4l8.5 4.5L12 13 3.5 8.5z" + "M3.5 12.5L12 17l8.5-4.5M3.5 16.5L12 21l8.5-4.5",

@@ -184,6 +184,8 @@ def test_main_qml_loads_and_the_grid_shows_the_model(qapp, tmp_path):
     context = engine.rootContext()
     context.setContextProperty("theme", theme)
     context.setContextProperty("photos", model)
+    from image_triage.qml_shell.photos import GridModel
+    context.setContextProperty("gridModel", GridModel(model, parent=qapp))
     context.setContextProperty("settings", settings)
     context.setContextProperty("cmdPalette", PaletteModel(memory=True, parent=qapp))
     context.setContextProperty("advFilters", FiltersModel(model, memory=True, parent=qapp))
@@ -225,6 +227,8 @@ def _load_main(qapp, tmp_path, startup=""):
     context = engine.rootContext()
     context.setContextProperty("theme", Theme(parent=qapp))
     context.setContextProperty("photos", model)
+    from image_triage.qml_shell.photos import GridModel
+    context.setContextProperty("gridModel", GridModel(model, parent=qapp))
     context.setContextProperty("settings", SettingsModel(memory=True, parent=qapp))
     context.setContextProperty("cmdPalette", PaletteModel(memory=True, parent=qapp))
     context.setContextProperty("advFilters", FiltersModel(model, memory=True, parent=qapp))

@@ -45,6 +45,12 @@ Item {
         return out
     }
 
+    function withHidden(ids) {                        // the buttons that are not shown now (off, or in the rail's \"...\" menu) keep their saved place, after the shown ones
+        var saved = UiState[orderName + "Order"] || [], out = ids.slice()
+        for (var i = 0; i < saved.length; ++i) if (out.indexOf(saved[i]) < 0) out.push(saved[i])
+        return out
+    }
+
     function step(pointer) {
         offset = pointer - carried
         var p = positions(), at = -1
@@ -57,7 +63,7 @@ Item {
         var before = p[at].pos
         var ids = p.map(function (e) { return e.item.dragId })
         var moved = ids[at]; ids[at] = ids[other]; ids[other] = moved
-        UiState[orderName + "Order"] = ids
+        UiState[orderName + "Order"] = withHidden(ids)
         var q = positions()
         for (var j = 0; j < q.length; ++j) if (q[j].item === button) carried += q[j].pos - before
         offset = pointer - carried
@@ -72,7 +78,7 @@ Item {
         cursorShape: active ? Qt.ClosedHandCursor : Qt.ArrowCursor
         onActiveChanged: {
             if (active) { settle.stop(); dr.carried = 0; dr.button.z = 50 }
-            else { settle.start(); uiMemory.set(dr.orderName + "Order", dr.ranked().map(function (it) { return it.dragId })) }
+            else { settle.start(); uiMemory.set(dr.orderName + "Order", dr.withHidden(dr.ranked().map(function (it) { return it.dragId }))) }
         }
         onTranslationChanged: if (active) dr.step(dr.horizontal ? translation.x : translation.y)
     }

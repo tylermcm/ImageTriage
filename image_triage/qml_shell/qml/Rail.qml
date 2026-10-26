@@ -5,6 +5,7 @@ import QtQuick.Effects
 // The left rail: four destinations with a sliding pill, then a hairline split, the pinned toolbar buttons, "+" to customise, settings.
 Rectangle {
     id: rail
+    objectName: "rail"
     property int row: 0                  // the grid's current row (what Accept / Reject act on)
     // Icon-only destinations, as the Widgets rail (docs/nav_rail_label_clipping.md, option 4): "Collections" and "PocketDrop" are wider than any
     // button the rail can afford, and the pinned buttons below have no text either. The names are the hover tooltips. true brings the labels back.
@@ -22,10 +23,49 @@ Rectangle {
     readonly property real pinsTop: 10 + 4 * pitch
     readonly property real pinsAvail: Math.max(0, height - pinsTop - gearSize - 18)
     readonly property int pinCount: { var n = 0; for (var k in UiState.pins) { if (UiState.pins[k]) ++n } return n }
-    readonly property real pinFit: Math.max(30, Math.min(UiState.compact ? 36 : 40, (pinsAvail - 21 - 4 * pinCount) / (pinCount + 1)))
+    // When the pinned buttons do not fit even at 30 px, the last ones that would not fit go into the "..." button's menu instead of being cut off or
+    // covering "+": `cap` buttons fit at 30 px, the last of them is "...", and the rest (the ones last in the order the buttons are shown in) wait in its menu.
+    readonly property int cap: Math.max(1, Math.floor((pinsAvail - 51) / 34))
+    readonly property bool overflowing: pinCount > cap
+    readonly property real pinFit: overflowing ? 30 : Math.max(30, Math.min(UiState.compact ? 36 : 40, (pinsAvail - 21 - 4 * pinCount) / (pinCount + 1)))
+    readonly property var pinMeta: [      // in the order the buttons are declared below; `id` is the button's drag id (UiState.railOrder), `menu` ones open their own menu
+        { k: "open", id: "openFolder", t: "Open folder", i: "openFolder" }, { k: "undo", id: "undo", t: "Undo", i: "undo" },
+        { k: "review", id: "check", t: "Review", i: "check", menu: true }, { k: "view", id: "view", t: "View", i: "view", menu: true },
+        { k: "filters", id: "funnel", t: "Filters", i: "funnel", menu: true }, { k: "accept", id: "accept", t: "Accept selection", i: "accept" },
+        { k: "reject", id: "reject", t: "Reject selection", i: "reject" }, { k: "sort", id: "sort", t: "Sort", i: "sort", menu: true },
+        { k: "columns", id: "columns", t: "Columns", i: "columns", menu: true }, { k: "compare", id: "compare", t: "Compare photos", i: "compare" },
+        { k: "preview", id: "eye", t: "Open preview", i: "eye" }, { k: "rename", id: "tag", t: "Rename selection", i: "tag" },
+        { k: "convert", id: "convert", t: "Resize and convert", i: "convert" }, { k: "share", id: "pocketdrop", t: "Share to phone", i: "pocketdrop" },
+        { k: "editor", id: "editor", t: "Open in editor", i: "editor" }, { k: "newfolder", id: "newfolder", t: "New folder", i: "newfolder" },
+        { k: "palette", id: "palette", t: "Command palette", i: "palette" }, { k: "shortcuts", id: "keyboard", t: "Keyboard shortcuts", i: "keyboard" }
+    ]
+    // the pinned buttons that are on, in the order they are shown in (DragReorder's rule: the saved order, then the declaration order)
+    readonly property var shownOrder: {
+        var saved = UiState.railOrder || [], list = []
+        for (var i = 0; i < pinMeta.length; ++i) if (UiState.pins[pinMeta[i].k]) { var r = saved.indexOf(pinMeta[i].id); list.push({ m: pinMeta[i], rank: r < 0 ? 100000 + i : r }) }
+        list.sort(function (a, b) { return a.rank - b.rank })
+        return list.map(function (e) { return e.m })
+    }
+    readonly property var overflowList: overflowing ? shownOrder.slice(cap - 1) : []      // what the "..." menu holds
+    readonly property var overflowKeys: overflowList.map(function (m) { return m.k })
+    function vis(k) { return !!UiState.pins[k] && overflowKeys.indexOf(k) < 0 }
+    function over(k) { return overflowKeys.indexOf(k) >= 0 }
+    function runPin(k) {          // what a pinned button does when it is pressed (the buttons below do the same; the "..." menu runs it for the ones it holds)
+        if (k === "open") UiState.openFolderRequested()
+        else if (k === "undo") UiState.undoRequested()
+        else if (k === "accept") photos.setDecision(row, "keep")
+        else if (k === "reject") photos.setDecision(row, "rej")
+        else if (k === "compare") UiState.compare = !UiState.compare
+        else if (k === "preview") popout.open(row)
+        else if (k === "rename") UiState.batchMode = "rename"
+        else if (k === "convert") UiState.batchMode = "resize"
+        else if (k === "share") { pocketDrop.refreshLibrary(row); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
+        else if (k === "palette") UiState.openPalette("main")
+        else if (UiState.pins[k] !== undefined && ["review", "view", "filters", "sort", "columns"].indexOf(k) >= 0) UiState.menu = k      // its own menu, opened beside the "..." button
+    }
     Binding { target: UiState; property: "railPin"; value: rail.pinFit }
     property real scrollY: 0
-    readonly property real maxScroll: Math.max(0, lower.height - pinsAvail)
+    readonly property real maxScroll: overflowing ? 0 : Math.max(0, lower.height - pinsAvail)
     onMaxScrollChanged: scrollY = Math.min(scrollY, maxScroll)
     WheelHandler {
         target: null; enabled: rail.maxScroll > 0
@@ -100,13 +140,14 @@ Rectangle {
 
         Item { width: 40; height: 9; Rectangle { anchors.centerIn: parent; width: 28; height: 1; radius: 1; color: Qt.alpha(theme.lift, 0.20) } }
 
-        RailButton { visible: UiState.pins.open; icon: "openFolder"; tip: "Open folder"; onClicked: UiState.openFolderRequested() }
-        RailButton { visible: UiState.pins.undo; icon: "undo"; tip: "Undo"; opacity: photos.canUndo ? 1 : 0.45; onClicked: UiState.undoRequested() }
+        RailButton { visible: rail.vis("open"); icon: "openFolder"; tip: "Open folder"; onClicked: UiState.openFolderRequested() }
+        RailButton { visible: rail.vis("undo"); icon: "undo"; tip: "Undo"; opacity: photos.canUndo ? 1 : 0.45; onClicked: UiState.undoRequested() }
         RailButton {
-            visible: UiState.pins.review; icon: "check"; tip: "Review"; menu: true; on: reviewMenu.opened
+            id: reviewBtn
+            visible: rail.vis("review"); icon: "check"; tip: "Review"; menu: true; on: reviewMenu.opened
             onClicked: UiState.setMenu("review")
             Popover {
-                id: reviewMenu; name: "review"; placement: 1
+                id: reviewMenu; name: "review"; placement: 1; parent: rail.over("review") ? moreBtn : reviewBtn
                 PopHeader { caption: "Decision for selection" }
                 PopItem { label: "Mark winner"; icon: "star"; kbd: "W"; onClicked: { photos.setDecision(rail.row, "win"); reviewMenu.close() } }
                 PopItem { label: "Keep"; icon: "check"; kbd: "K"; onClicked: { photos.setDecision(rail.row, "keep"); reviewMenu.close() } }
@@ -116,10 +157,11 @@ Rectangle {
             }
         }
         RailButton {
-            visible: UiState.pins.view; icon: "view"; tip: "View"; menu: true; on: viewMenu.opened
+            id: viewBtn
+            visible: rail.vis("view"); icon: "view"; tip: "View"; menu: true; on: viewMenu.opened
             onClicked: UiState.setMenu("view")
             Popover {
-                id: viewMenu; name: "view"; placement: 1
+                id: viewMenu; name: "view"; placement: 1; parent: rail.over("view") ? moreBtn : viewBtn
                 PopHeader { caption: "On each thumbnail" }
                 PopItem { label: "Filenames"; mode: "switch"; checked: UiState.showNames; onClicked: UiState.showNames = !UiState.showNames }
                 PopItem { label: "Decision badges"; mode: "switch"; checked: UiState.showBadges; onClicked: UiState.showBadges = !UiState.showBadges }
@@ -156,10 +198,11 @@ Rectangle {
             }
         }
         RailButton {
-            visible: UiState.pins.filters; icon: "funnel"; tip: "Filters"; menu: true; on: filtersMenu.opened
+            id: filtersBtn
+            visible: rail.vis("filters"); icon: "funnel"; tip: "Filters"; menu: true; on: filtersMenu.opened
             onClicked: UiState.setMenu("filters")
             Popover {
-                id: filtersMenu; name: "filters"; placement: 1
+                id: filtersMenu; name: "filters"; placement: 1; parent: rail.over("filters") ? moreBtn : filtersBtn
                 PopHeader { caption: "Minimum rating" }
                 Repeater {
                     model: [[0, "Any"], [3, "3 stars and up"], [4, "4 stars and up"], [5, "5 stars"]]
@@ -190,13 +233,14 @@ Rectangle {
                 }
             }
         }
-        RailButton { visible: UiState.pins.accept; icon: "accept"; tip: "Accept selection"; hoverColor: theme.win; onClicked: photos.setDecision(rail.row, "keep") }
-        RailButton { visible: UiState.pins.reject; icon: "reject"; tip: "Reject selection"; hoverColor: theme.rej; onClicked: photos.setDecision(rail.row, "rej") }
+        RailButton { visible: rail.vis("accept"); icon: "accept"; tip: "Accept selection"; hoverColor: theme.win; onClicked: photos.setDecision(rail.row, "keep") }
+        RailButton { visible: rail.vis("reject"); icon: "reject"; tip: "Reject selection"; hoverColor: theme.rej; onClicked: photos.setDecision(rail.row, "rej") }
         RailButton {
-            visible: UiState.pins.sort; icon: "sort"; tip: "Sort"; menu: true; on: sortMenu.opened
+            id: sortBtn
+            visible: rail.vis("sort"); icon: "sort"; tip: "Sort"; menu: true; on: sortMenu.opened
             onClicked: UiState.setMenu("sort")
             Popover {
-                id: sortMenu; name: "sort"; placement: 1
+                id: sortMenu; name: "sort"; placement: 1; parent: rail.over("sort") ? moreBtn : sortBtn
                 PopHeader { caption: "Sort photos by" }
                 Repeater {
                     model: [["name", "Name"], ["ai", "AI score"], ["rating", "Rating"], ["decision", "Decision"]]
@@ -209,10 +253,11 @@ Rectangle {
             }
         }
         RailButton {
-            visible: UiState.pins.columns; icon: "columns"; tip: "Columns"; menu: true; on: columnsMenu.opened
+            id: columnsBtn
+            visible: rail.vis("columns"); icon: "columns"; tip: "Columns"; menu: true; on: columnsMenu.opened
             onClicked: UiState.setMenu("columns")
             Popover {
-                id: columnsMenu; name: "columns"; placement: 1
+                id: columnsMenu; name: "columns"; placement: 1; parent: rail.over("columns") ? moreBtn : columnsBtn
                 PopHeader { caption: "Thumbnail size" }
                 Repeater {
                     model: [["s", "Small"], ["m", "Medium"], ["l", "Large"]]
@@ -234,19 +279,39 @@ Rectangle {
                 }
             }
         }
-        RailButton { visible: UiState.pins.compare; icon: "compare"; tip: "Compare photos"; on: UiState.compare; onClicked: UiState.compare = !UiState.compare }
-        RailButton { visible: UiState.pins.preview; icon: "eye"; tip: "Open preview"; onClicked: popout.open(rail.row) }
-        RailButton { visible: UiState.pins.rename; icon: "tag"; tip: "Rename selection"; onClicked: UiState.batchMode = "rename" }
-        RailButton { visible: UiState.pins.convert; icon: "convert"; tip: "Resize and convert"; onClicked: UiState.batchMode = "resize" }
+        RailButton { visible: rail.vis("compare"); icon: "compare"; tip: "Compare photos"; on: UiState.compare; onClicked: UiState.compare = !UiState.compare }
+        RailButton { visible: rail.vis("preview"); icon: "eye"; tip: "Open preview"; onClicked: popout.open(rail.row) }
+        RailButton { visible: rail.vis("rename"); icon: "tag"; tip: "Rename selection"; onClicked: UiState.batchMode = "rename" }
+        RailButton { visible: rail.vis("convert"); icon: "convert"; tip: "Resize and convert"; onClicked: UiState.batchMode = "resize" }
         RailButton {   // opens PocketDrop with the current photo added
-            visible: UiState.pins.share; icon: "pocketdrop"; tip: "Share to phone"
+            visible: rail.vis("share"); icon: "pocketdrop"; tip: "Share to phone"
             onClicked: { pocketDrop.refreshLibrary(rail.row); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
         }
-        RailButton { visible: UiState.pins.editor; icon: "editor"; tip: "Open in editor" }
-        RailButton { visible: UiState.pins.newfolder; icon: "newfolder"; tip: "New folder" }
-        RailButton { visible: UiState.pins.palette; icon: "palette"; tip: "Command palette (Ctrl K)"; onClicked: UiState.openPalette("main") }
-        RailButton { visible: UiState.pins.shortcuts; icon: "keyboard"; tip: "Keyboard shortcuts" }
+        RailButton { visible: rail.vis("editor"); icon: "editor"; tip: "Open in editor" }
+        RailButton { visible: rail.vis("newfolder"); icon: "newfolder"; tip: "New folder" }
+        RailButton { visible: rail.vis("palette"); icon: "palette"; tip: "Command palette (Ctrl K)"; onClicked: UiState.openPalette("main") }
+        RailButton { visible: rail.vis("shortcuts"); icon: "keyboard"; tip: "Keyboard shortcuts" }
 
+        RailButton {   // the pinned buttons that did not fit: shown only then, in the slot the last button that fits would have had
+            id: moreBtn
+            objectName: "railMore"
+            visible: rail.overflowing; icon: "moreDots"; dragId: ""; tip: "More buttons"; menu: false; on: moreMenu.opened
+            onClicked: UiState.setMenu("overflow")
+            Popover {
+                id: moreMenu; name: "overflow"; placement: 1; alignBottom: true; minWidth: 230
+                Connections { target: moreMenu; function onAboutToShow() { moreMenu.maxHeight = Math.max(160, moreBtn.mapToItem(null, 0, moreBtn.height).y - 12) } }
+                PopHeader { caption: "More buttons" }
+                Repeater {
+                    model: rail.overflowList
+                    delegate: PopItem {
+                        required property var modelData
+                        label: modelData.t; icon: modelData.i
+                        opacity: modelData.k === "undo" && !photos.canUndo ? 0.45 : 1
+                        onClicked: { moreMenu.close(); rail.runPin(modelData.k) }
+                    }
+                }
+            }
+        }
         Item { width: 1; height: 4 }   // the customise button sits 8px below the last pin, the pins 4px apart
         RailButton {
             id: add
