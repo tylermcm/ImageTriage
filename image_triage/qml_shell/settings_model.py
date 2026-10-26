@@ -49,6 +49,7 @@ APPEARANCE_MODES = (
     ("Forest", "forest"), ("High Contrast", "high_contrast"), ("Warm Neutral", "warm_neutral"), ("Light", "light"), ("Auto", "auto"),
 )
 DARK_TONE_OPTIONS = (("Slate (darkest)", "slate"), ("Soft (default)", "soft"), ("Dim (lightest)", "dim"))
+GRID_FADE_OPTIONS = (("Soft (default)", "soft"), ("Deep", "deep"), ("Dark", "dark"), ("Off", "off"))
 DELETE_MODES = (("Safe Trash (Undoable)", "Safe Trash (Undoable)"), ("System Trash", "System Trash"))
 INTERFACE_SIZES = (("Automatic (recommended)", "automatic"), ("Compact", "compact"), ("Comfortable", "standard"), ("Large", "spacious"))
 CARD_STYLES = (("Detailed", "detailed"), ("Zen", "zen"), ("Gallery", "gallery"))
@@ -135,6 +136,8 @@ def build_schema(shortcut_registry=()) -> tuple:
               key="window/appearance", kind="str", default="slate", options=APPEARANCE_MODES),
             F("darkTone", "select", "Dark theme", "How dark the Slate theme is (and Auto when the system is dark). Slate is the original near-black; Soft and Dim lift it for screens that show it as almost black. The sun button in the top bar swaps between this and Light.",
               key="view/dark_tone", kind="str", default="soft", options=DARK_TONE_OPTIONS),
+            F("gridFade", "select", "Fade behind the button bar", "A gradient from the bottom of the grid up past the floating button bar, so the last row does not end in a hard edge. Soft and Deep use the theme's colour; Dark is a black vignette.",
+              key="view/grid_fade", kind="str", default="soft", options=GRID_FADE_OPTIONS),
             F("accent", "swatch", "Accent colour", "Replaces the theme's accent for selection, focus and the progress ring.",
               key="view/accent_hue", kind="int", default=-1),
             F("contrast", "slider", "Text contrast", "Raises or lowers the strength of text against the background.",
@@ -339,6 +342,7 @@ class SettingsModel(QObject):
         if self._memory:
             self._store = {f.id: f.default for f in self._fields.values() if f.type not in ("text", "keys")}
             self._store["accent"] = 0          # the mockup shows the blue swatch chosen
+            self._store["gridFade"] = "off"    # the grid mockup has no fade by default, same reason
             self._store["darkTone"] = "slate"  # the mockup's own near-black, so the pixel checks against it hold
         self._vals = {f.id: self._read(f) for f in self._fields.values() if f.type != "text"}
         self._init = dict(self._vals)
@@ -460,7 +464,7 @@ class SettingsModel(QObject):
         self._conflict = ""
         self._revision += 1
         self.revisionChanged.emit()
-        if fid in ("theme", "accent", "contrast", "darkTone"):
+        if fid in ("theme", "accent", "contrast", "darkTone", "gridFade"):
             self.previewChanged.emit()
 
     @Slot(str, result="QVariant")
@@ -658,6 +662,7 @@ class SettingsModel(QObject):
     dirtyCount = Property(int, lambda self: sum(1 for k in self._vals if self._vals[k] != self._init.get(k)), notify=revisionChanged)
     saved = Property(bool, lambda self: self._saved, notify=revisionChanged)
     themeMode = Property(str, lambda self: str(self._vals.get("theme", "slate")), notify=previewChanged)
+    gridFade = Property(str, lambda self: str(self._vals.get("gridFade", "soft")), notify=previewChanged)
     darkTone = Property(str, lambda self: str(self._vals.get("darkTone", "soft")), notify=previewChanged)
     accentIndex = Property(int, lambda self: int(self._vals.get("accent", -1)), notify=previewChanged)
     contrast = Property(int, lambda self: int(self._vals.get("contrast", 90)), notify=previewChanged)

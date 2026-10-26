@@ -179,6 +179,23 @@ Window {
                                 x: !win.compact && win.pinRight ? Math.min(0, main.width - win.gridW) : 0
                                 width: win.compact ? parent.width : win.gridW; height: parent.height; overlay: floatBar }
                 }
+                Rectangle {   // the fade from the bottom of the grid to a little above the button bar (Settings > Appearance); click-through
+                    id: gridFade
+                    objectName: "gridFade"
+                    readonly property string kind: settings.gridFade
+                    visible: kind !== "off"
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                    height: kind === "deep" ? 210 : kind === "dark" ? 170 : 150
+                    gradient: Gradient {
+                        orientation: Gradient.Vertical
+                        GradientStop { position: 0; color: "transparent" }
+                        GradientStop { position: gridFade.kind === "dark" ? 0.55 : gridFade.kind === "deep" ? 0.36 : 0.22
+                                       color: gridFade.kind === "dark" ? Qt.rgba(0, 0, 0, 0.34) : Qt.alpha(theme.base, gridFade.kind === "deep" ? 0.38 : 0.16) }
+                        GradientStop { position: gridFade.kind === "dark" ? 1 : gridFade.kind === "deep" ? 0.70 : 0.58
+                                       color: gridFade.kind === "dark" ? Qt.rgba(0, 0, 0, 0.62) : Qt.alpha(theme.base, gridFade.kind === "deep" ? 0.82 : 0.55) }
+                        GradientStop { position: 1; color: gridFade.kind === "dark" ? Qt.rgba(0, 0, 0, 0.62) : Qt.alpha(theme.base, gridFade.kind === "deep" ? 1 : 0.88) }
+                    }
+                }
                 FloatingBar {
                     id: floatBar
                     sourceItem: grid.view
