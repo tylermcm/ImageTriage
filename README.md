@@ -61,6 +61,9 @@ For this to work in production:
   before any other). Build it first (`cargo build --release -p photocraft` in the companion `photocraft` checkout, branch
   `codex/image-triage-integration`), or name it with `IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT_EXE`. A build that finds no editor stops;
   `IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT=0` builds an installer without one.
+  The release workflow does this itself: it checks out `tylermcm/photocraft` at the commit in [packaging/photocraft_pin.txt](packaging/photocraft_pin.txt),
+  builds it with cargo and bundles that exe, and the release notes name the commit. Bump the pin (after validating the new editor, see
+  `docs/photocraft_handoff.md`) to ship a newer editor.
 - Push a matching version tag, for example `v1.1.4`. The `Build And Release Windows MSI` GitHub Actions workflow builds the MSI and uploads it to that GitHub Release.
 - Prefer attaching a release asset digest or hosting a JSON update manifest with a `sha256` value so downloads can be verified before install.
 

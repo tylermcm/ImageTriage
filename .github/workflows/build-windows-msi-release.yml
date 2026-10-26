@@ -54,6 +54,52 @@ jobs:
         run: |
           python -m compileall freeze_support.py setup_msi.py packaging/ai_python_runner.py packaging/ai_runtime_installer.py packaging/image_triage_cleanup.py
 
+      # The installer carries the PhotoCraft editor, so the release builds it from the fork's integration branch at the commit named in
+      # packaging/photocraft_pin.txt (bump that file, after validating the new editor, to ship a newer one).
+      - name: Read the pinned PhotoCraft commit
+        id: pin
+        shell: pwsh
+        run: |
+          $ref = (Get-Content packaging/photocraft_pin.txt -Raw).Trim()
+          if ($ref -notmatch '^[0-9a-f]{40}$') { throw "packaging/photocraft_pin.txt must hold a full 40-character commit hash." }
+          "ref=$ref" >> $env:GITHUB_OUTPUT
+
+      - name: Check out PhotoCraft
+        uses: actions/checkout@v6
+        with:
+          repository: tylermcm/photocraft
+          ref: ${{ steps.pin.outputs.ref }}
+          path: photocraft-src
+
+      - name: Set up Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - name: Cache the PhotoCraft build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            photocraft-src/target
+          key: photocraft-${{ runner.os }}-${{ steps.pin.outputs.ref }}
+          restore-keys: photocraft-${{ runner.os }}-
+
+      - name: Build PhotoCraft
+        shell: pwsh
+        working-directory: photocraft-src
+        run: cargo build --release -p photocraft
+
+      - name: Point the installer at the editor
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path photocraft-src/target/release/photocraft.exe).Path
+          "IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT_EXE=$exe" >> $env:GITHUB_ENV
+          Write-Host "Bundling $exe from PhotoCraft ${{ steps.pin.outputs.ref }}"
+
       - name: Build MSI
         run: python setup_msi.py bdist_msi
 
@@ -79,6 +125,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             gh release create $env:GITHUB_REF_NAME `
               --title "Image Triage $env:GITHUB_REF_NAME" `
-              --notes "Automated release for $env:GITHUB_REF_NAME"
+              --notes "Automated release for $env:GITHUB_REF_NAME. Bundled PhotoCraft editor: tylermcm/photocraft@${{ steps.pin.outputs.ref }}"
           }
           gh release upload $env:GITHUB_REF_NAME dist/*.msi --clobber
