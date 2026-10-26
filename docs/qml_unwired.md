@@ -44,7 +44,7 @@ shell reacts to it yet.
 | Thumbnails | `ThumbService` generates with `load_image_for_display` and stores in the app's disk thumbnail cache (`cache.DiskThumbnailCache`), shown as `file://` URLs |
 | Settings values | `SettingsModel` reads and writes the **same `QSettings` store and keys** as `window.MainWindow` (`app_identity.user_settings()`), same defaults and limits (checked by `tests/test_qml_shell_settings.py` against the window's constants) |
 | Shortcut overrides | `ui.shortcuts.load_shortcut_overrides` / `save_shortcut_overrides` and `SHORTCUT_REGISTRY` |
-| Theme | the ten appearance modes are derived from the real palettes in `ui/theme.py` (Slate and Light are the mockup's own palettes exactly) |
+| Theme | the ten appearance modes are derived from the real palettes in `ui/theme.py` (Slate and Light are the mockup's own palettes exactly). **Slate has three tones**, picked in Settings > Appearance > Dark theme (`view/dark_tone`, a shell-only key, default **Soft**; `--mock` and the sample page use Slate, the mockup's own near-black): Slate `#0d0e11`, Soft `#1d1f23`, Dim `#2b2e33`, the same hue lifted, every surface, line and text step derived from the base; the dim behind dialogs is 52% on Slate, 46% on Soft, 40% on Dim (`theme.scrim`). Only Slate (and Auto when the system is dark) takes a tone, the other themes are unchanged. Nothing tries to detect how dark a screen renders: Windows does not report it |
 | DPI | Qt high-DPI with fractional scales; every size is in device-independent pixels |
 
 ## Main window
@@ -56,7 +56,7 @@ shell reacts to it yet.
 | File, Review, View, AI | **Real menus** (`TopMenus.qml`; moving along the bar switches the open menu; Esc or a click below the bar closes). Each row runs the command the palette would (same ids, `Main.qml` `runCommand`) or is dimmed and says it is not connected yet. See "Top bar menus" below. They are hidden in the compact layout (900 px and narrower), as in the mockup | the Widgets entries marked not connected; the Widgets menus Edit, Library, Workflow, Tools and Settings have no button in the bar, their entries are spread over these four |
 | Help | **Real**: opens the Help menu (Help, Keyboard shortcuts, Browse Library, File associations, Check for updates, About) | |
 | Command search field, Ctrl K | Real (opens the command palette, see below) | |
-| Sun button | Real (sets and saves the appearance between Slate and Light) | |
+| Sun button | Real (swaps and saves the appearance between Light and the dark theme that was in use, so Midnight comes back as Midnight; with Slate it is the tone picked in Settings) | |
 | Inspector button | Memory (`UiState.insp`, not remembered) | persist in `window/state` |
 | Side panel and inspector width | **Real**: drag the edge (double click resets); remembered in the settings store | |
 | Minimize / maximize / close | Real (`tests/test_qml_shell_window_buttons.py` clicks them). The window is frameless and the bar is its title bar: drag moves it, double click maximizes, edges and corners resize (`WindowEdges.qml`) | the system drop shadow and rounded corners, Windows 11 snap layouts on the maximize button, dragging a maximized window to restore it |

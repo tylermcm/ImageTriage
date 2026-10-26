@@ -46,7 +46,7 @@ def test_every_stored_key_exists_in_the_widgets_window():
 
     known |= {nil.SETTINGS_KEY, nil.CAMERA_RAW_FIRST_KEY, nil.EDITOR_ON_DEMAND_KEY, nil.EDITOR_STARTS_OPEN_KEY, nil.EDITOR_PRESTART_KEY}
     known.add("ai/cascade_rank_on_cpu")
-    shell_only = {"view/accent_hue", "view/text_contrast"}
+    shell_only = {"view/accent_hue", "view/text_contrast", "view/dark_tone"}
     for f in fields(SettingsModel(memory=True)).values():
         if f.key and f.key not in shell_only:
             assert f.key in known, (f.id, f.key)

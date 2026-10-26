@@ -134,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     def apply_theme() -> None:
         index = settings.accentIndex
         system_dark = app.styleHints().colorScheme() != Qt.ColorScheme.Light
-        theme.applyMode(settings.themeMode, ACCENTS[index][1] if 0 <= index < len(ACCENTS) else -1, settings.contrast, system_dark)
+        theme.applyMode(settings.themeMode, ACCENTS[index][1] if 0 <= index < len(ACCENTS) else -1, settings.contrast, system_dark, settings.darkTone)
 
     settings.previewChanged.connect(apply_theme)
     app.styleHints().colorSchemeChanged.connect(lambda *_: apply_theme())      # Auto follows the system's light or dark when it changes

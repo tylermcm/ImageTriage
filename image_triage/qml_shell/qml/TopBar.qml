@@ -122,7 +122,7 @@ Rectangle {
                 Rectangle { anchors.fill: parent; radius: 9; color: on ? Qt.alpha(theme.accent, 0.16) : Qt.alpha(theme.lift, bh.hovered ? 0.08 : 0) }
                 Icon { anchors.centerIn: parent; name: modelData.i; size: 18; color: on ? theme.accentFg : theme.fg }   // `.app button{color:inherit}` outranks `.ibtn`, so the idle icon is the full text colour
                 HoverHandler { id: bh; cursorShape: Qt.PointingHandCursor }
-                TapHandler { onTapped: { if (modelData.i === "sun") { settings.set("theme", theme.light ? "slate" : "light"); settings.save() } else UiState.insp = !UiState.insp } }
+                TapHandler { onTapped: { if (modelData.i === "sun") { settings.toggleLight() } else UiState.insp = !UiState.insp } }
                 Accessible.role: Accessible.Button; Accessible.name: modelData.tip
             }
         }

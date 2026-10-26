@@ -70,6 +70,9 @@ WHITE = (1.0, 1.0, 1.0)
 BLACK = (0.0, 0.0, 0.0)
 
 DARK = {"base": (0.165, 0.006, 265.0), "accent": (0.70, 0.15, 255.0), "contrast": 90.0, "lift": WHITE, "star": "#f0b84a"}
+# The dark theme comes in three tones (the same hue, lifted): Slate is the original near-black (#0d0e12); Soft (#1d1f23) and Dim (#2c2e32) are for
+# laptop and office screens that show the original as almost black. The surfaces, lines and text are derived from the base, so they keep their steps.
+DARK_TONES = {"slate": (0.165, 0.006, 0.52), "soft": (0.24, 0.008, 0.46), "dim": (0.30, 0.010, 0.40)}      # base lightness, chroma, the dialogs' dim
 LIGHT = {"base": (0.975, 0.003, 265.0), "accent": (0.56, 0.17, 258.0), "contrast": 84.0, "lift": BLACK, "star": "#c98a14"}
 
 
@@ -100,13 +103,16 @@ def derive(spec: dict) -> dict[str, QColor]:
     return colors
 
 
-def _palette_spec(mode: str, system_dark: bool) -> dict:
+def _palette_spec(mode: str, system_dark: bool, tone: str = "slate") -> dict:
     """base / accent / contrast of one of the Widgets app's appearance modes, read from its real palette. Slate and Light are the
     mockup's own two palettes exactly."""
     if mode == "auto":
         mode = "slate" if system_dark else "light"
     if mode == "slate":
-        return dict(DARK)
+        spec = dict(DARK)
+        lightness, chroma, _veil = DARK_TONES.get(tone, DARK_TONES["slate"])
+        spec["base"] = (lightness, chroma, 265.0)
+        return spec
     if mode == "light":
         return dict(LIGHT)
     from ..ui.theme import AppearanceMode, resolve_theme
@@ -134,6 +140,7 @@ class Theme(QObject):
         super().__init__(parent)
         self._light = bool(light)
         self._colors = derive(LIGHT if light else DARK)
+        self._scrim = QColor(20, 22, 28, 87) if light else QColor(6, 7, 9, 133)
 
     def _get(self, name: str) -> QColor:
         return self._colors[name]
@@ -167,17 +174,21 @@ class Theme(QObject):
     rev = Property(QColor, lambda self: self._get("rev"), notify=changed)
     rej = Property(QColor, lambda self: self._get("rej"), notify=changed)
     star = Property(QColor, lambda self: self._get("star"), notify=changed)
+    scrim = Property(QColor, lambda self: self._scrim, notify=changed)
 
-    @Slot(str, int, int, bool)
-    def applyMode(self, mode: str, accent_hue: int, contrast: int, system_dark: bool = True) -> None:
+    @Slot(str, int, int, bool, str)
+    def applyMode(self, mode: str, accent_hue: int, contrast: int, system_dark: bool = True, tone: str = "slate") -> None:
         """Re-derive every colour for an appearance mode, an optional accent hue (-1 keeps the mode's own) and the contrast slider
         (90 = the mode's own contrast; each step moves it one point)."""
-        spec = _palette_spec(mode, system_dark)
+        spec = _palette_spec(mode, system_dark, tone)
         lifted_light = spec["lift"] == BLACK
         if accent_hue >= 0:
             spec["accent"] = (0.56, 0.17, float(accent_hue)) if lifted_light else (0.70, 0.15, float(accent_hue))
         spec["contrast"] = max(40.0, min(100.0, spec["contrast"] + (contrast - 90)))
         self._light = lifted_light
+        dark_slate = not lifted_light and (mode == "slate" or (mode == "auto" and system_dark))
+        veil = DARK_TONES.get(tone, DARK_TONES["slate"])[2] if dark_slate else 0.52
+        self._scrim = QColor(20, 22, 28, 87) if lifted_light else QColor(6, 7, 9, round(veil * 255))      # what dims the window behind a dialog
         self._colors = derive(spec)
         self.changed.emit()
 

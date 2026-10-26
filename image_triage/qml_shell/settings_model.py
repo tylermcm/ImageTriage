@@ -48,6 +48,7 @@ APPEARANCE_MODES = (
     ("Slate", "slate"), ("Indigo", "indigo"), ("Dark", "dark"), ("Midnight", "midnight"), ("Graphite", "graphite"),
     ("Forest", "forest"), ("High Contrast", "high_contrast"), ("Warm Neutral", "warm_neutral"), ("Light", "light"), ("Auto", "auto"),
 )
+DARK_TONE_OPTIONS = (("Slate (darkest)", "slate"), ("Soft (default)", "soft"), ("Dim (lightest)", "dim"))
 DELETE_MODES = (("Safe Trash (Undoable)", "Safe Trash (Undoable)"), ("System Trash", "System Trash"))
 INTERFACE_SIZES = (("Automatic (recommended)", "automatic"), ("Compact", "compact"), ("Comfortable", "standard"), ("Large", "spacious"))
 CARD_STYLES = (("Detailed", "detailed"), ("Zen", "zen"), ("Gallery", "gallery"))
@@ -132,6 +133,8 @@ def build_schema(shortcut_registry=()) -> tuple:
         Group("Theme", "Scale and presentation", (
             F("theme", "select", "Theme", "The app's colour theme. Also available from the View menu; both change the same setting.",
               key="window/appearance", kind="str", default="slate", options=APPEARANCE_MODES),
+            F("darkTone", "select", "Dark theme", "How dark the Slate theme is (and Auto when the system is dark). Slate is the original near-black; Soft and Dim lift it for screens that show it as almost black. The sun button in the top bar swaps between this and Light.",
+              key="view/dark_tone", kind="str", default="soft", options=DARK_TONE_OPTIONS),
             F("accent", "swatch", "Accent colour", "Replaces the theme's accent for selection, focus and the progress ring.",
               key="view/accent_hue", kind="int", default=-1),
             F("contrast", "slider", "Text contrast", "Raises or lowers the strength of text against the background.",
@@ -336,6 +339,7 @@ class SettingsModel(QObject):
         if self._memory:
             self._store = {f.id: f.default for f in self._fields.values() if f.type not in ("text", "keys")}
             self._store["accent"] = 0          # the mockup shows the blue swatch chosen
+            self._store["darkTone"] = "slate"  # the mockup's own near-black, so the pixel checks against it hold
         self._vals = {f.id: self._read(f) for f in self._fields.values() if f.type != "text"}
         self._init = dict(self._vals)
         self._rebuild_effective()
@@ -427,6 +431,21 @@ class SettingsModel(QObject):
         self.previewChanged.emit()
 
     # -- values ----------------------------------------------------------------------------------------------------------------
+    @Slot()
+    def toggleLight(self) -> None:
+        """The top bar's sun button: swap between Light and the dark theme that was in use (Slate unless another dark one was chosen), and save it."""
+        light_themes = ("light", "warm_neutral")
+        current = str(self._vals.get("theme", "slate"))
+        if current in light_themes:
+            self.set("theme", self._last_dark if self._last_dark not in light_themes else "slate")
+        else:
+            if current != "auto":
+                self._last_dark = current
+            self.set("theme", "light")
+        self.save()
+
+    _last_dark = "slate"
+
     @Slot(str, "QVariant")
     def set(self, fid: str, value) -> None:
         f = self._fields.get(fid)
@@ -441,7 +460,7 @@ class SettingsModel(QObject):
         self._conflict = ""
         self._revision += 1
         self.revisionChanged.emit()
-        if fid in ("theme", "accent", "contrast"):
+        if fid in ("theme", "accent", "contrast", "darkTone"):
             self.previewChanged.emit()
 
     @Slot(str, result="QVariant")
@@ -639,6 +658,7 @@ class SettingsModel(QObject):
     dirtyCount = Property(int, lambda self: sum(1 for k in self._vals if self._vals[k] != self._init.get(k)), notify=revisionChanged)
     saved = Property(bool, lambda self: self._saved, notify=revisionChanged)
     themeMode = Property(str, lambda self: str(self._vals.get("theme", "slate")), notify=previewChanged)
+    darkTone = Property(str, lambda self: str(self._vals.get("darkTone", "soft")), notify=previewChanged)
     accentIndex = Property(int, lambda self: int(self._vals.get("accent", -1)), notify=previewChanged)
     contrast = Property(int, lambda self: int(self._vals.get("contrast", 90)), notify=previewChanged)
 
