@@ -93,7 +93,7 @@ class PreviewController(QObject):
         )
         full_render.register(self._full_render)
         # Super Resolution applied for the editor's Camera Raw dialog when Done is pressed, polled on the autosave tick.
-        self._host_jobs = camera_raw_host_jobs.HostJobRunner()
+        self._host_jobs = camera_raw_host_jobs.HostJobRunner(on_blocked=lambda _kind, why: self._window.statusBar().showMessage(why, 12000))
         self._photocraft_closing = False
         # Previews use their own worker and PhotoCraft connection so they never queue
         # behind a RAW load.

@@ -135,6 +135,7 @@ from .tool_mode_controller import ToolModeController
 from .ai_run_controller import AiRunController
 from .aiculler_controller import AiCullerController
 from .ai_setup_controller import AiSetupController
+from .ai_status_controller import AiStatusController
 from .record_ops_controller import RecordOpsController, UndoAction
 from .records_repository import RecordsRepository
 from .records_view_controller import RecordsViewController, _memory_path_key
@@ -885,6 +886,7 @@ class MainWindow(QMainWindow):
         self._ai_run = AiRunController(self)
         self._aiculler = AiCullerController(self)
         self._ai_setup = AiSetupController(self)
+        self._ai_status = AiStatusController(self)
         # Windows: our app bar is the title bar (see nativeEvent), so drop the
         # system caption but keep a resizable, snappable frame.
         self._custom_frame = os.name == "nt"
@@ -1170,7 +1172,7 @@ class MainWindow(QMainWindow):
         self._hidden_ai_results_timer.timeout.connect(self._ai_run.start_hidden_ai_results_load)
         self._ai_stage_index = 0
         self._ai_stage_total = 3
-        self._ai_stage_message = "Ready to run AI review"
+        self._ai_stage_message = "Ready to analyze"
         self._ai_progress_current = 0
         self._ai_progress_total = 0
         self._ai_progress_eta_text = ""
@@ -2045,6 +2047,11 @@ class MainWindow(QMainWindow):
         self.clear_filters_button.setObjectName("statusFilterClearButton")
         self.clear_filters_button.setAutoRaise(True)
         self.clear_filters_button.setDefaultAction(self.actions.clear_filters)
+        from .ui.ai_status_widgets import AIStatusText
+
+        self.ai_status_text = AIStatusText()
+        self.ai_status_text.setObjectName("aiStatusText")
+        status.addPermanentWidget(self.ai_status_text)  # permanent: a normal status widget is hidden whenever a message is showing
         status.addPermanentWidget(self.catalog_status_label)
         status.addPermanentWidget(self.cache_pipeline_label)
         status.addPermanentWidget(self.filter_summary_label)
@@ -2054,6 +2061,7 @@ class MainWindow(QMainWindow):
         self._aiculler.refresh_adapter_status_indicator()
         self._records_view.refresh_filter_toolbar_menu()
         self._navigation.refresh_recent_folder_combos()
+        self._ai_status.bind(self.ai_status_chip, self.ai_status_text)
 
     def _init_view_signal_connections(self) -> None:
         """Connect the thumbnail grid and details-view signals to the window's handlers."""

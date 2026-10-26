@@ -61,7 +61,11 @@ def test_folder_menu_add_to_library_starts_indexing(tmp_path, monkeypatch):
 def test_ai_setup_dialog_accepted_returns_a_selection(monkeypatch):
     """F-01: accepting the dialog used to raise NameError (``semantic_missing``)."""
     install_dialog_guards(monkeypatch)
-    monkeypatch.setattr(QDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+    def _press_install(self):  # the Set Up AI dialog reports what was pressed; "Install" is the one that returns a selection
+        self.install.click()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", lambda self: _press_install(self))
     with _fresh_window() as window:
         selection = window._ai_setup.show_ai_setup_dialog(
             automatic=False,

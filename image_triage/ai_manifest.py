@@ -383,8 +383,6 @@ def unpinned_bundles() -> tuple[str, ...]:
 # Capabilities
 # --------------------------------------------------------------------------
 
-_TORCH_MASK_MODULES = ("torch", "transformers", "safetensors", "PIL", "numpy")
-
 CAPABILITIES: dict[str, Capability] = {
     "culling": Capability(
         key="culling",
@@ -425,10 +423,84 @@ CAPABILITIES: dict[str, Capability] = {
         },
         expected_outputs=("quality_score",),
     ),
+    # The landmarker bundle first, the recognizer second: the probe and the face worker rely on that order.
     "faces": Capability(
         key="faces",
         name="Faces and people",
-        summary="Face detection, face quality and named-person grouping.",
+        summary="Finds faces, flags closed eyes and groups photos by person.",
+        modules=("numpy", "onnxruntime", "PIL", "mediapipe"),
+        model_bundles=("faces_blink", "faces_identity"),
+        requires_onnx=True,
+        probe_kind="face_stack",
+    ),
+    "cascade_rankers": Capability(
+        key="cascade_rankers",
+        name="Ranking (MANIQA and Q-ReAlign)",
+        summary="Picks the best frame of each stack. Needs the PyTorch runtime; fast on a GPU, slow on a CPU.",
+        modules=("numpy", "PIL", "torch", "timm", "transformers", "safetensors"),
+        model_bundles=("maniqa", "qrealign"),
+        requires_torch=True,
+        optional=True,
+    ),
+    # One capability per optional model, so Set Up AI can install and verify any subset of them. "cascade_rankers" above stays as the pair.
+    "rank_quality": Capability(
+        key="rank_quality",
+        name="Quality ranking (MANIQA)",
+        summary="Scores the technical quality of each frame. Needs the PyTorch runtime.",
+        modules=("numpy", "PIL", "torch", "timm"),
+        model_bundles=("maniqa",),
+        requires_torch=True,
+        optional=True,
+    ),
+    "rank_aesthetic": Capability(
+        key="rank_aesthetic",
+        name="Appeal ranking (Q-ReAlign)",
+        summary="Orders the finalists by overall appeal. Needs the PyTorch runtime.",
+        modules=("numpy", "PIL", "torch", "transformers", "safetensors"),
+        model_bundles=("qrealign",),
+        requires_torch=True,
+        optional=True,
+    ),
+    "editor_subject": Capability(
+        key="editor_subject",
+        name="Subject masks (BiRefNet)",
+        summary="Subject and background masks for the editor and Camera Raw.",
+        modules=("numpy", "PIL", "torch", "transformers"),
+        model_bundles=("birefnet",),
+        requires_torch=True,
+        optional=True,
+    ),
+    "editor_select": Capability(
+        key="editor_select",
+        name="Click selection (SAM 2.1)",
+        summary="Click an object to select it.",
+        modules=("numpy", "PIL", "torch", "transformers"),
+        model_bundles=("sam",),
+        requires_torch=True,
+        optional=True,
+    ),
+    "editor_depth": Capability(
+        key="editor_depth",
+        name="Depth maps (Depth Anything V2)",
+        summary="Depth maps for depth-aware edits.",
+        modules=("numpy", "PIL", "torch", "transformers"),
+        model_bundles=("depth",),
+        requires_torch=True,
+        optional=True,
+    ),
+    "editor_scene": Capability(
+        key="editor_scene",
+        name="Scene regions (OneFormer)",
+        summary="Sky, water, mountains, people and other regions as masks.",
+        modules=("numpy", "PIL", "torch", "transformers"),
+        model_bundles=("oneformer",),
+        requires_torch=True,
+        optional=True,
+    ),
+    "legacy_faces": Capability(
+        key="legacy_faces",
+        name="Legacy face quality (AuraFace)",
+        summary="The old culler's face-quality pass. Not part of setup.",
         modules=("numpy", "onnxruntime", "cv2", "insightface"),
         model_bundles=("faces",),
         requires_onnx=True,
@@ -461,41 +533,6 @@ CAPABILITIES: dict[str, Capability] = {
         expected_outputs=("text_embeds", "image_embeds"),
         expected_embedding_dim=512,
     ),
-    "scene_masks": Capability(
-        key="scene_masks",
-        name="Scene selection (OneFormer)",
-        summary="Editor masks for sky, skin, foliage and other scene regions.",
-        modules=_TORCH_MASK_MODULES,
-        model_bundles=("oneformer",),
-        requires_torch=True,
-        worker_module="image_triage.oneformer_worker",
-        probe_kind="torch",
-        transformers_symbols=("OneFormerForUniversalSegmentation", "OneFormerProcessor"),
-    ),
-    "subject_masks": Capability(
-        key="subject_masks",
-        name="Subject selection (BiRefNet)",
-        summary="Editor masks that isolate the main subject.",
-        # BiRefNet loads its own modeling code, which imports einops and
-        # kornia directly; without them the model fails at load time.
-        modules=(*_TORCH_MASK_MODULES, "timm", "cv2", "einops", "kornia"),
-        model_bundles=("birefnet",),
-        requires_torch=True,
-        worker_module="image_triage.birefnet_worker",
-        probe_kind="torch",
-        transformers_symbols=("AutoModelForImageSegmentation",),
-    ),
-    "sam_masks": Capability(
-        key="sam_masks",
-        name="Click selection (SAM 2.1)",
-        summary="Editor masks from a click or box on the photo.",
-        modules=_TORCH_MASK_MODULES,
-        model_bundles=("sam",),
-        requires_torch=True,
-        worker_module="image_triage.sam_worker",
-        probe_kind="torch",
-        transformers_symbols=("Sam2Model", "Sam2Processor"),
-    ),
 }
 
 
@@ -503,34 +540,30 @@ CAPABILITIES: dict[str, Capability] = {
 BASE_CAPABILITIES: tuple[str, ...] = (
     "culling",
     "text_scoring",
-    "quality_topiq",
     "faces",
     "semantic_search",
 )
-# Capabilities the PyTorch runtime adds: the editor's Masking tab (Subject and
-# Background, Landscape, People) runs these three models through Image Triage.
-TORCH_CAPABILITIES: tuple[str, ...] = (
-    "scene_masks",
-    "subject_masks",
-    "sam_masks",
-)
+# The PyTorch runtime adds the two rankers of the stack-first cascade (MANIQA and Q-ReAlign); the built-in editor's mask/depth tools that used it were removed.
+TORCH_CAPABILITIES: tuple[str, ...] = ("cascade_rankers",)
 
 
-def setup_capabilities(*, include_torch: bool) -> tuple[str, ...]:
-    """Exactly what Set Up AI installs, and therefore what it verifies."""
-    return BASE_CAPABILITIES + (TORCH_CAPABILITIES if include_torch else ())
+def setup_capabilities(*, include_torch: bool, optional: tuple[str, ...] | None = None) -> tuple[str, ...]:
+    """Exactly what Set Up AI installs, and therefore what it verifies.
+
+    ``optional`` names the optional-model capabilities the person chose (see ``ai_setup_plan``); without it the PyTorch runtime adds the ranker pair, as before.
+    """
+    if not include_torch:
+        return BASE_CAPABILITIES
+    return BASE_CAPABILITIES + (TORCH_CAPABILITIES if optional is None else tuple(optional))
 
 
 # Capabilities the "AI setup" flow installs by default, in report order.
 DEFAULT_CAPABILITY_ORDER: tuple[str, ...] = (
     "culling",
     "text_scoring",
-    "quality_topiq",
     "faces",
     "semantic_search",
-    "scene_masks",
-    "subject_masks",
-    "sam_masks",
+    "cascade_rankers",
 )
 
 
@@ -559,3 +592,16 @@ __all__ = [
     "unpinned_bundles",
     "unverified_bundles",
 ]
+
+
+# The cascade's model bundles (MANIQA, Q-ReAlign, the face landmarker and the face recognizer) live with the code that uses them; register them here so every
+# consumer of this module (the model store, the health check, Set Up AI) sees one complete list. Idempotent.
+def _register_cascade_bundles() -> None:
+    try:
+        from .cascade.rankers.bundles import register_bundles
+    except ImportError:  # the bundles module is what imported this one and is still loading: it registers itself when it finishes
+        return
+    register_bundles()
+
+
+_register_cascade_bundles()

@@ -16,12 +16,13 @@ from PySide6.QtWidgets import QApplication
 from image_triage.app_data_migration import migrate_legacy_app_data_once
 from image_triage.app_identity import migrate_legacy_settings_once
 from image_triage.app_logging import configure_app_logging
+from image_triage import memtrace
 from image_triage.formats import is_image_file_candidate
 from image_triage.qt_logging import install_qt_message_filter
 from image_triage.updater import current_app_version
 
 
-_APP_ICON_PATH = Path(__file__).resolve().parent / "ui" / "assets" / "app_icon-v2.ico"
+_APP_ICON_PATH = Path(__file__).resolve().parent / "ui" / "assets" / "app_icon-v4.ico"
 # One deployment switch controls whether the preserved splash is shown.
 _STARTUP_SPLASH_ENABLED = True
 
@@ -75,6 +76,7 @@ def main() -> int:
     QImageReader.setAllocationLimit(1024)
 
     app = QApplication(sys.argv)
+    memtrace.start(app)  # observability; does nothing unless IMAGE_TRIAGE_MEMTRACE is set
     app.setApplicationDisplayName("Image Triage")
     app.setWindowIcon(QIcon(str(_APP_ICON_PATH)))
 

@@ -84,7 +84,14 @@ public:
     void shareLink();
     void refreshNetwork();
 
+    // For hosts that draw their own interface (Image Triage's QML shell) and use Ui as the model:
+    // everything paint() shows, as JSON, and every click as a named command.
+    std::string stateJson();
+    void command(const std::string& name, const std::string& arg);
+    void removePaths(const std::vector<std::string>& list);
+
 private:
+    void menuCommand(int cmd);
     struct Speed {
         uint64_t sent = 0, tick = 0;
         double bps = 0;

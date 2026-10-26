@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QInputDialog, QMenu, QMessageBox, QToolButton
 from .ai_results import find_ai_result_for_record
 from .aiculler_workflow import aiculler_db_path
 from .face_index import FaceFolderIndexTask
+from .face_stack import face_cache_path
 from .filtering import (
     AIStateFilter,
     FileTypeFilter,
@@ -2202,9 +2203,10 @@ class RecordsViewController:
         """Kick off the person-filtered face pass for the current folder.
 
         Best-effort and layered on the semantic index: it reuses the stored
-        TinyCLIP embeddings for a cheap person pre-filter and runs AuraFace only
-        on the flagged subset. Requires the AI runtime and the AuraFace face
-        model to be installed; otherwise it stays quiet (people tagging simply
+        TinyCLIP embeddings for a cheap person pre-filter and runs the face finder
+        (landmarker + AdaFace) only on the flagged subset; files the folder cascade
+        already analysed skip both. Requires the AI runtime and the face models
+        to be installed; otherwise it stays quiet (people tagging simply
         does not populate until the face model is installed).
         """
         window = self._window
@@ -2268,6 +2270,7 @@ class RecordsViewController:
             clip_tokenizer=tokenizer,
             clip_fallback_text_model=getattr(runtime, "clip_fallback_text_model", None),
             device=str(getattr(runtime, "device", "auto")),
+            face_cache_path=face_cache_path(paths.artifacts_dir),
         )
         task.signals.progress.connect(window._records_view.handle_face_index_progress, Qt.ConnectionType.QueuedConnection)
         task.signals.finished.connect(window._records_view.handle_face_index_finished, Qt.ConnectionType.QueuedConnection)

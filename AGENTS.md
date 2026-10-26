@@ -8,11 +8,33 @@ upstream (`origin`, storytold/photocraft) and user fork (`fork`, tylermcm/photoc
 and compare their commits with our integration branch. A failed fetch must be
 reported; do not describe an offline checkout as current.
 
-Keep host changes on `codex/image-triage-integration`. Preserve user edits and
-existing commits before integrating updates. Merge the fetched upstream tip;
-also examine any fork-only work and integrate it when it belongs to this branch.
-Do not force-push, push to storytold, or create an upstream pull request. Pushes
-to the user's fork require the user's request. The user normally pushes manually.
+Merge upstream on a release, not on every session. Merging each upstream push
+turned out to be a constant uphill battle; one merge per release is easier. Unless
+the user says otherwise, merge only when upstream cuts a release (a new version tag).
+
+Every session still checks, so a large conflict is seen before the release: dry-run
+the merge without starting it (`git merge-tree --write-tree --name-only HEAD
+origin/main`), and report how far upstream has moved, which files would conflict
+(Camera Raw ones in particular) and whether the conflicts look large. If they are
+large, say so and ask whether to merge early; do not merge early on your own.
+
+Image Triage's own work lives on `main` (its integration branch was retired);
+`../photocraft` keeps its host changes on `codex/image-triage-integration`. Preserve
+user edits and existing commits before integrating updates. Also examine any
+fork-only work and integrate it when it belongs to that branch.
+
+## Commits and pushes
+
+You may commit and push without asking: `main` of this repository to `origin`
+(tylermcm/ImageTriage) and, in `../photocraft`, `codex/image-triage-integration` to
+`fork` (tylermcm/photocraft). Run the relevant tests first and say what was pushed.
+Push normally only: never force-push (`--force`, `--force-with-lease`), never
+rewrite commits that were already pushed, never push to storytold, and never create
+an upstream pull request.
+
+Commits and pull-request descriptions carry no AI attribution: no `Co-Authored-By`
+line (or any trailer naming Claude, an assistant or a model) and no "Generated with"
+line. Commits are authored by the configured git user.
 
 Review conflicts individually and review automatic merges in shared integration
 files too: desktop startup/services, UI control/jobs/menus, theme tokens, native

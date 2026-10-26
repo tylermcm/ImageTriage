@@ -13,8 +13,9 @@ from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QMimeData, QPoint, 
 from PySide6.QtGui import QAction, QBrush, QColor, QContextMenuEvent, QCursor, QDrag, QFont, QFontMetrics, QImage, QKeyEvent, QKeySequence, QLinearGradient, QMouseEvent, QPainter, QPaintEvent, QPainterPath, QPalette, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QComboBox, QMenu, QToolButton, QWidget
 
-from .ai_results import AICullBucket, AIConfidenceBucket, AIImageResult, ai_cull_bucket_for_result, refine_ai_result_with_review_insight
+from .ai_results import AICullBucket, AIConfidenceBucket, AIImageResult, ai_flag_dim_alpha, ai_cull_bucket_for_result, refine_ai_result_with_review_insight
 from .ai_why import AIWhy, ai_why_tooltip_html, build_ai_why
+from . import memtrace
 from .cache import ThumbnailKey
 from .metadata import CaptureMetadata, MetadataKey, MetadataManager
 from .keyboard_mapping import matches_shortcut
@@ -193,6 +194,11 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._display_aspect_ratio_by_path: dict[str, float] = {}
         self._pixmap_cache: OrderedDict[ThumbnailKey, tuple[QPixmap, int]] = OrderedDict()
         self._pixmap_cache_bytes = 0
+        # The cost of a pixmap is width * height * 4, not a measurement of the platform's pixmap: estimated (see memtrace).
+        self._pixmap_trace = memtrace.cache_with_gauge(
+            "grid.pixmap_cache", "estimated", self, lambda grid: (grid._pixmap_cache_bytes, len(grid._pixmap_cache)),
+            shared_with="thumbnail.memory_cache",
+        )
         self._pixmap_cache_limit = 192 * 1024 * 1024
         self._current_index = -1
         self._selected_indexes: set[int] = set()
@@ -2256,6 +2262,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                     Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
                     failure_text,
                 )
+            self._paint_ai_flag_dim(painter, rect, ai_result)
             self._paint_ai_verdict_dot(painter, rect, ai_result)
         else:
             if not use_loupe_card:
@@ -2321,6 +2328,11 @@ class ThumbnailGridView(QAbstractScrollArea):
                     painter.drawPixmap(draw_rect, zoom_source, source_rect)
                 else:
                     painter.drawPixmap(draw_rect, pixmap)
+                if self._show_ai_annotations:
+                    # The loupe/boxed card dims a flagged photo exactly as the grid card does (shared rule: ai_flag_dim_alpha).
+                    flag_alpha = ai_flag_dim_alpha(ai_result)
+                    if flag_alpha:
+                        painter.fillRect(draw_rect if use_loupe_card else image_rect, QColor(0, 0, 0, flag_alpha))
                 painter.restore()
             elif record.is_folder:
                 self._paint_folder_thumbnail(painter, image_rect)
@@ -2728,6 +2740,21 @@ class ThumbnailGridView(QAbstractScrollArea):
             AICullBucket.NEEDS_REVIEW: QColor("#e0b04a"),
             AICullBucket.REJECT: QColor("#e5635b"),
         }.get(bucket)
+
+    @staticmethod
+    def _ai_flag_dim_alpha(ai_result: AIImageResult | None) -> int:
+        """Alpha of the dim laid over a frame the cleanup flagged (pass 1); 0 for everything else. Flagged frames are dimmed, never hidden."""
+        return ai_flag_dim_alpha(ai_result)
+
+    def _paint_ai_flag_dim(self, painter: QPainter, rect: QRect, ai_result: AIImageResult | None) -> None:
+        alpha = self._ai_flag_dim_alpha(ai_result)
+        if not alpha or not self._show_ai_annotations:
+            return
+        painter.save()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, alpha))
+        painter.drawRoundedRect(QRectF(rect), 6.0, 6.0)
+        painter.restore()
 
     def _paint_ai_verdict_dot(self, painter: QPainter, rect: QRect, ai_result: AIImageResult | None) -> None:
         color = self._ai_verdict_dot_color(ai_result)
@@ -4882,7 +4909,11 @@ class ThumbnailGridView(QAbstractScrollArea):
         entry = self._pixmap_cache.get(key)
         if entry is not None:
             self._pixmap_cache.move_to_end(key)
+            if self._pixmap_trace is not None:
+                self._pixmap_trace.hit()
             return entry[0]
+        if self._pixmap_trace is not None:
+            self._pixmap_trace.miss()
         if image is None or image.isNull():
             return None
         return self._cache_pixmap(key, image)
@@ -4890,8 +4921,12 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _cached_pixmap_for_key(self, key: ThumbnailKey) -> QPixmap | None:
         entry = self._pixmap_cache.get(key)
         if entry is None:
+            if self._pixmap_trace is not None:
+                self._pixmap_trace.miss()
             return None
         self._pixmap_cache.move_to_end(key)
+        if self._pixmap_trace is not None:
+            self._pixmap_trace.hit()
         return entry[0]
 
     def _cache_pixmap(self, key: ThumbnailKey, image: QImage) -> QPixmap | None:
@@ -4905,13 +4940,20 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._pixmap_cache[key] = (pixmap, cost)
         self._pixmap_cache.move_to_end(key)
         self._pixmap_cache_bytes += cost
+        if self._pixmap_trace is not None:
+            self._pixmap_trace.put()
+            self._pixmap_trace.observe(self._pixmap_cache_bytes, len(self._pixmap_cache))  # the peak is before the trim
         while self._pixmap_cache_bytes > self._pixmap_cache_limit and self._pixmap_cache:
             _, (_, removed_cost) = self._pixmap_cache.popitem(last=False)
             self._pixmap_cache_bytes -= removed_cost
+            if self._pixmap_trace is not None:
+                self._pixmap_trace.evicted()
         return pixmap
 
     def _clear_pixmap_cache(self, *, paths: list[str] | tuple[str, ...] | set[str] | None = None) -> None:
         if not paths:
+            if self._pixmap_trace is not None:
+                self._pixmap_trace.invalidated(len(self._pixmap_cache))
             self._pixmap_cache.clear()
             self._pixmap_cache_bytes = 0
             return
@@ -4924,6 +4966,8 @@ class ThumbnailGridView(QAbstractScrollArea):
             if normalized_path_key(key.path) in normalized_paths:
                 _, cost = self._pixmap_cache.pop(key)
                 removed_cost += cost
+                if self._pixmap_trace is not None:
+                    self._pixmap_trace.invalidated()
         if removed_cost:
             self._pixmap_cache_bytes = max(0, self._pixmap_cache_bytes - removed_cost)
 

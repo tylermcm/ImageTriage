@@ -1,0 +1,55 @@
+<!doctype html><html><head><meta charset="utf-8"><title>ref</title></head><body style="margin:0;background:#0e0f11">
+<div id="root"></div>
+<script>
+class DCLogic{ setState(p){ this.state=Object.assign({},this.state,p); window.__render(); } }
+(async()=>{
+ const txt=await (await fetch('Main.dc.html')).text();
+ const doc=new DOMParser().parseFromString(txt,'text/html');
+ const dc=doc.querySelector('x-dc');
+ const helm=dc.querySelector('helmet');
+ for(const n of [...helm.children]) document.head.appendChild(n.cloneNode(true));
+ helm.remove();
+ const tpl=dc.innerHTML;
+ const code=doc.querySelector('script[data-dc-script]').textContent;
+ const Comp=new Function('DCLogic',code+';return Component;')(DCLogic);
+ const inst=new Comp();inst.props={topAlign:new URLSearchParams(location.search).get("align")||"current"};
+ const q=new URLSearchParams(location.search);
+ if(q.get('light'))inst.state.light=true;
+ if(q.get('tab')!==null)inst.state.tab=q.get('tab');
+ if(q.get('insp')==='0')inst.state.insp=false;
+ if(q.get('itab'))inst.state.itab=q.get('itab');
+ if(q.get('sel'))inst.state.sel=+q.get('sel');
+ if(q.get('menu'))inst.state.menu=q.get('menu');
+ if(q.get('dens'))inst.state.dens=q.get('dens');if(q.get('ai'))inst.state.ai=+q.get('ai');
+ let handlers=[];
+ const get=(o,p)=>p.split('.').reduce((a,k)=>a==null?a:a[k],o);
+ const blob=s=>typeof s==='string'?s.replace(/\/_blob\/([0-9a-f]+)/,(m,id)=>{const ids=['456514c110c5ecfd8f6162c5571d0ae8','12511675f0bab8e4aa91d394d4edead8','c4c6df0cfc8df51c2b9b7b56a434ef76','190737aa754c4ac6dcff1e5857ccf647','469a2c62aa7ea93f1de77fe61e58c7a4','357ecab7d7a889a6e83d14050e64d643','a138582bf85cf6b62fde2a41cb49e44b','512d14a16b37a9bfc8ff6285ab66ce4b','754773b1fae95c70abca0987bc69695a','a0ee21ab9d1f33226c9b9de08a9ab048','2451a9dbcc4a96693a7466d0a145c716','5ba1333c25c871f57178cb16e548e784'];const i=ids.indexOf(id)+1;return 'img/p'+String(i).padStart(2,'0')+'.jpg'}):s;
+ function expand(html,scope){
+  html=html.replace(/<sc-for\s+list="\{\{([^}]+)\}\}"\s+as="(\w+)"[^>]*>([\s\S]*?)<\/sc-for>/g,(m,l,as,body)=>{
+    const arr=get(scope,l)||[];return arr.map(it=>expand(body,Object.assign({},scope,{[as]:it}))).join('');});
+  return html.replace(/\{\{([^}]+)\}\}/g,(m,p)=>{
+    const v=get(scope,p.trim());
+    if(typeof v==='function'){handlers.push(v);return 'h'+(handlers.length-1);}
+    return v==null?'':String(blob(v)).replace(/"/g,'&quot;');});
+ }
+ window.__render=()=>{
+  handlers=[];
+  const vals=inst.renderVals();
+  const html=expand(tpl,vals);
+  const root=document.getElementById('root');
+  root.innerHTML=html;
+  root.querySelectorAll('*').forEach(el=>{
+   for(const a of [...el.attributes]){
+    const m=/^on(click|keydown)$/i.exec(a.name);
+    if(m&&/^h\d+$/.test(a.value)){const f=handlers[+a.value.slice(1)];el.removeAttribute(a.name);
+      el.addEventListener(m[1].toLowerCase(),e=>f(e));}
+   }
+   if(el.tagName==='IMG')el.setAttribute('src',blob(el.getAttribute('src')));
+  });
+  if(inst.componentDidMount&&!window.__m){window.__m=1;inst.componentDidMount();}
+  document.title='ready';
+ };
+ window.__inst=inst;
+ window.__render();
+})();
+</script></body></html>

@@ -20,7 +20,7 @@ git rm "image_triage/ui/assets/splash_background-v2.png" "image_triage/ui/assets
 git rm "minus_sign.png" "sidebar_icons.zip" "sidebar_icons_2.zip" "ssh_err.txt" "ssh_out.txt" "package-lock.json"
 ```
 
-**Keep on purpose:** `splash_background-v7.png` (the splash uses it) and `splash_background-v4.png` (`freeze_support.py` stages it explicitly). Checked against the built MSI tree: the whole package folder ships, so v7 is in the installer and there is no packaging bug. The v4 include is redundant and can go with a later packaging clean-up (WI-4.6), not now.
+**Keep on purpose:** `splash_background-v8.png` (the splash uses it; redrawn from code, source in `scripts/splash_art`, replaces v7) and `splash_background-v4.png` (`freeze_support.py` stages it explicitly). Checked against the built MSI tree: the whole package folder ships, so v8 is in the installer and there is no packaging bug. The v4 include is redundant and can go with a later packaging clean-up (WI-4.6), not now.
 
 ## B. Decide later (not safe yet)
 | Path | Why it stays for now |

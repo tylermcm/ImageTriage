@@ -26,6 +26,8 @@ from .records_view_controller import _memory_path_key
 from .scanner import normalized_path_key
 from .shell_actions import open_with_default
 from .tasks.ai_tasks import HiddenAIResultsLoadTask, PostAIRunBundleLoadTask, _AIFolderProbeTask, _compute_ai_folder_probe, _unknown_ai_folder_probe
+from .ui.ai_review_progress_dialog import stage_text
+from .ui.ai_review_progress_dialog import stage_text
 from .ui import AIReviewProgressDialog, ApplyAIDecisionsDialog, GuidedAICullPreferencesDialog, GuidedCullPreferences
 from .ui.ai_review_dialogs import AIReviewCompleteDialog
 
@@ -33,6 +35,25 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .window import MainWindow
+
+
+# Wording for an Analyze (stack-first cascade) run. The legacy culler (setting ai/use_legacy_culler) keeps the "AI review" strings on the left.
+_ANALYZE_WORDS = {
+    "Queued AI review": "Queued analysis",
+    "Preparing AI review": "Preparing to analyze",
+    "Stopping AI review": "Stopping analysis",
+    "Stopping AI review...": "Stopping analysis...",
+    "AI review complete": "Analysis complete",
+    "AI review failed": "Analysis failed",
+    "AI review stopped": "Analysis stopped",
+    "AI Review complete": "Analysis complete",
+    "AI Review failed": "Analysis failed",
+    "AI Review stopped": "Analysis stopped",
+    "AI Review is not running": "Analysis is not running",
+    "AI review is already running for the current folder": "Analysis is already running for the current folder",
+    "Choose a folder before running AI review": "Choose a folder before analyzing",
+    "Wait for the current AI review run to finish first.": "Wait for the current analysis to finish first.",
+}
 
 
 class AiRunController(QObject):
@@ -48,6 +69,8 @@ class AiRunController(QObject):
         self._ai_probe_generation = 0
         self._ai_probe_task: _AIFolderProbeTask | None = None
         self._ai_review_progress_dialog: AIReviewProgressDialog | None = None
+        self._ai_plain = False  # the current/last run is an Analyze (cascade) run: plain wording, "Stage 2 of 4"
+        self._ai_stage_prefix = ""
         self._ai_status_terminal_notice_key = ""
         self._hidden_ai_results_token = 0
         self._bucket_counts_cache: tuple[AIBundle, dict[AICullBucket, int]] | None = None
@@ -328,7 +351,7 @@ class AiRunController(QObject):
         if self._window._active_ai_task is None:
             self._window._ai_stage_index = 0
             self._window._ai_stage_total = 3
-            self._window._ai_stage_message = "Ready to run AI review"
+            self._window._ai_stage_message = "Ready to run AI review" if self.use_legacy_culler() else "Ready to analyze"
             self._window._ai_progress_current = 0
             self._window._ai_progress_total = 0
             self._window._ai_progress_eta_text = ""
@@ -546,7 +569,7 @@ class AiRunController(QObject):
         self.recompute_ai_demoted_burst_paths()
         result_count = len(bundle.results_by_path or {})
         self._window._settings.setValue(self._window.AI_RESULTS_KEY, source_details.source_path if source_details is not None else str(path))
-        if self._window._active_ai_task is None and self._window._ai_stage_message != "AI review complete":
+        if self._window._active_ai_task is None and self._window._ai_stage_message not in {"AI review complete", "Analysis complete"}:
             self._window._ai_stage_index = 0
             self._window._ai_stage_total = 3
             self._window._ai_stage_message = "Saved AI cache loaded"
@@ -1055,7 +1078,7 @@ class AiRunController(QObject):
             f"Embedding batch size: {self._window._settings_ctl.ai_embed_batch_size_label()}",
             f"CLI-Culler CLIP model: {self.ai_clip_model_variant_label()}",
             f"TOPIQ model installed: {self._window._ai_setup.aiculler_topiq_model_available()}",
-            f"InsightFace models installed: {self._window._ai_setup.aiculler_face_model_available()}",
+            f"Face models (landmarker and AdaFace) installed: {self._window._ai_setup.aiculler_face_model_available()}",
         ]
         runtime_status = self._window._ai_setup.managed_ai_runtime_status()
         runtime_lines.append(f"Runtime cache: {runtime_status.directories.root}")
@@ -1069,9 +1092,10 @@ class AiRunController(QObject):
         runtime_lines.append(
             f"TOPIQ model dir: {self._window._ai_setup.managed_aiculler_topiq_model_installation().install_dir}"
         )
-        runtime_lines.append(
-            f"InsightFace model dir: {self._window._ai_setup.managed_aiculler_face_model_installation().install_dir}"
-        )
+        from .ai_model_store import bundle_install_dir
+
+        for bundle_key, label in (("faces_blink", "Face landmarker"), ("faces_identity", "Face recognizer"), ("maniqa", "MANIQA"), ("qrealign", "Q-ReAlign")):
+            runtime_lines.append(f"{label} model dir: {bundle_install_dir(bundle_key)}")
         runtime_lines.append(f"Managed semantic model dir: {self._window._ai_setup.managed_semantic_model_installation().install_dir}")
         if ai_paths is not None:
             runtime_lines.append(f"Hidden cache: {ai_paths.hidden_root}")
@@ -1124,12 +1148,17 @@ class AiRunController(QObject):
                 protected.append(path)
         return tuple(protected)
 
+    def _words(self, text: str, plain: bool | None = None) -> str:
+        """``text`` in the wording of the run on screen (plain = Analyze run); the legacy culler keeps its own strings."""
+        use_plain = self._ai_plain if plain is None else plain
+        return _ANALYZE_WORDS.get(text, text) if use_plain else text
+
     def run_ai_pipeline(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
 
         if not self._window._current_folder:
-            self._window.statusBar().showMessage("Choose a folder before running AI review")
+            self._window.statusBar().showMessage(self._words("Choose a folder before running AI review", plain=not self.use_legacy_culler()))
             if logger.enabled:
                 logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, reason="no_folder")
             return
@@ -1139,10 +1168,14 @@ class AiRunController(QObject):
                 logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, folder=self._window._current_folder, reason="no_records")
             return
         if self._window._active_ai_task is not None:
-            self._window.statusBar().showMessage("AI review is already running for the current folder")
+            self._window.statusBar().showMessage(self._words("AI review is already running for the current folder"))
             self.show_ai_review_progress_dialog(folder=self._window._current_folder)
             if logger.enabled:
                 logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, folder=self._window._current_folder, reason="already_running")
+            return
+
+        if not self.use_legacy_culler():
+            self._run_cascade_pipeline(start, logger)
             return
 
         try:
@@ -1180,6 +1213,10 @@ class AiRunController(QObject):
             QMessageBox.warning(self._window, "AI Review", f"Could not prepare the AI run.\n\n{exc}")
             return
 
+        self._start_ai_task(task, start, logger, backend="cli-culler")
+
+    def _start_ai_task(self, task, start: float, logger, *, backend: str, stage_total: int = 5) -> None:
+        """Wire a run task (either the legacy culler or the cascade) to the progress UI and queue it."""
         task.signals.started.connect(self.handle_ai_run_started, Qt.ConnectionType.QueuedConnection)
         task.signals.stage.connect(self.handle_ai_run_stage, Qt.ConnectionType.QueuedConnection)
         task.signals.progress.connect(self.handle_ai_run_progress, Qt.ConnectionType.QueuedConnection)
@@ -1195,8 +1232,10 @@ class AiRunController(QObject):
         self._window._active_ai_report_cache_key = ""
         self._window._active_ai_semantic_cache_key = ""
         self._window._ai_stage_index = 0
-        self._window._ai_stage_total = 5
-        self._window._ai_stage_message = "Queued AI review"
+        self._window._ai_stage_total = stage_total
+        self._ai_plain = backend == "cascade"
+        self._ai_stage_prefix = ""
+        self._window._ai_stage_message = self._words("Queued AI review")
         self._window._ai_progress_current = 0
         self._window._ai_progress_total = 0
         self._window._ai_progress_eta_text = ""
@@ -1208,7 +1247,9 @@ class AiRunController(QObject):
                 message=self._window._ai_stage_message,
             )
         self.update_ai_toolbar_state()
-        self._window.statusBar().showMessage(f"Queued AI review for {self._window._current_folder}")
+        self._window.statusBar().showMessage(
+            f"Queued analysis for {self._window._current_folder}" if self._ai_plain else f"Queued AI review for {self._window._current_folder}"
+        )
         self._window._ai_run_pool.start(task)
         if logger.enabled:
             logger.duration(
@@ -1216,15 +1257,92 @@ class AiRunController(QObject):
                 (time.perf_counter() - start) * 1000.0,
                 folder=self._window._current_folder,
                 records=len(self._window._all_records),
-                backend="cli-culler",
+                backend=backend,
             )
+
+    CASCADE_LEGACY_KEY = "ai/use_legacy_culler"
+    CASCADE_CPU_RANKING_KEY = "ai/cascade_rank_on_cpu"
+
+    def use_legacy_culler(self) -> bool:
+        """The older TOPIQ-based culler stays reachable behind this hidden setting; the stack-first cascade is the default."""
+        try:
+            return bool(self._window._settings.value(self.CASCADE_LEGACY_KEY, False, type=bool))
+        except Exception:
+            return False
+
+    def cascade_ranking_decision(self):
+        """Whether the two rankers run this time. They need the managed AI runtime; on a GPU they run automatically, on a CPU only when switched on."""
+        from .cascade.launch import decide_ranking
+
+        runtime_device = None
+        try:
+            self._window._ai_setup.refresh_ai_runtime_preferences()
+            runtime = self._window._settings_ctl.configured_aiculler_runtime(workers=self._window._settings_ctl.configured_ai_embed_batch_size())
+            runtime.validate()
+            runtime_device = str(runtime.device or "")
+        except Exception:
+            runtime_device = None
+        try:
+            rank_on_cpu = bool(self._window._settings.value(self.CASCADE_CPU_RANKING_KEY, False, type=bool))
+        except Exception:
+            rank_on_cpu = False
+        from .ai_model_store import bundle_status
+
+        try:
+            quality, appeal = bundle_status("maniqa").is_ready, bundle_status("qrealign").is_ready
+        except Exception:
+            quality = appeal = False
+        return decide_ranking(runtime_device, rank_on_cpu, quality_installed=quality, appeal_installed=appeal)
+
+    def _run_cascade_pipeline(self, start: float, logger) -> None:
+        from .cascade.launch import default_scorer_factory
+        from .cascade.task import CascadeRunTask
+
+        decision = self.cascade_ranking_decision()
+        if decision.ask_cpu_confirmation:
+            choice = QMessageBox.question(
+                self._window,
+                "Rank on the CPU?",
+                decision.confirmation_text,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.No,
+            )
+            if choice == QMessageBox.StandardButton.Cancel:
+                return
+            if choice == QMessageBox.StandardButton.No:
+                decision = decision.without_ranking("Ranking skipped: you chose not to rank on the CPU.")
+        try:
+            task = CascadeRunTask(
+                folder=Path(self._window._current_folder),
+                records=tuple(record for record in self._window._all_records if not record.is_folder),
+                paths=build_aiculler_workflow_paths(self._window._current_folder),
+                scorer_factory=(
+                    default_scorer_factory(
+                        decision.device or "cpu",
+                        rankers=decision.use_rankers,
+                        blink=decision.use_blink,
+                        quality=decision.use_quality,
+                        appeal=decision.use_appeal,
+                    )
+                    if decision.use_rankers or decision.use_blink
+                    else None
+                ),
+                protected_paths=self.manual_ai_protected_paths(),
+                ranking_note=decision.note,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self._window, "AI Review", f"Could not prepare the cleanup run.\n\n{exc}")
+            return
+        self._start_ai_task(task, start, logger, backend="cascade", stage_total=4)
+        if decision.note:
+            self._window.statusBar().showMessage(decision.note)
 
     def rerank_ai_pipeline(self) -> None:
         if not self._window._current_folder:
             self._window.statusBar().showMessage("Choose a folder before reranking.")
             return
         if self._window._active_ai_task is not None:
-            self._window.statusBar().showMessage("AI review is already running for the current folder")
+            self._window.statusBar().showMessage(self._words("AI review is already running for the current folder"))
             self.show_ai_review_progress_dialog(folder=self._window._current_folder)
             return
         try:
@@ -1271,6 +1389,8 @@ class AiRunController(QObject):
         self._window._active_ai_semantic_cache_key = ""
         self._window._ai_stage_index = 0
         self._window._ai_stage_total = 2
+        self._ai_plain = False
+        self._ai_stage_prefix = ""
         self._window._ai_stage_message = "Queued quick rerank"
         self._window._ai_progress_current = 0
         self._window._ai_progress_total = 0
@@ -1325,6 +1445,19 @@ class AiRunController(QObject):
             self._window.grid.set_current_index(index)
         self._window.statusBar().showMessage(f"{len(existing_paths)} Winner or Needs Review image(s) remain for manual review.")
 
+    def apply_decision_reasons(self, records) -> dict[str, str]:
+        """Why each frame is a Reject, in a few words: the cascade's flags when it made the call, otherwise the AI's own sentence."""
+        from .ai_why import flag_labels
+
+        reasons: dict[str, str] = {}
+        for record in records:
+            result = self.ai_result_for_record(record)
+            if result is None:
+                continue
+            flags = ", ".join(flag_labels(getattr(result, "triggered_tags", "")))
+            reasons[record.path] = flags or (result.confidence_summary or "").strip()
+        return reasons
+
     def apply_ai_culling(self) -> None:
         if not self._window._current_folder:
             self._window.statusBar().showMessage("Open a source folder before applying AI decisions.")
@@ -1336,7 +1469,7 @@ class AiRunController(QObject):
             self._window.statusBar().showMessage("Apply AI Decisions only from the source folder, not from the recycle bin.")
             return
         if self._window._active_ai_task is not None:
-            self._window.statusBar().showMessage("Wait for the current AI review run to finish first.")
+            self._window.statusBar().showMessage(self._words("Wait for the current AI review run to finish first."))
             return
 
         groups = self.ai_cull_record_groups(tuple(self._window._all_records))
@@ -1355,6 +1488,7 @@ class AiRunController(QObject):
             keeper_count=len(keeper_records),
             review_count=len(review_records),
             thumbnail_manager=self._window.thumbnail_manager,
+            reasons=self.apply_decision_reasons(reject_records),
             parent=self._window,
         )
         if self._window._exec_dialog_with_geometry(dialog, "apply_ai_decisions") != dialog.DialogCode.Accepted:
@@ -1443,14 +1577,25 @@ class AiRunController(QObject):
         if window._active_ai_task is not None:
             self.refresh_inspector_analysis()
             return
-        try:
-            window._ai_setup.refresh_ai_runtime_preferences()
-            runtime = window._settings_ctl.configured_aiculler_runtime(workers=window._settings_ctl.configured_ai_embed_batch_size())
-            runtime.validate()
-        except Exception:
-            window.statusBar().showMessage("AI is not set up yet; opening setup")
-            window._handoff.open_ai_workflow_center()
-            return
+        if self.use_legacy_culler():
+            try:
+                window._ai_setup.refresh_ai_runtime_preferences()
+                runtime = window._settings_ctl.configured_aiculler_runtime(workers=window._settings_ctl.configured_ai_embed_batch_size())
+                runtime.validate()
+            except Exception:
+                window.statusBar().showMessage("AI is not set up yet; opening setup")
+                window._handoff.open_ai_workflow_center()
+                return
+        status = getattr(window, "_ai_status", None)
+        if status is not None and not self.use_legacy_culler() and status.first_run_prompt_needed():
+
+            def analyze_without_setup() -> None:
+                self._inline_analysis_run = True
+                self.run_ai_pipeline()
+                self.refresh_inspector_analysis()
+
+            if status.show_first_run_prompt(analyze_without_setup):
+                return
         self._inline_analysis_run = True
         self.run_ai_pipeline()
         self.refresh_inspector_analysis()
@@ -1466,7 +1611,7 @@ class AiRunController(QObject):
             return
         window = self._window
         if window._active_ai_task is not None:
-            stopping = window._ai_stage_message == "Stopping AI review"
+            stopping = window._ai_stage_message == self._words("Stopping AI review")
             panel.show_analysis_running(
                 stage=window._ai_stage_message,
                 current=window._ai_progress_current,
@@ -1498,7 +1643,7 @@ class AiRunController(QObject):
     def show_ai_review_progress_dialog(self, *, folder: str, reset: bool = False) -> None:
         dialog = self.ensure_ai_review_progress_dialog()
         if reset:
-            dialog.start_run(folder=folder, stage_total=self._window._ai_stage_total)
+            dialog.start_run(folder=folder, stage_total=self._window._ai_stage_total, plain=self._ai_plain)
         if getattr(self, "_inline_analysis_run", False):
             return  # progress is shown in the inspector; the dialog still collects the log
         dialog.show()
@@ -1509,7 +1654,7 @@ class AiRunController(QObject):
         dialog = self._ai_review_progress_dialog
         if dialog is None:
             return
-        dialog.finish_and_close("AI Review complete")
+        dialog.finish_and_close(self._words("AI Review complete"))
         dialog.deleteLater()
         self._ai_review_progress_dialog = None
 
@@ -1517,14 +1662,14 @@ class AiRunController(QObject):
         task = self._window._active_ai_task
         if task is None:
             if self._ai_review_progress_dialog is not None:
-                self._ai_review_progress_dialog.mark_finished("AI Review is not running")
+                self._ai_review_progress_dialog.mark_finished(self._words("AI Review is not running"))
             return
         perf_logger().log("ai.run_cancel_requested", folder=self._window._current_folder)
         task.cancel()
-        self._window._ai_stage_message = "Stopping AI review"
+        self._window._ai_stage_message = self._words("Stopping AI review")
         self._window._ai_progress_eta_text = ""
         self.update_ai_toolbar_state()
-        self._window.statusBar().showMessage("Stopping AI review...")
+        self._window.statusBar().showMessage(self._words("Stopping AI review..."))
 
     def ai_run_signal_matches_active_task(self, folder: str) -> bool:
         task = self._window._active_ai_task
@@ -1555,15 +1700,15 @@ class AiRunController(QObject):
             self._ai_review_progress_dialog.set_stage(
                 stage_index=0,
                 stage_total=max(1, self._window._ai_stage_total),
-                message="Preparing AI review",
+                message=self._words("Preparing AI review"),
             )
         self._window._ai_stage_index = 0
         self._window._ai_stage_total = max(1, self._window._ai_stage_total)
-        self._window._ai_stage_message = "Preparing AI review"
+        self._window._ai_stage_message = self._words("Preparing AI review")
         self._window._ai_progress_current = 0
         self._window._ai_progress_total = 0
         self._window._ai_progress_eta_text = ""
-        self._window.statusBar().showMessage(f"AI review started for {folder}")
+        self._window.statusBar().showMessage(f"Analyzing {folder}" if self._ai_plain else f"AI review started for {folder}")
         self.update_ai_toolbar_state()
 
     def handle_ai_run_stage(self, folder: str, stage_index: int, stage_total: int, message: str) -> None:
@@ -1571,14 +1716,18 @@ class AiRunController(QObject):
         if not self.ai_run_signal_matches_active_task(folder) or not self.ai_run_signal_matches_current_folder(folder):
             perf_logger().log("ai.run_signal_ignored", signal="stage", folder=folder, message=message)
             return
+        if self._ai_plain:
+            # The cascade reports its stages 0-based; people read "Stage 2 of 4" for the second one.
+            self._ai_stage_prefix = f"{stage_text(max(0, stage_index) + 1, max(1, stage_total))}: "
         if self._ai_review_progress_dialog is not None:
             self._ai_review_progress_dialog.set_stage(
-                stage_index=max(0, stage_index),
+                stage_index=max(0, stage_index) + (1 if self._ai_plain else 0),
                 stage_total=max(1, stage_total),
                 message=message,
             )
         self._window._ai_stage_index = max(0, stage_index)
         self._window._ai_stage_total = max(1, stage_total)
+        message = f"{self._ai_stage_prefix}{message}" if self._ai_plain else message
         self._window._ai_stage_message = message
         self._window._ai_progress_current = 0
         self._window._ai_progress_total = 0
@@ -1607,6 +1756,8 @@ class AiRunController(QObject):
                 total=max(0, total),
                 eta_text=eta_text.strip(),
             )
+        if self._ai_plain and self._ai_stage_prefix and not message.startswith("Stage "):
+            message = f"{self._ai_stage_prefix}{message}"
         self._window._ai_stage_message = message
         self._window._ai_progress_current = max(0, current)
         self._window._ai_progress_total = max(0, total)
@@ -1827,7 +1978,7 @@ class AiRunController(QObject):
         self._window._active_ai_report_cache_key = ""
         self._window._active_ai_semantic_cache_key = ""
         self._window._ai_stage_index = self._window._ai_stage_total
-        self._window._ai_stage_message = "AI review complete"
+        self._window._ai_stage_message = self._words("AI review complete")
         if self._window._ai_progress_total <= 0:
             self._window._ai_progress_total = 1
         self._window._ai_progress_current = self._window._ai_progress_total
@@ -1860,7 +2011,7 @@ class AiRunController(QObject):
         self._window._scan.refresh_face_records_for_current_folder()
         self._window._scan.refresh_image_categories_for_current_folder()
         self._window.statusBar().showMessage(
-            f"AI review complete. Loading {Path(html_report_path).name}..."
+            (f"Analysis complete. Loading {Path(html_report_path).name}..." if self._ai_plain else f"AI review complete. Loading {Path(html_report_path).name}...")
         )
         if logger.enabled:
             logger.duration(
@@ -1908,7 +2059,7 @@ class AiRunController(QObject):
             self.refresh_ai_state()
         if same_folder:
             self._window.statusBar().showMessage(
-                f"AI review complete. Loaded {Path(html_report_path).name}"
+                (f"Analysis complete. Loaded {Path(html_report_path).name}" if self._ai_plain else f"AI review complete. Loaded {Path(html_report_path).name}")
             )
         else:
             self.resume_deferred_background_review_work_after_ai(reason="finished")
@@ -1945,7 +2096,7 @@ class AiRunController(QObject):
             self.resume_deferred_background_review_work_after_ai(reason="finished_with_error")
             self._active_ai_run_start_perf = 0.0
             return
-        self._window.statusBar().showMessage(f"AI review complete, but loading results failed: {error}")
+        self._window.statusBar().showMessage((f"Analysis complete, but loading results failed: {error}" if self._ai_plain else f"AI review complete, but loading results failed: {error}"))
         self.show_ai_review_complete_dialog(
             folder=folder,
             report_dir=report_dir,
@@ -1976,15 +2127,15 @@ class AiRunController(QObject):
         self._window._active_ai_cluster_cache_key = ""
         self._window._active_ai_report_cache_key = ""
         self._window._active_ai_semantic_cache_key = ""
-        self._window._ai_stage_message = "AI review failed"
+        self._window._ai_stage_message = self._words("AI review failed")
         self._window._ai_progress_eta_text = ""
         self.update_ai_toolbar_state()
         same_folder = self.ai_run_signal_matches_current_folder(folder)
         if same_folder and self._ai_review_progress_dialog is not None:
-            self._ai_review_progress_dialog.mark_failed("AI Review failed")
+            self._ai_review_progress_dialog.mark_failed(self._words("AI Review failed"))
         if same_folder:
             QMessageBox.warning(self._window, "AI Review Failed", message)
-            self._window.statusBar().showMessage("AI review failed")
+            self._window.statusBar().showMessage(self._words("AI review failed"))
         self.resume_deferred_background_review_work_after_ai(reason="failed")
 
     def handle_ai_run_cancelled(self, folder: str, message: str) -> None:
@@ -2007,16 +2158,16 @@ class AiRunController(QObject):
         self._window._active_ai_cluster_cache_key = ""
         self._window._active_ai_report_cache_key = ""
         self._window._active_ai_semantic_cache_key = ""
-        self._window._ai_stage_message = "AI review stopped"
+        self._window._ai_stage_message = self._words("AI review stopped")
         self._window._ai_progress_current = 0
         self._window._ai_progress_total = 1
         self._window._ai_progress_eta_text = ""
         self.update_ai_toolbar_state()
         same_folder = self.ai_run_signal_matches_current_folder(folder)
         if same_folder and self._ai_review_progress_dialog is not None:
-            self._ai_review_progress_dialog.mark_finished(message or "AI Review stopped")
+            self._ai_review_progress_dialog.mark_finished(message or self._words("AI Review stopped"))
         if same_folder:
-            self._window.statusBar().showMessage(message or "AI review stopped")
+            self._window.statusBar().showMessage(message or self._words("AI review stopped"))
         self.resume_deferred_background_review_work_after_ai(reason="cancelled")
 
     def set_ai_status_visible(self, visible: bool) -> None:
@@ -2032,6 +2183,9 @@ class AiRunController(QObject):
             "AI review complete",
             "AI review failed",
             "AI review stopped",
+            "Analysis complete",
+            "Analysis failed",
+            "Analysis stopped",
             "Reused cached AI results",
         }
         if active:
@@ -2065,16 +2219,16 @@ class AiRunController(QObject):
             self._window.ai_progress_bar.setToolTip(self._window._ai_stage_message)
             return
 
-        if self._window._ai_stage_message == "AI review complete":
+        if self._window._ai_stage_message in {"AI review complete", "Analysis complete"}:
             total = max(1, self._window._ai_progress_total)
             self._window.ai_progress_bar.setRange(0, total)
             self._window.ai_progress_bar.setValue(total)
             self._window.ai_progress_bar.setFormat("Done")
-        elif self._window._ai_stage_message == "AI review stopped":
+        elif self._window._ai_stage_message in {"AI review stopped", "Analysis stopped"}:
             self._window.ai_progress_bar.setRange(0, 1)
             self._window.ai_progress_bar.setValue(0)
             self._window.ai_progress_bar.setFormat("Stopped")
-        elif self._window._ai_stage_message == "AI review failed":
+        elif self._window._ai_stage_message in {"AI review failed", "Analysis failed"}:
             self._window.ai_progress_bar.setRange(0, 1)
             self._window.ai_progress_bar.setValue(0)
             self._window.ai_progress_bar.setFormat("Failed")

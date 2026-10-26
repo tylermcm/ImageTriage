@@ -25,6 +25,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
+from . import memtrace
+
 TARGET_MS = 100.0
 CEILING_MS = 200.0
 STAGES = ("first_pixel", "preview", "refined")
@@ -100,6 +102,19 @@ class NavigationTimer:
 
     def _retire(self, navigation: Navigation) -> None:
         self.finished.append(navigation)
+        if memtrace.ENABLED:
+            # So a finished navigation can be lined up with the memory samples around it (see memtrace_report).
+            from .perf import perf_logger
+
+            logger = perf_logger()
+            if logger.enabled:
+                logger.log(
+                    "nav.finished",
+                    path=navigation.path,
+                    stages=dict(navigation.stages),
+                    superseded=navigation.superseded,
+                    started_elapsed_ms=logger.elapsed_ms_at(navigation.started) if self._clock is time.perf_counter else None,
+                )
         if self._sink is not None:
             try:
                 self._sink(navigation.as_dict())

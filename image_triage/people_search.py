@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 import numpy as np
@@ -69,6 +69,9 @@ def cluster_face_identities(
     # ``identity_model`` scopes clustering to one recognizer's embeddings so
     # vectors written by a different recognizer never mix into the same space.
     ensure_people_search_schema(connection)
+    if identity_model is not None:
+        # Names given under another recognizer are remembered by where the face is, before anything below can drop their clusters.
+        remember_named_faces(connection, identity_model)
     faces = list_face_identities(
         connection,
         min_face_confidence=min_face_confidence,
@@ -154,7 +157,110 @@ def cluster_face_identities(
             )
             """
         )
+    if identity_model is not None and apply_remembered_names(connection, identity_model):
+        names = {item.cluster_id: item for item in list_person_clusters(connection, include_ignored=True)}
+        clusters = [replace(cluster, name=names[cluster.cluster_id].name, ignored=names[cluster.cluster_id].ignored) if cluster.cluster_id in names else cluster for cluster in clusters]
     return clusters
+
+
+# -- names that survive a change of recognizer -----------------------------------------------------------------------------------------------
+# A different recognizer is a different embedding space, so its clusters cannot be matched to the old ones by centroid. What both share is the photo and where the face
+# sits in it: before an old face is replaced, its name is remembered by (image, box), and a new cluster takes the name most of its faces carried.
+
+
+def _ensure_name_carry_table(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS face_name_carry (
+            image_id INTEGER NOT NULL, x1 REAL NOT NULL, y1 REAL NOT NULL, x2 REAL NOT NULL, y2 REAL NOT NULL,
+            name TEXT NOT NULL DEFAULT '', ignored INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(image_id, x1, y1, x2, y2)
+        )
+        """
+    )
+
+
+def remember_named_faces(connection: sqlite3.Connection, identity_model: str) -> int:
+    """Remember the name (or ignored mark) of every face that was not made by ``identity_model``. Idempotent; returns how many rows were added."""
+    ensure_people_search_schema(connection)
+    _ensure_name_carry_table(connection)
+    with connection:
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO face_name_carry(image_id, x1, y1, x2, y2, name, ignored)
+            SELECT image_faces.image_id, image_faces.x1, image_faces.y1, image_faces.x2, image_faces.y2,
+                   face_identity_clusters.name, face_identity_clusters.ignored
+            FROM image_faces
+            INNER JOIN face_identity_clusters ON face_identity_clusters.cluster_id = image_faces.cluster_id
+            WHERE (image_faces.identity_model IS NULL OR image_faces.identity_model != ?)
+              AND (face_identity_clusters.name != '' OR face_identity_clusters.ignored = 1)
+            """,
+            (identity_model,),
+        )
+    return int(cursor.rowcount or 0)
+
+
+def _boxes_match(left: tuple[float, float, float, float], right: tuple[float, float, float, float]) -> bool:
+    """The same face: either box's centre lies inside the other (the two recognizers' detectors draw the box a little differently)."""
+
+    def centre_inside(inner: tuple[float, float, float, float], outer: tuple[float, float, float, float]) -> bool:
+        cx, cy = (inner[0] + inner[2]) / 2.0, (inner[1] + inner[3]) / 2.0
+        return outer[0] <= cx <= outer[2] and outer[1] <= cy <= outer[3]
+
+    return centre_inside(left, right) and centre_inside(right, left)
+
+
+def apply_remembered_names(connection: sqlite3.Connection, identity_model: str) -> int:
+    """Name the unnamed clusters of ``identity_model`` from remembered faces: a cluster takes the name most of its matching faces carried, if no other cluster has it.
+    Returns how many clusters were named. Remembered faces that matched are forgotten; the rest wait for their photo to be scanned."""
+    ensure_people_search_schema(connection)
+    _ensure_name_carry_table(connection)
+    previous_factory = connection.row_factory
+    connection.row_factory = sqlite3.Row
+    try:
+        carry = connection.execute("SELECT image_id, x1, y1, x2, y2, name, ignored FROM face_name_carry").fetchall()
+        if not carry:
+            return 0
+        members = connection.execute(
+            """
+            SELECT image_faces.cluster_id, image_faces.image_id, image_faces.x1, image_faces.y1, image_faces.x2, image_faces.y2
+            FROM image_faces
+            INNER JOIN face_identity_clusters ON face_identity_clusters.cluster_id = image_faces.cluster_id
+            WHERE image_faces.identity_model = ? AND face_identity_clusters.name = '' AND face_identity_clusters.ignored = 0
+            """,
+            (identity_model,),
+        ).fetchall()
+        taken = {str(row["name"]).casefold() for row in connection.execute("SELECT name FROM face_identity_clusters WHERE name != ''")}
+    finally:
+        connection.row_factory = previous_factory
+    by_image: dict[int, list[sqlite3.Row]] = {}
+    for row in carry:
+        by_image.setdefault(int(row["image_id"]), []).append(row)
+    votes: dict[int, dict[tuple[str, int], int]] = {}
+    matched_keys: list[tuple] = []
+    for member in members:
+        box = (float(member["x1"]), float(member["y1"]), float(member["x2"]), float(member["y2"]))
+        for remembered in by_image.get(int(member["image_id"]), ()):
+            if _boxes_match(box, (float(remembered["x1"]), float(remembered["y1"]), float(remembered["x2"]), float(remembered["y2"]))):
+                tally = votes.setdefault(int(member["cluster_id"]), {})
+                key = (str(remembered["name"]), int(remembered["ignored"]))
+                tally[key] = tally.get(key, 0) + 1
+                matched_keys.append(tuple(remembered[column] for column in ("image_id", "x1", "y1", "x2", "y2")))
+                break
+    named = 0
+    stamp = datetime.now(timezone.utc).isoformat()
+    ranked = sorted(votes.items(), key=lambda item: -max(item[1].values()))
+    with connection:
+        for cluster_id, tally in ranked:
+            (name, ignored), _count = max(tally.items(), key=lambda item: item[1])
+            if name and name.casefold() not in taken:
+                connection.execute("UPDATE face_identity_clusters SET name = ?, updated_at = ? WHERE cluster_id = ?", (name, stamp, cluster_id))
+                taken.add(name.casefold())
+                named += 1
+            elif not name and ignored:
+                connection.execute("UPDATE face_identity_clusters SET ignored = 1, updated_at = ? WHERE cluster_id = ?", (stamp, cluster_id))
+        connection.executemany("DELETE FROM face_name_carry WHERE image_id = ? AND x1 = ? AND y1 = ? AND x2 = ? AND y2 = ?", matched_keys)
+    return named
 
 
 def assign_person_name(connection: sqlite3.Connection, cluster_id: int, name: str) -> None:

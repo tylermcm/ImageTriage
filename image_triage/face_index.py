@@ -3,11 +3,13 @@
 Decoupled from the full AI workflow, and layered on top of the semantic index:
 it reuses the TinyCLIP image embeddings the semantic pass already stored to
 cheaply decide which photos likely contain a person (zero-shot), and only runs
-the heavier AuraFace detect+embed on that flagged subset. Detected faces are
+the heavier face finder (landmarker + AdaFace, see ``face_stack``) on that flagged
+subset. A file the folder cascade or an earlier scan already analysed comes from the
+shared face cache and skips both the pre-filter and the models. Detected faces are
 persisted and clustered so the People panel can surface recurring people.
 
-Pipeline: stored TinyCLIP embeddings -> person pre-filter (@0.15) -> AuraFace on
-the flagged subset -> cluster (scoped to the active recognizer).
+Pipeline: stored TinyCLIP embeddings -> person pre-filter (@0.15), or a cache hit ->
+face finder on the flagged subset -> cluster (scoped to the active recognizer).
 
 The planner and scoring are pure so they can be unit tested without Qt, ONNX,
 or real models; the QRunnable is a thin wrapper.
@@ -28,10 +30,11 @@ from PySide6.QtCore import QObject, QRunnable, Signal
 
 from aiculler.features import PreviewExtractor, _file_signature
 from aiculler.storage import SQLiteFeatureStore
-from .ai_model import AICULLER_FACE_PACK_NAME, active_face_identity_model, aiculler_face_model_root
-from .people_search import cluster_face_identities
+from .ai_model import active_face_identity_model
+from .cascade.faces import FaceCache
+from .face_stack import FaceStackAnalyzer
+from .people_search import cluster_face_identities, remember_named_faces
 from .perf import write_execution_log
-from .quality.face import FaceQualityAnalyzer
 from .quality.store import upsert_faces
 from .semantic_index import ensure_semantic_onnx_runtime
 
@@ -42,8 +45,9 @@ FACE_INDEX_SCHEMA_VERSION = 2
 # while skipping ~74% of the AuraFace work. Favor recall — a false positive just
 # costs one AuraFace call that finds no face; a false negative drops a person.
 PERSON_PRESENCE_THRESHOLD = 0.15
-# Clustering threshold calibrated for AuraFace (glintr100) embeddings.
-FACE_CLUSTER_THRESHOLD = 0.40
+# Clustering threshold for AdaFace IR-50 embeddings: on 88 faces of five people (portraits and a family trip) every value from 0.30 to 0.40 recovered the same
+# people as average-linkage at 0.35; below 0.25 two people merged and above 0.45 one person began to split. One library, so recalibrate if real ones disagree.
+FACE_CLUSTER_THRESHOLD = 0.35
 FACE_INDEX_COMMIT_BATCH = 16
 # Full-image TinyCLIP margin below which an image is confidently animal-led.
 # This catches animal faces AuraFace can mistake for humans without imposing a
@@ -173,6 +177,7 @@ def plan_face_index(
     threshold: float = PERSON_PRESENCE_THRESHOLD,
     animal_rejection_margin: float = ANIMAL_REJECTION_MARGIN,
     schema_version: int = FACE_INDEX_SCHEMA_VERSION,
+    face_cache: FaceCache | None = None,
 ) -> FaceIndexPlan:
     """Decide which embedded images need the AuraFace pass.
 
@@ -196,6 +201,11 @@ def plan_face_index(
         )
         if state_matches_source and int(state["schema_version"]) == schema_version:
             skipped += 1
+            continue
+        cached = face_cache.get(source) if face_cache is not None else None
+        if cached is not None:  # already analysed (by the cascade or an earlier scan): the answer is known, no pre-filter needed
+            item = FaceIndexItem(image_id, source, signature_key, 1.0 if cached else 0.0, None, None)
+            (to_embed if cached else to_mark).append(item)
             continue
         embedding = store.get_embedding(image_id)
         prob = person_scorer(embedding)
@@ -230,7 +240,7 @@ class FaceIndexSignals(QObject):
 
 
 class FaceFolderIndexTask(QRunnable):
-    """Background person-filtered AuraFace pass + clustering for one folder."""
+    """Background person-filtered face pass (landmarker + AdaFace) + clustering for one folder."""
 
     def __init__(
         self,
@@ -241,10 +251,8 @@ class FaceFolderIndexTask(QRunnable):
         clip_text_model: str | Path | None = None,
         clip_tokenizer: str | Path | None = None,
         clip_fallback_text_model: str | Path | None = None,
-        face_model_root: str | Path | None = None,
-        face_pack_name: str = AICULLER_FACE_PACK_NAME,
         device: str = "auto",
-        det_size: int = 640,
+        face_cache_path: str | Path | None = None,
         person_threshold: float = PERSON_PRESENCE_THRESHOLD,
         cluster_threshold: float = FACE_CLUSTER_THRESHOLD,
         commit_batch: int = FACE_INDEX_COMMIT_BATCH,
@@ -261,10 +269,8 @@ class FaceFolderIndexTask(QRunnable):
         self.clip_text_model = Path(clip_text_model) if clip_text_model else None
         self.clip_tokenizer = Path(clip_tokenizer) if clip_tokenizer else None
         self.clip_fallback_text_model = Path(clip_fallback_text_model) if clip_fallback_text_model else None
-        self.face_model_root = Path(face_model_root) if face_model_root else None
-        self.face_pack_name = str(face_pack_name)
+        self.face_cache_path = Path(face_cache_path) if face_cache_path else None
         self.device = str(device or "auto")
-        self.det_size = int(det_size)
         self.person_threshold = float(person_threshold)
         self.cluster_threshold = float(cluster_threshold)
         self.commit_batch = max(1, int(commit_batch))
@@ -305,28 +311,8 @@ class FaceFolderIndexTask(QRunnable):
     def _build_analyzer(self):
         if self._analyzer is not None:
             return self._analyzer
-        ensure_semantic_onnx_runtime(device=self.device)
-        import onnxruntime
-
-        use_cuda = (
-            not self.device.startswith("cpu")
-            and "CUDAExecutionProvider" in onnxruntime.get_available_providers()
-        )
-        ctx_id = 0 if use_cuda else -1
-        providers = (
-            ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            if use_cuda
-            else ["CPUExecutionProvider"]
-        )
-        root = str(self.face_model_root) if self.face_model_root is not None else str(aiculler_face_model_root())
-        return FaceQualityAnalyzer(
-            root=root,
-            name=self.face_pack_name,
-            det_size=self.det_size,
-            ctx_id=ctx_id,
-            providers=providers,
-            enable_identity=True,
-        )
+        cache = FaceCache(self.face_cache_path) if self.face_cache_path is not None else None
+        return FaceStackAnalyzer(cache=cache, cancel_check=lambda: self._cancelled)
 
     def run(self) -> None:
         if self._cancelled:
@@ -334,6 +320,7 @@ class FaceFolderIndexTask(QRunnable):
         try:
             write_execution_log(f"face-index: run START (device={self.device}, model={self.model_identity})")
             store = SQLiteFeatureStore(self.db_path)
+            analyzer = None
             try:
                 embedded = store.list_images(require_embedding=True)
                 if not embedded:
@@ -341,22 +328,26 @@ class FaceFolderIndexTask(QRunnable):
                     self.signals.finished.emit(self.folder, self.token, 0, 0)
                     return
 
+                # Names given under the previous recognizer are remembered by photo and box before any face below is replaced.
+                remember_named_faces(store.connection, self.model_identity)
                 person_scorer, animal_scorer = self._build_image_scorers()
+                face_cache = FaceCache(self.face_cache_path) if self.face_cache_path is not None else None
                 plan = plan_face_index(
                     store,
                     person_scorer,
                     model_identity=self.model_identity,
                     animal_scorer=animal_scorer,
                     threshold=self.person_threshold,
+                    face_cache=face_cache,
                 )
                 write_execution_log(
                     f"face-index: plan — {len(embedded)} embedded images, "
-                    f"{len(plan.to_embed)} flagged for AuraFace, {len(plan.to_mark)} rejected by "
-                    f"person/animal filters, {len(plan.to_preserve)} migrated without AuraFace"
+                    f"{len(plan.to_embed)} flagged for the face finder, {len(plan.to_mark)} rejected by "
+                    f"person/animal filters or the face cache, {len(plan.to_preserve)} migrated without a rescan"
                 )
 
                 # Rejected images: clear stale detections and record state so
-                # they are not re-scored every run. No AuraFace work.
+                # they are not re-scored every run. No face-finder work.
                 for item in plan.to_mark:
                     if self._cancelled:
                         store.connection.commit()
@@ -392,7 +383,7 @@ class FaceFolderIndexTask(QRunnable):
                     if plan.to_mark:
                         self._cluster(store)
                     write_execution_log(
-                        "face-index: run END — no new images require AuraFace"
+                        "face-index: run END — no new images need the face finder"
                     )
                     self.signals.finished.emit(self.folder, self.token, 0, self._people_count(store))
                     return
@@ -400,7 +391,7 @@ class FaceFolderIndexTask(QRunnable):
                 analyzer = self._build_analyzer()
                 if not getattr(analyzer, "available", True):
                     detail = str(getattr(analyzer, "initialization_error", "") or "model/runtime load failed")
-                    write_execution_log(f"face-index: FAILED — AuraFace analyzer unavailable ({detail})")
+                    write_execution_log(f"face-index: FAILED — face analyzer unavailable ({detail})")
                     self.signals.failed.emit(
                         self.folder, self.token, f"Face analyzer could not start: {detail}"
                     )
@@ -409,6 +400,7 @@ class FaceFolderIndexTask(QRunnable):
 
                 with tempfile.TemporaryDirectory(prefix="face_index_") as cache_dir:
                     loader = self._image_loader or _default_image_loader(cache_dir)
+                    preview_path_of = _preview_path_loader(cache_dir) if getattr(analyzer, "wants_source_path", False) else None
                     completed = 0
                     faces_indexed = 0
                     pending = 0
@@ -418,10 +410,15 @@ class FaceFolderIndexTask(QRunnable):
                             store.connection.commit()
                             return
                         try:
-                            bgr = loader(item.source_path)
-                            result = analyzer.analyze(bgr)
+                            if preview_path_of is not None:  # the shared face finder reads the file itself; the preview only fixes the box coordinates
+                                result = analyzer.analyze_source(item.source_path, preview_path_of(item.source_path))
+                            else:
+                                bgr = loader(item.source_path)
+                                result = analyzer.analyze(bgr)
                             faces = list(result.get("faces") or [])
-                        except Exception:
+                        except Exception as error:
+                            if type(error).__name__.startswith("Ranker"):  # the helper could not run at all: say so instead of marking every photo face-free
+                                raise
                             # Unreadable image: record state so we do not retry it
                             # forever (a changed file gets a new signature).
                             faces = []
@@ -464,6 +461,9 @@ class FaceFolderIndexTask(QRunnable):
                     self.folder, self.token, faces_indexed, people
                 )
             finally:
+                close = getattr(analyzer, "close", None)
+                if close is not None:  # stops the face-finder worker and saves the face cache
+                    close()
                 store.close()
         except Exception as exc:  # pragma: no cover - defensive; surfaced to UI
             if self._cancelled:
@@ -484,6 +484,16 @@ class FaceFolderIndexTask(QRunnable):
             "SELECT COUNT(*) AS c FROM face_identity_clusters"
         ).fetchone()
         return 0 if row is None else int(row["c"])
+
+
+def _preview_path_loader(cache_dir: str | Path) -> Callable[[str], Path]:
+    preview_extractor = PreviewExtractor(cache_dir)
+
+    def load(source_path: str) -> Path:
+        preview_path, _ = preview_extractor.extract(Path(source_path))
+        return Path(preview_path)
+
+    return load
 
 
 def _default_image_loader(cache_dir: str | Path) -> Callable[[str], np.ndarray]:

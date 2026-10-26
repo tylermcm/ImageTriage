@@ -9,6 +9,7 @@ from typing import Callable
 from PySide6.QtCore import QObject, QPoint, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygon
 
+from . import memtrace
 from .cache import DiskThumbnailCache, EditStateMemo, MemoryThumbnailCache, ThumbnailKey
 from .edit_storage import session_has_edits
 from .formats import suffix_for_path
@@ -41,8 +42,24 @@ class ThumbnailTask(QRunnable):
         self.result_queue = result_queue
         self.is_key_wanted = is_key_wanted
         self.setAutoDelete(True)
+        self._jobs = memtrace.jobs("thumbnail.decode")
+        if self._jobs is not None:
+            self._jobs.queued()
 
     def run(self) -> None:
+        jobs = self._jobs
+        if jobs is None:
+            self._run()
+            return
+        # Estimated: the thumbnail size asked for, 4 bytes a pixel (the source is decoded at or near that size).
+        estimate = max(0, self.request.target_size.width()) * max(0, self.request.target_size.height()) * 4
+        jobs.started(estimate)
+        try:
+            self._run()
+        finally:
+            jobs.finished(estimate)
+
+    def _run(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         source = "decode"
@@ -157,6 +174,8 @@ class ThumbnailTask(QRunnable):
             self.disk_cache.save(self.request.key, image)
         if self._drop_stale_result(start, "decode"):
             return
+        if self._jobs is not None:
+            self._jobs.result(memtrace.image_bytes(image))
         self.result_queue.put(("ready", self.request.key, image))
         if logger.enabled:
             logger.duration(
@@ -217,6 +236,8 @@ class ThumbnailManager(QObject):
         self._wanted_keys_active = False
         self._wanted_keys_lock = Lock()
         self._result_queue: SimpleQueue = SimpleQueue()
+        memtrace.gauge("thumbnail.pending_keys", self, lambda manager: len(manager._pending))
+        memtrace.gauge("thumbnail.result_queue_depth", self, lambda manager: manager._result_queue.qsize())
         self._drain_timer = QTimer(self)
         self._drain_timer.setInterval(12)
         self._drain_timer.timeout.connect(self._drain_results)

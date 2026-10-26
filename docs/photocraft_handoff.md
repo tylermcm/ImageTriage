@@ -2830,3 +2830,62 @@ completion applies to the three features requested here, not the entire window.
 
 
 2026-10-18 push checkpoint: see CLAUDE_HANDOFF.md. Fresh fetch succeeded; upstream advanced5c89f16b ->56dbc89a. Merge deferred for this user-requested tested-state handoff; no conflict resolution or merge validation claimed. Both integration branches pushed only to user forks.
+
+
+## 2026-10-19 upstream merge: storytold/photocraft d95fdf31 (v0.10.0)
+
+* Old upstream tip merged earlier: 56dbc89a (recorded above as deferred); new upstream tip `d95fdf31` (`origin/main`, tag `v0.10.0`).
+  Fork tip before the merge: `12b459f5` (`fork/codex/image-triage-integration`, fast-forwarded from `c00bd4aa`).
+  Merge commit on `codex/image-triage-integration` in `../photocraft`: `99cdc8b4`. Not pushed.
+* 292 upstream commits, 303 files; 22 textual conflicts, resolved individually:
+  * `apps/photocraft/src/main.rs`: took upstream's `parse_launch_args`/`LaunchArgs`/`--help`/`--`; unknown `-` options are now
+    exit 2, so the host's flags must be registered. Re-added only `--hosted` and `--raw-workspace` (host behaviour upstream lacks).
+    Every flag `photocraft_bridge.py` and `preview_controller.py` pass (`--hosted --control --control-token-file
+    --automation-read-root --automation-write-root --raw-workspace`) is accepted. Upstream's missing-value usage errors replace
+    our silent `--control-token` fallback. Automation authorization is otherwise upstream's.
+  * `crates/algo/src/camera_raw/local_tone.rs`: kept ours. Our Shadows/Highlights already contained upstream PR #7141 (`4b660fcf`)
+    and adds the parallel per-reference loop on top; upstream has nothing else in the file.
+  * `crates/ui-egui/src/camera_raw_scope_ui.rs`: upstream's `paint_with(.., Spikes::Clip)` (#7419) with our
+    `camera_raw_design.histogram_corner_size` token instead of upstream's literal 18.0.
+  * `crates/engine/src/lens_cmds.rs`: both kept: upstream's exposure clamp -5..5 (#6876) and our `validate_finishing()`.
+  * 18 `crates/ui-egui/src/i18n/*.tsv`: union of both sides' entries (checked: no key from either side lost).
+  * Clean merges reviewed for CR: `raw/develop.rs`, `raw/tone.rs` (#7416 NaN fix), `engine/tests/camera_raw_exposure_clamp.rs`.
+* Validation: `cargo check -p photocraft --all-targets` ok. `shadows_bench --hash`: all 20 hashes identical to before the merge;
+  Shadows +60 ~70 ms, Highlights -60 ~73 ms (900x600 proxy; was ~64/66). Tests: algo+raw 587+ passed; engine lib 1776 passed
+  with `--test-threads=1` (the parallel run of the lib binary crashed with 0xc0000005, and a parallel link of all engine test
+  binaries hit linker 1140/0xc00000fd; both look environmental, not seen single-threaded or with `-j 2`); exposure clamp 2 passed;
+  app bins 152 passed (launch-args tests); ui-egui `camera_raw` 95 passed.
+* Not done: clippy, `cargo xtask layers|wasm`, a rebuilt hosted executable, and the live Image Triage handoff gates (persistent
+  filmstrip navigation, stash/restore, native Save and grid propagation, closed-tab reopen, hidden startup, theme/resize,
+  fullscreen, shutdown/process cleanup). Keep the known-good hosted executable until those pass.
+* Candidate build of merge `99cdc8b4`: `C:/Users/user00/Documents/photocraft/target/merge-d95fdf31/release/photocraft.exe`
+  (`cargo build --release -p photocraft -j 4`, own target dir, 15m56s). PE subsystem = GUI (2), so no console window (the
+  `windows_subsystem` attribute in `main.rs` only applies without debug assertions; dev builds show a console).
+  SHA256 f89342ebc8735edff6ae0403348ded82e9a2513cc9280527ef2e7f604bc90000. Not promoted; known-good executables untouched.
+
+## 2026-10-20: cascade audit session status check (no integration)
+
+Both `origin` and `fork` fetched successfully. The cached upstream main advanced
+`46e538b3` -> `9b9643764f3fb77d9f0e48d7510983ae50621e11`.
+Local `codex/image-triage-integration` and its fork tracking branch both point to
+`74dc329068732f419c43f1548827c434977fb657`; clean checkout, no fork-only commits.
+HEAD versus origin/main is 78 / 119 exclusive commits. Latest version tag remains
+v0.10.0, already integrated; newly fetched older tags do not call for a merge.
+
+`git merge-tree --write-tree --name-only HEAD origin/main` reports 21 conflicts:
+`crates/ui-egui/src/widgets.rs` and `crates/ui-egui/src/i18n/` tables
+cs, de, el, es, fr, hu, id, it, ja, ko, nl, pl, pt-br, ru, sr, tr, uk, vi,
+zh-hans and zh-hant. No textual Camera Raw conflict. The widget conflict is one
+small FieldOpts destructuring hunk; each translation has two hunks (larger in de/it).
+The textual conflict surface does not look like a large Camera Raw integration
+conflict. Automatic merges include Camera Raw, services, menus and state and would
+still require individual compatibility review on integration.
+
+Decision: defer merging until a new release under the repository policy. No
+resolutions, rebuild, live handoff validation, promotion or push in this session;
+known-good hosted executables preserved. The session's work is the read-only
+cascade logic/evidence audit recorded in `docs/cascade_logic_audit.md`.
+
+## 2026-10-20 evening: editor mask buttons follow the host's models
+
+PhotoCraft `codex/image-triage-integration` fast-forwarded from `74dc3290` to `0988078e` (one commit): `ui.hostJob` accepts `tools` (a list of host-job kinds the host can run; `[]` = none; not sent = nothing greyed), capability `cameraRawHostTools: 1` in `app.handoff`; the Subject and Background cards, the Landscape link and the People link are disabled with "Needs Editor tools in Image Triage (Set Up AI)." when their kind is missing. Image Triage sends the list only to editors that advertise the capability (`HostJobRunner.poll`, `photocraft_bridge.camera_raw_host_tools_supported`). PhotoCraft checks run: `cargo check -p photocraft-ui-egui`, the `host_job` and `host` unit tests (17 and 48 passed). `cargo clippy -D warnings` fails on warnings that were already there (`photocraft-algo` `calibration.rs:74`, `masks.rs:401`, three collapsible-ifs in `camera_raw_mask_edit_ui.rs`), none in the new lines. Not run: the Image Triage handoff checks against a rebuilt hosted editor. **The hosted executable must be rebuilt before the behaviour appears**; keep the known-good build until those checks pass. Pushed to the fork: `codex/image-triage-integration` at `0988078e`.
