@@ -4,7 +4,7 @@ import QtQuick.Shapes
 
 // The popout: one photo at full size over the whole window, a floating action bar and a full-width filmstrip that keeps the photo you are on in
 // the middle (mockup: scripts/qml_parity/viewer.dc.html). The host is viewer_host.py (`popout`); the grid, the rail and the menus open it with
-// popout.open(row). It is always dark, like a light table, whatever the theme is; only the accent follows the theme.
+// popout.open(row). It follows the active theme; on a dark theme the stage and glass go a step darker than the grid, like a light table.
 FocusScope {
     id: v
     objectName: "viewer"
@@ -35,17 +35,22 @@ FocusScope {
     readonly property real dpr: Screen.devicePixelRatio
     readonly property int filmCenterRow: film.indexAt(film.contentX + film.width / 2, film.height / 2)     // which thumbnail is in the middle of the strip
 
-    // ---- the viewer's own palette (dark in both themes) ----
-    readonly property color cStage: "#030405"
-    readonly property color cGlass: Qt.rgba(6 / 255, 7 / 255, 10 / 255, 0.74)
-    readonly property color cS2: "#191a1d"
-    readonly property color cLine: "#2a2b2e"
-    readonly property color cLineSoft: "#1e1f22"
-    readonly property color cFg: "#e3e3e4"
-    readonly property color cFg2: "#a4a5a6"
-    readonly property color cFg3: "#8d8e8f"
-    readonly property color cBtn: "#1c1d20"
-    readonly property color cBtnHover: "#242528"
+    // ---- the viewer's palette: the active theme's, with the stage and glass pushed darker on a dark theme (a light table) ----
+    readonly property bool lite: theme.light
+    readonly property color cStage: lite ? theme.base : Qt.darker(theme.base, 3)
+    readonly property color cGlass: lite ? Qt.alpha(theme.s1, 0.8) : Qt.alpha(Qt.darker(theme.base, 2), 0.74)
+    readonly property color cCard: lite ? theme.s1 : Qt.darker(theme.base, 2)     // the action bar: the same fill, opaque
+    readonly property color cScrim: Qt.alpha(cStage, 0.9)                 // over the photo behind a panel
+    readonly property color cS2: theme.s2
+    readonly property color cLine: theme.line
+    readonly property color cLineSoft: theme.lineSoft
+    readonly property color cFg: theme.fg
+    readonly property color cFg2: theme.fg2
+    readonly property color cFg3: theme.fg3
+    readonly property color cBtn: theme.s2
+    readonly property color cBtnHover: theme.s3
+    readonly property color cHover: theme.s3
+    readonly property color cDeep: Qt.darker(theme.base, lite ? 1 : 1.15)      // the deepest panel fill
 
     function decColor(d) { if (!theme) return "transparent"; return d === "win" ? theme.win : d === "keep" ? theme.keep : d === "rej" ? theme.rej : d === "rev" ? theme.rev : "transparent" }
     signal moveRequested(int row)
@@ -214,12 +219,12 @@ FocusScope {
         opacity: v.zen ? 0 : 1; enabled: !v.zen
         Behavior on opacity { NumberAnimation { duration: 300 } }
         transform: Translate { y: v.zen ? -12 : 0; Behavior on y { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } } }
-        Rectangle { anchors.fill: parent; gradient: Gradient { GradientStop { position: 0; color: Qt.rgba(0, 0, 0, 0.62) } GradientStop { position: 1; color: Qt.rgba(0, 0, 0, 0) } } }
+        Rectangle { anchors.fill: parent; gradient: Gradient { GradientStop { position: 0; color: Qt.alpha(v.cStage, 0.62) } GradientStop { position: 1; color: Qt.alpha(v.cStage, 0) } } }
         // back to the grid
         Item {
             id: back
             x: 18; y: 14; height: 34; width: backRow.implicitWidth + 21
-            Rectangle { anchors.fill: parent; radius: 10; color: backHover.hovered ? "#2a2c31" : v.cGlass; border.color: v.cLineSoft }
+            Rectangle { anchors.fill: parent; radius: 10; color: backHover.hovered ? v.cHover : v.cGlass; border.color: v.cLineSoft }
             Row { id: backRow; x: 9; anchors.verticalCenter: parent.verticalCenter; spacing: 7
                 Icon { anchors.verticalCenter: parent.verticalCenter; path: "M15 5l-7 7 7 7"; size: 15; color: v.cFg }
                 Text { anchors.verticalCenter: parent.verticalCenter; text: "Library"; color: v.cFg; font.pixelSize: 13; font.weight: Font.Medium }
@@ -275,14 +280,14 @@ FocusScope {
             }
             Item {   // hide the controls
                 width: 34; height: 34
-                Rectangle { anchors.fill: parent; radius: 10; color: zh.hovered ? "#2a2c31" : v.cGlass; border.color: v.cLineSoft }
+                Rectangle { anchors.fill: parent; radius: 10; color: zh.hovered ? v.cHover : v.cGlass; border.color: v.cLineSoft }
                 Icon { anchors.centerIn: parent; path: "M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4"; size: 18; color: zh.hovered ? v.cFg : v.cFg2 }
                 HoverHandler { id: zh; cursorShape: Qt.PointingHandCursor } TapHandler { onTapped: v.zen = true }
                 Accessible.role: Accessible.Button; Accessible.name: "Hide the controls"
             }
             Item {   // close
                 width: 34; height: 34
-                Rectangle { anchors.fill: parent; radius: 10; color: xh.hovered ? "#2a2c31" : v.cGlass; border.color: v.cLineSoft }
+                Rectangle { anchors.fill: parent; radius: 10; color: xh.hovered ? v.cHover : v.cGlass; border.color: v.cLineSoft }
                 Icon { anchors.centerIn: parent; path: "M6 6l12 12M18 6L6 18"; size: 18; color: xh.hovered ? v.cFg : v.cFg2 }
                 HoverHandler { id: xh; cursorShape: Qt.PointingHandCursor } TapHandler { onTapped: v.close() }
                 Accessible.role: Accessible.Button; Accessible.name: "Close"
@@ -305,7 +310,7 @@ FocusScope {
             width: 44; height: 44; z: 3
             opacity: over.hovered && !v.zen ? (atEnd ? 0.3 : 1) : 0
             Behavior on opacity { NumberAnimation { duration: 200 } }
-            Rectangle { anchors.fill: parent; radius: 22; color: eh.hovered && !edge.atEnd ? "#2c2e33" : v.cGlass; border.color: v.cLineSoft }
+            Rectangle { anchors.fill: parent; radius: 22; color: eh.hovered && !edge.atEnd ? v.cHover : v.cGlass; border.color: v.cLineSoft }
             Icon { anchors.centerIn: parent; path: edge.isLeft ? "M15 5l-7 7 7 7" : "M9 5l7 7-7 7"; size: 18; color: v.cFg }
             HoverHandler { id: eh; cursorShape: edge.atEnd ? Qt.ArrowCursor : Qt.PointingHandCursor }
             TapHandler { enabled: !edge.atEnd; onTapped: v.step(edge.isLeft ? -1 : 1) }
@@ -318,7 +323,7 @@ FocusScope {
         id: banner
         visible: (v.flag.label || "") !== "" && !v.zen
         z: 7; y: 74; width: bannerRow.implicitWidth + 22; height: 44; x: (parent.width - width) / 2
-        Rectangle { anchors.fill: parent; radius: 12; color: "#242019"; border.color: Qt.alpha(theme.rev, 0.55) }
+        Rectangle { anchors.fill: parent; radius: 12; color: Qt.tint(theme.base, Qt.alpha(theme.rev, 0.12)); border.color: Qt.alpha(theme.rev, 0.55) }
         Row { id: bannerRow; x: 14; anchors.verticalCenter: parent.verticalCenter; spacing: 12
             Icon { anchors.verticalCenter: parent.verticalCenter; path: "M12 4l9 16H3zM12 10v4M12 17h.01"; size: 15; color: theme.rev }
             Text { anchors.verticalCenter: parent.verticalCenter; text: "Cull flagged this as " + String(v.flag.label || "").toLowerCase(); color: v.cFg; font.pointSize: UiState.pt(12.5); font.weight: Font.DemiBold }
@@ -329,7 +334,7 @@ FocusScope {
                     id: bb
                     required property var modelData
                     anchors.verticalCenter: parent.verticalCenter; width: bbt.implicitWidth + 22; height: 28
-                    Rectangle { anchors.fill: parent; radius: 8; color: bh.hovered ? "#31333a" : "#222428"; border.color: v.cLine }
+                    Rectangle { anchors.fill: parent; radius: 8; color: bh.hovered ? v.cHover : v.cS2; border.color: v.cLine }
                     Text { id: bbt; anchors.centerIn: parent; text: bb.modelData.t; color: v.cFg; font.pixelSize: 13; font.weight: Font.Medium }
                     HoverHandler { id: bh; cursorShape: Qt.PointingHandCursor }
                     TapHandler { onTapped: { if (bb.modelData.a === "keep") popout.keepFlagged(v.row); else v.decide("rej") } }
@@ -346,13 +351,13 @@ FocusScope {
         opacity: v.zen ? 0 : 1; enabled: !v.zen
         Behavior on opacity { NumberAnimation { duration: 300 } }
         transform: Translate { y: v.zen ? 12 : 0; Behavior on y { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } } }
-        Rectangle { anchors.fill: parent; gradient: Gradient { GradientStop { position: 0; color: Qt.rgba(0, 0, 0, 0) } GradientStop { position: 0.55; color: Qt.rgba(0, 0, 0, 0.7) } GradientStop { position: 1; color: Qt.rgba(0, 0, 0, 0.7) } } }
+        Rectangle { anchors.fill: parent; gradient: Gradient { GradientStop { position: 0; color: Qt.alpha(v.cStage, 0) } GradientStop { position: 0.55; color: Qt.alpha(v.cStage, 0.7) } GradientStop { position: 1; color: Qt.alpha(v.cStage, 0.7) } } }
 
         // the action bar
         Item {
             id: bar
             y: 0; height: 52; width: barRow.implicitWidth + 12; x: (parent.width - width) / 2
-            Glass { anchors.fill: parent; frosted: false; radius: 16; tint: "#06070a"; shadowOffsetA: 14; shadowBlurA: 40; shadowAlphaA: 0.5; shadowInset: 6; shadowAlphaB: 0 }
+            Glass { anchors.fill: parent; frosted: false; radius: 16; tint: v.cCard; shadowOffsetA: 14; shadowBlurA: 40; shadowAlphaA: 0.5; shadowInset: 6; shadowAlphaB: 0 }
             Rectangle { anchors.fill: parent; radius: 16; color: "transparent"; border.color: v.cLine }
             Row {
                 id: barRow
@@ -370,7 +375,7 @@ FocusScope {
                         scale: dp.pressed ? 0.97 : 1
                         Behavior on scale { NumberAnimation { duration: 120 } }
                         Rectangle { anchors.fill: parent; radius: 11
-                            color: db.on ? Qt.tint("#0d0e11", Qt.alpha(db.tone, 0.24)) : dh.hovered ? "#222326" : v.cS2
+                            color: db.on ? Qt.tint(theme.base, Qt.alpha(db.tone, 0.24)) : dh.hovered ? v.cHover : v.cS2
                             border.color: db.on ? Qt.alpha(db.tone, 0.7) : v.cLineSoft }
                         Row { id: dRow; x: 11; anchors.verticalCenter: parent.verticalCenter; spacing: 7
                             Icon { anchors.verticalCenter: parent.verticalCenter; path: db.modelData.p; size: 15; color: db.tone }
@@ -413,7 +418,7 @@ FocusScope {
                         required property var modelData
                         readonly property bool on: modelData.id === "focus" ? popout.assistOn : modelData.id === "loupe" ? v.loupe : modelData.id === "coll" ? v.collOpen : false
                         width: 38; height: 38; y: 1
-                        Rectangle { anchors.fill: parent; radius: 11; color: tb.on ? Qt.alpha(theme.accent, 0.2) : th.hovered ? "#202124" : "transparent" }
+                        Rectangle { anchors.fill: parent; radius: 11; color: tb.on ? Qt.alpha(theme.accent, 0.2) : th.hovered ? v.cHover : "transparent" }
                         Icon { anchors.horizontalCenter: parent.horizontalCenter; y: 5; name: tb.modelData.icon; size: 20; strokeWidth: 1.7; color: tb.on ? theme.accentFg : th.hovered ? v.cFg : v.cFg2 }
                         Text { x: parent.width - width - 2; y: parent.height - height - 1; text: tb.modelData.k; color: v.cFg3; opacity: 0.9; font.pointSize: UiState.pt(8.5); font.weight: Font.Medium }
                         HoverHandler { id: th; cursorShape: Qt.PointingHandCursor }
@@ -440,14 +445,14 @@ FocusScope {
                     width: eRow.implicitWidth + 26; height: 38; y: 1
                     scale: ep.pressed && can ? 0.98 : 1
                     Rectangle { anchors.fill: parent; radius: 11
-                        color: edit.can ? (eh2.hovered ? Qt.lighter(theme.accent, 1.08) : theme.accent) : "#1c1d20"
+                        color: edit.can ? (eh2.hovered ? Qt.lighter(theme.accent, 1.08) : theme.accent) : v.cBtn
                         border.color: edit.can ? Qt.tint(theme.accent, Qt.rgba(1, 1, 1, 0.25)) : v.cLineSoft }
                     Row { id: eRow; x: 12; anchors.verticalCenter: parent.verticalCenter; spacing: 8
-                        Icon { anchors.verticalCenter: parent.verticalCenter; path: "M4 20l1-4.2L16.6 4.2a2 2 0 012.8 0l.4.4a2 2 0 010 2.8L8.2 19zM14.5 6.4l3.1 3.1"; size: 18; color: edit.can ? "#080e16" : v.cFg3 }
-                        Text { anchors.verticalCenter: parent.verticalCenter; text: edit.can ? "Edit in PhotoCraft" : "Edit"; color: edit.can ? "#080e16" : v.cFg3; font.pixelSize: 13; font.weight: Font.DemiBold }
+                        Icon { anchors.verticalCenter: parent.verticalCenter; path: "M4 20l1-4.2L16.6 4.2a2 2 0 012.8 0l.4.4a2 2 0 010 2.8L8.2 19zM14.5 6.4l3.1 3.1"; size: 18; color: edit.can ? theme.onAccent : v.cFg3 }
+                        Text { anchors.verticalCenter: parent.verticalCenter; text: edit.can ? "Edit in PhotoCraft" : "Edit"; color: edit.can ? theme.onAccent : v.cFg3; font.pixelSize: 13; font.weight: Font.DemiBold }
                         Item { id: ek; anchors.verticalCenter: parent.verticalCenter; width: ekt.implicitWidth + 12; height: 18
-                            Rectangle { anchors.fill: parent; radius: 5; color: edit.can ? Qt.rgba(1, 1, 1, 0.28) : "transparent"; border.color: edit.can ? Qt.alpha("#080e16", 0.35) : v.cLine }
-                            Text { id: ekt; anchors.centerIn: parent; text: "E"; color: edit.can ? "#080e16" : v.cFg3; font.pixelSize: 10; font.weight: Font.Medium } } }
+                            Rectangle { anchors.fill: parent; radius: 5; color: edit.can ? Qt.rgba(1, 1, 1, 0.28) : "transparent"; border.color: edit.can ? Qt.alpha(theme.onAccent, 0.35) : v.cLine }
+                            Text { id: ekt; anchors.centerIn: parent; text: "E"; color: edit.can ? theme.onAccent : v.cFg3; font.pixelSize: 10; font.weight: Font.Medium } } }
                     HoverHandler { id: eh2; cursorShape: edit.can ? Qt.PointingHandCursor : Qt.ArrowCursor }
                     TapHandler { id: ep; onTapped: v.editor() }
                     HoverTip { tip: edit.can ? "Open this photo in PhotoCraft (E)" : "PhotoCraft is not installed. Install it from Settings › Editor."; hovered: eh2.hovered }
@@ -460,7 +465,7 @@ FocusScope {
         Item {
             id: strip
             y: 52 + 12; width: parent.width; height: v.fh
-            Rectangle { anchors.fill: parent; color: Qt.rgba(6 / 255, 7 / 255, 10 / 255, 0.88) }
+            Rectangle { anchors.fill: parent; color: Qt.alpha(v.cStage, 0.88) }
             Rectangle { width: parent.width; height: 1; color: v.cLineSoft }
             readonly property int th: Math.round((v.fh - 16) / 1.25)
             readonly property int tw: Math.round(th * 1.5)
@@ -495,7 +500,7 @@ FocusScope {
                     width: strip.tw; height: strip.th
                     y: (film.height - strip.th) / 2 + 4 - 8 - l * strip.lift
                     opacity: 0.5 + l * 0.5
-                    Rectangle { anchors.fill: parent; radius: 7; color: "#111214"; border.width: 2; border.color: fs.cur ? v.cFg : "transparent"
+                    Rectangle { anchors.fill: parent; radius: 7; color: v.cDeep; border.width: 2; border.color: fs.cur ? v.cFg : "transparent"
                         layer.enabled: fs.cur; layer.effect: MultiEffect { shadowEnabled: true; shadowColor: Qt.rgba(0, 0, 0, 0.55); shadowBlur: 0.5; shadowVerticalOffset: 10 } }
                     RoundClip { anchors.fill: parent; anchors.margins: 2; radius: 5
                         ThumbImage { anchors.fill: parent; path: fs.path; bucket: strip.th > 100 ? 360 : 240; desaturate: fs.decision === "rej" ? 0.9 : 0 }
@@ -578,14 +583,14 @@ FocusScope {
         ParallelAnimation { id: enter
             NumberAnimation { target: toast; property: "opacity"; to: 1; duration: 220 }
             NumberAnimation { target: toast; property: "scale"; to: 1; duration: 300; easing.type: Easing.OutCubic } }
-        Rectangle { anchors.fill: parent; radius: 12; color: "#191b1e"; border.color: v.cLine
+        Rectangle { anchors.fill: parent; radius: 12; color: v.cS2; border.color: v.cLine
             layer.enabled: true; layer.effect: MultiEffect { shadowEnabled: true; shadowColor: Qt.rgba(0, 0, 0, 0.55); shadowBlur: 0.7; shadowVerticalOffset: 12 } }
         Row { id: trow; x: 13; anchors.verticalCenter: parent.verticalCenter; spacing: 10
             Icon { anchors.verticalCenter: parent.verticalCenter; size: 16; color: toast.tone
                 path: toast.t.kind === "win" ? "M12 20s-7-4.4-7-10a4 4 0 017-2.6A4 4 0 0119 10c0 5.6-7 10-7 10z" : toast.t.kind === "keep" ? "M5 12.5l4.5 4.5L19 7.5" : toast.t.kind === "rej" ? "M6 6l12 12M18 6L6 18" : "M12 8h.01M11 12h1v4h1" }
             Text { anchors.verticalCenter: parent.verticalCenter; text: toast.t.text || ""; color: v.cFg; font.pointSize: UiState.pt(12.5) }
             Item { visible: !!toast.t.undo; anchors.verticalCenter: parent.verticalCenter; width: ut.implicitWidth + 18; height: 26
-                Rectangle { anchors.fill: parent; radius: 7; color: uh.hovered ? "#2a2c31" : "transparent" }
+                Rectangle { anchors.fill: parent; radius: 7; color: uh.hovered ? v.cHover : "transparent" }
                 Text { id: ut; anchors.centerIn: parent; text: "Undo"; color: theme.accentFg; font.pixelSize: 13; font.weight: Font.Medium }
                 HoverHandler { id: uh; cursorShape: Qt.PointingHandCursor } TapHandler { onTapped: { popout.undo() } }
                 Accessible.role: Accessible.Button; Accessible.name: "Undo" } }
@@ -604,7 +609,7 @@ FocusScope {
         readonly property var rows: { if (!collections || !photos) return []; void collections.revision; void photos.revision; return v.collOpen ? popout.collectionRows(v.row) : [] }
         x: { void bar.x; void bar.width; void v.width; var b = v.collButton ? v.collButton.mapToItem(v, v.collButton.width / 2, 0).x : v.width / 2 + 130; return Math.max(12, Math.min(v.width - width - 12, b - width / 2)) }
         y: parent.height - (v.fh + 52) - height
-        Rectangle { anchors.fill: parent; radius: 14; color: "#141619"; border.color: v.cLine
+        Rectangle { anchors.fill: parent; radius: 14; color: v.cDeep; border.color: v.cLine
             layer.enabled: true; layer.effect: MultiEffect { shadowEnabled: true; shadowColor: Qt.rgba(0, 0, 0, 0.6); shadowBlur: 0.9; shadowVerticalOffset: 18 } }
         Column { id: collCol; x: 6; y: 6; width: parent.width - 12
             Text { x: 10; topPadding: 6; bottomPadding: 6; text: ("ADD " + (v.cur.name || "") + " TO…").toUpperCase(); color: v.cFg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.9 }
@@ -614,7 +619,7 @@ FocusScope {
                     id: cr
                     required property var modelData
                     width: collCol.width; height: 34
-                    Rectangle { anchors.fill: parent; radius: 9; color: crh.hovered ? "#232529" : "transparent" }
+                    Rectangle { anchors.fill: parent; radius: 9; color: crh.hovered ? v.cHover : "transparent" }
                     Rectangle { x: 10; anchors.verticalCenter: parent.verticalCenter; width: 12; height: 12; radius: 4; color: cr.modelData.color }
                     Text { x: 32; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 32 - 34; elide: Text.ElideRight; text: cr.modelData.name; color: v.cFg; font.pixelSize: 13 }
                     Icon { visible: cr.modelData.on; x: parent.width - 10 - width; anchors.verticalCenter: parent.verticalCenter; path: "M5 12.5l4.5 4.5L19 7.5"; size: 15; color: theme.accentFg }
@@ -623,9 +628,9 @@ FocusScope {
                     Accessible.role: Accessible.CheckBox; Accessible.checked: cr.modelData.on; Accessible.name: cr.modelData.name
                 }
             }
-            Rectangle { x: 4; width: parent.width - 8; height: 1; color: "#1e1f22" }
+            Rectangle { x: 4; width: parent.width - 8; height: 1; color: v.cLineSoft }
             Item { width: collCol.width; height: 34
-                Rectangle { anchors.fill: parent; radius: 9; color: nch.hovered ? "#232529" : "transparent" }
+                Rectangle { anchors.fill: parent; radius: 9; color: nch.hovered ? v.cHover : "transparent" }
                 Icon { x: 10; anchors.verticalCenter: parent.verticalCenter; path: "M12 5v14M5 12h14"; size: 15; color: theme.accentFg }
                 Text { x: 35; anchors.verticalCenter: parent.verticalCenter; text: "New collection…"; color: theme.accentFg; font.pixelSize: 13 }
                 HoverHandler { id: nch; cursorShape: Qt.PointingHandCursor }
@@ -637,7 +642,7 @@ FocusScope {
     // ---- opening the editor ----
     Rectangle {
         id: openScreen
-        visible: v.opening; anchors.fill: parent; z: 20; color: Qt.rgba(3 / 255, 4 / 255, 5 / 255, 0.9)
+        visible: v.opening; anchors.fill: parent; z: 20; color: Qt.alpha(v.cStage, 0.9)
         MouseArea { anchors.fill: parent }
         Column { anchors.centerIn: parent; spacing: 18; width: 420
             Rectangle { anchors.horizontalCenter: parent.horizontalCenter; width: 62; height: 62; radius: 17
@@ -646,7 +651,7 @@ FocusScope {
             Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; text: "Opening " + (v.cur.name || "") + (v.info.ext ? "." + v.info.ext : "") + " in PhotoCraft…"; color: v.cFg; font.pixelSize: 17; font.weight: Font.DemiBold }
             Text { width: parent.width; y: -10; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; text: "Your decisions here are saved. Closing the editor brings you back to this photo."; color: v.cFg3; font.pointSize: UiState.pt(12.5) }
             Item { anchors.horizontalCenter: parent.horizontalCenter; width: 220; height: 4; clip: true
-                Rectangle { anchors.fill: parent; radius: 2; color: "#242528" }
+                Rectangle { anchors.fill: parent; radius: 2; color: v.cHover }
                 Rectangle { id: bar2; width: 88; height: 4; radius: 2; color: theme.accent; x: -88
                     SequentialAnimation on x { running: v.opening; loops: Animation.Infinite; NumberAnimation { from: -88; to: 220; duration: 1200; easing.type: Easing.InOutQuad } } } }
             Item { anchors.horizontalCenter: parent.horizontalCenter; width: cr2.implicitWidth + 24; height: 30

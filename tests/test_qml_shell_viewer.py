@@ -309,3 +309,16 @@ def test_the_filmstrip_keeps_the_photo_you_are_on_in_the_middle(shell, qapp):
         pump(qapp, 1.0)
         item = viewer.property("filmCenterRow")
         assert item == target
+
+
+def test_the_viewer_follows_the_active_theme(shell, qapp):
+    engine, window, model, popout, warnings = shell
+    theme = engine.rootContext().contextProperty("theme")
+    viewer = window.findChild(QObject, "viewer")
+    stage = {}
+    for mode in ("slate", "light"):
+        theme.applyMode(mode, -1, 90, True, "soft")
+        pump(qapp, 0.2)
+        stage[mode] = viewer.property("cStage")
+        assert viewer.property("cFg") == theme.fg and viewer.property("cLine") == theme.line
+    assert stage["slate"].lightnessF() < theme.base.lightnessF() and stage["light"].lightnessF() > 0.9      # darker than the grid on a dark theme, light on Light

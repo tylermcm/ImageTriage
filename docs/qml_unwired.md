@@ -367,8 +367,7 @@ in the shell `--ui "cullScene=cu-review"` (the same names).
 
 `viewer_host.py` (`ViewerHost`, the context property `popout`) and `qml/Viewer.qml` are the popout: one photo at full size over the whole main window, an
 action bar and a full-width filmstrip (mockup: `scripts/qml_parity/viewer.dc.html`). It replaces the Widgets viewer, which is kept behind
-`--widgets-popout` (`popout.py`, `PopoutHost`, tests in `tests/test_qml_shell_popout.py`). The viewer is always dark whatever the theme is; only the
-accent follows it. Tests: `tests/test_qml_shell_viewer.py`.
+`--widgets-popout` (`popout.py`, `PopoutHost`, tests in `tests/test_qml_shell_popout.py`). The viewer follows the active theme (surfaces, lines, text, accent); on a dark theme its stage and glass sit a step darker than the grid, on Light they are light. Tests: `tests/test_qml_shell_viewer.py`.
 
 | Piece | Status | To connect |
 |---|---|---|
