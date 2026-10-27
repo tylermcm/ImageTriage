@@ -1,5 +1,43 @@
 # PhotoCraft handoff
 
+## 2026-10-26: QML native filmstrip follows the preview
+
+`EditorFilmstrip` sends the preview's ordered/filtered photo model through the
+existing `ui.filmstrip` protocol. Packets contain at most 32 photos and one RGBA
+thumbnail, using the shared thumbnail cache. PhotoCraft requests its visible
+window as it scrolls. Selection/navigation settle Camera Raw and save dirty
+documents before replacing the photo in the same process; successful opens move
+the preview selection too. A failed save keeps the current photo. Ratings/rejects
+update the shared model. Generation, stable-id, serial and process checks reject
+stale requests; browse-window thumbnail subscriptions are released when unused.
+
+Validation: 21 focused editor, filmstrip and key tests passed. A hidden native run
+of the existing executable received all three synthetic photos/thumbnails and
+reported ready/enabled with the correct total/current. Clicking the second native
+thumbnail switched Camera Raw and the preview selection to photo 2, then closed
+cleanly. Native sort/filter dropdowns remain unwired; library sorting/filtering
+defines the shared list. Full live handoff validation remains outstanding.
+No companion changes, editor rebuild, executable promotion or push.
+
+## 2026-10-26: QML Camera Raw entry and Space exit
+
+The QML host now launches the existing editor with `--raw-workspace`, supplies
+RAW recipe/display targets, binds native Save outputs, and requests Camera Raw
+before showing the window. Existing non-RAW project sidecars are reopened.
+Removed the host's Back to photo header. Space settles Camera Raw and saves dirty
+documents before hiding the native editor and closing the preview back to the
+grid. Save failure keeps the editor open. Closing during launch is deferred until
+the open finishes. A scoped Windows keyboard hook handles the foreign editor's
+Space press/repeats/release; Qt handles Space while the host itself has focus.
+
+Validation: 41 combined editor/viewer/window/key tests passed (14 focused on this
+editor change). The native hook registered and unregistered successfully on
+Windows. A hidden run of the existing executable opened a synthetic JPEG in
+Camera Raw (`open: true`, `workspace: true`, target `newFilter`) and settled/closed
+back to idle. Native focus/Space delivery, changed-photo saving and the full
+handoff gates still need live validation. No companion source changes,
+editor rebuild, executable promotion or push; known-good builds preserved.
+
 ## 2026-10-26: consolidate current Image Triage remote branches locally
 
 Fetched all origin branches. Merged `origin/codex/image-triage-integration`

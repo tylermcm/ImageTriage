@@ -13,6 +13,30 @@ Window {
     color: theme.base
     flags: Qt.Window | Qt.FramelessWindowHint      // no system title bar: TopBar is the title bar, WindowEdges the resize grips
 
+    readonly property bool wantsFullscreen: viewer.shown || editor.active || editor.state === "closing" || UiState.zen
+    property bool ownsFullscreen: false
+    property int previousWindowMode: Window.Windowed
+    property rect previousWindowGeometry: Qt.rect(0, 0, 1440, 900)
+    onWantsFullscreenChanged: {
+        if (wantsFullscreen) {
+            if (!ownsFullscreen) {
+                previousWindowMode = visibility
+                previousWindowGeometry = Qt.rect(x, y, width, height)
+                ownsFullscreen = true
+            }
+            showFullScreen()
+        } else if (ownsFullscreen) {
+            ownsFullscreen = false
+            if (previousWindowMode === Window.FullScreen) showFullScreen()
+            else if (previousWindowMode === Window.Maximized) showMaximized()
+            else {
+                showNormal()
+                x = previousWindowGeometry.x; y = previousWindowGeometry.y
+                width = previousWindowGeometry.width; height = previousWindowGeometry.height
+            }
+        }
+    }
+
     readonly property bool compact: width <= 900          // the mockup's @media (max-width: 900px)
     Binding { target: UiState; property: "compact"; value: win.compact }
     Binding { target: UiState; property: "selRow"; value: grid.row }
@@ -336,6 +360,8 @@ Window {
     Connections { target: UiState; function onRequestRowChanged() { if (UiState.requestRow >= 0) { grid.row = UiState.requestRow; UiState.requestRow = -1 } } }
     CommandPalette { id: commandPalette; sourceItem: appContent }
     Shortcut { sequence: "F1"; onActivated: reference.toggleHelp() }
+    Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; autoRepeat: false; enabled: editor.active || editor.state === "closing"; onActivated: editor.close() }
+    Shortcut { sequence: "Escape"; enabled: UiState.zen && !viewer.shown; onActivated: win.runCommand("view.zen_mode") }
     Shortcut { sequence: "Ctrl+/"; onActivated: reference.toggleKeys() }
     Shortcut { sequence: { void settings.shortcutRevision; return settings.seq("open_command_palette") }
                onActivated: { if (UiState.paletteOpen) UiState.paletteOpen = false; else UiState.openPalette("main") } }

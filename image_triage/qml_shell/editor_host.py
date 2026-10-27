@@ -2,7 +2,7 @@
 window inside the shell's window.
 
 This is the groundwork: the process lifecycle and the window placement over the same `photocraft_bridge` the Widgets app uses. The rest of the
-Widgets host's behaviour (save before switching, stash and restore, the persistent filmstrip, theme sync, the Camera Raw workspace) is listed in
+Widgets host's behaviour (save before switching, stash and restore, the persistent filmstrip and theme sync) is listed in
 docs/qml_unwired.md under "Editor". The launcher and the window mover are parameters so that tests run without PhotoCraft or Windows.
 """
 from __future__ import annotations
@@ -69,6 +69,9 @@ class EditorHost(QObject):
         self._geometry = (0, 0, 0, 0)
         self._parent_hwnd = 0
         self._generation = 0
+        self._close_requested = False
+        self._space_shortcut = None
+        self._filmstrip = None
         self._done.connect(self._finish, Qt.ConnectionType.QueuedConnection)
 
     # -- what QML sees ------------------------------------------------------------------------------------------------------
@@ -101,6 +104,14 @@ class EditorHost(QObject):
             self.stateChanged.emit()
 
     # -- opening a photo ----------------------------------------------------------------------------------------------------
+    def setBrowseSource(self, photos, thumbs, preview) -> None:
+        """Use the preview's ordered/filtered photo model for native Camera Raw browsing."""
+        from .editor_filmstrip import EditorFilmstrip
+
+        if self._filmstrip is not None:
+            self._filmstrip.stop()
+        self._filmstrip = EditorFilmstrip(self, photos, thumbs, preview)
+
     @Slot(str)
     def openPath(self, path: str) -> None:
         if not path or self._state in (STARTING, CLOSING):
@@ -113,38 +124,64 @@ class EditorHost(QObject):
         if not self._available():
             self._fail(path, "PhotoCraft is not installed. Install it from Settings › Editor.")
             return
+        switching = self._state == EDITING
+        if switching and path == self._path:
+            return
         self._generation += 1
         self._path = path
         self.pathChanged.emit()
         self._set(STARTING, "")
-        threading.Thread(target=self._open_worker, args=(self._generation, path), name="editor-open", daemon=True).start()
+        threading.Thread(target=self._open_worker, args=(self._generation, path, switching), name="editor-open", daemon=True).start()
 
-    def _open_worker(self, generation: int, path: str) -> None:
+    def _open_worker(self, generation: int, path: str, switching: bool = False) -> None:
+        proc = None
         try:
+            from .. import edit_storage, photocraft_bridge
+
             directory = str(Path(path).parent)
             proc = self._proc
+            if proc is not None and switching and proc.is_running():
+                self._settle(proc)
             if proc is not None and (not proc.is_running() or proc.path_within_root(path) is None):
                 self._stop(proc)               # the editor can only read the folder it was started on
                 proc = None
             if proc is None:
-                from .. import edit_storage, photocraft_bridge
-
                 launch = self._launcher or photocraft_bridge.launch_photocraft
                 write_root = edit_storage.ensure_edit_root(directory)
-                proc = launch(None, read_root=directory, write_root=str(write_root), idle=True)
-            relative = proc.path_within_root(path)
+                proc = launch(None, read_root=directory, write_root=str(write_root), idle=True, extra_args=("--raw-workspace",))
+            sidecar = photocraft_bridge.sidecar_pcraft_path(path)
+            is_raw = Path(path).suffix.lower() in photocraft_bridge.RAW_SUFFIXES
+            open_path = str(sidecar) if sidecar.exists() and not is_raw else path
+            relative = proc.path_within_root(open_path)
             if relative is None:
                 raise RuntimeError("That photo is outside the folder PhotoCraft can read.")
             if proc.idle_priority:
                 from .. import photocraft_bridge
 
                 photocraft_bridge.raise_priority(proc)
-            proc.control.app_open(relative, replace=True)
+            spec = None
+            if is_raw:
+                spec = {"recipePath": photocraft_bridge.recipe_path(path).name,
+                        "displayPath": photocraft_bridge.display_render_path(path).name}
+                recipe = photocraft_bridge.load_recipe(path)
+                if recipe is not None:
+                    spec["recipe"] = recipe
+                if sidecar.exists():
+                    spec["continueFrom"] = sidecar.name
+            proc.control.app_open(relative, replace=True, **({"camera_raw": spec} if spec is not None else {}))
+            proc.control.call("app.bind", {"path": sidecar.name, "preview": photocraft_bridge.rendered_preview_path(path).name,
+                                          "display": photocraft_bridge.display_render_path(path).name})
+            raw_state = proc.control.call("ui.cameraRaw", {"open": True})
+            if raw_state.get("open") is not True:
+                raise RuntimeError("PhotoCraft did not open Camera Raw for this photo.")
             proc.source_path = path
             self._done.emit("open", proc, "")
         except Exception as error:               # a failed launch or open is shown to the person, never raised into the event loop
+            if proc is not None and proc is not self._proc:
+                self._stop(proc)
             LOG.warning("PhotoCraft did not open %s: %s", path, error, exc_info=True)
-            self._done.emit("open-failed", None, str(error) or error.__class__.__name__)
+            what = "switch-failed" if proc is self._proc and proc is not None and proc.is_running() else "open-failed"
+            self._done.emit(what, None, str(error) or error.__class__.__name__)
 
     # -- the editor is up: put its window in ours ---------------------------------------------------------------------------
     @Slot(object)
@@ -154,6 +191,16 @@ class EditorHost(QObject):
             self._parent_hwnd = int(window.winId())
         except Exception:
             self._parent_hwnd = 0
+        if sys.platform == "win32" and not self._memory and isinstance(self._mover, WindowMover) and self._space_shortcut is None:
+            from .editor_keys import EditorSpaceShortcut
+
+            self._space_shortcut = EditorSpaceShortcut(
+                lambda: self._proc.hwnd if self._proc is not None and self._state == EDITING else 0, self)
+            self._space_shortcut.pressed.connect(self.close, Qt.ConnectionType.QueuedConnection)
+            try:
+                self._space_shortcut.start()
+            except OSError:
+                LOG.exception("Could not register the hosted editor Space shortcut")
 
     @Slot(int, int, int, int)
     def setGeometry(self, x: int, y: int, width: int, height: int) -> None:
@@ -173,6 +220,11 @@ class EditorHost(QObject):
     def _finish(self, what: str, result, error: str) -> None:
         if what == "open":
             self._proc = result
+            if self._close_requested:
+                self._close_requested = False
+                self._set(EDITING, "")
+                self.close()
+                return
             try:
                 if self._parent_hwnd and result.attached_parent != self._parent_hwnd:
                     self._mover.attach(result.hwnd, self._parent_hwnd)
@@ -191,8 +243,18 @@ class EditorHost(QObject):
             self.pathChanged.emit()
             self._set(IDLE, error)
             self.closed.emit(path)
+        elif what == "close-failed":
+            self._set(EDITING, error)
+            self.failed.emit(error)
+        elif what == "switch-failed":
+            self._close_requested = False
+            self._path = self._proc.source_path
+            self.pathChanged.emit()
+            self._set(EDITING, error)
+            self.failed.emit(error)
 
     def _fail(self, path: str, message: str) -> None:
+        self._close_requested = False
         self._set(FAILED, message)
         self.failed.emit(message)
         self._set(IDLE)
@@ -214,11 +276,16 @@ class EditorHost(QObject):
 
     @Slot()
     def close(self) -> None:
-        """Back to the photo: save what changed, hide the window and keep the editor running for the next photo."""
+        """Settle/save the edit before returning to the grid; keep the process for reuse."""
         if self._memory:
+            path = self._path
             self._path = ""
             self.pathChanged.emit()
             self._set(IDLE)
+            self.closed.emit(path)
+            return
+        if self._state == STARTING:
+            self._close_requested = True
             return
         proc = self._proc
         if proc is None or self._state not in (EDITING, STARTING):
@@ -229,13 +296,21 @@ class EditorHost(QObject):
     def _close_worker(self, proc) -> None:
         message = ""
         try:
-            state = proc.control.document_state()
-            if state is not None and state[1] is not False:         # changed since it was last saved (an editor that does not say is saved to be safe)
-                proc.control.app_save()
+            self._settle(proc)
         except Exception as error:
             LOG.warning("PhotoCraft did not save on close: %s", error, exc_info=True)
-            message = "The edit could not be saved."
+            self._done.emit("close-failed", None, "The edit could not be saved. " + str(error))
+            return
         self._done.emit("closed", None, message)
+
+    @staticmethod
+    def _settle(proc) -> None:
+        state = proc.control.call("ui.cameraRaw", {"done": True})
+        if state.get("open"):
+            raise RuntimeError("Camera Raw is still finishing this photo. Try again.")
+        state = proc.control.document_state()
+        if state is not None and state[1] is not False:
+            proc.control.app_save()
 
     def _hide(self) -> None:
         proc = self._proc
@@ -254,6 +329,10 @@ class EditorHost(QObject):
 
     @Slot()
     def shutdown(self) -> None:
+        if self._filmstrip is not None:
+            self._filmstrip.stop()
+        if self._space_shortcut is not None:
+            self._space_shortcut.stop()
         proc, self._proc = self._proc, None
         if proc is not None:
             self._stop(proc)

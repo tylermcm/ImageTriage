@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import Q_ARG, QMetaObject, QPoint, Qt
 from PySide6.QtGui import QWindow
 from PySide6.QtTest import QTest
 
 from test_qml_shell import _load_main, pump, qapp  # noqa: F401  (the same helpers and application fixture)
 
 WIDTH = 1440
-MINIMIZE, MAXIMIZE, CLOSE = 95, 57, 19              # the centres of the three 38 px buttons, counted from the window's right edge
+MINIMIZE, MAXIMIZE, CLOSE = 115, 69, 23             # the centres of the three 46 px buttons, counted from the window's right edge
 
 
 @pytest.fixture
@@ -52,3 +52,15 @@ def test_the_close_button_closes_the_window(qapp, shell):
     window, warnings = shell
     click(qapp, window, CLOSE)
     assert not window.isVisible()
+
+
+def test_library_zen_mode_is_fullscreen_and_escape_restores_window(qapp, shell):
+    window, warnings = shell
+    original_geometry = window.geometry()
+    assert QMetaObject.invokeMethod(window, "runCommand", Q_ARG("QVariant", "view.zen_mode"))
+    pump(qapp, 0.4)
+    assert window.visibility() == QWindow.FullScreen
+    QTest.keyClick(window, Qt.Key_Escape)
+    pump(qapp, 0.4)
+    assert window.visibility() == QWindow.Windowed
+    assert window.geometry() == original_geometry

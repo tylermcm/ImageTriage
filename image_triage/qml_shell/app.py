@@ -190,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
     app.aboutToQuit.connect(popout.shutdown)
     context.setContextProperty("popout", popout)
     editor = EditorHost(memory=bool(args.mock or args.grab), parent=app)
+    if not args.mock and not args.grab and not args.widgets_popout:
+        editor.setBrowseSource(photos, thumbs, popout)
     app.aboutToQuit.connect(editor.shutdown)
     context.setContextProperty("editor", editor)
     context.setContextProperty("startup", args.ui)

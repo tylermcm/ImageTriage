@@ -5,7 +5,8 @@ import time
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QObject, Qt
+from PySide6.QtCore import QObject, QPointF, Qt
+from PySide6.QtGui import QWindow
 from PySide6.QtTest import QTest
 
 from image_triage.qml_shell.collections_model import CollectionsModel
@@ -316,13 +317,13 @@ def test_the_viewer_follows_the_active_theme(shell, qapp):
     engine, window, model, popout, warnings = shell
     theme = engine.rootContext().contextProperty("theme")
     viewer = window.findChild(QObject, "viewer")
-    stage = {}
-    for mode in ("slate", "light"):
-        theme.applyMode(mode, -1, 90, True, "soft")
+    for mode, tone in (("slate", "soft"), ("slate", "dim"), ("slate", "dark"), ("light", "soft")):
+        theme.applyMode(mode, -1, 90, True, tone)
         pump(qapp, 0.2)
-        stage[mode] = viewer.property("cStage")
+        assert viewer.property("cStage") == theme.base
+        assert viewer.property("cCard") == theme.s1
+        assert viewer.property("cGlass") == theme.s1
         assert viewer.property("cFg") == theme.fg and viewer.property("cLine") == theme.line
-    assert stage["slate"].lightnessF() < theme.base.lightnessF() and stage["light"].lightnessF() > 0.9      # darker than the grid on a dark theme, light on Light
 
 
 def test_tab_puts_the_action_bar_away_and_brings_it_back_and_the_photo_gets_the_room(shell, qapp):
@@ -335,6 +336,20 @@ def test_tab_puts_the_action_bar_away_and_brings_it_back_and_the_photo_gets_the_
     pump(qapp, 0.5)
     assert popout.barHidden and viewer.property("bh") == 0
     assert window.findChild(QObject, "barTab").property("visible")           # the tab that brings it back
+    restore = window.findChild(QObject, "barTab")
+    pos = restore.mapToItem(viewer, QPointF(0, 0))
+    zoom = window.findChild(QObject, "viewerZoomControls")
+    assert pos.y() == zoom.y()
+    assert pos.x() >= zoom.x() + zoom.width()
+    stage = window.findChild(QObject, "viewerPhotoStage")
+    assert pos.y() >= stage.y() + stage.height()                           # never cover the photo
+    assert pos.y() + restore.height() <= viewer.height()
+    QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, restore.mapToScene(QPointF(restore.width() / 2, restore.height() / 2)).toPoint())
+    pump(qapp, 0.5)
+    assert not popout.barHidden
+    QTest.keyClick(window, Qt.Key_Tab)
+    pump(qapp, 0.5)
+    assert popout.barHidden
     QTest.keyClick(window, Qt.Key_Tab)
     pump(qapp, 0.5)
     assert not popout.barHidden and not window.findChild(QObject, "barTab").property("visible")
@@ -347,3 +362,66 @@ def test_space_closes_the_viewer_and_a_held_space_does_not_reopen_it(shell, qapp
     QTest.keyClick(window, Qt.Key_Space)
     pump(qapp, 0.4)
     assert not popout.isOpen
+
+
+def test_filmstrip_curve_is_correct_on_first_open_navigation_and_resize(shell, qapp):
+    engine, window, model, popout, warnings = shell
+    viewer = window.findChild(QObject, "viewer")
+
+    def thumb(index):
+        pending = list(viewer.childItems())
+        while pending:
+            child = pending.pop()
+            if child.objectName() == f"filmstripThumb_{index}":
+                return child
+            pending.extend(child.childItems())
+        raise AssertionError(f"Missing thumbnail {index}")
+
+    def check_curve(row):
+        for neighbor in (row - 1, row + 1):
+            if 0 <= neighbor < model.rowCount():
+                assert thumb(row).y() < thumb(neighbor).y()
+        for distant in (row - 2, row + 2):
+            if 0 <= distant < model.rowCount():
+                assert thumb(row).y() < thumb(distant).y()
+
+    popout.open(0)
+    pump(qapp, 0.8)
+    check_curve(0)
+    for row in (4, 6, 2):
+        popout.go(row)
+        pump(qapp, 0.8)
+        check_curve(row)
+    window.setWidth(1200)
+    popout.setStripHeight(180)
+    pump(qapp, 0.8)
+    check_curve(2)
+    popout.close()
+    pump(qapp, 0.3)
+    popout.open(4)
+    pump(qapp, 0.8)
+    check_curve(4)
+
+
+@pytest.mark.parametrize("maximized", [False, True])
+def test_preview_and_its_hide_ui_mode_cover_screen_then_restore_window(shell, qapp, maximized):
+    engine, window, model, popout, warnings = shell
+    if maximized:
+        window.showMaximized()
+        pump(qapp, 0.3)
+    original_mode = window.visibility()
+    original_geometry = window.geometry()
+    popout.open(1)
+    pump(qapp, 0.5)
+    assert window.visibility() == QWindow.FullScreen
+    viewer = window.findChild(QObject, "viewer")
+    QTest.keyClick(window, Qt.Key_H)
+    assert viewer.property("zen")
+    assert window.visibility() == QWindow.FullScreen
+    QTest.keyClick(window, Qt.Key_H)
+    assert window.visibility() == QWindow.FullScreen
+    popout.close()
+    pump(qapp, 0.5)
+    assert window.visibility() == original_mode
+    if not maximized:
+        assert window.geometry() == original_geometry

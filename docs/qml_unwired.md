@@ -393,18 +393,25 @@ action bar and a full-width filmstrip (mockup: `scripts/qml_parity/viewer.dc.htm
 
 `editor_host.py` (`EditorHost`, context property `editor`), `qml/EditorStage.qml`, `Viewer.qml` (`openEditor`), tests in `tests/test_qml_shell_editor.py`.
 Built on the same `photocraft_bridge` as the Widgets host: **E or the Edit in PhotoCraft button** starts the editor hidden (`--hosted`,
-`launch_photocraft(idle=True)`, rooted at the photo's folder, its edit-storage folder as the write root), opens the photo (`app.open`, replacing),
-raises its priority, puts its native window inside the shell's window below a 44px bar of ours (**Back to photo**) and keeps it running for the next
-photo. **Back to photo** saves a changed photo (`session.inspect` dirty, then `app.save`), hides the window and returns to the popout on the same
-photo. A different folder starts a fresh editor (the editor reads one folder). Failures (no executable, a build that is not compatible, an open that
+`launch_photocraft(idle=True, extra_args=("--raw-workspace",))`, rooted at the photo's folder, its edit-storage folder as the write root), opens the photo (`app.open`, replacing),
+binds its project/render outputs and opens Camera Raw. RAW opens supply recipe/display targets and a saved recipe when present; other photos reopen their saved project when present.
+Its native window fills the shell with no host header. **Space** settles Camera Raw, saves a changed document and returns to the grid, closing the preview too.
+The process stays available for reuse. A failed save keeps the editor visible. Space during launch requests closing once opening finishes.
+A Windows keyboard hook routes Space only while the hosted native editor has focus, consuming repeats and the matching release so the grid does not reopen.
+A different folder starts a fresh editor (the editor reads one folder). Failures (no executable, a build that is not compatible, an open that
 breaks) show as a toast in the popout and leave the editor idle. The sample page (`--mock`) only plays the Opening in PhotoCraft screen.
-**What is verified:** the lifecycle and the window placement against a fake PhotoCraft and a fake window mover (8 tests), the stage's geometry, the
-button and key. **What is not, and needs a Windows machine with a hosted build** (`scripts/check_photocraft_handoff.py` and the protocol in
-`docs/photocraft_handoff.md`): the real launch, the embed and resize of the native window (`WindowMover`), focus (the editor window takes keys, so Esc
-does not come back to the popout yet: only the Back button does), theme and resize, fullscreen, shutdown and process cleanup.
-**Not ported from `preview_controller.py` (the Widgets host's behaviour)**: save before switching photos and the automatic stash and restore, the
-persistent filmstrip in the editor, autosave and the full-size render after a pause, the Camera Raw workspace (`--raw-workspace`, `camera_raw`
-open spec, the prefetch of the next raw, the render manifest), the editor's theme following ours (`theme_synced`), idle prestart at startup, closed-tab
+**What is verified:** 14 focused tests cover lifecycle, full-window geometry, Camera Raw requests, saved recipes, Space back to the grid, deferred closing,
+save failure and scoped key/repeat handling. The native keyboard hook registered and unregistered successfully on Windows.
+A hidden native smoke check opened a synthetic JPEG in Camera Raw and settled/closed it back to idle.
+**What still needs a live hosted build** (`scripts/check_photocraft_handoff.py` and the protocol in
+`docs/photocraft_handoff.md`): changed-photo saving, native focus and Space delivery, embedding/resize, theme, fullscreen, shutdown and process cleanup.
+The native Camera Raw filmstrip uses the preview's same ordered/filtered `PhotoModel`, with bounded thumbnail uploads from the shared disk cache.
+Native selection and navigation settle/save the current edit before replacing the photo in the same process, and synchronize the preview selection.
+Native rating/reject actions update the shared model. Model resets invalidate stale native requests. The native sort/filter dropdowns are not wired;
+set the browse order and filters in the library. Hidden native validation delivered three thumbnails and clicked the second photo successfully.
+**Not ported from `preview_controller.py` (the Widgets host's behaviour)**: automatic stash and restore,
+autosave and the full-size render after a pause, Camera Raw prefetch and render manifests,
+the editor's theme following ours (`theme_synced`), idle prestart at startup, closed-tab
 reopen, `PhotoCraftSuperseded` (a newer photo asked for while one is opening), the compatibility retry across companion executables beyond
 `launch_photocraft`'s own, and the Settings > Editor rows (editor on demand, starts open, prestart). Hosting a window under QML also means nothing of
 ours can be drawn over the editor.

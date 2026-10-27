@@ -4,7 +4,7 @@ import QtQuick.Shapes
 
 // The popout: one photo at full size over the whole window, a floating action bar and a full-width filmstrip that keeps the photo you are on in
 // the middle (mockup: scripts/qml_parity/viewer.dc.html). The host is viewer_host.py (`popout`); the grid, the rail and the menus open it with
-// popout.open(row). It follows the active theme; on a dark theme the stage and glass go a step darker than the grid, like a light table.
+// popout.open(row). The stage and controls use the active theme's surfaces.
 FocusScope {
     id: v
     objectName: "viewer"
@@ -37,11 +37,10 @@ FocusScope {
     readonly property real dpr: Screen.devicePixelRatio
     readonly property int filmCenterRow: film.indexAt(film.contentX + film.width / 2, film.height / 2)     // which thumbnail is in the middle of the strip
 
-    // ---- the viewer's palette: the active theme's, with the stage and glass pushed darker on a dark theme (a light table) ----
-    readonly property bool lite: theme.light
-    readonly property color cStage: lite ? theme.base : Qt.darker(theme.base, 3)
-    readonly property color cGlass: lite ? Qt.alpha(theme.s1, 0.8) : Qt.alpha(Qt.darker(theme.base, 2), 0.74)
-    readonly property color cCard: lite ? theme.s1 : Qt.darker(theme.base, 2)     // the action bar: the same fill, opaque
+    // ---- the viewer's palette: shared surfaces keep every dark tone and Light consistent with the library ----
+    readonly property color cStage: theme.base
+    readonly property color cGlass: theme.s1
+    readonly property color cCard: theme.s1
     readonly property color cScrim: Qt.alpha(cStage, 0.9)                 // over the photo behind a panel
     readonly property color cS2: theme.s2
     readonly property color cLine: theme.line
@@ -52,7 +51,7 @@ FocusScope {
     readonly property color cBtn: theme.s2
     readonly property color cBtnHover: theme.s3
     readonly property color cHover: theme.s3
-    readonly property color cDeep: Qt.darker(theme.base, lite ? 1 : 1.15)      // the deepest panel fill
+    readonly property color cDeep: theme.base
 
     function decColor(d) { if (!theme) return "transparent"; return d === "win" ? theme.win : d === "keep" ? theme.keep : d === "rej" ? theme.rej : d === "rev" ? theme.rev : "transparent" }
     signal moveRequested(int row)
@@ -70,7 +69,7 @@ FocusScope {
         target: editor
         function onOpened() { v.opening = false }
         function onFailed(message) { v.opening = false; popout.notice(message) }
-        function onClosed() { v.opening = false; v.refocus() }
+        function onClosed() { v.opening = false; popout.close() }
     }
     function toggleZoom() { zoomed = !zoomed; if (!zoomed) loupe = false }
     function toggleLoupe() { loupe = !loupe; zoomed = loupe }
@@ -109,7 +108,7 @@ FocusScope {
 
     // Space closes the viewer wherever the focus is. A held key repeats, and the repeats used to land on the grid the viewer had just
     // handed the focus back to (where Space opens a photo), so the viewer closed and reopened.
-    Shortcut { sequence: "Space"; context: Qt.WindowShortcut; autoRepeat: false; enabled: v.shown && !v.opening; onActivated: v.close() }
+    Shortcut { sequence: "Space"; context: Qt.WindowShortcut; autoRepeat: false; enabled: v.shown && !editor.active && editor.state !== "closing"; onActivated: v.close() }
 
     // test hook: --ui "vwScene=zoom" opens the viewer on the photo `vwRow` and sets the scene the mockup calls by that name
     Connections {
@@ -135,9 +134,10 @@ FocusScope {
     Rectangle { anchors.fill: parent; color: v.cStage }
     Item {
         id: stage
+        objectName: "viewerPhotoStage"
         anchors.fill: parent
         anchors.leftMargin: v.zen ? 16 : 24; anchors.rightMargin: v.zen ? 16 : 24
-        anchors.topMargin: v.zen ? 16 : 64; anchors.bottomMargin: v.zen ? 16 : v.fh + 24 + v.bh
+        anchors.topMargin: v.zen ? 16 : 54; anchors.bottomMargin: v.zen ? 16 : v.fh + (v.barOff ? 54 : 24 + v.bh)
         Behavior on anchors.leftMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         Behavior on anchors.rightMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         Behavior on anchors.topMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
@@ -232,15 +232,15 @@ FocusScope {
     // ---- the top bar ----
     Item {
         id: topBar
-        width: parent.width; height: 76; z: 4
+        width: parent.width; height: 52; z: 4
         opacity: v.zen ? 0 : 1; enabled: !v.zen
         Behavior on opacity { NumberAnimation { duration: 300 } }
         transform: Translate { y: v.zen ? -12 : 0; Behavior on y { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } } }
-        Rectangle { anchors.fill: parent; gradient: Gradient { GradientStop { position: 0; color: Qt.alpha(v.cStage, 0.62) } GradientStop { position: 1; color: Qt.alpha(v.cStage, 0) } } }
+        Rectangle { anchors.fill: parent; color: v.cCard }
         // back to the grid
         Item {
             id: back
-            x: 18; y: 14; height: 34; width: backRow.implicitWidth + 21
+            x: 18; y: 9; height: 34; width: backRow.implicitWidth + 21
             Rectangle { anchors.fill: parent; radius: 10; color: backHover.hovered ? v.cHover : v.cGlass; border.color: v.cLineSoft }
             Row { id: backRow; x: 9; anchors.verticalCenter: parent.verticalCenter; spacing: 7
                 Icon { anchors.verticalCenter: parent.verticalCenter; path: "M15 5l-7 7 7 7"; size: 15; color: v.cFg }
@@ -251,7 +251,7 @@ FocusScope {
             Accessible.role: Accessible.Button; Accessible.name: "Back to the grid"
         }
         Column {
-            x: back.x + back.width + 12; y: 14; height: 34; spacing: 0; width: Math.max(60, rightRow.x - x - 12)
+            x: back.x + back.width + 12; y: 9; height: 34; spacing: 0; width: Math.max(60, rightRow.x - x - 12)
             Item { width: 1; height: 17
                 Text { anchors.verticalCenter: parent.verticalCenter; width: parent.parent.width; elide: Text.ElideRight; text: (v.cur.name || "") + (v.info.ext ? "." + v.info.ext : ""); color: v.cFg; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: 0.1 } }
             Item { width: 1; height: 17
@@ -260,7 +260,7 @@ FocusScope {
         }
         Row {
             id: rightRow
-            y: 14; spacing: 12; layoutDirection: Qt.LeftToRight
+            y: 9; spacing: 12; layoutDirection: Qt.LeftToRight
             x: parent.width - 18 - width
             Item {   // flagged by Cull
                 visible: (v.flag.label || "") !== ""; y: 0; width: flagRow.implicitWidth + 20; height: 28
@@ -313,27 +313,6 @@ FocusScope {
     }
     // a click on the picture while the controls are hidden brings them back
     TapHandler { enabled: v.zen; onTapped: v.zen = false }
-
-    // ---- the arrows at the edges of the photo, shown while the pointer is over the viewer ----
-    HoverHandler { id: over }
-    Repeater {
-        model: 2
-        delegate: Item {
-            id: edge
-            required property int index
-            readonly property bool isLeft: index === 0
-            readonly property bool atEnd: isLeft ? v.row <= 0 : v.row >= photos.rowCount() - 1
-            x: isLeft ? 18 : v.width - 18 - width; y: 76 + (v.height - (v.fh + 24 + v.bh) - 76) / 2 - height / 2
-            width: 44; height: 44; z: 3
-            opacity: over.hovered && !v.zen ? (atEnd ? 0.3 : 1) : 0
-            Behavior on opacity { NumberAnimation { duration: 200 } }
-            Rectangle { anchors.fill: parent; radius: 22; color: eh.hovered && !edge.atEnd ? v.cHover : v.cGlass; border.color: v.cLineSoft }
-            Icon { anchors.centerIn: parent; path: edge.isLeft ? "M15 5l-7 7 7 7" : "M9 5l7 7-7 7"; size: 18; color: v.cFg }
-            HoverHandler { id: eh; cursorShape: edge.atEnd ? Qt.ArrowCursor : Qt.PointingHandCursor }
-            TapHandler { enabled: !edge.atEnd; onTapped: v.step(edge.isLeft ? -1 : 1) }
-            Accessible.role: Accessible.Button; Accessible.name: edge.isLeft ? "Previous photo" : "Next photo"
-        }
-    }
 
     // ---- Cull flagged this photo ----
     Item {
@@ -492,17 +471,19 @@ FocusScope {
             }
         }
 
-        // while the bar is away, a small tab in its place brings it back
+        // Restore beside Fit/100%, with the same reserved space below the photo.
         Item {
             id: showTab
             objectName: "barTab"
+            parent: v
+            z: 10
             visible: opacity > 0.01
             opacity: v.barOff && !v.zen ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: 220 } }
-            width: 46; height: 22; x: (parent.width - width) / 2; y: 28
-            Glass { anchors.fill: parent; frosted: false; radius: 11; tint: v.cCard; shadowOffsetA: 6; shadowBlurA: 16; shadowAlphaA: 0.4; shadowInset: 3; shadowAlphaB: 0 }
-            Rectangle { anchors.fill: parent; radius: 11; color: sb.hovered ? Qt.alpha(v.cHover, 0.6) : "transparent"; border.color: v.cLine }
-            Icon { anchors.centerIn: parent; path: "M6 15l6-6 6 6"; size: 14; strokeWidth: 1.8; color: sb.hovered ? v.cFg : v.cFg2 }
+            width: restoreLabel.implicitWidth + 42; height: 30; x: zoomPill.x + zoomPill.width + 8; y: zoomPill.y
+            Rectangle { anchors.fill: parent; radius: 7; color: sb.hovered ? v.cHover : v.cBtn; border.color: v.cLine }
+            Icon { x: 8; anchors.verticalCenter: parent.verticalCenter; name: "chevUp"; size: 14; color: v.cFg2 }
+            Text { id: restoreLabel; x: 28; anchors.verticalCenter: parent.verticalCenter; text: "Show toolbar"; color: v.cFg2; font.pixelSize: 12 }
             HoverHandler { id: sb; cursorShape: Qt.PointingHandCursor }
             TapHandler { enabled: v.barOff; onTapped: popout.setBarHidden(false) }
             HoverTip { tip: "Show the action bar (Tab)"; hovered: sb.hovered }
@@ -513,7 +494,7 @@ FocusScope {
         Item {
             id: strip
             y: 52 + 12; width: parent.width; height: v.fh
-            Rectangle { anchors.fill: parent; color: Qt.alpha(v.cStage, 0.88) }
+            Rectangle { anchors.fill: parent; color: v.cCard }
             Rectangle { width: parent.width; height: 1; color: v.cLineSoft }
             readonly property int th: Math.round((v.fh - 16) / 1.25)
             readonly property int tw: Math.round(th * 1.5)
@@ -545,9 +526,14 @@ FocusScope {
                     Behavior on l { enabled: !grip.dragging && v.shown; SequentialAnimation { PauseAnimation { duration: fs.dist * 18 } NumberAnimation { duration: 550; easing.type: Easing.OutQuint } } }
                     readonly property bool cur: dist === 0
                     readonly property bool flagged: { void cull.view; return (popout.flagFor(index).label || "") !== "" }
-                    width: strip.tw; height: strip.th
-                    y: (film.height - strip.th) / 2 + 4 - 8 - l * strip.lift
+                    width: strip.tw; height: film.height
                     opacity: 0.5 + l * 0.5
+                    // ListView owns the delegate's position. Lift a child instead:
+                    // its initial layout otherwise overwrites the root y binding.
+                    Item {
+                        objectName: "filmstripThumb_" + fs.index
+                        width: parent.width; height: strip.th
+                        y: (film.height - height) / 2 - 4 - fs.l * strip.lift
                     Rectangle { anchors.fill: parent; radius: 7; color: v.cDeep; border.width: 2; border.color: fs.cur ? v.cFg : "transparent"
                         layer.enabled: fs.cur; layer.effect: MultiEffect { shadowEnabled: true; shadowColor: Qt.rgba(0, 0, 0, 0.55); shadowBlur: 0.5; shadowVerticalOffset: 10 } }
                     RoundClip { anchors.fill: parent; anchors.margins: 2; radius: 5
@@ -557,6 +543,7 @@ FocusScope {
                     }
                     Rectangle { x: parent.width - 4 - 9 - 2; y: 4 + 2; width: 9; height: 9; radius: 4.5; color: v.decColor(fs.decision); border.width: 1.5; border.color: Qt.rgba(0, 0, 0, 0.55) }
                     Text { x: 6; y: parent.height - height - 5; text: fs.index + 1; visible: fs.cur || fh.hovered; color: "white"; font.pixelSize: 9; font.weight: Font.DemiBold; style: Text.Outline; styleColor: Qt.rgba(0, 0, 0, 0.6) }
+                    }
                     HoverHandler { id: fh; cursorShape: Qt.PointingHandCursor }
                     TapHandler { onTapped: v.go(fs.index) }
                     Accessible.role: Accessible.Button; Accessible.name: fs.name
@@ -590,6 +577,7 @@ FocusScope {
     // ---- zoom pill and key hints, above the strip ----
     Item {
         id: zoomPill
+        objectName: "viewerZoomControls"
         x: 20; y: parent.height - (v.fh + 16) - height; width: zr.implicitWidth; height: 30; z: 5
         opacity: v.zen ? 0 : 1; Behavior on opacity { NumberAnimation { duration: 300 } }
         Rectangle { anchors.fill: parent; radius: 9; color: v.cGlass; border.color: v.cLineSoft }

@@ -140,9 +140,9 @@ Rectangle {
                 id: wb
                 required property string modelData
                 readonly property bool isClose: modelData === "winClose"
-                width: 38; height: 41
+                width: 46; height: 41
                 Rectangle { anchors.fill: parent; color: wb.isClose ? theme.rej : Qt.alpha(theme.lift, 0.08); visible: wh.hovered }
-                Icon { anchors.centerIn: parent; name: wb.modelData === "winMax" && winButtons.maximized ? "winRestore" : wb.modelData; size: 12; color: wb.isClose && wh.hovered ? "white" : theme.fg3 }
+                Icon { anchors.centerIn: parent; name: wb.modelData === "winMax" && winButtons.maximized ? "winRestore" : wb.modelData; size: 18; strokeWidth: 1.8; color: wb.isClose && wh.hovered ? "white" : theme.fg2 }
                 HoverHandler { id: wh }
                 TapHandler { onTapped: winButtons.act(wb.modelData) }
                 Accessible.role: Accessible.Button
