@@ -12,7 +12,7 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, Qt, Signal, Slot
+from PySide6.QtCore import Property, QObject, Qt, QTimer, Signal, Slot
 
 LOG = logging.getLogger(__name__)
 
@@ -44,6 +44,31 @@ class WindowMover:
         user32 = ctypes.windll.user32
         user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
         user32.ShowWindow(hwnd, 4 if visible else 0)         # SW_SHOWNOACTIVATE / SW_HIDE
+
+
+    def focus(self, hwnd: int) -> None:
+        """Keyboard focus into the editor's window (it is shown without activation, so the arrow keys and E would otherwise go to the shell)."""
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        user32.SetFocus.argtypes = [wintypes.HWND]
+        user32.SetFocus(hwnd)
+
+    def wants_focus(self, hwnd: int, parent: int) -> bool:
+        """True while the shell's window is the active one, the left button is down over the editor's window and the editor does not hold the focus."""
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        user32.GetFocus.restype = wintypes.HWND
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        if not (user32.GetAsyncKeyState(0x01) & 0x8000) or user32.GetForegroundWindow() != parent or user32.GetFocus() == hwnd:
+            return False
+        rect, point = wintypes.RECT(), wintypes.POINT()
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        user32.GetCursorPos(ctypes.byref(point))
+        return rect.left <= point.x < rect.right and rect.top <= point.y < rect.bottom
 
 
 class EditorHost(QObject):
@@ -197,10 +222,38 @@ class EditorHost(QObject):
             self._space_shortcut = EditorSpaceShortcut(
                 lambda: self._proc.hwnd if self._proc is not None and self._state == EDITING else 0, self)
             self._space_shortcut.pressed.connect(self.close, Qt.ConnectionType.QueuedConnection)
+            self._focus_timer = QTimer(self)
+            self._focus_timer.setInterval(60)
+            self._focus_timer.timeout.connect(self._follow_clicks)
+            self._focus_timer.start()
             try:
                 self._space_shortcut.start()
             except OSError:
                 LOG.exception("Could not register the hosted editor Space shortcut")
+
+    def _focus(self, hwnd: int) -> None:
+        focus = getattr(self._mover, "focus", None)
+        if focus is not None:
+            focus(hwnd)
+
+    def _follow_clicks(self) -> None:
+        """A click inside the editor hands it the keyboard (Windows does not, for a window of another process placed inside ours)."""
+        proc, wants = self._proc, getattr(self._mover, "wants_focus", None)
+        if proc is not None and self._state == EDITING and not proc.is_running():
+            # The editor was closed from its own window (its native exit button): back to the grid rather than an empty stage.
+            LOG.info("The hosted editor exited on its own")
+            path, self._path = self._path, ""
+            self._proc = None
+            self.pathChanged.emit()
+            self._set(IDLE)
+            self.closed.emit(path)
+            return
+        if proc is not None and wants is not None and self._state == EDITING and self._parent_hwnd:
+            try:
+                if wants(proc.hwnd, self._parent_hwnd):
+                    self._focus(proc.hwnd)
+            except Exception:
+                LOG.debug("editor focus follow", exc_info=True)
 
     @Slot(int, int, int, int)
     def setGeometry(self, x: int, y: int, width: int, height: int) -> None:
@@ -231,6 +284,7 @@ class EditorHost(QObject):
                     result.attached_parent = self._parent_hwnd
                 self._place(result)
                 self._mover.show(result.hwnd, True)
+                self._focus(result.hwnd)
             except Exception:
                 LOG.warning("could not put the editor window in the shell", exc_info=True)
             self._set(EDITING, "")

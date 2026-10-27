@@ -179,6 +179,9 @@ class EditorFilmstrip(QObject):
                 return
             self.ack = serial
             self.host.openPath(selected["path"])
+        elif kind == "close":
+            self.ack = serial
+            self.host.close()
         elif kind == "rating" and type(value) is int and 0 <= value <= 5:
             self.ack = serial
             self.photos.setRating(index, value)

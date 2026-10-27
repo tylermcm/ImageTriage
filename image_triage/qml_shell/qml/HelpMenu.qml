@@ -10,7 +10,7 @@ Item {
     anchors.fill: parent
     visible: v.menu
     z: 100
-    MouseArea { x: 0; y: 42; width: parent.width; height: parent.height - 42; onClicked: reference.closeMenu() }   // below the bar, so the bar's titles stay live
+    MouseArea { x: 0; y: 42; width: parent.width; height: parent.height - 42; acceptedButtons: Qt.AllButtons; hoverEnabled: true; onWheel: (w) => { w.accepted = true }; onClicked: reference.closeMenu() }   // below the bar, so the bar's titles stay live
     Item {
         id: card
         x: root.menuX; y: 41; width: 268; height: col.height + 12

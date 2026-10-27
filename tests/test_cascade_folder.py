@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from image_triage.cascade.export import build_rows, cluster_id, cluster_reason, frame_score
 from image_triage.cascade.folder import FolderFrame, run_folder, segment_bursts
-from image_triage.cascade.model import FrameFeatures
+from image_triage.cascade.model import CascadeSettings, FrameFeatures
 
 
 def feature(key: str, *, distance: int = 0, sharp: float = 100.0, clipped: float = 0.01, extremes: float = 0.01, blink: bool = False) -> FrameFeatures:
@@ -95,7 +95,39 @@ def test_cluster_ids_and_reasons_describe_stacks_brackets_and_singles():
 
 def test_rows_follow_the_folder_order_and_skip_undecided_frames():
     frames = [frame("b", 50.0), frame("a", 0.0)]
-    result = run_folder(frames)
+    result = run_folder(frames, CascadeSettings(repeat_distance=0))     # two identical pictures minutes apart would otherwise be folded as repeats
     rows = build_rows(result.outcomes, ["a", "missing", "b"])
     assert [row["file_path"] for row in rows] == ["a", "b"]
     assert rows[0]["cascade_role"] == "final" and rows[0]["rank_in_cluster"] == 1
+
+
+def test_a_repeat_of_the_same_scene_minutes_later_is_folded_into_the_first():
+    frames = [frame("a", 0.0), frame("b", 600.0)]      # two bursts, identical pictures, ten minutes apart
+    result = run_folder(frames)
+    roles = {key: outcome.role for key, outcome in result.outcomes.items()}
+    assert sorted(roles.values()) == ["duplicate", "final"]
+    folded = next(o for o in result.outcomes.values() if o.role == "duplicate")
+    assert folded.duplicate_of in ("a", "b") and "Near-duplicate of" in folded.summary
+    assert all(o.role == "final" for o in run_folder(frames, CascadeSettings(repeat_distance=0)).outcomes.values())
+
+
+def test_a_bracket_that_repeats_an_earlier_bracket_is_folded_whole():
+    first = [frame("a1", 0.0, bracket=0), frame("a2", 0.5, bracket=0), frame("a3", 1.0, bracket=0)]
+    second = [frame("b1", 300.0, bracket=1), frame("b2", 300.5, bracket=1), frame("b3", 301.0, bracket=1)]
+    result = run_folder(first + second)
+    roles = sorted(o.role for o in result.outcomes.values())
+    assert roles == ["bracket"] * 3 + ["duplicate"] * 3
+
+
+def test_ssim_pass_folds_a_reframed_repeat_that_phash_misses_and_leaves_a_different_picture():
+    import numpy as np
+
+    from image_triage.cascade.similarity import aligned_ssim
+
+    rng = np.random.default_rng(1)
+    scene = rng.random((120, 180)).astype("float32")
+    scene = (scene + np.roll(scene, 1, 0) + np.roll(scene, 1, 1)) / 3        # some texture
+    shifted = np.roll(scene, (3, -4), (0, 1)) * 0.6 + 0.1                     # a small reframe and a different exposure
+    other = np.random.default_rng(2).random((120, 180)).astype("float32")
+    assert aligned_ssim(scene, shifted) > 0.65
+    assert aligned_ssim(scene, other) < 0.3

@@ -174,7 +174,7 @@ Backdrop {
         DialogCard {
             shown: mergePrompt.open
             width: 400; height: mc.implicitHeight + 46
-            x: (parent.width - width) / 2; y: 180
+            x: (parent.width - width) / 2; y: (parent.height - height) / 2
             Column { id: mc; x: 23; y: 23; width: parent.width - 46
                 Text { height: 20.25; verticalAlignment: Text.AlignVCenter; text: "Merge as Same Person"; color: theme.fg; font.pixelSize: 15; font.weight: Font.DemiBold; font.letterSpacing: -0.15 }
                 Item { width: 1; height: 6 }

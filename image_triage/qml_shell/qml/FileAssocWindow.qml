@@ -21,7 +21,7 @@ Backdrop {
         id: win
         shown: root.shown
         width: root.winW; height: root.winH
-        x: (parent.width - width) / 2; y: 44
+        x: (parent.width - width) / 2; y: (parent.height - height) / 2
         RoundClip {
             anchors.fill: parent; anchors.margins: 1; radius: 15
             Rectangle { anchors.fill: parent; color: Qt.alpha(theme.base, 0.97) }

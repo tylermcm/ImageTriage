@@ -90,7 +90,7 @@ Item {
         else root.run(item.id)
     }
 
-    MouseArea { x: 0; y: 42; width: parent.width; height: parent.height - 42; acceptedButtons: Qt.AllButtons; onClicked: root.close() }   // a click anywhere below the bar puts the menu away
+    MouseArea { x: 0; y: 42; width: parent.width; height: parent.height - 42; acceptedButtons: Qt.AllButtons; hoverEnabled: true; onWheel: (w) => { w.accepted = true }; onClicked: root.close() }   // a click anywhere below the bar puts the menu away
     Shortcut { sequence: "Esc"; enabled: root.which !== ""; onActivated: root.close() }
 
     // one row of a menu, in the Help menu's look

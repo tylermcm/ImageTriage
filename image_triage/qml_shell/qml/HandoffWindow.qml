@@ -118,7 +118,7 @@ FocusScope {
 
     Item {
         id: win
-        x: (root.width - width) / 2; y: Math.max(40, (root.height - height) / 2 + 8)
+        x: (root.width - width) / 2; y: Math.max(8, (root.height - height) / 2)
         width: root.winW; height: root.winH
         scale: root.shown ? 1 : 0.96
         Behavior on scale { NumberAnimation { duration: 320; easing.type: Easing.OutBack; easing.overshoot: 1.4 } }

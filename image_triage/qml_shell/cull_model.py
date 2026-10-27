@@ -29,10 +29,13 @@ SENS_KEY = "ai/cascade_default_strictness"          # new, the shell's: how stri
 _D = CascadeSettings()
 # Measured defaults ("Balanced"); the other two are presets around them.
 PRESETS = {
-    "careful": {"split": _D.split_jump, "dup": _D.duplicate_distance, "soft": 30, "clip": 15, "blown": 50, "blink": 70},
+    "careful": {"split": _D.split_jump, "dup": _D.duplicate_distance, "soft": 30, "clip": 15, "blown": 50, "blink": 70,
+                "rdist": 6, "ssim": 75, "rwin": _D.repeat_window, "rounds": 1},
     "balanced": {"split": _D.split_jump, "dup": _D.duplicate_distance, "soft": round(_D.soft_ratio * 100), "clip": round(_D.clip_floor * 100),
-                 "blown": round(_D.blown_out * 100), "blink": 60},
-    "strict": {"split": _D.split_jump, "dup": _D.duplicate_distance, "soft": 50, "clip": 7, "blown": 35, "blink": 50},
+                 "blown": round(_D.blown_out * 100), "blink": 60,
+                 "rdist": _D.repeat_distance, "ssim": round(_D.ssim_threshold * 100), "rwin": _D.repeat_window, "rounds": 1},
+    "strict": {"split": _D.split_jump, "dup": _D.duplicate_distance, "soft": 50, "clip": 7, "blown": 35, "blink": 50,
+               "rdist": 12, "ssim": 58, "rwin": _D.repeat_window, "rounds": 2},
 }
 SENS_TEXT = {
     "careful": "Flags only the clearest problems. Fewer frames are flagged, so fewer good ones get caught by mistake.",
@@ -59,12 +62,16 @@ TUNES = (("split", "Stack split", "A new stack starts when two neighbouring fram
          ("soft", "Soft below", "Flag a frame whose sharpness is under this share of the sharpest frame in its stack.", 20, 70),
          ("clip", "Clipped above", "Flag a frame with more than this share of clipped pixels, and more than twice its stack’s cleanest.", 5, 30),
          ("blown", "Blown out from", "A frame this clipped counts as blown out. A stack of them gets no pick.", 25, 70),
-         ("blink", "Eyes closed from", "Flag a frame when the most closed face scores at or above this.", 40, 90))
+         ("blink", "Eyes closed from", "Flag a frame when the most closed face scores at or above this.", 40, 90),
+         ("rdist", "Repeat distance", "A frame is a repeat of an earlier shot of the same scene when its hash differs by this much or less (out of 64), whatever the time between them. 0 turns repeats off.", 0, 24),
+         ("ssim", "Same-framing match", "A frame whose structure matches an earlier frame at least this well, after a small shift is undone, is a repeat of it.", 40, 95),
+         ("rwin", "Compare with the last", "How many earlier shots each frame is compared with, in the order they were taken.", 2, 30),
+         ("rounds", "Repeat passes", "How many times the repeat check runs over what the previous run left.", 1, 3))
 STAGES = ("Reading capture times and brackets", "Reading previews", "Checking for closed eyes", "Deciding")
 
 
 def _fmt(key: str, v: int) -> str:
-    return f"{v / 100:.2f}" if key == "blink" else (f"{v}%" if key in ("soft", "clip", "blown") else str(v))
+    return f"{v / 100:.2f}" if key == "blink" else (f"{v}%" if key in ("soft", "clip", "blown", "ssim") else str(v))
 
 
 class CullModel(QObject):
@@ -847,7 +854,8 @@ class CullModel(QObject):
     def _start_real(self) -> None:
         s = self._s
         v = s["vals"]
-        cascade = CascadeSettings(split_jump=v["split"], duplicate_distance=v["dup"], soft_ratio=v["soft"] / 100, clip_floor=v["clip"] / 100, blown_out=v["blown"] / 100)
+        cascade = CascadeSettings(split_jump=v["split"], duplicate_distance=v["dup"], soft_ratio=v["soft"] / 100, clip_floor=v["clip"] / 100, blown_out=v["blown"] / 100,
+                                   repeat_distance=v["rdist"], ssim_threshold=v["ssim"] / 100, repeat_window=v["rwin"], repeat_rounds=v["rounds"])
         records = [r["record"] for r in self._photos.all_rows() if r.get("record") is not None]
         decision = self._ranking_decision()
         self._real, self._outcomes, self._picks, self._flags, self._stacks = True, {}, set(), {}, []

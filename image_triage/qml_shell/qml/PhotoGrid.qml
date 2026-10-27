@@ -175,6 +175,7 @@ Item {
                     anchors.fill: parent
                     path: cell.isFolder ? "" : cell.path
                     bucket: root.cellBucket
+                    blurFill: true
                     imageOpacity: cell.decision === "rej" || cell.flag.label !== undefined ? 0.38 : 1
                     desaturate: cell.decision === "rej" ? 0.75 : (cell.flag.label !== undefined ? 0.7 : 0)
                     scale: hover.hovered && !cell.isFolder ? 1.04 : 1
@@ -210,31 +211,31 @@ Item {
                 Rectangle {
                     // the name / stars / format strip: padding 22 9 7, 11.5px text, a 0.72 black ramp
                     anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                    height: 45.1
+                    height: 51
                     opacity: cell.hot && !cell.isFolder ? 1 : 0
                     Behavior on opacity { NumberAnimation { duration: 200 } }
                     gradient: Gradient { GradientStop { position: 0; color: cell.bright ? "#00ffffff" : "transparent" } GradientStop { position: 1; color: cell.bright ? "#d9ffffff" : "#b8000000" } }
                     Text {
                         visible: UiState.showNames
                         anchors.left: parent.left; anchors.leftMargin: 9; anchors.bottom: parent.bottom; anchors.bottomMargin: 7
-                        width: parent.width - 120; elide: Text.ElideRight; height: 16.1; verticalAlignment: Text.AlignVCenter
-                        text: cell.title; color: cell.bright ? "#15181f" : "white"; font.pointSize: UiState.pt(11.5)
+                        width: parent.width - 140; elide: Text.ElideRight; height: 18.5; verticalAlignment: Text.AlignVCenter
+                        text: cell.title; color: cell.bright ? "#15181f" : "white"; font.pointSize: UiState.pt(13)
                         style: cell.bright ? Text.Outline : Text.Normal; styleColor: Qt.rgba(1, 1, 1, 0.6)
                     }
                     Row {
                         anchors.right: parent.right; anchors.rightMargin: 9; anchors.bottom: parent.bottom; anchors.bottomMargin: 7; spacing: 7
                         Item {
-                            width: 62.5; height: 13
-                            Text { y: 1; text: "\u2605\u2605\u2605\u2605\u2605"; color: cell.bright ? Qt.rgba(0, 0, 0, 0.30) : Qt.rgba(1, 1, 1, 0.28); font.pixelSize: 11; font.letterSpacing: 1; height: 11 }
+                            width: 74; height: 15
+                            Text { y: 1; text: "\u2605\u2605\u2605\u2605\u2605"; color: cell.bright ? Qt.rgba(0, 0, 0, 0.30) : Qt.rgba(1, 1, 1, 0.28); font.pixelSize: 13; font.letterSpacing: 1.2; height: 13 }
                             Item {
-                                y: 1; width: parent.width * cell.rating / 5; height: 11; clip: true
-                                Text { text: "\u2605\u2605\u2605\u2605\u2605"; color: cell.bright ? Qt.darker(theme.star, 1.5) : theme.star; font.pixelSize: 11; font.letterSpacing: 1; height: 11 }
+                                y: 1; width: parent.width * cell.rating / 5; height: 13; clip: true
+                                Text { text: "\u2605\u2605\u2605\u2605\u2605"; color: cell.bright ? Qt.darker(theme.star, 1.5) : theme.star; font.pixelSize: 13; font.letterSpacing: 1.2; height: 13 }
                             }
                         }
                         Rectangle {
                             visible: UiState.showBadges
-                            width: fmt.implicitWidth + 11.7; height: 13; radius: 5; color: cell.isRaw ? Qt.alpha(theme.accent, cell.bright ? 0.92 : 0.7) : (cell.bright ? Qt.rgba(0, 0, 0, 0.62) : Qt.rgba(1, 1, 1, 0.18))
-                            Text { id: fmt; anchors.centerIn: parent; text: cell.ext; color: "white"; font.pointSize: UiState.pt(9.5); font.weight: Font.DemiBold; font.letterSpacing: 0.38 }
+                            width: fmt.implicitWidth + 13.5; height: 15.5; radius: 5.5; color: cell.isRaw ? Qt.alpha(theme.accent, cell.bright ? 0.92 : 0.7) : (cell.bright ? Qt.rgba(0, 0, 0, 0.62) : Qt.rgba(1, 1, 1, 0.18))
+                            Text { id: fmt; anchors.centerIn: parent; text: cell.ext; color: "white"; font.pointSize: UiState.pt(11); font.weight: Font.DemiBold; font.letterSpacing: 0.44 }
                         }
                     }
                 }

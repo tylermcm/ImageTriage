@@ -30,6 +30,7 @@ from ..perf import perf_logger
 _JOBS = memtrace.jobs("qml.thumbnail.decode")
 BUCKET_ASPECT = 2 / 3
 BUCKETS = (160, 240, 360, 540, 800)   # the sizes PhotoGrid.bucket() asks for
+FIT_TAG = (-3, -3)                # marks this grid's thumbnails in the shared cache: they keep the photo's own shape (the Widgets grid's are cropped to 3:2)
 STRIP = 0.30                      # the bottom share of a thumbnail that a card's name, stars and format tag are drawn over
 
 
@@ -116,7 +117,7 @@ class ThumbService(QObject):
             with self._lock:
                 self._stats[norm] = known
         size = self.size_for(bucket)
-        return ThumbnailKey(path=path, modified_ns=known[0], file_size=known[1], width=size.width(), height=size.height())
+        return ThumbnailKey(path=path, modified_ns=known[0], file_size=known[1], width=size.width(), height=size.height(), edit_state=FIT_TAG)
 
     @Slot(str, int, result=str)
     def url(self, path: str, bucket: int) -> str:
@@ -144,7 +145,7 @@ class ThumbService(QObject):
         every card until its new size had been decoded (seconds, on a NAS), and the cell redraws sharp when ``ready`` arrives."""
         for other in sorted((b for b in BUCKETS if b != bucket), key=lambda b: abs(b - bucket)):
             size = self.size_for(other)
-            candidate = self.disk._file_path(ThumbnailKey(path=path, modified_ns=key.modified_ns, file_size=key.file_size, width=size.width(), height=size.height()))
+            candidate = self.disk._file_path(ThumbnailKey(path=path, modified_ns=key.modified_ns, file_size=key.file_size, width=size.width(), height=size.height(), edit_state=key.edit_state))
             if candidate.exists():
                 return QUrl.fromLocalFile(str(candidate)).toString()
         return ""
@@ -206,12 +207,9 @@ class ThumbService(QObject):
             if wanted and not self.disk._file_path(key).exists():
                 image, _error = load_image_for_display(key.path, QSize(key.width, key.height), prefer_embedded=True)
                 if not image.isNull():
-                    if image.width() != key.width or image.height() != key.height:
-                        # Fill the cell exactly (the grid crops to its 3:2 cell anyway), so every cached file is the bucket's size.
-                        image = image.scaled(key.width, key.height, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
-                        left = max(0, (image.width() - key.width) // 2)
-                        top = max(0, (image.height() - key.height) // 2)
-                        image = image.copy(left, top, key.width, key.height)
+                    if image.width() > key.width or image.height() > key.height:
+                        # The whole photo, inside the bucket's box: the card decides whether to crop it or to fill the rest with a blur.
+                        image = image.scaled(key.width, key.height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                     if _JOBS is not None:
                         _JOBS.result(memtrace.image_bytes(image))
                     self.disk.save(key, image)

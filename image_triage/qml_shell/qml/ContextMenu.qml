@@ -40,7 +40,7 @@ Item {
         if (sub) ctxMenu.setSub(sub)
     }
 
-    MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onPressed: ctxMenu.close() }
+    MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; hoverEnabled: true; onWheel: (w) => { w.accepted = true }; onPressed: ctxMenu.close() }
     Keys.onEscapePressed: ctxMenu.close()
     onVisibleChanged: if (visible) forceActiveFocus()
 

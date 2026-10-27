@@ -27,6 +27,11 @@ FocusScope {
     readonly property int fh: popout.stripHeight
     readonly property var cur: { if (!photos) return ({}); void photos.revision; return row >= 0 ? photos.get(row) : ({}) }
     readonly property string curPath: cur.path || ""
+    // the row's name already is the file's name with its extension; only a name without one gets the extension added
+    readonly property string fileName: {
+        var n = cur.name || "", e = info.ext ? "." + info.ext : "";
+        return e && n.toLowerCase().lastIndexOf(e.toLowerCase()) !== n.length - e.length ? n + e : n
+    }
     readonly property string curDec: cur.decision || ""
     readonly property int curRating: cur.rating || 0
     readonly property var info: popout.info
@@ -132,6 +137,16 @@ FocusScope {
 
     // ---- the stage ----
     Rectangle { anchors.fill: parent; color: v.cStage }
+    // what the photo's shape leaves empty is filled with a blurred, dimmed copy of the photo instead of plain black bars
+    ThumbImage {
+        anchors.fill: parent
+        path: v.curPath; bucket: 240; fillMode: Image.PreserveAspectCrop
+        layer.enabled: true
+        layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: 48; brightness: -0.28; saturation: -0.1 }
+    }
+    // the popout covers the window: nothing under it (the grid, the rail, the drives) may see the pointer where the stage has no control of its own
+    MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; hoverEnabled: true; onWheel: (w) => { w.accepted = true }
+                 onClicked: { if (v.zen) v.zen = false } }
     Item {
         id: stage
         objectName: "viewerPhotoStage"
@@ -253,7 +268,7 @@ FocusScope {
         Column {
             x: back.x + back.width + 12; y: 9; height: 34; spacing: 0; width: Math.max(60, rightRow.x - x - 12)
             Item { width: 1; height: 17
-                Text { anchors.verticalCenter: parent.verticalCenter; width: parent.parent.width; elide: Text.ElideRight; text: (v.cur.name || "") + (v.info.ext ? "." + v.info.ext : ""); color: v.cFg; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: 0.1 } }
+                Text { anchors.verticalCenter: parent.verticalCenter; width: parent.parent.width; elide: Text.ElideRight; text: v.fileName; color: v.cFg; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: 0.1 } }
             Item { width: 1; height: 17
                 Text { anchors.verticalCenter: parent.verticalCenter; width: parent.parent.width; elide: Text.ElideRight; textFormat: Text.StyledText
                     text: popout.crumb + " <font color='" + v.cFg2 + "'>·</font> " + (v.info.kind || "") + (v.info.dims ? " · " + v.info.dims : ""); color: v.cFg3; font.pointSize: UiState.pt(11.5) } }
@@ -684,7 +699,7 @@ FocusScope {
             Rectangle { anchors.horizontalCenter: parent.horizontalCenter; width: 62; height: 62; radius: 17
                 gradient: Gradient { GradientStop { position: 0; color: Qt.lighter(theme.accent, 1.12) } GradientStop { position: 1; color: Qt.darker(theme.accent, 1.9) } }
                 Icon { anchors.centerIn: parent; size: 32; strokeWidth: 1.7; color: "white"; path: "M12 3.5a8.5 8.5 0 100 17 8.5 8.5 0 000-17zM12 3.5l3 8.5M20.5 12l-8.5 3M12 20.5L9 12M3.5 12l8.5-3" } }
-            Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; text: "Opening " + (v.cur.name || "") + (v.info.ext ? "." + v.info.ext : "") + " in PhotoCraft…"; color: v.cFg; font.pixelSize: 17; font.weight: Font.DemiBold }
+            Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; text: "Opening " + v.fileName + " in PhotoCraft…"; color: v.cFg; font.pixelSize: 17; font.weight: Font.DemiBold }
             Text { width: parent.width; y: -10; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; text: "Your decisions here are saved. Closing the editor brings you back to this photo."; color: v.cFg3; font.pointSize: UiState.pt(12.5) }
             Item { anchors.horizontalCenter: parent.horizontalCenter; width: 220; height: 4; clip: true
                 Rectangle { anchors.fill: parent; radius: 2; color: v.cHover }

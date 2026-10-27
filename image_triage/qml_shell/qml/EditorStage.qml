@@ -11,6 +11,7 @@ Item {
     visible: shown
 
     Rectangle { anchors.fill: parent; color: theme.base }
+    MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; hoverEnabled: true; onWheel: (w) => { w.accepted = true } }   // nothing under the editor sees the pointer
     Item {   // where the editor's window goes
         id: canvas
         anchors.fill: parent

@@ -27,6 +27,7 @@ from .faces import FaceCache, FaceFinding
 from .folder import ROLE_BRACKET, ROLE_DUPLICATE, ROLE_FINAL, ROLE_PICK, FolderFrame, FolderResult, FrameOutcome, run_folder
 from .model import CascadeSettings
 from .pipeline import Scorer
+from .pixels import PreviewPixels
 
 # The four stages of an Analyze run, in order. The run controller shows them as "Stage 2 of 4: Reading previews".
 STAGES = ("Reading capture times and brackets", "Reading previews", "Deciding what to flag", "Writing results")
@@ -152,6 +153,7 @@ class CascadeRunTask(QRunnable):
         detector = BracketDetector()
         captured: dict[str, float | None] = {}
         focal: dict[str, float | None] = {}
+        exposure: dict[str, float | None] = {}
         for index, record in enumerate(records):
             self._check_cancelled()
             metadata = load_capture_metadata(record.path)
@@ -159,6 +161,7 @@ class CascadeRunTask(QRunnable):
             value = metadata.captured_at_value
             captured[record.path] = value.timestamp() if value is not None else None
             focal_value = getattr(metadata, "focal_length_value", None)
+            exposure[record.path] = getattr(metadata, "exposure_seconds", None)
             focal[record.path] = float(focal_value) if focal_value else None
             if index % 25 == 0 or index == total - 1:
                 self._progress(folder, STAGES[0], index + 1, total, started)
@@ -199,6 +202,7 @@ class CascadeRunTask(QRunnable):
                 replace(feature, focal_mm=focal.get(record.path)) if feature is not None else None,
                 captured.get(record.path),
                 bracket_of.get(record.path),
+                exposure.get(record.path),
             )
             for record, feature in zip(records, extracted.features)
         ]
@@ -331,6 +335,7 @@ class CascadeRunTask(QRunnable):
             aesthetic=scorers.aesthetic,
             progress=progress,
             cancelled=self._cancelled,
+            pixels=PreviewPixels(),
         )
 
     def _apply_protection(self, result: FolderResult) -> None:

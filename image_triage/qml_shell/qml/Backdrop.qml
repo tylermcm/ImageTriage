@@ -6,6 +6,7 @@ FocusScope {
     id: root
     property Item sourceItem
     property bool shown: false
+    property bool plain: false             // another dialog already dims and blurs the window: this one adds no second layer
     signal dismissed()
     default property alias content: holder.data
     anchors.fill: parent
@@ -14,8 +15,8 @@ FocusScope {
     z: 108
     Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
     ShaderEffectSource { id: snap; anchors.fill: parent; sourceItem: root.sourceItem; live: true; visible: false }
-    MultiEffect { anchors.fill: parent; source: snap; blurEnabled: true; blur: 1.0; blurMax: 20 }
-    Rectangle { anchors.fill: parent; color: theme.scrim }
+    MultiEffect { anchors.fill: parent; source: snap; blurEnabled: true; blur: 1.0; blurMax: 20; visible: !root.plain }
+    Rectangle { anchors.fill: parent; color: theme.scrim; visible: !root.plain }
     MouseArea { anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.AllButtons; onClicked: root.dismissed(); onWheel: (w) => { w.accepted = true } }
     HoverHandler { blocking: true }        // nothing behind a dialog (the grid's hover strips, tooltips) reacts to the pointer while it is up
     Item { id: holder; anchors.fill: parent }

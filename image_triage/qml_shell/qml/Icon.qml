@@ -24,7 +24,7 @@ Item {
             fillColor: root.filled ? root.color : "transparent"
             capStyle: ShapePath.RoundCap
             joinStyle: ShapePath.RoundJoin
-            PathSvg { path: root.path !== "" ? root.path : (Icons.paths[root.name] || "") }
+            PathSvg { path: root.path !== "" ? Icons.spaced(root.path) : (Icons.paths[root.name] || "") }
         }
     }
 }

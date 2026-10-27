@@ -20,6 +20,7 @@ from .model import (
 )
 from .flags import is_rejecting
 from .pipeline import Scorer, run_cascade
+from .repeats import fold_repeats
 from .stacking import hamming
 
 # What the app stores per frame (the string goes into the results CSV and AIImageResult.cascade_role).
@@ -49,6 +50,7 @@ class FolderFrame:
     features: FrameFeatures | None  # None: unreadable, so it gets no decision
     captured: float | None = None  # seconds (any epoch); None when the EXIF time is missing
     bracket_id: int | None = None  # frames sharing an id are one exposure bracket
+    exposure: float | None = None  # shutter time in seconds; picks the middle frame of a bracket
 
 
 @dataclass(slots=True, frozen=True)
@@ -129,6 +131,7 @@ def run_folder(
     aesthetic: Scorer | None = None,
     progress: Callable[[int, int], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
+    pixels=None,
 ) -> FolderResult:
     """Decide every readable frame. ``progress(done_bursts, total_bursts)`` is called as each burst finishes."""
     settings = settings or CascadeSettings()
@@ -170,6 +173,9 @@ def run_folder(
                 )
         if progress is not None:
             progress(burst_index + 1, len(bursts))
+    if not result.cancelled:
+        # Repeats of one scene across the folder, however far apart in time (bursts only compare frames seconds apart, brackets not at all).
+        fold_repeats(frames, result, settings, {"eligible": (ROLE_PICK, ROLE_FINAL), "pick": ROLE_PICK, "bracket": ROLE_BRACKET, "duplicate": ROLE_DUPLICATE}, pixels)
     return result
 
 

@@ -91,6 +91,7 @@ class CullRun(QObject):
         self._task = None
         self._signals = None
         self._eyes = self._rank = False
+        self._decided = 0.0                                 # how far the deciding stage has got: it never goes back
         self.running = False
 
     def start(self, *, folder: str, records: list, cascade, blink_threshold: float, decision, protected: list[str]) -> None:
@@ -106,6 +107,7 @@ class CullRun(QObject):
                               protected_paths=protected, ranking_note=decision.note)
         self._task, self._signals = task, task.signals
         self._eyes, self._rank = decision.use_blink, decision.use_rankers
+        self._decided = 0.0
         queued = Qt.ConnectionType.QueuedConnection
         task.signals.progress.connect(self._progress, queued)
         task.signals.stage.connect(self._stage, queued)
@@ -122,6 +124,8 @@ class CullRun(QObject):
     # the cascade has four stages (reading capture times, reading previews, deciding, writing); the window shows the eyes check and the ranking inside
     # "deciding", so the progress labels tell which of the window's stages is on
     def _stage(self, folder: str, index: int, total: int, label: str) -> None:
+        if index < 2:
+            self._decided = 0.0
         self.stage.emit({0: 0, 1: 1, 2: 3, 3: 3}.get(index, 3), 0.0 if index < 3 else 0.97)
 
     def _progress(self, folder: str, label: str, done: int, total: int, eta: str) -> None:
@@ -133,8 +137,11 @@ class CullRun(QObject):
             self.stage.emit(0, fraction)
         elif low.startswith("reading previews"):
             self.stage.emit(1, fraction)
-        else:                                               # ranking, deciding, finding people
-            self.stage.emit(3, min(0.95, fraction))
+        elif low.startswith("deciding"):
+            # The only steady signal of this stage is the share of bursts finished. The rankers and the people pass report their own 0 to 1 for every
+            # stack or batch they are given, and feeding those to the bar made it hop up and down between 0 and 100% many times over.
+            self._decided = max(self._decided, min(0.95, fraction))
+            self.stage.emit(3, self._decided)
 
     def _finished(self, folder: str, report_dir: str, html: str) -> None:
         task, self._task, self._signals = self._task, None, None

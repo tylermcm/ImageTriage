@@ -80,7 +80,7 @@ Backdrop {
         id: card
         shown: root.shown
         width: 440; height: col.implicitHeight + 46
-        x: (parent.width - width) / 2; y: 56
+        x: (parent.width - width) / 2; y: (parent.height - height) / 2
         Column {
             id: col
             x: 23; y: 23; width: parent.width - 46

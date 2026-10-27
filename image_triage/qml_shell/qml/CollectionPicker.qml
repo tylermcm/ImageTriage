@@ -27,7 +27,7 @@ Backdrop {
     DialogCard {
         shown: root.shown
         width: 400; height: col.implicitHeight + 46
-        x: (parent.width - width) / 2; y: 130
+        x: (parent.width - width) / 2; y: (parent.height - height) / 2
         Column {
             id: col
             x: 23; y: 23; width: parent.width - 46

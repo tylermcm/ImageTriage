@@ -9,20 +9,24 @@ Backdrop {
     readonly property var v: reference.view
     readonly property var h: v.help || ({ topics: [], blocks: [], links: [], kind: "none", query: "", title: "", lead: "", version: "", upColor: "fg3", upTitle: "", upBody: "", upBtn: "", upPrimary: false })
     shown: v.window === "help"
+    plain: UiState.settingsOpen            // opened from Settings: it takes the settings window's place, over the same dimmed backdrop
     onDismissed: reference.close()
+    onOpacityChanged: UiState.guideCovers = shown && plain && opacity > 0.98
+    onShownChanged: if (!shown) UiState.guideCovers = false
     z: 106
 
-    readonly property real winW: Math.min(920, width - 64)
-    readonly property real winH: Math.min(640, height - 72)
+    readonly property real winW: plain ? Math.min(1060, width - 96) : Math.min(920, width - 64)      // the settings window's own size when it stands in for it
+    readonly property real winH: plain ? Math.min(700, height - 68 - 64) : Math.min(640, height - 72)
     function dotColor(n) { return n === "win" ? theme.win : n === "rev" ? theme.rev : n === "rej" ? theme.rej : n === "accent" ? theme.accentFg : theme.fg3 }
 
     DialogCard {
         id: win
         shown: root.shown
+        flat: root.plain; radius: root.plain ? 14 : 16
         width: root.winW; height: root.winH
-        x: (parent.width - width) / 2; y: 44
+        x: (parent.width - width) / 2; y: root.plain ? 42 + (parent.height - 68 - height) / 2 : (parent.height - height) / 2
         RoundClip {
-            anchors.fill: parent; anchors.margins: 1; radius: 15
+            anchors.fill: parent; anchors.margins: 1; radius: win.radius - 1
             Rectangle { anchors.fill: parent; color: Qt.alpha(theme.base, 0.97) }
             // ---- the rail ----
             Rectangle {
@@ -158,7 +162,7 @@ Backdrop {
                     Text { x: 36; anchors.verticalCenter: parent.verticalCenter; text: "Press F1 any time to open Help."; color: theme.fg3; font.pointSize: UiState.pt(12.5) }
                     Row { anchors.right: parent.right; anchors.rightMargin: 20; anchors.verticalCenter: parent.verticalCenter; spacing: 8
                         SButton { text: "Keyboard shortcuts"; h: 32; hpad: 14; radius: 11; onClicked: reference.open("keys") }
-                        SButton { text: "Done"; variant: "primary"; h: 32; hpad: 14; radius: 11; onClicked: reference.close() } }
+                        SButton { text: UiState.settingsOpen ? "Back to settings" : "Done"; variant: "primary"; h: 32; hpad: 14; radius: 11; onClicked: reference.close() } }
                 }
             }
         }

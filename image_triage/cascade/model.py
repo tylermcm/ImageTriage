@@ -47,6 +47,13 @@ class CascadeSettings:
     clip_floor: float = 0.10  # ... and above this absolute fraction
     blown_out: float = 0.40  # a frame this clipped is blown out; a stack of them gets no pick
     duplicate_distance: int = 8  # complete-linkage pHash distance for collapsing near-duplicates
+    repeat_distance: int = 10  # pHash distance within which a survivor repeats an earlier scene of the folder (0 turns the repeat pass off)
+    repeat_window: int = 10  # ... compared only with this many of the units (single frames or exposure brackets) before it, in capture order
+    repeat_rounds: int = 1  # how many times the repeat passes run over what the previous run left (stops early when a round folds nothing)
+    repeat_gate: int = 32  # the pixel passes (SSIM, ORB) only look at pairs whose pHash distance is at or below this
+    ssim_threshold: float = 0.65  # aligned, brightness-normalised SSIM at or above which two frames are the same scene (0 turns the SSIM pass off)
+    orb_inliers: int = 0  # ORB matches that agree on one near-identity transform, at least this many (0, the default, leaves the ORB pass off: ...
+    orb_share: float = 0.6  # ... it matches the same place from a slightly different spot as often as a true repeat, and needs OpenCV) and at least this share of the good matches
     maniqa_keep: int = 3  # the first ranker keeps this many representatives
     final_keep: int = 2  # the last ranker keeps this many
     # Optional behaviours; the defaults reproduce the original cascade exactly.

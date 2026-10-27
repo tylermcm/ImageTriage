@@ -32,6 +32,7 @@ QtObject {
     property int ai: 0                  // 0 idle, 1 analyzing, 2 ready
     property bool topAligned: false
     property bool settingsOpen: false
+    property bool guideCovers: false         // the settings guide is fully in front of the settings window (which then steps out of the way)
     property string settingsSection: "general"
     property string settingsQuery: ""
     property string batchMode: ""          // "" closed, or "rename", "resize", "convert"

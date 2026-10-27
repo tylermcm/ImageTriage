@@ -42,6 +42,7 @@ FocusScope {
         id: win
         x: (root.width - width) / 2; y: 42 + (root.height - 68 - height) / 2
         width: root.winW; height: root.winH
+        opacity: UiState.guideCovers ? 0 : 1          // the guide, once fully in front and the same size, takes this window's place: it fades in over it
         scale: root.shown ? 1 : 0.96
         Behavior on scale { NumberAnimation { duration: 320; easing.type: Easing.OutBack; easing.overshoot: 1.4 } }
 

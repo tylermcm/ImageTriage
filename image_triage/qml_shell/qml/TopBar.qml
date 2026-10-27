@@ -33,19 +33,7 @@ Rectangle {
         id: brand
         width: top.brandW; height: parent.height
         Behavior on width { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
-        Shape {
-            x: UiState.topAligned ? (parent.width - 18) / 2 : 12; anchors.verticalCenter: parent.verticalCenter; width: 18; height: 18; preferredRendererType: Shape.CurveRenderer
-            ShapePath {
-                strokeColor: "transparent"
-                fillGradient: ConicalGradient {
-                    centerX: 9; centerY: 9; angle: 210
-                    GradientStop { position: 0.0; color: theme.accent }
-                    GradientStop { position: 0.5; color: "#c58ae6" }
-                    GradientStop { position: 1.0; color: theme.accent }
-                }
-                PathSvg { path: Icons.rect(0, 0, 18, 18, 6) }
-            }
-        }
+        LogoMark { x: UiState.topAligned ? (parent.width - 28) / 2 : 6; anchors.verticalCenter: parent.verticalCenter; size: 28 }
         Accessible.name: "Image Triage"
         Accessible.role: Accessible.Graphic
     }

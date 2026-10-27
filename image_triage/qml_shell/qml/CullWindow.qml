@@ -216,7 +216,8 @@ Backdrop {
                                         Rectangle { anchors.fill: parent; radius: 12; visible: sg.modelData.state !== "cur"; color: sg.modelData.state === "done" ? Qt.tint(theme.s2, Qt.alpha(theme.win, 0.22)) : "transparent"
                                             border.width: 1.5; border.color: sg.modelData.state === "done" ? Qt.alpha(theme.win, 0.4) : theme.line }
                                         Icon { visible: sg.modelData.state === "done"; anchors.centerIn: parent; name: "check"; size: 13; strokeWidth: 2.8; color: theme.win }
-                                        Ring { visible: sg.modelData.state === "cur"; size: 24; pct: sg.modelData.pp } }
+                                        // the logo's ring fills 73% of its box, so 33 gives about the 24 the old ring had
+                                        LogoMark { visible: sg.modelData.state === "cur"; anchors.centerIn: parent; size: 33; spinning: visible } }
                                     Text { x: 51; anchors.verticalCenter: parent.verticalCenter; text: sg.modelData.label; font.pixelSize: 13; font.weight: Font.Medium; color: sg.modelData.state === "cur" ? theme.fg : sg.modelData.state === "done" ? theme.fg2 : theme.fg3 }
                                     Text { anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; text: sg.modelData.right; color: sg.modelData.state === "cur" ? theme.fg : theme.fg3; font.pointSize: UiState.pt(12.5) } } }
                             Item { width: 1; height: 8 }
