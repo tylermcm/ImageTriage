@@ -414,7 +414,7 @@ def test_the_splash_shows_and_hides(ref):
     assert ref.view["splash"]["on"] is False
     ref.splashShow("Reading your folder\u2026", 56)
     s = ref.view["splash"]
-    assert (s["on"], s["p"], s["status"], s["preview"], s["version"]) == (True, 56, "Reading your folder\u2026", False, "2.3.1")
+    assert (s["on"], s["p"], s["status"], s["preview"], s["version"]) == (True, 56, "Reading your folder\u2026", False, "2.4.0")
     ref.splashShow("Ready", 250)
     assert ref.view["splash"]["p"] == 100
     ref.splashHide()

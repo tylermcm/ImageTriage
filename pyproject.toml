@@ -1,6 +1,6 @@
 [project]
 name = "image-triage"
-version = "2.3.1"
+version = "2.4.0"
 description = "Image Triage"
 readme = "README.md"
 license = { file = "LICENSE" }
