@@ -7,7 +7,7 @@ Item {
     objectName: "editorStage"
     anchors.fill: parent
     z: 95
-    readonly property bool shown: editor.state === "editing" || editor.state === "closing"
+    readonly property bool shown: editor.state === "editing" || editor.state === "closing" || editor.switching
     visible: shown
 
     Rectangle { anchors.fill: parent; color: theme.base }

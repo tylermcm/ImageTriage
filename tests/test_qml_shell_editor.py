@@ -315,3 +315,84 @@ def test_failed_save_during_navigation_does_not_replace_photo(qapp, folder):
     assert wait(qapp, lambda: bool(host.error))
     assert host.state == EDITING and host.path == original
     assert proc.control.opened == [("a.jpg", True)]
+
+
+def _raw_editor(qapp, folder, supported=True, dialog=True):
+    host, mover, launched = make(qapp, folder)
+    (folder / "a.nef").write_bytes(b"x")
+    (folder / "b.nef").write_bytes(b"x")
+    host.openPath(str(folder / "a.nef"))
+    assert wait(qapp, lambda: host.state == EDITING)
+    proc = host._proc
+    proc.camera_raw_first = True
+    proc.control.camera_raw_switch_supported = supported
+    control = proc.control
+    control.calls.clear()
+    open_photo = control.app_open
+
+    def opening(*args, **kwargs):
+        open_photo(*args, **kwargs)
+        return {"cameraRaw": {"dialog": dialog}}
+
+    control.app_open = opening
+    original_call = control.call
+
+    def call(method, params=None):
+        if method == "ui.cameraRaw" and not params:
+            return {"open": True, "workspace": True}
+        return original_call(method, params)
+
+    control.call = call
+    return host, proc, control
+
+
+def test_cycling_raws_keeps_camera_raw_up_instead_of_closing_and_reopening_it(qapp, folder):
+    host, proc, control = _raw_editor(qapp, folder)
+    host.openPath(str(folder / "b.nef"))
+    assert wait(qapp, lambda: host.state == EDITING and host.path.endswith("b.nef"))
+    methods = [(m, p) for m, p in control.calls if m == "ui.cameraRaw"]
+    assert ("ui.cameraRaw", {"done": True}) not in methods          # the dialog is never closed between photos
+    assert ("ui.cameraRaw", {"open": True}) not in methods          # nor opened again
+    assert control.saved == 0 and control.opened[-1][1] is True and host._proc is proc
+
+
+def test_a_build_without_the_in_place_switch_still_closes_and_reopens_camera_raw(qapp, folder):
+    host, proc, control = _raw_editor(qapp, folder, supported=False)
+    host.openPath(str(folder / "b.nef"))
+    assert wait(qapp, lambda: host.state == EDITING and host.path.endswith("b.nef"))
+    methods = [(m, p) for m, p in control.calls if m == "ui.cameraRaw"]
+    assert ("ui.cameraRaw", {"done": True}) in methods and ("ui.cameraRaw", {"open": True}) in methods
+
+
+def test_if_the_dialog_did_not_come_up_in_place_it_is_opened(qapp, folder):
+    host, proc, control = _raw_editor(qapp, folder, dialog=False)
+    host.openPath(str(folder / "b.nef"))
+    assert wait(qapp, lambda: host.state == EDITING and host.path.endswith("b.nef"))
+    assert ("ui.cameraRaw", {"done": True}) not in control.calls and ("ui.cameraRaw", {"open": True}) in control.calls
+
+
+def test_the_stage_stays_up_while_the_next_photo_loads(qapp, tmp_path, folder):
+    engine, window, warnings = _load_main(qapp, tmp_path)
+    window.setWidth(1200)
+    window.setHeight(800)
+    window.show()
+    stage = window.findChild(QObject, "editorStage")
+    host = EditorHost(mover=Mover(), detector=lambda: True, launcher=lambda initial, *, read_root, write_root, idle=False, **_: Proc(read_root), parent=qapp)
+    engine.rootContext().setContextProperty("editor", host)
+    pump(qapp, 0.2)
+    host._parent_hwnd = 9
+    (folder / "b.jpg").write_bytes(b"x")
+    host.openPath(str(folder / "a.jpg"))
+    assert wait(qapp, lambda: host.state == EDITING)
+    pump(qapp, 0.2)
+    gate = __import__("threading").Event()
+    proc = host._proc
+    open_photo = proc.control.app_open
+    proc.control.app_open = lambda *a, **k: (gate.wait(5), open_photo(*a, **k))[1]
+    host.openPath(str(folder / "b.jpg"))
+    pump(qapp, 0.3)
+    assert host.state == STARTING and host.property("switching") and stage.property("visible")
+    gate.set()
+    assert wait(qapp, lambda: host.state == EDITING)
+    assert not host.property("switching")
+    window.close()

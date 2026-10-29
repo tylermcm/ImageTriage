@@ -95,6 +95,7 @@ class EditorHost(QObject):
         self._parent_hwnd = 0
         self._generation = 0
         self._close_requested = False
+        self._switching = False
         self._space_shortcut = None
         self._filmstrip = None
         self._done.connect(self._finish, Qt.ConnectionType.QueuedConnection)
@@ -119,6 +120,8 @@ class EditorHost(QObject):
     path = Property(str, lambda self: self._path, notify=pathChanged)
     error = Property(str, lambda self: self._error, notify=errorChanged)
     active = Property(bool, lambda self: self._state in (STARTING, EDITING), notify=stateChanged)
+    # Moving from one photo to the next while the editor is up: the stage stays on screen (nothing flashes between photos).
+    switching = Property(bool, lambda self: self._switching, notify=stateChanged)
 
     def _set(self, state: str, error: str | None = None) -> None:
         if error is not None and error != self._error:
@@ -155,7 +158,9 @@ class EditorHost(QObject):
         self._generation += 1
         self._path = path
         self.pathChanged.emit()
+        self._switching = switching
         self._set(STARTING, "")
+        self.stateChanged.emit()            # `switching` changes with the state, whether or not the state does
         threading.Thread(target=self._open_worker, args=(self._generation, path, switching), name="editor-open", daemon=True).start()
 
     def _open_worker(self, generation: int, path: str, switching: bool = False) -> None:
@@ -165,17 +170,29 @@ class EditorHost(QObject):
 
             directory = str(Path(path).parent)
             proc = self._proc
-            if proc is not None and switching and proc.is_running():
+            is_raw = Path(path).suffix.lower() in photocraft_bridge.RAW_SUFFIXES
+            # A raw going into Camera Raw while Camera Raw shows another: the editor keeps the dialog up and the next photo takes it over
+            # (it keeps what was adjusted as the recipe by itself), so the dialog is never closed and reopened, which would show as a flash.
+            in_place = bool(
+                switching and is_raw and proc is not None and proc.is_running() and getattr(proc, "camera_raw_first", False)
+                and getattr(proc.control, "camera_raw_switch_supported", False) is True and proc.path_within_root(path) is not None
+            )
+            if in_place:
+                try:
+                    in_place = proc.control.call("ui.cameraRaw").get("open") is True
+                except Exception:
+                    in_place = False
+            if proc is not None and switching and proc.is_running() and not in_place:
                 self._settle(proc)
             if proc is not None and (not proc.is_running() or proc.path_within_root(path) is None):
                 self._stop(proc)               # the editor can only read the folder it was started on
                 proc = None
+                in_place = False
             if proc is None:
                 launch = self._launcher or photocraft_bridge.launch_photocraft
                 write_root = edit_storage.ensure_edit_root(directory)
                 proc = launch(None, read_root=directory, write_root=str(write_root), idle=True, extra_args=("--raw-workspace",))
             sidecar = photocraft_bridge.sidecar_pcraft_path(path)
-            is_raw = Path(path).suffix.lower() in photocraft_bridge.RAW_SUFFIXES
             open_path = str(sidecar) if sidecar.exists() and not is_raw else path
             relative = proc.path_within_root(open_path)
             if relative is None:
@@ -193,12 +210,14 @@ class EditorHost(QObject):
                     spec["recipe"] = recipe
                 if sidecar.exists():
                     spec["continueFrom"] = sidecar.name
-            proc.control.app_open(relative, replace=True, **({"camera_raw": spec} if spec is not None else {}))
+            opened = proc.control.app_open(relative, replace=True, **({"camera_raw": spec} if spec is not None else {}))
             proc.control.call("app.bind", {"path": sidecar.name, "preview": photocraft_bridge.rendered_preview_path(path).name,
                                           "display": photocraft_bridge.display_render_path(path).name})
-            raw_state = proc.control.call("ui.cameraRaw", {"open": True})
-            if raw_state.get("open") is not True:
-                raise RuntimeError("PhotoCraft did not open Camera Raw for this photo.")
+            dialog = in_place and isinstance(opened, dict) and bool((opened.get("cameraRaw") or {}).get("dialog"))
+            if not dialog:
+                raw_state = proc.control.call("ui.cameraRaw", {"open": True})
+                if raw_state.get("open") is not True:
+                    raise RuntimeError("PhotoCraft did not open Camera Raw for this photo.")
             proc.source_path = path
             self._done.emit("open", proc, "")
         except Exception as error:               # a failed launch or open is shown to the person, never raised into the event loop
@@ -271,6 +290,7 @@ class EditorHost(QObject):
 
     @Slot(str, object, str)
     def _finish(self, what: str, result, error: str) -> None:
+        self._switching = False
         if what == "open":
             self._proc = result
             if self._close_requested:
@@ -309,6 +329,7 @@ class EditorHost(QObject):
 
     def _fail(self, path: str, message: str) -> None:
         self._close_requested = False
+        self._switching = False
         self._set(FAILED, message)
         self.failed.emit(message)
         self._set(IDLE)

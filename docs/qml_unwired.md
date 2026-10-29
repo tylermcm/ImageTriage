@@ -407,6 +407,8 @@ A hidden native smoke check opened a synthetic JPEG in Camera Raw and settled/cl
 `docs/photocraft_handoff.md`): changed-photo saving, native focus and Space delivery, embedding/resize, theme, fullscreen, shutdown and process cleanup.
 The native Camera Raw filmstrip uses the preview's same ordered/filtered `PhotoModel`, with bounded thumbnail uploads from the shared disk cache.
 Native selection and navigation settle/save the current edit before replacing the photo in the same process, and synchronize the preview selection.
+Raw to raw while Camera Raw is up (a build with `cameraRawSwitch`) keeps the dialog up: no `done`, no reopen, as the Widgets host does, and the stage stays on screen
+while the next photo loads (`editor.switching`), so cycling photos does not flash. Not yet checked on a live Windows build.
 Native rating/reject actions update the shared model. Model resets invalidate stale native requests. The native sort/filter dropdowns are not wired;
 set the browse order and filters in the library. Hidden native validation delivered three thumbnails and clicked the second photo successfully.
 **Not ported from `preview_controller.py` (the Widgets host's behaviour)**: automatic stash and restore,
