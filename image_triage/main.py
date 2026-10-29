@@ -23,7 +23,7 @@ from image_triage.qt_logging import install_qt_message_filter
 from image_triage.updater import current_app_version
 
 
-_APP_ICON_PATH = Path(__file__).resolve().parent / "ui" / "assets" / "app_icon-v4.ico"
+_APP_ICON_PATH = Path(__file__).resolve().parent / "ui" / "assets" / "app_icon-v5.ico"
 # One deployment switch controls whether the preserved splash is shown.
 _STARTUP_SPLASH_ENABLED = True
 

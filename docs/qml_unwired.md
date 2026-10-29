@@ -451,7 +451,7 @@ in the shell `--ui "refScene=hlp-start"` (the same names). `--mock` and the test
 | About: Release notes, Report a problem | **Real** (the default browser: the release's notes URL when the check found one, otherwise the repository's releases / new issue page) | |
 | About: Open the log folder | **Real** (`perf.performance_log_dir()`); in `--mock` a toast says it is sample data | |
 | About: **Licences and credits** | **Real**: opens the LICENSE file that sits next to the app (the checkout's root, the frozen bundle or the executable's folder); a toast says when it is not there | the licence audit (`docs/ai_model_licence_audit.md`) is not shown, and there is no credits page |
-| About: icon | `app_icon-v4.png`: the mark in the top left of the bar, drawn by `scripts/icon_art/render.py` (it is also the window and taskbar icon of the shell, and the .ico the Widgets app and the installer use) | |
+| About: icon | `app_icon-v5.png`: the mark in the top left of the bar, drawn by `scripts/icon_art/render.py` (it is also the window and taskbar icon of the shell, and the .ico the Widgets app and the installer use) | |
 | Keyboard shortcuts: the list | **Real, curated**: the shell's own keys plus the registry actions it has; a row tied to a registry action shows the key the user set (`ui/shortcuts.load_shortcut_overrides`) in blue | the shell binds fixed keys, not the user's overrides (also noted under Grid) |
 | Keyboard shortcuts: search | Real (matches the action, the category and an exact key name) | |
 | Change shortcuts in Settings | Opens the Settings window (the shortcuts section of the settings window is itself a sample list) | the registry editor |

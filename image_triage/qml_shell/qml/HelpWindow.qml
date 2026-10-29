@@ -113,7 +113,7 @@ Backdrop {
                         Column {
                             visible: root.h.kind === "about"; width: parent.width
                             Item { width: parent.width; height: 10 + 84 + 6 + 16 + 28 + 2 + 18
-                                Image { x: (parent.width - 84) / 2; y: 10; width: 84; height: 84; source: Qt.resolvedUrl("../../ui/assets/app_icon-v4.png"); sourceSize: Qt.size(168, 168); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                                Image { x: (parent.width - 84) / 2; y: 10; width: 84; height: 84; source: Qt.resolvedUrl("../../ui/assets/app_icon-v5.png"); sourceSize: Qt.size(168, 168); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
                                 Text { y: 10 + 84 + 16; width: parent.width; horizontalAlignment: Text.AlignHCenter; text: "Image Triage"; color: theme.fg; font.pixelSize: 22; font.weight: Font.DemiBold; font.letterSpacing: -0.44 }
                                 Text { y: 10 + 84 + 16 + 28 + 2; width: parent.width; horizontalAlignment: Text.AlignHCenter; text: "Version " + root.h.version; color: theme.fg3; font.pixelSize: 13 } }
                             Text { x: (parent.width - Math.min(600, parent.width)) / 2; width: Math.min(600, parent.width); topPadding: 13; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; color: theme.fg2; font.pixelSize: 14; lineHeight: 22.4; lineHeightMode: Text.FixedHeight

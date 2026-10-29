@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(sys.argv[:1])
     from PySide6.QtGui import QIcon
 
-    app.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "ui" / "assets" / "app_icon-v4.ico")))      # the taskbar and every window
+    app.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "ui" / "assets" / "app_icon-v5.ico")))      # the taskbar and every window
     from PySide6.QtGui import QFont
 
     base_font = QFont("Inter")

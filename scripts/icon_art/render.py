@@ -1,8 +1,9 @@
 """Draws the app icon and writes every file that carries it.
 
-The icon is the mark in the top left of the QML shell (`TopBar.qml`): a rounded square filled with a conical gradient that runs from the
-accent colour through a lavender back to the accent. It is drawn here with the same numbers (corner radius a third of the side, the
-gradient centred, starting at 210 degrees, the stops at 0, 0.5 and 1), in the default dark theme's accent.
+The icon is the Image Triage logo (`image_triage/qml_shell/qml/LogoMark.qml`), drawn here from the same geometry in a 1024 box: an ember ring
+(radius 374 outside, 314 inside, a linear gradient from #ffbb4d through #ff8a32 to #ff6a2a), six round blades turned 60 degrees apart about the
+centre (each a 60 wide capsule, lighter at its outer end, leaned back 22 degrees) and a white dot. There is no tile behind it; the mark is scaled
+up so the ring fills the frame.
 
     python scripts/icon_art/render.py          # writes the files below
     python scripts/icon_art/render.py OUTDIR   # only writes the frames (icon_<px>.png) there, for a look
@@ -17,17 +18,25 @@ from pathlib import Path
 
 from PIL import Image
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QConicalGradient, QGuiApplication, QImage, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QLinearGradient, QPainter, QPainterPath
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "v4"
-ACCENT = "#59a0f9"          # the dark theme's accent (`Theme(light=False).accent`)
-LAVENDER = "#c58ae6"
-ANGLE = 210.0
-MARGIN = 8 / 256            # the space round the square, as a share of the side (the previous icon's)
-RADIUS = 1 / 3              # TopBar.qml: 6 px of 18
+VERSION = "v5"
+RING_OUTER = 374            # LogoMark.qml: the 1024 box the mark is drawn in
+RING_INNER = 314
+FILL = 0.47                 # the ring's outer radius as a share of the frame (a little room round it)
+BLADES = 6
+BLADE_LEAN = -22.0
 FRAMES = (16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 96, 128, 256, 1024)
 ICO_SIZES = [size for size in FRAMES if size <= 256]
+
+
+def _ring() -> QPainterPath:
+    path = QPainterPath()
+    path.setFillRule(Qt.FillRule.OddEvenFill)
+    path.addEllipse(QPointF(512, 512), RING_OUTER, RING_OUTER)
+    path.addEllipse(QPointF(512, 512), RING_INNER, RING_INNER)
+    return path
 
 
 def draw(px: int) -> QImage:
@@ -35,15 +44,31 @@ def draw(px: int) -> QImage:
     image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    margin = px * MARGIN
-    side = px - 2 * margin
-    gradient = QConicalGradient(QPointF(px / 2, px / 2), ANGLE)
-    gradient.setColorAt(0.0, QColor(ACCENT))
-    gradient.setColorAt(0.5, QColor(LAVENDER))
-    gradient.setColorAt(1.0, QColor(ACCENT))
-    path = QPainterPath()
-    path.addRoundedRect(QRectF(margin, margin, side, side), side * RADIUS, side * RADIUS)
-    painter.fillPath(path, gradient)
+    painter.translate(px / 2, px / 2)
+    painter.scale(FILL * px / RING_OUTER, FILL * px / RING_OUTER)
+    painter.translate(-512, -512)
+    painter.setPen(Qt.PenStyle.NoPen)
+    ring = QLinearGradient(170, 860, 860, 170)
+    ring.setColorAt(0.0, QColor("#ffbb4d"))
+    ring.setColorAt(0.55, QColor("#ff8a32"))
+    ring.setColorAt(1.0, QColor("#ff6a2a"))
+    painter.fillPath(_ring(), ring)
+    for index in range(BLADES):
+        painter.save()
+        painter.translate(512, 512)
+        painter.rotate(index * 360 / BLADES)
+        # the blade runs from (170, 510) to (462, 392) before it is turned: a capsule leaned about its left end
+        painter.translate(-342, -2)
+        painter.rotate(BLADE_LEAN)
+        painter.translate(342, 2)
+        blade = QLinearGradient(-372, 0, 3, 0)
+        blade.setColorAt(0.0, QColor("#ffc24d"))
+        blade.setColorAt(1.0, QColor("#ff6a2a"))
+        painter.setBrush(blade)
+        painter.drawRoundedRect(QRectF(-372, -32, 375, 60), 30, 30)
+        painter.restore()
+    painter.setBrush(QColor("white"))
+    painter.drawEllipse(QPointF(512, 512), 36, 36)
     painter.end()
     return image
 
