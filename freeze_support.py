@@ -108,6 +108,8 @@ class FreezeAssetLayout:
                 str(ROOT / "image_triage" / "ui" / "assets" / "checkbox_check.png"),
                 "lib/image_triage/ui/assets/checkbox_check.png",
             ),
+            # The QML shell loads its .qml files from beside its modules (qml_shell.app.QML_DIR).
+            (str(ROOT / "image_triage" / "qml_shell" / "qml"), "lib/image_triage/qml_shell/qml"),
             *_pocketdrop_include_files(),
             (str(CLI_CULLER_PACKAGE_ROOT), "aiculler"),
             (str(ROOT / "image_triage" / "upscale_worker.py"), "ai_workers/upscale_worker.py"),

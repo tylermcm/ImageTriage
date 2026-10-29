@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -55,7 +56,8 @@ def is_quick_view_launch_target(target: str) -> bool:
     return bool(candidate and is_image_file_candidate(candidate) and Path(candidate).is_file())
 
 
-def main() -> int:
+def widgets_main() -> int:
+    """The original Widgets application; kept behind ``--widgets`` (or IMAGE_TRIAGE_UI=widgets) while the QML shell takes over."""
     install_qt_message_filter()
     configure_app_logging()
     _configure_windows_app_identity()
@@ -112,6 +114,35 @@ def main() -> int:
         window.schedule_deferred_preview_build()
         window.schedule_deferred_editor_start()
     return app.exec()
+
+
+def wants_widgets_ui(argv: Sequence[str], environ: dict[str, str] | None = None) -> bool:
+    env = os.environ if environ is None else environ
+    return "--widgets" in argv[1:] or str(env.get("IMAGE_TRIAGE_UI", "")).strip().lower() == "widgets"
+
+
+def qml_argv_from_launch(argv: Sequence[str]) -> list[str]:
+    """Translate a shell launch (``ImageTriage.exe <folder or image>``, as file associations send it) into QML shell arguments."""
+
+    qml_args = [arg for arg in argv[1:] if arg != "--widgets"]
+    if not qml_args or qml_args[0].startswith("-"):
+        return qml_args
+    target = Path(qml_args[0].strip().strip('"'))
+    rest = qml_args[1:]
+    if target.is_file():
+        target = target.parent
+    return [*rest, "--folder", str(target)] if str(target) else rest
+
+
+def main() -> int:
+    """Start the QML shell, which is the application; ``--widgets`` starts the old Widgets window instead."""
+
+    if wants_widgets_ui(sys.argv):
+        sys.argv = [arg for arg in sys.argv if arg != "--widgets"]
+        return widgets_main()
+    from image_triage.qml_shell.app import main as qml_main
+
+    return qml_main(qml_argv_from_launch(sys.argv))
 
 
 if __name__ == "__main__":

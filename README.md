@@ -38,7 +38,9 @@
 
 ```powershell
 py -3 -m pip install -e .
-py -3 -m image_triage
+py -3 -m image_triage                     # the QML shell (the application)
+py -3 -m image_triage "D:\Photos\Shoot1"  # open a folder
+py -3 -m image_triage --widgets           # the original Widgets window (or set IMAGE_TRIAGE_UI=widgets)
 ```
 
 If the `py` launcher is not available on your machine, run the commands with your local Python executable instead.

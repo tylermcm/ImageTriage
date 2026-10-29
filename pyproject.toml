@@ -37,6 +37,7 @@ include = ["image_triage*", "aiculler*"]
 [tool.setuptools.package-data]
 aiculler = ["resources/*.csv"]
 "image_triage.ui" = ["assets/*.png", "assets/*.ico"]
+"image_triage.qml_shell" = ["qml/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

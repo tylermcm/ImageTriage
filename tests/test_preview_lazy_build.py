@@ -298,7 +298,7 @@ def test_the_app_entry_point_opts_in_to_the_prebuild_and_a_quick_view_does_not()
 
     from image_triage import main as app_main
 
-    tree = ast.parse(textwrap.dedent(inspect.getsource(app_main.main)))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(app_main.widgets_main)))
     guarded = []
     for node in ast.walk(tree):
         if isinstance(node, ast.If):

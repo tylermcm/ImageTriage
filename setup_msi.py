@@ -36,6 +36,11 @@ build_exe_options = {
         # imports it, so cx_Freeze's scan misses it and the frozen app dies
         # on startup (hidden behind the splash) with an ImportError.
         "image_triage.ui.layout_ratios",
+        # The QML shell is the application. Its modules are imported inside main(); its .qml files ship as data (freeze_support).
+        "image_triage.qml_shell",
+        "image_triage.qml_shell.app",
+        "PySide6.QtQml",
+        "PySide6.QtQuick",
         # The vendored editor engine (formerly the separately-packaged
         # cli_editor/photo_terminal). editor_render.py imports it lazily
         # inside a function, so name it explicitly rather than relying on
