@@ -28,7 +28,7 @@ Corrections to the report, already reflected in the entries:
 Not confirmed, left marked as such:
 
 - Leica SL3 manual: the download was blocked, so the SL3 mapping and order are unverified. Q3 spec (3 or 5 frames, 3 EV) is confirmed.
-- Nikon's default shooting order is a custom setting (e7); no default was found on the pages read.
+- Nikon's default shooting order is 0,-,+ per the owner (Z7 II). The Nikon pages read do not state it; it is a custom setting (e7).
 - Canon `AutoExposureBracketing` value list (the tag exists; values were not read), and which Canon bodies the 2/3/5/7 and +/-3 pages describe.
 - Fujifilm X-T20 step range.
 - Ricoh gives multi-exposure counts as 2-2000 in one place and 2-200 in another.

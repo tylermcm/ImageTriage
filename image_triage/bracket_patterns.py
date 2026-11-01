@@ -100,7 +100,7 @@ PATTERNS: tuple[BracketPattern, ...] = (
             "Nikon: increments of 2 EV or more cap the sequence at 5 frames.",
             "Nikon custom setting e6 changes the manual-mode variable (shutter, shutter+aperture, aperture, flash only).",
             "Frame counts: Nikon 3-9 (Z8 manual), Olympus 2/3/5/7 (E-M5 III) or 3 only (E-PL1). Leica SL3 values unverified (manual download blocked).",
-            "Nikon default shooting order not confirmed from the pages read; the order is a custom setting.",
+            "Nikon default order is 0,-,+ (reported by the owner from a Z7 II; the Nikon pages read do not state it). It is a custom setting (e7), so -,0,+ also occurs.",
         ),
         sources=(
             "https://onlinemanual.nikonimglib.com/d850/en/11_exposure_07.html",
