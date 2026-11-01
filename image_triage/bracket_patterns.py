@@ -78,7 +78,7 @@ PATTERNS: tuple[BracketPattern, ...] = (
         label="Exposure bracket, variable set by exposure mode",
         ev_ladder=True,
         varies=(SHUTTER, APERTURE),
-        makers=("Nikon", "Olympus/OM System", "Leica"),
+        makers=("Nikon", "Olympus/OM System"),
         status=CONFIRMED,
         summary=(
             "P changes shutter and aperture, A and M change shutter, S changes aperture. "
@@ -99,7 +99,7 @@ PATTERNS: tuple[BracketPattern, ...] = (
         caveats=(
             "Nikon: increments of 2 EV or more cap the sequence at 5 frames.",
             "Nikon custom setting e6 changes the manual-mode variable (shutter, shutter+aperture, aperture, flash only).",
-            "Frame counts: Nikon 3-9 (Z8 manual), Olympus 2/3/5/7 (E-M5 III) or 3 only (E-PL1). Leica SL3 values unverified (manual download blocked).",
+            "Frame counts: Nikon 3-9 (Z8 manual), Olympus 2/3/5/7 (E-M5 III) or 3 only (E-PL1).",
             "Nikon default order is 0,-,+ (reported by the owner from a Z7 II; the Nikon pages read do not state it). It is a custom setting (e7), so -,0,+ also occurs.",
         ),
         sources=(
@@ -119,16 +119,18 @@ PATTERNS: tuple[BracketPattern, ...] = (
         makers=("Canon",),
         status=PARTIAL,
         summary=(
-            "Classic bodies: three shots, shutter or aperture, up to +/-2 stops in 1/3 steps, "
-            "default order 0,-,+ or -,0,+ via a custom function. Newer bodies: 2/3/5/7 shots, "
-            "+/-3 stops, sequences 0,-,+ / -,0,+ / +,0,-, one press per frame or one burst."
+            "Classic bodies (5D II): three shots, shutter or aperture, up to +/-2 stops in 1/3 steps, "
+            "order 0,-,+ or -,0,+ via a custom function. EOS R5 Mark II: default three shots (0,-,+) adjusting "
+            "shutter, aperture and ISO; a custom function sets 2/3/5/7 shots and the order (0,-,+ / -,0,+ / +,0,-). "
+            "Shot counts are in 1-stop steps in the 7-shot table, and 1/3 or 1/2 stop increments follow the "
+            "exposure level setting. One press per frame, or one burst in continuous drive."
         ),
         modes="creative modes; flash and bulb excluded on the 5D II",
         frame_counts=(2, 3, 5, 7),
         step_ev=(0.33, 0.5, 1.0, 2.0, 3.0),
         orders=(ORDER_ZERO_MINUS_PLUS, ORDER_MINUS_ZERO_PLUS, ORDER_PLUS_ZERO_MINUS),
         tags=(
-            TagRef("Canon", "AutoExposureBracketing", "ShotInfo index 16: on and which shot (values not read)"),
+            TagRef("Canon", "AutoExposureBracketing", "ShotInfo index 16: -1 On, 0 Off, 1/2/3 = On (shot 1/2/3); no values listed for shots 4 to 7"),
             TagRef("Canon", "AEBBracketValue", "ShotInfo index 17"),
             TagRef("Canon", "SequenceNumber", "ShotInfo index 9, some models only"),
             TagRef("Canon", "BracketMode", "FileInfo index 2: 0 Off, 1 AEB, 2 FEB, 3 ISO, 4 WB"),
@@ -136,13 +138,16 @@ PATTERNS: tuple[BracketPattern, ...] = (
             TagRef("Canon", "BracketShotNumber", "FileInfo index 5"),
         ),
         caveats=(
-            "The 5D II manual (shutter or aperture, +/-2) is confirmed. Which Canon bodies the 2/3/5/7 and +/-3 pages describe could not be established.",
+            "Confirmed against the 5D II manual and the EOS R5 Mark II manual only. Other Canon bodies (R6 II, R8, R10) were not checked.",
+            "AutoExposureBracketing numbers shots 1 to 3 only, so how it reports a 5- or 7-shot bracket is unknown; test on real files.",
+            "Flash, bulb and focus bracketing are not available with AEB on the R5 Mark II.",
             "Which of the two tag families a file carries depends on the model and format.",
             "Exports often strip Canon maker notes.",
         ),
         sources=(
             "https://gdlp01.c-wss.com/gds/0/0300004270/02/eos5dmkii-im5-c-en.pdf",
             "https://cam.start.canon/en/C017/manual/html/UG-09_Custom_0030.html",
+            "https://cam.start.canon/en/C017/manual/html/UG-03_Shooting-1_0050.html",
             "https://exiftool.org/TagNames/Canon.html",
         ),
     ),

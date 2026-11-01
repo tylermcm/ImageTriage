@@ -8,7 +8,7 @@ a `status` (`confirmed`, `partial`, `inferred`) and its source URLs.
 
 ## Entries
 
-Real exposure ladders (the EV maths can find them): `ae_mode_mapped` (Nikon, Olympus/OM, Leica), `ae_canon`, `ae_sony`,
+Real exposure ladders (the EV maths can find them): `ae_mode_mapped` (Nikon, Olympus/OM), `ae_canon`, `ae_sony`,
 `ae_configurable` (Fujifilm, Panasonic, Pentax), `in_camera_hdr`.
 
 Never to be mistaken for an exposure ladder: `flash_bracket`, `iso_derived_copies`, `iso_captured_frames`, `wb_variants`,
@@ -27,9 +27,9 @@ Corrections to the report, already reflected in the entries:
 
 Not confirmed, left marked as such:
 
-- Leica SL3 manual: the download was blocked, so the SL3 mapping and order are unverified. Q3 spec (3 or 5 frames, 3 EV) is confirmed.
+- Leica is out of scope (dropped by the owner).
 - Nikon's default shooting order is 0,-,+ per the owner (Z7 II). The Nikon pages read do not state it; it is a custom setting (e7).
-- Canon `AutoExposureBracketing` value list (the tag exists; values were not read), and which Canon bodies the 2/3/5/7 and +/-3 pages describe.
+- Canon: only the 5D II and EOS R5 Mark II are checked. The two R5 Mark II pages agree (default 3 shots; a custom function sets 2/3/5/7 and the order). `AutoExposureBracketing` is -1 On, 0 Off, 1/2/3 = shot number, so how it reports 5- and 7-shot brackets is unknown. Other Canon bodies are unchecked.
 - Fujifilm X-T20 step range.
 - Ricoh gives multi-exposure counts as 2-2000 in one place and 2-200 in another.
 - Apple ProRAW fusion and the iPhone HDR page, Google HDR+ frame counts: phones are out of scope here.
