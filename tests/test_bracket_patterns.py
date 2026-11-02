@@ -41,3 +41,18 @@ def test_non_ev_patterns_include_the_look_alikes():
 def test_tag_lookup_by_maker():
     names = {tag.name for _, tag in bp.tags_for_maker("pentax")}
     assert {"BracketShotNumber", "ExposureBracketStepSize"} <= names
+
+
+def test_order_support_separates_confirmed_from_possible():
+    nikon = bp.get_pattern("ae_mode_mapped")
+    assert bp.order_support(nikon, bp.ORDER_ZERO_MINUS_PLUS) == bp.ORDER_CONFIRMED
+    assert bp.order_support(nikon, bp.ORDER_MINUS_ZERO_PLUS) == bp.ORDER_CONFIRMED
+    # The inverse was recalled, not confirmed: accepted, but only as possible.
+    assert bp.order_support(nikon, bp.ORDER_PLUS_ZERO_MINUS) == bp.ORDER_POSSIBLE
+    assert bp.order_support(nikon, bp.ORDER_ZERO_PLUS_MINUS) == bp.ORDER_POSSIBLE
+    assert bp.order_support(nikon, "garbage") is None
+
+
+def test_non_ladder_patterns_accept_no_unlisted_order():
+    focus = bp.get_pattern("focus_bracket")
+    assert bp.order_support(focus, bp.ORDER_ZERO_MINUS_PLUS) is None

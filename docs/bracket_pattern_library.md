@@ -15,6 +15,13 @@ Never to be mistaken for an exposure ladder: `flash_bracket`, `iso_derived_copie
 `tone_style_variants`, `focus_bracket`, `aperture_dof_bracket`, `motion_shutter_bracket`, `pixel_shift`, `multi_exposure`,
 `interval_sequence`.
 
+## Shooting orders
+
+Users can often change the order (0,-,+, -,0,+, +,0,-, 0,+,-). Each pattern's `orders` lists only orders confirmed from a manual,
+the tag docs or the owner. `order_support()` returns `confirmed` for those, and `possible` for any other generic ladder order on an
+exposure-ladder pattern, so a detector can accept a user-changed order at lower confidence without the library claiming a camera does
+it. Non-ladder patterns accept no unlisted order. Example: Nikon 0,-,+ and -,0,+ are confirmed; +,0,- is possible only.
+
 ## What the cross-check found
 
 Corrections to the report, already reflected in the entries:

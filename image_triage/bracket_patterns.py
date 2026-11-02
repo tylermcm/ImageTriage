@@ -34,6 +34,17 @@ NOTHING = "nothing_intended"
 ORDER_ZERO_MINUS_PLUS = "0,-,+"
 ORDER_MINUS_ZERO_PLUS = "-,0,+"
 ORDER_PLUS_ZERO_MINUS = "+,0,-"
+ORDER_ZERO_PLUS_MINUS = "0,+,-"
+
+# Orders a bracket ladder can plausibly be shot in. Every exposure-ladder pattern accepts these
+# as POSSIBLE; only orders listed in a pattern's `orders` are CONFIRMED for that pattern. This lets
+# the detector cope with a user-changed order without the library claiming a camera does it.
+LADDER_ORDERS = (
+    ORDER_ZERO_MINUS_PLUS,
+    ORDER_MINUS_ZERO_PLUS,
+    ORDER_PLUS_ZERO_MINUS,
+    ORDER_ZERO_PLUS_MINUS,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +70,7 @@ class BracketPattern:
     modes: str = ""
     frame_counts: tuple[int, ...] = ()
     step_ev: tuple[float, ...] = ()
-    orders: tuple[str, ...] = ()
+    orders: tuple[str, ...] = ()  # orders confirmed from a manual, tag docs or the owner
     one_press_many_files: bool = False
     tags: tuple[TagRef, ...] = ()
     caveats: tuple[str, ...] = ()
@@ -88,7 +99,7 @@ PATTERNS: tuple[BracketPattern, ...] = (
         modes="P shutter+aperture; A shutter; S aperture; M shutter (ISO if Auto ISO, Olympus)",
         frame_counts=(2, 3, 5, 7, 9),
         step_ev=_THIRD_STEPS,
-        orders=(ORDER_ZERO_MINUS_PLUS, ORDER_MINUS_ZERO_PLUS),
+        orders=(ORDER_ZERO_MINUS_PLUS, ORDER_MINUS_ZERO_PLUS),  # Nikon: tag docs and owner's Z7 II; Olympus: 0,-,+ only
         tags=(
             TagRef("Nikon", "BracketSet", "0x0109: 1 AE/Flash, 2 AE, 3 Flash, 4 WB, 5 Active-D Lighting"),
             TagRef("Nikon", "BracketProgram", "0x010a: 3F/5F/7F/9F and directional two-frame values"),
@@ -100,7 +111,7 @@ PATTERNS: tuple[BracketPattern, ...] = (
             "Nikon: increments of 2 EV or more cap the sequence at 5 frames.",
             "Nikon custom setting e6 changes the manual-mode variable (shutter, shutter+aperture, aperture, flash only).",
             "Frame counts: Nikon 3-9 (Z8 manual), Olympus 2/3/5/7 (E-M5 III) or 3 only (E-PL1).",
-            "Nikon default order is 0,-,+ (reported by the owner from a Z7 II; the Nikon pages read do not state it). It is a custom setting (e7), so -,0,+ also occurs.",
+            "Nikon default order is 0,-,+ (owner, Z7 II; the Nikon pages read do not state it). -,0,+ is confirmed by the Nikon AutoBracketOrder tag docs and the owner. +,0,- (the inverse) was recalled by the owner, not confirmed, so it is accepted only as a possible order.",
         ),
         sources=(
             "https://onlinemanual.nikonimglib.com/d850/en/11_exposure_07.html",
@@ -493,6 +504,23 @@ PATTERNS: tuple[BracketPattern, ...] = (
 )
 
 _BY_ID = {pattern.id: pattern for pattern in PATTERNS}
+
+ORDER_CONFIRMED = "confirmed"
+ORDER_POSSIBLE = "possible"
+
+
+def order_support(pattern: BracketPattern, order: str) -> str | None:
+    """How well the library backs a shooting order for a pattern.
+
+    "confirmed": listed in the pattern's `orders`. "possible": an exposure ladder shot in any of the
+    generic orders, which users can often change. None: not accepted (non-ladder patterns accept no
+    order unless one is listed).
+    """
+    if order in pattern.orders:
+        return ORDER_CONFIRMED
+    if pattern.ev_ladder and order in LADDER_ORDERS:
+        return ORDER_POSSIBLE
+    return None
 
 
 def get_pattern(pattern_id: str) -> BracketPattern:
