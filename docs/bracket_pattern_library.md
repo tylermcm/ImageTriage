@@ -44,3 +44,23 @@ Not confirmed, left marked as such:
 ## Next
 
 The pattern detector (EV ladder plus tag evidence) and the scene confirmation are not written. The library is the vocabulary for them.
+
+## Detector (first version)
+
+`image_triage/sequence_detector.py` finds exposure-bracket candidates from metadata alone and scores them against this library.
+
+- Exposure per frame is computed from shutter, aperture and ISO together, in stops. A candidate is 3, 5, 7 or 9 consecutive frames whose
+  exposures form an even ladder (step 0.25 to 3.3 EV, tolerance 0.2 EV), each rung used once, with the same camera, lens and focal length.
+  Repeated rungs split a run, which is how back-to-back brackets separate.
+- The shooting order is recognised and checked with `order_support()`. An undocumented order is accepted but scored lower; an
+  unrecognised order is accepted with a warning.
+- Timing is a soft signal: gaps are judged against the shutter time, a hard split is 20 s beyond it, and a regular cadence of 8 s or more is
+  scored down as interval shooting.
+- Optional maker hints and exposure-bias agreement raise confidence. RAW+JPEG partners count as one exposure.
+- Constant-exposure aperture or shutter stepping is reported as `constant_ev_stepping`, status `uncertain`, never as a bracket.
+- Result states: `confirmed` (scene check passed), `unconfirmed` (ladder looks right, scene check not run), `uncertain` (weak, for
+  review). A scene check below 0.4 drops the candidate.
+
+Not done yet: the scene check itself (it is a plug-in hook), two-frame and one-sided brackets, focus, pixel-shift and flash sequences,
+reading maker-note tags (the EXIF reader gains subsecond time, exposure bias and exposure mode only), and wiring any of this into the app.
+Tests use synthetic frames only; there is no measured accuracy.

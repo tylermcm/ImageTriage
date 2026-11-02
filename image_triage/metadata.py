@@ -46,6 +46,10 @@ class CaptureMetadata:
     captured_at_value: datetime | None = None
     width: int = 0
     height: int = 0
+    # Bracket detection inputs (standard EXIF only; maker notes are not read here).
+    subsec_seconds: float | None = None
+    exposure_bias_value: float | None = None
+    exposure_mode: int | None = None
 
     @property
     def summary(self) -> str:
@@ -191,7 +195,23 @@ def _load_exif_capture_metadata(path: str) -> CaptureMetadata:
         captured_at_value=_parse_datetime_value(captured_at_value),
         width=width_pixels,
         height=height_pixels,
+        subsec_seconds=_parse_subsec_seconds(_tag_value(tags, "EXIF SubSecTimeOriginal")),
+        exposure_bias_value=_to_float(_tag_value(tags, "EXIF ExposureBiasValue")),
+        exposure_mode=_exposure_mode_value(_tag_value(tags, "EXIF ExposureMode")),
     )
+
+
+def _parse_subsec_seconds(value) -> float | None:
+    """EXIF SubSecTimeOriginal is the decimal digits after the point: '45' means 0.45 s."""
+    text = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if not text:
+        return None
+    return int(text) / (10 ** len(text))
+
+
+def _exposure_mode_value(value) -> int | None:
+    number = _first_numeric(value if isinstance(value, list) else [value] if value is not None else None)
+    return int(number) if number is not None else None
 
 
 def _import_astropy_fits_module():
