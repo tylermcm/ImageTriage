@@ -103,7 +103,7 @@ class AIStatusChip(QAbstractButton):
         outer = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         path = QPainterPath()
         path.addRoundedRect(outer, outer.height() / 2, outer.height() / 2)
-        painter.fillPath(path, self.palette().base())
+        painter.fillPath(path, self.palette().toolTipBase())
         pen = QPen(_ring_gradient(outer.center(), -self._angle), 1.6)
         painter.setPen(pen)
         painter.drawPath(path)
@@ -127,7 +127,7 @@ class AIStatusChip(QAbstractButton):
         if self._status.small:
             x += metrics.horizontalAdvance(self._status.label) + 7
             painter.setFont(self._small_font())
-            painter.setPen(self.palette().mid().color())
+            painter.setPen(self.palette().placeholderText().color())
             painter.drawText(x, baseline, self._status.small)
 
 
@@ -240,7 +240,7 @@ class AIStatusPopover(QFrame):
             tip.lineTo(x + arrow, card.bottom())
         tip.closeSubpath()
         shape = path.united(tip)
-        painter.fillPath(shape, self.palette().base())
+        painter.fillPath(shape, self.palette().toolTipBase())
         painter.setPen(QPen(self.palette().midlight().color(), 1.0))
         painter.drawPath(shape)
 

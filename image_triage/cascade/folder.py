@@ -68,6 +68,7 @@ class FrameOutcome:
     split_jump: int | None
     rank: int | None  # set only when a ranker actually ordered the stack's survivors
     duplicate_of: str | None = None
+    duplicate_by: str | None = None  # which check folded it: "stack" (inside a burst's stack) or a repeat pass ("phash", "ssim", "orb")
 
 
 @dataclass(slots=True)
@@ -220,7 +221,7 @@ def _outcome(
         kind, text = ROLE_CUT, "Ranked below the kept frames in this stack."
     return FrameOutcome(
         decision.key, kind, decision.flags, text, burst_index, burst_size, stack_index, stack_count, stack_size, stack_rank, split_jump,
-        decision.rank if ranked else None, decision.duplicate_of,
+        decision.rank if ranked else None, decision.duplicate_of, "stack" if decision.duplicate_of else None,
     )
 
 

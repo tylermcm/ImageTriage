@@ -118,7 +118,7 @@ def test_a_project_is_hashed_once_per_version(tmp_path, monkeypatch):
     assert len(opened) == 2, "a new version of the file is read again"
 
 
-@pytest.mark.parametrize("change", ["algorithm", "source", "missing picture", "corrupt", "wrong version", "picture elsewhere", "no source"])
+@pytest.mark.parametrize("change", ["algorithm", "previous algorithm", "source", "missing picture", "corrupt", "wrong version", "picture elsewhere", "no source"])
 def test_anything_that_does_not_match_is_out_of_date_with_no_timestamp_fallback(tmp_path, change):
     image, root = photo(tmp_path)
     manifest = save(image, root)
@@ -128,6 +128,8 @@ def test_anything_that_does_not_match_is_out_of_date_with_no_timestamp_fallback(
     target = root / "IMG.NEF.photocraft.renders.json"
     if change == "algorithm":
         save(image, root, algorithm=bridge.RENDER_ALGORITHM + 1)
+    elif change == "previous algorithm":
+        save(image, root, algorithm=bridge.RENDER_ALGORITHM - 1)
     elif change == "source":
         Path(image).write_bytes(b"the original was replaced")
     elif change == "missing picture":

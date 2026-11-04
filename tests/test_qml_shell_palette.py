@@ -119,7 +119,7 @@ def test_palette_opens_filters_navigates_runs_and_closes_in_qml(qapp, tmp_path, 
     from image_triage.cache import DiskThumbnailCache
     from image_triage.qml_shell.batch_model import BatchModel
     from image_triage.qml_shell.filters_model import FiltersModel
-    from image_triage.qml_shell.photos import PhotoModel
+    from image_triage.qml_shell.photos import GridModel, PhotoModel
     from image_triage.qml_shell.thumbs import ThumbService
 
     palette = PaletteModel(memory=True, parent=qapp)
@@ -132,6 +132,7 @@ def test_palette_opens_filters_navigates_runs_and_closes_in_qml(qapp, tmp_path, 
     for name, obj in objects:
         engine.rootContext().setContextProperty(name, obj)
     engine.addImportPath(str(shell_app.QML_DIR))
+    engine.rootContext().setContextProperty("gridModel", GridModel(photos, parent=qapp))
     engine.load(QUrl.fromLocalFile(str(shell_app.QML_DIR / "Main.qml")))
     assert engine.rootObjects(), warnings
     window = engine.rootObjects()[0]

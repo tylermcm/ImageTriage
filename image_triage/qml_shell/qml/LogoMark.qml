@@ -2,13 +2,22 @@ import QtQuick
 import QtQuick.Shapes
 
 // The Image Triage logo, drawn from its own geometry (a 1024 box: an ember ring of radius 344, six round blades turned 60 degrees apart about the
-// centre, a white dot), with no tile behind it. `spinning` turns the whole mark at a steady pace; it is the working indicator of the Cull window.
+// centre, a white dot), with no tile behind it. `spinning` is the working indicator of the Cull window: the whole mark drifts round while the six blades
+// swing shut and open again like an iris and the dot swells as the aperture closes.
 Item {
     id: mark
     property real size: 24
     property bool spinning: false
-    property int period: 1400                      // ms per turn
+    property int period: 4000                      // ms per turn of the whole mark
+    property int irisPeriod: 2200                  // ms for the blades to close and open once
+    property real iris: 0                          // 0 open .. 1 closed
     width: size; height: size
+
+    SequentialAnimation on iris {
+        running: mark.spinning && mark.visible; loops: Animation.Infinite
+        NumberAnimation { from: 0; to: 1; duration: mark.irisPeriod / 2; easing.type: Easing.InOutQuad }
+        NumberAnimation { from: 1; to: 0; duration: mark.irisPeriod / 2; easing.type: Easing.InOutQuad }
+    }
 
     Item {
         id: art
@@ -45,7 +54,8 @@ Item {
                     // the blade runs from (170, 510) to (462, 392) before it is turned: a 60 wide capsule, lighter at its outer end
                     Rectangle {
                         x: 170 - 512 - 30; y: 510 - 512 - 30; width: 315 + 60; height: 60; radius: 30; antialiasing: true
-                        transform: Rotation { origin.x: 30; origin.y: 30; angle: -22.0 }
+                        transform: [Rotation { origin.x: 30; origin.y: 30; angle: -22.0 },
+                                    Rotation { origin.x: 30; origin.y: 30; angle: -40.0 * mark.iris }]      // about the blade's end on the ring
                         gradient: Gradient {
                             orientation: Gradient.Horizontal
                             GradientStop { position: 0; color: "#ffc24d" }
@@ -54,7 +64,7 @@ Item {
                     }
                 }
             }
-            Rectangle { x: 512 - 36; y: 512 - 36; width: 72; height: 72; radius: 36; color: "white"; antialiasing: true }
+            Rectangle { x: 512 - 36; y: 512 - 36; width: 72; height: 72; radius: 36; color: "white"; antialiasing: true; scale: 1 + 0.5 * mark.iris }
         }
     }
 }

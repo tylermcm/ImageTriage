@@ -6,8 +6,8 @@ checks the keys and limits here against ``image_triage.window.MainWindow`` so th
 
 ``SettingsModel(memory=True)`` keeps everything in a dict instead (tests and the pixel comparison with the HTML mockup).
 
-What is *not* connected to the running application yet is listed in ``docs/qml_unwired.md``: saving writes the stored values, but nothing
-re-applies them to a live window (there is no main window behind the shell yet).
+Remaining runtime integration gaps are listed in ``docs/qml_unwired.md``. Saved shortcuts are applied live to the grid, viewer,
+window actions, command palette and shortcut guide.
 """
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ BOUND_ACTIONS = (
     ("batch_resize_selection", "tools.batch_resize"), ("batch_convert_selection", "tools.batch_convert"), ("handoff_builder", "workflow.handoff_builder"),
     ("share_to_phone", "workflow.share_to_phone"), ("best_of_set_auto_assembly", "workflow.best_of"), ("delete_selection", "review.delete_selection"),
     ("move_selection", "review.move_selection"), ("clear_filters", "search.clear_filters"), ("open_ai_workflow_center", "ai.workflow_center"),
+    ("compare_mode", "review.compare_mode"), ("zen_mode", "view.zen_mode"), ("next_ai_pick", "ai.next_top_pick"),
 )
 # Keys the shell binds itself and the registry has no row for: a shortcut changed to one of them is refused, as two rows on one chord are.
 FIXED_KEYS = {
@@ -172,7 +173,7 @@ def build_schema(shortcut_registry=()) -> tuple:
                "preview/photocraft_camera_raw_first", True),
         )),
         Group("Review flow", "How review moves between images", (
-            _t("autoAdvance", "Advance after Accept or Reject", "Moves to the next image automatically after you accept or reject the current one.", "view/auto_advance", True),
+            _t("autoAdvance", "Advance after Winner, Keep or Reject", "Moves to the next image automatically after you mark the current one Winner, Keep or Reject.", "view/auto_advance", True),
             _t("bursts", "Group burst sequences", "Groups likely capture bursts so related frames are easier to review together.", "view/burst_groups", False),
             _t("stacks", "Stack similar burst frames", "Stacks very similar burst frames behind one visible representative in the grid.", "view/burst_stacks", False),
         )),
@@ -234,7 +235,7 @@ def build_schema(shortcut_registry=()) -> tuple:
     for attr, category, default, display in shortcut_registry:
         by_cat.setdefault(category, []).append(F("k:" + attr, "keys", display, "", default=default))
     keys = Section("keys", "Shortcuts", "M5 6.5h14A2.5 2.5 0 0121.5 9v6a2.5 2.5 0 01-2.5 2.5H5A2.5 2.5 0 012.5 15V9A2.5 2.5 0 015 6.5zM6.5 10.5h.01M10 10.5h.01M13.5 10.5h.01M17 10.5h.01M7.5 14h9",
-        "Customize keyboard commands used throughout Image Triage. Press Change, then the new chord. Conflicts are reported when you save.",
+        "Customize keyboard commands used throughout Image Triage. Press Change, then the new chord. Backspace clears a binding. Conflicts are reported when you save.",
         tuple(Group(cat, "", tuple(rows)) for cat, rows in by_cat.items()))
     return (general, appearance, browsing, library, ai, dups, keys)
 
@@ -371,7 +372,7 @@ class SettingsModel(QObject):
             self._overrides = overrides
             if not self._memory:
                 from ..ui.shortcuts import save_shortcut_overrides
-                save_shortcut_overrides(overrides)
+                save_shortcut_overrides(overrides, preserve_empty=True)
             self._rebuild_effective()
             self._shortcut_revision += 1
             self.shortcutsChanged.emit()
@@ -580,6 +581,21 @@ class SettingsModel(QObject):
 
     shortcutRevision = Property(int, lambda self: self._shortcut_revision, notify=shortcutsChanged)
 
+    @Property("QVariantMap", notify=shortcutsChanged)
+    def shortcutMap(self):
+        return dict(self._effective)
+
+    @Slot(str, str, result=str)
+    def commandShortcut(self, command: str, fallback: str) -> str:
+        actions = {cmd: action for action, cmd in BOUND_ACTIONS}
+        actions.update({"review.accept_selection": "accept_selection", "review.reject_selection": "reject_selection",
+                        "review.keep_selection": "keep_at_cursor", "library.add_selected_to_collection": "collect_at_cursor",
+                        "review.open_preview": "open_preview"})
+        action = actions.get(command)
+        if action == "open_preview" and not self.seq(action):
+            return fallback  # Return and Space always open the current photo.
+        return self.seq(action) if action else fallback
+
     def _conflicts(self) -> str:
         seen: dict = {}
         for fid, f in self._fields.items():
@@ -690,7 +706,7 @@ _DEMO_SHORTCUTS = (
     ("open_folder", "File", "Ctrl+O", "Open Folder..."), ("refresh_folder", "File", "F5", "Refresh Folder"),
     ("new_folder", "File", "Ctrl+Shift+N", "New Folder..."), ("workflow_settings", "File", "Ctrl+,", "Settings..."),
     ("undo", "Edit", "Ctrl+Z", "Undo"), ("rename_selection", "Edit", "F2", "Rename Image..."),
-    ("accept_selection", "Review", "W", "Mark Winner"), ("reject_selection", "Review", "X", "Reject Selection"),
+    ("accept_selection", "Review", "W", "Mark Winner"), ("reject_selection", "Review", "R", "Reject Selection"),
     ("keep_at_cursor", "Review", "K", "Keep Photo At Cursor"), ("compare_mode", "Review", "C", "Compare"),
     ("open_command_palette", "Workspace", "Ctrl+K", "Command Palette..."),
 )

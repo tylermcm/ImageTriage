@@ -332,7 +332,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._hovered_checkbox_index = -1
         self._hovered_index = -1
         self._winner_shortcut = QKeySequence("W")
-        self._reject_shortcut = QKeySequence("X")
+        self._reject_shortcut = QKeySequence("R")
         # Review-action keys unified into the single shortcut registry
         # (WI-3.2); these defaults match what was previously hardcoded here.
         self._review_key_shortcuts: dict[str, QKeySequence] = {

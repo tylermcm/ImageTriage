@@ -105,22 +105,31 @@ Item {
         }
         property int anchorIndex: 0       // where a Shift+click or Shift+arrow range starts: the last photo picked on its own
         function pick() { return root.row < 0 ? [] : photos.selectionRows(root.row) }
-        // "Advance after Accept or Reject" (the Widgets setting): on one photo, W and X go on to the next; on a pick they stay
-        function advance(rows) { if (rows.length === 1 && settings.value("autoAdvance") === true && currentIndex < count - 1) { photos.clearSelection(); currentIndex = currentIndex + 1; anchorIndex = currentIndex } }
+        // Review advances a single photo; a multi-photo selection stays in place.
+        function advance(rows) { if (rows.length === 1 && settings.value("autoAdvance") === true && currentIndex < count - 1) stepTo(currentIndex + 1, false) }
+        function revealCurrent() {
+            if (currentIndex < 0 || currentIndex >= count) return
+            wheelEase.stop(); cancelFlick(); forceLayout()
+            positionViewAtIndex(currentIndex, GridView.Contain)
+            // Leave the current card above the floating controls as well as inside the viewport.
+            var bottom = originY + (Math.floor(currentIndex / root.cols) + 1) * cellHeight
+            var available = Math.max(cellHeight, height - root.bottomSpace)
+            if (bottom > contentY + available)
+                contentY = Math.min(Math.max(originY, originY + contentHeight - height + bottomMargin), bottom - available)
+        }
         function stepTo(target, extend) {
             target = Math.max(0, Math.min(count - 1, target))
             if (extend) { target = Math.max(root.nf, target); photos.selectRange(Math.max(0, anchorIndex - root.nf), target - root.nf) }
             else { photos.clearSelection(); anchorIndex = target }
             currentIndex = target
-            if (target < root.cols) positionViewAtBeginning()      // the first row: show the folder cards above it too
-            else positionViewAtIndex(target, GridView.Contain)
+            revealCurrent()
         }
         Keys.onPressed: (e) => {
             var k = e.key;
             var shift = (e.modifiers & Qt.ShiftModifier) !== 0, ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
             if (settings.keyIs("accept_selection", k, e.modifiers)) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") for (var i = 0; i < rows.length; ++i) collections.addSelection(collections.activeId, rows[i]); advance(rows) }
             else if (settings.keyIs("collect_at_cursor", k, e.modifiers)) root.addToCollection();
-            else if (settings.keyIs("keep_at_cursor", k, e.modifiers)) photos.setDecisionMany(pick(), "keep");
+            else if (settings.keyIs("keep_at_cursor", k, e.modifiers)) { var kr = pick(); photos.setDecisionMany(kr, "keep"); advance(kr) }
             else if (settings.keyIs("reject_selection", k, e.modifiers)) { var xr = pick(); photos.setDecisionMany(xr, "rej"); advance(xr) }
             else if (settings.keyIs("open_preview", k, e.modifiers)) { if (!e.isAutoRepeat) root.openCurrent() }
             else if (ctrl && k === Qt.Key_A) photos.selectAll();
@@ -135,7 +144,7 @@ Item {
             else return;
             e.accepted = true;
         }
-        onCurrentIndexChanged: { if (!photos.picked) anchorIndex = currentIndex }
+        onCurrentIndexChanged: { if (!photos.picked) anchorIndex = currentIndex; Qt.callLater(revealCurrent) }
 
         delegate: Item {
             id: cell

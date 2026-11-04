@@ -96,7 +96,7 @@ Backdrop {
                 Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
                 Text { x: 26; anchors.verticalCenter: parent.verticalCenter; text: root.k.count + (root.k.count === 1 ? " shortcut" : " shortcuts"); color: theme.fg3; font.pointSize: UiState.pt(12.5) }
                 Row { anchors.right: parent.right; anchors.rightMargin: 20; anchors.verticalCenter: parent.verticalCenter; spacing: 8
-                    SButton { text: "Change shortcuts in Settings"; h: 34; hpad: 16; radius: 12; onClicked: { reference.go("settings") } }
+                    SButton { objectName: "editShortcutsButton"; text: "Change shortcuts in Settings"; h: 34; hpad: 16; radius: 12; onClicked: { UiState.settingsSection = "keys"; UiState.settingsQuery = ""; reference.go("settings") } }
                     SButton { text: "Done"; variant: "primary"; h: 34; hpad: 16; radius: 12; onClicked: reference.close() } }
             }
         }

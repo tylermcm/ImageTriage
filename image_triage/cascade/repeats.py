@@ -159,7 +159,7 @@ def _fold_round(frames: Sequence, result, settings: CascadeSettings, outcome_rol
                     path = frames[index].path
                     outcome = result.outcomes[path]
                     result.outcomes[path] = replace(
-                        outcome, role=outcome_roles["duplicate"], flags=(), rank=None, duplicate_of=kept_frame.path,
+                        outcome, role=outcome_roles["duplicate"], flags=(), rank=None, duplicate_of=kept_frame.path, duplicate_by=step.name,
                         summary=f"Near-duplicate of {kept_name}, the frame kept for this scene ({step.label}).",
                     )
                     folded_total += 1

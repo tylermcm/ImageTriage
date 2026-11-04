@@ -87,6 +87,10 @@ def main(argv: list[str] | None = None) -> int:
     # device-independent pixels on every monitor; Qt 6 turns high-DPI scaling on by itself
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv[:1])
+    if not args.grab:                                  # headless checks have their own output; a real session keeps a log (it has no console to print to)
+        from . import diagnostics
+
+        diagnostics.install(app)
     from PySide6.QtGui import QIcon
 
     app.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "ui" / "assets" / "app_icon-v5.ico")))      # the taskbar and every window

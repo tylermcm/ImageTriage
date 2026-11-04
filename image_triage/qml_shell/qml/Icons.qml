@@ -29,6 +29,7 @@ QtObject {
         search: circle(11, 11, 6.5) + "M16 16l4 4",
         lock: "M7 11V8a5 5 0 0110 0v3M5 11h14v10H5zM12 15v2", unlock: "M7 11V8a5 5 0 019.6-2M5 11h14v10H5zM12 15v2",
         arrowUp: "M12 19V5M6 11l6-6 6 6",
+        pin: "M9 3h6M10 3v6l-3 4v2h10v-2l-3-4V3M12 15v6",
         chevL: "M14.5 6l-6 6 6 6", chevR: "M9.5 6l6 6-6 6", chevUp: "M6 14l6-6 6 6", chevDown: "M6 10l6 6 6-6",
         check: "M4.5 12.5l4.5 4.5 10.5-10.5", x: "M6 6l12 12M18 6L6 18", minus: "M5 12h14", sliders: "M4 7h10M18 7h2M4 17h2M10 17h10" + circle(16, 7, 2) + circle(8, 17, 2), plus: "M12 5v14M5 12h14",
         star: star,

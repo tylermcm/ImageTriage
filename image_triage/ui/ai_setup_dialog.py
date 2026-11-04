@@ -1,5 +1,5 @@
 """The Set Up AI dialog: a Core row that is always installed, then Culling and Editor tools as one switch each (open one to pick single models), and one
-download size with one Install button. Fixed size; the model list scrolls instead of growing the dialog. Pure widget: the controller decides what to install.
+download size with one Install button. Sized to the collapsed content; expanded models scroll instead of growing the dialog. Pure widget: the controller decides what to install.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 from .. import ai_setup_plan as plan
 
 _GRADIENT = ("#ff9a5a", "#ff5e8a", "#b25cff", "#5a8cff")
-CPU_WARNING = "This PC has no graphics card, so Culling is slow here: about half a minute or more per photo. A large folder can take hours."
+CPU_WARNING = "Culling on CPU takes 30+ seconds per photo."
 
 OUTCOME_INSTALL = "install"
 OUTCOME_REMOVE = "remove"
@@ -45,8 +45,36 @@ class SetupDialogInput:
     lede: str = ""
 
 
-def _size_html(size: str, caption: str) -> str:
-    return f"{size}<br><span style='font-size:11px; font-weight:400; color:gray'>{caption}</span>"
+def _size_html(size: str, caption: str, muted: str) -> str:
+    return f"{size}<br><span style='font-size:11px; font-weight:400; color:{muted}'>{caption}</span>"
+
+
+class _SetupEmblem(QWidget):
+    """A native vector mark using the setup controls' aurora colours."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setFixedSize(42, 42)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(self.palette().midlight().color())
+        painter.setBrush(self.palette().light())
+        painter.drawRoundedRect(QRectF(0.5, 0.5, 41, 41), 11, 11)
+        gradient = QLinearGradient(9, 10, 33, 33)
+        for stop, color in zip((0.0, 0.35, 0.68, 1.0), _GRADIENT):
+            gradient.setColorAt(stop, QColor(color))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(gradient)
+        for x, y, radius in ((19, 23, 12), (31, 11, 4)):
+            star = QPainterPath()
+            star.moveTo(x, y - radius)
+            star.quadTo(x + radius * 0.15, y - radius * 0.15, x + radius, y)
+            star.quadTo(x + radius * 0.15, y + radius * 0.15, x, y + radius)
+            star.quadTo(x - radius * 0.15, y + radius * 0.15, x - radius, y)
+            star.quadTo(x - radius * 0.15, y - radius * 0.15, x, y - radius)
+            painter.drawPath(star)
 
 
 class Switch(QAbstractButton):
@@ -99,24 +127,26 @@ class _Pill(QFrame):
         outer.setSpacing(0)
         head = QWidget(self)
         row = QHBoxLayout(head)
-        row.setContentsMargins(16, 12, 14, 12)
-        row.setSpacing(14)
+        row.setContentsMargins(16, 10, 16, 10)
+        row.setSpacing(12)
         self.switch = Switch(head)
         self.switch.setObjectName(f"aiSetupSwitch_{group}")
         self.switch.setAccessibleName(plan.GROUPS[group][0])
         row.addWidget(self.switch, 0, Qt.AlignmentFlag.AlignVCenter)
         text = QVBoxLayout()
-        text.setSpacing(1)
+        text.setSpacing(3)
         title = QLabel(plan.GROUPS[group][0], head)
         title.setObjectName("aiSetupCardTitle")
         self.note = QLabel(plan.GROUPS[group][1], head)
         self.note.setObjectName("aiSetupMuted")
+        self.note.setWordWrap(False)
         text.addWidget(title)
         text.addWidget(self.note)
         row.addLayout(text, 1)
         self.size = QLabel(head)
         self.size.setObjectName("aiSetupSize")
         self.size.setTextFormat(Qt.TextFormat.RichText)
+        self.size.setFixedWidth(78)
         self.size.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self.size, 0)
         self.chevron = QToolButton(head)
@@ -126,20 +156,22 @@ class _Pill(QFrame):
         self.chevron.setToolTip("Choose models")
         self.chevron.setAccessibleName(f"Choose {plan.GROUPS[group][0]} models")
         self.chevron.setCheckable(True)
+        self.chevron.setFixedSize(28, 28)
         row.addWidget(self.chevron, 0, Qt.AlignmentFlag.AlignVCenter)
         outer.addWidget(head)
 
         self.warning = QLabel(CPU_WARNING, self)
         self.warning.setObjectName("aiSetupWarning")
-        self.warning.setWordWrap(True)
+        self.warning.setWordWrap(False)
+        self.warning.setToolTip("A large folder can take hours when Culling runs on CPU.")
         self.warning.hide()
         outer.addWidget(self.warning)
 
         self.kids = QFrame(self)
         self.kids.setObjectName("aiSetupKids")
         kids_layout = QVBoxLayout(self.kids)
-        kids_layout.setContentsMargins(16, 6, 16, 8)
-        kids_layout.setSpacing(2)
+        kids_layout.setContentsMargins(16, 8, 16, 12)
+        kids_layout.setSpacing(8)
         self.boxes: dict[str, QCheckBox] = {}
         self.kid_sizes: dict[str, QLabel] = {}
         for item in plan.models_in(group):
@@ -188,20 +220,31 @@ class AISetupDialog(QDialog):
         self.setObjectName("aiSetupDialog")
         self.setWindowTitle("Set Up AI")
         self.setModal(True)
-        self.setFixedSize(820, 420)
+        # ToolTipBase uses the inspector's panel_bg; Window/Base are darker workspace surfaces.
         self.setStyleSheet(
             """
-            QDialog#aiSetupDialog { background: palette(window); }
-            QFrame#aiSetupCard { background: palette(base); border: 1px solid palette(midlight); border-radius: 12px; }
-            QFrame#aiSetupKids { background: palette(alternate-base); border-top: 1px solid palette(midlight); border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
-            QFrame#aiSetupSide { background: palette(alternate-base); border-left: 1px solid palette(midlight); }
-            QLabel#aiSetupTitle { font-size: 21px; font-weight: 700; }
-            QLabel#aiSetupCardTitle { font-size: 14px; font-weight: 650; }
-            QLabel#aiSetupMuted { color: palette(mid); }
-            QLabel#aiSetupSize { font-size: 14px; font-weight: 600; }
-            QLabel#aiSetupBig { font-size: 30px; font-weight: 700; }
+            QDialog#aiSetupDialog { background: palette(tooltip-base); }
+            QFrame#aiSetupCard { background: palette(light); border: 1px solid palette(midlight); border-radius: 12px; }
+            QFrame#aiSetupKids { background: palette(tooltip-base); border-top: 1px solid palette(midlight); border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
+            QFrame#aiSetupSide { background: palette(light); border: 1px solid palette(midlight); border-radius: 12px; }
+            QLabel#aiSetupTitle { font-size: 23px; font-weight: 700; }
+            QLabel#aiSetupCardTitle { font-size: 15px; font-weight: 650; }
+            QLabel#aiSetupMuted { color: palette(placeholder-text); font-size: 12px; }
+            QLabel#aiSetupSize { font-size: 14px; font-weight: 650; }
+            QLabel#aiSetupSummaryLabel { color: palette(placeholder-text); font-size: 12px; font-weight: 600; }
+            QLabel#aiSetupBig { font-size: 32px; font-weight: 700; }
             QLabel#aiSetupWarning { margin: 0 14px 10px 14px; padding: 8px 10px; border-radius: 8px; background: rgba(194,124,14,0.12); color: #b8730d; }
             QToolButton { border: 1px solid palette(midlight); border-radius: 7px; padding: 3px; }
+            QToolButton#aiSetupMore { color: palette(button-text); background: transparent; padding: 6px 10px; }
+            QToolButton#aiSetupMore:hover { background: palette(light); }
+            QToolButton#aiSetupMore::menu-indicator { image: none; }
+            QPushButton#aiSetupInstall { border: none; border-radius: 9px; color: white; font-size: 14px; font-weight: 650;
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #8551d0,stop:1 #4860c8); }
+            QPushButton#aiSetupInstall:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #9562df,stop:1 #5a72d8); }
+            QPushButton#aiSetupInstall:pressed { background: #6546af; }
+            QPushButton#aiSetupInstall:focus { border: 2px solid palette(text); }
+            QPushButton#aiSetupLater { background: transparent; border: none; color: palette(placeholder-text); font-size: 12px; }
+            QPushButton#aiSetupLater:hover { background: palette(tooltip-base); color: palette(text); }
             """
         )
         root = QVBoxLayout(self)
@@ -214,20 +257,30 @@ class AISetupDialog(QDialog):
         )
         root.addWidget(aurora)
         head = QWidget(self)
-        head_layout = QVBoxLayout(head)
-        head_layout.setContentsMargins(24, 16, 24, 6)
-        head_layout.setSpacing(2)
+        head_layout = QHBoxLayout(head)
+        head_layout.setContentsMargins(36, 16, 20, 16)
+        head_layout.setSpacing(14)
+        head_layout.addWidget(_SetupEmblem(head))
+        heading = QVBoxLayout()
+        heading.setSpacing(3)
         title = QLabel("Set up AI", head)
         title.setObjectName("aiSetupTitle")
-        self.lede = QLabel(data.lede or ("One download. Your graphics card makes it fast." if data.gpu else "One download, and you can add more later."), head)
+        self.lede = QLabel(data.lede or "Choose the tools for your workflow. Add more anytime.", head)
         self.lede.setObjectName("aiSetupMuted")
-        head_layout.addWidget(title)
-        head_layout.addWidget(self.lede)
+        heading.addWidget(title)
+        heading.addWidget(self.lede)
+        head_layout.addLayout(heading, 1)
+        self.more = QToolButton(head)
+        self.more.setObjectName("aiSetupMore")
+        self.more.setText("Manage  ▾")
+        self.more.setToolTip("Check, repair or remove the AI installation")
+        self.more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        head_layout.addWidget(self.more, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addWidget(head)
 
         body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(0)
+        body.setContentsMargins(20, 0, 20, 16)
+        body.setSpacing(16)
         scroll = QScrollArea(self)
         scroll.setObjectName("aiSetupScroll")
         scroll.setWidgetResizable(True)
@@ -238,8 +291,8 @@ class AISetupDialog(QDialog):
         holder.setStyleSheet("QWidget#aiSetupHolder { background: transparent; }")
         scroll.setStyleSheet("QScrollArea { background: transparent; }")
         column = QVBoxLayout(holder)
-        column.setContentsMargins(24, 8, 18, 12)
-        column.setSpacing(10)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(8)
         column.addWidget(self._build_core_card())
         self._pills: dict[str, _Pill] = {}
         for group in plan.GROUPS:
@@ -252,34 +305,34 @@ class AISetupDialog(QDialog):
 
         side = QFrame(self)
         side.setObjectName("aiSetupSide")
-        side.setFixedWidth(250)
+        side.setFixedWidth(200)
         side_layout = QVBoxLayout(side)
-        side_layout.setContentsMargins(22, 18, 22, 18)
-        side_layout.setSpacing(10)
-        side_layout.addStretch(1)
-        caption = QLabel("Download", side)
-        caption.setObjectName("aiSetupMuted")
+        side_layout.setContentsMargins(16, 16, 16, 10)
+        side_layout.setSpacing(0)
+        self.summary_caption = QLabel("Total download", side)
+        self.summary_caption.setObjectName("aiSetupSummaryLabel")
         self.total = QLabel(side)
         self.total.setObjectName("aiSetupBig")
+        self.total.setWordWrap(False)
         self.eta = QLabel(side)
         self.eta.setObjectName("aiSetupMuted")
-        side_layout.addWidget(caption)
+        side_layout.addWidget(self.summary_caption)
+        side_layout.addSpacing(4)
         side_layout.addWidget(self.total)
+        side_layout.addSpacing(2)
         side_layout.addWidget(self.eta)
+        side_layout.addStretch(1)
+        side_layout.addSpacing(10)
         self.install = QPushButton("Install", side)
-        self.install.setObjectName("editorPrimaryButton")
+        self.install.setObjectName("aiSetupInstall")
         self.install.setDefault(True)
+        self.install.setFixedHeight(36)
         self.later = QPushButton("Not now", side)
         self.later.setObjectName("aiSetupLater")
+        self.later.setFixedHeight(26)
         side_layout.addWidget(self.install)
+        side_layout.addSpacing(4)
         side_layout.addWidget(self.later)
-        self.more = QToolButton(side)
-        self.more.setObjectName("aiSetupMore")
-        self.more.setText("More")
-        self.more.setArrowType(Qt.ArrowType.NoArrow)
-        self.more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.more.setStyleSheet("QToolButton { border: none; color: palette(mid); text-align: left; } QToolButton::menu-indicator { image: none; }")
-        self.more.setText("More  ▾")
         self._menu = QMenu(self.more)
         self._menu_info = self._menu.addAction("")
         self._menu_info.setEnabled(False)
@@ -294,8 +347,6 @@ class AISetupDialog(QDialog):
             action.setEnabled(callback is not None)
             action.triggered.connect(lambda _checked=False, cb=callback: self._run_after_close(cb))
         self.more.setMenu(self._menu)
-        side_layout.addWidget(self.more, 0, Qt.AlignmentFlag.AlignLeft)
-        side_layout.addStretch(1)
         body.addWidget(side, 0)
         root.addLayout(body, 1)
 
@@ -307,6 +358,14 @@ class AISetupDialog(QDialog):
                 box.setChecked(key in self._selection)
                 box.blockSignals(False)
         self._refresh()
+        self.ensurePolished()
+        # Fit the closed cards and top-aligned summary, retaining a stable scroll
+        # viewport when model lists or the CPU warning are expanded later.
+        list_width = column.sizeHint().width()
+        margins = body.contentsMargins()
+        self.setFixedWidth(max(head.sizeHint().width(), list_width + margins.left() + margins.right() + body.spacing() + side.width()))
+        list_height = column.heightForWidth(list_width) if column.hasHeightForWidth() else column.sizeHint().height()
+        self.setFixedHeight(aurora.height() + head.sizeHint().height() + max(list_height, side_layout.sizeHint().height()) + margins.bottom())
 
     # ------------------------------------------------------------------ pieces
 
@@ -314,26 +373,36 @@ class AISetupDialog(QDialog):
         card = QFrame()
         card.setObjectName("aiSetupCard")
         row = QHBoxLayout(card)
-        row.setContentsMargins(16, 12, 16, 12)
-        row.setSpacing(14)
+        row.setContentsMargins(16, 10, 16, 10)
+        row.setSpacing(12)
+        leading = QWidget(card)
+        leading.setFixedSize(44, 26)
+        leading_layout = QHBoxLayout(leading)
+        leading_layout.setContentsMargins(0, 0, 0, 0)
         tick = QLabel("✓", card)
         tick.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tick.setFixedSize(26, 26)
         tick.setStyleSheet("background: #1f9d63; color: white; border-radius: 13px; font-weight: 700;")
-        row.addWidget(tick, 0, Qt.AlignmentFlag.AlignVCenter)
+        leading_layout.addWidget(tick, 0, Qt.AlignmentFlag.AlignCenter)
+        row.addWidget(leading, 0, Qt.AlignmentFlag.AlignVCenter)
         text = QVBoxLayout()
-        text.setSpacing(1)
+        text.setSpacing(3)
         title = QLabel("Core", card)
         title.setObjectName("aiSetupCardTitle")
-        note = QLabel("The AI engine, search, and faces and People", card)
+        note = QLabel("The AI engine, search and People", card)
         note.setObjectName("aiSetupMuted")
         text.addWidget(title)
         text.addWidget(note)
         row.addLayout(text, 1)
         self.core_size = QLabel(card)
         self.core_size.setObjectName("aiSetupSize")
+        self.core_size.setFixedWidth(78)
+        self.core_size.setTextFormat(Qt.TextFormat.RichText)
         self.core_size.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self.core_size, 0)
+        trailing = QWidget(card)
+        trailing.setFixedSize(28, 28)
+        row.addWidget(trailing, 0)
         return card
 
     # ------------------------------------------------------------------ state
@@ -378,21 +447,21 @@ class AISetupDialog(QDialog):
 
     def _refresh(self) -> None:
         data = self._data
-        self.core_size.setText("installed" if data.core_installed else plan.format_mb(plan.core_mb(data.variant)))
+        muted = self.palette().placeholderText().color().name()
+        self.core_size.setText(_size_html("Ready" if data.core_installed else plan.format_mb(plan.core_mb(data.variant)), "installed" if data.core_installed else "required", muted))
         for group, pill in self._pills.items():
             items = plan.models_in(group)
             chosen = [m for m in items if m.key in self._selection]
             full = len(chosen) == len(items)
             installed_all = all(m.key in data.installed for m in items)
             pill.switch.setChecked(bool(chosen))
-            pill.note.setText(
-                plan.GROUPS[group][1] + (f" · {len(chosen)} of {len(items)} models" if chosen and not full else "")
-            )
+            pill.note.setText(plan.GROUPS[group][1])
             if installed_all and full:
-                pill.size.setText(_size_html(plan.format_mb(plan.group_mb(group)), "installed"))
+                pill.size.setText(_size_html(plan.format_mb(plan.group_mb(group)), "installed", muted))
             else:
                 shown = plan.group_mb(group) if (full or not chosen) else sum(plan.model_mb(m.key) for m in chosen)
-                pill.size.setText(_size_html(plan.format_mb(shown), "download"))
+                caption = f"{len(chosen)} of {len(items)} selected" if chosen and not full else ("download" if chosen else "optional")
+                pill.size.setText(_size_html(plan.format_mb(shown), caption, muted))
             for item in items:
                 installed = item.key in data.installed
                 pill.kid_sizes[item.key].setText("installed" if installed else plan.format_mb(plan.model_mb(item.key)))
@@ -400,15 +469,17 @@ class AISetupDialog(QDialog):
             pill.warning.setVisible(show_warning)
         mb = self.download_mb()
         remove = self.to_remove()
-        self.total.setText(plan.format_mb(mb) if mb else ("Nothing to download" if remove else "Up to date"))
-        self.total.setStyleSheet("font-size: 30px;" if mb else "font-size: 18px;")
-        self.eta.setText(f"about {max(1, round(mb / 60 / 12))} min" if mb else "")
+        self.summary_caption.setText("Total download" if mb else "Installation status")
+        self.total.setText(plan.format_mb(mb) if mb else ("0 MB" if remove else "Up to date"))
+        self.total.setStyleSheet("font-size: 32px;" if mb else "font-size: 18px;")
+        self.eta.setText(f"Approx. {max(1, round(mb / 60 / 12))} min" if mb else "Your selected tools are ready.")
         if mb:
             self.install.setText("Install")
         elif remove:
             self.install.setText(f"Remove {len(remove)} model" + ("s" if len(remove) > 1 else ""))
         else:
             self.install.setText("Check installation")
+        self.later.setText("Not now" if mb or remove else "Done")
         free = f" Free on this drive: {self._data.free_gb:.0f} GB." if self._data.free_gb is not None else ""
         self._menu_info.setText((f"Needs about {plan.format_mb(mb * 1.3)} of disk space." if mb else "Everything selected is installed.") + free)
 

@@ -117,7 +117,7 @@ Item {
                     Row {
                         x: 16; y: 37; width: parent.width - 32; spacing: 6
                         Repeater {
-                            model: [{ k: "win", t: "Winner", i: "star", key: "W", c: theme.win }, { k: "keep", t: "Keep", i: "check", key: "K", c: theme.keep }, { k: "rej", t: "Reject", i: "x", key: "X", c: theme.rej }]
+                            model: { void settings.shortcutRevision; return [{ k: "win", t: "Winner", i: "star", key: settings.seq("accept_selection"), c: theme.win }, { k: "keep", t: "Keep", i: "check", key: settings.seq("keep_at_cursor"), c: theme.keep }, { k: "rej", t: "Reject", i: "x", key: settings.seq("reject_selection"), c: theme.rej }] }
                             delegate: Rectangle {
                                 required property var modelData
                                 readonly property bool on: insp.has && insp.cur.decision === modelData.k

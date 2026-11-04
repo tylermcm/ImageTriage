@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QObject, QUrl
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QUrl
 from PySide6.QtGui import QColor, QGuiApplication, QImage
 from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 
@@ -15,7 +15,7 @@ from image_triage.qml_shell.pocketdrop_model import PocketDropModel
 from qml_support import collection_models
 from image_triage.qml_shell.handoff_model import HandoffModel
 from image_triage.qml_shell.transfer_model import TransferModel
-from image_triage.qml_shell.photos import PhotoModel
+from image_triage.qml_shell.photos import GridModel, PhotoModel
 from image_triage.qml_shell.theme import DARK, LIGHT, Theme, derive
 from image_triage.qml_shell.thumbs import ThumbService
 
@@ -33,6 +33,7 @@ def pump(app, seconds=0.2):
     end = time.time() + seconds
     while time.time() < end:
         app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         time.sleep(0.005)
 
 
@@ -184,7 +185,6 @@ def test_main_qml_loads_and_the_grid_shows_the_model(qapp, tmp_path):
     context = engine.rootContext()
     context.setContextProperty("theme", theme)
     context.setContextProperty("photos", model)
-    from image_triage.qml_shell.photos import GridModel
     context.setContextProperty("gridModel", GridModel(model, parent=qapp))
     context.setContextProperty("settings", settings)
     context.setContextProperty("cmdPalette", PaletteModel(memory=True, parent=qapp))
@@ -227,7 +227,6 @@ def _load_main(qapp, tmp_path, startup=""):
     context = engine.rootContext()
     context.setContextProperty("theme", Theme(parent=qapp))
     context.setContextProperty("photos", model)
-    from image_triage.qml_shell.photos import GridModel
     context.setContextProperty("gridModel", GridModel(model, parent=qapp))
     context.setContextProperty("settings", SettingsModel(memory=True, parent=qapp))
     context.setContextProperty("cmdPalette", PaletteModel(memory=True, parent=qapp))

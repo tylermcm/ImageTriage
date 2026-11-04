@@ -377,9 +377,9 @@ FocusScope {
                 id: barRow
                 x: 6; y: 6; spacing: 6; height: 40
                 Repeater {
-                    model: [{ d: "win", t: "Winner", k: "W", p: "M12 20s-7-4.4-7-10a4 4 0 017-2.6A4 4 0 0119 10c0 5.6-7 10-7 10z" },
-                            { d: "keep", t: "Keep", k: "K", p: "M5 12.5l4.5 4.5L19 7.5" },
-                            { d: "rej", t: "Reject", k: "X", p: "M6 6l12 12M18 6L6 18" }]
+                    model: { void settings.shortcutRevision; return [{ d: "win", t: "Winner", k: settings.seq("accept_selection"), p: "M12 20s-7-4.4-7-10a4 4 0 017-2.6A4 4 0 0119 10c0 5.6-7 10-7 10z" },
+                            { d: "keep", t: "Keep", k: settings.seq("keep_at_cursor"), p: "M5 12.5l4.5 4.5L19 7.5" },
+                            { d: "rej", t: "Reject", k: settings.seq("reject_selection"), p: "M6 6l12 12M18 6L6 18" }] }
                     delegate: Item {
                         id: db
                         required property var modelData

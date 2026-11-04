@@ -359,14 +359,15 @@ Window {
     }
     Connections { target: UiState; function onRequestRowChanged() { if (UiState.requestRow >= 0) { grid.row = UiState.requestRow; UiState.requestRow = -1 } } }
     CommandPalette { id: commandPalette; sourceItem: appContent }
-    Shortcut { sequence: "F1"; onActivated: reference.toggleHelp() }
+    Shortcut { sequence: "F1"; enabled: settingsWindow.recording === ""; onActivated: reference.toggleHelp() }
     Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; autoRepeat: false; enabled: editor.active || editor.state === "closing"; onActivated: editor.close() }
     Shortcut { sequence: "Escape"; enabled: UiState.zen && !viewer.shown; onActivated: win.runCommand("view.zen_mode") }
-    Shortcut { sequence: "Ctrl+/"; onActivated: reference.toggleKeys() }
+    Shortcut { sequence: "Ctrl+/"; enabled: settingsWindow.recording === ""; onActivated: reference.toggleKeys() }
     Shortcut { sequence: { void settings.shortcutRevision; return settings.seq("open_command_palette") }
+               enabled: settingsWindow.recording === "" && !UiState.settingsOpen
                onActivated: { if (UiState.paletteOpen) UiState.paletteOpen = false; else UiState.openPalette("main") } }
     // The shortcuts the shell carries out, as Settings > Shortcuts has them (the Widgets defaults until one is changed): one Shortcut per row of settings.shortcutBindings.
-    // The grid's and the viewer's own keys (W, K, X, B ...) ask settings.keyIs where they are pressed.
+    // The grid's and the viewer's decision keys ask settings.keyIs where they are pressed.
     function runShortcut(cmd) {
         if (cmd === "file.workflow_settings") UiState.settingsOpen = !UiState.settingsOpen          // the settings and handoff windows toggle, as their keys always did
         else if (cmd === "workflow.handoff_builder") UiState.handoffOpen = !UiState.handoffOpen
@@ -377,7 +378,8 @@ Window {
         delegate: Shortcut {
             required property var modelData
             sequence: modelData.seq
-            enabled: !(popout.isOpen && (modelData.cmd === "edit.undo" || modelData.cmd === "review.delete_selection"))
+            enabled: settingsWindow.recording === "" && (!UiState.settingsOpen || modelData.cmd === "file.workflow_settings")
+                     && !(popout.isOpen && (modelData.cmd === "edit.undo" || modelData.cmd === "review.delete_selection"))
             onActivated: win.runShortcut(modelData.cmd)
         }
     }
@@ -461,8 +463,13 @@ Window {
         else if (id === "view.zen_mode") { UiState.zen = !UiState.zen; cmdPalette.setState("view.zen_mode", UiState.zen ? "On" : "Off") }
     }
     Connections { target: cmdPalette; function onExecuted(id) { win.runCommand(id) } }
+    function refreshShortcutHints() {
+        cmdPalette.setShortcuts(settings.shortcutMap)
+        reference.setShortcuts(settings.shortcutMap)
+    }
+    Connections { target: settings; function onShortcutsChanged() { win.refreshShortcutHints() } }
     TopMenus { id: topMenus; onRun: (id) => win.runCommand(id) }
-    Shortcut { sequence: "Delete"; enabled: !popout.isOpen; onActivated: win.runCommand("review.delete_selection") }      // Delete Selection has no default key in the registry: this one stays
+    Shortcut { sequence: "Delete"; enabled: !popout.isOpen && !UiState.settingsOpen; onActivated: win.runCommand("review.delete_selection") }
     Connections { target: UiState; function onUndoRequested() { win.runCommand("edit.undo") } }
     Connections { target: collections; function onExportRequested() { UiState.handoffOpen = true } }
     Connections { target: UiState; function onZenChanged() { if (UiState.zen) { UiState.zenTab = UiState.tab; UiState.zenInsp = UiState.insp; UiState.tab = ""; UiState.insp = false } else { UiState.tab = UiState.zenTab; UiState.insp = UiState.zenInsp } } }
@@ -514,6 +521,7 @@ Window {
         function onPinsLockedChanged() { win.remember("pinsLocked", UiState.pinsLocked) }
     }
     Component.onCompleted: {
+        refreshShortcutHints()
         win.restoreInterface()
         cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off")
         cmdPalette.setState("review.auto_advance", settings.value("autoAdvance") === true ? "On" : "Off")

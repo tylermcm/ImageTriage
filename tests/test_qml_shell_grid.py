@@ -46,7 +46,7 @@ def test_a_folder_read_from_disk_starts_unrated_and_undecided(qapp, tmp_path):
     assert model.shown == 4
     assert [model.row_at(i)["rating"] for i in range(4)] == [0, 0, 0, 0]
     assert [model.row_at(i)["decision"] for i in range(4)] == ["", "", "", ""]
-    assert model.winCount == 0 and model.keepCount == 0 and model.rejCount == 0
+    assert model.winCount == 0 and model.keepCount == 4 and model.rejCount == 0  # Keep includes every photo not rejected.
     model.setRating(0, 3)                                                  # a rating the user gives is kept
     assert model.row_at(0)["rating"] == 3
 

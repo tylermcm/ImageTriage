@@ -24,6 +24,7 @@ from .blink import BLINK_THRESHOLD, BlinkScoreCache, is_blink
 from .export import build_rows, write_export
 from .extract import FeatureCache, extract_features
 from .faces import FaceCache, FaceFinding
+from .ledger import build_ledger, summarize, write_ledger
 from .folder import ROLE_BRACKET, ROLE_DUPLICATE, ROLE_FINAL, ROLE_PICK, FolderFrame, FolderResult, FrameOutcome, run_folder
 from .model import CascadeSettings
 from .pipeline import Scorer
@@ -99,6 +100,7 @@ class CascadeRunTask(QRunnable):
         self.setAutoDelete(True)
         self._cancel_requested = False
         self.result: FolderResult | None = None
+        self.ledger_summary: dict | None = None      # the ledger's counts for the run (also in cull_ledger_summary.json beside the report)
         self.blink_checked = False
 
     def cancel(self) -> None:
@@ -118,6 +120,10 @@ class CascadeRunTask(QRunnable):
             self.signals.stage.emit(folder_text, 3, len(STAGES), STAGES[3])
             rows = build_rows(result.outcomes, [r.path for r in self.records], _capture_strings(frames))
             written = write_export(self.paths.report_dir, rows, result, ranked_with=scorers.names, note=" ".join(notes), blink_checked=self.blink_checked)
+            ledger = build_ledger(result.outcomes, [r.path for r in self.records], protected=self.protected)
+            write_ledger(self.paths.report_dir, ledger, result, settings=self.settings.cascade, ranked_with=scorers.names,
+                         blink_checked=self.blink_checked, note=" ".join(notes))
+            self.ledger_summary = summarize(ledger)
             self.result = result
             self.signals.finished.emit(folder_text, str(self.paths.report_dir), str(written["html"]))
         except _Cancelled:

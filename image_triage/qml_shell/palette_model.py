@@ -84,7 +84,7 @@ _DEMO_SHORTCUTS = {
     "rename_selection": "F2", "batch_rename_selection": "Ctrl+Shift+R", "batch_resize_selection": "Ctrl+Shift+E",
     "batch_convert_selection": "Ctrl+Shift+C", "handoff_builder": "Ctrl+Alt+H", "share_to_phone": "Ctrl+Alt+P",
     "send_to_editor_pipeline": "Ctrl+Alt+E", "best_of_set_auto_assembly": "Ctrl+Alt+B", "collect_at_cursor": "B", "open_preview": "Space",
-    "accept_selection": "W", "reject_selection": "X", "keep_at_cursor": "K", "compare_mode": "C", "grid_view": "Ctrl+1",
+    "accept_selection": "W", "reject_selection": "R", "keep_at_cursor": "K", "compare_mode": "C", "grid_view": "Ctrl+1",
     "details_view": "Ctrl+2", "zen_mode": "F11", "clear_filters": "Ctrl+Shift+X", "open_ai_workflow_center": "Ctrl+Shift+W",
     "quick_rerank_ai_culling": "Ctrl+Shift+Y", "next_ai_pick": "Ctrl+Alt+N",
 }
@@ -114,6 +114,14 @@ class PaletteModel(QObject):
         self._recent: list[str] = list(_DEMO_RECENT) if memory else self._load_recent()
         self._shortcuts = dict(_DEMO_SHORTCUTS) if memory else self._load_shortcuts()
         self._commands = self._build()
+
+    @Slot("QVariantMap")
+    def setShortcuts(self, shortcuts: dict) -> None:
+        if self._shortcuts != shortcuts:
+            self._shortcuts = dict(shortcuts)
+            self._commands = self._build()
+            self._revision += 1
+            self.revisionChanged.emit()
 
     # -- data ------------------------------------------------------------------------------------------------------------------
     @staticmethod

@@ -6,6 +6,7 @@ import QtQuick.Effects
 // operating-system window so the blur is of the live window behind it. Layout, sizes and colours follow the HTML mockup.
 FocusScope {
     id: root
+    objectName: "settingsWindow"
     property Item sourceItem                       // the application content to blur behind the window
     readonly property bool shown: UiState.settingsOpen
     anchors.fill: parent
@@ -29,7 +30,7 @@ FocusScope {
     function open() { UiState.settingsOpen = true; root.forceActiveFocus() }
     function openGuide() { reference.setQuery(""); reference.setTopic("settings"); reference.open("help") }       // the Help window's Settings guide, over this window
     function cancel() { settings.discard(); UiState.settingsOpen = false; UiState.settingsQuery = ""; root.recording = "" }
-    onShownChanged: if (shown) { settings.readCatalogSummary(); forceActiveFocus() }
+    onShownChanged: { root.recording = ""; if (shown) { settings.readCatalogSummary(); forceActiveFocus() } }
     Keys.onEscapePressed: root.cancel()
 
     // the dimmed, blurred application
@@ -97,7 +98,7 @@ FocusScope {
                     Behavior on border.color { ColorAnimation { duration: 200 } }
                     Icon { x: 10; anchors.verticalCenter: parent.verticalCenter; size: 18; color: theme.fg3; name: "search" }
                     TextInput {
-                        id: q; x: 10 + 18 + 8; width: parent.width - 10 - 18 - 8 - 10; anchors.verticalCenter: parent.verticalCenter
+                        id: q; objectName: "settingsSearch"; x: 10 + 18 + 8; width: parent.width - 10 - 18 - 8 - 10; anchors.verticalCenter: parent.verticalCenter
                         color: theme.fg; font.pixelSize: 13; clip: true; selectByMouse: true
                         text: UiState.settingsQuery
                         onTextEdited: UiState.settingsQuery = text
@@ -273,7 +274,7 @@ FocusScope {
                 Row {
                     anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; spacing: 8
                     SButton { text: "Cancel"; variant: "ghost"; h: 34; hpad: 16; radius: 12; onClicked: root.cancel() }
-                    SButton { text: "Save changes"; variant: "primary"; h: 34; hpad: 16; radius: 12; enabled: settings.dirtyCount > 0; onClicked: settings.save() }
+                    SButton { objectName: "saveSettingsButton"; text: "Save changes"; variant: "primary"; h: 34; hpad: 16; radius: 12; enabled: settings.dirtyCount > 0; onClicked: { root.recording = ""; settings.save() } }
                 }
             }
         }

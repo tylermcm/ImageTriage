@@ -36,18 +36,21 @@ Item {
                 Text { id: msg; anchors.centerIn: parent; text: "Press the new keys…"; font.pixelSize: 12; color: theme.accentFg }
             }
         }
-        SButton { text: k.recording ? "Cancel" : "Change"; onClicked: k.toggled() }
+        SButton { objectName: "changeShortcutButton"; text: k.recording ? "Cancel" : "Change"; onClicked: k.toggled() }
     }
     // while recording, this item holds the keyboard focus and turns a pressed chord into portable text
     Item {
         id: capture; focus: k.recording
         onFocusChanged: if (focus) forceActiveFocus()
+        Keys.onShortcutOverride: (e) => { if (k.recording) e.accepted = true }
         Keys.onPressed: (e) => {
             if (!k.recording) return
+            e.accepted = true
             if (e.key === Qt.Key_Escape) { k.toggled(); e.accepted = true; return }
+            if ((e.key === Qt.Key_Backspace || e.key === Qt.Key_Delete) && e.modifiers === Qt.NoModifier) { k.chord(""); return }
             var c = settings.chord(e.key, e.modifiers)
             if (c !== "") { k.chord(c); e.accepted = true }
         }
     }
-    onRecordingChanged: if (recording) capture.forceActiveFocus()
+    onRecordingChanged: if (recording) Qt.callLater(function () { if (k.recording) capture.forceActiveFocus() })
 }

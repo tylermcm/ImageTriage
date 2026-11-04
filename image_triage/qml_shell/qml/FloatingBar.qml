@@ -33,9 +33,9 @@ Item {
             onClicked: UiState.setMenu("fReview")
             Popover {
                 id: reviewMenu; name: "fReview"
-                PopItem { label: "Mark winner"; icon: "star"; kbd: "W"; onClicked: { photos.setDecision(bar.row, "win"); reviewMenu.close() } }
-                PopItem { label: "Keep"; icon: "check"; kbd: "K"; onClicked: { photos.setDecision(bar.row, "keep"); reviewMenu.close() } }
-                PopItem { label: "Reject"; icon: "x"; kbd: "X"; onClicked: { photos.setDecision(bar.row, "rej"); reviewMenu.close() } }
+                PopItem { label: "Mark winner"; icon: "star"; kbd: { void settings.shortcutRevision; return settings.seq("accept_selection") } onClicked: { photos.setDecision(bar.row, "win"); reviewMenu.close() } }
+                PopItem { label: "Keep"; icon: "check"; kbd: { void settings.shortcutRevision; return settings.seq("keep_at_cursor") } onClicked: { photos.setDecision(bar.row, "keep"); reviewMenu.close() } }
+                PopItem { label: "Reject"; icon: "x"; kbd: { void settings.shortcutRevision; return settings.seq("reject_selection") } onClicked: { photos.setDecision(bar.row, "rej"); reviewMenu.close() } }
                 PopDivider {}
                 PopItem { label: "Clear decision"; icon: "minus"; kbd: "U"; onClicked: { photos.setDecision(bar.row, ""); reviewMenu.close() } }
             }

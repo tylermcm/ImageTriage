@@ -54,7 +54,7 @@ SHORTCUT_REGISTRY: tuple[tuple[str, str, str, str], ...] = (
     # grid/preview/details view's hardcoded review keys, WI-3.2)
     ("open_preview", "Review", "", "Open Preview"),
     ("accept_selection", "Review", "W", "Mark Winner"),
-    ("reject_selection", "Review", "X", "Reject Selection"),
+    ("reject_selection", "Review", "R", "Reject Selection"),
     ("keep_selection", "Review", "", "Move Selection To _keep"),
     ("move_selection", "Review", "", "Move Selection..."),
     ("delete_selection", "Review", "", "Delete Selection"),
@@ -106,7 +106,7 @@ def load_shortcut_overrides(settings: QSettings | None = None) -> dict[str, str]
         if raw is None:
             continue
         text = str(raw).strip()
-        if text and text != default:
+        if text != default:
             overrides[attr_name] = text
     return overrides
 
@@ -153,8 +153,9 @@ def save_shortcut_overrides(
     overrides: Mapping[str, str],
     *,
     settings: QSettings | None = None,
+    preserve_empty: bool = False,
 ) -> None:
-    """Persist shortcut overrides; pass an empty string to reset to default.
+    """Persist overrides; an empty string resets to default unless preserve_empty is set.
 
     Keys not present in `overrides` are wiped from settings — the registry owns
     the universe and defaults will be re-applied at load time.
@@ -165,7 +166,7 @@ def save_shortcut_overrides(
     for attr_name in known_attrs:
         key = _shortcut_settings_key(attr_name)
         value = overrides.get(attr_name)
-        if value is None or not str(value).strip():
+        if value is None or (not str(value).strip() and not preserve_empty):
             store.remove(key)
         else:
             store.setValue(key, str(value).strip())

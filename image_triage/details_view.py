@@ -269,7 +269,7 @@ class DetailsTableView(QTableView):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._winner_shortcut = QKeySequence("W")
-        self._reject_shortcut = QKeySequence("X")
+        self._reject_shortcut = QKeySequence("R")
         # Mirrors grid.py's review-key registry (WI-3.2); brackets and the
         # 1-5 adapter labels are grid-only, so they're not needed here.
         self._review_key_shortcuts: dict[str, QKeySequence] = {

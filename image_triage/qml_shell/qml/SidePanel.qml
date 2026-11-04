@@ -6,7 +6,26 @@ import QtQuick.Controls
 // slide and fade with it, and each page's blocks rise in one after another when it becomes the current page.
 Item {
     id: panel
+    objectName: "librarySidePanel"
     property real fullW: 300
+    property bool drivesPinned: false
+    property bool drivesCollapsed: false
+    property bool libraryRestored: false
+    Component.onCompleted: {
+        drivesPinned = uiMemory.get("drivesPinned", false) === true
+        drivesCollapsed = uiMemory.get("drivesCollapsed", false) === true
+        libraryRestored = true
+    }
+    onDrivesPinnedChanged: {
+        if (libraryRestored) uiMemory.set("drivesPinned", drivesPinned)
+        lib.cancelFlick()
+        libWheel.stop()
+        Qt.callLater(lib.clampPosition)
+    }
+    onDrivesCollapsedChanged: {
+        if (libraryRestored) uiMemory.set("drivesCollapsed", drivesCollapsed)
+        Qt.callLater(lib.clampPosition)
+    }
     readonly property real p: Math.max(0, Math.min(1, width / fullW))
     clip: true
     property var hiddenPeople: []
@@ -85,6 +104,25 @@ Item {
         }
     }
 
+    component LibraryButton: Item {
+        id: button
+        property string icon
+        property string tip
+        property bool checked: false
+        signal clicked()
+        width: 26; height: 26
+        activeFocusOnTab: true
+        Rectangle { anchors.fill: parent; radius: 7; color: button.checked ? Qt.alpha(theme.accent, 0.14) : Qt.alpha(theme.lift, bh.hovered || button.activeFocus ? 0.08 : 0); border.width: button.activeFocus ? 1 : 0; border.color: theme.accent }
+        Icon { anchors.centerIn: parent; name: button.icon; size: 14; color: button.checked ? theme.accentFg : theme.fg3 }
+        HoverHandler { id: bh; cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: { button.forceActiveFocus(); button.clicked() } }
+        Keys.onSpacePressed: clicked()
+        Keys.onReturnPressed: clicked()
+        Tip { text: button.tip; show: bh.hovered; leftSide: true }
+        Accessible.role: Accessible.Button; Accessible.name: tip
+        Accessible.onPressAction: clicked()
+    }
+
     // Hands a Library entry (a collection key such as "col:album") to PocketDrop and shows its page.
     function shareToPhone(key) {
         pocketDrop.refreshLibrary(UiState.selRow)
@@ -126,11 +164,58 @@ Item {
         }
 
         // ---- Library -------------------------------------------------------------------------------------------------
+        Item {
+            id: pinnedSearch
+            y: head.height; width: parent.width
+            height: panel.drivesPinned ? 44 : 0
+            visible: UiState.tab === "lib"
+        }
+        Item {
+            id: pinnedDrives
+            y: head.height + pinnedSearch.height; width: parent.width
+            height: panel.drivesPinned && libraryNav.drivesModel.count > 0 ? driveSection.height : 0
+            visible: UiState.tab === "lib"
+        }
         Flickable {
             id: lib
+            objectName: "libraryScroll"
             readonly property bool on: UiState.tab === "lib"
-            y: head.height; width: parent.width; height: parent.height - head.height
+            y: head.height + pinnedSearch.height + pinnedDrives.height; width: parent.width; height: Math.max(0, parent.height - y)
             contentHeight: libCol.implicitHeight + 24; clip: true; boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar {
+                width: 6; policy: ScrollBar.AsNeeded
+                contentItem: Rectangle { implicitWidth: 6; radius: 3; color: Qt.alpha(theme.fg, 0.28) }
+                background: null
+            }
+            function clampPosition() {
+                libWheel.stop(); cancelFlick()
+                contentY = Math.max(originY, Math.min(Math.max(originY, contentHeight - height), contentY))
+            }
+            function scrollToTop() {
+                cancelFlick(); libWheel.stop()
+                libWheel.from = contentY; libWheel.to = originY; libWheel.start()
+            }
+            onContentHeightChanged: Qt.callLater(clampPosition)
+            onHeightChanged: Qt.callLater(clampPosition)
+            onDraggingChanged: if (dragging) libWheel.stop()
+            NumberAnimation { id: libWheel; target: lib; property: "contentY"; duration: 160; easing.type: Easing.OutCubic }
+            property double lastWheelTime: 0
+            property int wheelDirection: 0
+            property int wheelRun: 0
+            function wheelScroll(angle, pixels, now) {
+                var direction = Math.sign(pixels || angle)
+                if (!direction) return false
+                var high = Math.max(originY, contentHeight - height)
+                var from = libWheel.running ? libWheel.to : contentY
+                if ((direction > 0 && from <= originY) || (direction < 0 && from >= high)) return false
+                wheelRun = direction === wheelDirection && now - lastWheelTime < 180 ? Math.min(8, wheelRun + 1) : 0
+                lastWheelTime = now; wheelDirection = direction
+                var distance = pixels !== 0 ? pixels : angle / 120 * 96 * (1 + wheelRun * 0.3)
+                cancelFlick(); libWheel.stop()
+                libWheel.from = contentY; libWheel.to = Math.max(originY, Math.min(high, from - distance)); libWheel.start()
+                return true
+            }
+            WheelHandler { target: null; onWheel: (e) => { e.accepted = lib.wheelScroll(e.angleDelta.y, e.pixelDelta.y, Date.now()) } }
             opacity: on ? 1 : 0; visible: opacity > 0.01
             Behavior on opacity { NumberAnimation { duration: 250 } }
             // Scrolls the folder that was just opened into view, once per opened folder (its row may appear only when its parent has been listed).
@@ -141,18 +226,25 @@ Item {
                 Qt.callLater(function () {
                     if (item === null) return
                     var y = item.mapToItem(lib.contentItem, 0, 0).y
-                    if (y < lib.contentY || y + item.height > lib.contentY + lib.height)
+                    if (y < lib.contentY || y + item.height > lib.contentY + lib.height) {
+                        libWheel.stop(); lib.cancelFlick()
                         lib.contentY = Math.max(0, Math.min(Math.max(0, lib.contentHeight - lib.height), y - lib.height / 3))
+                    }
                 })
             }
             Column {
-                id: libCol; width: parent.width; topPadding: 12
-                Stag { active: lib.on; n: 0
+                id: libCol; width: parent.width; topPadding: panel.drivesPinned ? 0 : 12
+                Item {
+                    id: searchSlot
+                    width: parent.width; height: panel.drivesPinned ? 0 : 32
                     Rectangle {
-                        x: 12; width: parent.width - 24; height: 32; radius: 9; color: theme.base; border.color: fieldIn.activeFocus ? theme.accent : theme.lineSoft
+                        objectName: "libraryFolderSearchField"
+                        parent: panel.drivesPinned ? pinnedSearch : searchSlot
+                        x: 12; y: panel.drivesPinned ? 12 : 0
+                        width: panel.fullW - 24; height: 32; radius: 9; color: theme.base; border.color: fieldIn.activeFocus ? theme.accent : theme.lineSoft
                         Row { anchors.verticalCenter: parent.verticalCenter; x: 10; spacing: 8
                             Icon { name: "search"; size: 18; color: theme.fg3; anchors.verticalCenter: parent.verticalCenter }
-                            TextInput { id: fieldIn; width: 200; color: theme.fg; font.pixelSize: 13; clip: true; anchors.verticalCenter: parent.verticalCenter; selectByMouse: true
+                            TextInput { id: fieldIn; objectName: "libraryFolderSearch"; width: 200; color: theme.fg; font.pixelSize: 13; clip: true; anchors.verticalCenter: parent.verticalCenter; selectByMouse: true
                                 onTextEdited: libraryNav.setQuery(text)
                                 Text { visible: !parent.text && !parent.activeFocus; text: "Find a folder"; color: theme.fg3; font: parent.font }
                                 Accessible.name: "Find a folder" }
@@ -175,26 +267,79 @@ Item {
                             Accessible.role: Accessible.Button; Accessible.name: title
                         }
                     } } }
-                Stag { active: lib.on; n: 2; visible: libraryNav.drivesModel.count > 0; Column { width: parent.width
-                    SectionLabel { caption: "Drives" }
-                    Repeater {
-                        model: libraryNav.drivesModel
-                        delegate: Item {
-                            id: dr
-                            required property string folder
-                            required property string title
-                            required property string detail
-                            required property real ratio
-                            width: libCol.width; height: 43.2          // 6 + 18.2 line + 7 + 4 meter + 8
-                            Rectangle { anchors.fill: parent; color: Qt.alpha(theme.lift, drHover.hovered ? 0.05 : 0) }
-                            Text { x: 16; y: 6; height: 18.2; verticalAlignment: Text.AlignVCenter; text: dr.title; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
-                            Text { anchors.right: parent.right; anchors.rightMargin: 16; y: 6; text: dr.detail; color: theme.fg3; font.pointSize: UiState.pt(11) }
-                            Meter { x: 16; y: 31.2; width: parent.width - 32; value: dr.ratio; stops: ["#4cbd88", "#e6ac3d", "#ef6856"] }
-                            HoverHandler { id: drHover; cursorShape: Qt.PointingHandCursor }
-                            TapHandler { onTapped: libraryNav.openFolder(dr.folder) }
-                            Accessible.role: Accessible.Button; Accessible.name: title
+                Item {
+                    id: driveSlot
+                    width: parent.width; height: panel.drivesPinned || libraryNav.drivesModel.count === 0 ? 0 : driveSection.height
+                    Column {
+                        id: driveSection
+                        objectName: "driveSection"
+                        parent: panel.drivesPinned ? pinnedDrives : driveSlot
+                        width: panel.fullW
+                        visible: libraryNav.drivesModel.count > 0
+                        SectionLabel {
+                            caption: "Drives"
+                            Row {
+                                anchors.right: parent.right; anchors.rightMargin: 10; y: 7; spacing: 2
+                                LibraryButton {
+                                    objectName: "pinDrivesButton"; icon: "pin"; checked: panel.drivesPinned
+                                    tip: panel.drivesPinned ? "Unpin drives" : "Pin drives"
+                                    Accessible.checkable: true; Accessible.checked: checked
+                                    onClicked: panel.drivesPinned = !panel.drivesPinned
+                                }
+                                LibraryButton {
+                                    objectName: "collapseDrivesButton"; icon: panel.drivesCollapsed ? "chevR" : "chevDown"
+                                    tip: panel.drivesCollapsed ? "Expand drives" : "Collapse drives"
+                                    onClicked: panel.drivesCollapsed = !panel.drivesCollapsed
+                                }
+                            }
                         }
-                    } } }
+                        Flickable {
+                            id: driveScroll
+                            objectName: "driveScroll"
+                            width: parent.width
+                            height: panel.drivesCollapsed ? 0 : Math.min(contentHeight, 5 * 43.2, Math.max(0, (inner.height - head.height) * 0.30 - 33))
+                            visible: !panel.drivesCollapsed
+                            contentHeight: driveRows.height; clip: true; boundsBehavior: Flickable.StopAtBounds
+                            onContentHeightChanged: contentY = Math.max(0, Math.min(Math.max(0, contentHeight - height), contentY))
+                            onHeightChanged: contentY = Math.max(0, Math.min(Math.max(0, contentHeight - height), contentY))
+                            ScrollBar.vertical: ScrollBar {
+                                width: 6; policy: ScrollBar.AsNeeded
+                                contentItem: Rectangle { implicitWidth: 6; radius: 3; color: Qt.alpha(theme.fg, 0.28) }
+                                background: null
+                            }
+                            WheelHandler {
+                                target: null
+                                onWheel: (e) => {
+                                    var delta = e.pixelDelta.y || e.angleDelta.y / 120 * 43.2
+                                    var to = Math.max(0, Math.min(Math.max(0, driveScroll.contentHeight - driveScroll.height), driveScroll.contentY - delta))
+                                    if (to !== driveScroll.contentY) { driveScroll.cancelFlick(); driveScroll.contentY = to; e.accepted = true }
+                                    else e.accepted = !panel.drivesPinned && lib.wheelScroll(e.angleDelta.y, e.pixelDelta.y, Date.now())
+                                }
+                            }
+                            Column {
+                                id: driveRows; width: parent.width
+                                Repeater {
+                                    model: libraryNav.drivesModel
+                                    delegate: Item {
+                                        id: dr
+                                        required property string folder
+                                        required property string title
+                                        required property string detail
+                                        required property real ratio
+                                        width: driveRows.width; height: 43.2
+                                        Rectangle { anchors.fill: parent; color: Qt.alpha(theme.lift, drHover.hovered ? 0.05 : 0) }
+                                        Text { x: 16; y: 6; height: 18.2; verticalAlignment: Text.AlignVCenter; text: dr.title; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
+                                        Text { anchors.right: parent.right; anchors.rightMargin: 16; y: 6; text: dr.detail; color: theme.fg3; font.pointSize: UiState.pt(11) }
+                                        Meter { x: 16; y: 31.2; width: parent.width - 32; value: dr.ratio; stops: ["#4cbd88", "#e6ac3d", "#ef6856"] }
+                                        HoverHandler { id: drHover; cursorShape: Qt.PointingHandCursor }
+                                        TapHandler { onTapped: libraryNav.openFolder(dr.folder) }
+                                        Accessible.role: Accessible.Button; Accessible.name: title
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 Stag { active: lib.on; n: 3; Column { width: parent.width
                     SectionLabel { caption: "Folders" }
                     PanelRow { visible: libraryNav.treeStatus !== ""; text: libraryNav.treeStatus; muted: true; interactive: false }
@@ -229,6 +374,25 @@ Item {
                           onClicked: { if (libMenu.fav) libraryNav.removeFavorite(libMenu.path); else libraryNav.addFavorite(libMenu.path); libMenu.close() } }
                 PopItem { label: "Show in File Explorer"; icon: "library"; onClicked: { libraryNav.reveal(libMenu.path); libMenu.close() } }
             }
+        }
+
+        Item {
+            objectName: "libraryBackToTop"
+            anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 18
+            width: topLabel.implicitWidth + 48; height: 32
+            visible: opacity > 0.01
+            opacity: lib.on && lib.contentY - lib.originY > Math.min(180, lib.height * 0.4) ? 1 : 0
+            enabled: visible; z: 4; activeFocusOnTab: visible
+            Behavior on opacity { NumberAnimation { duration: 140 } }
+            Rectangle { anchors.fill: parent; radius: 9; color: topHover.hovered ? theme.s3 : theme.s2; border.color: parent.activeFocus ? theme.accent : theme.line }
+            Icon { x: 11; anchors.verticalCenter: parent.verticalCenter; name: "arrowUp"; size: 14; color: theme.fg2 }
+            Text { id: topLabel; x: 32; anchors.verticalCenter: parent.verticalCenter; text: "Back to top"; color: theme.fg2; font.pixelSize: 12; font.weight: Font.Medium }
+            HoverHandler { id: topHover; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: lib.scrollToTop() }
+            Keys.onSpacePressed: lib.scrollToTop()
+            Keys.onReturnPressed: lib.scrollToTop()
+            Accessible.role: Accessible.Button; Accessible.name: "Scroll library to top"
+            Accessible.onPressAction: lib.scrollToTop()
         }
 
         // ---- Faces ---------------------------------------------------------------------------------------------------

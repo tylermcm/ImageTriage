@@ -162,12 +162,6 @@ class AiStatusController(QObject):
                 ],
                 buttons=[("Open AI setup", True, self._open_setup), ("Check installation", False, self._check)],
             )
-        if status.state is AIState.NEEDS_SETUP:
-            return build_card(
-                "AI is not set up",
-                status.detail,
-                buttons=[(f"Set up AI{size}", True, self._open_setup), ("Not now", False, self._not_now)],
-            )
         if status.state is AIState.INSTALLING:
             return build_card(
                 "Installing AI",
@@ -189,6 +183,9 @@ class AiStatusController(QObject):
         )
 
     def show_card(self, *, below: bool) -> None:
+        if self._status.state is AIState.NEEDS_SETUP:
+            self._open_setup()
+            return
         anchor = self.chip if (self.chip is not None and self.chip.isVisible()) else self.text
         if anchor is None:
             return

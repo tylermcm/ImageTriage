@@ -10,7 +10,7 @@ Item {
     objectName: "topMenus"
     signal run(string id)
     readonly property string which: UiState.topMenu
-    readonly property var rows: { void libraryNav.recentFolders; return which === "" ? [] : build(which) }
+    readonly property var rows: { void settings.shortcutRevision; void libraryNav.recentFolders; return which === "" ? [] : build(which) }
     readonly property var subRows: UiState.topSub >= 0 && UiState.topSub < rows.length && rows[UiState.topSub].items ? rows[UiState.topSub].items : []
     property real subY: 0
     anchors.fill: parent
@@ -18,7 +18,7 @@ Item {
     z: 100
 
     // ---- the rows: mr a row that runs `id`, mo one that is not connected, mt one that is ticked while `on()` is true, mh a heading, ms a separator, mf a fly-out ----
-    function mr(label, id, kbd, icon) { return { kind: "row", label: label, id: id, kbd: kbd || "", icon: icon || "" } }
+    function mr(label, id, kbd, icon) { return { kind: "row", label: label, id: id, kbd: settings.commandShortcut(id, kbd || ""), icon: icon || "" } }
     function mo(label, kbd, icon) { return { kind: "row", label: label, id: "", kbd: kbd || "", icon: icon || "", off: true } }       // not connected yet
     function mt(label, id, on, kbd) { return { kind: "row", label: label, id: id, kbd: kbd || "", icon: "", on: on } }                   // ticked while `on()`
     function mh(caption) { return { kind: "head", label: caption } }
@@ -51,7 +51,7 @@ Item {
             return [
                 mr("Open Preview", "review.open_preview", "Space", "eye"),
                 ms(), mr("Mark Winner", "review.accept_selection", "W", "star"), mr("Keep", "review.keep_selection", "K", "check"),
-                mr("Reject", "review.reject_selection", "X", "x"), mr("Clear Decision", "review.clear_decision", "U", "minus"),
+                mr("Reject", "review.reject_selection", "R", "x"), mr("Clear Decision", "review.clear_decision", "U", "minus"),
                 mf("Rating", "star", [mr("1 star", "review.rate.1", "1"), mr("2 stars", "review.rate.2", "2"), mr("3 stars", "review.rate.3", "3"),
                                      mr("4 stars", "review.rate.4", "4"), mr("5 stars", "review.rate.5", "5"), ms(), mr("No rating", "review.rate.0", "0")]),
                 ms(), mr("Rename Selection…", "edit.rename_selection", "", "tag"), mo("Move…", "M", "newfolder"), mo("Delete", "Del", "x"),

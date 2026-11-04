@@ -149,9 +149,9 @@ Rectangle {
             Popover {
                 id: reviewMenu; name: "review"; placement: 1; parent: rail.over("review") ? moreBtn : reviewBtn
                 PopHeader { caption: "Decision for selection" }
-                PopItem { label: "Mark winner"; icon: "star"; kbd: "W"; onClicked: { photos.setDecision(rail.row, "win"); reviewMenu.close() } }
-                PopItem { label: "Keep"; icon: "check"; kbd: "K"; onClicked: { photos.setDecision(rail.row, "keep"); reviewMenu.close() } }
-                PopItem { label: "Reject"; icon: "x"; kbd: "X"; onClicked: { photos.setDecision(rail.row, "rej"); reviewMenu.close() } }
+                PopItem { label: "Mark winner"; icon: "star"; kbd: { void settings.shortcutRevision; return settings.seq("accept_selection") } onClicked: { photos.setDecision(rail.row, "win"); reviewMenu.close() } }
+                PopItem { label: "Keep"; icon: "check"; kbd: { void settings.shortcutRevision; return settings.seq("keep_at_cursor") } onClicked: { photos.setDecision(rail.row, "keep"); reviewMenu.close() } }
+                PopItem { label: "Reject"; icon: "x"; kbd: { void settings.shortcutRevision; return settings.seq("reject_selection") } onClicked: { photos.setDecision(rail.row, "rej"); reviewMenu.close() } }
                 PopDivider {}
                 PopItem { label: "Clear decision"; icon: "minus"; kbd: "U"; onClicked: { photos.setDecision(rail.row, ""); reviewMenu.close() } }
             }

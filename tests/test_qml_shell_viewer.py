@@ -125,9 +125,10 @@ def test_a_file_that_cannot_be_read_says_so(qapp, tmp_path):
 
 def test_decisions_toggle_toast_and_undo_and_a_winner_or_reject_moves_on(qapp, host, photos):
     host.open(1)
-    host.decide(1, "keep")                                  # keep stays on the photo
-    assert photos.row_at(1)["decision"] == "keep" and host.row == 1
+    host.decide(1, "keep")
+    assert photos.row_at(1)["decision"] == "keep" and host.row == 2
     assert host.toast["text"] == "DSC_4401 kept" and host.toast["kind"] == "keep" and host.toast["undo"]
+    host.go(1)
     host.decide(1, "win")                                   # a winner goes on to the next photo
     assert photos.row_at(1)["decision"] == "win" and host.row == 2
     assert host.toast["text"] == "DSC_4401 marked Winner"
@@ -275,7 +276,8 @@ def test_the_keys_step_decide_rate_and_close(shell, qapp):
     QTest.keyClick(window, Qt.Key.Key_Left)
     assert popout.row == 0
     QTest.keyClick(window, Qt.Key.Key_K)
-    assert model.row_at(0)["decision"] == "keep" and popout.row == 0
+    assert model.row_at(0)["decision"] == "keep" and popout.row == 1
+    popout.go(0)
     QTest.keyClick(window, Qt.Key.Key_W)                       # a winner moves on
     assert model.row_at(0)["decision"] == "win" and popout.row == 1
     QTest.keyClick(window, Qt.Key.Key_4)

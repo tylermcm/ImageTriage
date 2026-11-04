@@ -474,7 +474,7 @@ class ViewerHost(QObject):
             self._say(f"{item['name']} {DECISION_WORDS[after]}", after, undo=True)
         else:
             self._say(f"{item['name']} is no longer {'a winner' if before == 'win' else 'kept' if before == 'keep' else 'rejected'}", "info", undo=True)
-        if after in ("win", "rej") and self._read_bool(ADVANCE_KEY, True) and row == self._row:
+        if after in ("win", "keep", "rej") and self._read_bool(ADVANCE_KEY, True) and row == self._row:
             self.step(1)
 
     @Slot(int, int)

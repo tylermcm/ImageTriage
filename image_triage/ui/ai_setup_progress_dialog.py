@@ -65,7 +65,7 @@ class _StepIcon(QWidget):
         else:
             painter.setPen(QPen(self.palette().midlight().color(), 2.0))
             painter.drawEllipse(rect)
-            painter.setPen(self.palette().mid().color())
+            painter.setPen(self.palette().placeholderText().color())
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, str(self._number))
 
 
@@ -86,9 +86,9 @@ class AISetupProgressDialog(QDialog):
         self.setFixedSize(520, 365)
         self.setStyleSheet(
             """
-            QDialog#aiSetupProgressDialog { background: palette(window); }
+            QDialog#aiSetupProgressDialog { background: palette(tooltip-base); }
             QLabel#aiProgressTitle { font-size: 21px; font-weight: 700; }
-            QLabel#aiProgressMuted { color: palette(mid); }
+            QLabel#aiProgressMuted { color: palette(placeholder-text); }
             QLabel#aiProgressStep { font-size: 14px; }
             QProgressBar { border: none; background: palette(midlight); border-radius: 4px; }
             QProgressBar::chunk { border-radius: 4px; background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #ff9a5a, stop:0.35 #ff5e8a, stop:0.68 #b25cff, stop:1 #5a8cff); }

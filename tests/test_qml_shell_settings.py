@@ -226,7 +226,7 @@ def test_settings_window_opens_edits_and_saves_in_qml(qapp, tmp_path):
     from image_triage.qml_shell.batch_model import BatchModel
     from image_triage.qml_shell.filters_model import FiltersModel
     from image_triage.qml_shell.palette_model import PaletteModel
-    from image_triage.qml_shell.photos import PhotoModel
+    from image_triage.qml_shell.photos import GridModel, PhotoModel
     from image_triage.qml_shell.thumbs import ThumbService
 
     theme = Theme(parent=qapp)
@@ -239,6 +239,7 @@ def test_settings_window_opens_edits_and_saves_in_qml(qapp, tmp_path):
     for name, obj in (("theme", theme), ("photos", photos), ("settings", settings), ("cmdPalette", PaletteModel(memory=True, parent=qapp)), ("advFilters", FiltersModel(photos, memory=True, parent=qapp)), ("batch", BatchModel(photos, memory=True, parent=qapp)), *collection_models(photos, qapp), ("handoff", HandoffModel(photos, memory=True, parent=qapp)), ("transfers", TransferModel(photos, memory=True, parent=qapp)), ("thumbs", thumbs), ("startup", "")):
         engine.rootContext().setContextProperty(name, obj)
     engine.addImportPath(str(shell_app.QML_DIR))
+    engine.rootContext().setContextProperty("gridModel", GridModel(photos, parent=qapp))
     engine.load(QUrl.fromLocalFile(str(shell_app.QML_DIR / "Main.qml")))
     assert engine.rootObjects(), warnings
     window = engine.rootObjects()[0]

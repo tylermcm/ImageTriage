@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QObject, QSettings, Qt
+from PySide6.QtCore import QObject, QPointF, QSettings, Qt
 from PySide6.QtTest import QTest
 
 from image_triage.qml_shell import settings_model as sm
@@ -29,6 +29,7 @@ def test_the_widgets_defaults_are_in_force_until_a_row_is_changed(qapp, store):
     assert m.keyIs("batch_rename_selection", Qt.Key.Key_R, CTRL | SHIFT)
     assert not m.keyIs("accept_selection", Qt.Key.Key_W, SHIFT)      # Shift+W is another chord than W
     assert m.keyIs("accept_selection", Qt.Key.Key_W, KEYPAD)        # the keypad flag is not part of the chord
+    assert m.seq("reject_selection") == "R" and m.keyIs("reject_selection", Qt.Key.Key_R, 0)
 
 
 def test_a_saved_override_replaces_the_default_and_tells_the_window(qapp, store):
@@ -75,6 +76,21 @@ def test_a_default_the_shell_also_uses_is_not_a_conflict(qapp, store):
     assert m.seq("adapter_label_hero") == "1"                                               # the registry's 1 to 5 are the shell's ratings too
     m.set("k:undo", "Ctrl+Alt+U")
     assert m.save()                                                                         # saving another row is not refused because of them
+
+
+def test_reject_defaults_custom_choices_and_cleared_bindings_survive_reopening(qapp, store):
+    model = SettingsModel()
+    assert model.seq("reject_selection") == "R"
+    model.set("k:reject_selection", "X")
+    model.set("k:accept_selection", "")
+    assert model.save()
+    reopened = SettingsModel()
+    assert reopened.seq("reject_selection") == "X"
+    assert reopened.seq("accept_selection") == ""
+    assert not reopened.keyIs("accept_selection", Qt.Key_W, 0)
+    reopened.resetSection("keys")
+    assert reopened.save()
+    assert SettingsModel().seq("reject_selection") == "R"
 
 
 # -- the window -------------------------------------------------------------------------------------------------------------------
@@ -142,6 +158,93 @@ def test_the_windows_shortcuts_follow_the_saved_shortcuts(qapp, tmp_path):
     pump(qapp, 0.5)
     assert card.property("shown") is True and card.property("mode") == "rename"
     assert not [w for w in warnings if "ReferenceError" in w or "TypeError" in w or "Required property" in w], warnings
+    window.close()
+    engine.deleteLater()
+    pump(qapp, 0.2)
+
+
+def click_item(qapp, window, item):
+    assert item is not None and item.isVisible()
+    position = item.mapToScene(QPointF(item.width() / 2, item.height() / 2)).toPoint()
+    QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, position)
+    pump(qapp, 0.3)
+
+
+def visual_item(window, name):
+    pending = [window.contentItem()]
+    while pending:
+        candidate = pending.pop()
+        if candidate.objectName() == name:
+            return candidate
+        pending.extend(candidate.childItems())
+
+
+def test_shortcuts_guide_opens_the_editor_and_recorded_key_runs_the_action(qapp, tmp_path):
+    engine, window, warnings, photos, settings, grid = open_window(qapp, tmp_path)
+    reference = engine.rootContext().contextProperty("reference")
+    reference.open("keys")
+    pump(qapp, 0.4)
+    click_item(qapp, window, window.findChild(QObject, "editShortcutsButton"))
+    dialog = window.findChild(QObject, "settingsWindow")
+    assert dialog.property("shown") and dialog.property("section") == "keys"
+    search = dialog.findChild(QObject, "settingsSearch")
+    click_item(qapp, window, search)
+    for char in "Mark Winner":
+        QTest.keyClick(window, ord(char.upper()), Qt.ShiftModifier if char.isupper() else Qt.NoModifier)
+    pump(qapp, 0.3)
+    editor = visual_item(window, "shortcutEditor_k:accept_selection")
+    assert editor is not None, (search.property("text"), warnings, dialog.property("groups"))
+    click_item(qapp, window, editor.findChild(QObject, "changeShortcutButton"))
+    assert dialog.property("recording") == "k:accept_selection"
+    # An already bound chord must be recorded instead of closing Settings.
+    QTest.keyClick(window, Qt.Key_Comma, Qt.ControlModifier)
+    pump(qapp, 0.2)
+    assert dialog.property("shown") and settings.value("k:accept_selection") == "Ctrl+,"
+    editor = visual_item(window, "shortcutEditor_k:accept_selection")
+    click_item(qapp, window, editor.findChild(QObject, "changeShortcutButton"))
+    QTest.keyClick(window, Qt.Key_J)
+    pump(qapp, 0.2)
+    assert settings.value("k:accept_selection") == "J"
+    click_item(qapp, window, dialog.findChild(QObject, "saveSettingsButton"))
+    assert settings.seq("accept_selection") == "J"
+    assert settings.commandShortcut("review.accept_selection", "W") == "J"
+    guide_rows = [row for category in reference._keys_view()["cats"] for row in category["rows"]]
+    assert next(row for row in guide_rows if row["t"] == "Mark a winner")["keys"] == ["J"]
+    palette = engine.rootContext().contextProperty("cmdPalette")
+    assert next(row for row in palette.results("winner", "main") if row.get("id") == "review.accept_selection")["keys"] == ["J"]
+    QTest.keyClick(window, Qt.Key_Escape)
+    pump(qapp, 0.3)
+    grid.forceActiveFocus()
+    QTest.keyClick(window, Qt.Key_J)
+    assert photos.get(1)["decision"] == "win"
+    assert not warnings, warnings
+    window.close()
+    engine.deleteLater()
+    pump(qapp, 0.2)
+
+
+@pytest.mark.parametrize("key", [Qt.Key_W, Qt.Key_K, Qt.Key_R, Qt.Key_Right])
+def test_culling_and_navigation_keep_the_current_photo_visible(qapp, tmp_path, key):
+    engine, window, warnings, photos, settings, grid = open_window(qapp, tmp_path)
+    photos.setRows([dict(r, decision="", rating=0) for r in rows(120)], "/p")
+    pump(qapp, 0.2)
+    grid.forceActiveFocus()
+    grid.setProperty("currentIndex", 0)
+    for _ in range(38):
+        QTest.keyClick(window, key)
+        pump(qapp, 0.005)
+    pump(qapp, 0.2)
+    current = grid.property("currentIndex")
+    assert current == 38
+    assert grid.property("contentY") > 0
+    columns = round(grid.width() / grid.property("cellWidth"))
+    top = (current // columns) * grid.property("cellHeight")
+    assert top >= grid.property("contentY") - 1
+    assert top + grid.property("cellHeight") <= grid.property("contentY") + grid.height() - 132 + 1
+    # Rating after navigating still applies to the card that is in view.
+    QTest.keyClick(window, Qt.Key_4)
+    assert photos.get(current)["rating"] == 4
+    assert not warnings, warnings
     window.close()
     engine.deleteLater()
     pump(qapp, 0.2)

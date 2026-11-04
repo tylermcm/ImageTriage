@@ -364,6 +364,11 @@ class ReferenceModel(QObject):
         except Exception:                        # unreadable settings: show the defaults
             return {}
 
+    @Slot("QVariantMap")
+    def setShortcuts(self, shortcuts: dict) -> None:
+        self._live_shortcuts = dict(shortcuts)
+        self._emit()
+
     def _keys_view(self) -> dict:
         q = self._kq.strip().lower()
         overrides = self._key_overrides()
@@ -371,11 +376,14 @@ class ReferenceModel(QObject):
         for name, rows in C.KEY_GROUPS:
             out = []
             for label, attr, fixed in rows:
-                text = overrides.get(attr, fixed) if attr else fixed
+                live = getattr(self, "_live_shortcuts", overrides)
+                text = live.get(attr, fixed) if attr else fixed
+                if attr == "open_preview" and not text:
+                    text = fixed  # Space and Return also open the current photo without a custom binding.
                 keys = _keys(text)
                 if q and q not in label.lower() and q not in name.lower() and not any(k.lower() == q for k in keys):
                     continue
-                out.append({"t": label, "keys": keys, "changed": bool(attr and attr in overrides and overrides[attr] != fixed)})
+                out.append({"t": label, "keys": keys, "changed": bool(attr and text != fixed)})
             if out:
                 cats.append({"name": name, "rows": out})
         return {"query": self._kq, "cats": cats, "none": not cats, "count": sum(len(c["rows"]) for c in cats)}

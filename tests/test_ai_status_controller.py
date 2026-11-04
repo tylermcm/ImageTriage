@@ -55,16 +55,16 @@ def test_when_everything_is_installed_only_quiet_text_remains(shown, monkeypatch
     assert shown.ai_status_text.isVisible()
 
 
-def test_clicking_the_chip_opens_a_card_below_it_and_the_text_opens_one_above(shown, monkeypatch) -> None:
+def test_clicking_the_setup_chip_opens_setup_directly_without_a_popover(shown, monkeypatch) -> None:
     set_ready(shown, monkeypatch, False)
+    opened: list[str] = []
+    monkeypatch.setattr(shown._ai_setup, "download_ai_model", lambda: opened.append("setup"))
     shown.ai_status_chip.click()
-    popover = shown._ai_status._popover
-    assert popover is not None and popover.isVisible()
-    assert any(label.startswith("Set up AI") for label in button_labels(popover))
-    assert "Not now" in button_labels(popover)
-    chip_bottom = shown.ai_status_chip.mapToGlobal(shown.ai_status_chip.rect().bottomLeft()).y()
-    assert popover.y() >= chip_bottom
-    shown._ai_status.close_card()
+    assert opened == ["setup"]
+    assert shown._ai_status._popover is None
+
+
+def test_ready_text_opens_its_status_card_above_the_status_bar(shown, monkeypatch) -> None:
     set_ready(shown, monkeypatch, True)
     shown.ai_status_text.click()
     above = shown._ai_status._popover

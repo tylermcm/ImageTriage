@@ -767,7 +767,7 @@ class FullScreenPreview(QDialog):
         self._native_layer_wanted = False
         self._native_layer_release_token = 0
         self._winner_shortcut = QKeySequence("W")
-        self._reject_shortcut = QKeySequence("X")
+        self._reject_shortcut = QKeySequence("R")
         # Mirrors grid.py's review-key registry (WI-3.2); brackets and the
         # 1-5 adapter labels are grid-only, so they're not needed here.
         # Members of the active collection; their captions say so (set_active_collection_members).

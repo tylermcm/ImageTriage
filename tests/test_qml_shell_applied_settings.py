@@ -73,12 +73,12 @@ def test_the_grid_goes_on_after_a_winner_or_a_reject_when_the_setting_is_on(qapp
     pump(qapp, 0.1)
     QTest.keyClick(window, Qt.Key.Key_W)
     assert grid.property("currentIndex") == 3
-    QTest.keyClick(window, Qt.Key.Key_X)
+    QTest.keyClick(window, Qt.Key.Key_R)
     assert grid.property("currentIndex") == 4
-    QTest.keyClick(window, Qt.Key.Key_K)                               # Keep stays
-    assert grid.property("currentIndex") == 4
+    QTest.keyClick(window, Qt.Key.Key_K)
+    assert grid.property("currentIndex") == 5
     settings.set("autoAdvance", False)
     QTest.keyClick(window, Qt.Key.Key_W)
-    assert grid.property("currentIndex") == 4
+    assert grid.property("currentIndex") == 5
     window.close()
     pump(qapp, 0.1)

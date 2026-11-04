@@ -67,7 +67,7 @@ def test_a_pill_switch_selects_all_of_its_models_and_a_single_model_makes_it_par
     pill.boxes["depth"].setChecked(False)
     pill.boxes["oneformer"].setChecked(False)
     assert dialog.selection() == {"birefnet", "sam"}
-    assert "2 of 4 models" in pill.note.text()
+    assert "2 of 4 selected" in pill.size.text()
     assert "575 MB" in pill.size.text()
     assert pill.switch.isChecked()
     pill.switch.click()  # off

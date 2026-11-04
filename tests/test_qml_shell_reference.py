@@ -16,7 +16,7 @@ from image_triage.qml_shell.filters_model import FiltersModel
 from image_triage.qml_shell.handoff_model import HandoffModel
 from image_triage.qml_shell.menu_model import ToastModel
 from image_triage.qml_shell.palette_model import PaletteModel
-from image_triage.qml_shell.photos import PhotoModel
+from image_triage.qml_shell.photos import GridModel, PhotoModel
 from image_triage.qml_shell.reference_model import ReferenceModel, _ago, _keys
 from image_triage.qml_shell.settings_model import SettingsModel
 from image_triage.qml_shell.theme import Theme
@@ -441,6 +441,7 @@ def test_every_scene_loads_without_qml_errors(qapp, photos, scene):
                       ("thumbs", ThumbService(parent=qapp)), ("startup", f"refScene={scene}")):
         context.setContextProperty(name, obj)
     engine.addImportPath(str(shell_app.QML_DIR))
+    engine.rootContext().setContextProperty("gridModel", GridModel(photos, parent=qapp))
     engine.load(QUrl.fromLocalFile(str(shell_app.QML_DIR / "Main.qml")))
     assert engine.rootObjects(), warnings
     window = engine.rootObjects()[0]

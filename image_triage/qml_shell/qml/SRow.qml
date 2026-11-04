@@ -95,6 +95,7 @@ Item {
         } }
     Component { id: keysC
         SKeys {
+            objectName: "shortcutEditor_" + row.def.id
             keys: (row.val || "").split("+").filter(function (x, i, a) { return x !== "" || i === a.length - 1 })
             recording: row.recording === row.def.id
             onToggled: row.record(row.recording === row.def.id ? "" : row.def.id)

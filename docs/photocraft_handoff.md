@@ -1,5 +1,172 @@
 # PhotoCraft handoff
 
+## Stopped at the user's time limit — 2026-11-03
+
+The user said they did not have time for the remaining 20–30 minutes. Stop
+development here. All running validation was stopped; do not restart builds,
+tests, visible apps or follow-ups without a new request. No commit, push,
+default-editor selection or installed executable change has occurred.
+
+Source state:
+- Native isolated merge: USER_HOME/.codex/worktrees/photocraft-upstream-20261103.
+  HEAD ef1a2fd6a, MERGE_HEAD 327c4cc82 (v0.20.1), no unresolved conflict markers.
+- Current host worktree: USER_HOME/.codex/worktrees/photocraft-release-host/Playground,
+  based on origin/main e1eeaf8. Only this task's bridge/test/handoff edits are there.
+- Original host checkouts and primary native checkout have not been integrated,
+  stashed, reset or overwritten.
+
+Latest results:
+- Strict all-target automation/desktop/UI clippy passes; earlier algo/I/O/RAW/engine
+  clippy passes. Layers 31 and wasm 24 plus HEIF pass.
+- Engine 2671, algo 760, I/O 493, RAW 140 library tests passed. Public RAW corpus
+  104 passed. Desktop 213 plus startup/control 14 pass. Automation 108 unit and
+  78 integration tests pass. Current host focused/QML suite 272 passed / 1 skipped
+  before the final small bridge capability restoration.
+- Updated full UI library: 4826 passed, 4 GPU device-creation failures, 21 ignored.
+  Updated UI integration main: 131 passed, 16 GPU device-creation failures, 1 ignored.
+  ALL 20 GPU failures subsequently passed in fresh sequential processes; results:
+  original host logs/photocraft-v0201-resume/gpu-isolated-v2/results.json.
+- Hosted Workspace: 11 passed / 1 failed because the Luminance slider and number
+  share a label. Its query now specifies Slider, but this final test-only correction
+  has NOT been rerun. Earlier Radius, canvas-startup, Masking and Mixer failures
+  are corrected and passed.
+- Latest host bridge also restores require_masks_support, reads cameraRawMasks
+  from app.handoff and checks it before opening mask recipes. This small final
+  restoration has NOT been tested yet. It addresses the missing function that
+  blocked non-mask full-size recipe exports; full host mask validation and the
+  mask/warmer HostJobRunner APIs remain pre-existing incomplete areas.
+- Native candidate and offscreen renderer built successfully. The corrected
+  Detail capture was inspected with Radius 2.8 and strict accessibility checks.
+- First real secondary-monitor/no-activation handoff exposed manifest JSON
+  replacement being denied by upstream's new overwrite guard. The scoped host
+  sidecar adapter fixes that and its 108-test automation suite passes, but the
+  real hosted smoke check has NOT been rerun against the fixed candidate.
+- Optimized stock corpus compilation hit a rustc access violation and then spent
+  around eight minutes per thin-LTO engine test binary. The environment-only
+  no-LTO/codegen16 retry was stopped before completion. No corpus pass claimed.
+
+Remaining on a future explicit resume:
+1. Rerun the corrected Workspace test and targeted host bridge/full-render tests.
+2. Rerun check_photocraft_handoff.py using a NEW fixture output folder (the first
+   folder contains edits from the failed attempt), then Camera Raw-first and RAW
+   recipe checks. Use secondary monitor and no activation.
+3. Complete optimized corpus validation with CARGO_PROFILE_RELEASE_LTO=false,
+   CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16, RUST_MIN_STACK=67108864, jobs=2.
+   Repository production profiles are unchanged.
+4. Record exact final results, review/stage only merge source files, commit and
+   normally push the native integration branch to the user fork; pair host changes
+   on main. Existing dirty/divergent host checkouts must remain protected.
+5. Promote a build only after the complete hosted gates pass.
+
+An optional companion AGENTS.md policy update was rejected by automatic approval
+review because future workflow changes needed explicit authorization. It was not
+applied or retried. Follow the user's supplied release-only policy in this task.
+
+
+## 2026-11-03: v0.20.1 integration in progress
+
+Both PhotoCraft remotes fetched successfully. Host base: ef1a2fd6af5a399b13f34636753f383ecae8856c.
+Previous upstream: b1794c6e0608ccfc887213dcf58398977c5cb75e (v0.16.0).
+Release target: 327c4cc82e737a3e0af7c147a477126d77525495 (v0.20.1).
+Upstream main: 37a01ca8746c121170644a07968d11263ef64407, excluded under
+the release policy because it is 317 commits beyond the release. The host has
+82 exclusive commits and main has 2,908 exclusive commits. The fetched fork
+integration matches the host base, with no fork-only integration commits.
+
+The release merge began with 39 conflicts. All initial conflict markers are
+resolved in an isolated detached checkout; validation is still in progress.
+
+| Conflicted paths (relative to PhotoCraft) | Resolution |
+| --- | --- |
+| crates/engine/src/cmd/lens_cmds.rs | Upstream command behavior and Calibration; retain host finishing validation/schema. |
+| crates/io/src/camera_raw_map.rs | Upstream descriptor mapping and unsupported-setting refusal; retain host finishing regression. |
+| crates/io/src/camera_raw_xmp.rs | Upstream XML safety and Calibration; retain private host finishing/mask extension; remove duplicate calibration attributes. |
+| crates/io/src/flat.rs | Upstream band/scratch-buffer conversion; retain host display-JPEG exports. |
+| crates/raw/src/lib.rs | Upstream exports plus host reduced development. |
+| crates/ui-egui/Cargo.toml | Both immutable upstream dependencies and host render fingerprint dependency. |
+| crates/ui-egui/src/camera_raw_ui.rs | Remove obsolete root file. Move host workspace, recipe, jobs, controls and tests into upstream dialogs/camera_raw_ui modules. Keep upstream normal dialog, GPU preview, sidecars, defaults and multi-job state. |
+| crates/ui-egui/src/gpu_canvas.rs | Remove obsolete root file. Use upstream renderer/budgets; retain background pipeline warmup at canvas/gpu_canvas with upstream permanent failure fallback. |
+| crates/ui-egui/src/control.rs, lib.rs, state.rs, menus.rs, widgets.rs | Upstream split facades; reconnect host control routes, inspect metadata, fields, modules, bound Save and optional hosted widget styling at new locations. |
+| crates/ui-egui/src/dialogs/camera_raw_preview_ui.rs | Upstream ordinary preview toolbar plus explicit hosted navigation toolbar/interaction. |
+| crates/ui-egui/src/dialogs/camera_raw_scope_ui.rs | Upstream scope behavior plus host layout metrics and sampler mode. |
+| crates/ui-egui/src/theme.rs | Upstream palette/override behavior plus hosted Camera Raw tokens and radius overrides. |
+| crates/ui-egui/tests/it/camera_raw_histogram.rs, camera_raw_localization.rs | Upstream tests; retain separate host tests. |
+| crates/ui-egui/src/i18n/*.tsv: cs, de, el, es, fr, hu, id, it, ja, ko, nl, pl, pt-br, ru, sr, tr, uk, vi, zh-hans, zh-hant | Preserve upstream shared translations and append host-only context/source keys. All fork keys verified retained in 21 existing catalogs, including unchanged hi. |
+| docs/control-protocol.md | Current upstream protocol plus host extensions; remove obsolete duplicate inspect description. |
+
+Automatic shared-file review includes apps/photocraft startup, launch argument
+and capability services; app construction/frame rendering, job completion;
+native Save authorization and scoped outputs; and theme/native viewport
+integration. Hosted startup keeps its off-desktop hidden geometry and bypasses
+standalone geometry persistence. Ambient Save authorization is bypassed only
+for file.save bound to the active host document, using capability-scoped writes;
+Save As retains ordinary authorization. Upstream native project-directory opens
+remain available alongside host background file opens.
+
+Upstream Calibration replaces the duplicate host stage. Legacy calibration
+recipe keys deserialize into canonical upstream fields. Settings absent from the
+upstream GPU shader (host Glow, Point Color, masks and Super Resolution) force
+the CPU path. Section-preview bypass remains applied before either renderer.
+Upstream sidecar/default auto-tone behavior is retained, with explicit host
+recipes taking precedence.
+
+Validation in progress: layer gate passes (31 crates); wasm gate passes
+(24 crates plus HEIF codec check). Strict clippy passes for algo, I/O, RAW,
+engine and UI, all targets with warnings denied. Host tests: 144 passed; QML
+editor/keys/filmstrip: 21 passed using the app's existing Windows DLL bootstrap.
+
+The first native run passed engine (2,671 unit tests), algorithm, I/O and RAW
+suites, then UI reported 4,799 passed / 31 failed / 21 ignored. Six runtime
+failures exposed missing Auto support, full-size stand-in development, binding/
+claim hooks and RAW-default conversion parity in host full renders. Corrected;
+the full rerun is pending. Other initial failures involved missing multilingual
+fonts, parallel GPU device creation and harness settling. The documented official
+craft-fonts build input is pinned at aced4137c022f1f587624d48e81ec77e1914a9cc
+for the rerun, with serial test execution. All pinned public corpora are present
+and verified. Corpus execution, command panic checks, candidate build, native
+captures and the complete live Image Triage handoff remain required.
+
+The host's version-1 calibration recipe keys remain stable at the recipe
+boundary; native fields and processing follow upstream. The host UI drawing
+lives in its own module and retains its slider metrics. Camera Raw-first startup
+and covered-canvas suppression apply before docking, including upstream's new
+docked canvas layout.
+
+No merge commit, push, executable promotion or installed-app change has occurred.
+Original host workflow edits, primary companion checkout and its untracked
+artifacts remain preserved.
+
+
+### Resumed validation
+
+Both PhotoCraft remotes fetched successfully; upstream and fork hashes above
+remain current. Host origin/main is e1eeaf8, checked in a clean worktree while
+existing edits are preserved. Host branch fetch succeeded; the tag fetch refused
+seven moved tags (V2, appimage, exe, latest, msi, v2.3.0, v2.3.1), kept intact.
+
+Final full-library reruns: UI 4,830 passed / 21 ignored with official fonts and
+one test thread; engine 2,671 passed / 16 ignored; algorithm 760 passed / 26
+ignored; I/O 493 passed / 2 ignored; RAW 140 passed. The adversarial command
+registry check passes. Two initial engine Content-Aware Move failures passed
+in isolation and in the final complete engine rerun. Formatting and whitespace
+checks for the host delta against v0.20.1 pass.
+
+Render algorithm is 3 on both sides, invalidating cached pictures from the old
+Calibration and RAW workflow behavior. The previous algorithm is covered by a
+host regression. Host/editor updates must be selected together.
+
+Broader host checks: 285 passed / 30 failed / 2 skipped. All 30 failures also
+reproduce with the original committed bridge loaded. The host lacks mask
+validation/capability helpers and HostJobRunner mask/warmer APIs; these are
+pre-existing failures, and no green handoff is claimed. Current-main focused
+checks, desktop/integration tests, corpus and live handoff remain in progress.
+
+The 11 pinned public-domain RAW files are present and verified. Optimized
+corpus compilation hit rustc STATUS_ACCESS_VIOLATION; retry uses one compiler
+job and a 64 MiB compiler stack. A recovery patch and protected executable
+hashes are saved in the original workspace's logs/photocraft-v0201-resume.
+No executable promotion or push has occurred.
+
 ## 2026-10-26: QML native filmstrip follows the preview
 
 `EditorFilmstrip` sends the preview's ordered/filtered photo model through the

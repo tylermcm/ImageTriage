@@ -41,7 +41,7 @@ TOPICS = (
     {"id": "start", "title": "Getting started", "icon": ICON["start"], "lead": "Image Triage helps you go through a lot of photos quickly: look, decide, move on.",
      "blocks": (_h("Open a folder"), _p("Press Ctrl+O or use the folder button on the left rail. Your photos appear in the grid. Click one to see it larger in the panel on the right."),
                 _h("Decide as you go"),
-                _keys([("Mark a winner", ["W"]), ("Keep it for now", ["K"]), ("Reject it", ["X"]), ("Clear the decision", ["U"]), ("Give it stars", ["1", "–", "5"]), ("Move around", ["←", "→", "↑", "↓"])]),
+                _keys([("Mark a winner", ["W"]), ("Keep it for now", ["K"]), ("Reject it", ["R"]), ("Clear the decision", ["U"]), ("Give it stars", ["1", "–", "5"]), ("Move around", ["←", "→", "↑", "↓"])]),
                 _tip("Nothing here moves or deletes your files unless a button says so. Decisions are notes about each photo."), _btn("See every shortcut", "keys"))},
     {"id": "review", "title": "Reviewing photos", "icon": ICON["review"], "lead": "Every photo can carry a decision and a star rating. Both are quick to change and easy to filter by.",
      "blocks": (_h("Decisions"), _p("Winner is for the shots you will use, Keep for good ones you are not sure about, and Reject for the ones you do not want. They show as small badges in the grid."),
@@ -122,7 +122,7 @@ MENU = (
 # the shortcuts guide: (category, [(label, registry attribute or "", fixed keys)]). A row with an attribute shows the key the user has set
 # for it (Settings > Shortcuts); the other rows are keys the shell itself handles.
 KEY_GROUPS = (
-    ("Review", (("Move between photos", "", "←+→+↑+↓"), ("Mark a winner", "accept_selection", "W"), ("Keep it for now", "keep_at_cursor", "K"), ("Reject it", "reject_selection", "X"),
+    ("Review", (("Move between photos", "", "←+→+↑+↓"), ("Mark a winner", "accept_selection", "W"), ("Keep it for now", "keep_at_cursor", "K"), ("Reject it", "reject_selection", "R"),
                 ("Clear the decision", "", "U"), ("Star rating", "", "1+–+5"), ("Open the large view", "open_preview", "Space"), ("Compare", "compare_mode", "C"), ("Winner ladder", "winner_ladder_mode", "Ctrl+Alt+W"))),
     ("Collections", (("Add the photo you are on", "collect_at_cursor", "B"), ("Best-of-set assembly", "best_of_set_auto_assembly", "Ctrl+Alt+B"), ("Deliver / Handoff Builder", "handoff_builder", "Ctrl+Alt+H"))),
     ("File", (("Open folder", "open_folder", "Ctrl+O"), ("Refresh folder", "refresh_folder", "F5"), ("New folder", "new_folder", "Ctrl+Shift+N"), ("Settings", "workflow_settings", "Ctrl+,"), ("Open in editor", "", "E"))),

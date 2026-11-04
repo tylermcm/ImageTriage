@@ -172,6 +172,14 @@ def require_calibration_support(camera_raw, supported: bool) -> None:
         raise PhotoCraftCompatibilityError("This photo uses Calibration settings. Select a PhotoCraft build with Calibration support to preserve those edits.")
 
 
+def require_masks_support(camera_raw, supported: bool) -> None:
+    """Reject an older editor before it can discard a photo's local mask settings."""
+    recipe = camera_raw.get("recipe") if isinstance(camera_raw, dict) else None
+    settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
+    if isinstance(settings, dict) and settings.get("masks") and not supported:
+        raise PhotoCraftCompatibilityError("This photo uses local masks. Select a PhotoCraft build with local mask support to preserve those edits.")
+
+
 def require_super_resolution_support(camera_raw, supported: bool) -> None:
     """Keep an editor that does not know Super Resolution from discarding the setting when it saves the recipe back."""
     recipe = camera_raw.get("recipe") if isinstance(camera_raw, dict) else None
@@ -293,7 +301,8 @@ def display_render_path(image_path: str) -> Path:
 
 RENDER_MANIFEST_VERSION = 1
 # PhotoCraft's render_manifest::ALGORITHM. Pictures made by any other render algorithm are out of date. (A test keeps the two in step.)
-RENDER_ALGORITHM = 2
+# v0.20.1 uses upstream Calibration and RAW workflow defaults.
+RENDER_ALGORITHM = 3
 
 
 def render_manifest_path(image_path: str) -> Path:
@@ -700,6 +709,7 @@ class PhotoCraftControl:
         require_finishing_support(camera_raw, bool(getattr(self, "camera_raw_finishing_supported", False)))
         require_calibration_support(camera_raw, getattr(self, "camera_raw_calibration_supported", False) is True)
         require_super_resolution_support(camera_raw, getattr(self, "camera_raw_super_resolution_supported", False) is True)
+        require_masks_support(camera_raw, getattr(self, "camera_raw_masks_supported", False) is True)
         params = {"path": _automation_path(path)}
         if replace:
             params["replace"] = True
@@ -737,6 +747,7 @@ class PhotoCraftControl:
         self.camera_raw_finishing_supported = capabilities.get("cameraRawFinishing", 0) >= 1
         self.camera_raw_calibration_supported = capabilities.get("cameraRawCalibration", 0) >= 1
         self.camera_raw_super_resolution_supported = capabilities.get("cameraRawSuperResolution", 0) >= 1
+        self.camera_raw_masks_supported = capabilities.get("cameraRawMasks", 0) >= 1
         self.camera_raw_host_job_supported = capabilities.get("cameraRawHostJob", 0) >= 1
         self.camera_raw_host_tools_supported = capabilities.get("cameraRawHostTools", 0) >= 1  # ui.hostJob takes the list of kinds the host can run
         self.filmstrip_supported = capabilities.get("filmstrip", 0) >= 1
