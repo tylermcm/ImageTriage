@@ -101,7 +101,14 @@ def test_plain_file_worker_matches_direct_engine_outside_checkout(tmp_path, sett
     assert completed.returncode == 0, completed.stderr
     events = [json.loads(line) for line in completed.stdout.splitlines()]
     assert events[0]["event"] == "runtime"
-    assert not Path(events[0]["engine_path"]).is_relative_to(ROOT)
+    # CI may install the isolated runtime below checkout/build. What matters
+    # is importing its installed packages, never the host's legacy aiculler.
+    purelib = Path(subprocess.check_output(
+        [python, "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        cwd=tmp_path, text=True).strip()).resolve()
+    assert Path(events[0]["engine_path"]).resolve().is_relative_to(purelib)
+    assert Path(events[0]["bracketeering_path"]).resolve().is_relative_to(purelib)
+    assert not Path(events[0]["engine_path"]).resolve().is_relative_to(ROOT / "aiculler")
     assert any(event["event"] == "progress" for event in events)
     assert events[-1]["event"] == "complete"
     actual = NativeCullResults.load(events[-1]["decisions"]).to_document()

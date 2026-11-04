@@ -70,8 +70,11 @@ def test_reopening_uses_the_latest_saved_provider_after_compatibility_runs(tmp_p
     active.write_text("{}")
     paths.report_dir.mkdir(parents=True)
     paths.ranked_export_path.write_text("legacy export")
-    os.utime(active, ns=(1, 1))
-    os.utime(paths.ranked_export_path, ns=(2, 2))
+    # Use representable modern times, separated well beyond filesystem
+    # timestamp granularity (NTFS cannot distinguish 1 ns from 2 ns).
+    epoch = 1_700_000_000
+    os.utime(active, (epoch, epoch))
+    os.utime(paths.ranked_export_path, (epoch + 10, epoch + 10))
     assert existing_hidden_ai_report_dir(tmp_path) == paths.report_dir
-    os.utime(active, ns=(3, 3))
+    os.utime(active, (epoch + 20, epoch + 20))
     assert existing_hidden_ai_report_dir(tmp_path) == active
