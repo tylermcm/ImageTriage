@@ -891,7 +891,8 @@ class CatalogRepository:
                         export_csv_path,
                         summary_json_path,
                         report_html_path,
-                        summary_json
+                        summary_json,
+                        native_document_json
                     FROM catalog_ai_bundle_cache
                     WHERE folder_key = ? AND cache_key = ?
                     """,
@@ -942,6 +943,15 @@ class CatalogRepository:
                     error=str(exc),
                 )
             return None
+
+        if cache_row["native_document_json"] is not None:
+            from ..cli_culler_results import native_ai_bundle
+            try:
+                return AIBundleCacheEntry(
+                    cache_key=str(cache_row["cache_key"] or ""),
+                    bundle=native_ai_bundle(json.loads(cache_row["native_document_json"]), cache_row["source_path"]))
+            except (ValueError, TypeError):
+                return None
 
         results: list[AIImageResult] = []
         for row in result_rows:
@@ -1159,7 +1169,7 @@ class CatalogRepository:
         if not folder_path:
             return False
         folder_key = _normalized_path_key(folder_path)
-        results = iter_ai_bundle_results(bundle)
+        results = () if bundle.native_document is not None else iter_ai_bundle_results(bundle)
         summary_json = json.dumps(bundle.summary if isinstance(bundle.summary, dict) else {}, ensure_ascii=True, sort_keys=True)
         try:
             with closing(connect_catalog_db(self.db_path)) as connection:
@@ -1196,6 +1206,11 @@ class CatalogRepository:
                             bundle.report_html_path,
                             summary_json,
                         ),
+                    )
+                    connection.execute(
+                        "UPDATE catalog_ai_bundle_cache SET native_document_json = ? WHERE folder_key = ?",
+                        (json.dumps(bundle.native_document, ensure_ascii=False) if bundle.native_document is not None else None,
+                         folder_key),
                     )
                     connection.execute(
                         "DELETE FROM catalog_ai_results WHERE folder_key = ?",

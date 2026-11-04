@@ -121,8 +121,8 @@ class AIImageResult:
     file_name: str
     group_id: str
     group_size: int
-    rank_in_group: int
-    score: float
+    rank_in_group: int | None
+    score: float | None
     technical_score: float | None = None
     tag_base_score: float | None = None
     tag_penalty: float | None = None
@@ -140,6 +140,7 @@ class AIImageResult:
     # present it decides the bucket and the explanation directly instead of the folder percentile.
     cascade_role: str = ""
     cascade_summary: str = ""
+    native_payload: dict | None = None
 
     @property
     def is_rank_leader(self) -> bool:
@@ -147,6 +148,8 @@ class AIImageResult:
 
     @property
     def is_top_pick(self) -> bool:
+        if self.native_payload is not None:
+            return False
         # Cluster rank doesn't drive classification anymore — any card whose
         # bucket is keeper / obvious winner qualifies for the "AI Pick" badge.
         if self.cascade_role:
@@ -163,6 +166,8 @@ class AIImageResult:
 
     @property
     def score_text(self) -> str:
+        if self.score is None:
+            return ""
         return f"{self.score:.2f}"
 
     @property
@@ -200,20 +205,29 @@ class AIImageResult:
 
     @property
     def rank_text(self) -> str:
+        if self.native_payload is not None:
+            rank, size = self.native_payload.get("rank_in_set"), self.native_payload.get("set_size")
+            return f"#{rank}/{size} in {self.native_payload.get('comparison_set')}" if rank is not None and size is not None else ""
         if self.group_size <= 0:
             return ""
         return f"#{self.rank_in_group}/{self.group_size}"
 
     @property
     def confidence_bucket_label(self) -> str:
+        if self.native_payload is not None:
+            return {"keep": "Keeper", "reject": "Reject", "review": "Needs Review"}[self.native_payload["decision"]]
         return confidence_bucket_label(self.confidence_bucket)
 
     @property
     def confidence_bucket_short_label(self) -> str:
+        if self.native_payload is not None:
+            return self.confidence_bucket_label
         return confidence_bucket_short_label(self.confidence_bucket)
 
     @property
     def explanation_lines(self) -> tuple[str, ...]:
+        if self.native_payload is not None:
+            return build_ai_explanation_lines(self)
         lines = [f"Final score: {self.score:.4f}."]
         if self.folder_percentile is not None:
             lines.append(f"Folder percentile: {self.folder_percentile:.0f}.")
@@ -253,8 +267,16 @@ class AIBundle:
     results_by_group: dict[str, tuple[AIImageResult, ...]] | None = None
     normalized_scores_by_path: dict[str, float] | None = None
     summary: dict | None = None
+    native_document: dict | None = None
+    native_results_by_path: dict[str, AIImageResult] | None = None
 
     def result_for_path(self, path: str | Path) -> AIImageResult | None:
+        if self.native_results_by_path is not None:
+            exact = self.native_results_by_path.get(str(path))
+            if exact is not None:
+                return exact
+            if self.results_by_fast_path:
+                return self.results_by_fast_path.get(_fast_path_key(str(path).replace("\\", "/")))
         if self.results_by_fast_path:
             fast = self.results_by_fast_path.get(_fast_path_key(path))
             if fast is not None:
@@ -289,7 +311,7 @@ def refine_ai_result_with_review_insight(
     result: AIImageResult | None,
     review_insight: "ReviewInsight | None",
 ) -> AIImageResult | None:
-    if result is None or review_insight is None:
+    if result is None or review_insight is None or result.native_payload is not None:
         return result
 
     detail_score = float(getattr(review_insight, "detail_score", 0.0) or 0.0)
@@ -328,7 +350,21 @@ def refine_ai_result_with_review_insight(
     return result
 
 
+def _is_native_json_source(path: Path) -> bool:
+    if not path.is_file() or path.suffix.lower() != ".json":
+        return False
+    document = json.loads(path.read_text(encoding="utf-8"))
+    return isinstance(document, dict) and str(document.get("schema", "")).startswith(
+        ("aiculler-decisions/", "image-triage-culler-run/"))
+
+
 def load_ai_bundle(path: str | Path) -> AIBundle:
+    candidate = Path(path)
+    if _is_native_json_source(candidate):
+        from .cli_culler_results import NativeCullResults, native_ai_bundle
+        from .cli_culler_runs import load_active_generation
+        native = load_active_generation(candidate) if candidate.name == "active.json" else NativeCullResults.load(candidate)
+        return native_ai_bundle(native.to_document(), candidate)
     source = inspect_ai_bundle_source(path)
     results: list[AIImageResult] = []
     with Path(source.export_csv_path).open("r", encoding="utf-8", newline="") as handle:
@@ -360,6 +396,14 @@ def load_ai_bundle(path: str | Path) -> AIBundle:
 
 def inspect_ai_bundle_source(path: str | Path) -> AIBundleSource:
     source_path = Path(path).expanduser().resolve()
+    if _is_native_json_source(source_path):
+        signatures = [_path_signature(source_path)]
+        if source_path.name == "active.json":
+            descriptor = json.loads(source_path.read_text(encoding="utf-8"))
+            signatures.extend(_path_signature(Path(output["path"]))
+                              for output in descriptor["outputs"].values() if output)
+        return AIBundleSource(str(source_path), str(source_path),
+                              cache_key=sha1(json.dumps(signatures, sort_keys=True).encode()).hexdigest())
     export_csv_path = _discover_export_csv(source_path)
     summary_path = _discover_neighbor(export_csv_path.parent, SUMMARY_FILENAMES)
     html_path = _discover_neighbor(export_csv_path.parent, HTML_REPORT_FILENAMES)
@@ -428,6 +472,8 @@ def build_ai_bundle_from_results(
 
 
 def iter_ai_bundle_results(bundle: AIBundle) -> tuple[AIImageResult, ...]:
+    if bundle.native_results_by_path is not None:
+        return tuple(sorted(bundle.native_results_by_path.values(), key=lambda result: result.file_path))
     if bundle.results_by_group:
         seen: set[str] = set()
         ordered: list[AIImageResult] = []
@@ -813,6 +859,9 @@ def confidence_bucket_short_label(bucket: AIConfidenceBucket | str) -> str:
 
 
 def ai_cull_bucket_for_result(result: AIImageResult | None) -> AICullBucket:
+    if result is not None and result.native_payload is not None:
+        return {"keep": AICullBucket.KEEPER, "reject": AICullBucket.REJECT,
+                "review": AICullBucket.NEEDS_REVIEW}[result.native_payload["decision"]]
     if result is None:
         return AICullBucket.UNRATED
     if result.is_top_pick:
@@ -848,6 +897,8 @@ def ai_manual_cull_sort_key(result: AIImageResult | None) -> tuple[float, ...]:
     }[bucket]
     if result is None:
         return (priority, 0.0, 0.0, 0.0)
+    if result.native_payload is not None:
+        return (priority, 0.0, 0.0, 0.0)
 
     folder_percentile = float(result.folder_percentile or 0.0)
     score = float(result.score)
@@ -869,6 +920,11 @@ def build_ai_explanation_lines(
 ) -> tuple[str, ...]:
     if result is None:
         return ()
+    if result.native_payload is not None:
+        payload = result.native_payload
+        return tuple([f"Engine decision: {payload['decision']}.",
+                      *[str(reason) for reason in payload.get("reasons", [])],
+                      f"Capture: {payload.get('capture')}; group: {payload.get('group')}; scene: {payload.get('scene')}; comparison set: {payload.get('comparison_set')}."])
 
     lines: list[str] = [f"Confidence bucket: {result.confidence_bucket_label}."]
     if result.group_size > 1:

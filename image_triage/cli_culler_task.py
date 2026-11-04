@@ -1,0 +1,223 @@
+"""Qt runnable for isolated native culling, with owned subprocess lifetime."""
+from __future__ import annotations
+
+import copy
+import json
+import os
+from pathlib import Path
+import queue
+import shutil
+import subprocess
+import threading
+import uuid
+
+from PySide6.QtCore import QObject, QRunnable, Signal
+
+from .cli_culler_process import WorkerProcessTree
+from .cli_culler_runs import activate_generation, cull_run_paths, validate_generation
+from .cli_culler_worker import PROTOCOL
+
+
+class CliCullerSignals(QObject):
+    started = Signal(str)
+    stage = Signal(str, int, int, str)
+    progress = Signal(str, str, int, int, str)
+    detail = Signal(str, str)
+    runtime = Signal(dict)
+    finished = Signal(str, str, str)
+    failed = Signal(str, str)
+    cancelled = Signal(str, str)
+
+
+class _Cancelled(Exception):
+    pass
+
+
+class CliCullerRunTask(QRunnable):
+    def __init__(self, *, folders: list[Path], python: Path, worker: Path,
+                 app_path: Path, settings: dict, cache_namespace: str,
+                 device: str = "auto", workers: int | None = None,
+                 runtime_manifest: dict | None = None, comparison_snapshot: bool = False):
+        super().__init__()
+        if not folders:
+            raise ValueError("Analyze requires at least one folder root")
+        self.folders = [path.resolve() for path in folders]
+        self.folder = self.folders[0]
+        self.python = python.absolute()  # Preserve virtualenv interpreter symlinks.
+        self.worker = worker.resolve()
+        self.app_path = app_path.resolve()
+        self.settings = copy.deepcopy(settings)
+        self.paths = cull_run_paths(self.folders[0], cache_namespace)
+        self.device, self.workers = device, workers
+        self.runtime_manifest = copy.deepcopy(runtime_manifest)
+        self.comparison_snapshot = comparison_snapshot or bool(
+            runtime_manifest and runtime_manifest.get("comparison_snapshot"))
+        self.signals = CliCullerSignals()
+        self._cancel = threading.Event()
+        self._lock = threading.Lock()
+        self._terminal = False
+        self.run_root = self.paths.runs / uuid.uuid4().hex
+        self.log_path = self.paths.root / "logs" / (self.run_root.name + ".log")
+
+    def cancel(self):
+        with self._lock:
+            if not self._terminal:
+                self._cancel.set()
+
+    def _check_cancelled(self):
+        if self._cancel.is_set():
+            raise _Cancelled()
+
+    def run(self):
+        folder = str(self.folders[0])
+        outcome, message = "failed", "Native culler did not complete"
+        try:
+            self._check_cancelled()
+            self.signals.started.emit(folder)
+            if self.runtime_manifest is not None:
+                from .cli_culler_runtime import verify_native_runtime
+                verify_native_runtime(self.runtime_manifest)
+                self._check_cancelled()
+            descriptor = self._execute(folder)
+            with self._lock:
+                self._check_cancelled()
+                activate_generation(self.paths.active, descriptor)
+                self._terminal = True
+            outcome, message = "finished", str(self.paths.active)
+        except _Cancelled:
+            outcome, message = "cancelled", "Analysis stopped"
+        except Exception as error:
+            outcome, message = "failed", f"{error}\nDiagnostics: {self.log_path}"
+        finally:
+            with self._lock:
+                self._terminal = True
+            if outcome != "finished":
+                shutil.rmtree(self.run_root, ignore_errors=True)
+        if outcome == "finished":
+            self.signals.finished.emit(folder, message, "")
+        elif outcome == "cancelled":
+            self.signals.cancelled.emit(folder, message)
+        else:
+            self.signals.failed.emit(folder, message)
+
+    def _execute(self, folder: str) -> dict:
+        self.run_root.mkdir(parents=True)
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        request = {"protocol": PROTOCOL, "folders": [str(path) for path in self.folders],
+                   "settings": self.settings, "app_path": str(self.app_path),
+                   "cache_root": str(self.paths.cache), "staging_root": str(self.run_root),
+                   "device": self.device, "workers": self.workers}
+        request_path = self.run_root / "request.json"
+        request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+        if self.comparison_snapshot:
+            from .cli_culler_comparison import snapshot_start_cache
+            self.signals.progress.emit(folder, "Preparing CLI comparison", 0, 0, "")
+            snapshot_start_cache(self.paths.cache, self.run_root / "comparison-start", self._check_cancelled)
+        events = queue.Queue(maxsize=128)
+        stop_reader = threading.Event()
+        complete = None
+        process = tree = reader = None
+        try:
+            with self.log_path.open("w", encoding="utf-8") as diagnostics:
+                process = subprocess.Popen(
+                    [str(self.python), "-I", "-X", "utf8",
+                     *([str(self.app_path / "image_triage/cli_culler_process.py")] if os.name != "nt" else []),
+                     str(self.worker), "--await-start", str(request_path)],
+                    cwd=self.run_root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=diagnostics, text=True, encoding="utf-8", errors="strict",
+                    start_new_session=os.name != "nt",
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+                )
+                tree = WorkerProcessTree(process)
+                # The worker cannot import models or spawn metadata children
+                # until its Windows job/POSIX group is owned by this task.
+                process.stdin.write("start\n")
+                process.stdin.close()
+
+                def read_events():
+                    try:
+                        while not stop_reader.is_set():
+                            line = process.stdout.readline(1024 * 1024 + 1)
+                            if not line:
+                                item = None
+                            elif len(line) > 1024 * 1024:
+                                raise ValueError("Native worker protocol line exceeds 1 MiB")
+                            else:
+                                item = json.loads(line)
+                            while not stop_reader.is_set():
+                                try:
+                                    events.put(item, timeout=0.05)
+                                    break
+                                except queue.Full:
+                                    continue
+                            if item is None:
+                                return
+                    except Exception as error:
+                        while not stop_reader.is_set():
+                            try:
+                                events.put(error, timeout=0.05)
+                                return
+                            except queue.Full:
+                                continue
+
+                reader = threading.Thread(target=read_events, daemon=True)
+                reader.start()
+                while True:
+                    self._check_cancelled()
+                    try:
+                        event = events.get(timeout=0.05)
+                    except queue.Empty:
+                        if process.poll() is not None:
+                            # A metadata child may still hold stdout open after
+                            # its worker died. Close its tree so EOF can arrive.
+                            tree.close()
+                        continue
+                    if event is None:
+                        break
+                    if isinstance(event, Exception):
+                        raise event
+                    if not isinstance(event, dict):
+                        raise ValueError("Native worker event must be an object")
+                    if complete is not None:
+                        raise ValueError("Native worker sent an event after completion")
+                    kind = event.get("event")
+                    if kind == "runtime":
+                        self.signals.runtime.emit(event)
+                    elif kind == "progress":
+                        stage, done, total = event["stage"], event["done"], event["total"]
+                        if not isinstance(stage, str) or not isinstance(done, int) or not isinstance(total, int):
+                            raise ValueError("Invalid native progress event")
+                        # total=0 is genuinely indeterminate, never a fake four-stage percentage.
+                        self.signals.progress.emit(folder, stage, done, total, "")
+                    elif kind == "complete":
+                        complete = event
+                    elif kind == "error":
+                        raise RuntimeError(event.get("message", "Native worker failed"))
+                    else:
+                        raise ValueError(f"Unknown native worker event: {kind!r}")
+                while process.poll() is None:
+                    self._check_cancelled()
+                    self._cancel.wait(0.05)
+                if process.returncode != 0:
+                    raise RuntimeError(f"Native worker exited with status {process.returncode}")
+                if complete is None:
+                    raise ValueError("Native worker exited without a completed generation")
+                self._check_cancelled()
+                descriptor = validate_generation(complete, self.run_root)
+                self.signals.detail.emit(folder, json.dumps(
+                    {"warnings": complete.get("warnings", []), "models": complete.get("models", {})}))
+                return descriptor
+        finally:
+            stop_reader.set()
+            if tree is not None:
+                tree.close()
+            elif process is not None and process.poll() is None:
+                process.kill()
+            if process is not None:
+                process.wait()
+                if process.stdin and not process.stdin.closed:
+                    process.stdin.close()
+                if reader is not None:
+                    reader.join(timeout=5)
+                if process.stdout:
+                    process.stdout.close()

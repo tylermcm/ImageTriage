@@ -260,4 +260,8 @@ CATALOG_MIGRATIONS: tuple[tuple[int, str], ...] = (
     ),
 )
 
+CATALOG_MIGRATIONS += ((10, """
+    ALTER TABLE catalog_ai_bundle_cache ADD COLUMN native_document_json TEXT;
+"""),)
+
 LATEST_CATALOG_SCHEMA_VERSION = CATALOG_MIGRATIONS[-1][0]

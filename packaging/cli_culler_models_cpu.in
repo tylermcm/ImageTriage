@@ -1,0 +1,8 @@
+# Model versions already used by the app's py313 Windows CPU lock.
+# Resolve a separate platform-specific hashed closure for the native worker.
+torch==2.9.0+cpu
+torchvision==0.24.0+cpu
+timm==1.0.28
+transformers==5.14.1
+mediapipe==0.10.35
+einops==0.8.2

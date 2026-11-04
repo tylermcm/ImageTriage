@@ -1,0 +1,11 @@
+{
+  "ai-culler": {
+    "url": "https://github.com/tylermcm/CLI-Culler",
+    "commit": "f2e34b1b57f889f59b336619887d71d4bb701118",
+    "version": "0.3.0.dev1"
+  },
+  "bracketeering": {
+    "url": "https://github.com/tylermcm/bracketeering",
+    "commit": "a494be9a92f85bed7f987359139d12a5a83f718e"
+  }
+}

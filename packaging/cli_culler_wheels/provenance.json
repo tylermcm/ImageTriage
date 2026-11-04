@@ -1,0 +1,15 @@
+{
+  "ai-culler": {
+    "url": "https://github.com/tylermcm/CLI-Culler",
+    "commit": "f2e34b1b57f889f59b336619887d71d4bb701118",
+    "version": "0.3.0.dev1",
+    "wheel": "ai_culler-0.3.0.dev1-py3-none-any.whl",
+    "sha256": "1a9c9507e50946798eb401cd2a12874359a93f1afe683ef578e6f0b63ec03cb5"
+  },
+  "bracketeering": {
+    "url": "https://github.com/tylermcm/bracketeering",
+    "commit": "a494be9a92f85bed7f987359139d12a5a83f718e",
+    "wheel": "bracketeering-0.3.4-py3-none-any.whl",
+    "sha256": "5a7ea03721bd091cf8c049293160e50ebd8bb941ab248e59354c8c62870cc0b3"
+  }
+}
