@@ -90,6 +90,12 @@ jobs:
             if (Test-Path $file) {
               $summary = @("### $file", "~~~text") + (Get-Content $file -Tail 100) + @("~~~", "")
               Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summary
+              $errors = Get-Content $file -Tail 150 | Select-String -Pattern '^ERROR|^error:|^FAILED |^E\s+|^[A-Za-z_.]*(Error|Exception):|fatal error| error C[0-9]+' | Select-Object -Last 6
+              if ($errors) {
+                $message = (($errors | ForEach-Object { $_.Line }) -join " | ").Replace("%", "%25")
+                $message = $message.Replace([string][char]13, "%0D").Replace([string][char]10, "%0A")
+                Write-Output ("::error title={0}::{1}" -f $file, $message)
+              }
             }
           }
       - uses: actions/upload-artifact@v7
