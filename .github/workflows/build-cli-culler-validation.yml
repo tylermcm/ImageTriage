@@ -33,37 +33,65 @@ jobs:
         run: |
           python -m venv .validation_build_venv
           $buildPython = (Resolve-Path .validation_build_venv/Scripts/python.exe).Path
-          & $buildPython -m pip install --upgrade pip
-          & $buildPython -m pip install uv cx_Freeze
-          & $buildPython -m pip install -e ".[dev]"
+          & $buildPython -m pip install --upgrade pip *> build-tools.log
+          if ($LASTEXITCODE) { Get-Content build-tools.log -Tail 100; exit 1 }
+          & $buildPython -m pip install uv cx_Freeze *>> build-tools.log
+          if ($LASTEXITCODE) { Get-Content build-tools.log -Tail 100; exit 1 }
+          & $buildPython -m pip install -e ".[dev]" *>> build-tools.log
+          if ($LASTEXITCODE) { Get-Content build-tools.log -Tail 100; exit 1 }
           (Resolve-Path .validation_build_venv/Scripts).Path >> $env:GITHUB_PATH
       - name: Install standalone runtime Python
         shell: pwsh
         run: |
-          uv python install 3.13
+          uv python install 3.13 *> standalone-python.log
+          if ($LASTEXITCODE) { Get-Content standalone-python.log; exit 1 }
           $runtimePython = uv python find --managed-python 3.13
           "RUNTIME_PYTHON=$runtimePython" >> $env:GITHUB_ENV
       - name: Build isolated portable CPU runtime
-        run: >
-          python scripts/prepare_cli_culler_runtime.py --portable --models
-          --runtime-python "$env:RUNTIME_PYTHON"
-          --wheelhouse packaging/cli_culler_wheels --out-dir build/native-runtime
+        run: |
+          python scripts/prepare_cli_culler_runtime.py --portable --models --runtime-python "$env:RUNTIME_PYTHON" --wheelhouse packaging/cli_culler_wheels --out-dir build/native-runtime *> runtime-build.log
+          $result = $LASTEXITCODE
+          Get-Content runtime-build.log -Tail 100
+          exit $result
       - name: Verify connector
         shell: pwsh
         run: |
           $env:CLI_CULLER_PYTHON = (Resolve-Path build/native-runtime/python/python.exe).Path
-          python -m pytest -q tests/test_cli_culler_bridge.py tests/test_cli_culler_task.py tests/test_cli_culler_catalog.py tests/test_cli_culler_index.py tests/test_cli_culler_comparison.py
+          python -m pytest -q tests/test_cli_culler_bridge.py tests/test_cli_culler_task.py tests/test_cli_culler_catalog.py tests/test_cli_culler_index.py tests/test_cli_culler_comparison.py *> connector-tests.log
+          $result = $LASTEXITCODE
+          Get-Content connector-tests.log -Tail 150
+          exit $result
       - name: Build PocketDrop
         shell: cmd
-        run: native\pocketdrop\build_windows.bat
+        run: native\pocketdrop\build_windows.bat > pocketdrop-build.log 2>&1
       - name: Freeze validation app
-        run: python setup_msi.py build_exe --build-exe build/validation-app
+        run: |
+          python setup_msi.py build_exe --build-exe build/validation-app *> freeze-build.log
+          $result = $LASTEXITCODE
+          Get-Content freeze-build.log -Tail 100
+          exit $result
       - name: Assemble portable build
-        run: >
-          python scripts/build_cli_culler_validation.py --app-dir build/validation-app
-          --runtime-dir build/native-runtime --out-dir "dist/ImageTriage CLI-Culler Validation"
+        run: |
+          python scripts/build_cli_culler_validation.py --app-dir build/validation-app --runtime-dir build/native-runtime --out-dir "dist/ImageTriage CLI-Culler Validation" *> assemble-build.log
+          $result = $LASTEXITCODE
+          Get-Content assemble-build.log -Tail 100
+          exit $result
       - name: Smoke test shipped runtime and worker
-        run: python scripts/smoke_cli_culler_validation.py "dist/ImageTriage CLI-Culler Validation"
+        run: |
+          python scripts/smoke_cli_culler_validation.py "dist/ImageTriage CLI-Culler Validation" *> smoke-test.log
+          $result = $LASTEXITCODE
+          Get-Content smoke-test.log -Tail 100
+          exit $result
+      - name: Diagnostic summary
+        if: failure()
+        shell: pwsh
+        run: |
+          foreach ($file in @("build-tools.log", "standalone-python.log", "runtime-build.log", "connector-tests.log", "pocketdrop-build.log", "freeze-build.log", "assemble-build.log", "smoke-test.log")) {
+            if (Test-Path $file) {
+              $summary = @("### $file", "~~~text") + (Get-Content $file -Tail 100) + @("~~~", "")
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summary
+            }
+          }
       - uses: actions/upload-artifact@v7
         with:
           name: ImageTriage-CLI-Culler-Windows-CPU-Validation
