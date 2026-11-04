@@ -113,6 +113,7 @@ class FreezeAssetLayout:
             (str(ROOT / "image_triage" / "upscale_worker.py"), "ai_workers/upscale_worker.py"),
             (str(ROOT / "image_triage" / "upscale_core.py"), "ai_workers/upscale_core.py"),
             *cascade_worker_include_files(),
+            *cli_culler_worker_include_files(),
             (str(self.ai_stdlib_stage_root), "ai_stdlib"),
             (str(self.ai_binary_modules_stage_root), "lib"),
         ]
@@ -179,6 +180,20 @@ def cascade_worker_include_files(root: Path | None = None) -> list[tuple[str, st
         (str(path), f"{CASCADE_WORKER_TREE}/{path.relative_to(root).as_posix()}")
         for _name, path in sorted(worker_import_closure(root=root).items())
     ]
+
+
+def cli_culler_worker_include_files(root: Path | None = None) -> list[tuple[str, str]]:
+    """Ship a plain-file model/manifest closure separately from legacy aiculler."""
+    root = root or ROOT
+    closure = {}
+    for start in ("image_triage.cli_culler_worker", "image_triage.cli_culler_process", "image_triage.ai_manifest",
+                  "image_triage.ai_model_store", "image_triage.ai_paths"):
+        closure.update(worker_import_closure(start=start, root=root))
+    files = [(str(path), f"ai_workers/cli_culler/{path.relative_to(root).as_posix()}")
+             for path in sorted(set(closure.values()))]
+    for name in ("cli_culler_pins.json", "cli_culler_default_settings.json"):
+        files.append((str(root / "packaging" / name), f"packaging/{name}"))
+    return files
 
 
 def _pocketdrop_include_files() -> list[tuple[str, str]]:

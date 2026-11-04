@@ -172,8 +172,13 @@ def ai_run_log_path(paths: AIWorkflowPaths) -> Path:
 
 
 def existing_hidden_ai_report_dir(folder: str | Path) -> Path | None:
-    """Return the report directory only when a ranked export already exists."""
+    """Find the current native generation or an existing legacy ranked export."""
     paths = build_ai_workflow_paths(folder)
+    native = paths.artifacts_dir / "cli_culler" / "active.json"
+    if native.is_file():
+        if paths.ranked_export_path.is_file() and paths.ranked_export_path.stat().st_mtime_ns > native.stat().st_mtime_ns:
+            return paths.report_dir
+        return native
     if paths.ranked_export_path.exists():
         return paths.report_dir
     return None

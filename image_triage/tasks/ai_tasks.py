@@ -93,6 +93,26 @@ class PostAIRunBundleLoadTask(QRunnable):
                         cache_key=source_details.cache_key,
                         bundle=bundle,
                     )
+            if bundle.native_document is not None and Path(self.report_dir).name == "active.json":
+                import json
+                from ..cli_culler_runs import load_active_generation
+                from ..cli_culler_index import import_native_index
+                from ..semantic_plan import compute_semantic_model_identity
+                from ..aiculler_workflow import default_aiculler_runtime
+                try:
+                    load_active_generation(Path(self.report_dir))
+                    pointer = json.loads(Path(self.report_dir).read_text(encoding="utf-8"))
+                    output = pointer["outputs"].get("index")
+                    if output:
+                        runtime = default_aiculler_runtime()
+                        identity = compute_semantic_model_identity(runtime.clip_vision_model,
+                            fallback_model=runtime.clip_fallback_vision_model)
+                        bundle.summary["native_index_import"] = import_native_index(
+                            Path(output["path"]), aiculler_db_path(build_aiculler_workflow_paths(self.folder)),
+                            semantic_identity=identity)
+                except Exception as error:
+                    # Index import is derivative; never rewrite or discard valid decisions.
+                    bundle.summary["native_index_warning"] = str(error)
             if logger.enabled:
                 logger.duration(
                     "post_ai_run.bundle_load",
