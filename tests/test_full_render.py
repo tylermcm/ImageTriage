@@ -496,7 +496,7 @@ def test_opening_a_super_resolution_recipe_needs_an_editor_that_knows_it(support
 
 GRADIENT = {"name": "Sky", "shape": {"type": "linear", "x0": 0.5, "y0": 0.1, "x1": 0.5, "y1": 0.6}, "adjust": {"exposure": -0.7}}
 RADIAL = {"shape": {"type": "radial", "cx": 0.4, "cy": 0.5, "rx": 0.2, "ry": 0.3, "angle": 15, "feather": 40}, "adjust": {"saturation": 25}, "amount": 70, "invert": True}
-RASTER = {"shape": {"type": "raster", "w": 3, "h": 2, "data": "AAD/AQ=="}, "adjust": {"shadows": 30}}
+RASTER = {"shape": {"type": "raster", "w": 3, "h": 2, "data": "AAP/Aw=="}, "adjust": {"shadows": 30}}
 
 
 def masks_state(masks):
@@ -507,6 +507,7 @@ def test_masks_in_a_recipe_are_checked_strictly():
     assert masks_state([GRADIENT, RADIAL, RASTER]) == bridge.RECIPE_EDITED
     assert masks_state([]) == bridge.RECIPE_IDENTITY
     for bad in (
+        [{**RASTER, "shape": {**RASTER["shape"], "data": "AAD/AQ=="}}],
         "no", [GRADIENT] * 17, [{"shape": {"type": "mystery"}}], [{**GRADIENT, "bogus": 1}], [{**GRADIENT, "amount": 140}], [{**GRADIENT, "adjust": {"exposure": 9}}],
         [{**GRADIENT, "adjust": {"nonsense": 1}}], [{**GRADIENT, "enabled": "yes"}], [{**GRADIENT, "name": "x" * 65}],
         [{"shape": {"type": "linear", "x0": float("nan"), "y0": 0, "x1": 1, "y1": 1}}], [{"shape": {"type": "linear", "x0": 0, "y0": 0, "x1": 1}}],

@@ -90,7 +90,12 @@ def main() -> None:
         _preview=preview,
         statusBar=lambda: SimpleNamespace(showMessage=lambda *message: statuses.append(message)),
         grid=SimpleNamespace(update_items=lambda *_: None),
-        thumbnail_manager=SimpleNamespace(edit_states=EditStateMemo()),
+        thumbnail_manager=SimpleNamespace(
+            edit_states=EditStateMemo(),
+            get_cached=lambda record, *_: thumbnails[records.index(record)].toImage(),
+        ),
+        PREVIEW_FILMSTRIP_THUMB_SIZE=120,
+        _record_at=lambda index: records[index] if 0 <= index < len(records) else None,
         _records=[],
     )
     controller._photocraft_executable = str(Path(args.executable).resolve())

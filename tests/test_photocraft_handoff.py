@@ -610,3 +610,16 @@ def test_early_attachment_keeps_original_viewer_covered(controller, tmp_path, mo
     finally:
         preview.close()
 
+
+@pytest.mark.parametrize("workspace_open", [False, True])
+def test_host_fit_respects_camera_raw_modal(controller, workspace_open):
+    from types import SimpleNamespace
+    calls = Mock(side_effect=[{"open": workspace_open}, {}])
+    proc = SimpleNamespace(is_running=lambda: True,
+                           control=SimpleNamespace(camera_raw_supported=True, call=calls))
+    controller._fit_photocraft(proc, controller._photocraft_generation)
+    assert calls.call_args_list[0].args == ("ui.cameraRaw", {})
+    if workspace_open:
+        assert calls.call_count == 1
+    else:
+        assert calls.call_args_list[-1].args == ("engine.execute", {"command": "view.fitOnScreen"})

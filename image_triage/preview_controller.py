@@ -1071,8 +1071,11 @@ class PreviewController(QObject):
     def _fit_photocraft(self, proc, generation: int) -> None:
         if generation == self._photocraft_generation and proc.is_running():
             try:
-                # Not ui.menu.invoke: the editor refuses every menu command while Camera Raw is open, which in the
-                # Camera Raw workspace is nearly always. engine.execute is not a menu click.
+                if getattr(proc.control, "camera_raw_supported", False) is True:
+                    workspace = proc.control.call("ui.cameraRaw", {})
+                    if isinstance(workspace, dict) and workspace.get("open"):
+                        # Camera Raw owns its own preview fit/zoom while the canvas is covered.
+                        return
                 proc.control.call("engine.execute", {"command": "view.fitOnScreen"})
             except photocraft_bridge.PhotoCraftError:
                 _log.exception("Could not fit the hosted PhotoCraft canvas")

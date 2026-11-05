@@ -1,67 +1,87 @@
 # PhotoCraft handoff
 
-## Stopped at the user's time limit — 2026-11-03
+## 2026-11-04: v0.20.1 hosted validation completed
 
-The user said they did not have time for the remaining 20–30 minutes. Stop
-development here. All running validation was stopped; do not restart builds,
-tests, visible apps or follow-ups without a new request. No commit, push,
-default-editor selection or installed executable change has occurred.
+This supersedes the stopped checkpoint. The release merge was already published
+as native 908e6e212 and paired host dbbc0503. Native validation fixes are
+45f02561e5fc03fa011c8f31e05c0ed72e91ec67. This resume fixes issues found by
+running the remaining live checks; it does not integrate unreleased upstream.
 
-Source state:
-- Native isolated merge: USER_HOME/.codex/worktrees/photocraft-upstream-20261103.
-  HEAD ef1a2fd6a, MERGE_HEAD 327c4cc82 (v0.20.1), no unresolved conflict markers.
-- Current host worktree: USER_HOME/.codex/worktrees/photocraft-release-host/Playground,
-  based on origin/main e1eeaf8. Only this task's bridge/test/handoff edits are there.
-- Original host checkouts and primary native checkout have not been integrated,
-  stashed, reset or overwritten.
+- Old integrated upstream: b1794c6e0608ccfc887213dcf58398977c5cb75e (v0.16.0).
+- New integrated release: 327c4cc82e737a3e0af7c147a477126d77525495 (v0.20.1).
+- Both native remotes fetched successfully. User-fork integration matched the
+  published merge. Upstream main is 8e9277e20e8d5185ed4259908022a719a647237e,
+  with 489 upstream-only and 83 integration-only commits at the start of this
+  resume. v0.20.2 is a newer release, five commits beyond v0.20.1, not included
+  in this bounded validation of the existing merge.
+- The non-mutating upstream-main merge assessment reports four conflicts:
+  crates/automation/src/workspace.rs, crates/io/src/lib.rs,
+  crates/ui-egui/src/control/dispatch.rs, crates/ui-egui/src/jobs_ui.rs.
+  No Camera Raw textual conflict; the initial 39 release-conflict decisions and
+  automatic shared-file review remain recorded below.
 
-Latest results:
-- Strict all-target automation/desktop/UI clippy passes; earlier algo/I/O/RAW/engine
-  clippy passes. Layers 31 and wasm 24 plus HEIF pass.
-- Engine 2671, algo 760, I/O 493, RAW 140 library tests passed. Public RAW corpus
-  104 passed. Desktop 213 plus startup/control 14 pass. Automation 108 unit and
-  78 integration tests pass. Current host focused/QML suite 272 passed / 1 skipped
-  before the final small bridge capability restoration.
-- Updated full UI library: 4826 passed, 4 GPU device-creation failures, 21 ignored.
-  Updated UI integration main: 131 passed, 16 GPU device-creation failures, 1 ignored.
-  ALL 20 GPU failures subsequently passed in fresh sequential processes; results:
-  original host logs/photocraft-v0201-resume/gpu-isolated-v2/results.json.
-- Hosted Workspace: 11 passed / 1 failed because the Luminance slider and number
-  share a label. Its query now specifies Slider, but this final test-only correction
-  has NOT been rerun. Earlier Radius, canvas-startup, Masking and Mixer failures
-  are corrected and passed.
-- Latest host bridge also restores require_masks_support, reads cameraRawMasks
-  from app.handoff and checks it before opening mask recipes. This small final
-  restoration has NOT been tested yet. It addresses the missing function that
-  blocked non-mask full-size recipe exports; full host mask validation and the
-  mask/warmer HostJobRunner APIs remain pre-existing incomplete areas.
-- Native candidate and offscreen renderer built successfully. The corrected
-  Detail capture was inspected with Radius 2.8 and strict accessibility checks.
-- First real secondary-monitor/no-activation handoff exposed manifest JSON
-  replacement being denied by upstream's new overwrite guard. The scoped host
-  sidecar adapter fixes that and its 108-test automation suite passes, but the
-  real hosted smoke check has NOT been rerun against the fixed candidate.
-- Optimized stock corpus compilation hit a rustc access violation and then spent
-  around eight minutes per thin-LTO engine test binary. The environment-only
-  no-LTO/codegen16 retry was stopped before completion. No corpus pass claimed.
+Corrections proved by this resume:
 
-Remaining on a future explicit resume:
-1. Rerun the corrected Workspace test and targeted host bridge/full-render tests.
-2. Rerun check_photocraft_handoff.py using a NEW fixture output folder (the first
-   folder contains edits from the failed attempt), then Camera Raw-first and RAW
-   recipe checks. Use secondary monitor and no activation.
-3. Complete optimized corpus validation with CARGO_PROFILE_RELEASE_LTO=false,
-   CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16, RUST_MIN_STACK=67108864, jobs=2.
-   Repository production profiles are unchanged.
-4. Record exact final results, review/stage only merge source files, commit and
-   normally push the native integration branch to the user fork; pair host changes
-   on main. Existing dirty/divergent host checkouts must remain protected.
-5. Promote a build only after the complete hosted gates pass.
+- Hosted startup removes the standalone update-check service, leaving the
+  standalone app and update preference unchanged. The new v0.20.2 prompt had
+  covered the embedded photo; two desktop tests cover hosted/standalone setup.
+- While hosted Camera Raw owns the photo, only the read-only session.inspect
+  engine query bypasses the modal command guard. Authorization still runs and
+  document mutations remain blocked; two integration regressions pass.
+- The host skips the covered full-editor fit command while Camera Raw is open;
+  two host regressions cover open/closed behavior.
+- Host mask recipes now validate bounded native geometry, adjustment ranges,
+  combined parts and raster RLE without expanding pixels. Identity detection
+  includes active local edits. Mask capability tests prove unsupported editors
+  refuse before opening rather than losing masks.
+- The real-RAW check fixture now supplies the current record/cached-thumbnail
+  callbacks so native filmstrip polling does not raise UI callback exceptions.
 
-An optional companion AGENTS.md policy update was rejected by automatic approval
-review because future workflow changes needed explicit authorization. It was not
-applied or retried. Follow the user's supplied release-only policy in this task.
+Validation:
 
+- Host focused bridge/recipe/render suite: 229 passed, two skipped.
+- Hosted Camera Raw Workspace: 12 passed, including the corrected Luminance
+  Slider query. Desktop updater and modal authorization regressions: four passed.
+- Strict all-target clippy for desktop, automation and UI: passed.
+- cargo xtask wasm: 24 crates plus codecs HEIF passed. A separate check in the
+  native build target hit a rustc dependency access violation; the established
+  tools target completed the full check. No repository build profile changed.
+- cargo xtask test-corpus: 5,711 passed, zero failed, 38 ignored across
+  36 test binaries. This uses environment-only release LTO=false and codegen
+  units=16 plus the larger compiler stack; production profiles are unchanged.
+- check_photocraft_handoff.py: hidden startup, native parent, persistent process,
+  navigation/stash/restore, native menu Save, grid notifications, closed-tab
+  reopening, five themes, native screenshot pixels and shutdown cleanup passed.
+  Occluded desktop grabs are not counted as visible-desktop verification.
+- check_camera_raw_first.py: edits survive navigation, a single document remains,
+  commit keeps the full editor and closing returns to Camera Raw; passed.
+- check_camera_raw_recipe.py: Canon DNG plus Nikon NEF, failed recipe write keeps
+  draft, 4176x3062 live export, live/saved render equality, navigation persistence,
+  full-editor continuation and native Save; passed.
+- check_native_filmstrip.py: actual MainWindow passed with synthetic PNGs and
+  separately with public Nikon NEF. Native clicks keep PID/grid selection,
+  RAW recipe restore, ratings/reject, collapsed arrow/Home navigation,
+  comparison pixels/toggle, resize, fullscreen, live theme reload and shutdown
+  all passed. Originals remained byte-identical. Native captures inspected.
+- Prior broad native suites remain valid: engine 2671, algo 760, I/O 493,
+  RAW 140, pinned RAW corpus 104, desktop 213 + startup 14, automation 108 unit
+  + 78 integration. UI library 4826 passed and integration main 131 passed;
+  their 20 GPU device-creation failures all passed in fresh sequential processes.
+  The cumulative GPU run is not described as an uninterrupted full-suite pass.
+
+Local evidence is under logs/photocraft-v0201-resume/resume-20261104 in the
+original Image Triage checkout (host-tests-final.log, handoff-fixed,
+camera-raw-first-fixed, raw-recipe-clean, native-filmstrip-final and
+native-filmstrip-raw-final). Native build/check logs are merge-*.log in the
+isolated companion checkout. These local logs and public corpus files are not
+published as source.
+
+Validated candidate relative to the primary PhotoCraft checkout:
+target/merge-v0.20.1-20261103/debug/photocraft.exe, SHA256
+5e8edb349fc062e47ec713bd033aaf585c75efb29e41fecc0c97f0adce2e6ee9.
+The four protected known-good executable hashes remain unchanged. This session
+validates source and the explicit candidate; it does not replace an installed
+editor or change the default launcher selection.
 
 ## 2026-11-03: v0.20.1 integration in progress
 
