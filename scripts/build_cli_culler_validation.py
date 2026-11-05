@@ -1,4 +1,4 @@
-"""Assemble a portable validation app with its isolated CPU runtime and CLI tools."""
+"""Assemble a QML validation app with an isolated CPU or CUDA runtime."""
 from __future__ import annotations
 
 import argparse
@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def build(app: Path, runtime: Path, output: Path):
+    if (app / "ImageTriage.exe").is_file() and not (app / "lib/image_triage/qml_shell/qml/Main.qml").is_file():
+        raise ValueError("The validation app must contain the QML interface; refusing a retired Widgets-only build")
     manifest = json.loads((runtime / "runtime.json").read_text(encoding="utf-8"))
     if any(Path(manifest[key]).is_absolute() for key in ("python", "worker", "app_path")):
         raise ValueError("Build the runtime with --portable before bundling it")
@@ -46,7 +48,7 @@ def build(app: Path, runtime: Path, output: Path):
         path.write_text(text.replace("\n", "\r\n") if windows else text, encoding="utf-8", newline="")
         path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     (output / "VALIDATION-README.txt").write_text(
-        "ImageTriage / CLI-Culler CPU validation build\n\n"
+        "ImageTriage / CLI-Culler QML validation build\n\n"
         "1. Extract the entire build. Launch Start-ImageTriage-Validation.\n"
         "2. Open a representative shoot and Analyze. Missing requested models are reported in the result summary. "
         "Models use the app's existing Set Up AI installation; this package does not download weights.\n"

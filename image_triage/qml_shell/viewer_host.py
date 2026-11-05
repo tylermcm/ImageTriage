@@ -1,7 +1,7 @@
 """The popout in the QML shell: a full-window viewer drawn by `qml/Viewer.qml` (mockup: scripts/qml_parity/viewer.dc.html).
 
 This is the host behind it, under the context name `popout` (the grid, the rail and the menus open it with `popout.open(row)`).
-`popout.PopoutHost` is the Widgets app's own viewer in a separate window; it is kept behind `--widgets-popout`.
+The QML viewer is the application's only viewer launch path.
 
 What it does for the picture: a plain JPEG, PNG or WebP is shown from its own file (Qt applies the EXIF orientation); anything else
 (a RAW, a TIFF, a PSD...) is read the way the Widgets viewer reads it, `imaging.load_image_for_display`, on a worker thread and written

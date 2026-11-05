@@ -41,7 +41,7 @@ def display_score(result) -> int:
     for value in (result.folder_percentile, result.normalized_score):
         if value is not None:
             return int(round(max(0.0, min(100.0, value))))
-    return int(round(max(0.0, min(100.0, result.score * 100.0))))
+    return int(round(max(0.0, min(100.0, result.score * 100.0)))) if result.score is not None else -1
 
 
 class AiScores(QObject):
@@ -148,6 +148,13 @@ class AiScores(QObject):
         from ..ai_why import build_ai_why
 
         good = result.confidence_bucket in (AIConfidenceBucket.OBVIOUS_WINNER, AIConfidenceBucket.LIKELY_KEEPER)
+        if result.native_payload is not None:
+            item = result.native_payload
+            return {"has": True, "state": "ready", "score": display_score(result),
+                    "call": result.confidence_bucket_label, "good": good,
+                    "line": result.rank_text or "No comparison rank",
+                    "reasons": [{"good": good, "head": str(reason), "detail": ""} for reason in item.get("reasons", [])],
+                    "size": item.get("set_size") or 1, "group": []}
         why = build_ai_why(result)
         reasons = [{"good": good, "head": line.rstrip(".") + ".", "detail": ""} for line in (why.reasons if why else ())]
         said = {r["head"].casefold() for r in reasons}

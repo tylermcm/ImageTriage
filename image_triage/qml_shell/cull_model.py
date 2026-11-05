@@ -11,6 +11,7 @@ See docs/qml_unwired.md, section "Cull window and AI Center".
 from __future__ import annotations
 
 import threading
+import json
 import time
 import zlib
 
@@ -43,15 +44,19 @@ SENS_TEXT = {
     "strict": "Flags borderline frames too. Expect to restore a few.",
 }
 REASONS = {
+    "native_reject": ("Reject", "#e0614f", True),
+    "native_review": ("Needs review", "#d9b650", False),
     "blink": ("Eyes closed", "#c79bea", True),
     "soft": ("Soft", "#d9b650", True),
     "clipped": ("Clipped", "#e08a4a", True),
     "blown_out": ("Blown out", "#e0614f", True),
     "duplicate": ("Near-duplicate", "#6fb1d8", False),
 }
-REJECTS = ("blink", "soft", "clipped", "blown_out")
+REJECTS = ("blink", "soft", "clipped", "blown_out", "native_reject")
 APPLIABLE = REJECTS + ("duplicate",)      # what the Apply page can act on: the problems, and the near-duplicates (off until chosen, they are only suggestions)
 GROUP_WHY = {"blink": "A blink on the main face", "soft": "Much softer than the best frame of the stack",
+             "native_reject": "The culler marked these frames as Reject. Your manual choices are protected.",
+             "native_review": "The culler asks you to review these frames. They are never applied as Rejects.",
              "clipped": "Many more clipped pixels than its stack-mates", "blown_out": "Mostly pure white or black",
              "duplicate": "Almost identical to a better frame in its stack. Only a suggestion, so it is off until you turn it on"}
 # What --mock flags (the mockup's names); other folders are flagged by a hash of the name.
@@ -94,6 +99,10 @@ class CullModel(QObject):
         self._token = 0
         self._run = None
         self._settings = None if memory else user_settings()
+        from .cull_native import enabled
+        self._native = not memory and enabled(self._settings)
+        self._native_progress = ("Starting analysis", 0, 0)
+        self._native_error = ""
         cpu = False if memory else bool(self._settings.value(CPU_KEY, False, type=bool))
         self._s = self._defaults(cpu)
         sens = "balanced" if memory else str(self._settings.value(SENS_KEY, "balanced", str))
@@ -122,7 +131,12 @@ class CullModel(QObject):
             self._ai.changed.connect(self._on_ai)
             self._ai.refresh()
         if not memory:
-            self._run = CullRun(self)
+            if self._native:
+                from .cull_native import NativeCullRun
+                self._run = NativeCullRun(self._settings, self)
+                self._run.progress.connect(self._native_progress_changed)
+            else:
+                self._run = CullRun(self)
             self._run.stage.connect(self._run_stage)
             self._run.finished.connect(self._run_finished)
             self._run.failed.connect(self._run_failed)
@@ -228,7 +242,8 @@ class CullModel(QObject):
         return [(by_path[p], r) for p, r in self._flags.items() if p in by_path and not s["restored"].get(p)]
 
     def _apply_ids(self) -> list[str]:
-        return [r["path"] for r, reason in self._active_flags() if reason in APPLIABLE and self._s["inc"].get(reason)]
+        protected = set(self._protected_paths()) if self._native else set()
+        return [r["path"] for r, reason in self._active_flags() if reason in APPLIABLE and self._s["inc"].get(reason) and r["path"] not in protected]
 
     def flagFor(self, path: str) -> dict:
         reason = self._flags.get(path)
@@ -386,6 +401,7 @@ class CullModel(QObject):
             o["on"] = s["act"] == o["key"]
         n_ap = len(apply_ids)
         self._view = {
+            "native": self._native, "nativeError": self._native_error,
             "window": s["window"], "page": page, "title": titles[page][0], "sub": titles[page][1], "folder": folder,
             "steps": [{"n": i + 1, "label": lab, "sub": sub, "state": "done" if (page == "done" and i == 3) or i < idx else ("cur" if i == idx else "")} for i, (lab, sub) in enumerate(steps)],
             "centerDot": "ok" if rt_ready else ("bad" if s["rt"] == "error" else "warn"),
@@ -427,6 +443,17 @@ class CullModel(QObject):
                            ("appeal", "Appeal ranker", s["models"]["appeal"], "Scores how appealing a frame is. Downloaded on first use; best with a graphics card."))],
                        "cpu": s["cpuDefault"], "defSens": s["sens"], "runs": self._runs(flagged, applied) if s["runs"] else [], "noRuns": not s["runs"]},
         }
+        if self._native:
+            label, done, total = self._native_progress
+            percent = round(100 * done / total) if total else 0
+            self._view.update(estimate="Uses the saved CLI-Culler profile. Timing depends on the runtime and the shoot.",
+                              stages=[{"label": label, "right": f"{done} of {total}" if total else "Working…",
+                                       "state": "cur" if s["running"] else "", "pp": percent}],
+                              runLine=f"{label} · {done} of {total}" if total else label,
+                              runPct=percent, runEta="Current stage", notes=[],
+                              nativeSettings=self._native_settings_text())
+            self._view["nativeError"] = self._native_error
+            self._view["revNote"] = "The culler's decisions are suggestions. Review them before Apply."
         self._rev += 1
         self.changed.emit()
         self.gridChanged.emit()
@@ -615,6 +642,44 @@ class CullModel(QObject):
                 {"folder": "Wedding 2026", "when": "Mon 12 Oct", "frames": 1284, "flagged": 142, "did": "Marked 131 as Rejects", "current": False}]
 
     view = Property("QVariantMap", lambda self: self._view, notify=changed)
+
+    def _native_settings_text(self) -> str:
+        from ..cli_culler_runtime import load_native_runtime, native_settings
+        try:
+            return json.dumps(native_settings(self._settings, load_native_runtime()), indent=2)
+        except Exception as error:
+            self._native_error = str(error)
+            return "{}"
+
+    @Slot(str, result=bool)
+    def saveNativeSettings(self, text: str) -> bool:
+        from ..cli_culler_runtime import load_native_runtime, validate_native_settings
+        try:
+            value = json.loads(text)
+            if not isinstance(value, dict):
+                raise ValueError("Culling settings must be a JSON object")
+            validate_native_settings(load_native_runtime()["python"], value)
+            self._settings.setValue("ai/cli_culler_settings_json", json.dumps(value))
+        except Exception as error:
+            self._native_error = str(error)
+            self._rebuild()
+            return False
+        self._native_error = ""
+        self._rebuild()
+        return True
+
+    @Slot(str, int, int)
+    def _native_progress_changed(self, label, done, total):
+        if not self._s["running"]:
+            return
+        self._native_progress = (label, done, total)
+        self._set(stage=0, p=done / total if total else 0.0)
+
+    def shutdown(self):
+        if self._run is not None:
+            self._run.cancel()
+            if self._native:
+                self._run.shutdown()
     flagRev = Property(int, lambda self: self._rev, notify=gridChanged)
 
     def _set(self, **kw) -> None:
@@ -852,6 +917,18 @@ class CullModel(QObject):
         return out
 
     def _start_real(self) -> None:
+        if self._native:
+            self._real, self._outcomes, self._picks, self._flags, self._stacks = True, {}, set(), {}, []
+            self._token += 1
+            self._t0 = time.monotonic()
+            self._native_progress = ("Starting CLI-Culler", 0, 0)
+            self._set(page="run", running=True, done=False, stage=0, p=0.0, hidden=False,
+                      restored={}, applied=None, ranked=False, eyesRan=False, sel="", filter="all")
+            try:
+                self._run.start(folder=self._photos.folder_dir())
+            except Exception as error:
+                self._run_failed(str(error))
+            return
         s = self._s
         v = s["vals"]
         cascade = CascadeSettings(split_jump=v["split"], duplicate_distance=v["dup"], soft_ratio=v["soft"] / 100, clip_floor=v["clip"] / 100, blown_out=v["blown"] / 100,
@@ -869,7 +946,7 @@ class CullModel(QObject):
         except Exception as exc:
             self._run_failed(str(exc))
             return
-        if (s["semantic"] or s["eyes"]) and s["rt"] == "ready":
+        if not self._native and (s["semantic"] or s["eyes"]) and s["rt"] == "ready":
             self._face_wanted = bool(s["eyes"] and s["faceOk"])
             self._start_semantic(records)
 
@@ -917,11 +994,13 @@ class CullModel(QObject):
             self._set(stage=stage, p=fraction)
 
     def _run_finished(self, result, eyes: bool, ranked: bool) -> None:
+        if self._native and not self._s["running"]:
+            return  # a folder change invalidated this run before its queued completion
         if result is None:
             self._run_failed("The analysis gave no result.")
             return
         s = self._s
-        self._apply_outcomes(outcomes_from_result(result))
+        self._apply_outcomes(outcomes_from_bundle(result, self._rows()) if self._native else outcomes_from_result(result))
         first = next((r for r, _x in self._active_flags()), None)
         self._set(running=False, done=True, stage=4, p=1.0, page=s["page"] if s["hidden"] else "rev", sel=first["path"] if first else "", ranked=ranked, eyesRan=eyes)
         self.runFinished.emit()
@@ -1080,6 +1159,8 @@ class CullModel(QObject):
     # -- test hook: the mockup's scenes -------------------------------------------------------------------------------------------
     @Slot(str)
     def scene(self, name: str) -> None:
+        if self._run is not None and self._run.running:
+            return  # a delayed capture preset must not reset a live analysis
         self._timer.stop()
         self._install.stop()
         cpu = self._s["cpuDefault"]

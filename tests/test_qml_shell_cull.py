@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import time
+import os
+
+os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QSettings, QUrl
@@ -15,7 +18,7 @@ from image_triage.qml_shell.cull_model import PRESETS, CullModel
 from image_triage.qml_shell.filters_model import FiltersModel
 from image_triage.qml_shell.handoff_model import HandoffModel
 from image_triage.qml_shell.palette_model import PaletteModel
-from image_triage.qml_shell.photos import PhotoModel
+from image_triage.qml_shell.photos import PhotoModel, GridModel
 from image_triage.qml_shell.settings_model import SettingsModel
 from image_triage.qml_shell.theme import Theme
 from image_triage.qml_shell.thumbs import ThumbService
@@ -28,6 +31,7 @@ NAMES = ["DSC_4201", "DSC_4203", "DSC_4207", "DSC_4210", "DSC_4214", "DSC_4219",
 
 @pytest.fixture(scope="module")
 def qapp():
+    shell_app._configure_qt_dll_search()
     from PySide6.QtWidgets import QApplication   # the shell is a widgets application: the popout is a Widgets window
     return QCoreApplication.instance() or QApplication([])
 
@@ -70,7 +74,8 @@ def flagged(cull) -> dict:
 
 def test_balanced_is_what_the_cascade_measured():
     d = CascadeSettings()
-    assert PRESETS["balanced"] == {"split": d.split_jump, "dup": d.duplicate_distance, "soft": 40, "clip": 10, "blown": 40, "blink": 60}
+    assert PRESETS["balanced"] == {"split": d.split_jump, "dup": d.duplicate_distance, "soft": 40, "clip": 10, "blown": 40, "blink": 60,
+                                   "rdist": d.repeat_distance, "ssim": round(d.ssim_threshold * 100), "rwin": d.repeat_window, "rounds": 1}
     assert PRESETS["careful"]["soft"] < PRESETS["balanced"]["soft"] < PRESETS["strict"]["soft"]
 
 
@@ -102,7 +107,7 @@ def test_the_run_finds_what_the_mockup_found(qapp, cull):
     cull.openCull()
     run_to_the_end(qapp, cull)
     assert flagged(cull) == {"all": 5, "blink": 1, "soft": 1, "clipped": 1, "blown_out": 1, "duplicate": 1}
-    assert [t["n"] for t in cull.view["tiles"]] == [12, 6, 4, 1]
+    assert [t["n"] for t in cull.view["tiles"]] == [12, 6, 4, 1, 0]
     assert cull.view["steps"][2]["sub"] == "5 flagged" and cull.view["applyCount"] == 4
 
 
@@ -193,7 +198,7 @@ def test_every_scene_loads_without_qml_errors(qapp, photos, scene):
     warnings: list[str] = []
     engine.warnings.connect(lambda items: warnings.extend(str(i) for i in items))
     context = engine.rootContext()
-    for name, obj in (("theme", Theme(parent=qapp)), ("photos", photos), ("settings", SettingsModel(memory=True, parent=qapp)),
+    for name, obj in (("theme", Theme(parent=qapp)), ("photos", photos), ("gridModel", GridModel(photos, parent=qapp)), ("settings", SettingsModel(memory=True, parent=qapp)),
                       ("cmdPalette", PaletteModel(memory=True, parent=qapp)), ("advFilters", FiltersModel(photos, memory=True, parent=qapp)),
                       ("batch", BatchModel(photos, memory=True, parent=qapp)), *collection_models(photos, qapp),
                       ("handoff", HandoffModel(photos, memory=True, parent=qapp)), ("transfers", TransferModel(photos, memory=True, parent=qapp)),

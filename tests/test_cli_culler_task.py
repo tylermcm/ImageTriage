@@ -52,7 +52,7 @@ def task_for(tmp_path, body):
         encoding="utf-8")
     shoot = tmp_path / "shoot"
     shoot.mkdir(exist_ok=True)
-    return CliCullerRunTask(folders=[shoot], python=Path(sys.executable), worker=worker,
+    return CliCullerRunTask(folders=[shoot], python=Path(os.environ.get("CLI_CULLER_PYTHON", sys.executable)), worker=worker,
                            app_path=ROOT, settings={}, cache_namespace="test-v1")
 
 

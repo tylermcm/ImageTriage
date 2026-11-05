@@ -2,17 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from image_triage.main import qml_argv_from_launch, wants_widgets_ui
+from image_triage.main import qml_argv_from_launch
 
 
-def test_qml_shell_is_the_default_ui():
-    assert not wants_widgets_ui(["ImageTriage.exe"], {})
-    assert not wants_widgets_ui(["ImageTriage.exe", "D:/Photos"], {"IMAGE_TRIAGE_UI": ""})
-
-
-def test_widgets_ui_is_opt_in_by_flag_or_environment():
-    assert wants_widgets_ui(["ImageTriage.exe", "--widgets"], {})
-    assert wants_widgets_ui(["ImageTriage.exe"], {"IMAGE_TRIAGE_UI": "Widgets"})
+def test_retired_ui_selectors_cannot_launch_widgets(monkeypatch):
+    import sys
+    from image_triage import main as app
+    from image_triage.qml_shell import app as qml
+    seen = []
+    monkeypatch.setenv("IMAGE_TRIAGE_UI", "widgets")
+    monkeypatch.setattr(sys, "argv", ["ImageTriage.exe", "--widgets", "--widgets-popout"])
+    monkeypatch.setattr(qml, "main", lambda args: seen.append(args) or 0)
+    assert app.main() == 0
+    assert seen == [[]]
+    assert not hasattr(app, "widgets_main")
 
 
 def test_launch_without_arguments_passes_nothing_on():

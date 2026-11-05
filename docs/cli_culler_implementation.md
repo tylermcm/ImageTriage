@@ -1,6 +1,9 @@
 # Direct CLI-Culler integration: implementation and validation
 
-Work is on `codex/cli-culler-integration`; the contract remains
+The current local candidate is `codex/cli-culler-qml`; see the
+[CPU/CUDA and QML investigation](cli_culler_cpu_gpu_investigation.md) for
+current measurements, crash evidence and the temporary-vs-finished UI direction.
+The original implementation below was on `codex/cli-culler-integration`; the contract remains
 [the integration plan](cli_culler_integration_plan.md). Engine source and
 PhotoCraft are unchanged.
 

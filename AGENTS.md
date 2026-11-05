@@ -1,5 +1,16 @@
 # Image Triage development
 
+## Application UI
+
+The QML shell is the only desktop application UI. Do not restore a Widgets
+main-window or popout launch route, or build a validation package from a branch
+that predates the QML UI. Shared backend helpers are still used.
+
+The CLI-Culler command/JSON interface is temporary for validation. The intended
+UI keeps the current QML design with option controls, sliders, strictness
+presets and thresholds bound to native engine settings. See
+`docs/cli_culler_cpu_gpu_investigation.md` for that direction and current evidence.
+
 ## PhotoCraft integration: session updates
 
 PhotoCraft is actively developed. At the start of every development session in

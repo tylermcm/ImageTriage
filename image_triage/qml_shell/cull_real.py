@@ -48,6 +48,15 @@ def outcomes_from_bundle(bundle, rows: list[dict]) -> dict[str, Outcome]:
     from ..ai_results import find_ai_result_for_record
 
     out = {}
+    if getattr(bundle, "native_document", None) is not None:
+        for path, item in bundle.native_document["files"].items():
+            decision = item["decision"]
+            flag = {"reject": "native_reject", "review": "native_review"}.get(decision)
+            out[path] = Outcome("native_" + decision, (flag,) if flag else (),
+                                "; ".join(map(str, item.get("reasons", []))) or decision.capitalize(),
+                                str(item.get("comparison_set") or "alone:" + path),
+                                item.get("set_size") or 1, item.get("rank_in_set") or 1, False)
+        return out
     for row in rows:
         result = find_ai_result_for_record(bundle, row["record"], preferred_path=row["path"]) if row.get("record") is not None else bundle.result_for_path(row["path"])
         if result is None or not result.cascade_role:
@@ -60,6 +69,8 @@ def outcomes_from_bundle(bundle, rows: list[dict]) -> dict[str, Outcome]:
 
 def reason_of(outcome: Outcome) -> str | None:
     """What the Cull window calls a flagged frame's problem: a blink, soft, clipped or blown out frame, or a near-duplicate; None for a frame it keeps."""
+    if outcome.role in ("native_reject", "native_review"):
+        return outcome.role
     if outcome.role == ROLE_DUPLICATE:
         return "duplicate"
     if outcome.role in FLAGGED_ROLES:

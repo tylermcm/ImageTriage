@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Shapes
 
 // Cull this folder: one window with a step rail (Prepare, Analyze, Review, Apply). The model is cull_model.py (`cull`); this file only draws
@@ -115,6 +116,17 @@ Backdrop {
                         Column {
                             id: prep
                             visible: root.page === "prep"; width: parent.width; spacing: 0
+                            Card { visible: root.v.native; width: parent.width; height: nativeColumn.implicitHeight + 28
+                                Column { id: nativeColumn; x: 14; y: 14; width: parent.width - 28; spacing: 10
+                                    Text { text: "CLI-Culler"; color: theme.fg; font.pixelSize: 15; font.weight: Font.DemiBold }
+                                    Text { width: parent.width; text: "Choose the models and culling rules below. Analyze leaves your photos unchanged; review the decisions before Apply."; wrapMode: Text.WordWrap; color: theme.fg2; font.pixelSize: 13 }
+                                    TextArea { id: nativeProfile; width: parent.width; height: 200; text: root.v.nativeSettings || "{}"; color: theme.fg; font.family: "Consolas"; font.pixelSize: 13; wrapMode: TextEdit.Wrap; selectByMouse: true
+                                        background: Rectangle { color: theme.s2; radius: 8; border.color: theme.lineSoft } }
+                                    Text { visible: !!root.v.nativeError; width: parent.width; text: root.v.nativeError || ""; color: theme.rev; wrapMode: Text.WordWrap; font.pixelSize: 12 }
+                                    SButton { text: "Save culling profile"; h: 30; hpad: 12; onClicked: cull.saveNativeSettings(nativeProfile.text) }
+                                }
+                            }
+                            Column { visible: !root.v.native; width: parent.width; spacing: 0
                             H3 { title: "WHAT WILL RUN"; width: parent.width }
                             Item { width: 1; height: 9 }
                             // job: cleanup
@@ -205,6 +217,7 @@ Backdrop {
                                         Text { y: 14; width: parent.width - 190; text: "Measured on two reviewed albums. Review them on your own genres before relying on them."; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 12; lineHeight: 16.8; lineHeightMode: Text.FixedHeight }
                                         SButton { anchors.right: parent.right; y: 12; text: "Reset to measured values"; h: 28; hpad: 11; radius: 9; onClicked: cull.resetTune() } } } }
                         }
+                            }
                         // -------- running --------
                         Column {
                             id: run

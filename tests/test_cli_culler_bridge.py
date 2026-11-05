@@ -57,7 +57,10 @@ def test_native_bucket_does_not_promote_rank_one_to_winner(decision, bucket):
     {"brackets": "ignore"},
     json.loads((ROOT / "packaging/cli_culler_default_settings.json").read_text()),
 ])
-def test_plain_file_worker_matches_direct_engine_outside_checkout(tmp_path, settings):
+def test_plain_file_worker_matches_direct_engine_outside_checkout(tmp_path, settings, monkeypatch):
+    # Exercise the missing-model contract independently of a developer's installed
+    # weights. Real-model throughput/parity is a separate acceptance gate.
+    monkeypatch.setenv("IMAGE_TRIAGE_AI_ROOT", str(tmp_path / "models-not-installed"))
     python = os.environ.get("CLI_CULLER_PYTHON")
     if not python:
         pytest.skip("Set CLI_CULLER_PYTHON to the isolated pinned engine interpreter")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -10,22 +9,7 @@ from image_triage.frozen_bootstrap import configure_frozen_dll_search
 
 configure_frozen_dll_search()
 
-from PySide6.QtCore import QCoreApplication
-from PySide6.QtGui import QIcon, QImageReader
-from PySide6.QtWidgets import QApplication
-
-from image_triage.app_data_migration import migrate_legacy_app_data_once
-from image_triage.app_identity import migrate_legacy_settings_once
-from image_triage.app_logging import configure_app_logging
-from image_triage import memtrace
 from image_triage.formats import is_image_file_candidate
-from image_triage.qt_logging import install_qt_message_filter
-from image_triage.updater import current_app_version
-
-
-_APP_ICON_PATH = Path(__file__).resolve().parent / "ui" / "assets" / "app_icon-v5.ico"
-# One deployment switch controls whether the preserved splash is shown.
-_STARTUP_SPLASH_ENABLED = True
 
 
 def _configure_windows_app_identity() -> None:
@@ -56,75 +40,10 @@ def is_quick_view_launch_target(target: str) -> bool:
     return bool(candidate and is_image_file_candidate(candidate) and Path(candidate).is_file())
 
 
-def widgets_main() -> int:
-    """The original Widgets application; kept behind ``--widgets`` (or IMAGE_TRIAGE_UI=widgets) while the QML shell takes over."""
-    install_qt_message_filter()
-    configure_app_logging()
-    _configure_windows_app_identity()
-    # QSettings lives under one identity, HKCU\Software\Image Triage (see
-    # app_identity.py). The organisation name below also drives
-    # QStandardPaths (thumbnail cache, decisions.sqlite3, and everything
-    # under AppDataLocation/AppLocalDataLocation): it used to stay "Codex"
-    # here deliberately, because flipping it would silently relocate that
-    # data. WI-3.6 replaced that silence with an explicit, verified,
-    # one-time migration (migrate_legacy_app_data_once, just below), so the
-    # org name can now simply be "Image Triage" like everything else.
-    QCoreApplication.setOrganizationName("Image Triage")
-    QCoreApplication.setApplicationName("Image Triage")
-    QCoreApplication.setApplicationVersion(current_app_version())
-    migrate_legacy_settings_once()
-    migrate_legacy_app_data_once()
-    # Large edited derivatives can legitimately exceed Qt's conservative default.
-    QImageReader.setAllocationLimit(1024)
-
-    app = QApplication(sys.argv)
-    memtrace.start(app)  # observability; does nothing unless IMAGE_TRIAGE_MEMTRACE is set
-    app.setApplicationDisplayName("Image Triage")
-    app.setWindowIcon(QIcon(str(_APP_ICON_PATH)))
-
-    launch_target = launch_target_from_argv(sys.argv)
-    quick_view = is_quick_view_launch_target(launch_target)
-    splash = None
-    if _STARTUP_SPLASH_ENABLED and not quick_view:
-        from image_triage.ui.splash_screen import StartupSplash
-
-        splash = StartupSplash(QCoreApplication.applicationVersion())
-        splash.show_centered()
-        app.processEvents()
-        splash.set_status("Loading workspace…", 22)
-        app.processEvents()
-
-    from image_triage.window import MainWindow
-
-    if splash is not None:
-        splash.set_status("Restoring your library…", 58)
-        app.processEvents()
-    window = MainWindow(launch_target=launch_target, quick_view=quick_view)
-    if splash is not None:
-        splash.set_status("Ready", 100)
-        app.processEvents()
-        splash.finish(window)
-    elif not quick_view:
-        window.show()
-    if not quick_view:
-        # The popout viewer is built on first use rather than during startup
-        # (WI-8.1); pre-build it in idle time once the window is up so the first
-        # Space press doesn't pay for it. A quick-view launch needs it at once
-        # and builds it synchronously when it opens the image.
-        window.schedule_deferred_preview_build()
-        window.schedule_deferred_editor_start()
-    return app.exec()
-
-
-def wants_widgets_ui(argv: Sequence[str], environ: dict[str, str] | None = None) -> bool:
-    env = os.environ if environ is None else environ
-    return "--widgets" in argv[1:] or str(env.get("IMAGE_TRIAGE_UI", "")).strip().lower() == "widgets"
-
-
 def qml_argv_from_launch(argv: Sequence[str]) -> list[str]:
     """Translate a shell launch (``ImageTriage.exe <folder or image>``, as file associations send it) into QML shell arguments."""
 
-    qml_args = [arg for arg in argv[1:] if arg != "--widgets"]
+    qml_args = [arg for arg in argv[1:] if arg not in ("--widgets", "--widgets-popout")]
     if not qml_args or qml_args[0].startswith("-"):
         return qml_args
     target = Path(qml_args[0].strip().strip('"'))
@@ -135,11 +54,7 @@ def qml_argv_from_launch(argv: Sequence[str]) -> list[str]:
 
 
 def main() -> int:
-    """Start the QML shell, which is the application; ``--widgets`` starts the old Widgets window instead."""
-
-    if wants_widgets_ui(sys.argv):
-        sys.argv = [arg for arg in sys.argv if arg != "--widgets"]
-        return widgets_main()
+    """Start the QML application, including launches with retired UI selectors."""
     from image_triage.qml_shell.app import main as qml_main
 
     return qml_main(qml_argv_from_launch(sys.argv))

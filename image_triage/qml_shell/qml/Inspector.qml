@@ -228,7 +228,7 @@ Item {
         Flickable {
             id: ai
             readonly property bool on: insp.tab === 2
-            property real shown: on && insp.aiInfo.has ? insp.aiInfo.score / 100 : 0
+            property real shown: on && insp.aiInfo.has && insp.aiInfo.score >= 0 ? insp.aiInfo.score / 100 : 0
             Behavior on shown { NumberAnimation { duration: 1000; easing.type: Easing.OutCubic } }
             y: head.height; width: parent.width; height: parent.height - head.height
             contentHeight: aiCol.implicitHeight + 24; clip: true; boundsBehavior: Flickable.StopAtBounds
@@ -256,7 +256,7 @@ Item {
                                 PathSvg { path: Icons.circle(48, 48, 48) + Icons.circle(48, 48, 39) }
                             }
                         }
-                        Text { anchors.centerIn: parent; text: !insp.has ? "" : insp.aiInfo.has ? String(insp.aiInfo.score) : insp.aiInfo.state === "loading" ? "\u2026" : "\u2013"
+                        Text { anchors.centerIn: parent; text: !insp.has ? "" : insp.aiInfo.has && insp.aiInfo.score >= 0 ? String(insp.aiInfo.score) : insp.aiInfo.state === "loading" ? "\u2026" : "\u2013"
                                color: insp.aiInfo.has ? theme.fg : theme.fg3; font.pixelSize: 28; font.weight: Font.DemiBold; font.letterSpacing: -0.84 }
                     }
                     Column {

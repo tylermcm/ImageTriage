@@ -28,7 +28,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--folder", help="photo folder to open")
     parser.add_argument("--mock", metavar="DIR", help="open p01..p12.jpg from DIR with the HTML mockup's exact data (for pixel comparison)")
     parser.add_argument("--light", action="store_true", help="start in the light theme")
-    parser.add_argument("--widgets-popout", action="store_true", help="open the Widgets app's own full-screen viewer (in its own window) instead of the shell's viewer")
     parser.add_argument("--size", default="", help="window size in device-independent pixels (default: 1440x900, or 92%% of the screen if that is smaller)")
     parser.add_argument("--grab", metavar="PNG", help="render the window to PNG once thumbnails settle, then exit (for checks)")
     parser.add_argument("--grab-wait", type=float, default=4.0, help="seconds to wait before grabbing (default 4)")
@@ -65,7 +64,6 @@ def main(argv: list[str] | None = None) -> int:
     from .inspection import InspectionService
     from .library_nav import LibraryNavModel
     from .people_model import PeopleModel
-    from .popout import PopoutHost
     from .editor_host import EditorHost
     from .viewer_host import ViewerHost
     from .filters_model import FiltersModel
@@ -125,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     batch = BatchModel(photos, memory=bool(args.mock), parent=app, toasts=toasts)
     files = FileActions(photos, toasts, memory=bool(args.mock), parent=app)
     cull = CullModel(photos, memory=bool(args.mock), parent=app, toasts=toasts, files=files)
+    app.aboutToQuit.connect(cull.shutdown)
     menu = MenuModel(photos, collections, cull, toasts, memory=bool(args.mock), parent=app, files=files)
     pocket_drop = PocketDropModel(photos, memory=bool(args.mock), parent=app, collections=collections)
     reference = ReferenceModel(photos, toasts, memory=bool(args.mock), parent=app)
@@ -187,14 +186,11 @@ def main(argv: list[str] | None = None) -> int:
     context.setContextProperty("uiMemory", UiMemory(memory=bool(args.mock or args.grab), parent=app))     # the interface as it was left; headless checks start from the defaults
     library_nav = LibraryNavModel(photos, memory=bool(args.mock), persist=not args.grab, parent=app)
     context.setContextProperty("libraryNav", library_nav)
-    if args.widgets_popout:
-        popout = PopoutHost(photos, thumbs, collections, prebuild=not args.grab, parent=app, files=files)
-    else:
-        popout = ViewerHost(photos, thumbs, collections, files=files, cull=cull, toasts=toasts, memory=bool(args.mock or args.grab), parent=app)
+    popout = ViewerHost(photos, thumbs, collections, files=files, cull=cull, toasts=toasts, memory=bool(args.mock or args.grab), parent=app)
     app.aboutToQuit.connect(popout.shutdown)
     context.setContextProperty("popout", popout)
     editor = EditorHost(memory=bool(args.mock or args.grab), parent=app)
-    if not args.mock and not args.grab and not args.widgets_popout:
+    if not args.mock and not args.grab:
         editor.setBrowseSource(photos, thumbs, popout)
     app.aboutToQuit.connect(editor.shutdown)
     context.setContextProperty("editor", editor)

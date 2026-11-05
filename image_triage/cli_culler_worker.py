@@ -10,6 +10,8 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import json
 import importlib
+import faulthandler
+import time
 from pathlib import Path
 import sys
 import traceback
@@ -36,22 +38,35 @@ def run(request: dict, emit) -> None:
     outputs = importlib.import_module("aiculler.outputs")
 
     settings = aiculler.CullSettings.from_dict(request["settings"])
+    runtime = {}
+    if any(model in settings.models for model in ("maniqa", "appeal")):
+        import torch
+        cuda = torch.cuda.is_available()
+        requested = request.get("device", "auto")
+        if requested.startswith("cuda") and not cuda:
+            raise RuntimeError("CUDA was requested, but this worker cannot use it. Select a CPU runtime or repair the CUDA runtime/driver.")
+        runtime = {"torch_version": torch.__version__, "cpu_threads": torch.get_num_threads(),
+                   "device": "cuda" if cuda and requested != "cpu" else "cpu"}
+        if runtime["device"] == "cuda":
+            runtime["gpu"] = torch.cuda.get_device_name(0)
     emit({"event": "runtime", "engine_path": str(Path(aiculler.__file__).resolve()),
           "bracketeering_path": str(Path(bracketeering.__file__).resolve()),
-          "engine_version": aiculler.__version__})
+          "engine_version": aiculler.__version__, **runtime})
     # The caller passes a dedicated engine cache namespace, never the legacy DB.
     cache_root = Path(request["cache_root"])
     cache_root.mkdir(parents=True, exist_ok=True)
     generation = Path(request["staging_root"]) / uuid.uuid4().hex
     generation.mkdir(parents=True)
     registry = aiculler.ModelRegistry.from_app_manifest(request["app_path"], device=request.get("device", "auto"))
+    started = time.monotonic()
     try:
         result = aiculler.cull(
             folders, settings, models=registry,
             cache_db=cache_root / "scores.sqlite",
             cache_dir=cache_root / "previews",
             on_progress=lambda stage, done, total: emit(
-                {"event": "progress", "stage": stage, "done": done, "total": total}),
+                {"event": "progress", "stage": stage, "done": done, "total": total,
+                 "elapsed_seconds": round(time.monotonic() - started, 3)}),
             workers=request.get("workers"),
         )
         decisions = outputs.write_decisions(result, generation / "decisions.json")
@@ -64,6 +79,7 @@ def run(request: dict, emit) -> None:
 
 
 def main() -> int:
+    faulthandler.enable(file=sys.stderr)
     protocol_out = sys.stdout
 
     def emit(event):

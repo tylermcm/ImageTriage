@@ -15,7 +15,11 @@ sys.path.insert(0, str(ROOT))
 from freeze_support import worker_import_closure  # noqa: E402
 
 
-def prepare(wheelhouse: Path, output: Path, models: bool = False, portable: bool = False, runtime_python: Path | None = None):
+def prepare(wheelhouse: Path, output: Path, models: bool = False, portable: bool = False, runtime_python: Path | None = None, backend: str = "cpu"):
+    if backend not in ("cpu", "cuda"):
+        raise ValueError("backend must be cpu or cuda")
+    if backend == "cuda" and not models:
+        raise ValueError("CUDA packaging requires --models")
     output.mkdir(parents=True, exist_ok=True)
     provenance = json.loads((wheelhouse / "provenance.json").read_text())
     for entry in provenance.values():
@@ -30,8 +34,8 @@ def prepare(wheelhouse: Path, output: Path, models: bool = False, portable: bool
     lock = output / "core.lock"
     extra = []
     if models:
-        extra = ["--constraint", str(ROOT / "packaging/cli_culler_models_cpu.in"),
-                 "--extra-index-url", "https://download.pytorch.org/whl/cpu",
+        extra = ["--constraint", str(ROOT / f"packaging/cli_culler_models_{backend}.in"),
+                 "--extra-index-url", "https://download.pytorch.org/whl/" + ("cu128" if backend == "cuda" else "cpu"),
                  "--index-strategy", "unsafe-best-match", "--emit-index-url"]
     subprocess.run(["uv", "--system-certs", "pip", "compile", str(requirements),
                     "--python", str(runtime_python if portable else sys.executable),
@@ -77,7 +81,7 @@ def prepare(wheelhouse: Path, output: Path, models: bool = False, portable: bool
                 "worker": "worker/image_triage/cli_culler_worker.py" if portable else str(worker_root / "image_triage/cli_culler_worker.py"),
                 "app_path": "worker" if portable else str(worker_root),
                 "default_settings": json.loads((ROOT / "packaging/cli_culler_default_settings.json").read_text()),
-                "model_runtime": models,
+                "model_runtime": models, "backend": backend,
                 "namespace": hashlib.sha256(lock.read_bytes()).hexdigest()[:24]}
     (output / "runtime.json").write_text(json.dumps(manifest, indent=2))
 
@@ -87,8 +91,9 @@ if __name__ == "__main__":
     parser.add_argument("--wheelhouse", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--models", action="store_true", help="Include the CPU model runtime; no weights are downloaded")
+    parser.add_argument("--backend", choices=("cpu", "cuda"), default="cpu", help="Model-library backend; CUDA accelerates PyTorch rankers, with the engine's plain onnxruntime retained")
     parser.add_argument("--portable", action="store_true")
     parser.add_argument("--runtime-python", type=Path, help="Fresh standalone interpreter base to copy into the portable runtime")
     args = parser.parse_args()
     prepare(args.wheelhouse.resolve(), args.out_dir.resolve(), models=args.models,
-            portable=args.portable, runtime_python=args.runtime_python)
+            portable=args.portable, runtime_python=args.runtime_python, backend=args.backend)

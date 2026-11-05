@@ -62,6 +62,10 @@ build_exe_options = {
     # The editor is part of the program: <install dir>\photocraft\photocraft.exe, found there by shell_actions.bundled_photocraft_executable.
     "include_files": [*freeze_assets.include_files, *photocraft_bundle_files()],
     "excludes": [
+        # QML is the only desktop UI. Shared helpers remain, but neither
+        # retired Widgets application window is shipped in the frozen app.
+        "image_triage.window",
+        "image_triage.qml_shell.popout",
         "tkinter",
         "test",
         "tests",

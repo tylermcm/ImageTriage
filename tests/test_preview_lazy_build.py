@@ -291,35 +291,13 @@ def test_a_destroyed_window_takes_its_pending_build_with_it(dialogs) -> None:
     _turn(150)  # the timer is the window's child: nothing may fire into a deleted window
 
 
-def test_the_app_entry_point_opts_in_to_the_prebuild_and_a_quick_view_does_not() -> None:
-    import ast
-    import inspect
-    import textwrap
-
+def test_retired_widgets_startup_is_not_an_application_entry_point() -> None:
     from image_triage import main as app_main
 
-    tree = ast.parse(textwrap.dedent(inspect.getsource(app_main.widgets_main)))
-    guarded = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.If):
-            calls = [
-                call
-                for stmt in node.body
-                for call in ast.walk(stmt)
-                if isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Attribute)
-                and call.func.attr == "schedule_deferred_preview_build"
-            ]
-            if calls:
-                guarded.append(ast.unparse(node.test))
-    # Called once, and only for a normal launch: a quick view builds the viewer
-    # synchronously when it opens its image, so a background build would be wasted.
-    assert guarded == ["not quick_view"]
+    assert not hasattr(app_main, "widgets_main")
+    assert not hasattr(app_main, "wants_widgets_ui")
 
 
-# ---------------------------------------------------------------------------------------------
-# Equivalence: a lazily built viewer is configured like the eagerly built one was
-# ---------------------------------------------------------------------------------------------
 def _seed_returning_user(settings) -> None:
     """Non-default persisted preferences, so a viewer that merely used its own
     defaults (instead of the window's state) cannot pass by accident."""

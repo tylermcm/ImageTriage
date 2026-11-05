@@ -36,7 +36,7 @@ class _Cancelled(Exception):
 class CliCullerRunTask(QRunnable):
     def __init__(self, *, folders: list[Path], python: Path, worker: Path,
                  app_path: Path, settings: dict, cache_namespace: str,
-                 device: str = "auto", workers: int | None = None,
+                 device: str | None = None, workers: int | None = None,
                  runtime_manifest: dict | None = None, comparison_snapshot: bool = False):
         super().__init__()
         if not folders:
@@ -48,10 +48,11 @@ class CliCullerRunTask(QRunnable):
         self.app_path = app_path.resolve()
         self.settings = copy.deepcopy(settings)
         self.paths = cull_run_paths(self.folders[0], cache_namespace)
-        self.device, self.workers = device, workers
+        self.device = device or ("cuda" if runtime_manifest and runtime_manifest.get("backend") == "cuda" else "cpu" if runtime_manifest and runtime_manifest.get("backend") == "cpu" else "auto")
+        self.workers = workers
         self.runtime_manifest = copy.deepcopy(runtime_manifest)
         self.comparison_snapshot = comparison_snapshot or bool(
-            runtime_manifest and runtime_manifest.get("comparison_snapshot"))
+            runtime_manifest and runtime_manifest.get("comparison_snapshot")) or os.environ.get("IMAGE_TRIAGE_CLI_CULLER_VALIDATION") == "1"
         self.signals = CliCullerSignals()
         self._cancel = threading.Event()
         self._lock = threading.Lock()
@@ -178,6 +179,8 @@ class CliCullerRunTask(QRunnable):
                         raise event
                     if not isinstance(event, dict):
                         raise ValueError("Native worker event must be an object")
+                    diagnostics.write(json.dumps(event, ensure_ascii=True) + "\n")
+                    diagnostics.flush()
                     if complete is not None:
                         raise ValueError("Native worker sent an event after completion")
                     kind = event.get("event")
