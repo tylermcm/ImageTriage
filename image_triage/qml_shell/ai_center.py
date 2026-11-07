@@ -1,6 +1,6 @@
 """What the AI Center knows and does: is the AI runtime installed and does it start, is there a graphics card, is the Visual C++ runtime new enough,
 and which of the three models the cull uses (the face landmarker for the eyes-closed check, the MANIQA quality ranker and the Q-ReAlign appeal ranker)
-are on disk. It installs, repairs and removes them with the Widgets app's own code:
+are on disk. It installs, repairs and removes them with the shared code:
 
 * detection: `ai_runtime_packages.load_ai_runtime_installation_status`, `ai_platform.nvidia_gpu_name` and `vc_runtime_version`, and
   `ai_model_store.bundle_status` (size, pinned revision and file digests, not just "the folder exists");
@@ -230,7 +230,7 @@ class AiCenterBackend(QObject):
 
     def _start(self, kind: str, key: str, verb: str, work) -> bool:
         if self._job is not None:
-            return False                              # one install at a time, as the Widgets app does
+            return False                              # one install at a time, as the backend does
         self._cancel.clear()
         self._errors.pop(key, None)
         job = {"kind": kind, "key": key, "verb": verb, "pct": 0, "step": "Starting…"}

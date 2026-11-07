@@ -18,6 +18,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from image_triage.qml_shell.app import _configure_qt_dll_search
+
+_configure_qt_dll_search()
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 _SANDBOX = tempfile.TemporaryDirectory(prefix="image_triage_tests_")
@@ -131,30 +135,6 @@ def _per_test_hard_timeout(request):
             faulthandler.cancel_dump_traceback_later()
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _no_startup_update_check():
-    """A window schedules an update check 2.5 s after it is built; in a test session that is a real network request, and
-    it flips the "Check for updates" action while a test is looking at action state. No test relies on it (explicit
-    checks go through ``HelpUpdateController.check_for_updates``)."""
-    from image_triage.help_update_controller import HelpUpdateController
-
-    original = HelpUpdateController.check_for_updates_on_startup
-    HelpUpdateController.check_for_updates_on_startup = lambda self: None
-    yield
-    HelpUpdateController.check_for_updates_on_startup = original
-
-
-@pytest.fixture(autouse=True, scope="session")
-def _no_automatic_photocraft_process():
-    """UI tests use fake editor sessions, independent of installed binaries."""
-    from image_triage import preview_controller
-
-    original = preview_controller.detect_photocraft_executable
-    preview_controller.detect_photocraft_executable = lambda: None
-    yield
-    preview_controller.detect_photocraft_executable = original
-
-
 @pytest.fixture(autouse=True)
 def _forbid_real_mask_engine_worker(monkeypatch):
     real_popen = subprocess.Popen
@@ -170,47 +150,3 @@ def _forbid_real_mask_engine_worker(monkeypatch):
     guarded_popen.__wrapped__ = real_popen
     monkeypatch.setattr(subprocess, "Popen", guarded_popen)
     yield
-
-
-@pytest.fixture(scope="session")
-def _module_dialogs():
-    from tests.harness import install_dialog_guards
-
-    patcher = pytest.MonkeyPatch()
-    recorder = install_dialog_guards(patcher)
-    yield recorder
-    patcher.undo()
-
-
-@pytest.fixture
-def dialogs(_module_dialogs):
-    from PySide6.QtWidgets import QMessageBox
-
-    _module_dialogs.messages.clear()
-    _module_dialogs.question_answer = QMessageBox.StandardButton.Yes
-    return _module_dialogs
-
-
-@pytest.fixture(scope="session")
-def _shared_main_window(_module_dialogs):
-    # Building MainWindow costs seconds and leaks timers, so the whole session
-    # shares one instance; the main_window fixture resets its state per test.
-    from tests.harness import dispose_window, make_main_window
-
-    window = make_main_window()
-    yield window
-    dispose_window(window)
-
-
-@pytest.fixture
-def main_window(_shared_main_window, dialogs):
-    # MainWindow applies an app-wide palette/stylesheet; keep it from leaking
-    # into unrelated tests that share the QApplication.
-    from tests.harness import reset_window_state, restore_app_state, snapshot_app_state
-
-    snapshot = snapshot_app_state()
-    reset_window_state(_shared_main_window)
-    try:
-        yield _shared_main_window
-    finally:
-        restore_app_state(snapshot)

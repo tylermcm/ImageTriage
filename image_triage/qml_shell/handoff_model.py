@@ -1,13 +1,4 @@
-"""Deliver / Handoff Builder for the QML shell.
-
-The recipes, their wording and their storage are the Widgets app's own: `workflows.built_in_workflow_recipes`, `recipe_summary_lines`,
-`recipe_key_for_name`, the resize presets, the convert formats, the archive formats, and the saved recipes under the same settings key
-(`workflow/recipes`) as `window.MainWindow`, so a recipe saved here shows up there and the other way round. The scope is every photo
-the grid shows.
-
-**Running is real** (not for the sample photos of `--mock`): `run()` hands the recipe and the photos to the transfer cards (transfer_model.py), which
-start `workflow_runner.WorkflowRunner` once any question has been answered. In `--mock` the cards play a scripted progress and no file is touched.
-"""
+"""QML handoff plans and saved workflow recipes, backed by the shared workflow store."""
 from __future__ import annotations
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
@@ -29,7 +20,7 @@ from ..workflows import (
     recipe_summary_lines,
 )
 
-RECIPES_KEY = "workflow/recipes"          # window.MainWindow.WORKFLOW_RECIPES_KEY
+RECIPES_KEY = "workflow/recipes"          # shared workflow recipe key
 _ICON_EXPORT = "M12 15V4M8 8l4-4 4 4M5 14v4a2 2 0 002 2h10a2 2 0 002-2v-4"
 _ICON_BUNDLE = "M8 7h11v13H8zM5 4h11v3"
 _ICON_PACKAGE = "M3 7l9-4 9 4v10l-9 4-9-4zM3 7l9 4 9-4M12 11v10"
@@ -70,7 +61,7 @@ class HandoffModel(QObject):
         photos.countsChanged.connect(self._bump)
         photos.selectionChanged.connect(self._bump)
 
-    # -- storage (the Widgets app's key) ---------------------------------------------------------------------------------------
+    # -- storage (the shared key) ---------------------------------------------------------------------------------------
     def _load_saved(self) -> list[WorkflowRecipe]:
         return load_saved_workflow_recipes(str(self._settings.value(RECIPES_KEY, "", str)))
 

@@ -1,4 +1,4 @@
 {
-  "models": ["faces", "maniqa", "appeal"],
+  "models": ["faces", "maniqa", "appeal", "search"],
   "refine_scenes": true
 }

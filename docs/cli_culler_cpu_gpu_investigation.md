@@ -198,3 +198,69 @@ source pins remain unchanged.
 Applying this fix requires deliberately updating the CLI-Culler source pin and
 wheel provenance, then rerunning direct CLI parity and full-shoot validation.
 The previous unchanged-engine contract is preserved in the current candidate.
+
+## QML culling controls, November 5
+
+The source UI follows the supplied preparation-screen reference: four feature
+cards, Careful / Balanced / Strict, and a Fine-tune link. Detailed thresholds,
+keeper counts, device selection and Advanced JSON stay hidden until requested.
+Fine-tune closes when leaving preparation and stays closed on the next opening.
+
+Controls read defaults from the pinned isolated engine. Untouched settings and
+unexposed keys survive editing. Start analysis, Save changes, closing Fine-tune,
+and closing the preparation window validate and persist the selected profile.
+An invalid profile retains the previously saved settings and displays the error.
+
+Balanced uses the engine's default clipping, relative-blur and blink thresholds.
+Careful and Strict are new sensitivity presets for those three thresholds;
+they have not been calibrated against reviewed albums. They preserve existing
+quality floors, keeper counts and every other native setting. No engine or
+scoring-wheel changes are included.
+
+CPU and CUDA selections pass through to the worker and use separate score-cache
+namespaces. Runtime default preserves the manifest-selected backend. Semantic
+search toggles the native search model; background result loading imports the
+verified optional index into the host store. Import errors are reported without
+discarding decisions.
+
+The focused checks cover default preservation, feature toggles, profile
+save/reload and invalid-profile rejection, CPU/CUDA cache separation, clicking
+Fine-tune, committing slider drags on release, real native worker completion
+and cancellation, and search-index adapters. Synthetic-photo captures are in
+`logs/cli-culler-investigation/native-controls-reference.png` and
+`native-controls-finetune.png`. These source changes do not replace the portable
+release or resolve its previously observed Qt crash.
+
+## Photo search restored, November 6
+
+Semantic search is on in new default profiles, including when an older installed
+runtime manifest omits it. Explicitly saved profiles remain authoritative;
+turning search off and saving is preserved. The engine's own defaults and wheel
+remain unchanged.
+
+The top-bar field now searches photos directly. Commands have a separate button
+and keep Ctrl+K; Ctrl+F focuses photo search. Escape or the clear button removes
+the photo query. Commands do not consume or overwrite the photo query.
+
+The QML model applies filename matches immediately, then merges semantic and
+named-person hits from the existing shared search worker. Queries are debounced,
+late responses from replaced queries/folders are ignored, and results intersect
+the current filters and collection/person scope. A folder change clears the
+query. Without an index or text runtime, filename search remains usable and the
+field explains what is missing. Native index import refreshes the current query.
+
+The search worker now lives in `image_triage/unified_search_task.py`, shared by
+the QML shell and the existing backend controller. Search and native index
+imports resolve the installed managed TinyCLIP bundle instead of accidentally
+using the old cache's missing TinyCLIP path. Explicit model-path overrides are
+preserved.
+
+Validation includes typing into the rendered QML field, independent command
+palette use, clearing/search shortcuts, filter/scope composition, stale-query
+handling, saved opt-out preservation, canonical model lookup, and importing
+synthetic native vectors through the real SQL/search worker into the grid.
+A separate real smoke test indexed six synthetic JPEGs with the unchanged native
+engine, imported all six vectors, encoded a 512-dimensional TinyCLIP text query,
+and completed the query through the QML search bridge. This checks wiring, not
+search relevance on a real album. The source capture is
+`logs/cli-culler-investigation/photo-search-bar.png`.

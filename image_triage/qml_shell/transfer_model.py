@@ -1,8 +1,8 @@
 """The Move / Copy To Folder cards and the handoff's progress, for the QML shell.
 
-Wording follows the mockup (and the Widgets app's `ui/transfer_dialogs.py`): "Copy 12 items?", "Copying 12 items", "Copied 12 items".
+Wording follows the mockup (and the shared `ui/transfer_dialogs.py`): "Copy 12 items?", "Copying 12 items", "Copied 12 items".
 A handoff run is real: when `handoff_model` prepared a job (a recipe and real photos) the cards run it through `workflow_runner.WorkflowRunner` and follow
-its progress; a move or an archive asks first, as the Widgets app does. Without a job (`--mock`, the cards' test hook) `start()` plays a scripted progress
+its progress; a move or an archive asks first, as the backend does. Without a job (`--mock`, the cards' test hook) `start()` plays a scripted progress
 and no file is touched. See docs/qml_unwired.md.
 """
 from __future__ import annotations

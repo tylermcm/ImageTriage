@@ -74,7 +74,7 @@ def test_the_guide_lists_every_setting_with_its_words_and_is_searchable(qapp):
     reference.open("help")
     reference.setTopic("settings")
     text = " ".join(b.get("t", "") for b in reference.view["help"]["blocks"])
-    for label in ("Profile preset", "Delete behavior", "UI gamma", "Theme", "Show hidden folders", "Advance after Accept or Reject"):
+    for label in ("Profile preset", "Delete behavior", "UI gamma", "Theme", "Show hidden folders", "Advance after Winner, Keep or Reject"):
         assert label + ":" in text, label
     assert [b["t"] for b in reference.view["help"]["blocks"] if b["kind"] == "h"][:3] == ["General", "Appearance", "Browsing & editor"]
     reference.setQuery("gamma")

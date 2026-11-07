@@ -61,7 +61,9 @@ Window {
     readonly property real settledGridW: shell.width - rail.width - panelTarget - inspTarget
     readonly property bool sliding: panelW !== panelTarget || inspW !== inspTarget
     property real slideW: 0                                          // the layout width held while a panel slides (set as the slide starts)
-    readonly property real gridW: sliding ? slideW : settledGridW    // so the grid always ends up at the settled width, whatever happened on the way
+    // Maximizing at startup can enlarge the window during the first panel slide.
+    // The held width belongs to the old window size; never leave the new viewport uncovered.
+    readonly property real gridW: sliding ? Math.max(slideW, settledGridW, main.width) : settledGridW
     onSlidingChanged: if (sliding) slideW = Math.max(settledGridW, main.width)
     // Which edge the grid follows while a panel slides: the left panel pushes it by its left edge, the inspector by its right edge (the grid is
     // wider than the space it has for the moment, and the part that does not fit is clipped), so each panel carries the grid with it.
@@ -363,6 +365,7 @@ Window {
     Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; autoRepeat: false; enabled: editor.active || editor.state === "closing"; onActivated: editor.close() }
     Shortcut { sequence: "Escape"; enabled: UiState.zen && !viewer.shown; onActivated: win.runCommand("view.zen_mode") }
     Shortcut { sequence: "Ctrl+/"; enabled: settingsWindow.recording === ""; onActivated: reference.toggleKeys() }
+    Shortcut { sequence: "Ctrl+F"; enabled: settingsWindow.recording === "" && !UiState.settingsOpen && !UiState.paletteOpen && !viewer.shown && !editor.active; onActivated: top.focusSearch() }
     Shortcut { sequence: { void settings.shortcutRevision; return settings.seq("open_command_palette") }
                enabled: settingsWindow.recording === "" && !UiState.settingsOpen
                onActivated: { if (UiState.paletteOpen) UiState.paletteOpen = false; else UiState.openPalette("main") } }

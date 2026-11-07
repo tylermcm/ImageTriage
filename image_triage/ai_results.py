@@ -78,7 +78,7 @@ _SINGLETON_REJECT_PERCENTILE_THRESHOLD = 80.0
 def set_cull_thresholds(*, keeper_percentile: float, reject_percentile: float) -> None:
     """Update the bucket classifier's percentile thresholds at runtime.
 
-    Called by MainWindow at startup and whenever the user changes the
+    Called by the application at startup and whenever the user changes the
     "Keep top X%" / "Review band Y%" sliders in Settings -> AI. The next
     bundle load (or refresh) picks up the new thresholds.
     """

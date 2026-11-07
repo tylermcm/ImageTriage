@@ -43,7 +43,7 @@ def is_quick_view_launch_target(target: str) -> bool:
 def qml_argv_from_launch(argv: Sequence[str]) -> list[str]:
     """Translate a shell launch (``ImageTriage.exe <folder or image>``, as file associations send it) into QML shell arguments."""
 
-    qml_args = [arg for arg in argv[1:] if arg not in ("--widgets", "--widgets-popout")]
+    qml_args = list(argv[1:])
     if not qml_args or qml_args[0].startswith("-"):
         return qml_args
     target = Path(qml_args[0].strip().strip('"'))
@@ -54,7 +54,7 @@ def qml_argv_from_launch(argv: Sequence[str]) -> list[str]:
 
 
 def main() -> int:
-    """Start the QML application, including launches with retired UI selectors."""
+    """Start the QML application."""
     from image_triage.qml_shell.app import main as qml_main
 
     return qml_main(qml_argv_from_launch(sys.argv))

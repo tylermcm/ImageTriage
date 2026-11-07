@@ -1,6 +1,6 @@
 """The inspector's histograms: the real brightness and red, green and blue distribution of the selected photo.
 
-The numbers are the Widgets app's own (`review_tools.build_histogram_stats`, the same one the popout's inspection card draws, and its
+The numbers are the shared (`review_tools.build_histogram_stats`, the same one the popout's inspection card draws, and its
 `histogram_synopsis` sentence). A photo is read the way the grid reads it (`imaging.load_image_for_display`, the embedded preview for a RAW, at most
 512 px on the long edge for the counting), on one worker thread that skips photos the person has already moved past, so flipping through a folder never
 queues work. The 256 bins are folded into 64 and scaled to the tallest bin that is not pressed against an edge, so a clipped spike at 0 or 255 does not
@@ -8,7 +8,7 @@ flatten everything else. `histograms.get(path)` is what QML reads; `ready(path)`
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QSize
+from PySide6.QtCore import QObject, QSize, Slot
 
 from .photo_jobs import LatestPhotoJobs
 
@@ -40,6 +40,9 @@ def compute(path: str) -> dict | None:
     colour_peak = max(_peak(channels[key]) for key in ("r", "g", "b"))
     scales.update(r=colour_peak, g=colour_peak, b=colour_peak)
     out: dict = {key: [round(min(1.0, float(v) / scales[key]), 3) for v in channels[key]] for key in channels}
+    scope_peak = max(float(channels[key].max()) for key in ("r", "g", "b"))
+    for key in ("r", "g", "b"):
+        out["scope_" + key] = [float(value) / max(1, scope_peak) for value in channels[key]]
     out["summary"] = histogram_synopsis(stats)
     return out
 
@@ -55,3 +58,16 @@ class HistogramService(LatestPhotoJobs):
 
     def __init__(self, loader=None, parent: QObject | None = None) -> None:
         super().__init__(loader or compute, parent, CACHE_SIZE)
+        self._frames = {}
+
+    def publish_preview(self, path, counts):
+        self._frames[path] = counts
+        while len(self._frames) > 8:
+            self._frames.pop(next(iter(self._frames)))
+        self.ready.emit(path)
+
+    @Slot(str, result="QVariantMap")
+    def get(self, path):
+        if path.startswith("image://rawpreview/"):
+            return self._frames.get(path, {"ready": False})
+        return super().get(path)

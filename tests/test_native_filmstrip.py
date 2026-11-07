@@ -8,7 +8,6 @@ from PySide6.QtWidgets import QApplication
 
 from image_triage.models import ImageRecord
 from image_triage.photocraft_filmstrip import NativeFilmstrip
-from image_triage.preview import FullScreenPreview
 
 
 @pytest.fixture
@@ -150,19 +149,3 @@ def test_invalid_native_actions_are_not_acknowledged(adapter, kind, value):
     request = {"serial": 1, "generation": strip.generation, "kind": kind, "index": 0, "id": strip.identities[0], "value": value}
     strip._apply(strip.proc, strip.generation, {"generation": strip.generation, "request": request}, None)
     assert strip.ack == 0 and preview.selected == []
-
-
-def test_host_strip_is_detached_and_can_be_restored_without_recreating_it():
-    app = QApplication.instance() or QApplication([])
-    preview = FullScreenPreview()
-    try:
-        strip = preview._filmstrip
-        layout = strip.parentWidget().layout()
-        preview._photocraft_edit_active = True
-        preview.set_native_filmstrip(True)
-        assert layout.indexOf(strip) == -1 and strip.isHidden()
-        preview.set_native_filmstrip(False)
-        assert preview._filmstrip is strip and layout.indexOf(strip) >= 0
-    finally:
-        preview.close()
-        app.processEvents()

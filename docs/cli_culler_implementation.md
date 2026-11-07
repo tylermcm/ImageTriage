@@ -75,7 +75,7 @@ native JSON settings; `ai/cli_culler_settings_json` stores the exact profile.
 An unset profile uses:
 
 ```json
-{"models": ["faces", "maniqa", "appeal"], "refine_scenes": true}
+{"models": ["faces", "maniqa", "appeal", "search"], "refine_scenes": true}
 ```
 
 Omitted settings retain engine defaults, including the disabled quality floor,

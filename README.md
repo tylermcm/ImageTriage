@@ -40,10 +40,13 @@
 py -3 -m pip install -e .
 py -3 -m image_triage                     # the QML shell (the application)
 py -3 -m image_triage "D:\Photos\Shoot1"  # open a folder
-py -3 -m image_triage --widgets           # the original Widgets window (or set IMAGE_TRIAGE_UI=widgets)
 ```
 
 If the `py` launcher is not available on your machine, run the commands with your local Python executable instead.
+
+QML is the only application UI. The retired Widgets windows and launchers are
+removed. Python modules provide shared backends; screen implementations live in
+`image_triage/qml_shell/qml`. See `docs/qml_shell.md` for the current architecture.
 
 If you are updating an existing install, rerun the install command so dependencies stay in sync:
 

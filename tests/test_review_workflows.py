@@ -316,19 +316,6 @@ class ReviewWorkflowTests(unittest.TestCase):
             workflows._REVIEW_SCORING_CACHE_VERSION = original
         self.assertNotEqual(before, after)
 
-    def test_a_burst_suggestion_is_not_called_winner_on_the_card(self) -> None:
-        from types import SimpleNamespace
-
-        from image_triage.grid import ThumbnailGridView
-
-        label = ThumbnailGridView._review_keeper_label
-        self.assertEqual("Suggested", label(None, None, SimpleNamespace(best_in_group=True)))
-        self.assertEqual("", label(None, None, SimpleNamespace(best_in_group=False)))
-        top_pick = _ai_result(
-            "C:/shots/a.jpg", group_id="g", group_size=3, rank_in_group=1, score=0.9, normalized_score=95.0,
-            bucket=AIConfidenceBucket.OBVIOUS_WINNER,
-        )
-        self.assertEqual("Winner", label(None, top_pick, SimpleNamespace(best_in_group=True)))
 
     def test_build_pairwise_label_payload_uses_stable_relative_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

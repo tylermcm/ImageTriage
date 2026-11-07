@@ -55,32 +55,8 @@ def test_the_throwaway_key_is_not_the_apps_key():
     assert check_settings.CHECK_KEY != identity._REGISTRY_KEY and "Check" in check_settings.CHECK_KEY
 
 
-@pytest.mark.parametrize("name", CHECKS)
-def test_each_check_switches_before_it_first_touches_the_settings(name):
-    tree = ast.parse((REPO / "scripts" / name).read_text(encoding="utf-8"))
-    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
-    calls = sorted(
-        ((node.lineno, node.func.id) for node in ast.walk(main) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-         and node.func.id in {"use_throwaway_settings", "user_settings"}),
-    )
-    names = [name for _line, name in calls]
-    assert "use_throwaway_settings" in names, f"{name} never switches"
-    assert names.index("use_throwaway_settings") < names.index("user_settings"), f"{name} reads the settings before switching"
 
 
-@pytest.mark.parametrize("name", CHECKS)
-def test_each_check_s_stand_in_window_has_what_the_controller_asks_of_a_window(name):
-    """The controller keeps the photos' edit states in the window's thumbnail manager: a stand-in without one made
-    ``_refresh_photocraft_save`` fail inside its slot, so the grid was never told about a saved render."""
-    tree = ast.parse((REPO / "scripts" / name).read_text(encoding="utf-8"))
-    assigned = [
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Attribute) and t.attr == "_window" for t in node.targets)
-        and isinstance(node.value, ast.Call)
-    ]
-    assert assigned, f"{name} builds no stand-in window"
-    for node in assigned:
-        assert "thumbnail_manager" in {keyword.arg for keyword in node.value.keywords}, name
 
 
 def test_the_editor_a_check_launches_gets_a_private_profile(real_key, monkeypatch, tmp_path):

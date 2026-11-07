@@ -1,11 +1,4 @@
-"""Command palette data for the QML shell.
-
-The ranking is the Widgets palette's own (`ui.command_palette._rank_commands`, so a query orders results identically); shortcuts come
-from the shortcut registry plus the user's overrides; recent commands use the same settings key as the Widgets window
-(`commands/recent`). The command list is the Widgets controller's list of ids, sections, titles and keywords
-(`command_palette_controller.py`), minus the entries that need a live window (per-collection, per-preset and per-panel commands).
-Most commands are not wired to an action in the shell yet; see docs/qml_unwired.md.
-"""
+"""QML command descriptors, ranking, shortcut labels and recent commands."""
 from __future__ import annotations
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
@@ -143,7 +136,7 @@ class PaletteModel(QObject):
     @staticmethod
     def _load_shortcuts() -> dict[str, str]:
         try:
-            from ..ui.shortcuts import SHORTCUT_REGISTRY, load_shortcut_overrides
+            from ..shortcuts import SHORTCUT_REGISTRY, load_shortcut_overrides
 
             overrides = load_shortcut_overrides()
             return {attr: overrides.get(attr, default) for attr, _c, default, _d in SHORTCUT_REGISTRY}
@@ -151,7 +144,7 @@ class PaletteModel(QObject):
             return {}
 
     def _build(self) -> list:
-        from ..ui.command_palette import PaletteCommand
+        from ..palette_commands import PaletteCommand
 
         commands = []
         for command_id, section, title, attr, keywords in _COMMANDS:
@@ -200,7 +193,7 @@ class PaletteModel(QObject):
     def results(self, query: str, context: str = "main") -> list:
         """Rows for the list. Empty query: the recent commands first, then every command grouped by section (the order the sections
         were declared in). A query: the Widgets palette's ranking, as one flat list, with the matching text marked."""
-        from ..ui.command_palette import _normalize_query, _rank_commands
+        from ..palette_commands import _normalize_query, _rank_commands
 
         commands = self._visible(context)
         for command in commands:       # the Widgets palette ranks on the subtitle too (a toggle's On/Off, a preset's description)
@@ -243,7 +236,7 @@ class PaletteModel(QObject):
 
     @Slot(str, str, result=str)
     def countText(self, query: str, context: str = "main") -> str:
-        from ..ui.command_palette import _normalize_query, _rank_commands
+        from ..palette_commands import _normalize_query, _rank_commands
 
         commands = self._visible(context)
         shown = len(_rank_commands(commands, _normalize_query(query), tuple(self._recent))[:80])

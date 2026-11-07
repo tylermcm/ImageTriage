@@ -97,16 +97,12 @@ class FreezeAssetLayout:
         include_files = [
             (str(ROOT / "packaging" / "ai_runtime_locks"), "packaging/ai_runtime_locks"),
             (
-                str(ROOT / "image_triage" / "ui" / "assets" / "splash_background-v8.png"),
-                "lib/image_triage/ui/assets/splash_background-v8.png",
+                str(ROOT / "image_triage" / "assets" / "splash_background-v8.png"),
+                "lib/image_triage/assets/splash_background-v8.png",
             ),
             (
-                str(ROOT / "image_triage" / "ui" / "assets" / "app_icon-v5.ico"),
-                "lib/image_triage/ui/assets/app_icon-v5.ico",
-            ),
-            (
-                str(ROOT / "image_triage" / "ui" / "assets" / "checkbox_check.png"),
-                "lib/image_triage/ui/assets/checkbox_check.png",
+                str(ROOT / "image_triage" / "assets" / "app_icon-v5.ico"),
+                "lib/image_triage/assets/app_icon-v5.ico",
             ),
             # The QML shell loads its .qml files from beside its modules (qml_shell.app.QML_DIR).
             (str(ROOT / "image_triage" / "qml_shell" / "qml"), "lib/image_triage/qml_shell/qml"),

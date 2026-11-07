@@ -91,7 +91,7 @@ def main(argv: list[str]) -> None:
     # the largest frame leads: Pillow skips every size bigger than the image it is saving, and keeps the matching frame for each size it lists
     ico_frames = [frames[px] for px in sorted(ICO_SIZES, reverse=True)]
     for ico, png in (
-        (ROOT / "image_triage" / "ui" / "assets" / f"app_icon-{VERSION}.ico", ROOT / "image_triage" / "ui" / "assets" / f"app_icon-{VERSION}.png"),
+        (ROOT / "image_triage" / "assets" / f"app_icon-{VERSION}.ico", ROOT / "image_triage" / "assets" / f"app_icon-{VERSION}.png"),
         (ROOT / "build_assets" / "icons" / f"image_triage-{VERSION}.ico", ROOT / "build_assets" / "icons" / f"image_triage-{VERSION}.png"),
     ):
         ico_frames[0].save(ico, format="ICO", sizes=[(px, px) for px in ICO_SIZES], append_images=ico_frames[1:])

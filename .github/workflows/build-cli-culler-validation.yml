@@ -60,7 +60,7 @@ jobs:
         shell: pwsh
         run: |
           $env:CLI_CULLER_PYTHON = (Resolve-Path build/native-runtime/python/python.exe).Path
-          python -m pytest -q tests/test_default_ui_launch.py tests/test_qml_cli_culler.py tests/test_cli_culler_bridge.py tests/test_cli_culler_task.py tests/test_cli_culler_catalog.py tests/test_cli_culler_index.py tests/test_cli_culler_comparison.py *> connector-tests.log
+          python -m pytest -q tests/test_qml_only_architecture.py tests/test_default_ui_launch.py tests/test_qml_cli_culler.py tests/test_cli_culler_bridge.py tests/test_cli_culler_task.py tests/test_cli_culler_catalog.py tests/test_cli_culler_index.py tests/test_cli_culler_comparison.py *> connector-tests.log
           $result = $LASTEXITCODE
           Get-Content connector-tests.log -Tail 150
           exit $result

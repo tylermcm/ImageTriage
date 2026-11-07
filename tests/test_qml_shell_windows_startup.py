@@ -13,7 +13,7 @@ def test_dialog_plugin_loads_in_fresh_process():
         [sys.executable, "-c", """
 from image_triage.qml_shell.app import _configure_qt_dll_search
 _configure_qt_dll_search()
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QGuiApplication as QApplication
 from PySide6.QtCore import QUrl
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6 import QtQuick

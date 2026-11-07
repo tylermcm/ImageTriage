@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Shapes
 import QtQuick.Window
+import QtQuick.Controls
 
 // The slim application bar: brand icon, menus, the command search, theme and inspector toggles, window controls.
 // The window has no system frame, so this bar is its title bar: dragging an empty part moves the window (the system's own move, so
@@ -28,6 +29,7 @@ Rectangle {
     readonly property real brandW: UiState.topAligned ? 72 : 30
     property real helpX: 205
     function setHelpX(v) { helpX = v }                  // where the Help menu opens: under the Help button
+    function focusSearch() { searchInput.forceActiveFocus(); searchInput.selectAll() }
 
     Item {
         id: brand
@@ -81,22 +83,41 @@ Rectangle {
         width: Math.max(0, Math.min(460, avail)); height: 28; radius: 9
         x: UiState.compact ? left0 : Math.max(left0, Math.min((parent.width - width) / 2, rightRow.x - 6 - width))      // centred on the window while there is room (the mockup's auto margins left it off-centre on wide screens); compact: margin 0
         anchors.verticalCenter: parent.verticalCenter
-        color: ch.hovered ? theme.s2 : theme.base; border.color: ch.hovered ? theme.line : theme.lineSoft
+        color: ch.hovered ? theme.s2 : theme.base; border.color: searchInput.activeFocus ? theme.accent : ch.hovered ? theme.line : theme.lineSoft
         Behavior on color { ColorAnimation { duration: 150 } }
-        Row {
-            anchors.verticalCenter: parent.verticalCenter; x: 10; spacing: 8
-            Icon { name: "search"; size: 18; color: theme.fg; anchors.verticalCenter: parent.verticalCenter }
-            Text { text: "Search photos, or run a command"; color: theme.fg; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
+        Icon { x: 10; name: "search"; size: 16; color: theme.fg3; anchors.verticalCenter: parent.verticalCenter }
+        TextInput {
+            id: searchInput; objectName: "photoSearchInput"
+            x: 34; width: Math.max(0, commandButton.x - x - (clearSearch.visible ? 27 : 8)); anchors.verticalCenter: parent.verticalCenter
+            color: theme.fg; font.pixelSize: 13; clip: true; selectByMouse: true
+            text: photos.searchText
+            onTextEdited: photos.setSearch(text)
+            Keys.onEscapePressed: { photos.setSearch(""); focus = false }
+            Text { visible: !parent.text; width: parent.width; elide: Text.ElideRight; text: "Search photos…"; color: theme.fg3; font: parent.font }
+            Accessible.name: "Search photos"; Accessible.description: photos.searchStatus
+        }
+        Item { id: clearSearch; objectName: "clearPhotoSearch"; visible: !!photos.searchText; width: 24; height: 26; x: commandButton.x - width - 4
+            Icon { anchors.centerIn: parent; name: "x"; size: 13; color: theme.fg3; path: "M6 6l12 12M6 18L18 6" }
+            TapHandler { onTapped: { photos.setSearch(""); searchInput.forceActiveFocus() } }
+            HoverHandler { cursorShape: Qt.PointingHandCursor }
+            Accessible.role: Accessible.Button; Accessible.name: "Clear photo search"
         }
         Text {
+            id: commandButton; objectName: "searchCommandsButton"
             anchors.right: parent.right; anchors.rightMargin: 7; anchors.verticalCenter: parent.verticalCenter
-            text: "Ctrl K"; color: theme.fg3; font.pixelSize: 10; font.weight: Font.Medium; leftPadding: 6; rightPadding: 6; topPadding: 1.5; bottomPadding: 1.5
+            text: cmd.width > 300 ? "Commands · Ctrl K" : "Ctrl K"; color: theme.fg3; font.pixelSize: 10; font.weight: Font.Medium; leftPadding: 6; rightPadding: 6; topPadding: 1.5; bottomPadding: 1.5
             Rectangle { anchors.fill: parent; z: -1; radius: 5; color: "transparent"; border.color: theme.line }
             Rectangle { x: 1; y: parent.height - 2; width: parent.width - 2; height: 1.5; radius: 1; color: theme.line }
+            TapHandler { onTapped: UiState.openPalette("main") }
+            HoverHandler { cursorShape: Qt.PointingHandCursor }
+            Accessible.role: Accessible.Button; Accessible.name: "Open command palette"
         }
-        HoverHandler { id: ch; cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: UiState.openPalette("main") }
-        Accessible.role: Accessible.Button; Accessible.name: "Search photos or run a command"
+        HoverHandler { id: ch }
+        ToolTip { id: searchTip; visible: searchInput.activeFocus && !!photos.searchText && !!photos.searchStatus
+            text: photos.searchStatus; width: Math.min(480, implicitWidth)
+            contentItem: Text { text: searchTip.text; color: theme.fg2; font.pixelSize: 12; wrapMode: Text.WordWrap }
+            background: Rectangle { radius: 8; color: theme.s2; border.color: theme.lineSoft }
+        }
     }
     Row {
         id: rightRow

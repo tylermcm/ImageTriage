@@ -54,7 +54,7 @@ def run(window, command):
 
 
 def qapp_of(_window):
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QGuiApplication as QApplication
 
     return QApplication.instance()
 

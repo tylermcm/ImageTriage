@@ -1,11 +1,4 @@
-"""Which folder (or virtual scope) is open, and the review session that belongs to it.
-
-These six values used to be plain attributes on ``MainWindow``: 271 reads of ``_current_folder`` alone, from the window
-and from five controllers reaching into it. They now live here, with one object as the single writer, so a controller can
-hold the session instead of the window (docs/mainwindow_decomposition_plan.md, DC-3.2).
-
-UI-free by design (QtCore only): it is declared so in ``docs/architecture_ratchet.json``.
-"""
+"""Shared per-folder session state and forwarding properties for backend owners."""
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal
@@ -92,8 +85,7 @@ class FolderSession(QObject):
 def session_field(name: str) -> property:
     """A property for a class that still exposes ``FolderSession.<name>`` under its old attribute name.
 
-    The owner must have a ``_folder_session``. ``MainWindow`` uses it for the transitional shims; a test stub host does
-    the same so that unbound ``MainWindow`` methods keep working on it.
+    The owner must have a ``_folder_session``. Consumers can expose the session through this forwarding descriptor.
     """
 
     def getter(self):

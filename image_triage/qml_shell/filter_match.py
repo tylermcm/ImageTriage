@@ -1,12 +1,12 @@
-"""Applying the Advanced filters query to the open folder's photos with the Widgets app's own rule (`filtering.matches_record_query`).
+"""Applying the Advanced filters query to the open folder's photos with the shared rule (`filtering.matches_record_query`).
 
 The shell's photo model keeps the decision and rating part of a query itself (they are what the rail and the floating bar filter on too), and RAW or JPEG for the
 sample page's photos. Everything else a query can say is decided here, for the photos read from a folder (a row with its scanner `record`):
 
 - file types (RAW, JPEG, PSD, TIFF, FITS, STL, Edited, Other), the Edited quick filter, and the folder text: from the record;
-- AI states, the AI Top Picks and AI Grouped quick filters: from the folder's saved AI report (`ai_scores.py`), so with no report they match nothing, as in the Widgets app;
+- AI states, the AI Top Picks and AI Grouped quick filters: from the folder's saved AI report (`ai_scores.py`), so with no report they match nothing, as in the backend;
 - camera, lens, orientation, capture dates, ISO and focal length: from each photo's EXIF (`metadata.load_capture_metadata`), read on a worker thread the first
-  time a query needs them. Until a photo's turn comes it does not match (the Widgets app's rule), so a big folder fills in as the reading goes.
+  time a query needs them. Until a photo's turn comes it does not match (the shared rule), so a big folder fills in as the reading goes.
 
 What it cannot decide is still stored in the query and counted as "not applied": Smart Groups, Duplicates, AI Disagreements, AI Ingested and AI Prefilter Dumped
 (they need the review intelligence and the AI workflow), tags (the shell has none), and the search confidence.

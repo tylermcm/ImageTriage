@@ -1,6 +1,6 @@
 # Splash artwork source
 
-`scene.html` draws the startup splash (`image_triage/ui/assets/splash_background-v8.png`).
+`scene.html` draws the startup splash (`image_triage/assets/splash_background-v8.png`).
 The ring, type, icons, notes and frames are code; the photos inside the frames are the
 cropped `*.png` files here (taken from the earlier splash).
 

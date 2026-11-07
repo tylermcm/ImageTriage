@@ -112,10 +112,10 @@ Item {
         signal clicked()
         width: 26; height: 26
         activeFocusOnTab: true
-        Rectangle { anchors.fill: parent; radius: 7; color: button.checked ? Qt.alpha(theme.accent, 0.14) : Qt.alpha(theme.lift, bh.hovered || button.activeFocus ? 0.08 : 0); border.width: button.activeFocus ? 1 : 0; border.color: theme.accent }
-        Icon { anchors.centerIn: parent; name: button.icon; size: 14; color: button.checked ? theme.accentFg : theme.fg3 }
+        Rectangle { anchors.fill: parent; radius: 7; color: Qt.alpha(theme.lift, bh.hovered ? 0.08 : 0); border.width: button.activeFocus ? 1 : 0; border.color: theme.accent }
+        Icon { objectName: "libraryButtonIcon"; anchors.centerIn: parent; name: button.icon; size: 14; color: button.checked ? theme.rej : theme.fg3; filled: button.checked }
         HoverHandler { id: bh; cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: { button.forceActiveFocus(); button.clicked() } }
+        TapHandler { onTapped: button.clicked() }
         Keys.onSpacePressed: clicked()
         Keys.onReturnPressed: clicked()
         Tip { text: button.tip; show: bh.hovered; leftSide: true }
@@ -182,6 +182,7 @@ Item {
             readonly property bool on: UiState.tab === "lib"
             y: head.height + pinnedSearch.height + pinnedDrives.height; width: parent.width; height: Math.max(0, parent.height - y)
             contentHeight: libCol.implicitHeight + 24; clip: true; boundsBehavior: Flickable.StopAtBounds
+            layer.enabled: panel.drivesPinned  // keep scrolled tree icons inside the viewport below the pinned header
             ScrollBar.vertical: ScrollBar {
                 width: 6; policy: ScrollBar.AsNeeded
                 contentItem: Rectangle { implicitWidth: 6; radius: 3; color: Qt.alpha(theme.fg, 0.28) }
@@ -245,7 +246,9 @@ Item {
                         Row { anchors.verticalCenter: parent.verticalCenter; x: 10; spacing: 8
                             Icon { name: "search"; size: 18; color: theme.fg3; anchors.verticalCenter: parent.verticalCenter }
                             TextInput { id: fieldIn; objectName: "libraryFolderSearch"; width: 200; color: theme.fg; font.pixelSize: 13; clip: true; anchors.verticalCenter: parent.verticalCenter; selectByMouse: true
+                                text: libraryNav.query
                                 onTextEdited: libraryNav.setQuery(text)
+                                onAccepted: libraryNav.openQuery()
                                 Text { visible: !parent.text && !parent.activeFocus; text: "Find a folder"; color: theme.fg3; font: parent.font }
                                 Accessible.name: "Find a folder" }
                         }
@@ -347,6 +350,7 @@ Item {
                         model: libraryNav.treeModel
                         delegate: PanelRow {
                             id: fr
+                            objectName: "libraryFolderRow"
                             required property string folder
                             required property string title
                             required property string photos
@@ -356,7 +360,10 @@ Item {
                             required property bool canOpen
                             icon: glyph; text: title; count: photos; indent: depth * 18; current: here
                             // the chevron opens or closes the folder in the tree, the rest of the row shows its photos
-                            TapHandler { onTapped: (point) => { if (fr.canOpen && point.position.x < 16 + fr.indent + 24) libraryNav.toggle(fr.folder); else libraryNav.openFolder(fr.folder) } }
+                            TapHandler {
+                                onTapped: (point) => { if (tapCount > 1) return; if (fr.canOpen && point.position.x < 16 + fr.indent + 24) libraryNav.toggle(fr.folder); else libraryNav.openFolder(fr.folder) }
+                                onDoubleTapped: (point) => { if (fr.canOpen && point.position.x >= 16 + fr.indent + 24) libraryNav.expand(fr.folder) }
+                            }
                             TapHandler { acceptedButtons: Qt.RightButton; onTapped: libMenu.show(fr, fr.folder) }
                             Component.onCompleted: if (here) lib.reveal(fr)
                             onCurrentChanged: if (current) lib.reveal(fr)

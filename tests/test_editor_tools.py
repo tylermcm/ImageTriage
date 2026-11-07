@@ -72,15 +72,6 @@ def test_a_mask_job_with_its_model_is_left_for_its_handler_and_super_resolution_
     assert started.poll(proc(lane)) is True and lane.of("claim") == [4] and lane.of("finish")[0]["ok"] is True
 
 
-def test_the_window_shows_why_a_mask_job_was_blocked(main_window, monkeypatch) -> None:
-    shown: list[str] = []
-    bar = main_window.statusBar()
-    monkeypatch.setattr(tools, "installed_models", lambda: frozenset())  # whatever this PC has installed, none of the editor models are
-    monkeypatch.setattr(bar, "showMessage", lambda text, timeout=0: shown.append(text))
-    runner = main_window._preview_ctl._host_jobs
-    lane = Lane({"id": 5, "kind": "sceneMasks"})
-    assert runner.poll(proc(lane)) is False
-    assert shown and "Landscape masks" in shown[-1] and "Scene regions" in shown[-1]
 
 
 class ToolsLane(Lane):

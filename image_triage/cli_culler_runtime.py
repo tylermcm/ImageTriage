@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import os
 from pathlib import Path
 import subprocess
@@ -27,9 +28,17 @@ def load_native_runtime() -> dict:
 
 def native_settings(settings, manifest: dict) -> dict:
     text = settings.value("ai/cli_culler_settings_json", "", type=str)
-    selected = json.loads(text) if text else manifest["default_settings"]
+    selected = json.loads(text) if text else copy.deepcopy(manifest["default_settings"])
     if not isinstance(selected, dict):
         raise ValueError("Native culler settings must be a JSON object")
+    # Existing installed manifests predate the app's search-on default. Saved
+    # profiles, including an explicit empty model list, remain authoritative.
+    if not text:
+        models = selected.get("models", [])
+        if isinstance(models, str):
+            models = [item.strip() for item in models.split(",") if item.strip()]
+        if "all" not in models and "search" not in models:
+            selected["models"] = [*models, "search"]
     return selected
 
 

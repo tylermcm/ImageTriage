@@ -29,7 +29,7 @@ NAMES = ["DSC_4201", "DSC_4203", "DSC_4207", "DSC_4210", "DSC_4214", "DSC_4219",
 
 @pytest.fixture(scope="module")
 def qapp():
-    from PySide6.QtWidgets import QApplication   # the shell is a widgets application: the popout is a Widgets window
+    from PySide6.QtGui import QGuiApplication as QApplication
     return QCoreApplication.instance() or QApplication([])
 
 

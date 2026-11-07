@@ -7,7 +7,7 @@ import time
 import pytest
 from PIL import Image
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QGuiApplication as QApplication
 
 from image_triage.cli_culler_results import native_ai_bundle
 from image_triage.qml_shell.cull_native import NativeCullRun
@@ -77,6 +77,7 @@ def test_qml_native_run_completes_and_reloads_exact_decisions(tmp_path, monkeypa
     photo = tmp_path / "frame.jpg"
     Image.new("RGB", (300, 200), (40, 100, 160)).save(photo)
     settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    settings.setValue("ai/cli_culler_settings_json", '{"models": []}')
     run = NativeCullRun(settings)
     completed, errors, progress = [], [], []
     run.finished.connect(lambda *args: completed.append(args))

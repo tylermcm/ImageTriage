@@ -30,7 +30,7 @@ NAMES = ["DSC_4201", "DSC_4203", "DSC_4207", "DSC_4210", "DSC_4214", "DSC_4219",
 
 @pytest.fixture(scope="module")
 def qapp():
-    from PySide6.QtWidgets import QApplication   # the shell is a widgets application: the popout is a Widgets window
+    from PySide6.QtGui import QGuiApplication as QApplication
     return QCoreApplication.instance() or QApplication([])
 
 
@@ -231,7 +231,7 @@ def test_searching_the_guide_matches_labels_and_key_names(ref):
 
 
 def test_the_guide_reads_the_users_real_overrides(qapp, photos, monkeypatch):
-    import image_triage.ui.shortcuts as shortcuts
+    import image_triage.shortcuts as shortcuts
 
     monkeypatch.setattr(shortcuts, "load_shortcut_overrides", lambda: {"undo": "Ctrl+Alt+Z", "open_folder": "Ctrl+Shift+O"})
     ref = ReferenceModel(photos, ToastModel(parent=qapp), memory=False, parent=qapp)
@@ -243,7 +243,7 @@ def test_the_guide_reads_the_users_real_overrides(qapp, photos, monkeypatch):
 
 
 def test_every_registry_action_the_guide_names_exists():
-    from image_triage.ui.shortcuts import SHORTCUT_REGISTRY
+    from image_triage.shortcuts import SHORTCUT_REGISTRY
 
     known = {name for name, _c, _d, _n in SHORTCUT_REGISTRY}
     named = {attr for _cat, rows in content.KEY_GROUPS for _l, attr, _k in rows if attr}

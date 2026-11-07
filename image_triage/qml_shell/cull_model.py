@@ -103,6 +103,7 @@ class CullModel(QObject):
         self._native = not memory and enabled(self._settings)
         self._native_progress = ("Starting analysis", 0, 0)
         self._native_error = ""
+        self._native_controls = None
         cpu = False if memory else bool(self._settings.value(CPU_KEY, False, type=bool))
         self._s = self._defaults(cpu)
         sens = "balanced" if memory else str(self._settings.value(SENS_KEY, "balanced", str))
@@ -453,6 +454,19 @@ class CullModel(QObject):
                               runPct=percent, runEta="Current stage", notes=[],
                               nativeSettings=self._native_settings_text())
             self._view["nativeError"] = self._native_error
+            self._view["nativeGroups"] = self._native_controls.groups() if self._native_controls else []
+            self._view["nativeDirty"] = bool(self._native_controls and self._native_controls.dirty)
+            self._view["nativeDevice"] = str(self._settings.value("ai/cli_culler_device", "auto")) if self._settings else "auto"
+            if self._native_controls:
+                controls = self._native_controls
+                from .native_cull_controls import PRESETS as native_presets
+                values = tuple(controls.value(k) for k in ("gates.clip_region_reject", "gates.blur_ratio", "blink_threshold"))
+                self._view["nativePreset"] = next((list(native_presets).index(k) for k, v in native_presets.items() if values == v), -1)
+                self._view["nativeFeatures"] = [
+                    {"key": "cleanup", "title": "Cleanup and stacks", "description": "Groups captures into bursts, brackets and scenes, then checks exposure, clipping and sharpness. Your photos stay unchanged.", "icon": "stack", "on": True, "fixed": True},
+                    {"key": "faces", "title": "Face and eyes-closed check", "description": "Finds prominent faces and checks closed eyes. The selected thresholds are available in Fine-tune.", "icon": "eye", "on": controls.value("models.faces"), "fixed": False},
+                    {"key": "search", "title": "Semantic search", "description": "Makes this folder searchable in everyday words, such as ‘red lanterns’ or ‘a dog on a beach’.", "icon": "search", "on": controls.value("models.search"), "fixed": False},
+                    {"key": "ranking", "title": "Ranking · optional", "description": "Compares frames using technical quality and appeal. Keep counts and quality thresholds stay at your saved values.", "icon": "bars", "on": controls.value("models.maniqa") or controls.value("models.appeal"), "fixed": False}]
             self._view["revNote"] = "The culler's decisions are suggestions. Review them before Apply."
         self._rev += 1
         self.changed.emit()
@@ -460,7 +474,7 @@ class CullModel(QObject):
 
     def _people_tile(self) -> dict:
         """How many people the folder's face index holds, and how many faces they come from: the way to tell whether face detection did anything.
-        Read from the same database the People page uses (the Widgets app's folder database); 0 when the folder has no face index yet."""
+        Read from the same database the People page uses (the shared folder database); 0 when the folder has no face index yet."""
         folder = self._photos.folder_dir() if self._real else ""
         people = faces = 0
         if folder and self._s["done"]:
@@ -646,7 +660,11 @@ class CullModel(QObject):
     def _native_settings_text(self) -> str:
         from ..cli_culler_runtime import load_native_runtime, native_settings
         try:
-            return json.dumps(native_settings(self._settings, load_native_runtime()), indent=2)
+            if self._native_controls is None:
+                from .native_cull_controls import NativeCullControls
+                runtime = load_native_runtime()
+                self._native_controls = NativeCullControls.load(runtime, native_settings(self._settings, runtime))
+            return json.dumps(self._native_controls.draft, indent=2)
         except Exception as error:
             self._native_error = str(error)
             return "{}"
@@ -660,6 +678,9 @@ class CullModel(QObject):
                 raise ValueError("Culling settings must be a JSON object")
             validate_native_settings(load_native_runtime()["python"], value)
             self._settings.setValue("ai/cli_culler_settings_json", json.dumps(value))
+            if self._native_controls is not None:
+                self._native_controls.draft = value
+                self._native_controls.dirty = False
         except Exception as error:
             self._native_error = str(error)
             self._rebuild()
@@ -667,6 +688,44 @@ class CullModel(QObject):
         self._native_error = ""
         self._rebuild()
         return True
+
+    @Slot(str, "QVariant")
+    def setNativeValue(self, key, value):
+        try:
+            self._native_controls.set(key, value)
+            self._native_error = ""
+        except (ValueError, TypeError) as error:
+            self._native_error = str(error)
+        self._rebuild()
+
+    @Slot(str)
+    def setNativePreset(self, name):
+        if name in ("careful", "balanced", "strict") and self._native_controls:
+            self._native_controls.preset(name)
+            self._rebuild()
+
+    @Slot(str)
+    def toggleNativeFeature(self, name):
+        if not self._native_controls:
+            return
+        controls = self._native_controls
+        if name in ("faces", "search"):
+            controls.set("models." + name, not controls.value("models." + name))
+        elif name == "ranking":
+            on = not (controls.value("models.maniqa") or controls.value("models.appeal"))
+            controls.set("models.maniqa", on)
+            controls.set("models.appeal", on)
+        self._rebuild()
+
+    @Slot(result=bool)
+    def saveNativeDraft(self):
+        return self.saveNativeSettings(self._native_settings_text())
+
+    @Slot(str)
+    def setNativeDevice(self, device):
+        if device in ("auto", "cpu", "cuda") and self._settings:
+            self._settings.setValue("ai/cli_culler_device", device)
+            self._rebuild()
 
     @Slot(str, int, int)
     def _native_progress_changed(self, label, done, total):
@@ -703,6 +762,9 @@ class CullModel(QObject):
 
     @Slot()
     def close(self) -> None:
+        if self._native and self._native_controls and self._native_controls.dirty:
+            if not self.saveNativeDraft():
+                return
         self._install.stop()
         if self._s["window"] == "center" and self._s["back"]:
             self._set(window="cull", back=False)
@@ -890,7 +952,7 @@ class CullModel(QObject):
         self._set(stage=st, p=p)
 
 
-    # -- the real run: the Widgets app's cascade ---------------------------------------------------------------------------------
+    # -- the real run: the shared cascade ---------------------------------------------------------------------------------
     def _ranking_decision(self):
         """Which of the eyes check and the two rankers run: the Widgets' own rule (`cascade.launch.decide_ranking`) with what this window's switches say."""
         from dataclasses import replace
@@ -918,6 +980,8 @@ class CullModel(QObject):
 
     def _start_real(self) -> None:
         if self._native:
+            if not self.saveNativeDraft():
+                return
             self._real, self._outcomes, self._picks, self._flags, self._stacks = True, {}, set(), {}, []
             self._token += 1
             self._t0 = time.monotonic()
@@ -951,7 +1015,7 @@ class CullModel(QObject):
             self._start_semantic(records)
 
     def _start_semantic(self, records: list) -> None:
-        """Semantic search for the folder: the Widgets app's own background indexer (TinyCLIP embeddings into the folder's aiculler database), started
+        """Semantic search for the folder: the shared background indexer (TinyCLIP embeddings into the folder's aiculler database), started
         beside the cull. Best effort: without the runtime or the image model it stays quiet, and filename search remains the fallback."""
         folder = self._photos.folder_dir()
         if not folder or not records:

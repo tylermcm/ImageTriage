@@ -219,7 +219,7 @@ class MenuModel(QObject):
             QGuiApplication.clipboard().setText(text)
 
     def _open_with(self, how: str, path: str, name: str) -> None:
-        """Open the photo in the system's default app, or ask the system which app (the Widgets app's `shell_actions`)."""
+        """Open the photo in the system's default app, or ask the system which app (the shared `shell_actions`)."""
         if self._memory:
             self._toasts.push("info", f"Would open {name}", "Not done while the sample data is on.")
             return

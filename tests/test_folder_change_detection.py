@@ -33,7 +33,6 @@ from image_triage.catalog import CatalogRepository
 from image_triage.catalog.schema import CATALOG_MIGRATIONS, LATEST_CATALOG_SCHEMA_VERSION
 from image_triage.models import ImageRecord, SortMode
 from image_triage.scanner import FolderModifiedCheckTask, FolderScanTask, folder_modified_ns
-from tests.harness import make_jpegs, open_folder, pump_until
 
 
 def _record(folder: Path, name: str) -> ImageRecord:
@@ -218,15 +217,6 @@ class _StubCheckTask(QRunnable):
         return None
 
 
-@pytest.fixture
-def window(dialogs):
-    from tests.test_preview_lazy_build import _fresh_window
-
-    with _fresh_window() as win:
-        try:
-            yield win
-        finally:
-            win._folder_watch_refresh_timer.stop()  # a queued refresh must not fire during disposal
 
 
 def _ready_for_a_check(win, folder: Path) -> None:
@@ -240,117 +230,3 @@ def _ready_for_a_check(win, folder: Path) -> None:
     win._folder_check_task = None
     win._folder_check_token = -1
     win._folder_check_last_started = 0.0
-
-
-@pytest.mark.parametrize(
-    "spoil",
-    [
-        pytest.param(lambda w: setattr(w, "_watch_current_folder_enabled", False), id="watching-switched-off"),
-        pytest.param(lambda w: setattr(w, "_scope_kind", "collection"), id="not-a-folder-scope"),
-        pytest.param(lambda w: setattr(w, "_current_folder", ""), id="no-folder"),
-        pytest.param(lambda w: setattr(w, "_scan_in_progress", True), id="scan-running"),
-        pytest.param(lambda w: setattr(w, "_folder_dir_mtime_ns", None), id="no-baseline-yet"),
-        pytest.param(lambda w: setattr(w, "_is_slow_source_folder", lambda _f=None: False), id="local-drive-has-a-watcher"),
-    ],
-)
-def test_activation_checks_nothing_unless_every_condition_holds(window, tmp_path, monkeypatch, spoil) -> None:
-    _StubCheckTask.created.clear()
-    monkeypatch.setattr("image_triage.scan_controller.FolderModifiedCheckTask", _StubCheckTask)
-    _ready_for_a_check(window, tmp_path)
-    spoil(window)
-    window._scan.check_folder_changed_on_activation()
-    assert _StubCheckTask.created == [] and window._folder_check_task is None
-
-
-def test_activation_starts_one_check_and_debounces_focus_flaps(window, tmp_path, monkeypatch) -> None:
-    _StubCheckTask.created.clear()
-    monkeypatch.setattr("image_triage.scan_controller.FolderModifiedCheckTask", _StubCheckTask)
-    _ready_for_a_check(window, tmp_path)
-    window._scan.check_folder_changed_on_activation()
-    assert _StubCheckTask.created == [(str(tmp_path), window._scan_token)]
-    window._scan.check_folder_changed_on_activation()  # in flight for this scan: nothing new
-    assert len(_StubCheckTask.created) == 1
-    window._folder_check_task = None  # it came back...
-    window._scan.check_folder_changed_on_activation()  # ...but five seconds have not passed
-    assert len(_StubCheckTask.created) == 1
-    window._folder_check_last_started -= 6.0
-    window._scan.check_folder_changed_on_activation()
-    assert len(_StubCheckTask.created) == 2
-
-
-def test_a_different_modified_time_queues_the_watcher_refresh(window, tmp_path) -> None:
-    _ready_for_a_check(window, tmp_path)
-    window._folder_watch_refresh_pending = False
-    window._folder_check_token = window._scan_token
-    window._scan.handle_folder_modified_checked(str(tmp_path), window._scan_token, 2000)
-    assert window._folder_watch_refresh_pending is True
-    assert window._folder_check_task is None
-
-
-@pytest.mark.parametrize(
-    "case",
-    ["same-time", "unreachable", "stale-scan", "scan-running", "other-folder"],
-)
-def test_no_refresh_when_nothing_changed_or_the_answer_is_stale(window, tmp_path, case) -> None:
-    _ready_for_a_check(window, tmp_path)
-    window._folder_watch_refresh_pending = False
-    folder, token, modified = str(tmp_path), window._scan_token, 2000
-    if case == "same-time":
-        modified = 1000
-    elif case == "unreachable":
-        modified = None
-    elif case == "stale-scan":
-        token = window._scan_token - 1
-    elif case == "scan-running":
-        window._scan_in_progress = True
-    elif case == "other-folder":
-        folder = str(tmp_path / "elsewhere")
-    window._scan.handle_folder_modified_checked(folder, token, modified)
-    assert window._folder_watch_refresh_pending is False
-
-
-def test_an_old_answer_does_not_clear_the_marker_of_a_newer_check(window, tmp_path) -> None:
-    _ready_for_a_check(window, tmp_path)
-    marker = object()
-    window._folder_check_task = marker
-    window._folder_check_token = window._scan_token
-    window._scan.handle_folder_modified_checked(str(tmp_path), window._scan_token - 1, 2000)
-    assert window._folder_check_task is marker
-
-
-def test_returning_to_the_app_runs_the_check_and_other_state_changes_do_not(window, monkeypatch) -> None:
-    calls: list[int] = []
-    monkeypatch.setattr(window._scan, "check_folder_changed_on_activation", lambda: calls.append(1))
-    window._scan.handle_application_state_changed(Qt.ApplicationState.ApplicationInactive)
-    window._scan.handle_application_state_changed(Qt.ApplicationState.ApplicationSuspended)
-    assert calls == []
-    window._scan.handle_application_state_changed(Qt.ApplicationState.ApplicationActive)
-    assert calls == [1]
-    # and the signal really is wired to it
-    QApplication.instance().applicationStateChanged.emit(Qt.ApplicationState.ApplicationActive)
-    assert calls == [1, 1]
-
-
-def test_end_to_end_new_files_on_a_network_style_folder_appear_when_the_user_returns(window, tmp_path) -> None:
-    folder = tmp_path / "nas_shoot"
-    make_jpegs(folder, [f"IMG_{index}.jpg" for index in range(3)])
-    window._is_slow_source_folder = lambda _folder=None: True  # behave as a network drive
-    open_folder(window, folder, 3)
-    baseline = window._folder_dir_mtime_ns
-    assert baseline == folder_modified_ns(str(folder)), "the finished scan records the time it was taken at"
-
-    # Nothing changed: coming back to the app does not refresh.
-    window._folder_check_last_started = 0.0
-    window._scan.check_folder_changed_on_activation()
-    assert pump_until(lambda: window._folder_check_task is None, timeout=10)
-    assert window._folder_watch_refresh_pending is False
-
-    # Something else drops a file into the folder.
-    make_jpegs(folder, ["IMG_new.jpg"])
-    new_time = _bump_folder_mtime(folder)
-    window._folder_check_last_started = 0.0
-    window._scan.check_folder_changed_on_activation()
-    assert window._folder_check_task is not None, "a worker-thread check was started"
-    assert pump_until(lambda: len(window._records) == 4, timeout=30), "the new photo never appeared"
-    assert window._folder_dir_mtime_ns == new_time or window._folder_dir_mtime_ns == folder_modified_ns(str(folder))
-    assert window._folder_check_task is None

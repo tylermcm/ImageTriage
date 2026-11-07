@@ -166,13 +166,6 @@ Item {
             readonly property bool current: GridView.isCurrentItem
             readonly property var flag: { void cull.flagRev; return cell.isFolder ? ({}) : (cull.gridFlag(cell.path) || ({})) }
             readonly property bool hot: hover.hovered || current
-            // Contrast. The name, stars and format tag are drawn over the bottom strip of the photo, whatever it is: its brightness
-            // (thumbs.tone, measured on the cached thumbnail, only for the card that shows them) decides between light ink on a dark scrim
-            // and dark ink on a light one. A rejected or flagged photo is drawn dimmed, so it is measured the way it is shown.
-            readonly property real surfaceLuma: 0.2126 * theme.s2.r + 0.7152 * theme.s2.g + 0.0722 * theme.s2.b
-            readonly property real tone: { void img.rev; void img.bucket; return cell.hot && !cell.isFolder ? thumbs.tone(cell.path, img.bucket) : -1 }
-            readonly property real shownTone: tone < 0 ? -1 : tone * img.imageOpacity + (1 - img.imageOpacity) * surfaceLuma
-            readonly property bool bright: shownTone > 0.6
 
             Item {
                 anchors.fill: parent
@@ -223,27 +216,26 @@ Item {
                     height: 51
                     opacity: cell.hot && !cell.isFolder ? 1 : 0
                     Behavior on opacity { NumberAnimation { duration: 200 } }
-                    gradient: Gradient { GradientStop { position: 0; color: cell.bright ? "#00ffffff" : "transparent" } GradientStop { position: 1; color: cell.bright ? "#d9ffffff" : "#b8000000" } }
+                    gradient: Gradient { GradientStop { position: 0; color: "transparent" } GradientStop { position: 1; color: "#b8000000" } }
                     Text {
                         visible: UiState.showNames
                         anchors.left: parent.left; anchors.leftMargin: 9; anchors.bottom: parent.bottom; anchors.bottomMargin: 7
                         width: parent.width - 140; elide: Text.ElideRight; height: 18.5; verticalAlignment: Text.AlignVCenter
-                        text: cell.title; color: cell.bright ? "#15181f" : "white"; font.pointSize: UiState.pt(13)
-                        style: cell.bright ? Text.Outline : Text.Normal; styleColor: Qt.rgba(1, 1, 1, 0.6)
+                        text: cell.title; color: "white"; font.pointSize: UiState.pt(13)
                     }
                     Row {
                         anchors.right: parent.right; anchors.rightMargin: 9; anchors.bottom: parent.bottom; anchors.bottomMargin: 7; spacing: 7
                         Item {
                             width: 74; height: 15
-                            Text { y: 1; text: "\u2605\u2605\u2605\u2605\u2605"; color: cell.bright ? Qt.rgba(0, 0, 0, 0.30) : Qt.rgba(1, 1, 1, 0.28); font.pixelSize: 13; font.letterSpacing: 1.2; height: 13 }
+                            Text { y: 1; text: "\u2605\u2605\u2605\u2605\u2605"; color: Qt.rgba(1, 1, 1, 0.28); font.pixelSize: 13; font.letterSpacing: 1.2; height: 13 }
                             Item {
                                 y: 1; width: parent.width * cell.rating / 5; height: 13; clip: true
-                                Text { text: "\u2605\u2605\u2605\u2605\u2605"; color: cell.bright ? Qt.darker(theme.star, 1.5) : theme.star; font.pixelSize: 13; font.letterSpacing: 1.2; height: 13 }
+                                Text { text: "\u2605\u2605\u2605\u2605\u2605"; color: theme.star; font.pixelSize: 13; font.letterSpacing: 1.2; height: 13 }
                             }
                         }
                         Rectangle {
                             visible: UiState.showBadges
-                            width: fmt.implicitWidth + 13.5; height: 15.5; radius: 5.5; color: cell.isRaw ? Qt.alpha(theme.accent, cell.bright ? 0.92 : 0.7) : (cell.bright ? Qt.rgba(0, 0, 0, 0.62) : Qt.rgba(1, 1, 1, 0.18))
+                            width: fmt.implicitWidth + 13.5; height: 15.5; radius: 5.5; color: cell.isRaw ? Qt.alpha(theme.accent, 0.7) : Qt.rgba(1, 1, 1, 0.18)
                             Text { id: fmt; anchors.centerIn: parent; text: cell.ext; color: "white"; font.pointSize: UiState.pt(11); font.weight: Font.DemiBold; font.letterSpacing: 0.44 }
                         }
                     }

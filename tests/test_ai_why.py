@@ -30,7 +30,6 @@ from image_triage.ai_why import (
     quality_text,
     sharpness_text,
 )
-from image_triage.grid import ThumbnailGridView
 from image_triage.models import ImageRecord
 from image_triage.review_intelligence import ReviewInsight
 from image_triage.thumbnails import ThumbnailManager
@@ -94,21 +93,8 @@ def test_quality_score_is_shown_to_two_places_and_hidden_when_missing() -> None:
     assert quality_text(None) == ""
 
 
-def test_sharpness_cut_offs_match_the_inspectors_focus_row() -> None:
-    """The card and the Inspector must not disagree about what counts as sharp."""
-    from image_triage.ui.docks import InspectorPanel
-
-    inspector_word = {"Sharp": "Sharp", "Acceptable": "Acceptable", "Blur detected": "Blur detected"}
-    for score in (1, 25, 39.9, 40, 55, 69.9, 70, 85, 100):
-        card = sharpness_text(score).split(" (")[0]
-        assert card == inspector_word[InspectorPanel._focus_level(score)], score
 
 
-def test_category_names_match_the_inspectors_subject_row_for_every_category() -> None:
-    from image_triage.ui.docks import InspectorPanel
-
-    for category, label in CATEGORY_LABELS.items():
-        assert InspectorPanel._subject_profile_text(category)[0] == label, category
 
 
 def test_every_category_in_the_shipped_csv_has_a_label() -> None:
@@ -222,24 +208,6 @@ def test_tooltip_html_is_escaped_and_optionally_ends_with_the_filename() -> None
 
 
 # --------------------------------------------------------------------------- the grid
-def _grid(*, show_ai: bool, with_result: bool = True, insight: bool = True):
-    app = QApplication.instance() or QApplication([])
-    grid = ThumbnailGridView(ThumbnailManager())
-    grid.resize(900, 600)
-    grid.show()  # an unshown scroll area never lays out its viewport, so no card has a real rectangle
-    app.processEvents()
-    records = [
-        ImageRecord(path="C:/shoot/a.jpg", name="a.jpg", size=10, modified_ns=1),
-        ImageRecord(path="C:/shoot/b.jpg", name="b.jpg", size=10, modified_ns=1),
-    ]
-    grid.set_items(records, emit_state_signals=False, request_thumbnails=False)
-    grid.set_show_ai_annotations(show_ai)
-    if with_result:
-        grid.set_ai_results({"c:/shoot/a.jpg": _result(technical_score=0.6, primary_category="landscape")})
-    if insight:
-        grid.set_review_insights({"C:/shoot/a.jpg": ReviewInsight(path="C:/shoot/a.jpg", detail_score=80.0, exposure_score=70.0)})
-    app.processEvents()
-    return grid
 
 
 def _card_center(grid, index: int) -> QPoint:
@@ -264,60 +232,3 @@ def _hover(grid, point: QPoint) -> str:
     )
     QApplication.sendEvent(viewport, event)
     return viewport.toolTip()
-
-
-def test_hovering_a_card_explains_the_ai_call_when_ai_tags_are_on() -> None:
-    grid = _grid(show_ai=True)
-    tip = _hover(grid, _card_center(grid, 0))
-    assert tip.startswith("<b>Likely winner</b>")
-    for expected in ("Clear lead inside its AI group", "Sharpness: Sharp (80)", "Exposure: Balanced (70)", "Quality score: 0.60", "Subject: Landscape"):
-        assert expected in tip, expected
-    grid.deleteLater()
-
-
-def test_hovering_is_unchanged_when_ai_tags_are_off() -> None:
-    grid = _grid(show_ai=False)
-    assert _hover(grid, _card_center(grid, 0)) == ""  # a short filename is not elided, so no tooltip at all, as before
-    grid.deleteLater()
-
-
-def test_a_card_with_no_ai_result_gets_no_why() -> None:
-    grid = _grid(show_ai=True)
-    assert "Likely winner" not in _hover(grid, _card_center(grid, 1))  # b.jpg has no result
-    assert grid._ai_why_for(1) is None
-    grid.deleteLater()
-
-
-def test_the_why_comes_without_review_insight_too() -> None:
-    grid = _grid(show_ai=True, insight=False)
-    tip = grid._card_tooltip(0, grid._item_rect(0))
-    assert "Likely winner" in tip and "Sharpness" not in tip and "Exposure" not in tip
-    grid.deleteLater()
-
-
-def test_a_cut_off_filename_still_appears_under_the_why() -> None:
-    grid = _grid(show_ai=True)
-    with_name = ai_why_tooltip_html(build_ai_why(_result()), filename="a-very-long-name.jpg")
-    grid._filename_tooltip = lambda index, rect: "a-very-long-name.jpg"
-    assert grid._card_tooltip(0, grid._item_rect(0)).endswith("a-very-long-name.jpg</span>")
-    assert with_name.endswith("a-very-long-name.jpg</span>")
-    grid.deleteLater()
-
-
-def test_the_winner_and_reject_buttons_keep_their_own_tooltips() -> None:
-    grid = _grid(show_ai=True)
-    rect = grid._item_rect(0)
-    assert "Mark Winner" in _hover(grid, grid._winner_button_hit_rect(rect).center())
-    assert "Reject" in _hover(grid, grid._reject_button_hit_rect(rect).center())
-    assert "Likely winner" not in grid.viewport().toolTip()  # the button wins over the card-level why
-    grid.deleteLater()
-
-
-def test_toggling_ai_tags_switches_the_why_on_and_off_live() -> None:
-    grid = _grid(show_ai=True)
-    assert grid._ai_why_for(0) is not None
-    grid.set_show_ai_annotations(False)
-    assert grid._ai_why_for(0) is None
-    grid.set_show_ai_annotations(True)
-    assert grid._ai_why_for(0) is not None
-    grid.deleteLater()

@@ -13,12 +13,7 @@ from aiculler.storage import SQLiteFeatureStore
 from image_triage.quality.face import FaceRecord
 from image_triage.quality.store import upsert_faces
 from image_triage.people_search import assign_person_name, cluster_face_identities
-from image_triage.ui.face_groups import (
-    FaceGroup,
-    FaceGroupsPanel,
-    face_group_photo_paths,
-    load_face_groups,
-)
+from image_triage.face_groups import FaceGroup, face_group_photo_paths, load_face_groups
 
 # Cluster sizes; index 0 is the biggest so naming is easy to target.
 SIZES = (7, 5, 4, 3, 2, 1)
@@ -117,105 +112,6 @@ class FaceGroupLabelTests(unittest.TestCase):
         self.assertIn("1 photo)", group.label)
 
 
-class FaceGroupsPanelTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.app = QApplication.instance() or QApplication([])
-
-    def setUp(self) -> None:
-        self.panel = FaceGroupsPanel()
-
-    def tearDown(self) -> None:
-        self.panel.shutdown()
-
-    def _groups(self, count: int) -> list[FaceGroup]:
-        # rep_face=None keeps these tests off the crop thread.
-        return [
-            FaceGroup(key=i, name=f"P{i}", cluster_ids=(i,), face_count=count - i)
-            for i in range(count)
-        ]
-
-    def test_unindexed_folder_explains_itself(self) -> None:
-        self.panel.set_groups([], has_index=False)
-        self.assertEqual(1, self.panel.count())
-        self.assertIn("indexed", self.panel.item(0).text())
-        self.assertEqual(Qt.ItemFlag.NoItemFlags, self.panel.item(0).flags())
-
-    def test_indexed_but_empty_says_so_differently(self) -> None:
-        self.panel.set_groups([], has_index=True)
-        self.assertIn("No recurring faces", self.panel.item(0).text())
-        self.assertEqual(2, len(self.panel.item(0).text().splitlines()))
-
-    def test_rows_plus_a_handoff_to_the_full_dialog(self) -> None:
-        self.panel.set_groups(self._groups(3), has_index=True)
-        self.assertEqual(4, self.panel.count(), "3 faces plus the All people row")
-        self.assertEqual(
-            "All people...",
-            self.panel.item(3).data(Qt.ItemDataRole.AccessibleTextRole),
-        )
-
-    def test_activating_a_face_emits_its_group(self) -> None:
-        groups = self._groups(3)
-        self.panel.set_groups(groups, has_index=True)
-        seen = []
-        self.panel.group_activated.connect(seen.append)
-        self.panel.itemClicked.emit(self.panel.item(1))
-        self.assertEqual([groups[1]], seen)
-
-    def test_activating_all_people_asks_for_the_dialog(self) -> None:
-        self.panel.set_groups(self._groups(2), has_index=True)
-        asked = []
-        self.panel.browse_all_requested.connect(lambda: asked.append(True))
-        self.panel.itemClicked.emit(self.panel.item(2))
-        self.assertEqual([True], asked)
-
-    def test_rows_carry_an_explicit_height(self) -> None:
-        from image_triage.ui.face_groups import THUMB_PX
-
-        self.panel.set_groups(self._groups(3), has_index=True)
-        hint = self.panel.item(0).sizeHint()
-        # QSize(-1, h) is invalid and Qt discards it, which silently hands row
-        # height back to the stylesheet; the width must be non-negative.
-        self.assertTrue(hint.isValid(), "an invalid hint is discarded by Qt")
-        self.assertGreaterEqual(hint.height(), THUMB_PX)
-
-    def test_max_height_matches_the_rows_it_holds(self) -> None:
-        self.panel.set_groups(self._groups(4), has_index=True)
-        rows = sum(self.panel.item(i).sizeHint().height() for i in range(self.panel.count()))
-        self.assertEqual(rows + 2 * self.panel.frameWidth() + 2, self.panel.maximumHeight())
-        self.assertEqual(0, self.panel.minimumHeight(), "it must be free to shrink")
-
-    def test_rebuilding_cancels_the_previous_crop_pass(self) -> None:
-        with_faces = [
-            FaceGroup(key=9, name="X", cluster_ids=(9,), face_count=3, rep_face=("a.jpg", (0, 0, 1, 1)))
-        ]
-        self.panel.set_groups(with_faces, has_index=True)
-        stale = self.panel._crop_task
-        self.assertIsNotNone(stale)
-        self.panel.set_groups(self._groups(2), has_index=True)
-        self.assertTrue(stale._cancelled, "a rebuild must not leave the old pass running")
-
-    def test_search_filters_rows_and_clear_restores_them(self) -> None:
-        groups = [
-            FaceGroup(key=1, name="Justin", cluster_ids=(1,), face_count=8),
-            FaceGroup(key=2, name="Alec", cluster_ids=(2,), face_count=5),
-            FaceGroup(key=3, name="", cluster_ids=(3,), face_count=3),
-        ]
-        self.panel.set_groups(groups, has_index=True)
-
-        self.panel.set_search_text("ale")
-        self.assertEqual(2, self.panel.count(), "one match plus the All people row")
-        self.assertEqual(2, self.panel.item(0).data(Qt.ItemDataRole.UserRole))
-
-        self.panel.set_search_text("")
-        self.assertEqual(4, self.panel.count())
-
-    def test_person_rows_use_the_target_row_widget(self) -> None:
-        self.panel.set_groups(self._groups(1), has_index=True)
-        self.assertIsNotNone(self.panel.itemWidget(self.panel.item(0)))
-        self.assertIsNotNone(self.panel.itemWidget(self.panel.item(1)))
-        self.assertEqual("", self.panel.item(0).text())
-        self.assertEqual("", self.panel.item(1).text())
 
 
 if __name__ == "__main__":

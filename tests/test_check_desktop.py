@@ -64,25 +64,3 @@ def test_missing_monitor_does_not_create_window_handle(monkeypatch):
         assert not widget.isVisible()
     finally:
         widget.close()
-
-
-def test_protected_preview_never_requests_activation(monkeypatch):
-    from image_triage.preview import FullScreenPreview
-
-    app = QApplication.instance() or QApplication([])
-    preview = FullScreenPreview()
-    preview.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
-    activate, raise_window, focus = Mock(), Mock(), Mock()
-    monkeypatch.setattr(preview, "activateWindow", activate)
-    monkeypatch.setattr(preview, "raise_", raise_window)
-    monkeypatch.setattr(preview, "setFocus", focus)
-    try:
-        preview.show_entries([])
-        preview._editor_engaged = True
-        preview.close_editor()
-        activate.assert_not_called()
-        raise_window.assert_not_called()
-        focus.assert_not_called()
-    finally:
-        preview.close()
-        app.processEvents()

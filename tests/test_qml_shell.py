@@ -25,7 +25,7 @@ QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.Software)
 
 @pytest.fixture(scope="module")
 def qapp():
-    from PySide6.QtWidgets import QApplication   # the shell is a widgets application: the popout is a Widgets window
+    from PySide6.QtGui import QGuiApplication as QApplication
     return QCoreApplication.instance() or QApplication([])
 
 
@@ -95,7 +95,7 @@ def test_model_counts_filters_and_sorts(qapp):
     model = PhotoModel()
     model.setRows(rows(40), "/p")
     assert (model.total, model.shown) == (40, 40)
-    assert model.winCount == 10 and model.keepCount == 10 and model.rejCount == 10
+    assert model.winCount == 10 and model.keepCount == 30 and model.rejCount == 10
     model.setFilter("win")
     assert model.shown == 10
     model.setFilter("all")
@@ -144,7 +144,9 @@ def test_thumbnail_service_makes_a_cache_file_then_serves_its_url(qapp, tmp_path
     url = service.url(str(photo), 240)
     assert url.startswith("file://") and url.endswith(".jpg")
     local = Path(QUrl(url).toLocalFile())
-    assert local.is_file() and QImage(str(local)).width() == 240
+    assert local.is_file()
+    cached = QImage(str(local))
+    assert (cached.width(), cached.height()) == (213, 160)  # 4:3 source fits the 240x160 card without stretching.
 
 
 def test_a_thumbnail_nobody_wants_any_more_is_not_made(qapp, tmp_path):
@@ -222,6 +224,8 @@ def _load_main(qapp, tmp_path, startup=""):
 
     model = PhotoModel(parent=qapp)
     engine = QQmlApplicationEngine()
+    from image_triage.qml_shell.raw_preview import install_images
+    install_images(engine)
     warnings = []
     engine.warnings.connect(lambda items: warnings.extend(str(i) for i in items))
     context = engine.rootContext()

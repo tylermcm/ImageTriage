@@ -23,15 +23,24 @@ from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, QUrl, Sig
 from PySide6.QtGui import QImage
 
 from .. import memtrace
-from ..cache import DiskThumbnailCache, ThumbnailKey
+from ..cache import DiskThumbnailCache, EditStateMemo, ThumbnailKey
 from ..imaging import load_image_for_display
 from ..perf import perf_logger
+from ..photocraft_bridge import saved_render_path
 
 _JOBS = memtrace.jobs("qml.thumbnail.decode")
 BUCKET_ASPECT = 2 / 3
 BUCKETS = (160, 240, 360, 540, 800)   # the sizes PhotoGrid.bucket() asks for
 FIT_TAG = (-3, -3)                # marks this grid's thumbnails in the shared cache: they keep the photo's own shape (the Widgets grid's are cropped to 3:2)
 STRIP = 0.30                      # the bottom share of a thumbnail that a card's name, stars and format tag are drawn over
+
+
+def _render_stamp(render) -> tuple[int, int]:
+    try:
+        info = render.stat() if render is not None else None
+    except OSError:
+        return (0, 0)
+    return (info.st_mtime_ns, info.st_size) if info is not None else (0, 0)
 
 
 def strip_luma(image: QImage) -> float:
@@ -73,6 +82,13 @@ class ThumbService(QObject):
         self._queued: set[ThumbnailKey] = set()
         self._stats: dict[str, tuple[int, int]] = {}      # normalised path -> (modified_ns, size), from the folder listings (see prime_folder)
         self._tones: dict[str, float] = {}      # cache file -> brightness of its bottom strip (the file name changes when the photo does)
+        self._edits = EditStateMemo(probe=lambda path: _render_stamp(saved_render_path(path)), on_changed=self.ready.emit)
+
+    @Slot(str)
+    def refresh_edit(self, path: str) -> None:
+        if path:
+            self._edits.stale(path)
+            self._edits.peek(path)
 
     @staticmethod
     def size_for(bucket: int) -> QSize:
@@ -117,7 +133,9 @@ class ThumbService(QObject):
             with self._lock:
                 self._stats[norm] = known
         size = self.size_for(bucket)
-        return ThumbnailKey(path=path, modified_ns=known[0], file_size=known[1], width=size.width(), height=size.height(), edit_state=FIT_TAG)
+        modified, size_bytes = self._edits.peek(path)
+        edit_state = (-modified, -size_bytes) if modified > 0 and size_bytes > 0 else FIT_TAG
+        return ThumbnailKey(path=path, modified_ns=known[0], file_size=known[1], width=size.width(), height=size.height(), edit_state=edit_state)
 
     @Slot(str, int, result=str)
     def url(self, path: str, bucket: int) -> str:
@@ -205,7 +223,19 @@ class ThumbService(QObject):
             with self._lock:
                 wanted = key.path in self._wanted
             if wanted and not self.disk._file_path(key).exists():
-                image, _error = load_image_for_display(key.path, QSize(key.width, key.height), prefer_embedded=True)
+                size = QSize(key.width, key.height)
+                if key.edit_state == FIT_TAG:
+                    image, _error = load_image_for_display(key.path, size, prefer_embedded=True)
+                else:
+                    render = saved_render_path(key.path)
+                    expected = tuple(-value for value in key.edit_state)
+                    if _render_stamp(render) != expected:
+                        self.refresh_edit(key.path)
+                        return
+                    image, _error = load_image_for_display(str(render), size, prefer_embedded=False)
+                    if _render_stamp(render) != expected:
+                        self.refresh_edit(key.path)
+                        return
                 if not image.isNull():
                     if image.width() > key.width or image.height() > key.height:
                         # The whole photo, inside the bucket's box: the card decides whether to crop it or to fill the rest with a blur.

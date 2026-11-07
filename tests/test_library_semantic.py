@@ -16,7 +16,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from PIL import Image
 
-from image_triage.library_index_controller import IdleGate, _ReconcileTask
+from image_triage.library_index_tasks import IdleGate, _ReconcileTask
 from image_triage.library_semantic import (
     LibrarySemanticStore,
     LibraryVectorIndex,

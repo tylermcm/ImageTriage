@@ -1,6 +1,6 @@
 """The AI's verdict on each photo of the open folder, for the inspector's AI tab and the grid's "AI score" sort.
 
-The Widgets app writes a ranked report beside a folder it has analyzed (`ai_workflow.existing_hidden_ai_report_dir`, the `ranked_clusters_export.csv`
+The analysis backend writes a ranked report beside a folder it has analyzed (`ai_workflow.existing_hidden_ai_report_dir`, the `ranked_clusters_export.csv`
 inside it) and reads it back whenever the folder is opened. This reads the same file, with the same parser (`ai_results.load_ai_bundle`), on a worker
 thread each time the shell opens a folder, and answers from memory afterwards. A folder that has never been analyzed has no report: `state` says
 so ("none") and the inspector offers to analyse it. Nothing here runs the analysis (that is the Cull window's job, docs/qml_unwired.md).
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import threading
+from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
@@ -31,7 +32,17 @@ def load_bundle(folder: str):
 
     try:
         report_dir = existing_hidden_ai_report_dir(folder)
-        return None if report_dir is None else load_ai_bundle(report_dir)
+        if report_dir is None:
+            return None
+        bundle = load_ai_bundle(report_dir)
+        if bundle.native_document is not None and Path(report_dir).name == "active.json":
+            from ..cli_culler_index import import_active_index
+            try:
+                bundle.summary["native_index_import"] = import_active_index(folder, Path(report_dir))
+            except Exception as error:
+                # Search is derivative; retain all native decisions on failure.
+                bundle.summary["native_index_warning"] = str(error)
+        return bundle
     except Exception:
         return None
 
@@ -46,6 +57,7 @@ def display_score(result) -> int:
 
 class AiScores(QObject):
     revisionChanged = Signal()
+    indexWarning = Signal(str)
     _loaded = Signal(int, object, object)
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None, loader=None) -> None:
@@ -94,6 +106,8 @@ class AiScores(QObject):
             return                                  # another folder was opened while this one was being read
         self._bundle = bundle
         self._state = "ready" if bundle is not None else "none"
+        if bundle is not None and bundle.summary.get("native_index_warning"):
+            self.indexWarning.emit(bundle.summary["native_index_warning"])
         self._photos.rescore(lambda row: scores.get(row["path"]))
         self._bump()
 

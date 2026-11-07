@@ -1,6 +1,6 @@
 """Advanced filters and saved searches for the QML shell.
 
-The query, its wording (`active_filter_labels`), the built-in presets and the saved-search format are the Widgets app's own
+The query, its wording (`active_filter_labels`), the built-in presets and the saved-search format are the shared own
 (`filtering.py`); saved searches are stored under the same settings key (`filters/saved_queries`) so both front ends share them.
 The shell can only act on part of a query (decisions, rating and RAW/JPEG on the sample data it has); the rest is stored and shown
 but not applied. `unsupported` says how many set filters that is, and docs/qml_unwired.md lists them.
@@ -153,7 +153,7 @@ class FiltersModel(QObject):
     # -- chips and wording -----------------------------------------------------------------------------------------------------
     @Slot(result="QVariantList")
     def chips(self) -> list:
-        """One removable chip per active filter, worded by the Widgets app's own `active_filter_labels`."""
+        """One removable chip per active filter, worded by the shared `active_filter_labels`."""
         query = self._query()
         blank = RecordFilterQuery()
         chips = []

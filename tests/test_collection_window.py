@@ -28,108 +28,12 @@ def _row(window, collection_id):
     return next(panel.item(i) for i in range(panel.count()) if panel.item(i).data(0x0100) == collection_id)
 
 
-def test_create_then_edit(main_window, monkeypatch) -> None:
-    window = main_window
-
-    try:
-        catalog = window._catalog
-        catalog.set_active_collection("", show_message=False)
-        toolbar = window._toolbar
-        QApplication.instance().processEvents()
-        assert toolbar.app_search_key_hint.isVisibleTo(window) and not toolbar.also_add_to_button.isVisibleTo(window)
-
-        monkeypatch.setattr(window, "_exec_dialog_with_geometry", _fill_and_accept("Utah Portfolio", color="#3ccf8e"))
-        created = catalog.open_collection_window()
-        assert created is not None and created.item_count == 0, "it starts empty"
-        stored = window._library_store.load_collection_header(created.id)
-        assert (stored.name, stored.color) == ("Utah Portfolio", "#3ccf8e")
-        assert catalog.active_collection_id() == created.id
-
-        row = _row(window, created.id)
-        assert row.text() == "Utah Portfolio  (0)" and not row.icon().isNull() and row.font().bold()
-        assert toolbar.also_add_to_button.isVisibleTo(window) and not toolbar.app_search_key_hint.isVisibleTo(window)
-        chip = toolbar.also_add_to_button
-        assert chip.text().startswith("Also add to: Utah") and chip.text().endswith(" ▾"), "long names are shortened"
-        assert "Utah Portfolio" in chip.toolTip()
-        width_with_chip = toolbar.app_search_box.maximumWidth()
-
-        # Edit: rename, recolor, and stop taking new winners -> Ctrl K comes back.
-        monkeypatch.setattr(window, "_exec_dialog_with_geometry", _fill_and_accept("Utah Picks", color="#ff6b7d", add_new_winners=False))
-        catalog.edit_collection(created.id)
-        stored = window._library_store.load_collection_header(created.id)
-        assert (stored.name, stored.color) == ("Utah Picks", "#ff6b7d")
-        assert catalog.active_collection_id() == ""
-        assert not _row(window, created.id).font().bold()
-        assert toolbar.app_search_key_hint.isVisibleTo(window) and not toolbar.also_add_to_button.isVisibleTo(window)
-        assert toolbar.app_search_box.maximumWidth() < width_with_chip, "the box makes room for the chip, then gives it back"
-    finally:
-        window._catalog.set_active_collection("", show_message=False)  # the window is shared: leave it as found
 
 
-def test_edit_collection_items_is_gone(main_window) -> None:
-    assert not hasattr(main_window.actions, "add_selection_to_collection")
 
 
-def test_inside_the_collection_the_tag_and_add_items_go_away(main_window) -> None:
-    window = main_window
-    catalog, projects = window._catalog, window._projects
-    session = window._folder_session
-    old_scope = (session.scope_kind, session.scope_id)
-
-    def menu_texts(collection_id):
-        menu = projects.build_projects_context_menu(collection_id)
-        texts = [action.text() for action in menu.actions() if action.text()]
-        menu.deleteLater()
-        return texts
-
-    collection = window._library_store.create_collection(name="Claire")
-    window._library_store.add_paths_to_collection(collection.id, ["C:/shots/a.jpg"])
-    catalog.set_active_collection(collection.id, show_message=False)
-    try:
-        assert window.grid._active_collection_keys, "outside it, members carry the tag"
-        outside = menu_texts(collection.id)
-        assert "Add selection here" in outside and "Open collection" in outside and "New winners go here" in outside
-
-        projects.set_scope_state(kind="collection", scope_id=collection.id, label="Collection: Claire")
-        assert not window.grid._active_collection_keys, "inside it, the tag would only repeat the collection's name"
-        inside = menu_texts(collection.id)
-        assert not any(text.startswith("Add ") for text in inside) and "Open collection" not in inside
-        assert "New winners go here" in inside and "Edit..." in inside
-    finally:
-        catalog.set_active_collection("", show_message=False)
-        projects.set_scope_state(kind=old_scope[0], scope_id=old_scope[1])
 
 
-def test_sidebar_highlights_only_what_is_open(main_window) -> None:
-    window = main_window
-    projects, session = window._projects, window._folder_session
-    old_scope = (session.scope_kind, session.scope_id)
-    first = window._library_store.create_collection(name="Claire")
-    second = window._library_store.create_collection(name="Utah")
-    projects.refresh_projects_panel()
-    winners, panel = window.winners_list, window.projects_list
-
-    def selected():
-        return (
-            bool(winners.selectedItems()),
-            [item.data(0x0100) for item in panel.selectedItems()],
-        )
-
-    try:
-        projects.set_scope_state(kind="collection", scope_id=first.id, label="Collection: Claire")
-        assert selected() == (False, [first.id])
-        projects.set_scope_state(kind=window._catalog.WINNERS_SCOPE, label="Winners")
-        assert selected() == (True, []), "opening Winners lets go of the collection"
-        projects.set_scope_state(kind="collection", scope_id=second.id, label="Collection: Utah")
-        assert selected() == (False, [second.id]), "and opening a collection lets go of Winners"
-        projects.set_scope_state(kind="folder")
-        assert selected() == (False, [])
-        projects.refresh_projects_panel()
-        projects.set_scope_state(kind="collection", scope_id=first.id, label="Collection: Claire")
-        projects.refresh_projects_panel()
-        assert selected() == (False, [first.id]), "a rebuilt list keeps the highlight"
-    finally:
-        projects.set_scope_state(kind=old_scope[0], scope_id=old_scope[1])
 
 
 def test_older_library_gains_a_color_column(tmp_path, monkeypatch) -> None:

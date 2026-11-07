@@ -13,11 +13,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 def _load_shortcuts_module():
-    """Load image_triage/ui/shortcuts.py directly without triggering the
+    """Load image_triage/shortcuts.py directly without triggering the
     image_triage package __init__ (which imports modules that don't work on
     Python <3.10 due to dataclass(slots=True))."""
 
-    path = PROJECT_ROOT / "image_triage" / "ui" / "shortcuts.py"
+    path = PROJECT_ROOT / "image_triage" / "shortcuts.py"
     spec = importlib.util.spec_from_file_location("image_triage_shortcuts_under_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

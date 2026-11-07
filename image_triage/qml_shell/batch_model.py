@@ -1,10 +1,10 @@
 """Batch rename, resize and convert for the QML shell.
 
-The plans are built by the Widgets app's own planners (`batch_rename.build_batch_rename_preview`, `image_resize.build_resize_plan`,
+The plans are built by the shared planners (`batch_rename.build_batch_rename_preview`, `image_resize.build_resize_plan`,
 `image_convert.build_convert_plan`), so names, statuses, error messages and what blocks Apply are identical. The scope is every photo the
 grid shows. **Applying is real** (not for the sample photos of `--mock`): rename runs the Widgets' `BatchRenameApplyTask`, resize and convert their
 `ResizeApplyTask` / `ConvertApplyTask`, on a worker thread with a toast that follows the progress. A rename moves the saved decisions with the files
-and can be undone (Ctrl+Z); resize and convert write copies (or overwrite, if the option says so) and have no undo, as in the Widgets app.
+and can be undone (Ctrl+Z); resize and convert write copies (or overwrite, if the option says so) and have no undo, as in the backend.
 """
 from __future__ import annotations
 
@@ -320,7 +320,7 @@ class BatchModel(QObject):
         self._photos.reload()
 
     def _rename_done(self, preview, annotations: dict, moves) -> None:
-        from ..record_ops_controller import RecordOpsController
+        from ..file_ops import record_after_moves
         from .decision_bridge import session_id
 
         self._end()
@@ -329,7 +329,7 @@ class BatchModel(QObject):
         for item in renamed:
             annotation = annotations.get(item.record.path)
             if annotation is not None and not annotation.is_empty:
-                updates.append((item.record, RecordOpsController.record_after_moves(item.record, item.planned_moves), annotation))
+                updates.append((item.record, record_after_moves(item.record, item.planned_moves), annotation))
         if updates:
             from ..decision_store import DecisionStore
 
@@ -380,4 +380,3 @@ class BatchModel(QObject):
         if self._stage:
             shutil.rmtree(self._stage, ignore_errors=True)
             self._stage = ""
-

@@ -12,9 +12,7 @@ from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QApplication
 
 from image_triage import photocraft_bridge as bridge
-from image_triage import preview_controller as controller_module
 from image_triage.models import ImageRecord
-from image_triage.preview_controller import PreviewController
 from image_triage.scanner import discover_edited_paths
 
 
@@ -23,17 +21,6 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
-@pytest.fixture
-def controller(qapp):
-    parent = QObject()
-    ctl = PreviewController(parent)
-    ctl._parent_keepalive = parent
-    yield ctl
-    ctl._photocraft_save_timer.stop()
-    ctl._photocraft_dwell_timer.stop()
-    ctl._photocraft_executor.shutdown(wait=True)
-    ctl._photocraft_preview_executor.shutdown(wait=True)
-    qapp.processEvents()
 
 
 def editing(tmp_path, *, lean_supported: bool, revision: int = 5, opened: int = 1):
@@ -59,85 +46,22 @@ def stashes(proc):
     return [call.args[1] for call in proc.control.call.call_args_list if call.args[0] == "app.stash"]
 
 
-def test_an_autosave_leaves_the_full_size_render_out_when_the_editor_can_save_without_it(controller, tmp_path):
-    proc = editing(tmp_path, lean_supported=True)
-    controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False, lean=True)
-    (params,) = stashes(proc)
-    assert "preview" not in params
-    assert params["display"] == "IMG.NEF.photocraft.display.jpg"
-    assert params["path"] == "IMG.NEF.pcraft"
-    assert str(proc.current_sidecar) in proc.preview_missing
 
 
-def test_an_editor_that_cannot_save_without_the_render_is_asked_for_it_as_before(controller, tmp_path):
-    proc = editing(tmp_path, lean_supported=False)
-    controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False, lean=True)
-    (params,) = stashes(proc)
-    assert params["preview"] == "IMG.NEF.photocraft.png"
-    assert not proc.preview_missing
 
 
-def test_a_capability_that_is_merely_truthy_is_not_taken_for_support(controller, tmp_path):
-    proc = editing(tmp_path, lean_supported=True)
-    proc.control.stash_without_preview_supported = Mock()  # what an attribute of a stand-in control looks like
-    controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False, lean=True)
-    assert "preview" in stashes(proc)[0]
 
 
-def test_leaving_the_photo_asks_for_the_full_size_render(controller, tmp_path):
-    proc = editing(tmp_path, lean_supported=True)
-    controller._save_photocraft_sidecar_if_dirty(proc)
-    (params,) = stashes(proc)
-    assert params["preview"] == "IMG.NEF.photocraft.png"
-    assert not proc.preview_missing
 
 
-def test_leaving_writes_the_render_that_an_autosave_left_out_even_if_nothing_changed_since(controller, tmp_path):
-    proc = editing(tmp_path, lean_supported=True)
-    controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False, lean=True)
-    proc.control.call.reset_mock()
-    proc.pending_stashes.clear()
-    proc.opened_revision = 5  # the autosave brought it up to the current revision
-    controller._save_photocraft_sidecar_if_dirty(proc)
-    (params,) = stashes(proc)
-    assert "preview" in params
-    assert not proc.preview_missing, "and it is done: leaving again saves nothing"
-    proc.control.call.reset_mock()
-    proc.pending_stashes.clear()
-    controller._save_photocraft_sidecar_if_dirty(proc)
-    assert stashes(proc) == []
 
 
-def test_an_autosave_of_a_photo_nothing_changed_in_saves_nothing(controller, tmp_path):
-    proc = editing(tmp_path, lean_supported=True, revision=5, opened=5)
-    controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False, lean=True)
-    assert stashes(proc) == []
-    assert not proc.preview_missing
 
 
-def test_a_photo_left_without_a_pending_render_and_unchanged_saves_nothing(controller, tmp_path):
-    proc = editing(tmp_path, lean_supported=True, revision=5, opened=5)
-    controller._save_photocraft_sidecar_if_dirty(proc)
-    assert stashes(proc) == []
 
 
-def test_more_edits_are_autosaved_lean_again(controller, tmp_path):
-    proc = editing(tmp_path, lean_supported=True)
-    controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False, lean=True)
-    proc.pending_stashes.clear()
-    proc.control.document_revision.return_value = 9
-    controller._save_photocraft_sidecar_if_dirty(proc, commit_raw_draft=False, lean=True)
-    assert len(stashes(proc)) == 2 and all("preview" not in params for params in stashes(proc))
 
 
-def test_the_autosave_timer_path_is_the_lean_one(controller, tmp_path, monkeypatch):
-    proc = editing(tmp_path, lean_supported=True)
-    controller._photocraft = proc
-    monkeypatch.setattr(controller, "_sync_photocraft_theme", lambda proc: None)
-    monkeypatch.setattr(controller, "_poll_photocraft_stashes", lambda proc: None)
-    controller._autosave_photocraft()
-    (params,) = stashes(proc)
-    assert "preview" not in params
 
 
 @pytest.fixture
@@ -148,253 +72,48 @@ def shutdowns(monkeypatch):
     return quit_ones
 
 
-def test_the_saves_the_ui_thread_waits_for_are_lean(controller, tmp_path):
-    """Closing the popout and quitting wait on the UI thread: not for the 211 MB render too."""
-    proc = editing(tmp_path, lean_supported=True)
-    controller._photocraft = proc
-    controller._wait_photocraft_stashes = lambda proc, only=None: None
-    controller._save_active_photocraft()
-    (params,) = stashes(proc)
-    assert "preview" not in params and str(proc.current_sidecar) in proc.preview_missing
 
 
-def test_quitting_saves_lean_and_leaves_the_render_behind(controller, tmp_path, shutdowns):
-    proc = editing(tmp_path, lean_supported=True)
-    controller._photocraft = proc
-    controller._wait_photocraft_stashes = lambda proc, only=None: None
-    controller.shutdown_photocraft()
-    (params,) = stashes(proc)
-    assert "preview" not in params
-    assert shutdowns == [proc]
-    assert controller._photocraft is None
 
 
-@pytest.fixture
-def parkings(monkeypatch, controller):
-    """(editor window, new parent) for every time the editor's window was moved. The popout here closes for real
-    (``hide_on_close`` off, the fallback): that is when the editor has to be moved out before the close."""
-    controller._window = SimpleNamespace(_preview=SimpleNamespace(hide_on_close=False))
-    moves = []
-    monkeypatch.setattr(bridge, "embed_in_widget", lambda hwnd, parent: moves.append((hwnd, parent)))
-    return moves
 
 
-def test_a_popout_that_hides_on_close_leaves_the_editor_where_it_is(controller, tmp_path, shutdowns, monkeypatch):
-    """The default: closing hides the popout and keeps its native window, so nothing is moved (moving the editor's window waits
-    for the editor's thread: up to 6 s when it is busy redrawing), nothing is saved and nothing is quit before the close."""
-    moves = []
-    monkeypatch.setattr(bridge, "embed_in_widget", lambda hwnd, parent: moves.append((hwnd, parent)))
-    controller._window = SimpleNamespace(_preview=SimpleNamespace(hide_on_close=True))
-    proc = editing(tmp_path, lean_supported=True)
-    proc.attached_parent = 555
-    controller._photocraft = proc
-    assert controller.prepare_photocraft_preview_close() is True
-    assert moves == [] and proc.attached_parent == 555
-    assert stashes(proc) == [] and shutdowns == [] and controller._photocraft is proc
 
 
-def test_a_popout_that_closes_for_real_has_the_editor_moved_out_first(controller, tmp_path, shutdowns, parkings):
-    """The fallback (``hide_on_close`` off): the close saves nothing itself and does not quit the editor; it is moved out of the
-    popout, whose native window Qt destroys on close (a child window goes with it), and what changed is saved afterwards."""
-    proc = editing(tmp_path, lean_supported=True)
-    proc.attached_parent = 555  # in the popout
-    controller._photocraft = proc
-    assert controller.prepare_photocraft_preview_close() is True
-    assert stashes(proc) == [], "the close does not wait for a save"
-    assert shutdowns == [] and controller._photocraft is proc
-    park = controller._photocraft_park_id
-    assert parkings == [(proc.hwnd, park)] and proc.attached_parent == park and park not in (None, 555)
 
 
-def test_what_changed_is_saved_once_after_the_close_with_the_render(controller, tmp_path, shutdowns, parkings):
-    proc = editing(tmp_path, lean_supported=True)
-    proc.attached_parent = 555
-    controller._photocraft = proc
-    controller._wait_photocraft_stashes = lambda proc, only=None: proc.pending_stashes.clear()
-    controller.prepare_photocraft_preview_close()
-    controller._settle_closed_photocraft()
-    (params,) = stashes(proc)
-    assert params.get("preview"), "one save, project and full-size render together"
-    assert shutdowns == []
 
 
-def test_a_save_that_fails_after_the_close_is_reported_and_the_editor_keeps_the_photo(controller, tmp_path, shutdowns):
-    proc = editing(tmp_path, lean_supported=True)
-    controller._photocraft = proc
-    messages = []
-    controller._window = SimpleNamespace(statusBar=lambda: SimpleNamespace(showMessage=lambda text, ms=0: messages.append(text)))
-
-    def fail(proc, only=None):
-        raise bridge.PhotoCraftError("disk full")
-
-    controller._wait_photocraft_stashes = fail
-    controller._settle_closed_photocraft()
-    assert len(messages) == 1 and "disk full" in messages[0] and "IMG.NEF" in messages[0]
-    assert shutdowns == [] and controller._photocraft is proc, "the editor still has the photo open"
 
 
-def test_an_editor_that_was_never_in_the_popout_is_not_moved(controller, tmp_path, shutdowns, parkings):
-    """Started in the background and never shown: it has no window of ours to lose."""
-    proc = editing(tmp_path, lean_supported=True, revision=1, opened=1)
-    controller._photocraft = proc
-    assert controller.prepare_photocraft_preview_close() is True
-    assert parkings == [] and shutdowns == [] and proc.attached_parent is None
 
 
-def test_closing_twice_parks_once(controller, tmp_path, shutdowns, parkings):
-    proc = editing(tmp_path, lean_supported=True, revision=1, opened=1)
-    proc.attached_parent = 555
-    controller._photocraft = proc
-    controller.prepare_photocraft_preview_close()
-    controller.prepare_photocraft_preview_close()
-    assert len(parkings) == 1
 
 
-def test_the_render_an_autosave_left_out_is_written_after_the_close(controller, tmp_path, shutdowns, parkings):
-    """Nothing changed since the last autosave, which left the render out: after the close the parked editor writes it."""
-    proc = editing(tmp_path, lean_supported=True, revision=5, opened=5)
-    proc.attached_parent = 555
-    proc.preview_missing.add(str(proc.current_sidecar))
-    controller._photocraft = proc
-    controller._wait_photocraft_stashes = lambda proc, only=None: proc.pending_stashes.clear()
-    controller.prepare_photocraft_preview_close()
-    assert stashes(proc) == []
-    controller._settle_closed_photocraft()
-    (params,) = stashes(proc)
-    assert params.get("preview"), "the full-size render is asked for"
-    assert shutdowns == []
 
 
-def test_settling_after_the_close_survives_an_editor_that_has_gone(controller, tmp_path):
-    controller._photocraft = None
-    controller._settle_closed_photocraft()
-    proc = editing(tmp_path, lean_supported=True)
-    proc.process.poll.return_value = 1
-    controller._photocraft = proc
-    controller._settle_closed_photocraft()
-    assert stashes(proc) == []
 
 
-def _asked_for_a_window(controller, proc, tmp_path, monkeypatch):
-    """Runs the start of an open on ``proc`` (stopped where the document would be switched) and returns the editors the popout
-    was asked to take in."""
-    controller._photocraft = proc
-    proc.current_source = "another photo"
-    asked = []
-    controller._photocraft_window_ready.connect(lambda generation, editor: asked.append(editor))
-    target = str(tmp_path / "IMG2.NEF")
-    monkeypatch.setattr(controller, "_resolve_photocraft_target", lambda path: (target, str(proc.write_root / "IMG2.NEF.pcraft")))
-    monkeypatch.setattr(bridge.PhotoCraftProcess, "path_within_root", lambda self, path: "IMG2.NEF")
-    monkeypatch.setattr(bridge.PhotoCraftProcess, "path_within_write_root", lambda self, path: "IMG2.NEF.pcraft")
-    monkeypatch.setattr(controller, "_camera_raw_mode", lambda path: False)
-
-    def stop(*args, **kwargs):
-        raise RuntimeError("stop here")
-
-    monkeypatch.setattr(controller, "_switch_photocraft_document", stop)
-    with pytest.raises(RuntimeError, match="stop here"):
-        controller._open_in_photocraft(None, target)
-    return asked
 
 
-def test_a_parked_editor_is_put_back_in_the_popout_before_its_next_photo(controller, tmp_path, parkings, monkeypatch):
-    proc = editing(tmp_path, lean_supported=True, revision=1, opened=1)
-    proc.attached_parent = 555
-    controller._photocraft = proc
-    controller.prepare_photocraft_preview_close()
-    assert proc.attached_parent == controller._photocraft_park_id
-    assert _asked_for_a_window(controller, proc, tmp_path, monkeypatch) == [proc]
 
 
-def test_an_editor_already_in_the_popout_is_not_asked_for_again(controller, tmp_path, monkeypatch):
-    proc = editing(tmp_path, lean_supported=True, revision=1, opened=1)
-    proc.attached_parent = 555
-    assert _asked_for_a_window(controller, proc, tmp_path, monkeypatch) == []
 
 
-def test_the_ui_thread_wait_keeps_its_message_queue_running(controller, qapp):
-    """A blocking wait here stops the editor from closing its window (it is our child) until the wait times out."""
-    import threading
-
-    from PySide6.QtCore import QTimer
-
-    ticks = []
-    timer = QTimer()
-    timer.timeout.connect(lambda: ticks.append(1))
-    timer.start(5)
-    release = threading.Event()
-    future = controller._photocraft_executor.submit(lambda: (release.wait(5), "done")[1])
-    QTimer.singleShot(60, release.set)
-    assert controller._pump_until_done(future) == "done"
-    timer.stop()
-    assert ticks, "events were processed while waiting"
 
 
-def test_the_ui_thread_wait_passes_on_what_the_work_raised(controller):
-    future = controller._photocraft_executor.submit(lambda: (_ for _ in ()).throw(bridge.PhotoCraftError("disk full")))
-    with pytest.raises(bridge.PhotoCraftError, match="disk full"):
-        controller._pump_until_done(future)
 
 
 # --- the render is written after a pause in editing ---------------------------------------------------------
 
-def autosave_tick(controller, proc, monkeypatch, now):
-    monkeypatch.setattr(controller_module.time, "monotonic", lambda: now)
-    monkeypatch.setattr(controller, "_sync_photocraft_theme", lambda proc: None)
-    monkeypatch.setattr(controller, "_poll_photocraft_stashes", lambda proc: proc.pending_stashes.clear())
-    controller._photocraft = proc
-    controller._autosave_photocraft()
 
 
-def test_the_render_is_written_once_the_photo_has_been_left_alone_for_a_while(controller, tmp_path, monkeypatch):
-    proc = editing(tmp_path, lean_supported=True)
-    autosave_tick(controller, proc, monkeypatch, now=1000.0)  # the edit: saved lean
-    assert [("preview" in params) for params in stashes(proc)] == [False]
-    proc.opened_revision = 5
-    autosave_tick(controller, proc, monkeypatch, now=1000.0 + controller.RENDER_IDLE_S - 1)
-    assert len(stashes(proc)) == 1, "not yet: it could be a moment between two edits"
-    autosave_tick(controller, proc, monkeypatch, now=1000.0 + controller.RENDER_IDLE_S + 1)
-    assert [("preview" in params) for params in stashes(proc)] == [False, True]
-    assert not proc.preview_missing
-    autosave_tick(controller, proc, monkeypatch, now=1000.0 + controller.RENDER_IDLE_S + 30)
-    assert len(stashes(proc)) == 2, "and once"
 
 
-def test_another_edit_starts_the_wait_again(controller, tmp_path, monkeypatch):
-    proc = editing(tmp_path, lean_supported=True)
-    autosave_tick(controller, proc, monkeypatch, now=1000.0)
-    proc.control.document_revision.return_value = 9  # edited again, seven seconds later
-    autosave_tick(controller, proc, monkeypatch, now=1007.0)
-    assert [("preview" in params) for params in stashes(proc)] == [False, False]
-    proc.opened_revision = 9
-    autosave_tick(controller, proc, monkeypatch, now=1007.0 + controller.RENDER_IDLE_S - 1)
-    assert len(stashes(proc)) == 2
-    autosave_tick(controller, proc, monkeypatch, now=1007.0 + controller.RENDER_IDLE_S + 1)
-    assert [("preview" in params) for params in stashes(proc)] == [False, False, True]
 
 
-def test_a_photo_nothing_was_done_to_in_this_session_gets_no_render_written_while_it_is_looked_at(controller, tmp_path, monkeypatch):
-    """Its render may be behind from an earlier session; writing it takes seconds of the editor's time, and it is caught up when the photo is left."""
-    proc = editing(tmp_path, lean_supported=True, revision=5, opened=5)
-    project_and_render(tmp_path, 1060.0, 1000.0)
-    assert bridge.render_is_behind(proc.source_path)
-    autosave_tick(controller, proc, monkeypatch, now=5000.0)
-    autosave_tick(controller, proc, monkeypatch, now=9000.0)
-    assert stashes(proc) == []
 
 
-def test_the_render_is_not_written_while_the_last_save_is_still_running(controller, tmp_path, monkeypatch):
-    proc = editing(tmp_path, lean_supported=True)
-    autosave_tick(controller, proc, monkeypatch, now=1000.0)
-    proc.opened_revision = 5
-    proc.pending_stashes[str(proc.current_sidecar)] = (3, proc.source_path)
-    monkeypatch.setattr(controller, "_poll_photocraft_stashes", lambda proc: None)  # the job has not finished
-    waited = []
-    monkeypatch.setattr(controller, "_wait_photocraft_stashes", lambda proc, only=None: waited.append(only))
-    monkeypatch.setattr(controller_module.time, "monotonic", lambda: 1000.0 + controller.RENDER_IDLE_S + 5)
-    controller._autosave_photocraft()
-    assert len(stashes(proc)) == 1
-    assert waited == [], "the autosave does not wait for a save that is still running: it tries again at the next tick"
 
 
 # --- a render that is behind according to the files --------------------------------------------------------------
@@ -434,19 +153,8 @@ def test_a_photo_with_no_project_has_nothing_behind(tmp_path):
     assert not bridge.render_is_behind(str(tmp_path / "other.NEF"))
 
 
-def test_leaving_a_photo_whose_render_an_earlier_session_left_behind_catches_it_up(controller, tmp_path):
-    proc = editing(tmp_path, lean_supported=True, revision=5, opened=5)
-    project_and_render(tmp_path, 1060.0, 1000.0)
-    assert not proc.preview_missing, "nothing is remembered in this session"
-    controller._save_photocraft_sidecar_if_dirty(proc)
-    (params,) = stashes(proc)
-    assert "preview" in params
 
 
-def test_leaving_a_photo_nothing_was_done_to_saves_nothing(controller, tmp_path):
-    proc = editing(tmp_path, lean_supported=True, revision=5, opened=5)  # no project on disk
-    controller._save_photocraft_sidecar_if_dirty(proc)
-    assert stashes(proc) == []
 
 
 # --- the capability -----------------------------------------------------------------------------------------------

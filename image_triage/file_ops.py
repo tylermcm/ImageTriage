@@ -179,7 +179,7 @@ def sync_winner_copy_for_paths(
     they could not be proven to be Image Triage's own copy.
 
     ``create_artifact``/``is_artifact`` default to the module-level
-    functions above; MainWindow passes its own instance methods instead so
+    functions above; A caller can pass its own instance methods instead so
     ``unittest.mock.patch.object(main_window, "_create_winner_artifact", ...)``
     still works on the real window for fault-injection tests.
     """
@@ -446,3 +446,24 @@ def _validated_leaf_name(value: str) -> str:
 def _has_path_components(value: str) -> bool:
     normalized = value.replace("/", os.sep).replace("\\", os.sep)
     return Path(normalized).name != normalized
+
+
+def record_after_moves(record: ImageRecord, moves: tuple[FileMove, ...]) -> ImageRecord:
+    moved_paths = {move.source_path: move.target_path for move in moves}
+    return ImageRecord(
+        path=moved_paths.get(record.path, record.path),
+        name=Path(moved_paths.get(record.path, record.path)).name,
+        size=record.size,
+        modified_ns=record.modified_ns,
+        companion_paths=tuple(moved_paths.get(path, path) for path in record.companion_paths),
+        edited_paths=tuple(moved_paths.get(path, path) for path in record.edited_paths),
+        variants=tuple(
+            type(variant)(
+                path=moved_paths.get(variant.path, variant.path),
+                name=Path(moved_paths.get(variant.path, variant.path)).name,
+                size=variant.size,
+                modified_ns=variant.modified_ns,
+            )
+            for variant in record.variants
+        ),
+    )

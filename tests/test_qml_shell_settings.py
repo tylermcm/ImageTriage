@@ -22,7 +22,7 @@ QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.Software)
 
 @pytest.fixture(scope="module")
 def qapp():
-    from PySide6.QtWidgets import QApplication   # the shell is a widgets application: the popout is a Widgets window
+    from PySide6.QtGui import QGuiApplication as QApplication
     return QCoreApplication.instance() or QApplication([])
 
 
@@ -38,35 +38,8 @@ def fields(model):
     return model._fields
 
 
-def test_every_stored_key_exists_in_the_widgets_window():
-    """The shell must read and write the keys the main window uses (so the two front ends share one configuration)."""
-    window = pytest.importorskip("image_triage.window").MainWindow
-    known = {getattr(window, name) for name in dir(window) if name.endswith("_KEY") and isinstance(getattr(window, name), str)}
-    from image_triage.ui import native_image_layer as nil
-
-    known |= {nil.SETTINGS_KEY, nil.CAMERA_RAW_FIRST_KEY, nil.EDITOR_ON_DEMAND_KEY, nil.EDITOR_STARTS_OPEN_KEY, nil.EDITOR_PRESTART_KEY}
-    known.add("ai/cascade_rank_on_cpu")
-    shell_only = {"view/accent_hue", "view/text_contrast", "view/dark_tone", "view/grid_fade"}
-    for f in fields(SettingsModel(memory=True)).values():
-        if f.key and f.key not in shell_only:
-            assert f.key in known, (f.id, f.key)
 
 
-def test_limits_match_the_widgets_window():
-    window = pytest.importorskip("image_triage.window").MainWindow
-    assert (window.AI_KEEP_TOP_PERCENT_MIN, window.AI_KEEP_TOP_PERCENT_MAX, window.AI_KEEP_TOP_PERCENT_DEFAULT) == sm.AI_KEEP_TOP
-    assert (window.AI_REVIEW_BAND_PERCENT_MIN, window.AI_REVIEW_BAND_PERCENT_MAX, window.AI_REVIEW_BAND_PERCENT_DEFAULT) == sm.AI_REVIEW_BAND
-    assert (window.AI_DISPUTE_WEIGHT_MIN, window.AI_DISPUTE_WEIGHT_MAX, window.AI_DISPUTE_WEIGHT_DEFAULT) == sm.AI_DISPUTE
-    assert (window.AI_BASE_SCORE_WEIGHT_PERCENT_MIN, window.AI_BASE_SCORE_WEIGHT_PERCENT_MAX, window.AI_BASE_SCORE_WEIGHT_PERCENT_DEFAULT) == sm.AI_BASE_WEIGHT
-    assert window.PREVIEW_PRELOAD_BATCH_SIZE_DEFAULT == sm.PRELOAD_DEFAULT and window.PREVIEW_PRELOAD_BATCH_SIZE_MAX == sm.PRELOAD_MAX
-    from image_triage.ui.theme import UI_GAMMA_MAX, UI_GAMMA_MIN, AppearanceMode, appearance_profile_modes
-
-    assert (UI_GAMMA_MIN, UI_GAMMA_MAX) == (sm.UI_GAMMA_MIN, sm.UI_GAMMA_MAX)
-    assert [value for _label, value in sm.APPEARANCE_MODES] == [m.value for m in appearance_profile_modes()]
-    from image_triage.models import DeleteMode
-
-    assert [value for _label, value in sm.DELETE_MODES] == [m.value for m in DeleteMode]
-    assert AppearanceMode.AUTO.value == "auto"
 
 
 def test_empty_store_gives_the_documented_defaults(qapp, store):
@@ -181,7 +154,7 @@ def test_shortcut_chords_and_conflicts(qapp, store):
     assert m.save() is False and "Ctrl+Q" in m.conflict()
     m.set(ids[1], "Ctrl+Alt+Q")
     assert m.save() is True
-    from image_triage.ui.shortcuts import load_shortcut_overrides
+    from image_triage.shortcuts import load_shortcut_overrides
 
     assert load_shortcut_overrides()[ids[0][2:]] == "Ctrl+Q"
 

@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QObject, QPointF, Qt
+from PySide6.QtCore import QObject, QPoint, QPointF, Qt
 from PySide6.QtGui import QWindow
 from PySide6.QtTest import QTest
 
@@ -294,6 +294,117 @@ def test_the_keys_step_decide_rate_and_close(shell, qapp):
     assert not popout.isOpen
 
 
+def test_zoom_keeps_transparent_navigator_and_pans_only_when_dragged(shell, qapp):
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, model, popout, warnings = shell
+    popout.open(0)
+    popout.rawEditor.open("sample.NEF")
+    popout.rawEditor._full_size = [8000, 6000]
+    popout.rawEditor.changed.emit()
+    pump(qapp, .3)
+    viewer = window.findChild(QQuickItem, "viewer")
+    navigator = window.findChild(QQuickItem, "viewerZoomNavigator")
+    viewport = window.findChild(QQuickItem, "viewerZoomViewport")
+    pan = window.findChild(QQuickItem, "viewerZoomPan")
+    assert not navigator.isVisible()
+    QTest.keyClick(window, Qt.Key_Z)
+    pump(qapp, .2)
+    assert viewer.property("zoomed") and navigator.isVisible() and pan.property("interactive")
+    assert viewport.opacity() == pytest.approx(.35)
+    assert viewport.property("color").alpha() == 0
+    x, y = pan.property("contentX"), pan.property("contentY")
+    point = pan.mapToScene(QPointF(pan.width()/2, pan.height()/2)).toPoint()
+    QTest.mouseMove(window, point)
+    pump(qapp, .1)
+    assert pan.property("contentX") == x and pan.property("contentY") == y
+    old_square = viewport.x()
+    QTest.mousePress(window, Qt.LeftButton, Qt.NoModifier, point)
+    QTest.mouseMove(window, point + QPoint(50, 30), 60)
+    QTest.mouseMove(window, point + QPoint(100, 60), 60)
+    QTest.mouseRelease(window, Qt.LeftButton, Qt.NoModifier, point + QPoint(100, 60))
+    pump(qapp, .2)
+    assert pan.property("contentX") != x and viewport.x() != old_square
+    QTest.keyClick(window, Qt.Key_L)
+    assert viewer.property("zoomed")  # The retired loupe shortcut cannot change the mode.
+    QTest.keyClick(window, Qt.Key_0)
+    assert not viewer.property("zoomed") and not navigator.isVisible()
+    assert not [w for w in warnings if "Viewer.qml" in w], warnings
+
+
+def test_wheel_zoom_is_variable_pointer_anchored_and_scoped_to_the_photo(shell, qapp):
+    from PySide6.QtGui import QGuiApplication, QWheelEvent
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, model, popout, warnings = shell
+    popout.open(0)
+    popout.rawEditor.open("sample.NEF")
+    popout.rawEditor._full_size = [8000, 5000]
+    popout.rawEditor.changed.emit()
+    pump(qapp, .4)
+    viewer = window.findChild(QQuickItem, "viewer")
+    pan = window.findChild(QQuickItem, "viewerZoomPan")
+    photo = window.findChild(QQuickItem, "viewerPhotoImage")
+    viewport = window.findChild(QQuickItem, "viewerZoomViewport")
+    navigator = window.findChild(QQuickItem, "viewerZoomNavigator")
+    point = QPointF(pan.width()*.65, pan.height()/2)
+
+    def wheel(delta, local=None, pixels=0, target=pan, horizontal=0):
+        if local is None:
+            local = point
+        scene = target.mapToScene(local)
+        event = QWheelEvent(scene, QPointF(window.mapToGlobal(scene.toPoint())), QPoint(0,pixels), QPoint(horizontal,delta),
+                            Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False)
+        QGuiApplication.sendEvent(window, event)
+        pump(qapp, .05)
+
+    def anchor():
+        return ((pan.property("contentX")+point.x()-pan.property("imageLeft"))/pan.property("drawWidth"),
+                (pan.property("contentY")+point.y()-pan.property("imageTop"))/pan.property("drawHeight"))
+
+    fit = pan.property("effectiveScale")
+    initial = anchor()
+    wheel(120)
+    assert viewer.property("zoomed") and navigator.isVisible()
+    assert viewer.property("zoomScale") == pytest.approx(fit*1.2)
+    assert anchor() == pytest.approx(initial, abs=.001)
+    first_square = viewport.width()
+    wheel(120)
+    assert viewer.property("zoomScale") == pytest.approx(fit*1.2**2)
+    assert viewport.width() < first_square
+    assert anchor() == pytest.approx(initial, abs=.001)
+    wheel(-120)
+    assert viewer.property("zoomScale") == pytest.approx(fit*1.2)
+    wheel(0,pixels=30)
+    assert viewer.property("zoomScale") == pytest.approx(fit*1.2**1.5)
+    before = viewer.property("zoomScale")
+    wheel(120,QPointF(20,20),target=window.findChild(QQuickItem,"viewerRawEditorPanel"))
+    assert viewer.property("zoomScale") == before
+    QTest.keyClick(window, Qt.Key_Z)
+    assert viewer.property("zoomScale") == 1
+    point = QPointF(pan.width()*.65,pan.height()*.45)
+    full_anchor = anchor()
+    wheel(120)
+    assert viewer.property("zoomScale") == pytest.approx(1.2)
+    assert anchor() == pytest.approx(full_anchor,abs=.001)
+    # Wheels must never trigger Flickable's independent scrolling, including
+    # horizontal wheel input which has no vertical zoom delta.
+    position = (pan.property("contentX"), pan.property("contentY"))
+    wheel(0, horizontal=120)
+    pump(qapp, .25)
+    assert (pan.property("contentX"), pan.property("contentY")) == pytest.approx(position)
+    assert not pan.property("moving")
+    assert pan.property("interactive")  # Mouse dragging remains available.
+    wheel(-12000, QPointF(pan.width()/2,pan.height()/2))
+    assert viewer.property("zoomScale") == pytest.approx(.05)
+    assert photo.width() < pan.width()  # Below-fit zoom is not stretched back up.
+    assert viewport.width() == pytest.approx(viewport.parentItem().width())
+    QTest.keyClick(window, Qt.Key_0)
+    assert not viewer.property("zoomed") and not navigator.isVisible()
+    assert popout.row == 0
+    assert not [w for w in warnings if "Viewer.qml" in w],warnings
+
+
 def test_the_editor_key_starts_the_opening_screen(shell, qapp):
     engine, window, model, popout, warnings = shell
     popout.open(0)
@@ -427,3 +538,499 @@ def test_preview_and_its_hide_ui_mode_cover_screen_then_restore_window(shell, qa
     assert window.visibility() == original_mode
     if not maximized:
         assert window.geometry() == original_geometry
+
+
+def test_raw_dock_meets_filmstrip_and_closes_to_full_width(shell, qapp):
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, model, popout, warnings = shell
+    popout.open(0)
+    popout.rawEditor.open("sample.NEF")
+    pump(qapp, 0.4)
+    dock = window.findChild(QQuickItem, "viewerRawEditorPanel")
+    strip = window.findChild(QQuickItem, "viewerFilmstrip")
+    origin = QPointF()
+    assert dock.isVisible()
+    assert dock.mapToScene(origin).y() + dock.height() == pytest.approx(window.height())
+    assert strip.mapToScene(origin).x() + strip.width() == pytest.approx(dock.x())
+    for tool in ("Crop", "Mask", "Remove", "Red Eye", "Presets", "History", "Adjust"):
+        dock.setProperty("tool", tool)
+        pump(qapp, 0.02)
+    popout.rawEditor.cancel()
+    pump(qapp, 0.2)
+    assert strip.width() == pytest.approx(window.width())
+    assert not [w for w in warnings if "RawEditorPanel.qml" in w], warnings
+
+
+def test_raw_reset_and_history_preserve_unexposed_recipe_settings(qapp):
+    from image_triage.qml_shell.raw_editor import RawEditor
+
+    raw = RawEditor(memory=True)
+    raw.open("sample.NEF")
+    original = {"exposure": 1.0, "contrast": 15, "profile": "Embedded", "masks": [{"name": "Subject"}]}
+    raw._original = dict(original)
+    raw._draft = dict(original)
+    raw.adjust("saturation", -20)
+    raw.adjust("contrast", 30)
+    raw.reset()
+    assert raw.values["exposure"] == 0
+    assert raw.values["contrast"] == 0
+    assert raw._draft["masks"] == original["masks"]
+    raw.undo()
+    assert raw.values["contrast"] == 30
+    raw.restoreHistory(1)
+    assert raw._draft == original
+    assert not raw.dirty
+    raw.redo()
+    assert raw.values["saturation"] == -20
+    raw.cancel()
+
+
+def test_raw_photo_navigation_restores_each_draft_and_undo_history(qapp):
+    from image_triage.qml_shell.raw_editor import RawEditor
+
+    raw = RawEditor(memory=True)
+    raw.open("first.NEF")
+    raw.adjust("exposure", 1.25)
+    raw.open("second.NEF")
+    assert raw.active and raw.loaded
+    assert raw.values["exposure"] == 0
+    raw.adjust("contrast", 35)
+    raw.open("first.NEF")
+    assert raw.values["exposure"] == 1.25
+    assert raw.values["contrast"] == 0
+    raw.undo()
+    assert not raw.dirty
+    raw.cancel()
+    raw.open("second.NEF")
+    assert raw.values["contrast"] == 35
+    raw.shutdown()
+
+
+def test_late_raw_load_cannot_replace_the_photo_switched_to(qapp, monkeypatch):
+    from image_triage.qml_shell.raw_editor import RawEditor
+
+    raw = RawEditor()
+    monkeypatch.setattr(raw, "_start_queued", lambda: None)
+    raw.open("first.NEF")
+    first_revision = raw._revision
+    raw._running = True
+    raw.open("second.NEF")
+    second_revision = raw._revision
+    raw._arrived(first_revision, "load", ({"exposure": 4}, ""), "")
+    assert raw.active and not raw.loaded
+    raw._arrived(second_revision, "load", ({"contrast": 15}, ""), "")
+    assert raw.loaded and raw.values["exposure"] == 0
+    assert raw.values["contrast"] == 15
+    raw.shutdown()
+
+
+def test_filmstrip_wheel_and_keys_work_across_raw_editing(shell, qapp):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QGuiApplication, QWheelEvent
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, photos, popout, warnings = shell
+    popout.open(1)
+    pump(qapp, .3)
+    zoom = window.findChild(QQuickItem, "viewerZoomControls")
+    initial_zoom_y = zoom.y()
+    popout.rawEditor.open("first.NEF")
+    pump(qapp, .3)
+    assert zoom.y() == initial_zoom_y
+    reset = window.findChild(QQuickItem, "rawReset")
+    point = reset.mapToScene(QPointF(reset.width() / 2, reset.height() / 2))
+    QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point.toPoint())
+    strip = window.findChild(QQuickItem, "viewerFilmstrip")
+
+    def wheel():
+        local = strip.mapToScene(QPointF(strip.width() / 2, strip.height() / 2))
+        global_pos = window.mapToGlobal(local.toPoint())
+        event = QWheelEvent(local, QPointF(global_pos), QPoint(), QPoint(0, -120),
+                            Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False)
+        QGuiApplication.sendEvent(window, event)
+        pump(qapp, .15)
+
+    wheel()
+    assert popout.row == 2
+    assert popout.rawEditor.active
+    QTest.keyClick(window, Qt.Key_Right)
+    assert popout.row == 3
+    popout.rawEditor.cancel()
+    pump(qapp, .2)
+    assert zoom.y() == initial_zoom_y
+    wheel()
+    assert popout.row == 4
+    QTest.keyClick(window, Qt.Key_Left)
+    assert popout.row == 3
+    assert not [w for w in warnings if "Viewer.qml" in w or "RawEditorPanel.qml" in w], warnings
+
+
+def test_raw_color_tools_validate_and_keep_structured_history(qapp):
+    from copy import deepcopy
+    from image_triage.qml_shell.raw_editor import RawEditor
+
+    raw = RawEditor(memory=True)
+    raw.open("sample.NEF")
+    assert raw.values["gradeBlending"] == 50
+    points = [[0, 0], [120, 145], [255, 255]]
+    raw.setCurve("pointCurveRed", points)
+    points[1][1] = 0
+    assert raw.values["pointCurveRed"][1][1] == 145
+    raw.setMixer(3, "hslSat", 25)
+    raw.setGrading("gradeMidtones", 210, 20, -5)
+    saved_draft = deepcopy(raw._draft)
+    raw.setCurve("pointCurveRed", [[0, 0], [0, 100]])
+    raw.setCurve("pointCurveRed", [[0, 0], [255, float("nan")]])
+    raw.setMixer(9, "hslSat", 30)
+    raw.setGrading("gradeMidtones", float("inf"), 20, 0)
+    assert raw._draft == saved_draft
+    raw.undo()
+    assert raw.values["gradeMidtones"]["sat"] == 0
+    raw.redo()
+    assert raw.values["gradeMidtones"]["sat"] == 20
+    raw.open("second.NEF")
+    raw.open("sample.NEF")
+    assert raw._draft == saved_draft
+    raw.reset()
+    assert raw.values["pointCurveRed"] == []
+    assert raw.values["hslSat"] == [0] * 8
+    assert raw.values["gradeMidtones"] == {"hue": 0, "sat": 0, "lum": 0}
+    assert raw.values["gradeBlending"] == 50
+    raw.undo()
+    assert raw._draft == saved_draft
+    raw.shutdown()
+
+
+def test_raw_color_controls_edit_through_qml(shell, qapp):
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, photos, popout, warnings = shell
+    popout.open(0)
+    popout.rawEditor.open("sample.NEF")
+    pump(qapp, .3)
+    panel = window.findChild(QQuickItem, "viewerRawEditorPanel")
+
+    def walk(item):
+        for child in item.childItems():
+            yield child
+            yield from walk(child)
+
+    for child in walk(panel):
+        title = child.property("title")
+        if title in ("Light", "Color"):
+            child.setProperty("expanded", False)
+        elif title in ("Curve", "Color Mixer", "Color Grading"):
+            child.setProperty("expanded", True)
+    pump(qapp, .3)
+    scroll = window.findChild(QQuickItem, "rawEditorScroll").property("contentItem")
+
+    def show_section(title):
+        section = next(child for child in walk(panel) if child.property("title") == title)
+        point = section.mapToItem(scroll, QPointF())
+        scroll.setProperty("contentY", point.y() + scroll.property("contentY"))
+        pump(qapp, .1)
+
+    def click(name, x, y):
+        item = next(child for child in walk(panel) if child.objectName() == name)
+        point = item.mapToScene(QPointF(item.width() * x, item.height() * y))
+        QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point.toPoint())
+        pump(qapp, .1)
+
+    show_section("Curve")
+    click("rawCurveGraph", .5, .35)
+    assert len(popout.rawEditor.values["pointCurve"]) == 3
+    show_section("Color Mixer")
+    click("rawMixer_hslHue_slider", .75, .5)
+    assert popout.rawEditor.values["hslHue"][0] > 0
+    show_section("Color Grading")
+    click("rawWheel_gradeMidtones", .8, .4)
+    assert popout.rawEditor.values["gradeMidtones"]["sat"] > 20
+    popout.rawEditor.undo()
+    assert popout.rawEditor.values["gradeMidtones"]["sat"] == 0
+    assert not [w for w in warnings if any(name in w for name in ("RawCurve", "RawColor", "RawGrading"))], warnings
+
+
+def test_raw_effects_and_as_shot_white_balance_keep_atomic_history(qapp):
+    from image_triage.qml_shell.raw_editor import RawEditor
+
+    raw = RawEditor(memory=True)
+    raw.open("sample.NEF")
+    raw.adjust("temperature", 25)
+    raw.adjust("tint", -10)
+    raw.asShotWhiteBalance()
+    assert raw.values["temperature"] == raw.values["tint"] == 0
+    raw.undo()
+    assert raw.values["temperature"] == 25 and raw.values["tint"] == -10
+    raw.adjust("texture", 30)
+    raw.adjust("vignetteAmount", -35)
+    raw.adjust("grainAmount", 15)
+    raw.adjust("grainSize", 40)
+    raw.setGlow("amount", 20)
+    raw.setGlow("spread", 75)
+    raw.setEffectStyle("glow", "halation")
+    raw.setEffectStyle("vignette", "colorPriority")
+    assert raw.values["glow"] == {"amount": 20, "style": "halation", "range": 50, "spread": 75, "warmth": 0}
+    raw.setGlow("spread", float("nan"))
+    raw.setEffectStyle("glow", "invalid")
+    assert raw.values["glow"]["spread"] == 75
+    raw.reset()
+    assert raw.values["grainSize"] == 25
+    assert raw.values["grainRoughness"] == 50
+    assert raw.values["vignetteStyle"] == "highlightPriority"
+    assert raw.values["glow"]["amount"] == 0
+    raw.undo()
+    assert raw.values["glow"]["amount"] == 20
+    raw.shutdown()
+
+
+def test_raw_detail_and_calibration_preserve_defaults_and_history(qapp):
+    from image_triage.qml_shell.raw_editor import RawEditor
+
+    raw = RawEditor(memory=True)
+    raw.open("sample.NEF")
+    raw.adjust("sharpenAmount", 250)
+    raw.adjust("sharpenRadius", .1)
+    assert raw.values["sharpenAmount"] == 150
+    assert raw.values["sharpenRadius"] == .5
+    raw.setCalibration(0, "calibHue", 35)
+    raw.setCalibration(2, "calibSat", -20)
+    raw.setCalibration(3, "calibHue", 90)
+    assert raw.values["calibHue"] == [35, 0, 0]
+    assert raw.values["calibSat"] == [0, 0, -20]
+    raw.setSuperResolution(True)
+    raw.undo()
+    assert not raw.values["superResolution"]
+    raw.redo()
+    assert raw.values["superResolution"]
+    raw.open("other.NEF")
+    raw.open("sample.NEF")
+    assert raw.values["calibHue"] == [35, 0, 0]
+    raw.reset()
+    assert raw.values["sharpenRadius"] == 1
+    assert raw.values["sharpenDetail"] == 25
+    assert raw.values["noiseLuminanceDetail"] == 50
+    assert raw.values["calibHue"] == raw.values["calibSat"] == [0, 0, 0]
+    assert not raw.values["superResolution"]
+    raw.shutdown()
+
+
+def test_raw_technical_controls_edit_through_qml(shell, qapp):
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, photos, popout, warnings = shell
+    popout.open(0)
+    popout.rawEditor.open("sample.NEF")
+    pump(qapp, .3)
+    panel = window.findChild(QQuickItem, "viewerRawEditorPanel")
+
+    def walk(item):
+        for child in item.childItems():
+            yield child
+            yield from walk(child)
+
+    for child in walk(panel):
+        title = child.property("title")
+        if title in ("Light", "Color"):
+            child.setProperty("expanded", False)
+        elif title in ("Detail", "Calibration"):
+            child.setProperty("expanded", True)
+    pump(qapp, .3)
+    scroll = window.findChild(QQuickItem, "rawEditorScroll").property("contentItem")
+
+    def show_section(title):
+        section = next(child for child in walk(panel) if child.property("title") == title)
+        point = section.mapToItem(scroll, QPointF())
+        scroll.setProperty("contentY", point.y() + scroll.property("contentY"))
+        pump(qapp, .1)
+
+    def click(name, x=.5, y=.5):
+        item = next(child for child in walk(panel) if child.objectName() == name)
+        point = item.mapToScene(QPointF(item.width() * x, item.height() * y))
+        QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point.toPoint())
+        pump(qapp, .1)
+
+    show_section("Detail")
+    click("rawDetailSharpen_slider", .6)
+    assert popout.rawEditor.values["sharpenAmount"] > 0
+    click("rawSuperResolution", .25)
+    assert popout.rawEditor.values["superResolution"]
+    popout.rawEditor.undo()
+    assert not popout.rawEditor.values["superResolution"]
+    click("rawManualNoise")
+    click("rawTechnical_noiseLuminance_slider", .4)
+    assert popout.rawEditor.values["noiseLuminance"] > 0
+    show_section("Calibration")
+    click("rawCalibrationHue_0_slider", .75)
+    assert popout.rawEditor.values["calibHue"][0] > 0
+    assert not [w for w in warnings if "RawTechnicalAdjustments.qml" in w], warnings
+
+
+def test_white_balance_sampling_uses_neutral_rgb_and_rejects_clipping(tmp_path):
+    from PySide6.QtGui import QColor, QImage
+    from image_triage.qml_shell.raw_editor import _white_balance_sample
+
+    path = tmp_path / "sample.png"
+    image = QImage(20, 10, QImage.Format_RGBA8888)
+    image.fill(QColor(140, 140, 140))
+    assert image.save(str(path))
+    values = _white_balance_sample(path, .5, .5)
+    assert values["temperature"] == pytest.approx(0, abs=.01)
+    assert values["tint"] == pytest.approx(0, abs=.01)
+    image.fill(QColor(180, 150, 130))
+    assert image.save(str(path))
+    assert _white_balance_sample(path, .5, .5)["temperature"] < 0
+    image.fill(QColor("white"))
+    assert image.save(str(path))
+    with pytest.raises(ValueError, match="clipped"):
+        _white_balance_sample(path, .5, .5)
+
+
+def test_late_white_balance_sample_does_not_edit_another_photo(qapp, monkeypatch):
+    import threading
+    from image_triage.qml_shell.raw_editor import RawEditor
+
+    started = threading.Event()
+    release = threading.Event()
+    raw = RawEditor(memory=True)
+
+    def work(action, path, original, draft, directory, sample):
+        assert action == "whiteBalance" and sample == (.4, .6)
+        started.set()
+        assert release.wait(5)
+        return {"temperature": -20, "tint": 5}
+
+    monkeypatch.setattr(raw, "_work", work)
+    raw.open("first.NEF")
+    raw.pickWhiteBalance(.4, .6)
+    assert started.wait(2)
+    raw.open("second.NEF")
+    release.set()
+    assert wait_for(qapp, lambda: not raw.busy)
+    assert raw.values["temperature"] == raw.values["tint"] == 0
+    assert not raw.dirty
+    raw.shutdown()
+
+
+def test_raw_numeric_entry_and_white_balance_picker_work_through_qml(shell, qapp, monkeypatch):
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, photos, popout, warnings = shell
+    popout.open(0)
+    popout.rawEditor.open("sample.NEF")
+    pump(qapp, .4)
+    panel = window.findChild(QQuickItem, "viewerRawEditorPanel")
+
+    def walk(item):
+        for child in item.childItems():
+            yield child
+            yield from walk(child)
+
+    def click_item(item):
+        point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
+        QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point.toPoint())
+        pump(qapp, .1)
+
+    value = next(child for child in walk(panel) if child.objectName() == "rawBasic_exposure_value")
+    click_item(value)
+    QTest.keyClick(window, Qt.Key_A, Qt.ControlModifier)
+    for character in "1.25":
+        QTest.keyClick(window, Qt.Key(ord(character)))
+    QTest.keyClick(window, Qt.Key_Return)
+    pump(qapp, .1)
+    assert popout.rawEditor.values["exposure"] == 1.25
+    click_item(value)
+    QTest.keyClick(window, Qt.Key_A, Qt.ControlModifier)
+    for character in "2.50":
+        QTest.keyClick(window, Qt.Key(ord(character)))
+    QTest.keyClick(window, Qt.Key_Escape)
+    assert popout.rawEditor.values["exposure"] == 1.25
+    assert popout.rawEditor.active
+
+    samples = []
+
+    def work(action, path, original, draft, directory, sample):
+        assert action == "whiteBalance"
+        samples.append(sample)
+        return {"temperature": -15, "tint": 8}
+
+    monkeypatch.setattr(popout.rawEditor, "_work", work)
+    picker = next(child for child in walk(panel) if child.objectName() == "rawWhiteBalancePicker" and child.isVisible())
+    # The Color section can extend below the viewport when the offscreen screen is short.
+    scroll = window.findChild(QQuickItem, "rawEditorScroll").property("contentItem")
+    section = next(child for child in walk(panel) if child.property("title") == "Color")
+    point = section.mapToItem(scroll, QPointF())
+    scroll.setProperty("contentY", point.y() + scroll.property("contentY"))
+    pump(qapp, .1)
+    click_item(picker)
+    assert panel.property("whiteBalancePicking"), warnings
+    sample_area = window.findChild(QQuickItem, "rawWhiteBalanceSample")
+    assert wait_for(qapp, lambda: sample_area.isVisible() and sample_area.width() > 0)
+    QTest.keyClick(window, Qt.Key_Escape)
+    assert not panel.property("whiteBalancePicking") and popout.rawEditor.active
+    click_item(picker)
+    # Letterbox padding must not become a sample.
+    top = sample_area.mapToScene(QPointF(sample_area.width() / 2, 0))
+    if sample_area.y() > 12:
+        QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, (top - QPointF(0, 8)).toPoint())
+        assert panel.property("whiteBalancePicking") and not samples
+    click_item(sample_area)
+    assert wait_for(qapp, lambda: not popout.rawEditor.busy)
+    assert samples[0] == pytest.approx((.5, .5), abs=.01)
+    assert popout.rawEditor.values["temperature"] == -15
+    assert popout.rawEditor.values["tint"] == 8
+    assert not panel.property("whiteBalancePicking")
+    popout.rawEditor.undo()
+    assert popout.rawEditor.values["temperature"] == popout.rawEditor.values["tint"] == 0
+    assert not [w for w in warnings if "RawColorSlider.qml" in w or "RawBasicAdjustments.qml" in w], warnings
+
+
+def test_raw_display_preview_decodes_when_native_16_bit_render_exceeds_qt_limit(tmp_path):
+    from PySide6.QtGui import QColor, QColorSpace, QImage, QImageReader
+    from image_triage.qml_shell.raw_editor import _display_preview
+
+    native = tmp_path / "native.png"
+    image = QImage(512, 384, QImage.Format_RGBA64)
+    image.fill(QColor(35, 120, 220))
+    image.setColorSpace(QColorSpace(QColorSpace.SRgb))
+    assert image.save(str(native))
+    limit = QImageReader.allocationLimit()
+    try:
+        QImageReader.setAllocationLimit(1)
+        assert QImageReader(str(native)).read().isNull()
+        display = _display_preview(native)
+        decoded = QImageReader(display).read()
+        assert not decoded.isNull()
+        assert decoded.size() == image.size()  # Full-resolution zoom is preserved.
+        assert decoded.pixelColor(20, 20).getRgb() == image.pixelColor(20, 20).getRgb()
+        assert decoded.colorSpace() == image.colorSpace()
+        assert QImageReader.allocationLimit() == 1
+        assert native.exists()  # The converter does not modify the native render.
+    finally:
+        QImageReader.setAllocationLimit(limit)
+
+
+def test_raw_completed_preview_replaces_the_displayed_photo(shell, qapp, tmp_path):
+    from PySide6.QtGui import QColor, QImage
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, photos, popout, warnings = shell
+    popout.open(0)
+    popout.rawEditor.open("sample.NEF")
+    pump(qapp, .4)
+    preview = tmp_path / "edited.png"
+    image = QImage(120, 80, QImage.Format_RGB32)
+    image.fill(QColor("blue"))
+    assert image.save(str(preview))
+    popout.rawEditor._preview = str(preview)
+    popout.rawEditor.changed.emit()
+    pump(qapp, .4)
+    photo = window.findChild(QQuickItem, "viewerPhotoImage")
+    panel = window.findChild(QQuickItem, "viewerRawEditorPanel")
+    assert photo.property("source").toString() == popout.rawEditor.preview, (photo.property("source"), panel.property("displaySource"), warnings)
+    assert photo.opacity() == pytest.approx(1), warnings
+    point = photo.mapToScene(QPointF(photo.width() / 2, photo.height() / 2)).toPoint()
+    rendered = window.grabWindow()
+    assert not rendered.isNull()
+    color = rendered.pixelColor(point)
+    assert color.blue() > 200 and color.red() < 30, (color.getRgb(), warnings)

@@ -77,6 +77,7 @@ class EditStateMemo:
         self._on_changed = on_changed
         self._known: dict[str, tuple[float, tuple[int, int]]] = {}
         self._pending: set[str] = set()
+        self._recheck: set[str] = set()
         self._queue: SimpleQueue[str] = SimpleQueue()
         self._thread: Thread | None = None
         self._lock = Lock()
@@ -110,6 +111,9 @@ class EditStateMemo:
                 known = self._known.get(key)
                 if known is not None:
                     self._known[key] = (float("-inf"), known[1])
+            # A save may land after a pending probe read the old render.
+            if path is not None and str(path) in self._pending:
+                self._recheck.add(str(path))
 
     def _find(self, key: str) -> tuple[int, int]:
         try:
@@ -142,7 +146,11 @@ class EditStateMemo:
             state = self._find(key)
             previous = self._remember(key, state)
             with self._lock:
-                self._pending.discard(key)
+                if key in self._recheck:
+                    self._recheck.remove(key)
+                    self._queue.put(key)
+                else:
+                    self._pending.discard(key)
             if state != (previous if previous is not None else (0, 0)) and self._on_changed is not None:
                 try:
                     self._on_changed(key)

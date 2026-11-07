@@ -7,7 +7,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 ICON_FILES = (
-    ROOT / "image_triage" / "ui" / "assets" / "app_icon-v5",
+    ROOT / "image_triage" / "assets" / "app_icon-v5",
     ROOT / "build_assets" / "icons" / "image_triage-v5",
 )
 

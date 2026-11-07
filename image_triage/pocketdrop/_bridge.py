@@ -1,6 +1,6 @@
 """ctypes bindings for pocketdrop.dll (native/pocketdrop/capi/pocketdrop_capi.h).
 
-Only the layout of the C interface lives here; panel.py implements it with Qt.
+Only the layout of the C interface lives here; the QML transfer models drive it.
 """
 from __future__ import annotations
 

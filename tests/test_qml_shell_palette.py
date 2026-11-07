@@ -24,7 +24,7 @@ QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.Software)
 
 @pytest.fixture(scope="module")
 def qapp():
-    from PySide6.QtWidgets import QApplication   # the shell is a widgets application: the popout is a Widgets window
+    from PySide6.QtGui import QGuiApplication as QApplication
     return QCoreApplication.instance() or QApplication([])
 
 
@@ -47,7 +47,7 @@ def titles(rows):
 
 
 def test_a_query_is_ranked_by_the_widgets_palettes_own_function(qapp, store):
-    from image_triage.ui.command_palette import _normalize_query, _rank_commands
+    from image_triage.palette_commands import _normalize_query, _rank_commands
 
     model = PaletteModel(memory=True, parent=qapp)
     for query in ("rename", "fo", "theme", "ai", "x"):
@@ -82,7 +82,7 @@ def test_preview_context_offers_only_the_commands_that_act_on_a_photo(qapp, stor
 
 
 def test_shortcuts_come_from_the_registry_and_follow_overrides(qapp, store):
-    from image_triage.ui.shortcuts import save_shortcut_overrides
+    from image_triage.shortcuts import save_shortcut_overrides
 
     save_shortcut_overrides({"open_folder": "Ctrl+Shift+O"})
     model = PaletteModel(parent=qapp)

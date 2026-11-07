@@ -358,7 +358,7 @@ class ReferenceModel(QObject):
         if self._memory:
             return {"compare_mode": "V"}         # the mockup's one changed key
         try:
-            from ..ui.shortcuts import load_shortcut_overrides
+            from ..shortcuts import load_shortcut_overrides
 
             return load_shortcut_overrides()
         except Exception:                        # unreadable settings: show the defaults

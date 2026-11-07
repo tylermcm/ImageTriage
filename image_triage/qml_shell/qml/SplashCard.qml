@@ -10,7 +10,7 @@ Item {
     readonly property real s: width / 1633
     readonly property real pad: 115 * s
     readonly property real barH: Math.max(8, 25 * s)
-    Image { anchors.fill: parent; source: Qt.resolvedUrl("../../ui/assets/splash_background-v8.png"); fillMode: Image.Stretch; smooth: true; mipmap: true }
+    Image { anchors.fill: parent; source: Qt.resolvedUrl("../../assets/splash_background-v8.png"); fillMode: Image.Stretch; smooth: true; mipmap: true }
     Text {
         x: card.pad; y: 805 * card.s; width: card.width - 2 * card.pad; height: 34 * card.s
         verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight

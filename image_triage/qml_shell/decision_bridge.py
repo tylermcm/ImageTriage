@@ -1,4 +1,4 @@
-"""Ratings and decisions that last: the photo model's changes saved to the Widgets app's decision store, and read back when a folder opens.
+"""Ratings and decisions that last: the photo model's changes saved to the shared decision store, and read back when a folder opens.
 
 The store is the same one the Widgets app uses (`decision_store.DecisionStore`, session = the "Profile preset" setting), so a rating or a winner set
 here shows up there and the other way round. The saving goes through the Widgets' own `AnnotationPersistenceQueue`: the database row and the XMP

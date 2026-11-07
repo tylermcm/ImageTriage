@@ -82,6 +82,11 @@ class ViewerHost(QObject):
         super().__init__(parent)
         self._photos, self._thumbs, self._collections, self._files, self._cull, self._toasts = photos, thumbs, collections, files, cull, toasts
         self._memory = memory
+        from .raw_editor import RawEditor
+
+        self._raw_editor = RawEditor(memory=memory, parent=self)
+        self._raw_editor.saved.connect(self._raw_saved)
+        self._saved_previews: dict[str, tuple[str, int, int]] = {}
         self._settings = None if memory else user_settings()
         self._open = False
         self._row = -1
@@ -232,7 +237,10 @@ class ViewerHost(QObject):
 
     @Slot()
     def close(self) -> None:
-        if not self._open:
+        if not self._open or self._raw_editor.saving:
+            return
+        if self._raw_editor.active:
+            self._raw_editor.cancel()
             return
         self._open = False
         self._preload_timer.stop()
@@ -242,6 +250,9 @@ class ViewerHost(QObject):
 
     @Slot(int)
     def go(self, row: int) -> None:
+        if self._raw_editor.saving:
+            self.notice("Saving the RAW edit. Please wait before switching photos.")
+            return
         count = self._photos.rowCount()
         if count == 0:
             return
@@ -259,6 +270,8 @@ class ViewerHost(QObject):
         item = self._photos.row_at(row)
         if item is None:
             return
+        if self._raw_editor.active and item["path"] != self._path:
+            self._raw_editor.open(item["path"])
         self._row = row
         self._path = item["path"]
         self._ask("picture", self._path)
@@ -268,6 +281,19 @@ class ViewerHost(QObject):
         self.rowChanged.emit()
         self.imageChanged.emit()
         self.assistChanged.emit()
+
+    rawEditor = Property(QObject, lambda self: self._raw_editor, constant=True)
+
+    def _raw_saved(self, path: str, preview: str) -> None:
+        previous = self._picture_for(path)
+        size = QImageReader(preview).size()
+        dimensions = previous[1:] if previous else (size.width(), size.height())
+        self._saved_previews[path] = (_file_url(preview), *dimensions)
+        refresh = getattr(self._thumbs, "refresh_edit", None)
+        if refresh is not None:
+            refresh(path)
+        if path == self._path:
+            self.imageChanged.emit()
 
     def _photos_changed(self, *args) -> None:
         """Photos went away (deleted, moved) or the folder changed: stay on the same photo, or the one that took its place."""
@@ -289,6 +315,8 @@ class ViewerHost(QObject):
     def _picture_for(self, path: str):
         if not path:
             return None
+        if path in self._saved_previews:
+            return self._saved_previews[path]
         if suffix_for_path(path) in DIRECT:
             reader = QImageReader(path)
             size = reader.size()
@@ -329,8 +357,10 @@ class ViewerHost(QObject):
 
     def _make_picture(self, path: str):
         from ..imaging import load_image_for_display, sanitize_display_error
+        from ..photocraft_bridge import RAW_SUFFIXES, saved_render_path
 
-        image, error = load_image_for_display(path, QSize(READ_LIMIT, READ_LIMIT), prefer_embedded=True)
+        render = saved_render_path(path) if Path(path).suffix.lower() in RAW_SUFFIXES else None
+        image, error = load_image_for_display(str(render or path), QSize(READ_LIMIT, READ_LIMIT), prefer_embedded=render is None)
         if image.isNull():
             return "", 0, 0, sanitize_display_error(error, path=path) or "The photo could not be read."
         file = os.path.join(self._ensure_dir(), f"{abs(hash(path)):x}.jpg")
@@ -409,6 +439,7 @@ class ViewerHost(QObject):
             self._ask("picture", item["path"])
 
     def shutdown(self) -> None:
+        self._raw_editor.shutdown()
         self._preload_timer.stop()
         with self._lock:
             self._wanted.clear()

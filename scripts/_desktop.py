@@ -175,7 +175,7 @@ def _send_to_back(hwnd: int) -> None:
 
 def place(widget) -> None:
     """Place a hidden test window before showing it. No-op without a desktop or monitor request."""
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QGuiApplication as QApplication
 
     screen = _check_screen(QApplication.instance())
     if _home() is None and screen is None:

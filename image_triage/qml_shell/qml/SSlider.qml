@@ -11,13 +11,15 @@ Item {
     property real value: 0
     property string text
     signal moved(real value)
+    signal committed(real value)
     width: trackW + 14 + 52; height: 20
     Slider {
         id: s
         x: 0; width: sl.trackW; height: 20; padding: 0
         from: sl.from; to: sl.to; stepSize: sl.step; snapMode: Slider.SnapAlways
         value: sl.value
-        onMoved: sl.moved(value)
+        onMoved: { sl.moved(value); if (!pressed) sl.committed(value) }
+        onPressedChanged: if (!pressed) sl.committed(value)
         background: Item {
             Rectangle { x: 0; y: 8; width: parent.width; height: 4; radius: 2; color: theme.s3 }
             Rectangle { x: 0; y: 8; width: s.visualPosition * parent.width; height: 4; radius: 2; color: theme.accent }

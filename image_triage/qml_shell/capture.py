@@ -1,6 +1,6 @@
 """The inspector's Capture section: the camera, lens, exposure, focal length, capture time and pixel size of the selected photo, read from the photo itself.
 
-The values are the Widgets app's own (`metadata.load_capture_metadata`, its EXIF reader, the same one its inspector and its metadata filters use), read for
+The values are the shared (`metadata.load_capture_metadata`, its EXIF reader, the same one its inspector and its metadata filters use), read for
 the photo on the one worker thread that skips photos the person has already moved past (photo_jobs.py). The pixel size is the EXIF size when the file
 has one, else what the image reader says without decoding the picture (a RAW the reader cannot open and EXIF does not size has none).
 `captureData.get(path)` is what QML reads: {"ready": true, "camera", "lens", "exposure", "focal", "captured", "pixels", "width", "height"}; a field the
@@ -35,6 +35,7 @@ def compute(path: str) -> dict | None:
         "camera": meta.camera, "lens": meta.lens, "focal": meta.focal_length, "captured": meta.captured_at,
         "exposure": " · ".join(part for part in (meta.exposure, meta.aperture, meta.iso) if part),
         "pixels": f"{width} × {height}" if width > 0 and height > 0 else "", "width": max(0, width), "height": max(0, height),
+        "iso": meta.iso, "aperture": meta.aperture, "shutter": meta.exposure,
     }
 
 

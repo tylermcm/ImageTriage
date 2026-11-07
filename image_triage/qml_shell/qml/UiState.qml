@@ -78,7 +78,7 @@ QtObject {
     property string peopleQuery: ""
     property string peopleSel: ""           // test hook: comma-separated ids to start selected
     property string faceQuery: ""
-    property string vwScene: ""             // checks: open the viewer on row vwRow in the scene of the mockup's name (view, zoom, loupe, focus, collect, zen, opening, loading)
+    property string vwScene: ""             // checks: open the viewer on row vwRow in the scene of the mockup's name (view, zoom, focus, collect, zen, opening, loading)
     property int vwRow: -1
     property int vwFh: 0
     property int requestRow: -1             // a window asks the grid to move to this row (Show in grid)

@@ -1,21 +1,28 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 
 from image_triage.main import qml_argv_from_launch
 
 
-def test_retired_ui_selectors_cannot_launch_widgets(monkeypatch):
+@pytest.mark.parametrize("selector", ["--widgets", "--widgets-popout"])
+def test_removed_ui_selectors_are_not_accepted(selector):
+    from image_triage.qml_shell.app import main
+    with pytest.raises(SystemExit) as error:
+        main([selector])
+    assert error.value.code == 2
+
+
+def test_main_launches_only_qml(monkeypatch):
     import sys
     from image_triage import main as app
     from image_triage.qml_shell import app as qml
     seen = []
-    monkeypatch.setenv("IMAGE_TRIAGE_UI", "widgets")
-    monkeypatch.setattr(sys, "argv", ["ImageTriage.exe", "--widgets", "--widgets-popout"])
+    monkeypatch.setattr(sys, "argv", ["ImageTriage.exe"])
     monkeypatch.setattr(qml, "main", lambda args: seen.append(args) or 0)
     assert app.main() == 0
     assert seen == [[]]
-    assert not hasattr(app, "widgets_main")
 
 
 def test_launch_without_arguments_passes_nothing_on():

@@ -2371,7 +2371,7 @@ _DUPLICATE_DIVERSITY_MAX_PENALTY = 0.35
 
 def set_base_score_blend_weight(weight: float) -> None:
     """Update the blend weight between the tag-penalty-aware base score and
-    the adapter score. Called by MainWindow whenever the user changes the
+    the adapter score. Called by the application whenever the user changes the
     'Base score weight' slider in Settings -> AI."""
 
     global _BASE_SCORE_BLEND_WEIGHT

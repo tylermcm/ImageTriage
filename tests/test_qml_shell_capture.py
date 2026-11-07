@@ -2,14 +2,59 @@
 from __future__ import annotations
 
 import time
+import pytest
 
 from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QPointF, QMetaObject, Q_ARG
 
 from image_triage.qml_shell import capture
 from image_triage.qml_shell.capture import CaptureService
 from test_qml_shell import _load_main, pump, qapp  # noqa: F401  (the same helpers and application fixture)
+
+
+@pytest.mark.parametrize("width", [300, 331, 352])
+def test_long_capture_values_wrap_with_padding_and_no_row_overlap(qapp, tmp_path, width):
+    engine, window, warnings = _load_main(qapp, tmp_path, f"inspW={width}")
+    QMetaObject.invokeMethod(window, "applyStartup", Q_ARG("QVariant", 1440))
+    context = engine.rootContext()
+    context.contextProperty("captureData")._loader = lambda path: {
+        "camera": "NIKON CORPORATION NIKON Z 7_2 Extended Camera Model",
+        "lens": "NIKKOR-Z-14-24mm-f2.8-S-ExtremelyLongUnbrokenLensIdentifier",
+        "exposure": "1/500s · f/8 · ISO 128000", "focal": "14.5mm",
+        "captured": "2026-11-07 12:34", "pixels": "8256 × 5504",
+    }
+    photo = tmp_path / "photo.jpg"
+    Image.new("RGB", (64, 48), (90, 120, 180)).save(photo)
+    context.contextProperty("photos").setRows([
+        dict(path=str(photo), name="photo.jpg", ext="JPG", raw=False,
+             decision="", rating=0, ai=-1)], str(tmp_path))
+    pump(qapp, .8)
+    inspector = inspector_of(window)
+    until(qapp, lambda: capture_of(inspector).get("ready"))
+    items = {}
+    pending = [inspector]
+    while pending:
+        item = pending.pop()
+        items[item.objectName()] = item
+        pending.extend(item.childItems())
+    previous_bottom = 0
+    for label in ("Camera", "Lens", "Exposure", "Focal length", "Captured", "Pixels"):
+        value = items.get("inspectorCaptureValue_" + label)
+        assert value is not None
+        position = value.mapToItem(inspector, QPointF(0, 0))
+        assert position.x() + value.width() <= inspector.width() - 15.5
+        assert value.property("paintedWidth") <= value.width() + .5
+        assert position.y() >= previous_bottom
+        previous_bottom = position.y() + value.height()
+        if label in ("Camera", "Lens"):
+            assert value.property("lineCount") > 1
+    section = window.findChild(QObject, "inspectorCapture")
+    assert section.mapToItem(inspector, QPointF(0, section.height())).y() >= previous_bottom + 15
+    assert not [warning for warning in warnings if "Inspector.qml" in warning], warnings
+    window.close()
+    engine.deleteLater()
+    pump(qapp, .2)
 
 
 def photo_with_exif(path, size=(600, 400), orientation=1):

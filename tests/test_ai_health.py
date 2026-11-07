@@ -576,47 +576,6 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertTrue(caught.exception.remediation)
 
 
-class ReadinessSummaryTests(unittest.TestCase):
-    def _health(self, key: str, ready: bool) -> ai_health.CapabilityHealth:
-        capability = ai_manifest.CAPABILITIES[key]
-        return ai_health.CapabilityHealth(
-            key=key,
-            name=capability.name,
-            summary=capability.summary,
-            ready=ready,
-            stage=ai_health.STAGE_READY if ready else ai_health.STAGE_MODELS,
-            selected_device="cpu",
-            optional=capability.optional,
-            message="" if ready else "missing model",
-            remediation="" if ready else "Download it.",
-        )
-
-    def test_summary_is_honest_when_anything_is_missing(self) -> None:
-        from image_triage.ui.ai_readiness import summarize
-
-        results = {
-            "culling": self._health("culling", True),
-            "text_scoring": self._health("text_scoring", False),
-        }
-        text = summarize(results)
-
-        self.assertIn("1 of 2", text)
-        self.assertIn("need attention", text)
-
-    def test_summary_reports_success_only_when_everything_is_ready(self) -> None:
-        from image_triage.ui.ai_readiness import summarize
-
-        results = {"culling": self._health("culling", True)}
-        self.assertIn("All 1 AI features are ready", summarize(results))
-
-    def test_failure_message_leads_with_the_capability_not_a_traceback(self) -> None:
-        from image_triage.ui.ai_readiness import failure_message
-
-        text = failure_message(self._health("text_scoring", False))
-
-        self.assertTrue(text.startswith("missing model"))
-        self.assertIn("Stage:", text)
-        self.assertIn("Download it.", text)
 
 
 if __name__ == "__main__":

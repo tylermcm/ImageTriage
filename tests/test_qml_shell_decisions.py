@@ -97,7 +97,7 @@ def test_a_decision_and_a_rating_come_back_when_the_folder_is_opened_again(qapp,
     again, bridge2, _ = open_folder(qapp, folder)
     got = {again.get(i)["name"]: (again.get(i)["decision"], again.get(i)["rating"]) for i in range(again.shown)}
     assert got == {"a.jpg": ("win", 4), "b.jpg": ("rej", 0), "c.jpg": ("keep", 0)}
-    assert (again.winCount, again.rejCount, again.keepCount) == (1, 1, 1)
+    assert (again.winCount, again.rejCount, again.keepCount) == (1, 1, 2)  # Keep includes every non-rejected photo.
     assert not bridge.failures
 
 

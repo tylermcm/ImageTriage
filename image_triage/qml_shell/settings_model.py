@@ -1,14 +1,4 @@
-"""Settings for the QML shell: the Widgets settings dialog's keys, defaults and limits, and the schema the QML page renders.
-
-The values are read from and written to the same ``QSettings`` store the main window uses (``app_identity.user_settings()``), under the
-same keys, with the same normalisation, so changing a setting in either front end changes it in both. ``tests/test_qml_shell_settings.py``
-checks the keys and limits here against ``image_triage.window.MainWindow`` so they cannot drift apart.
-
-``SettingsModel(memory=True)`` keeps everything in a dict instead (tests and the pixel comparison with the HTML mockup).
-
-Remaining runtime integration gaps are listed in ``docs/qml_unwired.md``. Saved shortcuts are applied live to the grid, viewer,
-window actions, command palette and shortcut guide.
-"""
+"""Persistent QML settings, defaults, validation and shortcut bindings."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -16,7 +6,7 @@ from dataclasses import dataclass, field
 from PySide6.QtCore import Property, QObject, Qt, Signal, Slot
 from PySide6.QtGui import QKeySequence
 
-# -- the real dialog's limits (window.MainWindow constants), kept in one place -----------------------------------------------------
+# -- settings limits, kept in one place -----------------------------------------------------
 UI_GAMMA_MIN, UI_GAMMA_MAX = 0.60, 1.60
 PRELOAD_DEFAULT, PRELOAD_MAX = 10, 128
 AI_BATCH_MAX = 64            # the dialog's spin box range; the window itself clamps at 256
@@ -39,6 +29,7 @@ BOUND_ACTIONS = (
 )
 # Keys the shell binds itself and the registry has no row for: a shortcut changed to one of them is refused, as two rows on one chord are.
 FIXED_KEYS = {
+    "Ctrl+F": "Search photos",
     "Ctrl+A": "Select all photos", "Ctrl+/": "Keyboard shortcuts", "F1": "Help", "Esc": "Close", "Return": "Open the photo", "Space": "Open the photo",
     "U": "Clear the decision", "I": "Show or hide the inspector", "Left": "Previous photo", "Right": "Next photo", "Up": "Photo above", "Down": "Photo below",
     "Home": "First photo", "End": "Last photo", "1": "Rate 1 star", "2": "Rate 2 stars", "3": "Rate 3 stars", "4": "Rate 4 stars", "5": "Rate 5 stars",
@@ -242,7 +233,7 @@ def build_schema(shortcut_registry=()) -> tuple:
 
 def _shortcut_registry() -> tuple:
     try:
-        from ..ui.shortcuts import SHORTCUT_REGISTRY
+        from ..shortcuts import SHORTCUT_REGISTRY
         return SHORTCUT_REGISTRY
     except Exception:
         return ()
@@ -336,7 +327,7 @@ class SettingsModel(QObject):
     def load(self) -> None:
         if not self._memory:
             try:
-                from ..ui.shortcuts import load_shortcut_overrides
+                from ..shortcuts import load_shortcut_overrides
                 self._overrides = dict(load_shortcut_overrides())
             except Exception:
                 self._overrides = {}
@@ -371,7 +362,7 @@ class SettingsModel(QObject):
             overrides = {i[2:]: self._vals[i] for i in shortcut_ids if self._vals[i] != (self._fields[i].default or "")}
             self._overrides = overrides
             if not self._memory:
-                from ..ui.shortcuts import save_shortcut_overrides
+                from ..shortcuts import save_shortcut_overrides
                 save_shortcut_overrides(overrides, preserve_empty=True)
             self._rebuild_effective()
             self._shortcut_revision += 1
@@ -517,7 +508,7 @@ class SettingsModel(QObject):
 
     @Slot()
     def readCatalogSummary(self) -> None:
-        """Fill the Catalog summary row from the Widgets app's catalog (`catalog.CatalogRepository.stats`, the lines `scan_controller.catalog_debug_summary` writes)."""
+        """Fill the Catalog summary row from the shared catalog (`catalog.CatalogRepository.stats`, the lines `scan_controller.catalog_debug_summary` writes)."""
         if self._memory:
             return
         try:
@@ -701,7 +692,7 @@ def _compact_catalog_summary(summary: str) -> str:
     return "\n".join(compact[:5]) if compact else lines[0]
 
 
-# the same registry rows as image_triage/ui/shortcuts.py, for the in-memory (mockup comparison) model
+# the same registry rows as image_triage/shortcuts.py, for the in-memory (mockup comparison) model
 _DEMO_SHORTCUTS = (
     ("open_folder", "File", "Ctrl+O", "Open Folder..."), ("refresh_folder", "File", "F5", "Refresh Folder"),
     ("new_folder", "File", "Ctrl+Shift+N", "New Folder..."), ("workflow_settings", "File", "Ctrl+,", "Settings..."),

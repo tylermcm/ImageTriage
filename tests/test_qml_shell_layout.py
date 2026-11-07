@@ -24,6 +24,30 @@ def close(qapp, engine, window):
     pump(qapp, 0.2)
 
 
+@pytest.mark.parametrize("inspector_width", [352, 331])
+def test_startup_grid_fills_the_window_after_hidden_maximize(qapp, tmp_path, inspector_width):
+    from test_qml_shell import rows
+
+    engine, window, warnings = _load_main(qapp, tmp_path, f"tab=lib;inspW={inspector_width}")
+    window.setOpacity(0)
+    QMetaObject.invokeMethod(window, "applyStartup", Q_ARG("QVariant", 1440))
+    window.setWidth(2560)
+    window.setHeight(1400)
+    engine.rootContext().contextProperty("photos").setRows(rows(100), "/p")
+    pump(qapp, .05)
+    grid = window.findChild(QObject, "photoGrid")
+    assert grid.width() >= grid.parentItem().parentItem().width() - 2
+    pump(qapp, 1)
+    window.setOpacity(1)
+    pump(qapp, .3)
+    grid = window.findChild(QObject, "photoGrid")
+    assert grid.width() == pytest.approx(window.property("settledGridW") - 2), {
+        name: window.property(name) for name in ("sliding", "slideW", "gridW", "settledGridW", "panelW", "panelTarget", "inspW", "inspTarget")
+    }
+    assert grid.property("cellWidth") * grid.parentItem().property("cols") == pytest.approx(grid.width())
+    close(qapp, engine, window)
+
+
 def test_the_widths_stay_between_their_minimum_and_maximum(qapp, tmp_path):
     engine, window, warnings = open_window(qapp, tmp_path, "tab=lib;panelW=100;inspW=900")
     assert window.property("panelWanted") == 260 and window.property("inspWanted") == 352        # too small, too big

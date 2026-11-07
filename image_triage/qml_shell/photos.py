@@ -67,6 +67,8 @@ class PhotoModel(QAbstractListModel):
     annotationChanged = Signal(object)      # a row's decision or rating changed (the row dict, with its scanner record): save it
     undoChanged = Signal()
     selectionChanged = Signal()             # the set of photos picked with Ctrl, Shift or Ctrl+A changed
+    searchChanged = Signal()
+    searchRequested = Signal(str)
     _loaded = Signal(list, str, int)
 
     def __init__(self, parent=None) -> None:
@@ -87,6 +89,9 @@ class PhotoModel(QAbstractListModel):
         self._sort = "name"
         self._adv: dict | None = None      # the advanced-filters dialog's part of the query: {"decisions", "min_rating", "file", "rest"} (rest: filter_match.rest_of(query))
         self._matcher = None               # decides the rest of a query for the photos read from a folder (filter_match.FilterMatcher)
+        self._search_text = ""
+        self._search_matches: set[str] = set()
+        self._search_status = ""
         self._folder = ""
         self._loading = False
         self._load_token = 0                # the newest loadFolder request: an older scan that finishes later is dropped
@@ -202,6 +207,8 @@ class PhotoModel(QAbstractListModel):
             self._scope_kind, self._scope_id, self._scope_pred = "", "", None      # a collection or person is not a folder: opening one leaves it
         if folder != self._folder:
             self._history = []
+            self._search_text, self._search_matches, self._search_status = "", set(), ""
+            self.searchChanged.emit()
             self.undoChanged.emit()
         if token != -1:
             self._subfolders = self._found_folders.pop(token, [])
@@ -237,7 +244,7 @@ class PhotoModel(QAbstractListModel):
 
     def _filtered(self) -> bool:
         """A filter (Winners, Keep, Rejected, a minimum rating, a file type or the advanced filters) is narrowing the grid."""
-        return self._filter != "all" or self._min_rate > 0 or self._fmt != "all" or bool(self._adv)
+        return self._filter != "all" or self._min_rate > 0 or self._fmt != "all" or bool(self._adv) or bool(self._search_text.strip())
 
     def _filter_ok(self, decision: str) -> bool:
         """The bar's Keep filter is everything that was not rejected (winners, keeps and frames nobody decided on): what is left after a cull marks its
@@ -255,6 +262,7 @@ class PhotoModel(QAbstractListModel):
             and r["rating"] >= self._min_rate
             and (self._fmt == "all" or (r["raw"] if self._fmt == "raw" else not r["raw"]))
             and self._advanced_ok(r, self._adv)
+            and self._search_ok(r)
         ]
         if self._sort == "name":
             rows.sort(key=lambda r: r["name"].casefold())
@@ -274,6 +282,32 @@ class PhotoModel(QAbstractListModel):
         self._bump()
 
     # -- advanced filters (filters_model.py) -------------------------------------------------------------------------------
+    def _search_ok(self, row: dict) -> bool:
+        needle = self._search_text.strip().casefold()
+        if not needle:
+            return True
+        paths = (row["path"], *row.get("companions", ()))
+        return (needle in row["name"].casefold()
+                or any(needle in os.path.basename(path).casefold() or _path_key(path) in self._search_matches for path in paths))
+
+    @Slot(str)
+    def setSearch(self, text: str) -> None:
+        if text == self._search_text:
+            return
+        self._search_text, self._search_matches, self._search_status = text, set(), ""
+        self._rebuild()
+        self.searchChanged.emit()
+        self.searchRequested.emit(text)
+
+    def search_results(self, paths, status: str) -> None:
+        self._search_matches = {_path_key(path) for path in paths}
+        self._search_status = status
+        self._rebuild()
+        self.searchChanged.emit()
+
+    searchText = Property(str, lambda self: self._search_text, notify=searchChanged)
+    searchStatus = Property(str, lambda self: self._search_status, notify=searchChanged)
+
     def _advanced_ok(self, row: dict, adv: dict | None) -> bool:
         if not adv:
             return True
@@ -352,6 +386,7 @@ class PhotoModel(QAbstractListModel):
     @Slot()
     def clearFilters(self) -> None:
         self._filter, self._min_rate, self._fmt, self._adv = "all", 0, "all", None
+        self.setSearch("")
         self._rebuild()
 
     @Slot(str, result=str)
@@ -674,7 +709,7 @@ class PhotoModel(QAbstractListModel):
     keepCount = Property(int, lambda self: sum(1 for r in self._scoped() if r["decision"] != "rej"), notify=countsChanged)   # what the Keep filter shows: everything not rejected
     rejCount = Property(int, lambda self: self._count("rej"), notify=countsChanged)
     loading = Property(bool, lambda self: self._loading, notify=loadingChanged)
-    subfolders = Property(list, lambda self: [] if self._scope_kind or self._filtered() else list(self._subfolders), notify=subfoldersChanged)   # folders are not photos: none while a scope or a filter is on
+    subfolders = Property(list, lambda self: [] if self._scope_kind else list(self._subfolders), notify=subfoldersChanged)   # photo filters must not remove navigation into child folders
     folderName = Property(str, lambda self: os.path.basename(self._folder.rstrip("/\\")) or self._folder, notify=folderChanged)
     leafName = Property(str, lambda self: "Kutaisi" if self._mock else os.path.basename(self._folder.rstrip("/\\")), notify=folderChanged)
     folderPath = Property(str, lambda self: self._mock_path or self._folder, notify=folderChanged)

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from image_triage.models import ImageRecord
 from image_triage.records_repository import RecordsRepository
-from tests.harness import make_jpegs, open_folder
 
 
 def _record(path: str, **overrides) -> ImageRecord:
@@ -133,25 +132,3 @@ def test_all_records_and_by_path_reflect_the_same_underlying_state() -> None:
 
     assert repo.all_records[0] is repo.by_path("C:/shots/a.jpg")
     assert repo.all_records_by_path["C:/shots/a.jpg"] is repo.all_records[0]
-
-
-def test_main_window_all_records_properties_delegate_to_the_repository(main_window, tmp_path) -> None:
-    """MainWindow._all_records/_all_records_by_path are now read-only
-    properties over window._records_repo, not plain instance attributes -
-    this pins that the real window's read path still works and that
-    assigning the old way is no longer possible (the property has no
-    setter, by design: every write site was migrated to a named repository
-    operation instead)."""
-    make_jpegs(tmp_path, ["a.jpg", "b.jpg"])
-    open_folder(main_window, tmp_path, 2)
-
-    assert main_window._all_records is main_window._records_repo.all_records
-    assert main_window._all_records_by_path is main_window._records_repo.all_records_by_path
-    assert {record.path for record in main_window._all_records} == set(main_window._all_records_by_path)
-
-    try:
-        main_window._all_records = []
-    except AttributeError:
-        pass
-    else:
-        raise AssertionError("_all_records should be read-only now that RecordsRepository owns it")

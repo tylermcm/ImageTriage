@@ -1,6 +1,6 @@
-"""Collections for the QML shell: the Widgets app's own store, plus an icon for each.
+"""Collections for the QML shell: the shared store, plus an icon for each.
 
-Collections are the Widgets app's `LibraryStore` (library.sqlite3): the same collections, the same members, the same colours, and "New
+Collections are the shared `LibraryStore` (library.sqlite3): the same collections, the same members, the same colours, and "New
 winners go here" is the same setting (`collections/also_add_to`). A collection can also carry an icon from a small built-in library
 (mountain, rings, ...); the Widgets store has no field for it, so the icons are kept beside it in the settings (`collections/icons`, a JSON
 map of collection id to icon name) and the Widgets app does not show them.

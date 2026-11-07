@@ -48,7 +48,7 @@ jobs:
 
       - name: Run packaging smoke tests
         run: |
-          python -m pytest tests/test_freeze_support.py tests/test_version.py tests/test_updater.py -q
+          python -m pytest tests/test_qml_only_architecture.py tests/test_freeze_support.py tests/test_version.py tests/test_updater.py -q
 
       - name: Compile packaging scripts
         run: |

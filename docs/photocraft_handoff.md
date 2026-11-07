@@ -1,5 +1,62 @@
 # PhotoCraft handoff
 
+## 2026-11-06: full-resolution RAW zoom candidate
+
+Hosted Camera Raw kept browsing-sized RAW stand-ins indefinitely: its detail path
+explicitly excluded them. Zooming enlarged the interactive proxy without loading
+sensor-resolution pixels. The source launcher also discovered an older ordinary
+debug executable rather than the explicit release-validation candidate.
+
+The detail worker now lazily decodes the RAW at full resolution when zoom exceeds
+the proxy's native scale, caches that source for later edits, and uploads only the
+visible crop. Stale edit results remain discarded; a completed sensor decode can
+still serve the latest revision. Before/After uses the full-resolution source.
+Raw-stage tone adjustments can refine after a drag ends. The browsing document,
+navigation, recipe and commit/save behavior remain separate from preview detail.
+The existing 64-megapixel worker allocation guard remains in place.
+
+Validation:
+
+- 58 RAW-workspace and eight detail-preview native tests passed. The new regression
+  zooms a reduced RAW, changes exposure and shadows during decoding, and checks
+  refinement, document identity/history preservation and Before navigation.
+- Strict UI-library clippy and the native desktop candidate build passed.
+- 38 focused host/QML editor, filmstrip, shortcut, handoff and architecture tests
+  passed. One initial environment-only failure passed after restoring USERPROFILE.
+- Real Nikon Z6 RAW: 6048x4024 source versus a 672x447 proxy. The previous candidate
+  stayed approximate at 100%; the new candidate reported full detail, without a
+  detail error. Isolated native captures visibly confirm the difference.
+- QML-host smoke checks passed hidden startup, native parenting, edited detail,
+  Before/After, persistent native filmstrip navigation, recipe restore, close/reopen,
+  five themes, resize/fullscreen and process cleanup. Source fixtures were unchanged.
+- Native captures succeeded while the editor was unparented. Parent-window grabs
+  were blank and are not counted as visual validation of the embedded window.
+
+Candidate: `target/merge-v0.20.1-20261103/debug/photocraft.exe`, SHA256
+`3b2136422b3bab5f748f40c62b55688a0a1ee5cec9b48dbffe5013148d467ee8`.
+The preceding validated candidate was backed up and verified against its recorded
+hash before rebuilding. The ordinary/default editor executable is untouched.
+This candidate is not promoted: complete the native Save/grid-propagation acceptance
+gate before changing default editor discovery. The QML source launcher accepts
+`-PhotoCraftExecutable` for an explicit development-candidate run and restores the
+caller environment afterwards. Local captures/reports are in the external build
+storage's `validation/raw-detail-20261106` directory.
+
+No upstream merge, commit or push was performed. The user-fork integration matched
+HEAD; the upstream fetch failed locally in Git/cURL, so its cached 1,028 upstream-only
+commits and 27 conflict paths are not described as current. Existing user edits in
+the companion checkout were preserved.
+
+## 2026-11-06: QML-only source retirement
+
+The retired Widgets frontend and its window-specific live-check scripts are
+removed. References to those scripts below are historical validation records.
+Current UI checks use `tests/test_qml_only_architecture.py`, the QML viewer and
+editor-host tests, and the QML source application. Before promoting a new
+PhotoCraft build, still perform the real hosted lifecycle checks required by
+AGENTS.md; this source retirement does not certify a new editor binary.
+
+
 ## 2026-11-04: v0.20.1 hosted validation completed
 
 This supersedes the stopped checkpoint. The release merge was already published

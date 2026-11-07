@@ -104,7 +104,7 @@ def derive(spec: dict) -> dict[str, QColor]:
 
 
 def _palette_spec(mode: str, system_dark: bool, tone: str = "slate") -> dict:
-    """base / accent / contrast of one of the Widgets app's appearance modes, read from its real palette. Slate and Light are the
+    """base / accent / contrast of one of the shared appearance modes, read from its real palette. Slate and Light are the
     mockup's own two palettes exactly."""
     if mode == "auto":
         mode = "slate" if system_dark else "light"
@@ -115,7 +115,7 @@ def _palette_spec(mode: str, system_dark: bool, tone: str = "slate") -> dict:
         return spec
     if mode == "light":
         return dict(LIGHT)
-    from ..ui.theme import AppearanceMode, resolve_theme
+    from ..theme_tokens import AppearanceMode, resolve_theme
 
     palette = resolve_theme(AppearanceMode(mode), None)  # type: ignore[arg-type]  # only AUTO needs an application
     lift = WHITE if palette.is_dark else BLACK

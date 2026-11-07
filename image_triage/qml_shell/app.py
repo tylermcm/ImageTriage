@@ -46,7 +46,6 @@ def main(argv: list[str] | None = None) -> int:
     from PySide6.QtCore import Q_ARG, QCoreApplication, QMetaObject, QTimer, QUrl
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtQml import QQmlApplicationEngine
-    from PySide6.QtWidgets import QApplication      # the popout is the Widgets app's own viewer, so this is a widgets application
     from PySide6 import QtQuick as _QtQuick  # noqa: F401 - registers QQuickWindow so the root object is wrapped with grabWindow()
 
     from .. import memtrace
@@ -57,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     from .menu_model import MenuModel, ToastModel
     from .collections_model import CollectionsModel
     from .ai_scores import AiScores
+    from .search_model import SearchModel
     from .capture import CaptureService
     from .filter_match import FilterMatcher
     from .ui_memory import UiMemory
@@ -84,14 +84,14 @@ def main(argv: list[str] | None = None) -> int:
     # fractional scales (125%, 150%, 175%) are used as they are, not rounded to whole numbers, so the layout is the same size in
     # device-independent pixels on every monitor; Qt 6 turns high-DPI scaling on by itself
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-    app = QApplication(sys.argv[:1])
+    app = QGuiApplication(sys.argv[:1])
     if not args.grab:                                  # headless checks have their own output; a real session keeps a log (it has no console to print to)
         from . import diagnostics
 
         diagnostics.install(app)
     from PySide6.QtGui import QIcon
 
-    app.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "ui" / "assets" / "app_icon-v5.ico")))      # the taskbar and every window
+    app.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "assets" / "app_icon-v5.ico")))      # the taskbar and every window
     from PySide6.QtGui import QFont
 
     base_font = QFont("Inter")
@@ -148,10 +148,12 @@ def main(argv: list[str] | None = None) -> int:
     if not args.mock and settings.value("perfLog") is True:
         from ..perf import perf_logger
 
-        perf_logger().set_enabled(True, reason="startup")       # as the Widgets app does when the setting was left on
+        perf_logger().set_enabled(True, reason="startup")       # as the backend does when the setting was left on
     if args.light:
         theme.light = True
     engine = QQmlApplicationEngine()
+    from .raw_preview import install_images
+    install_images(engine)
     thumbs = ThumbService(parent=app)
     photos.set_after_scan(thumbs.prime_folder)
     context = engine.rootContext()
@@ -179,6 +181,10 @@ def main(argv: list[str] | None = None) -> int:
     context.setContextProperty("inspection", InspectionService(parent=app))
     context.setContextProperty("captureData", CaptureService(parent=app))
     ai_scores = AiScores(photos, memory=bool(args.mock), parent=app)
+    photo_search = SearchModel(photos, parent=app)
+    ai_scores.revisionChanged.connect(photo_search.refresh)
+    app.aboutToQuit.connect(photo_search.shutdown)
+    ai_scores.indexWarning.connect(lambda message: toasts.push("error", "Search index could not be imported", message))
     photos.set_matcher(FilterMatcher(ai_result=ai_scores.result_for_row, parent=app))          # what the Advanced filters ask beyond decision, rating and RAW or JPEG
     settings.aiScoringChanged.connect(ai_scores.reload)           # a saved report is classified as it is read: read it again with the new sliders
     cull.runFinished.connect(ai_scores.reload)          # an analysis has just written its report: the inspector reads it
@@ -190,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     app.aboutToQuit.connect(popout.shutdown)
     context.setContextProperty("popout", popout)
     editor = EditorHost(memory=bool(args.mock or args.grab), parent=app)
+    editor.editSaved.connect(thumbs.refresh_edit)
     if not args.mock and not args.grab:
         editor.setBrowseSource(photos, thumbs, popout)
     app.aboutToQuit.connect(editor.shutdown)
@@ -287,9 +294,13 @@ def main(argv: list[str] | None = None) -> int:
             app.quit()
 
         from PySide6.QtCore import QPoint
-        from PySide6.QtTest import QTest
         hx, hy = (int(v) for v in args.hover.split(",")) if args.hover else (3, 3)
-        QTimer.singleShot(300, lambda: QTest.mouseMove(window, QPoint(hx, hy)))   # park the pointer off the grid so no cell shows hover
+        if args.hover or args.click:
+            from PySide6.QtTest import QTest
+            QTimer.singleShot(300, lambda: QTest.mouseMove(window, QPoint(hx, hy)))
+        else:
+            from PySide6.QtGui import QCursor
+            QTimer.singleShot(300, lambda: QCursor.setPos(window.mapToGlobal(QPoint(3, 3))))
         QTimer.singleShot(int(args.grab_wait * 1000), grab)
         if args.click:
             from PySide6.QtCore import Qt

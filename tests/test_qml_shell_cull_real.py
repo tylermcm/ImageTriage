@@ -115,10 +115,10 @@ def isolated(monkeypatch, tmp_path):
     session = "qml-cull-" + tmp_path.name
     monkeypatch.setattr(bridge_module, "session_id", lambda: session)
     monkeypatch.setattr(fa, "session_id", lambda: session)
-    from image_triage.recycle_bin_controller import RecycleBinController
+    from image_triage.safe_trash import SafeTrash
 
-    monkeypatch.setattr(RecycleBinController, "recycle_root_for_folder", lambda self, folder=None: tmp_path / "trash")
-    monkeypatch.setattr(RecycleBinController, "is_temporary_storage_folder", lambda self, folder=None: False)
+    monkeypatch.setattr(SafeTrash, "recycle_root_for_folder", lambda self, folder=None: tmp_path / "trash")
+    monkeypatch.setattr(SafeTrash, "is_temporary_storage_folder", lambda self, folder=None: False)
     yield
     QStandardPaths.setTestModeEnabled(False)
 

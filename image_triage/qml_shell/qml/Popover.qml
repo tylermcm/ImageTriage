@@ -55,6 +55,12 @@ Popup {
         interactive: contentHeight > height
         clip: true
         boundsBehavior: Flickable.StopAtBounds
+        // A modal Popup alone does not cancel passive TapHandlers below it.
+        // Grab the press within the menu, while child controls still handle taps.
+        TapHandler {
+            acceptedButtons: Qt.AllButtons
+            gesturePolicy: TapHandler.WithinBounds
+        }
         Column { id: column; width: parent.width }
     }
 }

@@ -78,3 +78,5 @@ SideResizer 1.0 SideResizer.qml
 Viewer 1.0 Viewer.qml
 EditorStage 1.0 EditorStage.qml
 LogoMark 1.0 LogoMark.qml
+
+NativeCullOptions 1.0 NativeCullOptions.qml

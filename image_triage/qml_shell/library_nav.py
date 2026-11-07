@@ -14,9 +14,11 @@ Everything comes from what the Widgets app uses, so both front ends agree:
 from __future__ import annotations
 
 import json
+from collections import deque
 import os
 import shutil
 import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Property, QAbstractListModel, QByteArray, QFileSystemWatcher, QModelIndex, QObject, Qt, QTimer, QUrl, Signal, Slot
@@ -120,6 +122,7 @@ class LibraryNavModel(QObject):
     changed = Signal()
     positionRestored = Signal(int)                             # the grid should be on this row: the photo the person was on when they left this folder
     _listed = Signal(str, list)                                # a folder's child folders, from the worker thread
+    _searched = Signal(int, object)
 
     def __init__(self, photos, *, memory: bool = False, persist: bool = True, drives=None, drive_root=None, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -142,6 +145,18 @@ class LibraryNavModel(QObject):
         self._counts: dict[str, int] = {}                      # photos in a folder, known once it has been opened
         self._sizes: dict[str, tuple[int, int]] = {}           # drive -> (free, total) bytes, as the last probe saw them
         self._query = ""
+        self._search_token = 0
+        self._search_cancel = threading.Event()
+        self._search_expanded: set[str] = set()
+        self._direct_matches: list[str] | None = None
+        self._search_pending = False
+        self._search_limited = False
+        self._open_query_when_ready = False
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(200)
+        self._search_timer.timeout.connect(self._search_folders)
+        self._searched.connect(self._apply_search)
         self._last_photo = ""                                  # the photo the grid was last on, for reading the folder again where the person is
         self._watcher: QFileSystemWatcher | None = None
         self._watch_timer: QTimer | None = None
@@ -283,16 +298,19 @@ class LibraryNavModel(QObject):
                       ("Georgia trip", "1,284", 1, "chevDown", False), (leaf, str(self._photos.total), 2, "library", True), ("Tbilisi", "402", 2, "library", False))
             return [{"path": f"sample:{name}", "name": name, "count": count, "depth": depth, "icon": icon, "current": current, "expandable": icon != "library"}
                     for name, count, depth, icon, current in sample]
+        if self._query and self._direct_matches is not None:
+            return [{"path": path, "name": path, "count": _count_text(self._counts.get(_key(path))), "depth": 0,
+                     "icon": "chevR", "current": _key(path) == _key(self._open), "expandable": True} for path in self._direct_matches]
         if not self._root:
             return []
-        query = self._query.casefold()
+        query = self._query.strip().casefold()
         open_key = _key(self._open) if self._open else ""
 
         def walk(parent: str, depth: int) -> list[dict]:
             out: list[dict] = []
             for name, path in self._children.get(_key(parent), ()):
                 key = _key(path)
-                expanded = key in self._expanded
+                expanded = key in self._expanded or bool(query and key in self._search_expanded)
                 below = walk(path, depth + 1) if expanded else []
                 if query and query not in name.casefold() and not below:
                     continue
@@ -311,6 +329,14 @@ class LibraryNavModel(QObject):
         """A quiet line under the Folders heading when there is nothing to list: what to do, or that the drive is being read."""
         if self._memory:
             return ""
+        if self._query:
+            if self._search_pending:
+                return "Searching folders…"
+            if self._search_limited:
+                return "More folders may match. Enter a full path to go directly."
+            if not self._root and self._direct_matches is None:
+                return "Choose a drive to search, or enter a full folder path"
+            return "" if self._tree_rows() else "No folder matches"
         if not self._root:
             return "Choose a drive or open a folder"
         key = _key(self._root)
@@ -369,13 +395,17 @@ class LibraryNavModel(QObject):
         path = os.path.normpath(path.strip()) if path and path.strip() else ""
         if not path or path.startswith("sample:") or path_policy.confirmed_missing(path):
             return
+        if self._query:
+            self.setQuery("")
         if self._open and _key(self._open) != _key(path) and not self._stepping:
             self._back.append(self._open)
             del self._back[:-100]
             self._forward.clear()
+        same_folder = bool(self._open) and _key(self._open) == _key(path)
         self._open = path
         self._root = os.path.normpath(self._drive_root(path) or path)
-        self._expanded = {}
+        if not same_folder:
+            self._expanded = {}
         self._list(self._root)
         parent = self._root
         try:
@@ -398,7 +428,7 @@ class LibraryNavModel(QObject):
         return self._settings is not None and bool(self._settings.value(WATCH_KEY, True, bool))
 
     def _watch(self, folder: str) -> None:
-        """Watch `folder` (a local one: a network or removable drive is not watched, as in the Widgets app) when the setting is on."""
+        """Watch `folder` (a local one: a network or removable drive is not watched, as in the backend) when the setting is on."""
         if self._watcher is None:
             return
         old = self._watcher.directories()
@@ -476,7 +506,7 @@ class LibraryNavModel(QObject):
         key = _key(self._open)
         entry = states.pop(key, {})
         entry = dict(entry) if isinstance(entry, dict) else {}
-        entry["current"] = photo                               # the other fields of the entry (the Widgets app's sort and scroll) are kept as they are
+        entry["current"] = photo                               # the other fields of the entry (the shared sort and scroll) are kept as they are
         states[key] = entry
         while len(states) > STATE_LIMIT:
             states.pop(next(iter(states)))
@@ -510,6 +540,12 @@ class LibraryNavModel(QObject):
             self._expanded[key] = path
             self._list(path)
         self.changed.emit()
+
+    @Slot(str)
+    def expand(self, path: str) -> None:
+        """Reveal children on a row double-click, including a row already selected."""
+        if _key(path) not in self._expanded:
+            self.toggle(path)
 
     def _one_branch(self) -> bool:
         """The Widgets setting "Keep only one branch expanded per level" (`view/single_drive_expansion`, on by default)."""
@@ -562,7 +598,87 @@ class LibraryNavModel(QObject):
     def setQuery(self, text: str) -> None:
         if text != self._query:
             self._query = text
+            self._search_token += 1
+            self._search_cancel.set()
+            self._search_cancel = threading.Event()
+            self._search_timer.stop()
+            self._search_expanded.clear()
+            self._direct_matches = None
+            self._search_limited = False
+            self._open_query_when_ready = False
+            self._search_pending = bool(text.strip()) and not self._memory
+            if self._search_pending:
+                self._search_timer.start()
             self.changed.emit()
+
+    def _search_folders(self) -> None:
+        token, query, cancel = self._search_token, self._query.strip().strip('"'), self._search_cancel
+        root, hidden = self._root, self._include_hidden()
+        local = QUrl(query).toLocalFile() if query.startswith("file:") else query
+        direct = os.path.isabs(local)
+
+        def work() -> None:
+            from ..scanner import scan_child_folders
+
+            listings = []
+            matches = [] if direct else None
+            limited = False
+            if direct:
+                if os.path.isdir(local):
+                    matches.append(os.path.normpath(local))
+            elif root:
+                pending, seen = deque([(root, 0)]), set()
+                deadline = time.monotonic() + 5
+                found = 0
+                while pending and not cancel.is_set():
+                    if len(seen) >= 5000 or time.monotonic() >= deadline or found >= 100:
+                        limited = True
+                        break
+                    parent, depth = pending.popleft()
+                    key = _key(parent)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    try:
+                        children = [(r.name, r.path) for r in scan_child_folders(parent, include_hidden=hidden)]
+                    except OSError:
+                        children = []
+                    listings.append((parent, children))
+                    found += sum(query.casefold() in name.casefold() for name, _ in children)
+                    if depth < 32:
+                        pending.extend((path, depth + 1) for _, path in children
+                                       if not os.path.islink(path) and not getattr(os.path, "isjunction", lambda _: False)(path))
+                    elif children:
+                        limited = True
+            if not cancel.is_set():
+                self._searched.emit(token, (listings, matches, limited))
+
+        threading.Thread(target=work, name="qml-folder-search", daemon=True).start()
+
+    def _apply_search(self, token: int, result) -> None:
+        if token != self._search_token:
+            return
+        listings, self._direct_matches, self._search_limited = result
+        for path, children in listings:
+            self._children[_key(path)] = children
+            self._search_expanded.add(_key(path))
+        self._search_pending = False
+        self.changed.emit()
+        if self._open_query_when_ready:
+            self.openQuery()
+
+    @Slot()
+    def openQuery(self) -> None:
+        """Enter opens a pasted folder path, or the sole matching folder."""
+        if self._search_pending:
+            self._open_query_when_ready = True
+            return
+        matches = self._direct_matches
+        if matches is None:
+            query = self._query.strip().casefold()
+            matches = [r["path"] for r in self._tree_rows() if query and query in r["name"].casefold()]
+        if len(matches) == 1:
+            self.openFolder(matches[0])
 
     # -- recent folders (the Widgets key, same rules) ----------------------------------------------------------------------
     def _remember_recent(self, folder: str) -> None:
@@ -615,6 +731,7 @@ class LibraryNavModel(QObject):
     drives = Property("QVariantList", lambda self: self._drives_view(), notify=changed)
     tree = Property("QVariantList", lambda self: self._tree_rows(), notify=changed)
     treeStatus = Property(str, lambda self: self._tree_status(), notify=changed)
+    query = Property(str, lambda self: self._query, notify=changed)
     openPath = Property(str, lambda self: self._open, notify=changed)
     canBack = Property(bool, lambda self: bool(self._back), notify=changed)
     canForward = Property(bool, lambda self: bool(self._forward), notify=changed)

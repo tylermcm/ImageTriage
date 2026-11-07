@@ -160,29 +160,8 @@ def test_job_stats_track_queue_running_and_estimate(traced):
     assert snapshot["peak_est_bytes_in_flight"] == 1500 and snapshot["max_result_bytes"] == 777
 
 
-def test_preview_task_reports_its_decode(traced, qapp, tmp_path):
-    from image_triage.preview import PreviewRequest, PreviewTask
-
-    path = tmp_path / "a.jpg"
-    image(80, 60).save(str(path), "JPEG")
-    results = SimpleQueue()
-    request = PreviewRequest(path=str(path), token=1, slot=0, target_size=QSize(80, 60), load_metadata=False)
-    task = PreviewTask(request, results)
-    jobs = memtrace._jobs["preview.decode"]
-    assert jobs.snapshot()["queued"] == 1
-    task.run()
-    snapshot = jobs.snapshot()
-    assert (snapshot["queued"], snapshot["running"], snapshot["started"], snapshot["finished"]) == (0, 0, 1, 1)
-    assert snapshot["peak_est_bytes_in_flight"] == 80 * 60 * 4
-    assert snapshot["max_result_bytes"] > 0
-    assert results.get_nowait()[0] == "ready"
 
 
-def test_metadata_only_preview_requests_are_not_decode_jobs(traced, qapp):
-    from image_triage.preview import PreviewRequest, PreviewTask
-
-    PreviewTask(PreviewRequest(path="x", token=1, slot=0, target_size=QSize(8, 8), load_image=False), SimpleQueue())
-    assert "preview.decode" not in memtrace._jobs or memtrace._jobs["preview.decode"].snapshot()["queued"] == 0
 
 
 def test_estimate_object_bytes_scales_with_the_collection():
@@ -307,21 +286,3 @@ def test_sampler_writes_samples_into_the_performance_log(traced, qapp, tmp_path,
     assert "tree" in sample and "own" in sample["tree"] and "ui_lag_ms_max" in sample
     assert next(event for event in events if event["event"] == "mem.mark")["label"] == "phase:test"
     assert not [thread for thread in threading.enumerate() if thread.name == "memtrace-sampler"], "stop() ends the sampler"
-
-
-def test_preview_cache_reports_distinct_pixel_buffers(traced, qapp):
-    from image_triage.preview import FullScreenPreview
-
-    pane = FullScreenPreview()
-    try:
-        shared = image(200, 100)
-        pane._cache_preview_image(("a", None, 1), shared)
-        pane._cache_preview_image(("a", (1, 1), 1), shared)  # the same pixels under a second key
-        pane._cache_preview_image(("b", None, 1), image(200, 100))
-        row = memtrace._caches["preview.cache"].snapshot()
-        one = shared.sizeInBytes()
-        assert row["bytes"] == 3 * one, "the cache charges every key"
-        assert row["unique_bytes"] == 2 * one and row["unique_images"] == 2, "...but only two pixel buffers exist"
-        assert row["peak_unique_bytes"] == 2 * one
-    finally:
-        pane.close()

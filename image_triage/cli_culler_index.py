@@ -7,6 +7,25 @@ from pathlib import Path
 import numpy as np
 
 
+def import_active_index(folder: str, active: Path) -> dict | None:
+    """Import the verified generation's optional index on a background thread."""
+    from .cli_culler_runs import load_active_generation
+    from .semantic_plan import compute_semantic_model_identity
+    from .aiculler_workflow import aiculler_db_path, build_aiculler_workflow_paths
+    from .semantic_runtime import default_search_runtime
+
+    load_active_generation(active)
+    pointer = json.loads(active.read_text(encoding="utf-8"))
+    output = pointer["outputs"].get("index")
+    if not output:
+        return None
+    runtime = default_search_runtime()
+    identity = compute_semantic_model_identity(runtime.clip_vision_model,
+        fallback_model=runtime.clip_fallback_vision_model)
+    return import_native_index(Path(output["path"]),
+        aiculler_db_path(build_aiculler_workflow_paths(folder)), semantic_identity=identity)
+
+
 def import_native_index(path: Path, db_path: Path, *, semantic_identity: str) -> dict:
     # These are the host's legacy storage APIs, never the engine's ScoreCache.
     from aiculler.features import PreviewExtractor, _file_signature

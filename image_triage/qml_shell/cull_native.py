@@ -35,10 +35,14 @@ class NativeCullRun(QObject):
         from ..cli_culler_task import CliCullerRunTask
 
         runtime = load_native_runtime()
+        device = str(self.settings.value("ai/cli_culler_device", "auto"))
+        if device not in ("auto", "cpu", "cuda"):
+            raise ValueError("Unknown culling device")
+        namespace = runtime["namespace"] + ("-" + device if device != "auto" else "")
         task = CliCullerRunTask(folders=[Path(folder)], python=Path(runtime["python"]),
                                worker=Path(runtime["worker"]), app_path=Path(runtime["app_path"]),
                                settings=native_settings(self.settings, runtime), runtime_manifest=runtime,
-                               cache_namespace=runtime["namespace"])
+                               device=device if device != "auto" else None, cache_namespace=namespace)
         queued = Qt.ConnectionType.QueuedConnection
         task.signals.progress.connect(self._progress, queued)
         task.signals.finished.connect(self._finished, queued)

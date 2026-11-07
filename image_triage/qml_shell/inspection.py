@@ -1,6 +1,6 @@
 """The inspector's Quality checks: focus, exposure, noise and motion blur measured on the selected photo itself.
 
-The measurements are the Widgets app's own (`review_tools.build_inspection_stats`, the numbers its inspector reads), taken on the same kind of picture it
+The measurements are the shared (`review_tools.build_inspection_stats`, the numbers its inspector reads), taken on the same kind of picture it
 uses (the photo read for display at up to 1200 px, the embedded preview for a RAW), on one worker thread that skips photos the person has already moved past.
 The wording follows `ui.inspector_quality.quality_readout`, and the focus and exposure cut-offs are the ones `ai_why` pins for the grid's tooltip, so the
 shell and the Widgets app call the same photo the same thing. `inspection.get(path)` is what QML reads; `ready(path)` says a photo's checks have arrived.

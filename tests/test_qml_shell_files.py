@@ -36,10 +36,10 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(fa, "session_id", lambda: session)
     monkeypatch.setattr(FileActions, "_delete_mode", lambda self: fa.SAFE_TRASH)
     # the safe trash lives under the test's own folder, not the user's app data
-    from image_triage.recycle_bin_controller import RecycleBinController
+    from image_triage.safe_trash import SafeTrash
 
-    monkeypatch.setattr(RecycleBinController, "recycle_root_for_folder", lambda self, folder=None: tmp_path / "trash")
-    monkeypatch.setattr(RecycleBinController, "is_temporary_storage_folder", lambda self, folder=None: False)
+    monkeypatch.setattr(SafeTrash, "recycle_root_for_folder", lambda self, folder=None: tmp_path / "trash")
+    monkeypatch.setattr(SafeTrash, "is_temporary_storage_folder", lambda self, folder=None: False)
     from PySide6.QtCore import QSettings
 
     settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
@@ -209,7 +209,8 @@ def test_deleting_inside_a_recycle_bin_asks_first_and_is_for_good(qapp, tmp_path
 def test_system_trash_that_fails_asks_before_deleting(qapp, world, monkeypatch):
     w = world
     monkeypatch.setattr(FileActions, "_delete_mode", lambda self: "System Trash")
-    monkeypatch.setattr(fa.QFile, "moveToTrash", lambda self: False, raising=False)
+    from types import SimpleNamespace
+    monkeypatch.setattr(fa, "QFile", lambda path: SimpleNamespace(moveToTrash=lambda: False))
     asked = []
     w.files.confirmRequested.connect(lambda *a: asked.append(a))
     w.files.deleteRow(row_of(w.photos, "c"))
@@ -251,52 +252,3 @@ def test_the_menu_asks_for_a_folder_and_lists_recent_ones(qapp, world):
     menu.openPhoto(row_of(w.photos, "c"))
     menu.act("del")
     assert not (w.shoot / "c.jpg").exists()
-
-
-def test_the_viewers_delete_shows_the_photo_that_took_its_place(qapp, world, monkeypatch):
-    from types import SimpleNamespace
-
-    from image_triage.qml_shell.popout import PopoutHost
-
-    from PySide6.QtCore import QObject, Signal
-
-    class Thumbs(QObject):
-        ready = Signal(str, int)
-
-    w = world
-    popout = PopoutHost(w.photos, Thumbs(parent=qapp), None, prebuild=False, parent=qapp, files=w.files)
-    shown, closed = [], []
-    popout._show = lambda row: shown.append(row)
-    popout._preview = SimpleNamespace(close=lambda: closed.append(True))
-    start = w.photos.shown
-    first = w.photos.get(0)["path"]
-    popout._delete(first)
-    assert w.photos.shown == start - 1 and shown == [0] and not os.path.exists(first)
-    for _ in range(w.photos.shown):
-        popout._delete(w.photos.get(0)["path"])
-    assert w.photos.shown == 0 and closed                                       # the last one went: the viewer is put away
-    popout._delete("nothing/here.jpg")                                           # a path that is not in the grid does nothing
-
-
-def test_the_viewers_move_asks_for_a_folder(qapp, world, monkeypatch):
-    from types import SimpleNamespace
-
-    from PySide6.QtCore import QObject, Signal
-    from PySide6.QtWidgets import QFileDialog
-
-    from image_triage.qml_shell.popout import PopoutHost
-
-    class Thumbs(QObject):
-        ready = Signal(str, int)
-
-    w = world
-    popout = PopoutHost(w.photos, Thumbs(parent=qapp), None, prebuild=False, parent=qapp, files=w.files)
-    popout._show = lambda row: None
-    popout._preview = SimpleNamespace(close=lambda: None)
-    dest = w.tmp / "from-viewer"
-    monkeypatch.setattr(QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(dest)))
-    popout._move(str(w.shoot / "c.jpg"))
-    assert (dest / "c.jpg").exists() and not (w.shoot / "c.jpg").exists()
-    monkeypatch.setattr(QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: ""))
-    popout._move(str(w.shoot / "b.jpg"))                                         # the dialog was cancelled
-    assert (w.shoot / "b.jpg").exists()

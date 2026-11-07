@@ -1,4 +1,4 @@
-"""Delete, move and copy photos: the Widgets app's own file operations, with the same trash rules, companions and undo.
+"""Delete, move and copy photos: the shared file operations, with the same trash rules, companions and undo.
 
 A photo is a bundle (the file, its RAW or JPEG companion and sidecars: `file_ops.record_paths`); every operation takes the whole bundle. Delete
 follows the "Delete behavior" setting: **Safe Trash** moves the bundle into the app's recycle folder (a "recycle bin" folder beside a removable
@@ -33,9 +33,9 @@ def rekey_after_move(record, moves, annotation) -> None:
     if annotation is None or annotation.is_empty:
         return
     from ..decision_store import DecisionStore
-    from ..record_ops_controller import RecordOpsController
+    from ..file_ops import record_after_moves
 
-    DecisionStore().move_annotation(session_id(), record.path, RecordOpsController.record_after_moves(record, tuple(moves)), annotation)
+    DecisionStore().move_annotation(session_id(), record.path, record_after_moves(record, tuple(moves)), annotation)
 
 
 def _label(path: str) -> str:
@@ -83,10 +83,9 @@ class FileActions(QObject):
 
     def _recycle(self, folder: str):
         """The Widgets' recycle-bin rules for `folder` (where the safe trash is, whether it is a removable drive, the restore manifest)."""
-        from ..recycle_bin_controller import RecycleBinController
+        from ..safe_trash import SafeTrash
 
-        shim = SimpleNamespace(_folder_session=SimpleNamespace(folder=folder), _is_recycle_folder=lambda f=None: _is_recycle_folder(f or folder), _unique_destination=unique_destination, actions=None)
-        return RecycleBinController(shim)
+        return SafeTrash(folder)
 
     def _store(self):
         from ..decision_store import DecisionStore
@@ -313,7 +312,7 @@ class FileActions(QObject):
         if annotation is not None and not annotation.is_empty:
             moved = next((m.target_path for m in moves if m.source_path == record.path), "")
             if moved:
-                from ..record_ops_controller import RecordOpsController
+                from ..file_ops import record_after_moves
 
                 self._store().move_annotation(session_id(), moved, record, annotation)
         self._photos.reload()

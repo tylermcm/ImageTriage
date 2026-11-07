@@ -8,7 +8,6 @@ from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QApplication
 
 from image_triage import photocraft_bridge as bridge
-from image_triage.preview_controller import PreviewController
 
 
 def control_replying(*lines: bytes) -> bridge.PhotoCraftControl:
@@ -79,25 +78,3 @@ def test_requests_from_two_threads_do_not_interleave_on_one_connection():
         thread.join()
     assert not errors, errors
     assert overlaps[0] == 0
-
-
-def test_fitting_the_canvas_does_not_use_a_menu_click():
-    """The editor refuses every menu command while Camera Raw is open, which in the workspace is nearly always."""
-    app = QApplication.instance() or QApplication([])
-    parent = QObject()
-    controller = PreviewController(parent)
-    try:
-        proc = Mock()
-        proc.is_running.return_value = True
-        controller._photocraft_generation = 4
-        controller._fit_photocraft(proc, 4)
-        proc.control.call.assert_called_once_with("engine.execute", {"command": "view.fitOnScreen"})
-        proc.control.call.reset_mock()
-        controller._fit_photocraft(proc, 3)  # a stale request does nothing
-        proc.control.call.assert_not_called()
-    finally:
-        controller._photocraft_save_timer.stop()
-        controller._photocraft_dwell_timer.stop()
-        controller._photocraft_executor.shutdown(wait=True)
-        controller._photocraft_preview_executor.shutdown(wait=True)
-        app.processEvents()

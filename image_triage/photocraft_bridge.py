@@ -2,9 +2,8 @@
 (docs/control-protocol.md in the PhotoCraft repo), and embeds its native window
 as a Win32 child so it can sit inside the popout preview's editor pane.
 
-Windows-only (uses ctypes/user32 the same way image_triage.window does for its
-custom frame), matching the "Edit in PhotoCraft" feature wired from
-preview.py/preview_controller.py.
+Windows-only native window hosting for the QML shell's "Edit in PhotoCraft"
+feature. The QML editor host owns the visible application state.
 """
 from __future__ import annotations
 
@@ -884,7 +883,7 @@ class PhotoCraftProcess:
     observed_stashes: set[int] = field(default_factory=set)
     # The sidecar the *currently open* document would be saved to, and its
     # document.inspect() revision right after that open — together these say
-    # whether switching away should save first (preview_controller.py owns
+    # whether switching away should save first (the editor host owns
     # the actual save-before-close-before-open sequence).
     current_sidecar: Path | None = None
     opened_revision: int = 0

@@ -1,4 +1,4 @@
-"""Best-of-Set Auto Assembly for the QML shell: the Widgets app's own planner (`workflows.best_of.build_best_of_set_plan`).
+"""Best-of-Set Auto Assembly for the QML shell: the shared planner (`workflows.best_of.build_best_of_set_plan`).
 
 The planner ranks by AI results, burst groups and duplicate analysis. The shell has none of those yet (its AI scores are sample data and
 its decisions are the only real signal), so it is given the user's winners as annotations: winners rank first, the rest by name. The

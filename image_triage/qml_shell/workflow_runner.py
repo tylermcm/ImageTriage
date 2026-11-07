@@ -1,4 +1,4 @@
-"""Runs a handoff recipe for real: the Widgets app's own export, archive, copy and move, on worker threads, reporting progress to the transfer cards.
+"""Runs a handoff recipe for real: the shared export, archive, copy and move, on worker threads, reporting progress to the transfer cards.
 
 What a recipe does follows its content and transfer mode, as `export_jobs_controller.run_workflow_recipe` does it:
   Export (resized / converted / stripped copies)  -> `workflows.build_workflow_export_plan` + `WorkflowExportTask`, then optionally an archive of the outputs

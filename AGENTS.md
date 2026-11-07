@@ -4,7 +4,10 @@
 
 The QML shell is the only desktop application UI. Do not restore a Widgets
 main-window or popout launch route, or build a validation package from a branch
-that predates the QML UI. Shared backend helpers are still used.
+that predates the QML UI. The retired source is removed, not an alternative
+frontend to maintain. Shared helpers belong in UI-independent Python modules;
+application modules must not import PySide6.QtWidgets. Keep the QML-only
+architecture checks passing when adding UI or packaging changes.
 
 The CLI-Culler command/JSON interface is temporary for validation. The intended
 UI keeps the current QML design with option controls, sliders, strictness

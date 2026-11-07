@@ -4,7 +4,7 @@ The app icon is the Image Triage logo (`image_triage/qml_shell/qml/LogoMark.qml`
 dot, with no tile behind it. `render.py` draws it with the same numbers (a 1024 box, ring radius 374 outside and 314 inside, the gradient stops,
 the blades leaned back 22 degrees), scaled up so the ring fills the frame, and writes every file that carries it:
 
-    python scripts/icon_art/render.py          # image_triage/ui/assets/app_icon-v5.{ico,png}, build_assets/icons/image_triage-v5.{ico,png},
+    python scripts/icon_art/render.py          # image_triage/assets/app_icon-v5.{ico,png}, build_assets/icons/image_triage-v5.{ico,png},
                                                # website/assets/image-triage-icon.png and scripts/qml_parity/help_icon.png
     python scripts/icon_art/render.py OUTDIR   # only the frames (icon_<px>.png), to look at
 

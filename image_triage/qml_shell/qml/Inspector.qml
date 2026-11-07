@@ -76,7 +76,7 @@ Item {
                     Text { width: parent.width; height: 17; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight; text: insp.has ? (insp.cur.name.indexOf(".") >= 0 ? insp.cur.name : insp.cur.name + "." + insp.cur.ext) : "No photo"
                            color: theme.fg; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: -0.14 }
                     Item { width: 1; height: 4 }
-                    Text { height: 13; verticalAlignment: Text.AlignVCenter; text: !insp.has ? "" : (insp.cur.isRaw && (insp.cur.companions === undefined || insp.cur.companions.length > 0) ? "RAW + JPG" : insp.cur.ext) + (insp.cap.ready && insp.cap.pixels ? " \u00b7 " + insp.cap.pixels : ""); color: theme.fg3; font.pointSize: UiState.pt(10.8333) }
+                    Text { width: parent.width; height: 13; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; text: !insp.has ? "" : (insp.cur.isRaw && (insp.cur.companions === undefined || insp.cur.companions.length > 0) ? "RAW + JPG" : insp.cur.ext) + (insp.cap.ready && insp.cap.pixels ? " \u00b7 " + insp.cap.pixels : ""); color: theme.fg3; font.pointSize: UiState.pt(10.8333) }
                 }
                 Row {
                     anchors.right: parent.right; spacing: 8; height: 35.2
@@ -165,18 +165,31 @@ Item {
                     }
                 }
                 Item {
-                    width: parent.width; height: 196.1
+                    objectName: "inspectorCapture"
+                    width: parent.width; height: captureRows.y + captureRows.implicitHeight + 16
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
                     Text { x: 16; y: 14; height: 13; verticalAlignment: Text.AlignVCenter; text: "CAPTURE"; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
                     Column {
-                        x: 16; y: 37; spacing: 7
+                        id: captureRows
+                        x: 16; y: 37; width: parent.width - 32; spacing: 7
                         Repeater {
                             model: insp.has ? [["Camera", insp.capText("camera")], ["Lens", insp.capText("lens")], ["Exposure", insp.capText("exposure")], ["Focal length", insp.capText("focal")], ["Captured", insp.capText("captured")], ["Pixels", insp.capText("pixels")]] : []
                             delegate: Row {
+                                id: captureRow
                                 required property var modelData
+                                width: captureRows.width
+                                height: Math.max(18.2, captureValue.implicitHeight)
                                 spacing: 12
                                 Text { width: 96; height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[0]; color: theme.fg3; font.pixelSize: 13 }
-                                Text { height: 18.2; verticalAlignment: Text.AlignVCenter; text: modelData[1]; color: theme.fg; font.pixelSize: 13 }
+                                Text {
+                                    id: captureValue
+                                    objectName: "inspectorCaptureValue_" + captureRow.modelData[0]
+                                    width: captureRow.width - 108
+                                    text: captureRow.modelData[1]; textFormat: Text.PlainText
+                                    wrapMode: Text.Wrap
+                                    color: theme.fg; font.pixelSize: 13
+                                    lineHeight: 18.2; lineHeightMode: Text.FixedHeight
+                                }
                             }
                         }
                     }

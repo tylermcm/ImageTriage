@@ -1,4 +1,4 @@
-"""The Cull window's real analysis: the Widgets app's stack-first cascade (`cascade.task.CascadeRunTask`), and what it leaves behind.
+"""The Cull window's real analysis: the shared stack-first cascade (`cascade.task.CascadeRunTask`), and what it leaves behind.
 
 `CullRun` starts a `CascadeRunTask` on the thread pool and reports its stage, its progress and its end to the Cull model (queued, so on the UI thread).
 Every decision it makes is an `Outcome`; a run produces them from the task's `FolderResult`, a folder analysed earlier produces them from the saved

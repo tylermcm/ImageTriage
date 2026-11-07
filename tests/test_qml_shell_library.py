@@ -240,9 +240,52 @@ def test_the_search_field_narrows_the_loaded_rows(qapp, nav, library):
     nav.setQuery("day2")
     assert [r["name"] for r in nav.tree] == ["2025", "Trip", "Day2"]      # the match and the folders it is in
     nav.setQuery("zzz")
-    assert nav.tree == [] and nav.treeStatus == "No folder matches"
+    until(qapp, lambda: nav.treeStatus == "No folder matches")
+    assert nav.tree == []
     nav.setQuery("")
     assert len(nav.tree) >= 3
+
+
+def test_folder_search_finds_descendants_that_were_never_expanded(qapp, nav, library):
+    nav.openFolder(str(library))
+    until(qapp, lambda: not nav.photos.loading and len(nav.tree) == 2)
+    nav.setQuery("day2")
+    until(qapp, lambda: any(r["name"] == "Day2" for r in nav.tree))
+    assert [r["name"] for r in nav.tree] == ["2025", "Trip", "Day2"]
+    nav.openQuery()
+    until(qapp, lambda: not nav.photos.loading)
+    assert nav.openPath == str(library / "2025/Trip/Day2")
+    assert nav.query == ""
+
+
+def test_enter_opens_a_pasted_path_even_before_a_drive_is_selected(qapp, nav, library):
+    path = library / "2025/Trip"
+    nav.setQuery(str(path))
+    nav.openQuery()  # Enter before the debounce/worker finishes still opens this request.
+    until(qapp, lambda: nav.openPath == str(path) and not nav.photos.loading)
+    assert sorted(r["name"] for r in nav.photos.subfolders) == ["Day1", "Day2"]
+    assert nav.query == ""
+
+
+def test_cancelled_folder_search_cannot_replace_a_newer_query(qapp, nav, library):
+    nav.setQuery(str(library / "2025/Trip"))
+    old_token = nav._search_token
+    nav.setQuery(str(library / "2026/Georgia"))
+    nav._apply_search(old_token, ([], [str(library / "2025/Trip")], False))
+    nav.openQuery()
+    until(qapp, lambda: nav.openPath == str(library / "2026/Georgia") and not nav.photos.loading)
+
+
+def test_photo_filters_do_not_hide_folder_navigation(qapp, nav, library):
+    from image_triage.qml_shell.photos import GridModel
+    grid = GridModel(nav.photos)
+    nav.photos.setFilter("keep")
+    nav.photos.setMinRating(5)
+    nav.openFolder(str(library / "2025/Trip"))
+    until(qapp, lambda: not nav.photos.loading)
+    assert nav.photos.shown == 0
+    assert grid.folders == grid.rowCount() == 2
+    assert sorted(r["name"] for r in nav.photos.subfolders) == ["Day1", "Day2"]
 
 
 # -- favorites and recent folders ------------------------------------------------------------------------------------------------

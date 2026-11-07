@@ -8,6 +8,9 @@ Item {
     property int bucket: 240             // thumbnail width to ask for (a bucket size, so neighbours share cache files)
     property int fillMode: Image.PreserveAspectCrop
     property real imageOpacity: 1
+    // Dim the composed thumbnail, so its blurred fill cannot bleed through the photo.
+    opacity: imageOpacity
+    layer.enabled: imageOpacity < 1
     property bool blurFill: false        // show the whole photo and fill what its shape leaves empty with a blurred copy of it, instead of cropping it to the card
     readonly property int shape: blurFill ? Image.PreserveAspectFit : fillMode
     readonly property bool letterboxed: blurFill && img.status === Image.Ready && width > 0 && (img.paintedWidth < width - 2 || img.paintedHeight < height - 2)
@@ -27,9 +30,9 @@ Item {
         source: t.letterboxed ? t.shown : ""
         sourceSize: Qt.size(96, 64)
         fillMode: Image.PreserveAspectCrop
-        opacity: t.imageOpacity * 0.85
+        opacity: 0.24
         layer.enabled: t.letterboxed
-        layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: 24; brightness: -0.12; saturation: -t.desaturate }
+        layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: 48; brightness: -0.18; saturation: -Math.max(0.65, t.desaturate) }
     }
     Image {
         anchors.fill: parent
@@ -38,7 +41,6 @@ Item {
         sourceSize: Qt.size(t.bucket, Math.round(t.bucket * 2 / 3))
         fillMode: t.shape
         visible: img.status !== Image.Ready && status === Image.Ready
-        opacity: t.imageOpacity
         layer.enabled: t.desaturate > 0
         layer.effect: MultiEffect { saturation: -t.desaturate }
     }
@@ -50,7 +52,7 @@ Item {
         sourceSize: Qt.size(t.bucket, Math.round(t.bucket * 2 / 3))
         asynchronous: true
         fillMode: t.shape
-        opacity: status === Image.Ready ? t.imageOpacity : 0
+        opacity: status === Image.Ready ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: 220 } }
         layer.enabled: t.desaturate > 0
         layer.effect: MultiEffect { saturation: -t.desaturate }

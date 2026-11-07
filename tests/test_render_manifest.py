@@ -240,38 +240,3 @@ def test_the_manifest_path_reaches_only_an_editor_that_keeps_manifests(supported
     sent = stand_in.call.call_args.args[1]["cameraRaw"]
     assert ("manifestPath" in sent) is supported
     assert "manifestPath" in spec, "the caller's spec is left as it was"
-
-
-def test_saves_and_the_binding_ask_for_the_manifest_when_the_editor_keeps_one(qapp_controller, tmp_path):
-    from tests.test_lean_autosave import editing, stashes
-
-    proc = editing(tmp_path, lean_supported=True)
-    Path(proc.source_path).write_bytes(b"raw")
-    proc.control.render_manifest_supported = True
-    qapp_controller._save_photocraft_sidecar_if_dirty(proc)
-    (params,) = stashes(proc)
-    assert params["manifest"] == "IMG.NEF.photocraft.renders.json"
-    assert params["source"] == bridge.file_signature(proc.source_path)
-    assert params["display"] == "IMG.NEF.photocraft.display.jpg"
-    assert qapp_controller._render_manifest_params(proc, proc.source_path)["display"] == "IMG.NEF.photocraft.display.jpg"
-    proc.control.render_manifest_supported = Mock()  # merely truthy: not support
-    assert qapp_controller._render_manifest_params(proc, proc.source_path) == {}
-
-
-@pytest.fixture
-def qapp_controller():
-    from PySide6.QtCore import QObject
-    from PySide6.QtWidgets import QApplication
-
-    from image_triage.preview_controller import PreviewController
-
-    app = QApplication.instance() or QApplication([])
-    parent = QObject()
-    ctl = PreviewController(parent)
-    ctl._parent_keepalive = parent
-    yield ctl
-    ctl._photocraft_save_timer.stop()
-    ctl._photocraft_dwell_timer.stop()
-    ctl._photocraft_executor.shutdown(wait=True)
-    ctl._photocraft_preview_executor.shutdown(wait=True)
-    app.processEvents()

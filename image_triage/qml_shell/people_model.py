@@ -1,12 +1,4 @@
-"""People for the QML shell: the faces PocketDrop-style panel and the Tag People window, on the Widgets app's own face index.
-
-The face index of a folder is the Widgets app's `aiculler.sqlite` (one per folder, built by "Rescan Faces" / the AI scan). This reads and
-writes it with the Widgets functions (`ui.face_groups.load_face_groups`, `face_group_photo_paths`, `people_search.assign_person_names`,
-`set_clusters_ignored`), so a name given here shows up there. Grouping and ordering follow `PeopleSearchDialog._build_people`.
-
-Not connected: **Rescan Faces** (building the index) and the face crops (each person is a coloured circle with an initial for now).
-`memory=True` (--mock, tests) uses a small in-memory set shaped like the mockup.
-"""
+"""QML people state over the shared face-group and naming stores."""
 from __future__ import annotations
 
 import sqlite3
@@ -15,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from ..scanner import normalized_path_key
-from ..ui.face_groups import MAX_FACE_GROUPS, MIN_FACE_COUNT
+from ..face_groups import MAX_FACE_GROUPS, MIN_FACE_COUNT
 
 _DEMO = (
     ("p1", "Anna", 214, 20), ("p2", "Mark", 187, 150), ("p3", "Lena", 142, 260), ("p4", "Jonas", 96, 330), ("p5", "", 61, 200),
@@ -148,7 +140,7 @@ class PeopleModel(QObject):
             keys = {rows[i]["name"] for i in ids if rows}
             pred = lambda r, k=keys: r["name"] in k
         else:
-            from ..ui.face_groups import face_group_photo_paths
+            from ..face_groups import face_group_photo_paths
 
             keys = {normalized_path_key(p) for p in face_group_photo_paths(self._db, person["clusters"])}
             pred = lambda r, k=keys: normalized_path_key(r["path"]) in k

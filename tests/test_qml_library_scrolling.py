@@ -1,5 +1,6 @@
 """Exercise the Library controls with overflowing drives and a large folder tree."""
 import pytest
+import time
 from PySide6.QtCore import QObject, QPoint, QPointF, QUrl, Qt
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
@@ -63,6 +64,69 @@ def click(qapp, window, control):
     pos = control.mapToScene(QPointF(control.width() / 2, control.height() / 2)).toPoint()
     QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, pos)
     pump(qapp, 0.25)
+
+
+def test_drive_pin_uses_red_ink_without_a_mouse_focus_highlight(qapp, sidebar):
+    window, context, warnings, tmp_path = sidebar
+    panel = item(window, "librarySidePanel")
+    button = item(window, "pinDrivesButton")
+    icon = button.findChild(QObject, "libraryButtonIcon")
+    panel.setProperty("drivesPinned", False)
+    pump(qapp, .1)
+    assert not icon.property("filled")
+    click(qapp, window, button)
+    assert panel.property("drivesPinned") is True
+    assert icon.property("color") == context.contextProperty("theme").rej
+    assert icon.property("filled") is True
+    assert not button.hasActiveFocus()
+    click(qapp, window, button)
+    assert icon.property("filled") is False
+    assert icon.property("color") == context.contextProperty("theme").fg3
+
+
+def test_double_clicking_a_folder_row_opens_it_and_reveals_its_children(qapp, sidebar):
+    from image_triage.drive_list_model import DriveListModel
+    from image_triage.qml_shell.library_nav import LibraryNavModel
+    from image_triage.qml_shell.photos import GridModel
+    window, context, warnings, tmp_path = sidebar
+    root = tmp_path / "drive"
+    folder = root / "Photography"
+    (folder / "Portland").mkdir(parents=True)
+    (folder / "China").mkdir()
+    photos = context.contextProperty("photos")
+    photos.setFilter("keep")
+    grid = GridModel(photos)
+    nav = LibraryNavModel(photos, persist=False, drives=DriveListModel(roots_provider=lambda: [], probe=lambda p: (False, "", None)),
+                          drive_root=lambda p: str(root), parent=context.engine())
+    context.setContextProperty("libraryNav", nav)
+    nav.openFolder(str(root))
+    deadline = time.monotonic() + 5
+    while not nav.tree and time.monotonic() < deadline:
+        pump(qapp, .02)
+    pump(qapp, .1)
+    pending = [window.contentItem()]
+    row = None
+    while pending:
+        candidate = pending.pop()
+        if candidate.objectName() == "libraryFolderRow" and candidate.property("folder") == str(folder):
+            row = candidate
+            break
+        pending.extend(candidate.childItems())
+    assert row is not None
+    pos = row.mapToScene(QPointF(120, row.height() / 2)).toPoint()
+    QTest.mouseDClick(window, Qt.LeftButton, Qt.NoModifier, pos)
+    deadline = time.monotonic() + 5
+    while (photos.loading or len(nav.tree) < 3) and time.monotonic() < deadline:
+        pump(qapp, .02)
+    assert nav.openPath == str(folder)
+    assert [r["name"] for r in nav.tree] == ["Photography", "China", "Portland"]
+    assert grid.folders == 2
+    nav.toggle(str(folder))
+    pump(qapp, .5)
+    assert [r["name"] for r in nav.tree] == ["Photography"]
+    QTest.mouseDClick(window, Qt.LeftButton, Qt.NoModifier, pos)
+    pump(qapp, .2)
+    assert [r["name"] for r in nav.tree] == ["Photography", "China", "Portland"]
 
 
 def wheel(qapp, window, control, *, angle=-120, pixels=0, settle=0.19):

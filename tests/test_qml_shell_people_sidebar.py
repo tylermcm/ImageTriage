@@ -8,7 +8,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtGui import QInputMethodEvent
 from PySide6.QtQuick import QQuickWindow  # Register the native QML window/item wrappers.
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QGuiApplication as QApplication
 
 from image_triage.qml_shell.app import QML_DIR, _configure_qt_dll_search
 from image_triage.qml_shell.photos import PhotoModel
