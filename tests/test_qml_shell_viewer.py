@@ -18,6 +18,29 @@ from test_qml_shell import _load_main, pump, qapp  # noqa: F401  (the same helpe
 COUNT = 7
 
 
+@pytest.mark.parametrize("decoded,metadata,expected", [
+    ((2400, 1600), (160, 120), (2400, 1600)),
+    ((2400, 1600), (8256, 5504), (8256, 5504)),
+    ((1600, 2400), (8256, 5504), (5504, 8256)),
+    ((2400, 1600), (9000, 9000), (2400, 1600)),
+])
+def test_raw_zoom_dimensions_ignore_thumbnail_metadata(qapp, monkeypatch, decoded, metadata, expected):
+    from types import SimpleNamespace
+    from PySide6.QtGui import QImage
+
+    image = QImage(*decoded, QImage.Format_RGB888)
+    image.fill(Qt.red)
+    monkeypatch.setattr("image_triage.imaging.load_image_for_display", lambda *args, **kw: (image, ""))
+    monkeypatch.setattr("image_triage.photocraft_bridge.saved_render_path", lambda path: None)
+    monkeypatch.setattr("image_triage.metadata.load_capture_metadata", lambda path: SimpleNamespace(width=metadata[0], height=metadata[1]))
+    host = ViewerHost(PhotoModel(parent=qapp), NoThumbs(), memory=True, parent=qapp)
+    try:
+        file, width, height, error = host._make_picture("sample.NEF")
+        assert file and not error and (width, height) == expected
+    finally:
+        host.shutdown()
+
+
 def wait_for(app, condition, seconds=8.0):
     end = time.monotonic() + seconds
     while time.monotonic() < end:
@@ -266,6 +289,187 @@ def test_the_viewer_is_hidden_until_a_photo_is_opened_and_shows_the_controls(she
     assert not [w for w in warnings if "Viewer.qml" in w and "null" not in w], warnings
 
 
+def test_image_swaps_handoff_without_opacity_animation(shell, qapp):
+    engine, window, model, popout, warnings = shell
+    photo = window.findChild(QObject, "viewerPhotoImage")
+    placeholder = window.findChild(QObject, "viewerPhotoPlaceholder")
+    popout.open(0)
+    pump(qapp, .3)
+    assert placeholder.property("fadeIn") is False
+    ready = 0
+    for row in [1, 2, 3, 0, 4, 2, 5, 1]:
+        popout.go(row)
+        until = time.monotonic() + .08
+        while time.monotonic() < until:
+            pump(qapp, .005)
+            assert placeholder.property("opacity") in (0, 1)
+            assert photo.property("opacity") in (0, 1)
+            if photo.property("opacity") == 1:
+                ready += 1
+                assert placeholder.property("opacity") == 0
+    assert ready > 8
+    assert not [w for w in warnings if "Viewer.qml" in w or "ThumbImage.qml" in w], warnings
+
+
+def test_navigator_follows_exact_filmstrip_motion_into_hidden_ui(shell, qapp):
+    engine, window, model, popout, warnings = shell
+    popout.open(0)
+    pump(qapp, .5)
+    viewer = window.findChild(QObject, "viewer")
+    viewer.setProperty("zoomed", True)
+    mini = window.findChild(QObject, "viewerZoomNavigator")
+    strip = window.findChild(QObject, "viewerFilmstrip")
+    def ys():
+        return mini.mapToScene(QPointF()).y(), strip.mapToScene(QPointF()).y()
+    old = ys()
+    popout.setStripHeight(popout.stripHeight + 40)
+    pump(qapp, .1)
+    new = ys()
+    assert new[0] - old[0] == pytest.approx(-40)
+    assert new[1] - old[1] == pytest.approx(-40)
+    viewer.setProperty("zen", True)
+    for _ in range(8):
+        pump(qapp, .04)
+        moving = ys()
+        assert moving[0] - new[0] == pytest.approx(moving[1] - new[1], abs=.1)
+    assert mini.y() + mini.height() == pytest.approx(window.height() - 20)
+    viewer.setProperty("zen", False)
+    pump(qapp, .4)
+    assert ys() == pytest.approx(new)
+
+
+def test_preview_close_button_returns_to_library_without_closing_main_window(shell, qapp):
+    engine, window, model, popout, warnings = shell
+    popout.open(0)
+    pump(qapp, .5)
+    button = window.findChild(QObject, "viewerCloseButton")
+    point = button.mapToScene(QPointF(button.width()/2, button.height()/2)).toPoint()
+    QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point)
+    pump(qapp, .4)
+    assert not popout.isOpen
+    assert window.isVisible()  # The main titlebar's X beneath it never receives the tap.
+    background = window.findChild(QObject, "librarySidePanel").parentItem().parentItem()
+    assert background.isEnabled()
+    grid = window.findChild(QObject, "photoGrid")
+    before = grid.property("currentIndex")
+    QTest.keyClick(window, Qt.Key_Right)
+    assert grid.property("currentIndex") == before + 1
+
+
+def test_preview_x_closes_directly_with_raw_editor_open(shell,qapp):
+    _,window,_,popout,_=shell
+    popout.open(0);popout.rawEditor.open("sample.NEF");pump(qapp,.2)
+    assert popout.rawEditor.active
+    button=window.findChild(QObject,"viewerCloseButton")
+    QTest.mouseClick(window,Qt.LeftButton,Qt.NoModifier,button.mapToScene(QPointF(button.width()/2,button.height()/2)).toPoint())
+    pump(qapp,.3)
+    assert not popout.isOpen and window.isVisible()
+    assert popout.rawEditor.active
+
+
+def test_raw_editor_open_preference_survives_new_host_and_shutdown(qapp,tmp_path,monkeypatch):
+    from PySide6.QtCore import QSettings
+    from image_triage.qml_shell.viewer_host import RAW_EDITOR_OPEN_KEY
+    settings_path=str(tmp_path/"viewer.ini")
+    monkeypatch.setattr("image_triage.qml_shell.viewer_host.user_settings",lambda:QSettings(settings_path,QSettings.IniFormat))
+    photos=PhotoModel(parent=qapp)
+    photos.setRows([dict(path=str(tmp_path/"photo.NEF"),name="photo.NEF",ext="NEF",raw=True,decision="",rating=0,ai=0)],str(tmp_path))
+    def make():
+        viewer=ViewerHost(photos,NoThumbs(),parent=qapp)
+        viewer.rawEditor._memory=True  # Real settings, isolated from native model/render jobs.
+        viewer._ask=lambda *args:None
+        return viewer
+    first=make()
+    try:
+        first.open(0);assert not first.rawEditor.active
+        first.rawEditor.open(photos.row_at(0)["path"]);first.rawEditor.adjust("exposure",1)
+        first.close()
+        assert not first.isOpen and first.rawEditor.active and first.rawEditor.values["exposure"]==1
+        first.open(0)
+        assert first.rawEditor.active and first.rawEditor.values["exposure"]==1
+    finally:first.shutdown()
+    assert QSettings(settings_path,QSettings.IniFormat).value(RAW_EDITOR_OPEN_KEY,False,bool)
+    second=make()
+    try:
+        second.open(0);assert second.rawEditor.active
+        second.rawEditor.cancel()  # Explicitly putting the editor away is remembered too.
+    finally:second.shutdown()
+    third=make()
+    try:
+        third.open(0);assert not third.rawEditor.active
+    finally:third.shutdown()
+
+
+def test_hidden_preview_banner_reveals_on_top_hover_and_can_restore_controls(shell, qapp):
+    engine, window, model, popout, warnings = shell
+    popout.open(0)
+    pump(qapp, .5)
+    viewer = window.findChild(QObject, "viewer")
+    banner = window.findChild(QObject, "viewerTopBar")
+    toggle = window.findChild(QObject, "viewerToggleControlsButton")
+    def click_toggle():
+        QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier,
+                         toggle.mapToScene(QPointF(toggle.width()/2, toggle.height()/2)).toPoint())
+    click_toggle()
+    assert viewer.property("zen")
+    QTest.mouseMove(window, QPoint(window.width()//2, 180))
+    pump(qapp, .4)
+    assert banner.property("opacity") == 0 and not banner.isEnabled()
+    QTest.mouseMove(window, QPoint(window.width()//2, 2))
+    pump(qapp, .4)
+    assert wait_for(qapp, lambda: banner.property("opacity") == 1 and banner.isEnabled(), seconds=1)
+    assert viewer.property("zen")  # Hover reveals only the banner, not the filmstrip.
+    QTest.mouseMove(window, QPoint(window.width()//2, 180))
+    pump(qapp, .4)
+    assert banner.property("opacity") == 0
+    QTest.mouseMove(window, QPoint(window.width()//2, 2))
+    pump(qapp, .4)
+    click_toggle()
+    pump(qapp, .4)
+    assert not viewer.property("zen") and banner.property("opacity") == 1
+    assert popout.isOpen and window.isVisible()
+    assert not [w for w in warnings if "Viewer.qml" in w], warnings
+
+
+def test_reject_appearance_setting_updates_grid_and_filmstrip_live(shell, qapp):
+    from PySide6.QtCore import QMetaObject, Q_ARG
+
+    engine, window, model, popout, warnings = shell
+    settings = engine.rootContext().contextProperty("settings")
+    model.setDecision(0, "rej")
+    pump(qapp, .2)
+    path = model.get(0)["path"]
+    grid = window.findChild(QObject, "photoGrid")
+    def thumb(parent):
+        pending = [parent]
+        while pending:
+            item = pending.pop()
+            if item.property("path") == path and item.property("imageOpacity") is not None:
+                return item
+            pending.extend(item.childItems())
+        raise AssertionError("Thumbnail not found")
+    assert thumb(grid).property("imageOpacity") == .38
+    settings.set("dimRejects", False)
+    pump(qapp, .1)
+    assert thumb(grid).property("imageOpacity") == 1
+    assert thumb(grid).property("desaturate") == 0
+    popout.open(0)
+    pump(qapp, .4)
+    strip = window.findChild(QObject, "viewerFilmstrip")
+    assert thumb(strip).property("desaturate") == 0
+    settings.set("dimRejects", True)
+    pump(qapp, .1)
+    assert thumb(strip).property("desaturate") == .9
+    assert thumb(grid).property("imageOpacity") == .38
+    popout.close()
+    pump(qapp, .3)
+    QMetaObject.invokeMethod(window, "runCommand", Q_ARG("QVariant", "view.filter.rej"))
+    pump(qapp, .1)
+    assert thumb(grid).property("imageOpacity") == 1 and thumb(grid).property("desaturate") == 0
+    assert model.get(0)["decision"] == "rej"
+    assert not [w for w in warnings if "ReferenceError" in w or "TypeError" in w], warnings
+
+
 def test_the_keys_step_decide_rate_and_close(shell, qapp):
     engine, window, model, popout, warnings = shell
     popout.open(1)
@@ -341,13 +545,15 @@ def test_wheel_zoom_is_variable_pointer_anchored_and_scoped_to_the_photo(shell, 
     popout.rawEditor.open("sample.NEF")
     popout.rawEditor._full_size = [8000, 5000]
     popout.rawEditor.changed.emit()
-    pump(qapp, .4)
+    pump(qapp, .8)  # Fullscreen and the RAW dock must finish resizing before anchoring.
     viewer = window.findChild(QQuickItem, "viewer")
     pan = window.findChild(QQuickItem, "viewerZoomPan")
     photo = window.findChild(QQuickItem, "viewerPhotoImage")
     viewport = window.findChild(QQuickItem, "viewerZoomViewport")
     navigator = window.findChild(QQuickItem, "viewerZoomNavigator")
-    point = QPointF(pan.width()*.65, pan.height()/2)
+    # At Fit, either axis may still have no pan room on a wide Windows screen.
+    # Check its center first; the 100% checks below use an off-center pointer.
+    point = QPointF(pan.width()/2, pan.height()/2)
 
     def wheel(delta, local=None, pixels=0, target=pan, horizontal=0):
         if local is None:
@@ -382,6 +588,8 @@ def test_wheel_zoom_is_variable_pointer_anchored_and_scoped_to_the_photo(shell, 
     assert viewer.property("zoomScale") == before
     QTest.keyClick(window, Qt.Key_Z)
     assert viewer.property("zoomScale") == 1
+    assert window.findChild(QQuickItem, "viewerZoomPercent").property("text") == "100%"
+    assert photo.width() == pytest.approx(8000 / viewer.property("dpr"))
     point = QPointF(pan.width()*.65,pan.height()*.45)
     full_anchor = anchor()
     wheel(120)
@@ -395,12 +603,23 @@ def test_wheel_zoom_is_variable_pointer_anchored_and_scoped_to_the_photo(shell, 
     assert (pan.property("contentX"), pan.property("contentY")) == pytest.approx(position)
     assert not pan.property("moving")
     assert pan.property("interactive")  # Mouse dragging remains available.
+    wheel(12000, QPointF(pan.width()/2, pan.height()/2))
+    assert viewer.property("zoomScale") == pytest.approx(64)
     wheel(-12000, QPointF(pan.width()/2,pan.height()/2))
-    assert viewer.property("zoomScale") == pytest.approx(.05)
+    assert viewer.property("zoomScale") == pytest.approx(fit * .5)
     assert photo.width() < pan.width()  # Below-fit zoom is not stretched back up.
     assert viewport.width() == pytest.approx(viewport.parentItem().width())
     QTest.keyClick(window, Qt.Key_0)
     assert not viewer.property("zoomed") and not navigator.isVisible()
+    # Embedded-thumbnail dimensions must not cap magnification near the fit view.
+    popout.rawEditor._full_size = [160, 100]
+    popout.rawEditor.changed.emit()
+    pump(qapp, .1)
+    small_fit = pan.property("fitScale")
+    wheel(24000, QPointF(pan.width()/2, pan.height()/2))
+    assert viewer.property("zoomScale") == pytest.approx(max(64, small_fit*32))
+    assert max(photo.width()/pan.width(), photo.height()/pan.height()) >= 32 - .001
+    QTest.keyClick(window, Qt.Key_0)
     assert popout.row == 0
     assert not [w for w in warnings if "Viewer.qml" in w],warnings
 

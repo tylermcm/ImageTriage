@@ -80,3 +80,15 @@ EditorStage 1.0 EditorStage.qml
 LogoMark 1.0 LogoMark.qml
 
 NativeCullOptions 1.0 NativeCullOptions.qml
+CollectionCard 1.0 CollectionCard.qml
+MiddleScroll 1.0 MiddleScroll.qml
+RawCropOverlay 1.0 RawCropOverlay.qml
+RawMaskPanel 1.0 RawMaskPanel.qml
+RawMaskOverlay 1.0 RawMaskOverlay.qml
+RawMaskList 1.0 RawMaskList.qml
+RawMaskOptions 1.0 RawMaskOptions.qml
+
+RawAdjustmentSection 1.0 RawAdjustmentSection.qml
+
+RawRetouchPanel 1.0 RawRetouchPanel.qml
+RawRetouchOverlay 1.0 RawRetouchOverlay.qml

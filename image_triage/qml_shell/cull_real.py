@@ -69,8 +69,26 @@ def outcomes_from_bundle(bundle, rows: list[dict]) -> dict[str, Outcome]:
 
 def reason_of(outcome: Outcome) -> str | None:
     """What the Cull window calls a flagged frame's problem: a blink, soft, clipped or blown out frame, or a near-duplicate; None for a frame it keeps."""
-    if outcome.role in ("native_reject", "native_review"):
-        return outcome.role
+    if outcome.role == "native_review":
+        return "native_review"
+    if outcome.role == "native_reject":
+        # The pinned native report supplies prose reasons rather than gate IDs.
+        # Match its rejection phrases, not incidental ranking/score notes.
+        text = outcome.summary.lower()
+        rejected = text[text.find("rejected:"):] if "rejected:" in text else text
+        if "below the quality floor" in rejected or rejected == "quality_floor":
+            return "native_quality"
+        if any(t in rejected for t in ("black frame", "blown to white", "sky blown out", "washed out", "unusable shadows")):
+            return "native_exposure"
+        if "featureless frame" in rejected:
+            return "native_blank"
+        if "not the best-exposed frame of bracket" in rejected:
+            return "native_bracket"
+        if "better unit" in rejected or "lost in its scene" in rejected:
+            return "native_scene"
+        if "better frame" in rejected and "burst" in rejected:
+            return "native_burst"
+        return "native_reject"
     if outcome.role == ROLE_DUPLICATE:
         return "duplicate"
     if outcome.role in FLAGGED_ROLES:

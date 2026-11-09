@@ -34,6 +34,20 @@ class Control:
         return (3, self.dirty)
 
 
+def test_hosted_settle_uses_sidecar_stash_for_a_changed_flat_image(tmp_path):
+    from types import SimpleNamespace
+    from image_triage import photocraft_bridge as bridge
+    path=tmp_path/"photo.png";path.write_bytes(b"fixture")
+    control=Control();control.render_manifest_supported=True
+    EditorHost._settle(SimpleNamespace(control=control,source_path=str(path)))
+    assert control.saved==0
+    method,params=control.calls[-1]
+    assert method=="app.stash" and params["wait"] is True
+    assert params["path"]==bridge.sidecar_pcraft_path(str(path)).name
+    assert params["manifest"]==bridge.render_manifest_path(str(path)).name
+    assert params["source"]==bridge.file_signature(str(path))
+
+
 class Proc:
     idle_priority = False
     attached_parent = None

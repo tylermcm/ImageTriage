@@ -33,6 +33,29 @@ Backdrop {
     component Card: Rectangle { radius: 14; color: theme.s1; border.color: theme.lineSoft }
     component Dot: Rectangle { property color c: theme.fg3; width: 8; height: 8; radius: 4; color: c }
     function dotColor(k) { return k === "ok" ? theme.win : k === "bad" ? theme.rej : theme.rev }
+    function showInGrid() {
+        var row = cull.rowOf(root.v.det.path)
+        cull.hide()
+        if (row >= 0) UiState.requestRow = row
+    }
+    Popup {
+        id: frameMenu
+        objectName: "cullFrameMenu"
+        parent: root
+        modal: true; dim: false; focus: true; padding: 7
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle { color: theme.s2; radius: 12; border.color: theme.line }
+        contentItem: Item {
+            implicitWidth: 200; implicitHeight: menuItems.implicitHeight
+            MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons }
+            TapHandler { acceptedButtons: Qt.AllButtons; gesturePolicy: TapHandler.WithinBounds }
+            Column { id: menuItems; width: parent.width; spacing: 3
+                SButton { objectName: "cullMenuRestore"; width: parent.width; text: root.v.det.restoreLabel || "Restore"; enabled: root.v.det.canRestore; variant: "ghost"; onClicked: { frameMenu.close(); cull.toggleRestore() } }
+                SButton { objectName: "cullMenuShowGrid"; width: parent.width; text: "Show in grid"; variant: "ghost"; onClicked: { frameMenu.close(); root.showInGrid() } }
+                SButton { width: parent.width; text: "Filter by this reason"; enabled: !!root.v.det.reason; variant: "ghost"; onClicked: { frameMenu.close(); cull.setFilter(root.v.det.reason) } }
+            }
+        }
+    }
 
     DialogCard {
         id: win
@@ -40,6 +63,7 @@ Backdrop {
         width: root.winW; height: root.winH
         x: (parent.width - width) / 2; y: (parent.height - height) / 2
         RoundClip {
+            enabled: !cull.applying
             anchors.fill: parent; anchors.margins: 1; radius: 15
             // ---- the rail ----
             Rectangle {
@@ -107,11 +131,12 @@ Backdrop {
                 }
                 Flickable {
                     id: body
+                    interactive: root.page !== "rev"
                     y: hd.y + hd.height + 22; width: parent.width; height: parent.height - y - 60
                     contentWidth: width; contentHeight: pages.height + 18; clip: true; boundsBehavior: Flickable.StopAtBounds
                     Item {
                         id: pages
-                        x: 28; width: body.width - 56; height: Math.max(prep.height, run.height, rev.height, apply.height, done.height)
+                        x: 28; width: body.width - 56; height: root.page === "prep" ? prep.height : root.page === "run" ? run.height : root.page === "rev" ? rev.height : root.page === "apply" ? apply.height : done.height
                         // -------- prepare --------
                         Column {
                             id: prep
@@ -247,6 +272,11 @@ Backdrop {
                                             Text { text: modelData.n; color: theme.fg; font.pixelSize: 21; font.weight: Font.DemiBold; font.letterSpacing: -0.4 }
                                             Text { text: modelData.l; color: theme.fg3; font.pixelSize: 12 } } } } }
                             Item { width: 1; height: 14 }
+                            Row { width: parent.width; spacing: 10
+                                Text { text: "Sort by"; color: theme.fg2; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                                SSelect { objectName: "cullReviewSort"; width: 160; options: [{label: "Stack order", value: "stack"}, {label: "Flag reason", value: "reason"}]; current: root.v.sort; onPicked: (value) => cull.setReviewSort(value) }
+                            }
+                            Item { width: 1; height: 8 }
                             Flow { id: chipFlow; width: parent.width; spacing: 6
                                 Repeater { model: root.v.chips
                                     delegate: Rectangle { id: chip; required property var modelData; height: 28; width: crow.implicitWidth + 22; radius: 14; color: modelData.on ? theme.s3 : (chh.hovered ? theme.s2 : theme.s1); border.width: modelData.on ? 1.5 : 1; border.color: modelData.on ? theme.accent : theme.lineSoft
@@ -260,8 +290,14 @@ Backdrop {
                             Item { width: 1; height: 12 }
                             // the stacks scroll in a list of their own that only builds the cards on screen (hundreds of stacks, each with its pictures, built at once made scrolling crawl and
                             // queued every thumbnail ahead of the one you picked); the detail card stays put beside it
-                            Item { id: split; width: parent.width; height: Math.max(320, body.height - 18 - 64 - 14 - chipFlow.height - 12)
-                                ListView { id: stk; width: parent.width - 262 - 16; height: parent.height; spacing: 8; clip: true; cacheBuffer: 500; boundsBehavior: Flickable.StopAtBounds; model: root.v.stacks
+                            Item { id: split; width: parent.width; height: Math.max(260, body.height - 18 - 64 - 14 - 40 - chipFlow.height - 12)
+                                ListView { id: stk; objectName: "cullReviewList"; width: parent.width - 262 - 16; height: parent.height; spacing: 8; clip: true; cacheBuffer: 500; boundsBehavior: Flickable.StopAtBounds; interactive: false; model: cull.reviewRows
+                                        property real savedY: 0
+                                        Connections { target: cull
+                                            function onReviewRowsAboutToChange() { stk.savedY = stk.contentY; reviewScroll.stop() }
+                                            function onReviewRowsChanged() { Qt.callLater(function () { stk.forceLayout(); stk.contentY = reviewScroll.clampY(stk.savedY) }) }
+                                        }
+                                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; width: 6; contentItem: Rectangle { implicitWidth: 6; radius: 3; color: theme.line } }
                                         delegate: Card { id: sk; required property var modelData; width: stk.width; height: 34 + fl.height + 11
                                             Row { x: 13; y: 8; spacing: 8; height: 20
                                                 Text { text: sk.modelData.title; color: theme.fg; font.pixelSize: 12; font.weight: Font.DemiBold; anchors.verticalCenter: parent.verticalCenter }
@@ -272,7 +308,7 @@ Backdrop {
                                                         RoundClip { anchors.fill: parent; radius: 8
                                                             Rectangle { anchors.fill: parent; color: theme.s3 }
                                                             ThumbImage { anchors.fill: parent; path: fr.modelData.path; bucket: 240; imageOpacity: fr.modelData.flagged ? 0.4 : 1; desaturate: fr.modelData.flagged ? 0.7 : 0 } }
-                                                        Rectangle { visible: fr.modelData.sel; anchors.fill: parent; radius: 8; color: "transparent"; border.width: 2; border.color: theme.accent }
+                                                        Rectangle { visible: fr.modelData.path === root.v.det.path; anchors.fill: parent; radius: 8; color: "transparent"; border.width: 2; border.color: theme.accent }
                                                         Rectangle { visible: fr.modelData.flagged; x: 5; y: 74.7 - 24; height: 19; width: bt.implicitWidth + 22; radius: 9.5; color: Qt.rgba(10 / 255, 12 / 255, 16 / 255, 0.72)
                                                             Row { x: 6; anchors.verticalCenter: parent.verticalCenter; spacing: 5
                                                                 Dot { c: fr.modelData.color; width: 7; height: 7; radius: 3.5; anchors.verticalCenter: parent.verticalCenter }
@@ -282,9 +318,19 @@ Backdrop {
                                                         Rectangle { visible: fr.modelData.restored; x: 112 - 5 - width; y: 5; height: 19; width: rs.implicitWidth + 14; radius: 9.5; color: Qt.rgba(10 / 255, 12 / 255, 16 / 255, 0.72)
                                                             Text { id: rs; anchors.centerIn: parent; text: "Restored"; color: "white"; font.pointSize: UiState.pt(10.5); font.weight: Font.Medium } }
                                                         HoverHandler { cursorShape: Qt.PointingHandCursor }
-                                                        TapHandler { onTapped: cull.pick(fr.modelData.path) }
+                                                        objectName: "cullFrame-" + fr.modelData.path
+                                                        TapHandler { acceptedButtons: Qt.LeftButton; gesturePolicy: TapHandler.WithinBounds; onTapped: cull.pick(fr.modelData.path) }
+                                                        TapHandler { acceptedButtons: Qt.RightButton; gesturePolicy: TapHandler.WithinBounds
+                                                            onTapped: (point) => {
+                                                                cull.pick(fr.modelData.path)
+                                                                var pos = root.mapFromItem(fr, point.position.x, point.position.y)
+                                                                frameMenu.x = Math.min(pos.x, root.width - 220); frameMenu.y = Math.min(pos.y, root.height - 120)
+                                                                frameMenu.open()
+                                                            }
+                                                        }
                                                         Accessible.role: Accessible.Button; Accessible.name: fr.modelData.name + (fr.modelData.flagged ? ", flagged " + fr.modelData.badge : "") } } } }
                                     Text { visible: root.v.noRows; width: parent.width; topPadding: 26; horizontalAlignment: Text.AlignHCenter; text: "Nothing here. Every frame with this flag has been restored."; color: theme.fg3; font.pointSize: UiState.pt(12.5) } }
+                                MiddleScroll { id: reviewScroll; objectName: "cullReviewScroll"; anchors.fill: stk; view: stk }
                                 Card { id: detail; x: parent.width - 262; width: 262; height: dcol.implicitHeight + 24
                                     Column { id: dcol; x: 12; y: 12; width: parent.width - 24; spacing: 0
                                         Text { visible: !root.v.det.has; width: parent.width; topPadding: 26; bottomPadding: 26; horizontalAlignment: Text.AlignHCenter; text: "Pick a frame to see why it was flagged."; color: theme.fg3; font.pointSize: UiState.pt(12.5) }
@@ -304,7 +350,7 @@ Backdrop {
                                                     Text { anchors.right: parent.right; text: modelData.v; color: theme.fg; font.pixelSize: 12 } } } }
                                         Row { visible: root.v.det.has; topPadding: 12; spacing: 6
                                             SButton { visible: root.v.det.canRestore; text: root.v.det.restoreLabel; h: 28; hpad: 11; radius: 9; onClicked: cull.toggleRestore() }
-                                            SButton { text: "Show in grid"; h: 28; hpad: 11; radius: 9; onClicked: { var r = cull.rowOf(root.v.det.path); cull.hide(); if (r >= 0) UiState.requestRow = r } } } } }
+                                            SButton { text: "Show in grid"; h: 28; hpad: 11; radius: 9; onClicked: root.showInGrid() } } } }
                             }
                         }
                         // -------- apply --------
@@ -324,7 +370,8 @@ Backdrop {
                                     TapHandler { onTapped: cull.setAct(op.modelData.key) }
                                     Accessible.role: Accessible.RadioButton; Accessible.name: modelData.label; Accessible.checked: modelData.on } }
                             Item { width: 1; height: 9 }
-                            H3 { title: "FRAMES AFFECTED · " + root.v.applyCount; width: parent.width }
+                            H3 { title: "CHOOSE REASONS TO APPLY · " + root.v.applyCount + " FRAMES"; width: parent.width }
+                            Text { width: parent.width; text: "Only checked reasons will be applied. Restored photos and your winners stay protected."; wrapMode: Text.WordWrap; color: theme.fg2; font.pixelSize: 12 }
                             Item { width: 1; height: 2 }
                             Repeater { model: root.v.groups
                                 delegate: Card { id: gp; required property var modelData; width: apply.width; height: 54; radius: 12; opacity: modelData.on ? 1 : 0.55
@@ -375,6 +422,21 @@ Backdrop {
                         SButton { visible: root.page === "done"; text: "Done"; variant: "primary"; h: 34; hpad: 16; radius: 12; onClicked: cull.close() } }
                 }
             }
+        }
+        Item {
+            objectName: "cullApplyOverlay"
+            anchors.fill: parent
+            visible: cull.applying
+            z: 20
+            Rectangle { anchors.fill: parent; radius: 16; color: Qt.alpha(theme.s2, 0.88) }
+            Column {
+                anchors.centerIn: parent; spacing: 12; width: parent.width - 80
+                LogoMark { objectName: "cullApplySpinner"; anchors.horizontalCenter: parent.horizontalCenter; size: 160; spinning: cull.applying }
+                Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; text: "Marking photos as Rejects…"; color: theme.fg; font.pixelSize: 17; font.weight: Font.DemiBold }
+                Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; text: cull.applyProgress; color: theme.fg2; font.pixelSize: 13 }
+            }
+            MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: (event) => { event.accepted = true } }
+            TapHandler { acceptedButtons: Qt.AllButtons; gesturePolicy: TapHandler.WithinBounds }
         }
     }
 }

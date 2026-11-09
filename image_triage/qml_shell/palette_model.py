@@ -22,7 +22,7 @@ _COMMANDS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     ("workflow.handoff_builder", "Export", "Deliver / Handoff Builder", "handoff_builder", ("delivery", "handoff", "export workflow")),
     ("workflow.share_to_phone", "Export", "Send to PocketDrop", "share_to_phone", ("phone", "qr", "pocketdrop", "share", "transfer", "send")),
     ("workflow.send_to_editor", "Export", "Send To Editor", "send_to_editor_pipeline", ("retouch", "editor queue", "send to editor")),
-    ("workflow.best_of", "Export", "Best-of-Set Auto Assembly", "best_of_set_auto_assembly", ("best of", "shortlist", "auto assembly")),
+    ("workflow.best_of", "Export", "Choose best photos", "best_of_set_auto_assembly", ("best of", "shortlist", "auto assembly", "picks")),
     ("workflow.keyboard_shortcuts", "Export", "Keyboard Shortcuts", "", ("shortcuts", "keyboard mapping")),
     ("library.create_collection", "Library", "Create Virtual Collection", "", ("virtual collection", "portfolio picks", "proofing set")),
     ("library.add_selected_to_collection", "Library", "Add Selection To Collection", "collect_at_cursor", ("collection", "add selection", "save picks")),

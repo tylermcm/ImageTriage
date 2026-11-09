@@ -77,7 +77,7 @@ Item {
         if (name === "ai") {
             return [
                 mr("Analyze Folder…", "ai.analyze", "", "spark"), mr("AI Center…", "ai.center", "", "bars"),
-                ms(), mr("People…", "ai.people", "", "people"), mr("Best-of-Set Auto Assembly…", "workflow.best_of", "Ctrl Alt B", "star"),
+                ms(), mr("People…", "ai.people", "", "people"), mr("Choose best photos…", "workflow.best_of", "Ctrl Alt B", "star"),
                 ms(), mo("Re-rank AI Culling", "", "sort"), mo("Sort into Semantic Folders", "", "library"), mo("Next AI Pick", "", "spark")]
         }
         return []
@@ -129,6 +129,7 @@ Item {
         }
         TapHandler {
             enabled: row.live
+            gesturePolicy: TapHandler.WithinBounds
             onTapped: { if (row.kind === "sub") { UiState.topSub = row.at; row.subShown(row.mapToItem(null, 0, 0).y - 6) } else row.picked(row.item) }
         }
         Accessible.role: row.kind === "sep" ? Accessible.Separator : Accessible.MenuItem
@@ -141,6 +142,8 @@ Item {
         property alias contentHeight: col.height
         Glass { anchors.fill: parent; radius: 14; frosted: false; tint: theme.s2; shadowAlphaA: 0.7; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16 }
         Rectangle { anchors.fill: parent; radius: 14; color: "transparent"; border.color: Qt.alpha(theme.lift, 0.11) }
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: (wheel) => { wheel.accepted = true } }
+        TapHandler { acceptedButtons: Qt.AllButtons; gesturePolicy: TapHandler.WithinBounds }
         Flickable {
             anchors.fill: parent; anchors.margins: 6
             contentHeight: col.height; clip: true; interactive: contentHeight > height; boundsBehavior: Flickable.StopAtBounds

@@ -13,12 +13,15 @@ Item {
     MouseArea { x: 0; y: 42; width: parent.width; height: parent.height - 42; acceptedButtons: Qt.AllButtons; hoverEnabled: true; onWheel: (w) => { w.accepted = true }; onClicked: reference.closeMenu() }   // below the bar, so the bar's titles stay live
     Item {
         id: card
+        objectName: "helpMenuCard"
         x: root.menuX; y: 41; width: 268; height: col.height + 12
         opacity: root.v.menu ? 1 : 0; scale: root.v.menu ? 1 : 0.96; transformOrigin: Item.TopLeft
         Behavior on scale { NumberAnimation { duration: 280; easing.type: Easing.OutBack; easing.overshoot: 1.4 } }
         Behavior on opacity { NumberAnimation { duration: 160 } }
         Glass { anchors.fill: parent; radius: 14; frosted: false; tint: theme.s2; shadowAlphaA: 0.7; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16 }
         Rectangle { anchors.fill: parent; radius: 14; color: "transparent"; border.color: Qt.alpha(theme.lift, 0.11) }
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: (wheel) => { wheel.accepted = true } }
+        TapHandler { acceptedButtons: Qt.AllButtons; gesturePolicy: TapHandler.WithinBounds }
         Column {
             id: col
             x: 6; y: 6; width: parent.width - 12
@@ -37,7 +40,7 @@ Item {
                            Rectangle { anchors.fill: parent; z: -1; radius: 5; color: "transparent"; border.color: theme.line }
                            Rectangle { x: 1; y: parent.height - 2; width: parent.width - 2; height: 1.5; radius: 1; color: theme.line } }
                     HoverHandler { id: rh; enabled: !row.modelData.sep; cursorShape: Qt.PointingHandCursor }
-                    TapHandler { enabled: !row.modelData.sep; onTapped: reference.open(row.modelData.id) }
+                    TapHandler { enabled: !row.modelData.sep; gesturePolicy: TapHandler.WithinBounds; onTapped: reference.open(row.modelData.id) }
                     Accessible.role: row.modelData.sep ? Accessible.Separator : Accessible.MenuItem; Accessible.name: row.modelData.label || ""
                 }
             }

@@ -21,6 +21,8 @@ FocusScope {
     property bool zen: false
     property bool zoomed: false
     property real zoomScale: 1
+    readonly property real minZoomScale: Math.min(1, pan.fitScale * 0.5)
+    readonly property real maxZoomScale: Math.max(64, pan.fitScale * 32)
     onZoomedChanged: {
         if (!zoomed) zoomScale = 1
         if (rawEditor) rawEditor.setDetailMode(zoomed)
@@ -30,6 +32,10 @@ FocusScope {
     property bool slow: false             // the loading look held on (checks only)
     readonly property int row: popout.row
     readonly property int fh: popout.stripHeight
+    readonly property bool dimRejected: { void settings.revision; return settings.value("dimRejects") === true }
+    // Both the filmstrip group and navigator follow this exact animated offset.
+    property real controlsSlide: zen ? fh + bh + 16 : 0
+    Behavior on controlsSlide { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
     readonly property var cur: { if (!photos) return ({}); void photos.revision; return row >= 0 ? photos.get(row) : ({}) }
     readonly property string curPath: cur.path || ""
     readonly property var rawEditor: popout.rawEditor || null
@@ -84,40 +90,22 @@ FocusScope {
         if (rawEditing) rawEditor.cancel()
         if (curPath !== "") { opening = true; editor.openFullEditor(curPath) }
     }
-    Item {
-        id: cropGuide
-        z: 2
-        visible: rawPanel.visible && rawPanel.tool === "Crop" && !rawPanel.before && v.rawOverlay
-        x: (v.width - rawPanel.width) * 0.23
-        y: 52 + (v.height - 52 - v.fh) * 0.12
-        width: (v.width - rawPanel.width) * 0.54
-        height: (v.height - 52 - v.fh) * 0.76
-        Rectangle { x: -cropGuide.x; y: 52 - cropGuide.y; width: v.width - rawPanel.width; height: cropGuide.y - 52; color: "#77000000" }
-        Rectangle { x: -cropGuide.x; y: parent.height; width: v.width - rawPanel.width; height: v.height - v.fh - cropGuide.y - cropGuide.height; color: "#77000000" }
-        Rectangle { x: -cropGuide.x; width: cropGuide.x; height: parent.height; color: "#77000000" }
-        Rectangle { x: parent.width; width: cropGuide.x; height: parent.height; color: "#77000000" }
-        Rectangle { anchors.fill: parent; color: "transparent"; border.color: "white" }
-        Repeater {
-            model: [1 / 3, 2 / 3]
-            delegate: Item {
-                required property real modelData
-                anchors.fill: parent
-                Rectangle { x: parent.width * parent.modelData; width: 1; height: parent.height; color: "#77ffffff" }
-                Rectangle { y: parent.height * parent.modelData; width: parent.width; height: 1; color: "#77ffffff" }
-            }
-        }
-    }
     Connections {
         target: editor
         function onOpened() { v.opening = false }
         function onFailed(message) { v.opening = false; popout.notice(message) }
         function onClosed() { v.opening = false; popout.close() }
     }
+    Connections {
+        target: rawPanel
+        function onToolChanged() { if (rawPanel.tool === "Crop") v.zoomed = false }
+    }
     function setZoom(scale, px, py) {
+        if (rawPanel.visible && (rawPanel.tool === "Crop" || rawPanel.tool === "Remove" || rawPanel.tool === "Mask" && v.rawEditor.maskEditor.tool)) return
         var fx = (pan.contentX + px - pan.imageLeft) / pan.drawWidth
         var fy = (pan.contentY + py - pan.imageTop) / pan.drawHeight
         pan.cancelFlick()
-        zoomScale = Math.max(Math.min(0.05, pan.fitScale), Math.min(Math.max(16, pan.fitScale * 4), scale))
+        zoomScale = Math.max(minZoomScale, Math.min(maxZoomScale, scale))
         zoomed = true
         pan.contentX = Math.max(0, Math.min(pan.contentWidth - pan.width, pan.imageLeft + fx * pan.drawWidth - px))
         pan.contentY = Math.max(0, Math.min(pan.contentHeight - pan.height, pan.imageTop + fy * pan.drawHeight - py))
@@ -149,6 +137,7 @@ FocusScope {
         e.accepted = true
         if (k === Qt.Key_Escape) {
             if (rawPanel.whiteBalancePicking) rawPanel.whiteBalancePicking = false
+            else if (rawEditing && rawPanel.tool === "Mask" && rawEditor.maskEditor.tool) rawEditor.maskEditor.stop()
             else if (collOpen) collOpen = false
             else close()
         }
@@ -165,7 +154,6 @@ FocusScope {
         else if (k === Qt.Key_H) zen = !zen
         else if (k === Qt.Key_B || k === Qt.Key_G) collOpen = !collOpen
         else if (k === Qt.Key_M) moveRequested(row)
-        else if (k === Qt.Key_T) popout.notice("Tagging isn’t connected to this window yet")
         else if (k === Qt.Key_Delete) popout.delete(row)
         else if (k === Qt.Key_E) openEditor()
         else e.accepted = false
@@ -201,6 +189,7 @@ FocusScope {
     }
 
     // ---- the stage ----
+    readonly property real photoPadding: v.zen || rawPanel.visible ? 12 : 18
     Rectangle { anchors.fill: parent; color: v.cStage }
     // what the photo's shape leaves empty is filled with a blurred, dimmed copy of the photo instead of plain black bars
     ThumbImage {
@@ -216,10 +205,10 @@ FocusScope {
         id: stage
         objectName: "viewerPhotoStage"
         anchors.fill: parent
-        anchors.leftMargin: v.zen || rawPanel.visible ? 16 : 24
-        anchors.rightMargin: (v.zen || rawPanel.visible ? 16 : 24) + (rawPanel.visible ? rawPanel.width : 0)
-        anchors.topMargin: v.zen ? 16 : 54
-        anchors.bottomMargin: v.zen ? 16 : v.fh + (v.barOff ? 54 : rawPanel.visible ? 92 : 24 + v.bh)
+        anchors.leftMargin: v.photoPadding
+        anchors.rightMargin: v.photoPadding + (rawPanel.visible ? rawPanel.width : 0)
+        anchors.topMargin: (v.zen ? 0 : 52) + v.photoPadding
+        anchors.bottomMargin: v.zen ? v.photoPadding : v.fh + (v.barOff ? 30 : v.bh) + v.photoPadding
         Behavior on anchors.leftMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         Behavior on anchors.rightMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         Behavior on anchors.topMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
@@ -254,13 +243,14 @@ FocusScope {
                 // the grid's thumbnail, blurred, until the real picture is there
                 ThumbImage {
                     id: holder
+                    objectName: "viewerPhotoPlaceholder"
                     anchors.centerIn: parent
                     width: v.zoomed ? pan.drawWidth : parent.width; height: v.zoomed ? pan.drawHeight : parent.height
                     path: v.curPath; bucket: 800
                     fillMode: Image.PreserveAspectFit
+                    fadeIn: false
                     opacity: photoImg.status === Image.Ready && !v.loading ? 0 : 1
                     visible: opacity > 0.01
-                    Behavior on opacity { NumberAnimation { duration: 220 } }
                     layer.enabled: v.loading
                     layer.effect: MultiEffect { blurEnabled: true; blur: 0.42; blurMax: 14; saturation: -0.2 }
                 }
@@ -271,6 +261,10 @@ FocusScope {
                     y: v.zoomed ? pan.imageTop : 0
                     width: rawPanel.visible && rawPanel.before ? parent.width / 2 - 7 : v.zoomed ? pan.drawWidth : parent.width
                     height: v.zoomed ? pan.drawHeight : parent.height
+                    sourceClipRect: {
+                        var c = v.rawEditing && v.rawEditor.preview.indexOf("image://") !== 0 ? v.rawEditor.previewClip : ({x:0,y:0,w:0,h:0})
+                        return Qt.rect(c.x,c.y,c.w,c.h)
+                    }
                     source: rawPanel.displaySource || popout.src
                     asynchronous: true; cache: false; autoTransform: true
                     retainWhileLoading: v.rawEditing
@@ -279,7 +273,6 @@ FocusScope {
                     fillMode: Image.PreserveAspectFit
                     smooth: true; mipmap: pan.effectiveScale < 1
                     opacity: !v.loading && (status === Image.Ready || (v.rawEditing && readyPath === v.curPath)) ? 1 : 0
-                    Behavior on opacity { enabled: !v.rawEditing; NumberAnimation { duration: 220 } }
                 }
                 MouseArea {
                     objectName: "rawWhiteBalanceSample"
@@ -297,6 +290,10 @@ FocusScope {
                 Image {
                     visible: rawPanel.visible && rawPanel.before
                     width: parent.width / 2 - 7; height: parent.height
+                    sourceClipRect: {
+                        var c = v.rawEditing && v.rawEditor.baseline.indexOf("image://") !== 0 ? v.rawEditor.baselineClip : ({x:0,y:0,w:0,h:0})
+                        return Qt.rect(c.x,c.y,c.w,c.h)
+                    }
                     source: visible ? v.rawEditor.baseline || popout.src : ""
                     asynchronous: true; fillMode: Image.PreserveAspectFit; autoTransform: true
                     smooth: true; mipmap: pan.effectiveScale < 1
@@ -319,12 +316,13 @@ FocusScope {
                     visible: !v.rawEditing && popout.assistOn && status === Image.Ready
                     smooth: true
                 }
+
             }
         }
         MouseArea {
             parent: pan
             anchors.fill: parent
-            enabled: !rawPanel.whiteBalancePicking
+            enabled: !rawPanel.whiteBalancePicking && !(rawPanel.visible && (rawPanel.tool === "Crop" || rawPanel.tool === "Remove" || rawPanel.tool === "Mask" && v.rawEditor.maskEditor.tool))
             acceptedButtons: Qt.NoButton
             // Intercept wheels before Flickable can also scroll the image.
             // Button events pass through so dragging still pans normally.
@@ -375,13 +373,61 @@ FocusScope {
             wrapMode: Text.Wrap; text: popout.error; color: v.cFg2; font.pixelSize: 13
         }
     }
+    // Crop handles may overflow the photo viewport; the photo itself stays clipped.
+    RawCropOverlay {
+        objectName: "rawCropOverlay"
+        model: v.rawEditor
+        visible: rawPanel.visible && rawPanel.tool === "Crop" && !rawPanel.before && v.rawOverlay
+        enabled: visible && rawPanel.editable
+        x: stage.x + pan.x - pan.contentX + photoImg.x + (photoImg.width-photoImg.paintedWidth)/2
+        y: stage.y + pan.y - pan.contentY + photoImg.y + (photoImg.height-photoImg.paintedHeight)/2
+        width: photoImg.paintedWidth; height: photoImg.paintedHeight
+        z: 3
+    }
+    RawRetouchOverlay {
+        parent: stage
+        viewport: stage
+        objectName: "rawRetouchOverlay"
+        model: v.rawEditor.retouchEditor; raw: v.rawEditor
+        visible: rawPanel.visible && rawPanel.tool === "Remove" && !rawPanel.before
+        enabled: visible && rawPanel.editable
+        x: pan.x - pan.contentX + photoImg.x + (photoImg.width-photoImg.paintedWidth)/2
+        y: pan.y - pan.contentY + photoImg.y + (photoImg.height-photoImg.paintedHeight)/2
+        width: photoImg.paintedWidth; height: photoImg.paintedHeight
+        clip: true; z: 3
+    }
+    RawMaskOverlay {
+        objectName: "rawMaskOverlay"
+        model: v.rawEditor.maskEditor; raw: v.rawEditor
+        visible: rawPanel.visible && rawPanel.tool === "Mask" && !rawPanel.before
+        showCoverage: v.rawOverlay
+        enabled: visible && rawPanel.editable
+        x: stage.x + pan.x - pan.contentX + photoImg.x + (photoImg.width-photoImg.paintedWidth)/2
+        y: stage.y + pan.y - pan.contentY + photoImg.y + (photoImg.height-photoImg.paintedHeight)/2
+        width: photoImg.paintedWidth; height: photoImg.paintedHeight
+        clip: true; z: 3
+    }
+    Connections {
+        target: v.rawEditor.maskEditor
+        function onChanged() { if (rawPanel.visible && rawPanel.tool === "Mask" && v.rawEditor.maskEditor.tool) v.zoomed = false }
+    }
+    RawMaskList {
+        objectName: "floatingMaskList"
+        model: v.rawEditor.maskEditor; raw: v.rawEditor
+        visible: rawPanel.visible && rawPanel.tool === "Mask" && model.rows.length>0
+        width: Math.min(232,stage.width*.48)
+        x: rawPanel.x-width-12; y: 64; z: 6
+        maxBodyHeight: Math.max(70,Math.min(310,stage.height-120))
+        overlayVisible: v.rawOverlay
+        onOverlayToggled: (value) => v.rawOverlay=value
+    }
     // ---- zoom navigator: where the visible part is ----
     Item {
         id: mini
         objectName: "viewerZoomNavigator"
         visible: v.zoomed; z: 5
         x: parent.width - (rawPanel.visible ? rawPanel.width : 0) - 20 - width
-        y: parent.height - (v.fh + 36 + v.bh) - height
+        y: parent.height - (v.fh + 36 + v.bh) - height + v.controlsSlide
         width: 150; height: 100
         Rectangle { anchors.fill: parent; radius: 9; color: "black"; border.color: v.cLine; layer.enabled: true
             layer.effect: MultiEffect { shadowEnabled: true; shadowColor: Qt.rgba(0, 0, 0, 0.5); shadowBlur: 0.6; shadowVerticalOffset: 10 } }
@@ -401,11 +447,17 @@ FocusScope {
 
     // ---- the top bar ----
     Item {
+        width: parent.width; height: 52; z: 5
+        HoverHandler { id: topReveal; enabled: v.shown && v.zen }
+    }
+    Item {
         id: topBar
+        objectName: "viewerTopBar"
         width: parent.width; height: 52; z: 4
-        opacity: v.zen ? 0 : 1; enabled: !v.zen
+        readonly property bool revealed: !v.zen || topReveal.hovered
+        opacity: revealed ? 1 : 0; enabled: revealed
         Behavior on opacity { NumberAnimation { duration: 300 } }
-        transform: Translate { y: v.zen ? -12 : 0; Behavior on y { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } } }
+        transform: Translate { y: topBar.revealed ? 0 : -12; Behavior on y { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } } }
         Rectangle { anchors.fill: parent; color: v.cCard }
         // back to the grid
         Item {
@@ -466,17 +518,19 @@ FocusScope {
                 }
             }
             Item {   // hide the controls
+                objectName: "viewerToggleControlsButton"
                 width: 34; height: 34
                 Rectangle { anchors.fill: parent; radius: 10; color: zh.hovered ? v.cHover : v.cGlass; border.color: v.cLineSoft }
                 Icon { anchors.centerIn: parent; path: "M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4"; size: 18; color: zh.hovered ? v.cFg : v.cFg2 }
-                HoverHandler { id: zh; cursorShape: Qt.PointingHandCursor } TapHandler { onTapped: v.zen = true }
-                Accessible.role: Accessible.Button; Accessible.name: "Hide the controls"
+                HoverHandler { id: zh; cursorShape: Qt.PointingHandCursor } TapHandler { gesturePolicy: TapHandler.WithinBounds; onTapped: v.zen = !v.zen }
+                Accessible.role: Accessible.Button; Accessible.name: v.zen ? "Show the controls" : "Hide the controls"
             }
             Item {   // close
+                objectName: "viewerCloseButton"
                 width: 34; height: 34
                 Rectangle { anchors.fill: parent; radius: 10; color: xh.hovered ? v.cHover : v.cGlass; border.color: v.cLineSoft }
                 Icon { anchors.centerIn: parent; path: "M6 6l12 12M18 6L6 18"; size: 18; color: xh.hovered ? v.cFg : v.cFg2 }
-                HoverHandler { id: xh; cursorShape: Qt.PointingHandCursor } TapHandler { onTapped: v.close() }
+                HoverHandler { id: xh; cursorShape: Qt.PointingHandCursor } TapHandler { gesturePolicy: TapHandler.WithinBounds; onTapped: v.close() }
                 Accessible.role: Accessible.Button; Accessible.name: "Close"
             }
         }
@@ -517,7 +571,7 @@ FocusScope {
         height: v.fh + 12 + 52; anchors.bottom: parent.bottom; z: 4
         opacity: v.zen ? 0 : 1; enabled: !v.zen
         Behavior on opacity { NumberAnimation { duration: 300 } }
-        transform: Translate { y: v.zen ? 12 : 0; Behavior on y { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } } }
+        transform: Translate { y: v.controlsSlide }
         Rectangle { anchors.fill: parent; gradient: Gradient { GradientStop { position: 0; color: Qt.alpha(v.cStage, 0) } GradientStop { position: 0.55; color: Qt.alpha(v.cStage, 0.7) } GradientStop { position: 1; color: Qt.alpha(v.cStage, 0.7) } } }
 
         // the action bar
@@ -585,7 +639,6 @@ FocusScope {
                 Repeater {
                     model: [{ id: "focus", k: "F", tip: "Focus assist (F, Shift+F colour)", icon: "focusAssist" },
                             { id: "move", k: "M", tip: "Move to… (M)", icon: "movePhoto" },
-                            { id: "tag", k: "T", tip: "Tag (T)", icon: "photoTag" },
                             { id: "coll", k: "B", tip: "Add to a collection (B)", icon: "addCollection" },
                             { id: "del", k: "Del", tip: "Move to the Recycle Bin (Delete)", icon: "trash" }]
                     delegate: Item {
@@ -602,7 +655,6 @@ FocusScope {
                                 var id = tb.modelData.id
                                 if (id === "focus") popout.toggleAssist()
                                 else if (id === "move") v.moveRequested(v.row)
-                                else if (id === "tag") popout.notice("Tagging isn’t connected to this window yet")
                                 else if (id === "coll") v.collOpen = !v.collOpen
                                 else if (id === "del") popout.delete(v.row)
                             }
@@ -743,8 +795,8 @@ FocusScope {
                     Rectangle { anchors.fill: parent; radius: 7; color: v.cDeep; border.width: 2; border.color: fs.cur ? v.cFg : "transparent"
                         layer.enabled: fs.cur; layer.effect: MultiEffect { shadowEnabled: true; shadowColor: Qt.rgba(0, 0, 0, 0.55); shadowBlur: 0.5; shadowVerticalOffset: 10 } }
                     RoundClip { anchors.fill: parent; anchors.margins: 2; radius: 5
-                        ThumbImage { anchors.fill: parent; path: fs.path; bucket: strip.th > 100 ? 360 : 240; desaturate: fs.decision === "rej" ? 0.9 : 0 }
-                        Rectangle { anchors.fill: parent; color: "black"; opacity: fs.decision === "rej" ? 0.4 : 0 }
+                        ThumbImage { anchors.fill: parent; path: fs.path; bucket: strip.th > 100 ? 360 : 240; desaturate: fs.decision === "rej" && v.dimRejected ? 0.9 : 0 }
+                        Rectangle { anchors.fill: parent; color: "black"; opacity: fs.decision === "rej" && v.dimRejected ? 0.4 : 0 }
                         Rectangle { visible: fs.flagged; anchors.bottom: parent.bottom; width: parent.width; height: 3; color: v.decColor("rev") }
                     }
                     Rectangle { x: parent.width - 4 - 9 - 2; y: 4 + 2; width: 9; height: 9; radius: 4.5; color: v.decColor(fs.decision); border.width: 1.5; border.color: Qt.rgba(0, 0, 0, 0.55) }
@@ -833,7 +885,7 @@ FocusScope {
                 onClicked: rawPanel.before = !rawPanel.before
             }
             SButton {
-                visible: rawPanel.visible && rawPanel.tool === "Crop"; text: "Overlay"
+                visible: rawPanel.visible && (rawPanel.tool === "Crop" || rawPanel.tool === "Remove" || rawPanel.tool === "Mask"); text: "Overlay"
                 h: 30; hpad: 10; variant: v.rawOverlay ? "primary" : "ghost"
                 onClicked: v.rawOverlay = !v.rawOverlay
             }

@@ -18,8 +18,63 @@ Item {
     property int keepRow: -1
     Connections {
         target: gridModel
-        function onModelAboutToBeReset() { root.keepRow = root.row }
-        function onModelReset() { if (root.keepRow >= 0) gv.currentIndex = root.keepRow + gridModel.folders }
+        function onModelAboutToBeReset() { root.stopAutoScroll(); root.keepRow = root.row }
+        function onModelReset() { if (!root.restoringScope && root.keepRow >= 0) gv.currentIndex = root.keepRow + gridModel.folders }
+    }
+    property bool restoringScope: false
+    property var scopePositions: ({})
+    property string bookmarkFolder: ""
+    function scopeKey() { return JSON.stringify([photos.scopeKind, photos.scopeId]) }
+    function saveScopePosition() {
+        if (bookmarkFolder !== photos.folderPath) scopePositions = ({})
+        bookmarkFolder = photos.folderPath
+        var topIndex = gv.indexAt(1, gv.contentY + 1)
+        var top = topIndex >= root.nf ? photos.get(topIndex - root.nf) : ({})
+        var current = root.row >= 0 ? photos.get(root.row) : ({})
+        var states = Object.assign({}, scopePositions)
+        states[scopeKey()] = {
+            path: current.path || "", index: gv.currentIndex, y: gv.contentY,
+            topPath: top.path || "", cellHeight: gv.cellHeight,
+            offset: topIndex >= 0 ? gv.contentY - gv.originY - Math.floor(topIndex / root.cols) * gv.cellHeight : 0
+        }
+        scopePositions = states
+    }
+    function restoreScopePosition() {
+        if (!restoringScope) return
+        gv.forceLayout()
+        var saved = scopePositions[scopeKey()]
+        var index = 0
+        if (saved) {
+            var row = saved.path ? photos.rowForPath(saved.path) : -1
+            index = row >= 0 ? row + root.nf : saved.index
+        }
+        gv.currentIndex = gv.count > 0 ? Math.max(0, Math.min(gv.count - 1, index)) : -1
+        gv.forceLayout()
+        var y = gv.originY
+        if (saved) {
+            var topRow = saved.topPath ? photos.rowForPath(saved.topPath) : -1
+            y = topRow >= 0 ? gv.originY + Math.floor((topRow + root.nf) / root.cols) * gv.cellHeight
+                    + saved.offset * gv.cellHeight / saved.cellHeight : saved.y
+        }
+        var high = Math.max(gv.originY, gv.originY + gv.contentHeight - gv.height + gv.bottomMargin)
+        gv.contentY = Math.max(gv.originY, Math.min(high, y))
+        Qt.callLater(function () { root.restoringScope = false })
+    }
+    Connections {
+        target: photos
+        function onScopeAboutToChange(kind, ident) {
+            wheelEase.stop(); gv.cancelFlick(); root.stopAutoScroll()
+            root.saveScopePosition()
+            root.restoringScope = true
+        }
+        function onScopeChanged() { if (root.restoringScope) Qt.callLater(root.restoreScopePosition) }
+        function onFolderChanged() {
+            if (root.bookmarkFolder !== photos.folderPath) {
+                root.scopePositions = ({})
+                root.bookmarkFolder = photos.folderPath
+                root.restoringScope = false
+            }
+        }
     }
     readonly property int minCell: UiState.dens === "s" ? 150 : UiState.dens === "m" ? 230 : 340
     readonly property int cols: UiState.cols > 0 ? UiState.cols : Math.max(1, Math.floor(gv.width / (minCell + 2)))   // auto-fill: n tracks of min width plus (n-1) gaps
@@ -30,6 +85,27 @@ Item {
     property Item overlay                // something floating over the grid (the bar): taps inside it are not the grid's
     signal openRequested(int row)
     signal contextRequested(string kind, int row, real x, real y)
+    property bool autoScrolling: false
+    readonly property bool dimRejected: { void settings.revision; return settings.value("dimRejects") === true }
+    readonly property var scrollCursor: typeof nativeScrollCursor !== "undefined" ? nativeScrollCursor : null
+    onAutoScrollingChanged: {
+        if (!scrollCursor) return
+        if (autoScrolling) scrollCursor.begin()
+        else scrollCursor.end()
+    }
+    Component.onDestruction: if (scrollCursor) scrollCursor.end()
+    property point scrollOrigin: Qt.point(0, 0)
+    property real scrollPointerY: 0
+    onScrollPointerYChanged: if (autoScrolling && scrollCursor) {
+        var delta = scrollPointerY - scrollOrigin.y
+        scrollCursor.direction(Math.abs(delta) <= 16 ? 0 : Math.sign(delta))
+    }
+    function stopAutoScroll() { autoScrolling = false }
+    onEnabledChanged: if (!enabled) stopAutoScroll()
+    Connections {
+        target: root.Window.window
+        function onActiveChanged() { if (!root.Window.active) root.stopAutoScroll() }
+    }
 
     // B: the photo you are on goes into the collection that collects (or, when there is none, you choose one)
     function addToCollection() {
@@ -65,6 +141,9 @@ Item {
         focus: true
         keyNavigationEnabled: true
         boundsBehavior: Flickable.StopAtBounds
+        // Scrolling belongs to the wheel handler and middle-button autoscroll.
+        // Flickable's default left-button drag competes with photo selection.
+        interactive: false
         model: gridModel
         cellWidth: width / root.cols
         cellHeight: (cellWidth - 2) * 2 / 3 + 2   // a 3:2 card plus the 2px gutter
@@ -86,6 +165,7 @@ Item {
         WheelHandler {
             target: null
             onWheel: (e) => {
+                root.stopAutoScroll()
                 var notches = e.angleDelta.y / 120
                 var from = wheelEase.running ? wheelEase.to : gv.contentY
                 var low = gv.originY, high = Math.max(low, gv.originY + gv.contentHeight - gv.height + gv.bottomMargin)
@@ -108,6 +188,7 @@ Item {
         // Review advances a single photo; a multi-photo selection stays in place.
         function advance(rows) { if (rows.length === 1 && settings.value("autoAdvance") === true && currentIndex < count - 1) stepTo(currentIndex + 1, false) }
         function revealCurrent() {
+            if (root.restoringScope) return
             if (currentIndex < 0 || currentIndex >= count) return
             wheelEase.stop(); cancelFlick(); forceLayout()
             positionViewAtIndex(currentIndex, GridView.Contain)
@@ -126,6 +207,10 @@ Item {
         }
         Keys.onPressed: (e) => {
             var k = e.key;
+            if (root.autoScrolling) {
+                root.stopAutoScroll()
+                if (k === Qt.Key_Escape) { e.accepted = true; return }
+            }
             var shift = (e.modifiers & Qt.ShiftModifier) !== 0, ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
             if (settings.keyIs("accept_selection", k, e.modifiers)) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") for (var i = 0; i < rows.length; ++i) collections.addSelection(collections.activeId, rows[i]); advance(rows) }
             else if (settings.keyIs("collect_at_cursor", k, e.modifiers)) root.addToCollection();
@@ -144,7 +229,7 @@ Item {
             else return;
             e.accepted = true;
         }
-        onCurrentIndexChanged: { if (!photos.picked) anchorIndex = currentIndex; Qt.callLater(revealCurrent) }
+        onCurrentIndexChanged: { if (!photos.picked) anchorIndex = currentIndex; if (!root.restoringScope) Qt.callLater(revealCurrent) }
 
         delegate: Item {
             id: cell
@@ -178,8 +263,8 @@ Item {
                     path: cell.isFolder ? "" : cell.path
                     bucket: root.cellBucket
                     blurFill: true
-                    imageOpacity: cell.decision === "rej" || cell.flag.label !== undefined ? 0.38 : 1
-                    desaturate: cell.decision === "rej" ? 0.75 : (cell.flag.label !== undefined ? 0.7 : 0)
+                    imageOpacity: UiState.filter === "rej" ? 1 : cell.decision === "rej" ? (root.dimRejected ? 0.38 : 1) : (cell.flag.label !== undefined ? 0.38 : 1)
+                    desaturate: UiState.filter === "rej" ? 0 : cell.decision === "rej" ? (root.dimRejected ? 0.75 : 0) : (cell.flag.label !== undefined ? 0.7 : 0)
                     scale: hover.hovered && !cell.isFolder ? 1.04 : 1
                     Behavior on scale { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
                 }
@@ -311,6 +396,66 @@ Item {
             }
         }
     }
+    // Middle click latches an origin; distance above/below it controls speed.
+    // Holding the button and dragging also works, ending on release.
+    MouseArea {
+        id: autoScrollInput
+        objectName: "gridAutoScrollInput"
+        anchors.fill: parent
+        acceptedButtons: root.autoScrolling ? Qt.AllButtons : Qt.MiddleButton
+        hoverEnabled: true
+        preventStealing: true
+        property bool moved: false
+        property bool stopping: false
+        onPressed: (event) => {
+            stopping = root.autoScrolling
+            if (event.button !== Qt.MiddleButton) {
+                event.accepted = stopping
+                return
+            }
+            if (stopping || root.blocked(mapToItem(null, event.x, event.y))) return
+            wheelEase.stop(); gv.cancelFlick(); gv.forceActiveFocus()
+            root.scrollOrigin = Qt.point(event.x, event.y)
+            root.scrollPointerY = event.y
+            moved = false
+            root.autoScrolling = true
+        }
+        onPositionChanged: (event) => {
+            if (!root.autoScrolling) return
+            root.scrollPointerY = event.y
+            if (Math.abs(event.x - root.scrollOrigin.x) + Math.abs(event.y - root.scrollOrigin.y) >= 10) moved = true
+        }
+        onReleased: if (stopping || moved) root.stopAutoScroll()
+        onCanceled: root.stopAutoScroll()
+        onExited: if (!pressed) root.stopAutoScroll()
+        // Cancel passive photo/folder taps behind the consumed gesture.
+        TapHandler {
+            enabled: root.autoScrolling
+            acceptedButtons: Qt.AllButtons
+            gesturePolicy: TapHandler.WithinBounds
+        }
+        onWheel: (event) => { root.stopAutoScroll(); event.accepted = false }
+    }
+    Timer {
+        interval: 16; repeat: true; running: root.autoScrolling
+        onTriggered: {
+            if (UiState.menu !== "" || UiState.topMenu !== "" || UiState.paletteOpen || !root.visible) { root.stopAutoScroll(); return }
+            var delta = root.scrollPointerY - root.scrollOrigin.y
+            var magnitude = Math.abs(delta) - 16
+            if (magnitude <= 0) return
+            var step = Math.sign(delta) * Math.min(130, magnitude / 9 * (1 + magnitude / 140))
+            var high = Math.max(gv.originY, gv.originY + gv.contentHeight - gv.height + gv.bottomMargin)
+            gv.contentY = Math.max(gv.originY, Math.min(high, gv.contentY + step))
+        }
+    }
+    Image {
+        objectName: "gridAutoScrollAnchor"
+        visible: root.autoScrolling && source.toString() !== ""
+        x: root.scrollOrigin.x - width / 2; y: root.scrollOrigin.y - height / 2
+        source: root.scrollCursor ? root.scrollCursor.anchorSource : ""
+        width: root.scrollCursor ? root.scrollCursor.anchorWidth : 0
+        height: root.scrollCursor ? root.scrollCursor.anchorHeight : 0
+    }
     Column {   // nothing to show: say why, instead of an empty grid
         anchors.centerIn: parent
         anchors.verticalCenterOffset: -root.bottomSpace / 3
@@ -329,6 +474,7 @@ Item {
     MouseArea {   // right click: the photo's menu, or the folder's menu on empty space (left clicks pass through to the cells)
         anchors.fill: parent; acceptedButtons: Qt.RightButton
         onPressed: (m) => {
+            if (root.autoScrolling) { root.stopAutoScroll(); return }
             var idx = gv.indexAt(m.x - gv.x + gv.contentX, m.y - gv.y + gv.contentY)
             var p = mapToItem(null, m.x, m.y)
             if (idx >= root.nf) { gv.currentIndex = idx; gv.forceActiveFocus(); root.contextRequested("photo", idx - root.nf, p.x, p.y) }

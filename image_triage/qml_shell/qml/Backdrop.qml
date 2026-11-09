@@ -17,7 +17,7 @@ FocusScope {
     ShaderEffectSource { id: snap; anchors.fill: parent; sourceItem: root.sourceItem; live: true; visible: false }
     MultiEffect { anchors.fill: parent; source: snap; blurEnabled: true; blur: 1.0; blurMax: 20; visible: !root.plain }
     Rectangle { anchors.fill: parent; color: theme.scrim; visible: !root.plain }
-    MouseArea { anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.AllButtons; onClicked: root.dismissed(); onWheel: (w) => { w.accepted = true } }
+    MouseArea { anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.AllButtons; onClicked: (mouse) => { if (mouse.button === Qt.LeftButton) root.dismissed() }; onWheel: (w) => { w.accepted = true } }
     HoverHandler { blocking: true }        // nothing behind a dialog (the grid's hover strips, tooltips) reacts to the pointer while it is up
     Item { id: holder; anchors.fill: parent }
     Keys.onEscapePressed: root.dismissed()

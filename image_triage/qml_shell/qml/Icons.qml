@@ -24,6 +24,7 @@ QtObject {
         library: folder,
         faces: circle(12, 12, 8.5) + circle(9, 10.5, 0.6) + circle(15, 10.5, 0.6) + "M8.8 14.5c1 1.3 2.2 1.9 3.2 1.9s2.2-.6 3.2-1.9",
         collections: "M12 4l8.5 4.5L12 13 3.5 8.5z" + "M3.5 12.5L12 17l8.5-4.5M3.5 16.5L12 21l8.5-4.5",
+        imagePlaceholder: rect(4.08, 6, 15.84, 12, 1.44) + circle(7.92, 9.36, 1.2) + "M4.8 16.8l4.56-4.8 2.88 2.64 2.88-3.84 4.08 5.04",
         pocketdrop: rect(7, 3.5, 10, 17, 2.5) + "M12 8.5v5M9.8 11.2L12 8.5l2.2 2.7",
         settings: circle(12, 12, 3) + gear,
         search: circle(11, 11, 6.5) + "M16 16l4 4",

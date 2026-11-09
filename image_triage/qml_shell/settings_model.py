@@ -135,6 +135,10 @@ def build_schema(shortcut_registry=()) -> tuple:
             F("contrast", "slider", "Text contrast", "Raises or lowers the strength of text against the background.",
               key="view/text_contrast", kind="int", default=90, lo=70, hi=100, step=1, fmt="%"),
         )),
+        Group("Photo review", "How rejected photos look", (
+            _t("dimRejects", "Gray out rejected photos", "Dims and desaturates rejects in the grid and preview filmstrip. The Rejected tab's grid stays in full color. Does not hide decision badges.",
+               "view/dim_rejected_photos", True),
+        )),
         Group("Interface", "Size and card style", (
             F("size", "select", "Interface size", "Automatic adapts the interface to the window's usable size. Choose another size to keep the same control density on every display.",
               key="view/interface_size", kind="str", default="automatic", options=INTERFACE_SIZES),

@@ -22,6 +22,38 @@ def _key(path: str) -> ThumbnailKey:
 
 
 class DiskThumbnailCacheEvictionTests(unittest.TestCase):
+    def test_thumbnail_is_published_only_after_encoding_finishes(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            cache = DiskThumbnailCache(Path(temp_dir) / "thumbs")
+            key = _key("atomic.jpg")
+            target = cache._file_path(key)
+            image = _make_image()
+            class EncodingImage:
+                def isNull(self): return False
+                def save(self, device, fmt, quality):
+                    assert not target.exists()
+                    result = image.save(device, fmt, quality)
+                    assert not target.exists()
+                    return result
+            cache.save(key, EncodingImage())
+            self.assertFalse(cache.load(key).isNull())
+
+    def test_failed_encoding_keeps_the_previous_thumbnail_intact(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            cache = DiskThumbnailCache(Path(temp_dir) / "thumbs")
+            key = _key("atomic.jpg")
+            cache.save(key, _make_image())
+            target = cache._file_path(key)
+            original = target.read_bytes()
+            class FailedImage:
+                def isNull(self): return False
+                def save(self, device, fmt, quality):
+                    device.write(b"partial jpeg")
+                    assert target.read_bytes() == original
+                    return False
+            cache.save(key, FailedImage())
+            self.assertEqual(target.read_bytes(), original)
+
     def test_enforce_size_cap_is_a_no_op_under_the_cap(self) -> None:
         with TemporaryDirectory() as temp_dir:
             cache = DiskThumbnailCache(Path(temp_dir) / "thumbs", max_bytes=1024 * 1024 * 1024)

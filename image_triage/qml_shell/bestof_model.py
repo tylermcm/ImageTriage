@@ -14,9 +14,9 @@ from ..scanner import normalized_path_key
 from ..workflows import BEST_OF_BALANCED, BEST_OF_TOP_N, BEST_OF_TOP_PER_GROUP, build_best_of_set_plan
 
 STRATEGIES = (
-    (BEST_OF_BALANCED, "Balanced Shortlist", "The best frame of each group first, then the strongest of the rest."),
-    (BEST_OF_TOP_N, "Top N Overall", "The highest-scoring photos, whichever group they are in."),
-    (BEST_OF_TOP_PER_GROUP, "Top Per Group", "One pick from every burst or AI group, strongest first."),
+    (BEST_OF_BALANCED, "Best mix", "Start with one photo per stack, then add extras to reach your total."),
+    (BEST_OF_TOP_N, "Best overall", "Take the highest-ranked photos, even if some look alike."),
+    (BEST_OF_TOP_PER_GROUP, "One per stack", "Keep just one photo from each stack of similar shots."),
 )
 
 

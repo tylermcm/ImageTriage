@@ -113,6 +113,7 @@ class MenuModel(QObject):
         self._sub = ""
         self._state: dict = {}
         self._view: dict = {"open": False, "kind": "", "sub": "", "items": [], "subItems": []}
+        collections.revisionChanged.connect(self._build)
 
     view = Property("QVariantMap", lambda self: self._view, notify=changed)
 
@@ -160,8 +161,13 @@ class MenuModel(QObject):
             if flag:
                 items.append({"kind": "flag", "label": flag["label"], "color": flag["color"]})
             items.append({"kind": "dec", "decs": [{"key": k, "label": lab, "icon": ic, "color": col, "on": d.get("decision") == k} for k, lab, ic, col in DECISIONS]})
+            last = self._collections.lastUsedCollection()
+            in_last = bool(last) and self._in_collection(last["id"], path)
+            quick_collection = self._row_item(
+                "coll-last", f'Add to “{last["name"]}”' if last else "Add to last collection",
+                "coll", off=not last or in_last, tick=in_last)
             items += [SEP, self._row_item("open", "Open", "open", kbd="Space"), self._row_item("edit", "Open in editor", "editor", kbd="E"), self._arrow("with", "Open with", "with"), SEP,
-                      self._row_item("share", "Share to phone", "phone"), self._arrow("coll", "Collections", "coll"), self._arrow("mv", "Copy or move", "move"), SEP,
+                      self._row_item("share", "Share to phone", "phone"), quick_collection, self._arrow("coll", "Collections", "coll"), self._arrow("mv", "Copy or move", "move"), SEP,
                       self._row_item("rename", "Rename…", "rename", kbd="F2"), self._row_item("resize", "Resize…", "resize"), self._row_item("convert", "Convert…", "convert"), SEP,
                       self._row_item("cpath", "Copy path", "link"), self._row_item("cname", "Copy file name", "text"), self._row_item("reveal", "Show in File Explorer", "folder"), SEP,
                       self._row_item("del", "Delete", "trash", kbd="Del", danger=True)]
@@ -240,6 +246,14 @@ class MenuModel(QObject):
 
     @Slot(str)
     def act(self, key: str) -> None:
+        if key == "coll-last":
+            last = self._collections.lastUsedCollection()
+            path = self._detail().get("path", "")
+            if last and path and not self._in_collection(last["id"], path):
+                self.act("coll:" + last["id"])
+            else:
+                self.close()
+            return
         row = self._row
         d = self._detail()
         path, name = d.get("path", ""), d.get("name", "")
@@ -283,7 +297,7 @@ class MenuModel(QObject):
                 t.push("success", f"Removed from {title}", "", "Undo", lambda: self._collections.addSelection(cid, self._row_of(path)))
             else:
                 self._collections.addSelection(cid, row)
-                t.push("success", f"Added to {title}", "", "Undo", lambda: self._collections.removeSelection(cid, self._row_of(path)))
+                t.push("success", f"Added to {title}", "", "Undo", lambda: self._collections.removeRow(cid, self._row_of(path)))
         elif key == "cpath":
             self._clipboard(path)
             t.push("success", "Path copied")

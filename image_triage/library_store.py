@@ -174,6 +174,16 @@ class LibraryStore:
             color=str(row["color"] or ""),
         )
 
+    def recent_collection_paths(self, collection_id: str, limit: int = 12) -> tuple[str, ...]:
+        """Newest additions first, independent of the folder currently being browsed."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT item_path FROM collection_items WHERE collection_id = ? "
+                "ORDER BY added_at DESC, sort_order DESC LIMIT ?",
+                (collection_id, max(0, min(64, limit))),
+            ).fetchall()
+        return tuple(str(row[0]) for row in rows if row[0])
+
     def load_collection_header(self, collection_id: str) -> VirtualCollection | None:
         """One collection's name and count without its item paths (cheap enough for every keypress)."""
         normalized_id = (collection_id or "").strip()

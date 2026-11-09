@@ -204,6 +204,7 @@ def test_apply_as_rejects_marks_them_and_undo_takes_that_back(qapp, world):
     assert wait_for(qapp, lambda: done)
     cull.toApply()
     cull.apply()
+    assert wait_for(qapp, lambda: not cull.applying)
     assert photos.rejCount == 1 and (shoot / "b.jpg").exists()
     cull.undo()
     assert photos.rejCount == 0

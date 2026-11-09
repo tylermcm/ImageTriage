@@ -10,7 +10,7 @@ from PySide6.QtTest import QTest
 from image_triage.qml_shell.app import QML_DIR
 from image_triage.qml_shell.photos import PhotoModel
 from image_triage.qml_shell.theme import Theme
-from qml_support import collection_models
+from qml_support import collection_models, NoThumbs
 from test_qml_shell import pump, qapp  # noqa: F401
 
 
@@ -25,6 +25,7 @@ def sidebar(qapp, tmp_path):
     context = engine.rootContext()
     context.setContextProperty("theme", theme)
     context.setContextProperty("photos", photos)
+    context.setContextProperty("thumbs", NoThumbs(parent=engine))
     for name, obj in collection_models(photos, engine):
         context.setContextProperty(name, obj)
     engine.addImportPath(str(QML_DIR))

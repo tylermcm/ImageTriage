@@ -174,6 +174,7 @@ fn frame(source: &mut Source, request: &Value, gpu: &mut Option<Gpu>) -> Result<
     let mut p: CameraRaw =
         serde_json::from_value(recipe["cameraRaw"].clone()).map_err(|e| e.to_string())?;
     p.validate_changes(&CameraRaw::default())?;
+    p.validate_retouch_size(source.full[0] as usize,source.full[1] as usize)?;
     let quick = request["quality"] == "draft";
     let raw_values = [
         p.temperature,
@@ -269,6 +270,42 @@ fn frame(source: &mut Source, request: &Value, gpu: &mut Option<Gpu>) -> Result<
         develop(&mut px, w, h, &p, false);
     }
     let process_ms = process.elapsed().as_secs_f64() * 1000.0;
+    if request.get("coverage").is_some() {
+        let mask: photocraft_algo::camera_raw::LocalMask = serde_json::from_value(request["coverage"].clone()).map_err(|e|e.to_string())?;
+        let check = CameraRaw { masks:vec![mask.clone()],..CameraRaw::default() };
+        check.validate()?;
+        let coverage = mask.coverage_fn(w,h);
+        let bytes: Vec<u8> = px.par_iter().enumerate().flat_map_iter(|(i,p)| {
+            let alpha = (coverage.at_px(i%w,i/w,[p[0],p[1],p[2]]).clamp(0.0,1.0)*90.0).round() as u8;
+            [255,70,95,alpha]
+        }).collect();
+        return Ok((json!({"ok":true,"protocol":2,"maskCoverage":true,"revision":request["revision"],"width":w,"height":h,"bytes":bytes.len(),"fullSize":source.full}),bytes));
+    }
+    if let Some(area) = request["sample"].as_array() {
+        if area.len() != 4 { return Err("Sample needs four normalized coordinates".into()); }
+        let values: Vec<f64> = area.iter().map(|v| v.as_f64().ok_or("Invalid sample coordinate".to_string())).collect::<Result<_>>()?;
+        let x0 = (values[0].min(values[2]).clamp(0.0,1.0)*(w-1) as f64).floor() as usize;
+        let x1 = (values[0].max(values[2]).clamp(0.0,1.0)*(w-1) as f64).ceil() as usize;
+        let y0 = (values[1].min(values[3]).clamp(0.0,1.0)*(h-1) as f64).floor() as usize;
+        let y1 = (values[1].max(values[3]).clamp(0.0,1.0)*(h-1) as f64).ceil() as usize;
+        let step = (((x1-x0+1)*(y1-y0+1)) as f64/4096.0).sqrt().ceil().max(1.0) as usize;
+        let mut rgb = [0.0f32; 4];
+        let (mut low, mut high, mut count) = (f32::INFINITY,f32::NEG_INFINITY,0.0f32);
+        for y in (y0..=y1).step_by(step) {
+            for x in (x0..=x1).step_by(step) {
+                let p = px[y*w+x];
+                for c in 0..3 { rgb[c] += p[c]; }
+                let luma = 0.2126*p[0]+0.7152*p[1]+0.0722*p[2];
+                low = low.min(luma); high = high.max(luma); count += 1.0;
+            }
+        }
+        for c in 0..3 { rgb[c] = (rgb[c]/count).clamp(-0.5,2.0); }
+        rgb[3] = 1.0;
+        let mut display = [0.0f32; 4];
+        source.display.convert_f32(&rgb,4,&mut display,4,true);
+        return Ok((json!({"ok":true,"protocol":2,"bytes":0,"revision":request["revision"],
+            "sampleRGB":&rgb[..3],"sampleDisplay":&display[..3],"sampleLuminance":[low.clamp(0.0,1.0),high.clamp(0.0,1.0)]}),vec![]));
+    }
     let histogram_start = Instant::now();
     let histogram = RgbHistogram::from_rgba(&px);
     let histogram_ms = histogram_start.elapsed().as_secs_f64() * 1000.0;

@@ -74,22 +74,22 @@ class PerCapabilityValidationTests(unittest.TestCase):
         with patch.object(service_module, "select_runtime"), patch.object(
             service_module, "require_capability", side_effect=lambda key, **_: asked.append(key)
         ):
-            service_module.validate_mask_runtime("depth")
-            service_module.validate_mask_runtime("sam_masks")
+            service_module.validate_mask_runtime("editor_depth")
+            service_module.validate_mask_runtime("editor_select")
             service_module.validate_semantic_runtime()
 
-        self.assertEqual(asked, ["depth", "sam_masks", "scene_masks"])
+        self.assertEqual(asked, ["editor_depth", "editor_select", "editor_scene"])
 
     def test_a_missing_scene_model_does_not_block_depth(self) -> None:
         # One optional model must never disable an unrelated capability.
         def guard(key, **_kwargs):
-            if key == "scene_masks":
+            if key == "editor_scene":
                 raise AIRuntimeUnavailable("OneFormer is not downloaded.", category="bundle_missing")
 
         with patch.object(service_module, "select_runtime"), patch.object(
             service_module, "require_capability", side_effect=guard
         ):
-            service_module.validate_mask_runtime("depth")
+            service_module.validate_mask_runtime("editor_depth")
             with self.assertRaises(AIRuntimeUnavailable):
                 service_module.validate_semantic_runtime()
 
@@ -98,22 +98,22 @@ class PerCapabilityValidationTests(unittest.TestCase):
         with patch.object(service_module, "select_runtime"), patch.object(
             service_module, "require_capability", side_effect=lambda key, **_: asked.append(key)
         ):
-            service_module.validate_mask_runtime("depth")
-            service_module.validate_mask_runtime("depth")
-            service_module.validate_mask_runtime("sam_masks")
+            service_module.validate_mask_runtime("editor_depth")
+            service_module.validate_mask_runtime("editor_depth")
+            service_module.validate_mask_runtime("editor_select")
 
-        self.assertEqual(asked, ["depth", "sam_masks"])
+        self.assertEqual(asked, ["editor_depth", "editor_select"])
 
     def test_resetting_the_cache_forces_revalidation(self) -> None:
         asked: list[str] = []
         with patch.object(service_module, "select_runtime"), patch.object(
             service_module, "require_capability", side_effect=lambda key, **_: asked.append(key)
         ):
-            service_module.validate_mask_runtime("depth")
+            service_module.validate_mask_runtime("editor_depth")
             service_module.reset_runtime_validation_cache()
-            service_module.validate_mask_runtime("depth")
+            service_module.validate_mask_runtime("editor_depth")
 
-        self.assertEqual(asked, ["depth", "depth"])
+        self.assertEqual(asked, ["editor_depth", "editor_depth"])
 
     def test_the_shared_engine_host_does_not_require_any_model_bundle(self) -> None:
         # The MaskEngine host loads engines lazily; coupling it to a bundle

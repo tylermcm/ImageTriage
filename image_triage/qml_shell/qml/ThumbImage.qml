@@ -8,6 +8,7 @@ Item {
     property int bucket: 240             // thumbnail width to ask for (a bucket size, so neighbours share cache files)
     property int fillMode: Image.PreserveAspectCrop
     property real imageOpacity: 1
+    property bool fadeIn: true
     // Dim the composed thumbnail, so its blurred fill cannot bleed through the photo.
     opacity: imageOpacity
     layer.enabled: imageOpacity < 1
@@ -53,7 +54,7 @@ Item {
         asynchronous: true
         fillMode: t.shape
         opacity: status === Image.Ready ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: 220 } }
+        Behavior on opacity { enabled: t.fadeIn; NumberAnimation { duration: 220 } }
         layer.enabled: t.desaturate > 0
         layer.effect: MultiEffect { saturation: -t.desaturate }
     }

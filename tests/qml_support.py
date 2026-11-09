@@ -9,6 +9,7 @@ from image_triage.qml_shell.people_model import PeopleModel
 from image_triage.qml_shell.ai_scores import AiScores
 from image_triage.qml_shell.capture import CaptureService
 from image_triage.qml_shell.ui_memory import UiMemory
+from image_triage.qml_shell.scroll_cursor import ScrollCursor
 from image_triage.qml_shell.histograms import HistogramService
 from image_triage.qml_shell.inspection import InspectionService
 from image_triage.qml_shell.library_nav import LibraryNavModel
@@ -16,7 +17,7 @@ from image_triage.qml_shell.editor_host import EditorHost
 from image_triage.qml_shell.viewer_host import ViewerHost
 from image_triage.qml_shell.reference_model import ReferenceModel
 from image_triage.qml_shell.photos import GridModel
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, Slot
 
 
 class NoThumbs(QObject):
@@ -26,10 +27,16 @@ class NoThumbs(QObject):
     def cached_file(self, path, bucket):
         return ""
 
+    @Slot(str, int, result=str)
     def url(self, path, bucket):
         return ""
 
+    @Slot(str)
     def unwant(self, path):
+        pass
+
+    @Slot()
+    def notePainted(self):
         pass
 
 
@@ -44,4 +51,4 @@ def collection_models(photos, qapp):
             ("pocketDrop", PocketDropModel(photos, memory=True, parent=qapp, collections=collections)), ("popout", popout), ("editor", EditorHost(memory=True, parent=qapp)),
             ("libraryNav", LibraryNavModel(photos, memory=True, parent=qapp)), ("histograms", HistogramService(loader=lambda path: None, parent=qapp)),
             ("inspection", InspectionService(loader=lambda path: None, parent=qapp)), ("captureData", CaptureService(loader=lambda path: None, parent=qapp)), ("aiScores", AiScores(photos, memory=True, parent=qapp)),
-            ("uiMemory", UiMemory(memory=True, parent=qapp)))
+            ("uiMemory", UiMemory(memory=True, parent=qapp)), ("nativeScrollCursor", ScrollCursor(parent=qapp)))

@@ -6,6 +6,7 @@ Column {
     required property var model
     required property string section
     property bool picking: false
+    property bool localAdjustments: false
     signal pickerToggled()
     spacing: 3
     clip: true
@@ -51,7 +52,7 @@ Column {
     }
 
     Row {
-        visible: basic.section === "Color"
+        visible: basic.section === "Color" && !basic.localAdjustments
         width: parent.width; height: visible ? 35 : 0; spacing: 8
         Text {
             id: balanceLabel
@@ -93,7 +94,7 @@ Column {
         }
     }
     Repeater {
-        model: basic.section === "Light" ? basic.lightFields : basic.section === "Color" ? basic.colorFields : basic.effectFields
+        model: basic.section === "Light" ? basic.lightFields : basic.section === "Color" ? basic.colorFields : (basic.localAdjustments ? basic.effectFields.slice(0,3) : basic.effectFields)
         delegate: Column {
             id: entry
             required property var modelData
@@ -102,7 +103,7 @@ Column {
             RawColorSlider {
         editModel: basic.model
                 width: parent.width; controlHeight: 32
-                objectName: "rawBasic_" + entry.modelData.key
+                objectName: (basic.localAdjustments ? "maskBasic_" : "rawBasic_") + entry.modelData.key
                 label: entry.modelData.label
                 from: entry.modelData.low === undefined ? -100 : entry.modelData.low
                 to: entry.modelData.high === undefined ? 100 : entry.modelData.high

@@ -102,7 +102,7 @@ def test_the_photo_menu_has_what_the_mockup_has(ctx):
     v = menu.view
     assert v["open"] and v["kind"] == "photo"
     assert [d["key"] for d in v["items"][0]["decs"]] == ["win", "keep", "rej"]
-    assert keys(v["items"]) == ["open", "edit", "with", "share", "coll", "mv", "rename", "resize", "convert", "cpath", "cname", "reveal", "del"]
+    assert keys(v["items"]) == ["open", "edit", "with", "share", "coll-last", "coll", "mv", "rename", "resize", "convert", "cpath", "cname", "reveal", "del"]
     assert next(i for i in v["items"] if i.get("key") == "del")["danger"]
     menu.close()
     assert not menu.view["open"]
@@ -134,6 +134,48 @@ def test_collections_submenu_ticks_and_toggles(ctx):
     assert collections.get("c2")["count"] == 2 and toasts.items[-1]["title"] == "Removed from Print order"
     toasts.trigger(toasts.items[-1]["id"])
     assert collections.get("c2")["count"] == 3
+
+
+def test_add_to_last_collection_is_direct_add_only_and_has_precise_undo(ctx):
+    menu, toasts, photos, collections, *_ = ctx
+    cid = collections.save("", "Quick picks", "", "", False)
+    collections.addSelection(cid, 0)
+    menu.openPhoto(2)
+    entry = next(item for item in menu.view["items"] if item.get("key") == "coll-last")
+    assert entry["label"] == "Add to “Quick picks”" and not entry["off"]
+    menu.act("coll-last")
+    assert collections.hasRow(cid, 2) and collections.get(cid)["count"] == 2
+    photos.selectRange(0, 1)
+    toasts.trigger(toasts.items[-1]["id"])
+    assert collections.hasRow(cid, 0) and not collections.hasRow(cid, 2)
+    menu.openPhoto(2)
+    menu.act("coll-last")
+    menu.openPhoto(2)
+    entry = next(item for item in menu.view["items"] if item.get("key") == "coll-last")
+    assert entry["tick"] and entry["off"]
+    menu.act("coll-last")
+    assert collections.hasRow(cid, 2) and collections.get(cid)["count"] == 2
+
+
+def test_last_collection_updates_after_rename_or_delete_and_disables_without_history(ctx):
+    menu, _, _, collections, *_ = ctx
+    collections._recent = []
+    menu.openPhoto(2)
+    def quick():
+        return next(item for item in menu.view["items"] if item.get("key") == "coll-last")
+    assert quick()["off"]
+    first = collections.save("", "First picks", "", "", False)
+    collections.addSelection(first, 0)
+    assert "First picks" in quick()["label"]
+    collections.save(first, "Renamed picks", "", "", False)
+    assert "Renamed picks" in quick()["label"]
+    second = collections.save("", "Second picks", "", "", False)
+    collections.addSelection(second, 1)
+    assert "Second picks" in quick()["label"]
+    collections.remove(second)
+    assert "Renamed picks" in quick()["label"]
+    collections.remove(first)
+    assert quick()["off"] and quick()["label"] == "Add to last collection"
 
 
 def test_what_only_the_window_can_do_is_requested(ctx):

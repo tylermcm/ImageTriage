@@ -90,6 +90,18 @@ def test_save_writes_the_real_keys_and_discard_restores(qapp, store):
     assert SettingsModel().value("keepTop") == 20          # a new session sees it
 
 
+def test_reject_appearance_toggle_is_saved_and_can_be_discarded(qapp, store):
+    m = SettingsModel()
+    assert m.value("dimRejects") is True
+    m.set("dimRejects", False)
+    m.discard()
+    assert m.value("dimRejects") is True
+    m.set("dimRejects", False)
+    assert m.save()
+    assert QSettings(store, QSettings.Format.IniFormat).value("view/dim_rejected_photos", True, bool) is False
+    assert SettingsModel().value("dimRejects") is False
+
+
 @pytest.fixture
 def scoring_globals():
     """The classifier's and the workflow's module-level settings, put back after a test changes them."""

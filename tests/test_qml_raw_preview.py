@@ -166,6 +166,8 @@ def test_white_balance_picker_uses_cached_preview_and_one_undo_step(qapp, monkey
     class Worker(QObject):
         completed = Signal(int, object)
         sampled = Signal(int, object)
+        maskSampled = Signal(int, object)
+        coverageReady = Signal(int, object)
         failed = Signal(int, str)
 
         def __init__(self, path, parent):

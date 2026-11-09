@@ -25,7 +25,7 @@ def test_native_review_does_not_become_a_reject_or_a_winner():
     outcomes = outcomes_from_bundle(bundle, [])
     assert reason_of(outcomes["a.jpg"]) is None
     assert reason_of(outcomes["b.jpg"]) == "native_review"
-    assert reason_of(outcomes["c.jpg"]) == "native_reject"
+    assert reason_of(outcomes["c.jpg"]) == "native_quality"
     assert outcomes["a.jpg"].cluster == outcomes["b.jpg"].cluster
     assert all(not outcome.ranked and outcome.role != "pick" for outcome in outcomes.values())
     assert display_score(bundle.result_for_path("a.jpg")) == -1

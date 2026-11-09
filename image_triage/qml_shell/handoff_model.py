@@ -110,6 +110,9 @@ class HandoffModel(QObject):
 
     @Slot(str, "QVariant")
     def set(self, key: str, value) -> None:
+        if key == "load":
+            self.setRecipe(str(value))
+            return
         if key == "root":
             self._root = str(value)
         else:

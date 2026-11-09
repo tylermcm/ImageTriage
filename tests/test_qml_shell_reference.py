@@ -132,6 +132,50 @@ def test_searching_help_filters_topics_and_counts_hits(ref):
     assert h["kind"] == "none" and h["topics"] == []
 
 
+def test_contextual_help_opens_requested_topic_despite_previous_search(ref):
+    ref.open("help")
+    ref.setQuery("zzzz nothing")
+    ref.openTopic("best")
+    h = ref.view["help"]
+    assert ref.window == "help" and h["query"] == ""
+    assert h["title"] == "Choose your best photos"
+    assert any(t.get("id") == "best" and t["cur"] for t in h["topics"])
+    ref.openTopic("missing")
+    assert ref.view["help"]["title"] == "Getting started"
+
+
+def test_best_photo_question_mark_opens_help_and_returns_to_choices(qapp, tmp_path):
+    from PySide6.QtCore import QObject, QPointF, Qt, QMetaObject, Q_ARG
+    from PySide6.QtTest import QTest
+    from test_qml_shell import _load_main, rows
+
+    engine, window, warnings = _load_main(qapp, tmp_path)
+    context = engine.rootContext()
+    context.contextProperty("photos").setRows(rows(12), "/photos")
+    reference = context.contextProperty("reference")
+    reference.setQuery("zzzz nothing")
+    QMetaObject.invokeMethod(window, "runCommand", Q_ARG("QVariant", "workflow.best_of"))
+    pump(qapp, .5)
+    dialog = window.findChild(QObject, "bestOfDialog")
+    dialog.setProperty("strat", "top_n")
+    dialog.setProperty("n", 4)
+    button = window.findChild(QObject, "bestOfHelpButton")
+    QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, button.mapToScene(QPointF(14, 14)).toPoint())
+    pump(qapp, .5)
+    assert not dialog.property("shown")
+    assert reference.window == "help"
+    assert reference.view["help"]["title"] == "Choose your best photos"
+    assert reference.view["help"]["query"] == ""
+    reference.go("best")
+    pump(qapp, .5)
+    assert reference.window == "" and dialog.property("shown")
+    assert dialog.property("strat") == "top_n" and dialog.property("n") == 4
+    assert not [w for w in warnings if "BestOfDialog.qml" in w or "HelpWindow.qml" in w], warnings
+    window.close()
+    engine.deleteLater()
+    pump(qapp, .2)
+
+
 def test_a_topic_can_be_picked_and_about_has_no_article(ref):
     ref.open("help")
     ref.setTopic("cull")

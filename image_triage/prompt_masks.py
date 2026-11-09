@@ -183,7 +183,7 @@ def ensure_prompt_mask(
         download_sam_model(model_installation, progress_callback=download_progress)
 
     # Click selection depends on SAM, not on the scene-mask model.
-    validate_mask_runtime("sam_masks")
+    validate_mask_runtime("editor_select")
     stat = source.stat()
     cache_key = _source_cache_key(source, stat.st_size, stat.st_mtime_ns)
     cache_dir = Path(cache_root or default_prompt_mask_cache_root()) / cache_key

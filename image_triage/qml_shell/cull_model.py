@@ -44,7 +44,13 @@ SENS_TEXT = {
     "strict": "Flags borderline frames too. Expect to restore a few.",
 }
 REASONS = {
-    "native_reject": ("Reject", "#e0614f", True),
+    "native_reject": ("Other rejects", "#e0614f", True),
+    "native_quality": ("Low quality", "#d9b650", True),
+    "native_exposure": ("Exposure", "#e08a4a", True),
+    "native_blank": ("Blank frame", "#e0614f", True),
+    "native_burst": ("Better burst shot", "#6fb1d8", True),
+    "native_scene": ("Better scene shot", "#c79bea", True),
+    "native_bracket": ("Other bracket exposure", "#6fb1d8", True),
     "native_review": ("Needs review", "#d9b650", False),
     "blink": ("Eyes closed", "#c79bea", True),
     "soft": ("Soft", "#d9b650", True),
@@ -52,9 +58,15 @@ REASONS = {
     "blown_out": ("Blown out", "#e0614f", True),
     "duplicate": ("Near-duplicate", "#6fb1d8", False),
 }
-REJECTS = ("blink", "soft", "clipped", "blown_out", "native_reject")
+REJECTS = tuple(key for key, (_, _, reject) in REASONS.items() if reject)
 APPLIABLE = REJECTS + ("duplicate",)      # what the Apply page can act on: the problems, and the near-duplicates (off until chosen, they are only suggestions)
 GROUP_WHY = {"blink": "A blink on the main face", "soft": "Much softer than the best frame of the stack",
+             "native_quality": "Below the quality floor set for this analysis",
+             "native_exposure": "Black, blown-out, washed-out or unusable shadows",
+             "native_blank": "A featureless or blank frame",
+             "native_burst": "A higher-ranked shot was kept from the same burst",
+             "native_scene": "A higher-ranked shot or burst was kept from the same scene",
+             "native_bracket": "A better-exposed frame was kept from the bracket",
              "native_reject": "The culler marked these frames as Reject. Your manual choices are protected.",
              "native_review": "The culler asks you to review these frames. They are never applied as Rejects.",
              "clipped": "Many more clipped pixels than its stack-mates", "blown_out": "Mostly pure white or black",
@@ -81,6 +93,9 @@ def _fmt(key: str, v: int) -> str:
 
 class CullModel(QObject):
     changed = Signal()
+    reviewRowsAboutToChange = Signal()
+    reviewRowsChanged = Signal()
+    applyingChanged = Signal()
     gridChanged = Signal()
     runFinished = Signal()              # a real analysis has written its report: the inspector's AI tab reads it again
     _savedLoaded = Signal(int, object)
@@ -98,6 +113,10 @@ class CullModel(QObject):
         self._t0 = 0.0
         self._token = 0
         self._run = None
+        self._apply_job = None
+        self._apply_timer = QTimer(self)
+        self._apply_timer.setSingleShot(True)
+        self._apply_timer.timeout.connect(self._apply_next)
         self._settings = None if memory else user_settings()
         from .cull_native import enabled
         self._native = not memory and enabled(self._settings)
@@ -116,6 +135,7 @@ class CullModel(QObject):
             self._s.update(rt="checking", faceOk=False, gpu=False, vcOld=False, models={"quality": False, "appeal": False})
         self._flags: dict[str, str] = {}
         self._stacks: list[list[dict]] = []
+        self._review_rows = []
         self._times: dict[str, str] = {}
         self._times_started = False                  # a real folder's capture times are being read (or have been): once per set of stacks
         self._times_gen = 0
@@ -160,7 +180,7 @@ class CullModel(QObject):
     def _defaults(cpu: bool = False) -> dict:
         return {"window": "", "page": "prep", "sens": "balanced", "vals": dict(PRESETS["balanced"]), "tune": False, "eyes": True, "semantic": True, "rank": False, "rankTouched": False,
                 "cpuAsk": False, "cpuDefault": cpu, "rt": "ready", "rtp": 0.0, "vcOld": False, "gpu": False, "faceOk": True, "models": {"quality": True, "appeal": False},
-                "stage": 0, "p": 0.0, "running": False, "done": False, "hidden": False, "ranked": False, "filter": "all", "sel": "", "restored": {},
+                "stage": 0, "p": 0.0, "running": False, "done": False, "hidden": False, "ranked": False, "filter": "all", "sort": "stack", "sel": "", "restored": {},
                 "act": "reject", "inc": {**{r: True for r in REJECTS}, "duplicate": False}, "applied": None, "runs": True, "back": False, "eyesRan": False}
 
     # -- helpers -----------------------------------------------------------------------------------------------------------------
@@ -243,7 +263,7 @@ class CullModel(QObject):
         return [(by_path[p], r) for p, r in self._flags.items() if p in by_path and not s["restored"].get(p)]
 
     def _apply_ids(self) -> list[str]:
-        protected = set(self._protected_paths()) if self._native else set()
+        protected = set(self._protected_paths())
         return [r["path"] for r, reason in self._active_flags() if reason in APPLIABLE and self._s["inc"].get(reason) and r["path"] not in protected]
 
     def flagFor(self, path: str) -> dict:
@@ -367,12 +387,26 @@ class CullModel(QObject):
                     reason = self._flags.get(x["path"])
                     on = bool(reason) and not s["restored"].get(x["path"])
                     frames.append({"path": x["path"], "name": x["name"], "flagged": on, "badge": REASONS[reason][0] if on else "", "color": REASONS[reason][1] if on else "",
-                                   "restored": bool(reason) and not on, "sel": s["sel"] == x["path"],
+                                   "restored": bool(reason) and not on,
                                    "rank": "1st choice" if ((x["path"] in self._picks and not on) if self._real else (s["ranked"] and len(st) > 1 and not on and bool(firsts) and x["path"] == firsts[0])) else ""})
                 stacks_out.append({"title": f"Stack {si + 1}", "meta": f"{len(st)} {'frame' if len(st) == 1 else 'frames'}" + (f" · {self._frame_time(st[0]['path'])}" if self._frame_time(st[0]['path']) else ""), "frames": frames})
                 shown += 1
-                if shown >= 300:
-                    break
+            if s["sort"] == "reason":
+                # Keep stack context, but put only matching flagged photos under
+                # each reason heading; a mixed stack can appear in two sections.
+                by_reason = []
+                for reason in sorted(REASONS, key=lambda r: REASONS[r][0].lower()):
+                    if s["filter"] not in ("all", reason):
+                        continue
+                    for stack in stacks_out:
+                        frames = [f for f in stack["frames"] if f["flagged"] and self._flags.get(f["path"]) == reason]
+                        if frames:
+                            by_reason.append(dict(stack, title=REASONS[reason][0] + " · " + stack["title"], frames=frames))
+                stacks_out = by_reason
+        if stacks_out != self._review_rows:
+            self.reviewRowsAboutToChange.emit()
+            self._review_rows = stacks_out
+            self.reviewRowsChanged.emit()
         det = {"has": False, "path": "", "flagged": False, "color": "", "name": "", "title": "", "why": "", "rows": [], "canRestore": False, "restoreLabel": ""}
         sel = next((r for r in rows if r["path"] == s["sel"]), None)
         if sel is not None:
@@ -387,7 +421,7 @@ class CullModel(QObject):
                                                   (self._outcomes[sel["path"]].summary if self._real and sel["path"] in self._outcomes else "No rule flagged this frame.")
                                                   + (" It is the suggested first choice of its stack. Nothing is selected for you." if (sel["path"] in self._picks if self._real else s["ranked"]) else "")),
                    "rows": info["rows"] + [{"k": "Stack", "v": f"{si + 1} of {len(self._stacks)}"}, {"k": "Taken", "v": self._frame_time(sel["path"])}],
-                   "canRestore": bool(reason), "restoreLabel": "Flag again" if s["restored"].get(sel["path"]) else ("Keep both" if reason == "duplicate" else "Restore")}
+                   "reason": reason or "", "canRestore": bool(reason), "restoreLabel": "Flag again" if s["restored"].get(sel["path"]) else ("Keep both" if reason == "duplicate" else "Restore")}
         groups = [{"key": r, "label": REASONS[r][0], "color": REASONS[r][1], "n": cnt(r), "why": GROUP_WHY[r], "on": bool(s["inc"].get(r)),
                    "thumbs": [row["path"] for row, x in flagged if x == r][:4]} for r in APPLIABLE if cnt(r)]
         applied = s["applied"]
@@ -422,12 +456,12 @@ class CullModel(QObject):
             "runEta": self._eta_text(s, secs), "notes": notes,
             "tiles": [{"n": n, "l": "Frames"}, {"n": len(self._stacks), "l": "Stacks"}, {"n": sum(cnt(r) for r in REJECTS), "l": "Flagged"}, {"n": cnt("duplicate"), "l": "Near-duplicates"},
                       self._people_tile()],
-            "chips": chips, "stacks": stacks_out, "noRows": s["filter"] != "all" and cnt(s["filter"]) == 0, "det": det,
+            "chips": chips, "stacks": stacks_out, "sort": s["sort"], "noRows": not stacks_out, "det": det,
             "revNote": "Ranking suggestions are marked 1st choice. Nothing is selected for you." if s["ranked"] else "Cleanup only. Turn on ranking in Run again to get suggestions.",
             "applyCount": n_ap, "opts": opts, "groups": groups,
             "applyLabel": (f"Move {n_ap} to the recycle bin" if s["act"] == "bin" and self._real and self._files is not None else f"Mark {n_ap} as Rejects") if s["act"] in ("reject", "bin") else "Keep as flags",
             "applyNote": "Nothing is deleted. You can undo this." if s["act"] != "none" else "Nothing will change.",
-            "doneTitle": done_title, "doneBody": done_body, "canUndo": bool(applied),
+            "doneTitle": done_title, "doneBody": done_body, "canUndo": bool(applied and ("entry" not in applied or applied["entry"])),
             "mini": s["running"] and s["hidden"] and s["window"] == "", "miniLine": f"{cur_stage} · {round(s['p'] * n)} of {n}",
             "center": self._center(s, rt_ready, rtp, rt_step, flagged, applied) if self._ai_state is not None else {"rtDot": "ok" if rt_ready else ("bad" if s["rt"] == "error" else "warn"), "rtState": {"ready": "Installed", "missing": "Not set up", "installing": "Installing…", "error": "Needs attention", "checking": "Checking…"}[s["rt"]],
                        "rtInstalling": s["rt"] == "installing", "rtPct": rtp, "rtStep": rt_step,
@@ -446,11 +480,13 @@ class CullModel(QObject):
         }
         if self._native:
             label, done, total = self._native_progress
+            label = label[:1].upper() + label[1:]
+            progress_line = f"{label} · {done} of {total}" if total else label
             percent = round(100 * done / total) if total else 0
             self._view.update(estimate="Uses the saved CLI-Culler profile. Timing depends on the runtime and the shoot.",
                               stages=[{"label": label, "right": f"{done} of {total}" if total else "Working…",
                                        "state": "cur" if s["running"] else "", "pp": percent}],
-                              runLine=f"{label} · {done} of {total}" if total else label,
+                              runLine=progress_line, miniLine=progress_line,
                               runPct=percent, runEta="Current stage", notes=[],
                               nativeSettings=self._native_settings_text())
             self._view["nativeError"] = self._native_error
@@ -656,6 +692,7 @@ class CullModel(QObject):
                 {"folder": "Wedding 2026", "when": "Mon 12 Oct", "frames": 1284, "flagged": 142, "did": "Marked 131 as Rejects", "current": False}]
 
     view = Property("QVariantMap", lambda self: self._view, notify=changed)
+    reviewRows = Property("QVariantList", lambda self: self._review_rows, notify=reviewRowsChanged)
 
     def _native_settings_text(self) -> str:
         from ..cli_culler_runtime import load_native_runtime, native_settings
@@ -735,6 +772,10 @@ class CullModel(QObject):
         self._set(stage=0, p=done / total if total else 0.0)
 
     def shutdown(self):
+        # Finish accepted decision changes before DecisionBridge flushes its queue.
+        self._apply_timer.stop()
+        while self._apply_job is not None:
+            self._apply_next(schedule=False)
         if self._run is not None:
             self._run.cancel()
             if self._native:
@@ -762,6 +803,8 @@ class CullModel(QObject):
 
     @Slot()
     def close(self) -> None:
+        if self._apply_job is not None:
+            return
         if self._native and self._native_controls and self._native_controls.dirty:
             if not self.saveNativeDraft():
                 return
@@ -773,6 +816,8 @@ class CullModel(QObject):
 
     @Slot()
     def hide(self) -> None:
+        if self._apply_job is not None:
+            return
         self._set(window="", hidden=True)
 
     # -- prepare ----------------------------------------------------------------------------------------------------------------
@@ -1142,6 +1187,11 @@ class CullModel(QObject):
         self._set(filter=key)
 
     @Slot(str)
+    def setReviewSort(self, key: str) -> None:
+        if key in ("stack", "reason"):
+            self._set(sort=key)
+
+    @Slot(str)
     def pick(self, path: str) -> None:
         self._set(sel=path)
 
@@ -1184,6 +1234,8 @@ class CullModel(QObject):
 
     @Slot()
     def apply(self) -> None:
+        if self._apply_job is not None:
+            return
         s = self._s
         ids = self._apply_ids()
         if s["act"] == "none":
@@ -1193,22 +1245,57 @@ class CullModel(QObject):
             entry = self._files.trashPaths(ids, "the analysis's flagged frames")      # one step on the undo list, with its toast
             self._set(applied={"ids": ids, "prev": {}, "act": "bin", "entry": entry}, page="done")
             return
-        prev = {}
-        for i in range(self._photos.shown):
-            d = self._photos.get(i)
-            if d.get("path") in ids:
-                prev[d["path"]] = d.get("decision", "")
-                if d.get("decision") != "rej":
-                    self._photos.setDecision(i, "rej")
-        self._set(applied={"ids": ids, "prev": prev, "act": s["act"]}, page="done")
+        wanted = set(ids)
+        tasks = [r["path"] for r in self._photos.all_rows() if r["path"] in wanted and r["decision"] != "rej"]
+        self._apply_job = {"ids": ids, "tasks": tasks, "pos": 0, "prev": {}, "act": s["act"]}
+        self.applyingChanged.emit()
+        # Let the busy overlay paint before any annotations are queued.
+        self._apply_timer.start(40)
+
+    applying = Property(bool, lambda self: self._apply_job is not None, notify=applyingChanged)
+    applyProgress = Property(str, lambda self: (f"{self._apply_job['pos']} of {len(self._apply_job['tasks'])} photos"
+                                               if self._apply_job else ""), notify=applyingChanged)
+
+    def _apply_next(self, schedule=True) -> None:
+        job = self._apply_job
+        if job is None:
+            return
+        end = min(len(job["tasks"]), job["pos"] + 32)
+        values = {path: "rej" for path in job["tasks"][job["pos"]:end]}
+        job["prev"].update(self._photos.update_decision_values(values, publish=False))
+        job["pos"] = end
+        if end < len(job["tasks"]):
+            self.applyingChanged.emit()
+            if schedule:
+                self._apply_timer.start(8)
+            return
+        self._apply_timer.stop()
+        previous = dict(job["prev"])
+
+        def undo() -> bool:
+            # Do not overwrite a decision made after the apply operation.
+            restore = {r["path"]: previous[r["path"]] for r in self._photos.all_rows()
+                       if r["path"] in previous and r["decision"] == "rej"}
+            self._photos.update_decision_values(restore)
+            return True
+
+        entry = self._photos.push_undo(f"Reject {len(previous)} photos", undo) if previous else 0
+        if previous:
+            self._photos.publish_decision_values()
+        self._apply_job = None
+        self._set(applied={"ids": job["ids"], "prev": previous, "act": job["act"], "entry": entry}, page="done")
+        self.applyingChanged.emit()
 
     @Slot()
     def undo(self) -> None:
+        if self._apply_job is not None:
+            return
         a = self._s["applied"]
         if not a:
             return
-        if a.get("act") == "bin" and a.get("entry"):
-            self._photos.undo_entry(a["entry"])
+        if "entry" in a:
+            if a["entry"]:
+                self._photos.undo_entry(a["entry"])
             self._set(applied=None, page="rev")
             return
         for i in range(self._photos.shown):

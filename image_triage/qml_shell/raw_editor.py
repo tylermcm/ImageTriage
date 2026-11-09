@@ -14,6 +14,7 @@ from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from .. import edit_storage, photocraft_bridge as bridge
 from .histograms import HistogramService
 from . import raw_preview
+from ..raw_crop import DEFAULT_CROP, RATIOS, bounds as crop_bounds, valid as crop_valid
 
 _native_context = threading.local()
 
@@ -53,6 +54,9 @@ CURVES = ("pointCurve", "pointCurveRed", "pointCurveGreen", "pointCurveBlue")
 MIXER = ("hslHue", "hslSat", "hslLum")
 WHEELS = ("gradeShadows", "gradeMidtones", "gradeHighlights", "gradeGlobal")
 DEFAULTS = {
+    "masks": [],
+    "retouch": [],
+    "hostCrop": DEFAULT_CROP,
     **dict.fromkeys(FIELDS, 0),
     "gradeBlending": 50,
     "curveSplits": [25, 50, 75],
@@ -100,6 +104,10 @@ class RawEditor(QObject):
         self._proxy_pending = False
         self._published_revision = -1
         self._full_size = [0, 0]
+        self._preview_size = [0, 0]
+        self._baseline_size = [0, 0]
+        self._detail_size = [0, 0]
+        self._crop_editing = False
         self._gesture = False
         self._gesture_recorded = False
         self._detail_mode = False
@@ -111,6 +119,14 @@ class RawEditor(QObject):
         self._timer = QTimer(self, singleShot=True, interval=60)
         self._timer.timeout.connect(self._start_queued)
         self._finished.connect(self._arrived)
+        from .raw_masks import RawMasks
+        self._mask_editor = RawMasks(self)
+        from .raw_retouch import RawRetouch
+        self._retouch_editor=RawRetouch(self)
+
+    retouchEditor=Property(QObject,lambda self:self._retouch_editor,constant=True)
+
+    maskEditor = Property(QObject, lambda self: self._mask_editor, constant=True)
 
     active = Property(bool, lambda self: bool(self._path), notify=changed)
     busy = Property(bool, lambda self: self._running or self._queued is not None or self._proxy_pending, notify=changed)
@@ -125,11 +141,41 @@ class RawEditor(QObject):
             values[key] = {**DEFAULTS[key], **self._draft.get(key, {})}
         return values
 
-    preview = Property(str, lambda self: _image_url(self._detail if self._detail_mode and self._detail else self._preview), notify=changed)
-    baseline = Property(str, lambda self: _image_url(self._baseline), notify=changed)
+    def _cropped_url(self, path, clip):
+        url = _image_url(path)
+        from ..raw_crop import active as crop_active
+        if url.startswith("image://") and clip["w"] > 0 and crop_active(self.values["hostCrop"]):
+            return url + "?crop=" + ",".join(str(clip[key]) for key in ("x", "y", "w", "h"))
+        return url
+
+    preview = Property(str, lambda self: self._cropped_url(self._detail if self._detail_mode and self._detail else self._preview, self.previewClip), notify=changed)
+    baseline = Property(str, lambda self: self._cropped_url(self._baseline, self.baselineClip), notify=changed)
     detailPending = Property(bool, lambda self: self._detail_mode and not self._detail, notify=changed)
-    fullWidth = Property(int, lambda self: self._full_size[0], notify=changed)
-    fullHeight = Property(int, lambda self: self._full_size[1], notify=changed)
+    def _display_size(self):
+        if self._crop_editing or min(self._full_size) <= 0:
+            return self._full_size
+        return crop_bounds(self.values["hostCrop"], *self._full_size)[2:]
+
+    fullWidth = Property(int, lambda self: self._display_size()[0], notify=changed)
+    fullHeight = Property(int, lambda self: self._display_size()[1], notify=changed)
+    originalWidth = Property(int, lambda self: self._full_size[0], notify=changed)
+    originalHeight = Property(int, lambda self: self._full_size[1], notify=changed)
+    cropEditing = Property(bool, lambda self: self._crop_editing, notify=changed)
+
+    @Property("QVariantMap", notify=changed)
+    def previewClip(self):
+        size = self._detail_size if self._detail_mode and self._detail else self._preview_size
+        if self._crop_editing or min(size) <= 0:
+            return {"x": 0, "y": 0, "w": 0, "h": 0}
+        x, y, w, h = crop_bounds(self.values["hostCrop"], *size)
+        return {"x": x, "y": y, "w": w, "h": h}
+    @Property("QVariantMap", notify=changed)
+    def baselineClip(self):
+        if self._crop_editing or min(self._baseline_size) <= 0:
+            return {"x": 0, "y": 0, "w": 0, "h": 0}
+        x, y, w, h = crop_bounds(self.values["hostCrop"], *self._baseline_size)
+        return {"x": x, "y": y, "w": w, "h": h}
+
     histogramPath = Property(str, lambda self: self._preview or self._path, notify=changed)
     baselinePath = Property(str, lambda self: self._baseline or self._path, notify=changed)
     histograms = Property(QObject, lambda self: self._histograms, constant=True)
@@ -144,15 +190,17 @@ class RawEditor(QObject):
             return
         self._stop_detail()
         self._proxy_pending = False
-        self._full_size = [0, 0]
+        self._detail_size = [0, 0]
         if hasattr(self, "_proxy_request"):
             del self._proxy_request
         self._gesture = self._gesture_recorded = False
         if self._path and self._loaded:
             self._sessions[self._path] = (
                 self._original, self._draft, self._preview, self._baseline,
-                self._undo, self._redo,
+                self._undo, self._redo, self._full_size, self._preview_size, self._baseline_size,
             )
+        self._full_size = [0, 0]
+        self._preview_size = self._baseline_size = [0, 0]
         self._revision += 1
         self._timer.stop()
         self._queued = None
@@ -167,7 +215,7 @@ class RawEditor(QObject):
         restored = self._sessions.pop(path, None)
         if restored is not None:
             (self._original, self._draft, self._preview, self._baseline,
-             self._undo, self._redo) = restored
+             self._undo, self._redo, self._full_size, self._preview_size, self._baseline_size) = restored
             if self._preview.startswith("image://") and not raw_preview.has_frame(self._preview):
                 self._preview = ""
             if self._baseline.startswith("image://") and not raw_preview.has_frame(self._baseline):
@@ -193,7 +241,7 @@ class RawEditor(QObject):
     def _set_value(self, key, value, label):
         self._set_values({key: value}, label)
 
-    def _set_values(self, updates, label):
+    def _set_values(self, updates, label, render=True):
         if not self._loaded or self._saving:
             return
         draft = dict(self._draft)
@@ -211,18 +259,56 @@ class RawEditor(QObject):
             self._gesture_recorded = self._gesture
         self._redo.clear()
         self._draft = draft
-        self._draft_changed()
+        if render:
+            self._draft_changed()
+        else:
+            self.changed.emit()
+
+    @Slot(bool)
+    def setCropEditing(self, enabled):
+        if self._crop_editing != enabled:
+            self._crop_editing = enabled
+            self.changed.emit()
+
+    @Slot(float, float, float, float)
+    def setCrop(self, x, y, width, height):
+        crop = {**self.values["hostCrop"], "x": x, "y": y, "w": width, "h": height}
+        if crop_valid(crop):
+            self._set_values({"hostCrop": crop}, "Crop", render=False)
+
+    @Slot(str)
+    def setCropRatio(self, ratio):
+        if ratio not in RATIOS:
+            return
+        crop = {**self.values["hostCrop"], "ratio": ratio}
+        if ratio != "Free":
+            aspect = self._full_size[0] / max(1, self._full_size[1]) if self._full_size[0] else 1
+            desired = aspect if ratio == "Original" else float(ratio.split(":")[0]) / float(ratio.split(":")[1])
+            normalized = desired / aspect
+            width, height = crop["w"], crop["h"]
+            if width / height > normalized:
+                width = height * normalized
+            else:
+                height = width / normalized
+            crop.update(x=crop["x"]+(crop["w"]-width)/2, y=crop["y"]+(crop["h"]-height)/2, w=width, h=height)
+        self._set_values({"hostCrop": crop}, "Crop ratio", render=False)
+
+    @Slot()
+    def resetCrop(self):
+        self._set_values({"hostCrop": dict(DEFAULT_CROP)}, "Reset crop", render=False)
 
     @Slot()
     def beginGesture(self):
         if not self._gesture:
             self._gesture = True
             self._gesture_recorded = False
+            self._mask_editor.changed.emit()
 
     @Slot()
     def endGesture(self):
         changed = self._gesture_recorded
         self._gesture = self._gesture_recorded = False
+        self._mask_editor.changed.emit()
         if changed and not self._memory and raw_preview.executable():
             self._enqueue("preview")
         if self._detail_mode:
@@ -259,6 +345,9 @@ class RawEditor(QObject):
     def pickWhiteBalance(self, x, y):
         if not self._loaded or self._saving or not all(math.isfinite(v) and 0 <= v <= 1 for v in (x, y)):
             return
+        crop = self.values["hostCrop"]
+        if not self._crop_editing:
+            x, y = crop["x"] + x*crop["w"], crop["y"] + y*crop["h"]
         self._enqueue("whiteBalance", (x, y))
         self.changed.emit()
 
@@ -352,6 +441,9 @@ class RawEditor(QObject):
             return
         draft = dict(self._draft)
         for key, default in DEFAULTS.items():
+            # Global Reset keeps authored masks, as it did before the Mask tab.
+            if key in ("masks","retouch"):
+                continue
             if key in self._original:
                 draft[key] = deepcopy(default)
             else:
@@ -442,7 +534,7 @@ class RawEditor(QObject):
             self._proxy_pending = False
             if hasattr(self, "_proxy_request"):
                 del self._proxy_request
-        if action in ("preview", "whiteBalance") and raw_preview.executable():
+        if action in ("preview", "whiteBalance", "maskSample") and raw_preview.executable():
             self._proxy_pending = True
             # A bounded dispatch interval during dragging, not a trailing-edge
             # debounce that waits until the person stops moving the pointer.
@@ -464,11 +556,16 @@ class RawEditor(QObject):
                 self._proxy = raw_preview.PreviewWorker(raw_preview.executable(), self)
                 self._proxy.completed.connect(self._proxy_arrived)
                 self._proxy.sampled.connect(self._proxy_sampled)
+                self._proxy.maskSampled.connect(self._mask_sampled)
+                self._proxy.coverageReady.connect(self._coverage_arrived)
                 self._proxy.failed.connect(self._proxy_failed)
             request = self._proxy_request
             del self._proxy_request
             if request[0] == self._revision and not self._saving:
-                self._proxy.submit(*request)
+                coverage=self._mask_editor.current
+                if any(p.get("shape",{}).get("type") in ("colorRange","luminanceRange") for p in [coverage,*coverage.get("parts",[])]):
+                    self._proxy.submit(*request,coverage=coverage)
+                else:self._proxy.submit(*request)
         if self._running or self._queued is None:
             return
         revision, action, path, original, draft, sample = self._queued
@@ -516,6 +613,8 @@ class RawEditor(QObject):
             return
         self._published_revision = revision
         self._full_size = header["fullSize"]
+        self._preview_size = [image.width(), image.height()]
+        self._baseline_size = [base_image.width(), base_image.height()]
         self._proxy_pending = revision != self._revision
         self._error = ""
         self._discard_preview(self._preview)
@@ -547,6 +646,20 @@ class RawEditor(QObject):
             self._error = str(error)
         self.changed.emit()
 
+    def _mask_sampled(self, revision, result):
+        if revision != self._revision or not self._loaded or self._saving:
+            return
+        self._proxy_pending = False
+        try:
+            self._mask_editor.applySample(*result)
+        except (ValueError,KeyError,TypeError) as error:
+            self._error = str(error)
+        self.changed.emit()
+
+    def _coverage_arrived(self,revision,result):
+        if revision==self._revision and self._loaded and not self._saving:
+            self._mask_editor.acceptCoverage(*result)
+
     @staticmethod
     def _work(action, path, original, draft, directory, sample=None):
         if bridge.sidecar_pcraft_path(path).exists():
@@ -574,6 +687,8 @@ class RawEditor(QObject):
             source = proc.path_within_root(path)
             if not source:
                 raise ValueError("The photo is outside the editor's read folder.")
+            bridge.require_masks_support({"recipe": _recipe(draft)}, getattr(proc.control, "camera_raw_masks_supported", False) is True)
+            bridge.require_retouch_support({"recipe": _recipe(draft)}, getattr(proc.control, "camera_raw_retouch_supported", False) is True)
             if not saving:
                 if not proc.control.full_render_supported:
                     raise ValueError("This PhotoCraft build cannot render RAW recipes.")
@@ -596,6 +711,25 @@ class RawEditor(QObject):
                     return _display_preview(preview)
                 finally:
                     preview.unlink(missing_ok=True)
+            if any(key in draft or key in original for key in ("hostCrop", "masks", "retouch")):
+                from ..full_render import _without_host_settings
+                from ..raw_crop import publish
+                signature = bridge.file_signature(path)
+                if not signature:
+                    raise ValueError("The original photo could not be read")
+                out = uuid4().hex
+                reply = proc.control.call("app.render", {"source": source, "recipe": _without_host_settings(_recipe(draft)), "out": out})
+                name = reply.get("out")
+                if name not in (out + ".png", out + ".tif", out + ".tiff"):
+                    raise ValueError("PhotoCraft returned an unexpected crop render path")
+                rendered = Path(write_root) / name
+                try:
+                    _, current, _ = bridge.recipe_state(path)
+                    if (current or {}).get("cameraRaw", {}) != original:
+                        raise ValueError("The saved recipe changed while the crop was rendering")
+                    return publish(path, rendered, draft, signature)
+                finally:
+                    rendered.unlink(missing_ok=True)
             if not proc.control.render_manifest_supported:
                 raise ValueError("This PhotoCraft build cannot publish RAW previews to the grid.")
             bridge.require_super_resolution_support(
@@ -613,7 +747,7 @@ class RawEditor(QObject):
             if not (opened.get("cameraRaw") or {}).get("dialog"):
                 raise ValueError("PhotoCraft could not develop this RAW.")
             proc.control.call("ui.menu.invoke", {"id": "filter.cameraRaw",
-                "params": {"ui": {"set": {key: draft.get(key, default) for key, default in DEFAULTS.items()}}}})
+                "params": {"ui": {"set": {key: draft.get(key, default) for key, default in DEFAULTS.items() if key not in ("hostCrop", "masks", "retouch")}}}})
             previous_render = bridge.saved_render_path(path)
             result = proc.control.call("ui.cameraRaw", {"done": True})
             if result.get("open"):
@@ -645,15 +779,20 @@ class RawEditor(QObject):
                 self._baseline = self._preview
                 self._draft = dict(self._original)
                 self._loaded = True
-                if raw_preview.executable():
-                    self._enqueue("preview")
+                # A saved display is already cropped; redevelop from the RAW before editing.
+                self._preview = self._baseline = ""
+                self._enqueue("preview")
             elif not error and action == "detail" and self._detail_mode:
+                self._detail_size = _preview_dimensions(result)
                 self._discard_preview(self._detail)
                 self._detail = (raw_preview.put_frame(f"{self._owner}/{revision}/detail", result)
                                 if not isinstance(result, str) else result)
             elif not error and action == "preview":
                 self._discard_preview(self._preview)
                 self._preview = result
+                self._preview_size = _preview_dimensions(result)
+                if min(self._full_size) <= 0:
+                    self._full_size = list(self._preview_size)
             elif not error and action == "whiteBalance":
                 self._set_values(result, "White balance sample")
             elif not error and action == "save":
@@ -676,6 +815,12 @@ class RawEditor(QObject):
             return
         if path and self._files and Path(path).parent == Path(self._files.name):
             Path(path).unlink(missing_ok=True)
+
+
+def _preview_dimensions(image):
+    from PySide6.QtGui import QImageReader
+    size = QImageReader(image).size() if isinstance(image, str) else image.size()
+    return [size.width(), size.height()]
 
 
 def _display_preview(path):

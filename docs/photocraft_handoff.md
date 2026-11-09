@@ -3258,3 +3258,188 @@ cascade logic/evidence audit recorded in `docs/cascade_logic_audit.md`.
 ## 2026-10-20 evening: editor mask buttons follow the host's models
 
 PhotoCraft `codex/image-triage-integration` fast-forwarded from `74dc3290` to `0988078e` (one commit): `ui.hostJob` accepts `tools` (a list of host-job kinds the host can run; `[]` = none; not sent = nothing greyed), capability `cameraRawHostTools: 1` in `app.handoff`; the Subject and Background cards, the Landscape link and the People link are disabled with "Needs Editor tools in Image Triage (Set Up AI)." when their kind is missing. Image Triage sends the list only to editors that advertise the capability (`HostJobRunner.poll`, `photocraft_bridge.camera_raw_host_tools_supported`). PhotoCraft checks run: `cargo check -p photocraft-ui-egui`, the `host_job` and `host` unit tests (17 and 48 passed). `cargo clippy -D warnings` fails on warnings that were already there (`photocraft-algo` `calibration.rs:74`, `masks.rs:401`, three collapsible-ifs in `camera_raw_mask_edit_ui.rs`), none in the new lines. Not run: the Image Triage handoff checks against a rebuilt hosted editor. **The hosted executable must be rebuilt before the behaviour appears**; keep the known-good build until those checks pass. Pushed to the fork: `codex/image-triage-integration` at `0988078e`.
+
+
+## 2026-11-08: local color tool parity
+
+Native integration base: `45f02561e5fc03fa011c8f31e05c0ed72e91ec67`.
+No upstream merge or conflict resolution was performed for this feature. The
+existing companion UI/detail edits were preserved. The candidate was built from
+a source snapshot of that base plus the local-mask algorithm extension, excluding
+those unrelated in-progress edits.
+
+`LocalAdjust` now stores Vibrance, parametric/RGB curves, eight-band HSL,
+four grading wheels and Calibration. It passes these settings into the existing
+`develop` pipeline, preserving coverage, composition, amount and enabled state.
+Old sparse recipes keep neutral defaults; extended recipes require the paired
+native helper and hosted editor. Python validates the same bounded schema and
+tracks neutral curves/wheels correctly. No Detail, grain, glow, decoding or
+geometry controls were added to local masks.
+
+The live QML-host smoke exposed generic Save being used for a bound flat image.
+The host now waits for `app.stash` with sidecar/render/manifest outputs before
+navigation; save failure still keeps the active editor. Native menu Save remains
+bound to the same outputs.
+
+Validation: 796 algorithm tests plus doctest compilation passed; strict algorithm
+all-target Clippy passed; layer checks passed (31 crates); WASM checks passed
+(24 crates plus codecs HEIF). Five real-RAW preview cases changed their covered
+pixels while sampled uncovered pixels matched exactly. Combined local settings
+saved/exported at 6048x4024, 16-bit with ICC; exported and saved pixels matched,
+and the original RAW checksum was unchanged. Live QML-host checks passed hidden
+startup, persistent process/navigation, stash/restore, native Save publication,
+grid notifications, closed-tab reopen, five themes, resize/fullscreen and process
+cleanup. QML captures reported zero warnings.
+The final host/schema/QML suite passed 76 tests. The broad quick performance run
+completed its scenarios but returned failure for P50 (Gaussian Blur app-frame
+measurement): only seven frames were collected, so that case could not be scored.
+No performance baseline was changed or claimed green.
+
+Validated hosted executable SHA256:
+`5a9c7c3ff2866e5dca3aff4c2bc54bade55f21af4e34fa5befe771b5865e74a7`.
+Validated helper SHA256:
+`fd78fc97b3a0e63aac89ae540b6fa65d65e1d013c93818978373f04eba1729f6`.
+The original known-good hosted executable was restored after the candidate build
+and retains SHA256
+`3b2136422b3bab5f748f40c62b55688a0a1ee5cec9b48dbffe5013148d467ee8`.
+The source launcher selects the separately validated hosted copy when installed;
+explicit executable/environment overrides still take precedence. Rollback copies
+of the previous helper and native editor were retained. No application installer
+was built, and no code was committed or pushed in this feature step.
+
+
+## 2026-11-08: native RAW retouch adaptation
+
+User-approved scope: adapt PhotoCraft's main-editor Remove, Spot Healing,
+Healing Brush and Clone Stamp kernels into the QML popout RAW workflow. This
+is separate from opening PhotoCraft's main window. Generative AI and automated
+reflection/people/dust removal were not implemented or enabled.
+
+The native integration base remains `45f02561e5fc03fa011c8f31e05c0ed72e91ec67`;
+upstream was fetched at `848fa306f518a4b4cbb0fea01a6833722cb58a53` earlier in
+this session. No upstream merge or conflict resolution was performed. The
+candidate snapshot excludes the companion checkout's unrelated active UI edits.
+
+`CameraRaw.retouch` stores normalized strokes and replays existing completion,
+membrane-fill and Poisson kernels after global development, before local masks.
+Clone reads from a snapshot of the current stroke input. Heal blends the sampled
+source; Remove closes painted loops. Feathered painted edges are preserved.
+The CPU fallback prevents GPU development from dropping the stroke list.
+Preview and full-resolution render preflight dense stroke domains against the
+16-megapixel budget; QML authoring also checks that budget at the RAW's full size.
+
+The QML Remove pane uses shared adjustment sliders, Alt-click source selection,
+paint gestures, stroke history, individual deletion, Clear and undo/redo.
+Coordinates map through host crop. Strokes persist in RAW sidecars and flow into
+saved renders and export, leaving the source untouched. Proxy content completion
+is approximate; full-resolution Save/export recomputes against the full image.
+`cameraRawRetouch: 1` is required before an editor can accept a retouched recipe.
+PhotoCraft settings clipboard validation also accepts the stroke list and
+rejects malformed strokes; a broad UI test caught the previous scalar fallback.
+
+Validation: 802 algorithm tests passed, including six retouch regressions;
+strict all-target Clippy passed for algorithm and native UI crates. The focused
+host/schema/QML suite passed 60 tests; the viewer/editor/crop/history regression
+suite passed 101 tests, including ten retouch cases. QML captures had zero
+warnings. All four tools changed covered pixels in real-RAW proxies while an
+uncovered pixel stayed identical. Full-resolution Save/export at 6048x4024,
+16-bit with ICC produced identical saved/exported pixels and retained the RAW
+checksum. The corrected native build repeated the live QML-host smoke: hidden
+startup, same-process navigation, stash/restore, native Save publication, grid
+notification, closed-tab reopen, five themes, resize/fullscreen and cleanup.
+
+The broad native UI run initially passed 4,806 tests and failed 24. The settings
+clipboard failure was fixed with a new stroke round-trip/invalid-source test;
+19 font-dependent failures passed after enabling the existing craft-fonts
+bundle. Across the original run and focused rerun, 4,827 tests passed. Four
+unmodified screenshot tests still fail during GPU device creation with
+`RequestDeviceError(... Device(Lost))`, before drawing; a serial DX12 rerun did
+not resolve that environment limitation. Twenty-one tests remain ignored by the
+native suite. This is not a claim that every native screenshot test passed.
+
+Layer and WASM checks passed. Broad `cargo xtask perf --quick` exited zero;
+regression comparison was skipped because its baseline is an Apple M4 Pro and
+this machine is Windows/RTX 4080 Super. No performance baseline was changed and
+these broad scenarios do not measure the new retouch strokes.
+
+Promoted hosted executable SHA256:
+`ad16421b0a31921691b6844c9888bcc876868d59533514bbc1914d8c8be92015`.
+Promoted helper SHA256:
+`e05bebcc5a638193131ce8690bdbba22b5dfa1cb7870e94e4c10e1e8eef765b9`.
+The normal source launcher uses the validated hosted copy and default helper;
+rollback copies retain the prior local-color build. The original target editor
+was restored and still hashes to
+`3b2136422b3bab5f748f40c62b55688a0a1ee5cec9b48dbffe5013148d467ee8`.
+No application installer was built and no code was committed or pushed.
+
+
+### Retouch viewport input follow-up
+
+The retouch overlay now belongs to the clipped photo stage, preserving its
+image-relative coordinates during zoom and pan. It cannot render or receive
+new presses over the sidebar, filmstrip or header. Captured strokes finish on
+leaving the visible photo, instead of clamping outside motion into edge paint.
+Cursor feedback also checks the visible viewport. Real pointer regressions
+cover all four tools at 1:1 zoom, switching tools/tabs, dragging out of bounds,
+and ignoring letterbox clicks. All 16 retouch tests passed. The viewer and
+QML-only checks passed, and an own-window D3D11 capture verified that hovering
+and clicking sidebar controls works with Heal active (zero QML warnings).
+Only QML/source changed; the native backend pair did not require a rebuild.
+
+
+### Push-time upstream assessment, 2026-11-08
+
+Both PhotoCraft remotes fetched successfully. The fork integration branch
+remains aligned at `45f02561e5fc03fa011c8f31e05c0ed72e91ec67` before the feature
+commit. Upstream advanced from `848fa306f518a4b4cbb0fea01a6833722cb58a53`
+to `9394960e428771fb94e79ef1644bd788c69df927`; the integration branch is 84 commits
+ahead and 2,542 behind. No upstream integration or conflict resolution was
+performed as part of this code-only push. The dry-run conflict surface remains
+large, including Camera Raw UI and host startup/control/rendering boundaries.
+Unrelated active companion drafts were excluded from the feature commit.
+
+Dry-run conflicted paths (36):
+
+```text
+apps/photocraft/src/main.rs
+crates/automation/src/workspace.rs
+crates/io/src/lib.rs
+crates/ui-egui/src/app.rs
+crates/ui-egui/src/canvas/gpu_canvas.rs
+crates/ui-egui/src/control/dispatch.rs
+crates/ui-egui/src/dialogs/camera_raw_ui.rs
+crates/ui-egui/src/dialogs/camera_raw_ui/controls.rs
+crates/ui-egui/src/dialogs/camera_raw_ui/convert.rs
+crates/ui-egui/src/dialogs/camera_raw_ui/identity_tests.rs
+crates/ui-egui/src/dialogs/camera_raw_ui/menu.rs
+crates/ui-egui/src/dialogs/camera_raw_ui/open.rs
+crates/ui-egui/src/dialogs/camera_raw_ui/tests.rs
+crates/ui-egui/src/i18n/cs.tsv
+crates/ui-egui/src/i18n/de.tsv
+crates/ui-egui/src/i18n/el.tsv
+crates/ui-egui/src/i18n/es.tsv
+crates/ui-egui/src/i18n/fr.tsv
+crates/ui-egui/src/i18n/hu.tsv
+crates/ui-egui/src/i18n/id.tsv
+crates/ui-egui/src/i18n/it.tsv
+crates/ui-egui/src/i18n/ja.tsv
+crates/ui-egui/src/i18n/ko.tsv
+crates/ui-egui/src/i18n/nl.tsv
+crates/ui-egui/src/i18n/pl.tsv
+crates/ui-egui/src/i18n/pt-br.tsv
+crates/ui-egui/src/i18n/ru.tsv
+crates/ui-egui/src/i18n/sr.tsv
+crates/ui-egui/src/i18n/tr.tsv
+crates/ui-egui/src/i18n/uk.tsv
+crates/ui-egui/src/i18n/vi.tsv
+crates/ui-egui/src/i18n/zh-hans.tsv
+crates/ui-egui/src/i18n/zh-hant.tsv
+crates/ui-egui/src/jobs_ui.rs
+crates/ui-egui/src/lib.rs
+docs/control-protocol.md
+```
+
+Native feature commit `150587cb8` was pushed normally to the user fork
+integration branch. All six unrelated companion drafts retained their original
+SHA256 fingerprints. The push used the configured GitHub noreply identity and
+`[skip ci]`; no release tag or installer workflow was started.

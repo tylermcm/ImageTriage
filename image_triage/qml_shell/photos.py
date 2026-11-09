@@ -63,6 +63,7 @@ class PhotoModel(QAbstractListModel):
     subfoldersChanged = Signal()
     folderSummaryReady = Signal(str)
     scopeChanged = Signal()
+    scopeAboutToChange = Signal(str, str)
     loadingChanged = Signal()
     annotationChanged = Signal(object)      # a row's decision or rating changed (the row dict, with its scanner record): save it
     undoChanged = Signal()
@@ -237,6 +238,8 @@ class PhotoModel(QAbstractListModel):
         """Limit the grid to the folder's photos that satisfy `predicate(row)` (a collection, the winners, a person, a shortlist).
 
         Collections and people can span folders; the shell only has the open folder's photos, so only those are shown."""
+        if (kind, ident) != (self._scope_kind, self._scope_id):
+            self.scopeAboutToChange.emit(kind, ident)
         self._scope_kind, self._scope_id, self._scope_pred = kind, ident, predicate
         self._rebuild()
         self.scopeChanged.emit()
@@ -564,6 +567,32 @@ class PhotoModel(QAbstractListModel):
         self._bump()
         self._record_change(target, (before, target["decision"]), (target["rating"],) * 2)
 
+    def update_decision_values(self, values: dict[str, str], *, publish: bool = True) -> dict[str, str]:
+        """Set exact values (never toggle), optionally deferring expensive UI notifications.
+
+        Annotation writes still enter the existing background persistence queue.
+        The caller groups these changes into one undo entry after its final batch.
+        """
+        previous = {}
+        for target in self._all:
+            path = target["path"]
+            if path not in values or target["decision"] == values[path]:
+                continue
+            previous[path] = target["decision"]
+            target["decision"] = values[path]
+            if target.get("record") is not None:
+                self.annotationChanged.emit(target)
+        if publish and previous:
+            self.publish_decision_values()
+        return previous
+
+    def publish_decision_values(self) -> None:
+        """Refresh views once after a group of exact decision updates."""
+        if self._rows:
+            self.dataChanged.emit(self.index(0), self.index(len(self._rows) - 1), [DecisionRole])
+        self.countsChanged.emit()
+        self._bump()
+
     @Slot(int, int)
     def setRating(self, row: int, value: int) -> None:
         if not 0 <= row < len(self._rows):
@@ -684,6 +713,10 @@ class PhotoModel(QAbstractListModel):
     def row_at(self, row: int) -> dict | None:
         """The shown row `row` as the model holds it (path, name, decision, rating, and the scanner's `record` for real folders)."""
         return self._rows[row] if 0 <= row < len(self._rows) else None
+
+    @Slot(str, result=int)
+    def rowForPath(self, path: str) -> int:
+        return self.row_for_path(path)
 
     def row_for_path(self, path: str) -> int:
         """Where `path` is among the shown photos, or -1 (a path written with other slashes or capitals still finds its photo)."""

@@ -47,7 +47,7 @@ SHORTCUT_REGISTRY: tuple[tuple[str, str, str, str], ...] = (
     # Workflow / export
     ("handoff_builder", "Workflow", "Ctrl+Alt+H", "Deliver / Handoff Builder..."),
     ("send_to_editor_pipeline", "Workflow", "Ctrl+Alt+E", "Send To Editor..."),
-    ("best_of_set_auto_assembly", "Workflow", "Ctrl+Alt+B", "Best-of-Set Auto Assembly..."),
+    ("best_of_set_auto_assembly", "Workflow", "Ctrl+Alt+B", "Choose best photos..."),
     # Workspace
     ("save_workspace_preset", "Workspace", "Ctrl+Alt+S", "Save Current Workspace Preset..."),
     # Review (unified from the window's own Keyboard Shortcuts dialog and

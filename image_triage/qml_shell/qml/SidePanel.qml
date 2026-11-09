@@ -527,74 +527,53 @@ Item {
                     Text { visible: coll.rows.length === 0; x: 16; width: parent.width - 32; wrapMode: Text.WordWrap; topPadding: 6; text: "No collections yet. Make one to gather photos from any folder without moving them."; color: theme.fg3; font.pixelSize: 12; lineHeight: 17.4; lineHeightMode: Text.FixedHeight }
                     Item { visible: coll.rows.length === 0; x: 16; width: 1; height: 44
                         SButton { y: 10; text: "New collection"; variant: "primary"; h: 28; hpad: 11; radius: 9; onClicked: { UiState.collDlgId = ""; UiState.collDlg = "new" } } }
-                    Repeater {
-                        model: coll.rows
-                        delegate: Item {
-                            id: crow
-                            required property var modelData
-                            required property int index
-                            readonly property bool cur: { void photos.scopeKind; return photos.scopeKind === "collection" && photos.scopeId === modelData.id }
-                            readonly property bool drop: UiState.cldrop === modelData.id
-                            readonly property bool hot: ch.hovered || dragH.active
-                            width: coll.width; height: 34
-                            Rectangle { x: crow.drop ? 8 : 0; width: parent.width - (crow.drop ? 16 : 0); height: parent.height; radius: crow.drop ? 8 : 0
-                                        color: crow.drop ? Qt.alpha(theme.accent, 0.12) : crow.cur ? Qt.alpha(theme.accent, 0.13) : Qt.alpha(theme.lift, ch.hovered ? 0.05 : 0) }
-                            Rectangle { visible: crow.drop; x: 8; width: parent.width - 16; height: parent.height; radius: 8; color: "transparent"; border.width: 1.5; border.color: Qt.alpha(theme.accent, 0.70) }
-                            Rectangle { visible: crow.cur; x: 0; y: 6; width: 2; height: parent.height - 12; radius: 1; color: theme.accent }
-                            Row {
-                                x: 16; anchors.verticalCenter: parent.verticalCenter; spacing: 10
-                                CollMark { anchors.verticalCenter: parent.verticalCenter; color: crow.modelData.color; iconPath: crow.modelData.iconPath }
-                                Text { anchors.verticalCenter: parent.verticalCenter; width: Math.min(implicitWidth, crow.width - 130); elide: Text.ElideRight; text: crow.modelData.name; color: theme.fg
-                                       font.pixelSize: 13; font.weight: crow.modelData.active ? Font.DemiBold : Font.Normal }
-                            }
-                            Text { visible: crow.drop; anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: "Drop here"; color: theme.accentFg; font.pointSize: UiState.pt(11.5) }
-                            Row {
-                                visible: !crow.drop && !crow.hot; anchors.right: parent.right; anchors.rightMargin: 18; anchors.verticalCenter: parent.verticalCenter; spacing: 8
-                                Rectangle { visible: crow.modelData.active; height: 17; width: wl.implicitWidth + 12; radius: 6; color: Qt.alpha(theme.accent, 0.14); anchors.verticalCenter: parent.verticalCenter
-                                    Text { id: wl; anchors.centerIn: parent; text: "W"; color: theme.accentFg; font.pixelSize: 10; font.weight: Font.DemiBold } }
-                                Text { text: crow.modelData.count; color: theme.fg3; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
-                            }
-                            Row {
-                                visible: crow.hot && !crow.drop; anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 2
-                                Item { width: 26; height: 26
-                                    Rectangle { anchors.fill: parent; radius: 8; color: Qt.alpha(theme.lift, sh.hovered ? 0.09 : 0) }
-                                    Icon { anchors.centerIn: parent; name: "pocketdrop"; size: 16; strokeWidth: 1.8; color: sh.hovered ? theme.fg : theme.fg3 }
-                                    HoverHandler { id: sh; cursorShape: Qt.PointingHandCursor }
-                                    TapHandler { onTapped: panel.shareToPhone("col:" + crow.modelData.id) }
-                                    Accessible.role: Accessible.Button; Accessible.name: "Share " + crow.modelData.name + " to phone" }
-                                Item { width: 26; height: 26
-                                    Rectangle { anchors.fill: parent; radius: 8; color: Qt.alpha(theme.lift, mh.hovered ? 0.09 : 0) }
-                                    Icon { anchors.centerIn: parent; name: "more"; size: 16; strokeWidth: 2.4; color: mh.hovered ? theme.fg : theme.fg3 }
-                                    HoverHandler { id: mh; cursorShape: Qt.PointingHandCursor }
-                                    TapHandler { onTapped: UiState.collMenu = UiState.collMenu === crow.modelData.id ? "" : crow.modelData.id }
-                                    Accessible.role: Accessible.Button; Accessible.name: "More for " + crow.modelData.name }
-                            }
-                            HoverHandler { id: ch; cursorShape: Qt.PointingHandCursor }
-                            TapHandler { onTapped: { if (crow.cur) collections.closeScope(); else collections.open(crow.modelData.id) } }
-                            TapHandler { acceptedButtons: Qt.RightButton; onTapped: UiState.collMenu = crow.modelData.id }
-                            DropArea {   // photos dragged from the grid (the grid is not a drag source yet)
-                                anchors.fill: parent
-                                onEntered: UiState.cldrop = crow.modelData.id
-                                onExited: { if (UiState.cldrop === crow.modelData.id) UiState.cldrop = "" }
-                                onDropped: { collections.addSelection(crow.modelData.id, UiState.selRow); UiState.cldrop = "" }
-                            }
-                            DragHandler {   // drag onto the PocketDrop button (it opens after a moment) and drop on its page
-                                id: dragH; target: null; cursorShape: Qt.ClosedHandCursor
-                                onActiveChanged: {
-                                    if (active) {
-                                        UiState.pdDragInfo = { key: "col:" + crow.modelData.id, title: crow.modelData.name, sub: crow.modelData.here + " photos", thumbs: crow.modelData.thumbs }
-                                        UiState.pdGhostX = centroid.scenePosition.x; UiState.pdGhostY = centroid.scenePosition.y
-                                        UiState.pdDragging = true
-                                    } else {
-                                        var p = panel.mapFromItem(null, centroid.scenePosition.x, centroid.scenePosition.y)
-                                        var onPage = UiState.tab === "drop" && p.x >= 0 && p.x <= panel.width && p.y >= 0 && p.y <= panel.height
-                                        UiState.pdDragging = false
-                                        if (onPage) panel.shareToPhone("col:" + crow.modelData.id)
-                                    }
+                    Grid {
+                        id: collectionGrid; objectName: "collectionCardGrid"
+                        x: 16; width: parent.width - 32
+                        columns: 2; columnSpacing: 10; rowSpacing: 10
+                        Repeater {
+                            id: collectionCards
+                            model: coll.rows
+                            delegate: Item {
+                                id: crow
+                                required property var modelData
+                                required property int index
+                                readonly property bool cur: { void photos.scopeKind; return photos.scopeKind === "collection" && photos.scopeId === modelData.id }
+                                readonly property bool drop: UiState.cldrop === modelData.id
+                                width: (collectionGrid.width - collectionGrid.columnSpacing) / 2
+                                height: collectionCard.implicitHeight
+                                CollectionCard {
+                                    id: collectionCard
+                                    objectName: "collectionCard_" + crow.modelData.id
+                                    anchors.fill: parent
+                                    collection: crow.modelData; selected: crow.cur; dropActive: crow.drop
+                                    onActivated: { if (crow.cur) collections.closeScope(); else collections.open(crow.modelData.id) }
+                                    onMenuRequested: UiState.collMenu = UiState.collMenu === crow.modelData.id ? "" : crow.modelData.id
                                 }
-                                onCentroidChanged: { if (active) { UiState.pdGhostX = centroid.scenePosition.x; UiState.pdGhostY = centroid.scenePosition.y } }
+                                DropArea {   // photos dragged from the grid (the grid is not a drag source yet)
+                                    anchors.fill: parent
+                                    onEntered: UiState.cldrop = crow.modelData.id
+                                    onExited: { if (UiState.cldrop === crow.modelData.id) UiState.cldrop = "" }
+                                    onDropped: { collections.addSelection(crow.modelData.id, UiState.selRow); UiState.cldrop = "" }
+                                }
+                                DragHandler {   // drag onto the PocketDrop button (it opens after a moment) and drop on its page
+                                    id: dragH; target: null; cursorShape: Qt.ClosedHandCursor
+                                    onActiveChanged: {
+                                        if (active) {
+                                            UiState.pdDragInfo = { key: "col:" + crow.modelData.id, title: crow.modelData.name, sub: crow.modelData.here + " photos", thumbs: crow.modelData.thumbs }
+                                            UiState.pdGhostX = centroid.scenePosition.x; UiState.pdGhostY = centroid.scenePosition.y
+                                            UiState.pdDragging = true
+                                        } else {
+                                            var p = panel.mapFromItem(null, centroid.scenePosition.x, centroid.scenePosition.y)
+                                            var onPage = UiState.tab === "drop" && p.x >= 0 && p.x <= panel.width && p.y >= 0 && p.y <= panel.height
+                                            UiState.pdDragging = false
+                                            if (onPage) panel.shareToPhone("col:" + crow.modelData.id)
+                                        }
+                                    }
+                                    onCentroidChanged: { if (active) { UiState.pdGhostX = centroid.scenePosition.x; UiState.pdGhostY = centroid.scenePosition.y } }
+                                }
+                                Accessible.role: Accessible.Button; Accessible.name: crow.modelData.name + ", " + crow.modelData.count + " photos"
                             }
-                            Accessible.role: Accessible.Button; Accessible.name: crow.modelData.name + ", " + crow.modelData.count + " photos"
                         }
                     } } }
             }
@@ -619,7 +598,13 @@ Item {
             readonly property bool inside: { void photos.scopeKind; return photos.scopeKind === "collection" && photos.scopeId === cid }
             readonly property int idx: { var r = collections.rows; for (var i = 0; i < r.length; ++i) if (r[i].id === cid) return i; return 0 }
             parent: inner
-            x: panel.fullW - 12 - width; y: head.height + 150 + idx * 34
+            x: Math.max(8, panel.fullW - 12 - width)
+            y: {
+                void coll.contentY
+                var card = collectionCards.itemAt(idx)
+                var point = card ? card.mapToItem(inner, 0, 24) : Qt.point(0, head.height)
+                return Math.max(head.height + 8, Math.min(inner.height - height - 12, point.y))
+            }
             padding: 7; modal: true; dim: false; focus: true
             closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
             onCidChanged: { if (cid !== "") open(); else if (opened) close() }
@@ -643,6 +628,7 @@ Item {
             }
             contentItem: Column {
                 width: 221
+                TapHandler { acceptedButtons: Qt.AllButtons; gesturePolicy: TapHandler.WithinBounds }
                 MItem { label: "New collection\u2026"; onClicked: { UiState.collDlgId = ""; UiState.collDlg = "new" } }
                 Item { width: parent.width; height: 13; Rectangle { x: 4; y: 6; width: parent.width - 8; height: 1; color: theme.lineSoft } }
                 MItem { label: "Open collection"; off: cmenu.inside; onClicked: collections.open(cmenu.cid) }
@@ -650,6 +636,7 @@ Item {
                 MItem { label: "Add selection here"; off: cmenu.inside; onClicked: { var rows = photos.selectionRows(UiState.selRow); for (var i = 0; i < rows.length; ++i) collections.addSelection(cmenu.cid, rows[i]) } }
                 MItem { label: "Add all " + photos.shown + " visible here"; off: cmenu.inside; onClicked: collections.addVisible(cmenu.cid) }
                 MItem { label: "New winners go here"; tick: cmenu.c.id !== undefined && cmenu.cid === collections.activeId; onClicked: collections.toggleActive(cmenu.cid) }
+                MItem { label: "Share to phone"; onClicked: panel.shareToPhone("col:" + cmenu.cid) }
                 MItem { label: "Export\u2026"; onClicked: collections.exportCollection(cmenu.cid) }
                 Item { width: parent.width; height: 13; Rectangle { x: 4; y: 6; width: parent.width - 8; height: 1; color: theme.lineSoft } }
                 MItem { label: "Remove selection from collection"; off: !cmenu.inside; onClicked: collections.removeSelection(cmenu.cid, UiState.selRow) }

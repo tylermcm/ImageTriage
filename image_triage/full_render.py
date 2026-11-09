@@ -106,11 +106,11 @@ def _described(path: Path, reply: dict, *, temporary: bool) -> RenderResult:
 
 
 def _without_host_settings(recipe: dict) -> dict:
-    """The recipe as the editor should see it: settings the host carries out itself (Super Resolution) are not sent."""
+    """Only native development settings; the host applies crop and Super Resolution."""
     settings = recipe.get("cameraRaw") if isinstance(recipe, dict) else None
-    if not isinstance(settings, dict) or "superResolution" not in settings:
+    if not isinstance(settings, dict) or not ({"superResolution", "hostCrop"} & settings.keys()):
         return recipe
-    return {**recipe, "cameraRaw": {k: v for k, v in settings.items() if k != "superResolution"}}
+    return {**recipe, "cameraRaw": {k: v for k, v in settings.items() if k not in ("superResolution", "hostCrop")}}
 
 
 class FullRenderService:
@@ -199,6 +199,10 @@ class FullRenderService:
         and a new one is kept for the next output."""
         from . import camera_raw_super_resolution as sr  # imported late: these modules import this one
         from . import super_resolution_cache as cache
+        from .raw_crop import apply_render
+
+        develop = render
+        render = lambda: apply_render(develop(), recipe)
 
         if not sr.wants_super_resolution(recipe):
             return render()
@@ -274,6 +278,7 @@ class FullRenderService:
                 bridge.require_finishing_support({"recipe": what["recipe"]}, getattr(proc.control, "camera_raw_finishing_supported", False) is True)
                 bridge.require_calibration_support({"recipe": what["recipe"]}, getattr(proc.control, "camera_raw_calibration_supported", False) is True)
                 bridge.require_masks_support({"recipe": what["recipe"]}, getattr(proc.control, "camera_raw_masks_supported", False) is True)
+                bridge.require_retouch_support({"recipe": what["recipe"]}, getattr(proc.control, "camera_raw_retouch_supported", False) is True)
                 params["recipe"] = _without_host_settings(what["recipe"])
             reply = self._run_job(proc.render_lane(), params)
             if reply.get("out") not in (out + ".png", out + ".tif", out + ".tiff"):

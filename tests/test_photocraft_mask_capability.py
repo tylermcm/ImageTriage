@@ -44,3 +44,16 @@ def test_open_preserves_masks_or_refuses_before_sending(supported):
         with pytest.raises(bridge.PhotoCraftCompatibilityError):
             control.app_open("test.dng", camera_raw=spec)
         control.call.assert_not_called()
+
+
+def test_retouch_requires_its_own_capability_before_open():
+    control=object.__new__(bridge.PhotoCraftControl)
+    control.camera_raw_supported=True;control.camera_raw_masks_supported=True
+    control.call=Mock(return_value={})
+    spec={"recipe":{"version":1,"cameraRaw":{"retouch":[{"kind":"remove","points":[[.5,.5]],"size":.01,"feather":50,"opacity":100}]}}}
+    with pytest.raises(bridge.PhotoCraftCompatibilityError,match="retouch"):
+        control.app_open("test.nef",camera_raw=spec)
+    control.call.assert_not_called()
+    control.camera_raw_retouch_supported=True
+    control.app_open("test.nef",camera_raw=spec)
+    assert control.call.call_args.args[1]["cameraRaw"]==spec

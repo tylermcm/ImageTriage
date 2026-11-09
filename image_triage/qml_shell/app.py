@@ -157,6 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     thumbs = ThumbService(parent=app)
     photos.set_after_scan(thumbs.prime_folder)
     context = engine.rootContext()
+    from .scroll_cursor import ScrollCursor
+    context.setContextProperty("nativeScrollCursor", ScrollCursor(parent=app))
     context.setContextProperty("theme", theme)
     context.setContextProperty("photos", photos)
     gridModel = GridModel(photos, parent=app)

@@ -190,3 +190,65 @@ def test_the_menus_are_solid_not_frosted(qapp, shell):
         assert len(pixels) == 1, pixels
         click(qapp, window, "menuTitle-Review")
     assert not [w for w in warnings if "ReferenceError" in w or "TypeError" in w or "Required property" in w], warnings
+
+
+@pytest.mark.parametrize("title,action", [
+    ("File", "menuOff-New Folder…"),
+    ("Review", "menuRow-review.reject_selection"),
+    ("View", "menuRow-view.names"),
+    ("AI", "menuOff-Sort into Semantic Folders"),
+    ("Help", None),
+])
+def test_top_menus_block_passive_background_taps_on_rows_padding_and_dismissal(qapp, shell, title, action):
+    from test_qml_modal_input import spy
+
+    window, context, warnings = shell
+    background = find(window, "librarySidePanel").parentItem()
+    underlay = spy(context.engine(), background)
+    # Prove the passive handler beneath the menus is live before opening one.
+    QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, QPoint(1000, 700))
+    assert underlay.property("taps") == 1
+    click(qapp, window, "menuTitle-" + title)
+    assert not background.isEnabled()
+    card = find(window, "helpMenuCard" if title == "Help" else "topMenuCard")
+    margin = card.mapToScene(QPointF(3, card.height() / 2)).toPoint()
+    QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, margin)
+    pump(qapp, .1)
+    assert not background.isEnabled()  # Card padding is not an outside click.
+    assert underlay.property("taps") == 1
+    if action:
+        click(qapp, window, action)
+    else:
+        point = card.mapToScene(QPointF(60, 23)).toPoint()  # Help article action.
+        QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point)
+        pump(qapp, .3)
+        assert context.contextProperty("reference").window == "help"
+        context.contextProperty("reference").close()
+        pump(qapp, .4)
+    assert underlay.property("taps") == 1
+    pump(qapp, .3)
+    click(qapp, window, "menuTitle-" + title)
+    QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, QPoint(1000, 700))
+    pump(qapp, .3)
+    assert underlay.property("taps") == 1  # Dismissal never activates the folder below.
+    assert background.isEnabled()
+    QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, QPoint(1000, 700))
+    assert underlay.property("taps") == 2
+    underlay.deleteLater()
+
+
+def test_flyout_padding_and_actions_do_not_click_background(qapp, shell):
+    from test_qml_modal_input import spy
+
+    window, context, warnings = shell
+    background = find(window, "librarySidePanel").parentItem()
+    underlay = spy(context.engine(), background)
+    click(qapp, window, "menuTitle-Review")
+    hover(qapp, window, "menuSub-Rating")
+    card = find(window, "topMenuFlyout")
+    QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, card.mapToScene(QPointF(3, 20)).toPoint())
+    assert card.isVisible() and underlay.property("taps") == 0
+    click(qapp, window, "menuRow-review.rate.4")
+    assert context.contextProperty("photos").row_at(0)["rating"] == 4
+    assert underlay.property("taps") == 0
+    underlay.deleteLater()

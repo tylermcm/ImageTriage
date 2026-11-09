@@ -17,6 +17,10 @@ if (-not $HostPython) {
     $HostPython = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 }
 if (-not $HostPython) { throw 'Pass -HostPython pointing to the Image Triage development Python with PySide6 installed.' }
+if (-not $PhotoCraftExecutable -and -not $env:IMAGE_TRIAGE_PHOTOCRAFT_EXE) {
+    $hostedCandidate = 'K:\Builds\PhotoCraft\hosted\photocraft.exe'
+    if (Test-Path -LiteralPath $hostedCandidate -PathType Leaf) { $PhotoCraftExecutable = $hostedCandidate }
+}
 if ($PhotoCraftExecutable -and -not (Test-Path -LiteralPath $PhotoCraftExecutable -PathType Leaf)) {
     throw "PhotoCraft executable not found: $PhotoCraftExecutable"
 }

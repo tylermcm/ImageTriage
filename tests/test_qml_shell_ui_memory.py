@@ -1,7 +1,7 @@
 """The interface as the person left it: the open tab, the inspector, thumbnail size, sort, names and badges, and the rail's pins come back next run."""
 from __future__ import annotations
 
-from PySide6.QtCore import Q_ARG, QMetaObject
+from PySide6.QtCore import Q_ARG, QMetaObject, QObject
 
 from image_triage.app_identity import user_settings
 from image_triage.qml_shell.ui_memory import PREFIX, UiMemory
@@ -11,13 +11,14 @@ from test_qml_shell import _load_main, pump, qapp  # noqa: F401  (the same helpe
 def test_a_value_comes_back_as_it_went_in_and_survives_a_new_session(qapp):
     memory = UiMemory(parent=qapp)
     assert memory.get("tab", "lib") == "lib"                                  # nothing saved yet
-    for name, value in (("tab", "faces"), ("inspector", False), ("pins", {"sort": True, "undo": False})):
+    for name, value in (("tab", "faces"), ("inspector", False), ("inspectorTab", 1), ("pins", {"sort": True, "undo": False})):
         memory.set(name, value)
     again = UiMemory(parent=qapp)
     assert again.get("tab", "lib") == "faces" and again.get("inspector", True) is False and again.get("pins", None) == {"sort": True, "undo": False}
+    assert again.get("inspectorTab", 0) == 1
     user_settings().remove(PREFIX + "tab")
     assert UiMemory(parent=qapp).get("tab", "lib") == "lib"
-    for name in ("inspector", "pins"):
+    for name in ("inspector", "inspectorTab", "pins"):
         user_settings().remove(PREFIX + name)
 
 
@@ -110,3 +111,26 @@ def test_a_narrow_window_does_not_overwrite_what_was_left(qapp, tmp_path):
     window.close()
     engine.deleteLater()
     pump(qapp, 0.2)
+
+
+def test_inspector_tab_is_saved_and_restored_including_narrow_windows(qapp, tmp_path):
+    engine, window, warnings, memory = window_with(qapp, tmp_path)
+    inspector = window.findChild(QObject, "inspector")
+    inspector.setProperty("tab", 1)
+    assert memory.get("inspectorTab", -1) == 1
+    inspector.setProperty("tab", 2)
+    assert memory.get("inspectorTab", -1) == 2
+    memory.set("inspectorTab", 1)
+    QMetaObject.invokeMethod(window, "restoreInterface")
+    assert inspector.property("tab") == 1
+    for invalid in (-1, 3, 1.5, "Quality", True):
+        memory.set("inspectorTab", invalid)
+        QMetaObject.invokeMethod(window, "restoreInterface")
+        assert inspector.property("tab") == 1
+    window.setWidth(800)
+    pump(qapp, .2)
+    inspector.setProperty("tab", 2)
+    assert memory.get("inspectorTab", -1) == 2
+    window.close()
+    engine.deleteLater()
+    pump(qapp, .2)

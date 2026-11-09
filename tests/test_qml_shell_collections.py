@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QSettings, QUrl
@@ -101,6 +102,35 @@ def test_adding_and_removing_photos(qapp, photos, collections):
     assert collections.pickerEntries()[0]["recent"] is True
 
 
+@pytest.mark.parametrize("memory", [False, True])
+@pytest.mark.parametrize("quantity", [1, 3, 8])
+def test_removing_members_updates_the_open_collection_without_deleting_photos(qapp, photos, tmp_path, monkeypatch, memory, quantity):
+    import image_triage.library_store as storage
+
+    monkeypatch.setattr(storage, "app_data_root", lambda: tmp_path / "data")
+    model = CollectionsModel(photos, memory=memory, parent=qapp)
+    cid = model.save("", "Removal test", "", "", False)
+    model.addVisible(cid)
+    original_paths = [item["path"] for item in photos.collect()]
+    model.open(cid)
+    removed = {photos.get(index)["path"] for index in (range(8) if quantity == 8 else range(1, 4) if quantity == 3 else (1,))}
+    if quantity == 8:
+        photos.selectAll()
+    elif quantity == 3:
+        photos.selectRange(1, 3)
+    model.removeSelection(cid, 1)
+    expected = 8 - len(removed)
+    assert photos.shown == expected
+    assert model.get(cid)["count"] == expected
+    assert photos.scopeKind == "collection" and photos.scopeId == cid
+    assert not removed.intersection(photos.get(i)["path"] for i in range(photos.shown))
+    model.closeScope()
+    assert photos.shown == 8
+    assert all(Path(path).exists() for path in original_paths)
+    model.open(cid)
+    assert photos.shown == expected
+
+
 def test_opening_a_collection_scopes_the_grid(photos, collections):
     cid = collections.save("", "Shortlist", "", "", False)
     collections.addSelection(cid, 1)
@@ -137,6 +167,7 @@ def test_the_real_store_keeps_collections_and_their_icons(qapp, photos, tmp_path
     assert model.addVisible(cid) == 8
     reopened = CollectionsModel(photos, memory=False, parent=qapp)               # what is in the store and the settings survives
     row = reopened.get(cid)
+    assert reopened.lastUsedCollection()["id"] == cid
     assert (row["name"], row["color"], row["icon"], row["here"], row["active"]) == ("Wedding", "#ff6b7d", "ring", 8, True)
     reopened.removeSelection(cid, 0)
     assert reopened.get(cid)["here"] == 7
@@ -194,7 +225,7 @@ def test_opening_a_person_scopes_the_grid(photos, people):
 
 def test_best_of_builds_a_shortlist_of_what_is_in_view(qapp, photos):
     best = BestOfModel(photos, parent=qapp)
-    assert [s["label"] for s in best.strategies()] == ["Balanced Shortlist", "Top N Overall", "Top Per Group"]
+    assert [s["label"] for s in best.strategies()] == ["Best mix", "Best overall", "One per stack"]
     assert best.total == 8 and best.defaultSize() == 8
     best.build("top_n", 3)
     assert (photos.scopeKind, photos.shown) == ("best", 3)

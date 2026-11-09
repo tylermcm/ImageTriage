@@ -94,7 +94,7 @@ def validate_mask_runtime(capability_key: str) -> None:
 
 
 def validate_semantic_runtime() -> None:
-    validate_mask_runtime("scene_masks")
+    validate_mask_runtime("editor_scene")
 
 
 def reset_runtime_validation_cache() -> None:

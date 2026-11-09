@@ -221,6 +221,15 @@ class ReferenceModel(QObject):
 
     # ---------------- help ----------------
     @Slot(str)
+    def openTopic(self, topic: str) -> None:
+        """Open contextual help, clearing any search that would hide the topic."""
+        self._menu = False
+        self._window = "help"
+        self._hq = ""
+        self._topic = topic if any(t["id"] == topic for t in C.TOPICS) else "start"
+        self._emit()
+
+    @Slot(str)
     def setQuery(self, text: str) -> None:
         if text != self._hq:
             self._hq = text

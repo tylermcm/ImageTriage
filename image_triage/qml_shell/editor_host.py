@@ -381,7 +381,7 @@ class EditorHost(QObject):
     def _save_worker(self, proc) -> None:
         path = proc.source_path
         try:
-            proc.control.app_save()
+            self._settle(proc)
             self.editSaved.emit(path)
         except Exception as error:
             LOG.warning("PhotoCraft did not save: %s", error, exc_info=True)
@@ -423,7 +423,17 @@ class EditorHost(QObject):
             raise RuntimeError("Camera Raw is still finishing this photo. Try again.")
         state = proc.control.document_state()
         if state is not None and state[1] is not False:
-            proc.control.app_save()
+            if getattr(proc.control,"render_manifest_supported",False) is True:
+                from .. import photocraft_bridge as bridge
+                source=proc.source_path
+                params={"path":bridge.sidecar_pcraft_path(source).name,
+                        "preview":bridge.rendered_preview_path(source).name,
+                        "display":bridge.display_render_path(source).name,
+                        "manifest":bridge.render_manifest_path(source).name,
+                        "source":bridge.file_signature(source),"wait":True}
+                proc.control.call("app.stash",params)
+            else:
+                proc.control.app_save()
 
     def _hide(self) -> None:
         proc = self._proc

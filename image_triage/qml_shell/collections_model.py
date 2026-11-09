@@ -11,11 +11,13 @@ Members are file paths. The grid only holds the open folder's photos, so opening
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from ..app_identity import user_settings
 from ..scanner import normalized_path_key
+from ..formats import IMAGE_SUFFIXES
 
 ACTIVE_KEY = "collections/also_add_to"          # catalog_controller.ACTIVE_COLLECTION_KEY
 ICONS_KEY = "collections/icons"
@@ -79,6 +81,7 @@ class CollectionsModel(QObject):
         self._mem: dict[str, dict] = {}
         self._rows: list[dict] = []
         self._members: dict[str, set[str]] = {}
+        self._previews: dict[str, list[str]] = {}
         self._revision = 0
         if memory:
             self._mem = {c[0]: {"id": c[0], "name": c[1], "color": c[2], "icon": c[3], "members": list(c[4])} for c in _DEMO}
@@ -110,6 +113,7 @@ class CollectionsModel(QObject):
     def _reload(self) -> None:
         """Re-read the collections (names, colours, who is in them) and rebuild the rows."""
         self._members = {}
+        self._previews = {}
         headers: list[dict] = []
         if self._memory:
             for cid in self._order:
@@ -122,9 +126,26 @@ class CollectionsModel(QObject):
                 full = store.load_collection(c.id)
                 paths = full.item_paths if full is not None else ()
                 self._members[c.id] = {normalized_path_key(p) for p in paths}
+                seen = set()
+                preview = []
+                for path in store.recent_collection_paths(c.id):
+                    image = Path(path)
+                    key = normalized_path_key(str(image.with_suffix("")))
+                    if image.suffix.lower() not in IMAGE_SUFFIXES or key in seen:
+                        continue
+                    seen.add(key)
+                    preview.append(path)
+                    if len(preview) == 3:
+                        break
+                self._previews[c.id] = preview
                 headers.append({"id": c.id, "name": c.name, "color": c.color, "icon": self._icons.get(c.id, ""), "count": c.item_count})
         self._headers = headers
-        self._refresh_rows()
+        if self._photos.scopeKind == "collection" and self._photos.scopeId in self._members:
+            # The open scope captured the old membership set. Rebind it after
+            # edits so removed members disappear immediately from the grid.
+            self.open(self._photos.scopeId)
+        else:
+            self._refresh_rows()
 
     def _refresh_rows(self) -> None:
         rows = []
@@ -135,7 +156,12 @@ class CollectionsModel(QObject):
             thumbs = [r["path"] for r in mine[:3]]
             while thumbs and len(thumbs) < 3:
                 thumbs.append(thumbs[len(thumbs) % len(mine[:3])])
-            rows.append(dict(h, active=h["id"] == self._active, here=len(mine), thumbs=thumbs + [""] * (3 - len(thumbs)), iconPath=icon_path(h["icon"])))
+            if self._memory:
+                by_name = {r["name"]: r["path"] for r in mine}
+                preview = [by_name[name] for name in reversed(self._mem[h["id"]]["members"]) if name in by_name][:3]
+            else:
+                preview = self._previews.get(h["id"], [])
+            rows.append(dict(h, active=h["id"] == self._active, here=len(mine), thumbs=thumbs + [""] * (3 - len(thumbs)), previewThumbs=preview, iconPath=icon_path(h["icon"])))
         self._rows = rows
         self._revision += 1
         self.revisionChanged.emit()
@@ -296,7 +322,16 @@ class CollectionsModel(QObject):
 
     @Slot(str, int)
     def removeSelection(self, cid: str, row: int) -> None:
-        rows = [r for r in self._rows_for(row, False) if r]
+        rows = [self._photos.get(index) for index in self._photos.selectionRows(row)]
+        self._remove_rows(cid, rows)
+
+    @Slot(str, int)
+    def removeRow(self, cid: str, row: int) -> None:
+        """Undo a single-photo addition without including a later multi-selection."""
+        self._remove_rows(cid, self._rows_for(row, False))
+
+    def _remove_rows(self, cid: str, rows: list[dict]) -> None:
+        rows = [item for item in rows if item]
         if not rows or self._find(cid) is None:
             return
         if self._memory:
@@ -305,6 +340,14 @@ class CollectionsModel(QObject):
             paths = [r["path"] for r in rows] + [c for r in rows for c in r.get("companions", ())]
             self._db().remove_paths_from_collection(cid, paths)
         self._reload()
+
+    @Slot(result="QVariantMap")
+    def lastUsedCollection(self) -> dict:
+        for cid in self._recent:
+            collection = self._find(cid)
+            if collection is not None:
+                return collection
+        return {}
 
     @Slot(result="QVariantList")
     def pickerEntries(self) -> list:

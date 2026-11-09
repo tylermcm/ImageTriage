@@ -36,6 +36,7 @@ TOAST_MS = 3200
 STRIP_MIN, STRIP_MAX, STRIP_DEFAULT = 84, 260, 120
 STRIP_KEY = "viewer/strip_height"
 BAR_HIDDEN_KEY = "viewer/action_bar_hidden"
+RAW_EDITOR_OPEN_KEY = "viewer/raw_editor_open"
 ASSIST_ON_KEY, ASSIST_COLOR_KEY = "preview/focus_assist_enabled", "preview/focus_assist_color"
 PRELOAD_KEY, ADVANCE_KEY = "preview/preload_batch_size", "view/auto_advance"
 DECISION_WORDS = {"win": "marked Winner", "keep": "kept", "rej": "rejected"}
@@ -88,6 +89,9 @@ class ViewerHost(QObject):
         self._raw_editor.saved.connect(self._raw_saved)
         self._saved_previews: dict[str, tuple[str, int, int]] = {}
         self._settings = None if memory else user_settings()
+        self._raw_wanted = self._read_bool(RAW_EDITOR_OPEN_KEY, False)
+        self._shutting_down = False
+        self._raw_editor.changed.connect(self._remember_raw_editor)
         self._open = False
         self._row = -1
         self._path = ""
@@ -140,6 +144,15 @@ class ViewerHost(QObject):
     def _write(self, key: str, value) -> None:
         if self._settings is not None:
             self._settings.setValue(key, value)
+
+    def _remember_raw_editor(self):
+        # Window hiding and shutdown do not mean the user put the editor away.
+        if self._open and not self._shutting_down:
+            wanted=self._raw_editor.active
+            if wanted!=self._raw_wanted:
+                self._raw_wanted=wanted
+                self._write(RAW_EDITOR_OPEN_KEY,wanted)
+                if self._settings is not None:self._settings.sync()
 
     # -- what QML sees ------------------------------------------------------------------------------------------------------
     isOpen = Property(bool, lambda self: self._open, notify=openChanged)
@@ -229,6 +242,9 @@ class ViewerHost(QObject):
     def open(self, row: int) -> None:
         if not 0 <= row < self._photos.rowCount():
             return
+        if self._raw_editor.saving and row!=self._row:
+            self.notice("Saving the RAW edit. Please wait before switching photos.")
+            return
         self._travel = 0
         self._show(row)
         if not self._open:
@@ -237,10 +253,7 @@ class ViewerHost(QObject):
 
     @Slot()
     def close(self) -> None:
-        if not self._open or self._raw_editor.saving:
-            return
-        if self._raw_editor.active:
-            self._raw_editor.cancel()
+        if not self._open:
             return
         self._open = False
         self._preload_timer.stop()
@@ -270,7 +283,8 @@ class ViewerHost(QObject):
         item = self._photos.row_at(row)
         if item is None:
             return
-        if self._raw_editor.active and item["path"] != self._path:
+        if ((self._raw_editor.active and item["path"] != self._raw_editor._path)
+                or (self._raw_wanted and not self._raw_editor.active and suffix_for_path(item["path"]) in RAW_SUFFIXES)):
             self._raw_editor.open(item["path"])
         self._row = row
         self._path = item["path"]
@@ -288,6 +302,9 @@ class ViewerHost(QObject):
         previous = self._picture_for(path)
         size = QImageReader(preview).size()
         dimensions = previous[1:] if previous else (size.width(), size.height())
+        from ..photocraft_bridge import load_recipe
+        if "hostCrop" in (load_recipe(path) or {}).get("cameraRaw", {}):
+            dimensions = (size.width(), size.height())
         self._saved_previews[path] = (_file_url(preview), *dimensions)
         refresh = getattr(self._thumbs, "refresh_edit", None)
         if refresh is not None:
@@ -370,8 +387,13 @@ class ViewerHost(QObject):
             from ..metadata import load_capture_metadata
 
             meta = load_capture_metadata(path)
-            if meta.width > 0 and meta.height > 0:
-                width, height = meta.width, meta.height
+            if render is None and meta.width > 0 and meta.height > 0:
+                mw, mh = sorted((meta.width, meta.height), reverse=width >= height)
+                # Some RAW metadata describes a 160x120 thumbnail. Never let
+                # it shrink the decoded photo's 1:1 coordinate system. A valid
+                # larger size must also describe the same oriented framing.
+                if max(mw, mh) > max(width, height) and abs((mw / mh) / (width / height) - 1) < 0.02:
+                    width, height = mw, mh
         except Exception:
             pass
         return file, width, height, ""
@@ -439,6 +461,7 @@ class ViewerHost(QObject):
             self._ask("picture", item["path"])
 
     def shutdown(self) -> None:
+        self._shutting_down = True
         self._raw_editor.shutdown()
         self._preload_timer.stop()
         with self._lock:

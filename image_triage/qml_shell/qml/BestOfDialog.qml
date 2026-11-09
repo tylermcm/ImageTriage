@@ -17,6 +17,12 @@ Backdrop {
     }
     function close() { UiState.bestOfOpen = false }
     function build() { bestOf.build(strat, n); close() }
+    function showHelp() {
+        UiState.boStrat = strat
+        UiState.boN = n
+        close()
+        reference.openTopic("best")
+    }
     onDismissed: close()
     Keys.onReturnPressed: build()
 
@@ -27,9 +33,15 @@ Backdrop {
         Column {
             id: col
             x: 23; y: 23; width: parent.width - 46
-            Text { width: parent.width; height: 20.25; verticalAlignment: Text.AlignVCenter; text: "Best-of-Set Auto Assembly"; color: theme.fg; font.pixelSize: 15; font.weight: Font.DemiBold; font.letterSpacing: -0.15 }
+            Item {
+                width: parent.width; height: 28
+                Text { width: parent.width - 40; anchors.verticalCenter: parent.verticalCenter; text: "Choose your best photos"; color: theme.fg; font.pixelSize: 15; font.weight: Font.DemiBold; font.letterSpacing: -0.15 }
+                SButton { objectName: "bestOfHelpButton"; anchors.right: parent.right; text: "?"; width: 28; h: 28; radius: 14
+                    Accessible.name: "How to choose your best photos"
+                    onClicked: root.showHelp() }
+            }
             Item { width: 1; height: 6 }
-            Text { width: parent.width; wrapMode: Text.WordWrap; text: "Build an editable shortlist from the current set. The shortlist takes the place of the grid until you go back to the folder, so you can review and override it immediately."
+            Text { width: parent.width; wrapMode: Text.WordWrap; text: "Choose how to pick from the photos shown. Review the picks in the grid, then use Back to folder to return."
                    color: theme.fg3; font.pointSize: UiState.pt(12.5); lineHeight: 18.75; lineHeightMode: Text.FixedHeight }
             Item { width: 1; height: 16 }
             Column {
@@ -56,7 +68,7 @@ Backdrop {
             Item { width: 1; height: 16 }
             Item {
                 width: parent.width; height: 34
-                Text { anchors.verticalCenter: parent.verticalCenter; text: "Proposal size"; color: theme.fg2; font.pixelSize: 13 }
+                Text { anchors.verticalCenter: parent.verticalCenter; text: "Photos to pick"; color: theme.fg2; font.pixelSize: 13 }
                 Text { id: ofText; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "of " + root.total + (root.total === 1 ? " photo" : " photos"); color: theme.fg3; font.pixelSize: 12 }
                 Rectangle {
                     anchors.right: ofText.left; anchors.rightMargin: 12; height: 34; width: 32 + 36 + 32; radius: 10; color: theme.base; border.color: theme.lineSoft
@@ -76,7 +88,7 @@ Backdrop {
             Item { width: 1; height: 20 }
             Row { anchors.right: parent.right; spacing: 8
                 SButton { text: "Cancel"; variant: "ghost"; h: 34; hpad: 16; radius: 12; onClicked: root.close() }
-                SButton { text: "Build shortlist"; variant: "primary"; h: 34; hpad: 16; radius: 12; enabled: root.total > 0; onClicked: root.build() }
+                SButton { text: "Show picks"; variant: "primary"; h: 34; hpad: 16; radius: 12; enabled: root.total > 0; onClicked: root.build() }
             }
         }
     }

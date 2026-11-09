@@ -73,14 +73,34 @@ Window {
     Behavior on panelW { enabled: !win.resizing; NumberAnimation { duration: 600; easing.type: Easing.OutQuint } }
     Behavior on inspW { enabled: !win.resizing; NumberAnimation { duration: 600; easing.type: Easing.OutQuint } }
 
+    readonly property bool modalInputBlocked: {
+        var layers = win.contentItem.children
+        for (var i = 0; i < layers.length; ++i) {
+            if (layers[i] !== appContent && layers[i].sourceItem === appContent
+                    && (layers[i].visible || layers[i].shown === true)) return true
+        }
+        return false
+    }
+    onModalInputBlockedChanged: if (!modalInputBlocked) Qt.callLater(function () {
+        if (!win.modalInputBlocked) {
+            if (viewer.shown) viewer.refocus()
+            else grid.view.forceActiveFocus()
+        }
+    })
     Item {
         id: appContent
+        // Dialogs identify the app they cover through sourceItem. Disable its
+        // input for the complete fade, including passive pointer handlers.
+        enabled: !win.modalInputBlocked && !viewer.visible
         anchors.fill: parent
         TopBar { id: top; objectName: "topBar"; width: parent.width }
         StatusBar { id: status; width: parent.width; anchors.bottom: parent.bottom }
 
         Item {
             id: shell
+            // Menus leave the title bar live, but suspend passive handlers in
+            // the library, grid and inspector until the menu has disappeared.
+            enabled: !topMenus.visible && !helpMenu.visible
             y: top.height; width: parent.width; height: parent.height - top.height - status.height
 
             Rail { id: rail; z: 25; height: parent.height; row: grid.row }
@@ -246,6 +266,7 @@ Window {
                 width: win.compact ? sheetW : win.inspW; height: parent.height
                 z: win.compact ? 30 : 0
                 row: grid.row
+                onTabChanged: if (win.interfaceRestored) uiMemory.set("inspectorTab", tab)
                 onStep: (d) => { grid.row = Math.max(0, Math.min(photos.shown - 1, grid.row + d)) }
                 onAnalyze: win.runCommand("ai.analyze")
                 onPick: (r) => { grid.row = r }
@@ -317,7 +338,7 @@ Window {
     CullWindow { id: cullWindow; sourceItem: appContent }
     AiCenterWindow { id: aiCenterWindow; sourceItem: appContent }
     CullMini { }
-    HelpMenu { menuX: top.helpX }
+    HelpMenu { id: helpMenu; menuX: top.helpX }
     Rectangle {   // the splash scenes of the mockup, drawn over the window (the real splash is SplashWindow.qml)
         z: 120; anchors.fill: parent; color: "#05060a"; visible: reference.view.splash.on && reference.view.splash.preview
         Item { anchors.centerIn: parent; width: 765; height: 451
@@ -328,7 +349,7 @@ Window {
     ShortcutsWindow { id: shortcutsWindow; sourceItem: appContent }
     LibraryWindow { id: libraryWindow; sourceItem: appContent }
     FileAssocWindow { id: fileAssocWindow; sourceItem: appContent }
-    Viewer { id: viewer; onMoveRequested: (r) => win.chooseDestination("move", r) }
+    Viewer { id: viewer; enabled: !win.modalInputBlocked; onMoveRequested: (r) => win.chooseDestination("move", r) }
     EditorStage { id: editorStage }
     ContextMenu { id: ctxHost }
     Toasts { }
@@ -352,6 +373,7 @@ Window {
         function onUiRequest(what) {
             if (what === "settings") UiState.settingsOpen = true
             else if (what === "cull") cull.openCull()
+            else if (what === "best") UiState.bestOfOpen = true
             else if (what === "coll" || what === "faces" || what === "drop") UiState.tab = what
         }
     }
@@ -395,11 +417,15 @@ Window {
         onAccepted: libraryNav.openUrl(selectedFolder.toString())
     }
     Connections { target: UiState; function onOpenFolderRequested() { folderDialog.open() } }
-    Connections { target: photos; function onFolderChanged() { grid.row = 0 } }
+    Connections {
+        target: photos
+        function onFolderChanged() { grid.row = 0 }
+        function onScopeAboutToChange(kind, ident) { win.savePositionNow() }
+    }
 
     // Session memory: the photo the person is on is saved a moment after it changes and when the window closes; opening the folder again puts the grid
     // back on it (library_nav.py, the Widgets' own keys).
-    function savePositionNow() { var d = photos.get(grid.row); if (d && d.path) libraryNav.savePosition(d.path) }
+    function savePositionNow() { if (photos.scopeKind !== "") return; var d = photos.get(grid.row); if (d && d.path) libraryNav.savePosition(d.path) }
     Timer { id: positionTimer; interval: 700; onTriggered: win.savePositionNow() }
     Connections { target: grid.view; function onCurrentIndexChanged() { positionTimer.restart() } }
     Connections { target: libraryNav; function onPositionRestored(row) { grid.row = row; grid.view.positionViewAtIndex(row + grid.nf, GridView.Center) } }
@@ -485,6 +511,8 @@ Window {
         if (tab === "" || UiState.tabs.indexOf(tab) >= 0) UiState.tab = tab
         var inspector = uiMemory.get("inspector", UiState.insp)
         if (typeof inspector === "boolean") UiState.insp = inspector
+        var inspectorTab = uiMemory.get("inspectorTab", 0)
+        if (typeof inspectorTab === "number" && Number.isInteger(inspectorTab) && inspectorTab >= 0 && inspectorTab <= 2) insp.tab = inspectorTab
         var density = uiMemory.get("density", UiState.dens)
         if (["s", "m", "l"].indexOf(density) >= 0) UiState.dens = density
         var railOrder = uiMemory.get("railOrder", []), barOrder = uiMemory.get("barOrder", [])

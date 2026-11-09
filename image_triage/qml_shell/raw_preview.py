@@ -20,6 +20,7 @@ from .. import photocraft_bridge as bridge
 from ..full_render import _without_host_settings
 
 _frames = OrderedDict()
+_thumbnails = OrderedDict()
 _frame_lock = threading.Lock()
 
 
@@ -28,8 +29,16 @@ class _Images(QQuickImageProvider):
         super().__init__(QQuickImageProvider.Image)
 
     def requestImage(self, key, size, requested):
+        key, _, clip = key.partition("?crop=")
         with _frame_lock:
-            image = _frames.get(key, QImage())
+            image = (_thumbnails if key.startswith("thumb/") else _frames).get(key, QImage())
+        if clip and not image.isNull():
+            try:
+                x, y, w, h = [int(v) for v in clip.split(",")]
+                if 0 <= x < image.width() and 0 <= y < image.height() and 0 < w <= image.width()-x and 0 < h <= image.height()-y:
+                    image = image.copy(x, y, w, h)
+            except ValueError:
+                pass
         size.setWidth(image.width())
         size.setHeight(image.height())
         return image
@@ -54,11 +63,27 @@ def has_frame(url):
         return url.removeprefix("image://rawpreview/") in _frames
 
 
+def frame_image(url):
+    """Uncropped display pixels for host AI tools; Qt shares the immutable buffer."""
+    with _frame_lock:
+        return QImage(_frames.get(url.removeprefix("image://rawpreview/"), QImage()))
+
+
 def clear_frames(owner):
     with _frame_lock:
         for key in list(_frames):
             if key.startswith(owner + "/"):
                 del _frames[key]
+        for key in list(_thumbnails):
+            if key.startswith("thumb/"+owner+"/"):del _thumbnails[key]
+
+
+def put_thumbnail(key,image):
+    key="thumb/"+key
+    with _frame_lock:
+        _thumbnails[key]=image
+        while len(_thumbnails)>32:_thumbnails.popitem(last=False)
+    return "image://rawpreview/"+key
 
 
 def discard_frame(url):
@@ -150,6 +175,8 @@ class Connection:
 class PreviewWorker(QObject):
     completed = Signal(int, object)
     sampled = Signal(int, object)
+    maskSampled = Signal(int, object)
+    coverageReady = Signal(int, object)
     failed = Signal(int, str)
 
     def __init__(self, path, parent=None):
@@ -161,9 +188,9 @@ class PreviewWorker(QObject):
         self._thread = None
         self._closing = False
 
-    def submit(self, revision, path, original, draft, quality="settled", sample=None):
+    def submit(self, revision, path, original, draft, quality="settled", sample=None, coverage=None):
         with self._condition:
-            self._queued = revision, path, deepcopy(original), deepcopy(draft), quality, sample
+            self._queued = revision, path, deepcopy(original), deepcopy(draft), quality, sample, deepcopy(coverage)
             if self._thread is None:
                 self._thread = threading.Thread(target=self._run, daemon=True, name="raw-preview-worker")
                 self._thread.start()
@@ -178,7 +205,7 @@ class PreviewWorker(QObject):
                     self._condition.wait_for(lambda: self._closing or self._queued is not None)
                     if self._closing:
                         return
-                    revision, path, original, draft, quality, sample = self._queued
+                    revision, path, original, draft, quality, sample, coverage = self._queued
                     self._queued = None
                 started = time.perf_counter()
                 try:
@@ -202,15 +229,28 @@ class PreviewWorker(QObject):
                         baseline = self._connection.call({**request, "quality": "settled", "op": "open", "path": path, "edge": 1800,
                             "recipe": _without_host_settings({"version": 1, "cameraRaw": original})})
                         source = source_key
-                    result = (self._connection.call({**request, "op": "render", "recipe": {"version": 1, "cameraRaw": {}}})
+                    if isinstance(sample, dict):
+                        settings = {k:v for k,v in draft.items() if k != "masks"}
+                        result = self._connection.call({**request,"op":"render","recipe":_without_host_settings({"version":1,"cameraRaw":settings}),"sample":sample["area"]})
+                        if "sampleRGB" not in result[0]:
+                            raise RuntimeError("Range sampling needs the updated RAW preview helper.")
+                    else:
+                        result = (self._connection.call({**request, "op": "render", "recipe": {"version": 1, "cameraRaw": {}}})
                         if sample is not None else baseline if draft == original else self._connection.call({**request, "op": "render",
                         "recipe": _without_host_settings({"version": 1, "cameraRaw": draft})}))
                     if bridge.file_signature(path) != signature:
                         raise RuntimeError("The RAW changed during preview. Reopen the editor.")
-                    if sample is not None:
+                    if isinstance(sample, dict):
+                        self.maskSampled.emit(revision,(result[0],sample))
+                    elif sample is not None:
                         self.sampled.emit(revision, (result[1], sample))
                     else:
                         self.completed.emit(revision, (result, baseline, (time.perf_counter()-started)*1000, path))
+                        if coverage:
+                            settings={k:v for k,v in draft.items() if k!="masks"}
+                            header,image=self._connection.call({**request,"op":"render","recipe":_without_host_settings({"version":1,"cameraRaw":settings}),"coverage":coverage})
+                            if not header.get("maskCoverage"):raise RuntimeError("Mask overlays need the updated RAW preview helper.")
+                            self.coverageReady.emit(revision,(image,coverage))
                 except Exception as error:
                     if self._connection:
                         self._connection.close()

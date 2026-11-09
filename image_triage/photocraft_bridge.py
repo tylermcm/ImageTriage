@@ -146,7 +146,7 @@ RECIPE_ARRAYS = {"curveSplits": 3, "hslHue": 8, "hslSat": 8, "hslLum": 8, "calib
 RECIPE_CALIBRATION_FIELDS = frozenset(("calibShadowTint", "calibHue", "calibSat"))
 RECIPE_CURVES = ("pointCurve", "pointCurveRed", "pointCurveGreen", "pointCurveBlue")
 RECIPE_WHEELS = ("gradeShadows", "gradeMidtones", "gradeHighlights", "gradeGlobal")
-RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle", "glow", "pointColors", "superResolution", "masks"}
+RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle", "glow", "pointColors", "superResolution", "masks", "hostCrop", "retouch"}
 
 
 def _recipe_value_ok(value) -> bool:
@@ -171,6 +171,13 @@ def require_calibration_support(camera_raw, supported: bool) -> None:
     settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
     if isinstance(settings, dict) and RECIPE_CALIBRATION_FIELDS.intersection(settings) and not supported:
         raise PhotoCraftCompatibilityError("This photo uses Calibration settings. Select a PhotoCraft build with Calibration support to preserve those edits.")
+
+
+def require_retouch_support(camera_raw, supported: bool) -> None:
+    recipe = camera_raw.get("recipe") if isinstance(camera_raw, dict) else None
+    settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
+    if isinstance(settings,dict) and settings.get("retouch") and not supported:
+        raise PhotoCraftCompatibilityError("This photo uses RAW retouch strokes. Select the updated PhotoCraft build to preserve them.")
 
 
 def require_masks_support(camera_raw, supported: bool) -> None:
@@ -206,6 +213,12 @@ def classify_recipe(recipe) -> tuple[str, str]:
             valid = (isinstance(values, list)
                      and len(values) == (1 if name == "calibShadowTint" else 3)
                      and all(_recipe_value_ok(v) and -100 <= v <= 100 for v in values))
+        elif name == "hostCrop":
+            from .raw_crop import valid as crop_valid
+            valid = crop_valid(value)
+        elif name == "retouch":
+            from .raw_retouch import valid as retouch_valid
+            valid=retouch_valid(value)
         elif name == "masks":
             valid = _masks_valid(value)
         elif name == "superResolution":
@@ -248,7 +261,10 @@ def classify_recipe(recipe) -> tuple[str, str]:
     identity = all(settings.get(name, 0) == 0 for name in RECIPE_ACTIVE_FIELDS)
     identity = identity and settings.get("glow", {}).get("amount", 0) == 0
     identity = identity and settings.get("superResolution") is not True
+    from .raw_crop import active as crop_active
+    identity = identity and not crop_active(settings.get("hostCrop"))
     identity = identity and not _masks_active(settings.get("masks", []))
+    identity = identity and not any(s["opacity"]>0 for s in settings.get("retouch",[]))
     identity = identity and all(all(sample.get(k, 0) == 0 for k in ("hue", "saturation", "luminance", "variance"))
                                 for sample in settings.get("pointColors", []))
     identity = identity and all(all(v == 0 for v in settings.get(name, [])) for name in ("hslHue", "hslSat", "hslLum", "calibHue", "calibSat"))
@@ -714,6 +730,7 @@ class PhotoCraftControl:
         require_calibration_support(camera_raw, getattr(self, "camera_raw_calibration_supported", False) is True)
         require_super_resolution_support(camera_raw, getattr(self, "camera_raw_super_resolution_supported", False) is True)
         require_masks_support(camera_raw, getattr(self, "camera_raw_masks_supported", False) is True)
+        require_retouch_support(camera_raw, getattr(self,"camera_raw_retouch_supported",False) is True)
         params = {"path": _automation_path(path)}
         if replace:
             params["replace"] = True
@@ -752,6 +769,7 @@ class PhotoCraftControl:
         self.camera_raw_calibration_supported = capabilities.get("cameraRawCalibration", 0) >= 1
         self.camera_raw_super_resolution_supported = capabilities.get("cameraRawSuperResolution", 0) >= 1
         self.camera_raw_masks_supported = capabilities.get("cameraRawMasks", 0) >= 1
+        self.camera_raw_retouch_supported = capabilities.get("cameraRawRetouch", 0) >= 1
         self.camera_raw_host_job_supported = capabilities.get("cameraRawHostJob", 0) >= 1
         self.camera_raw_host_tools_supported = capabilities.get("cameraRawHostTools", 0) >= 1  # ui.hostJob takes the list of kinds the host can run
         self.filmstrip_supported = capabilities.get("filmstrip", 0) >= 1

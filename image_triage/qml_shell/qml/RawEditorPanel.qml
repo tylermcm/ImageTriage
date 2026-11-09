@@ -45,9 +45,11 @@ Rectangle {
     onVisibleChanged: {
         if (!visible) { before = false; whiteBalancePicking = false; tool = "Adjust" }
         else refreshCapture()
+        if (model) model.setCropEditing(visible && tool === "Crop")
     }
     Connections { target: captureData; function onReady(path) { if (path === panel.photoPath) panel.refreshCapture() } }
     onToolChanged: {
+        if (model) model.setCropEditing(visible && tool === "Crop")
         whiteBalancePicking = false
         if (scroll.contentItem) scroll.contentItem.contentY = 0
     }
@@ -140,34 +142,7 @@ Rectangle {
         ToolTip.text: "This adjustment is not connected yet."
         ToolTip.delay: 500
     }
-    component Section: Column {
-        id: section
-        property string title: ""
-        property bool expanded: false
-        property int inset: 13
-        default property alias contents: body.data
-        width: parent.width
-        Item {
-            width: parent.width; height: 36.84
-            Copy {
-                x: section.inset; anchors.verticalCenter: parent.verticalCenter
-                text: "\u203a"; color: panel.subtle; font.pixelSize: 16
-                rotation: section.expanded ? 90 : 0
-            }
-            Copy { x: section.inset + 13; anchors.verticalCenter: parent.verticalCenter; text: section.title; font.weight: Font.Bold }
-            TapHandler { onTapped: section.expanded = !section.expanded }
-            HoverHandler { cursorShape: Qt.PointingHandCursor }
-            Accessible.role: Accessible.Button; Accessible.name: section.title
-            Accessible.onPressAction: section.expanded = !section.expanded
-        }
-        Column {
-            id: body
-            visible: section.expanded
-            width: parent.width - section.inset * 2; x: section.inset
-            bottomPadding: 10
-        }
-        Rectangle { width: parent.width; height: 1; color: panel.line }
-    }
+    component Section: RawAdjustmentSection {}
     component Choice: Row {
         id: choice
         property string label: ""
@@ -375,9 +350,9 @@ Rectangle {
             Column {
                 visible: panel.tool === "Crop"; x: 13; width: parent.width - 26; topPadding: 12
                 PageTitle { text: "Crop & Expand" }
-                Check { label: "Enable Expand"; height: 37 }
-                Choice { label: "Preset"; width: 131; choices: ["Original", "1:1", "4:5", "3:2", "16:9"] }
-                Check { label: "Lock aspect ratio" }
+                Copy { width: parent.width; text: "Drag on the photo to draw a crop. Hold Ctrl for a free crop. Drag inside to move it, or drag a corner to resize."; wrapMode: Text.WordWrap; color: panel.muted; font.pixelSize: 12; bottomPadding: 12 }
+                SSelect { objectName: "rawCropRatio"; width: parent.width; options: ["Original", "Free", "1:1", "4:5", "3:2", "16:9"].map(function (v) { return {label: v, value: v} }); current: panel.model.values.hostCrop.ratio; enabled: panel.editable; onPicked: (value) => panel.model.setCropRatio(value) }
+                Action { text: "Reset crop"; enabled: panel.editable; onClicked: panel.model.resetCrop() }
                 Field { label: "Angle"; low: -45; high: 45; step: 0.1 }
                 Grid {
                     width: parent.width; columns: 2; spacing: 6
@@ -397,77 +372,17 @@ Rectangle {
                     inset: 0; topPadding: 8; title: "Generative Expand"; Pending {} }
                 Section {
                     inset: 0; topPadding: 8; title: "Trim"; Pending {} }
-                Pending {}
+                Copy { width: parent.width; text: "Crop is ready. Rotation, geometry and expansion are not available yet."; wrapMode: Text.WordWrap; color: panel.subtle; font.pixelSize: 11; topPadding: 12 }
             }
-            Column {
-                visible: panel.tool === "Mask"; x: 13; width: parent.width - 16; topPadding: 12
-                PageTitle { text: "Create New Mask"; height: 22 }
-                Row {
-                    width: parent.width; spacing: 7; topPadding: 10; bottomPadding: 10
-                    Repeater {
-                        model: [
-                            {name: "Subject", path: "M12 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM5 21v-2a7 7 0 0 1 14 0v2z"},
-                            {name: "Sky", path: "M3 19V5h18v14zM3 16l6-6 4 4 3-3 5 5"},
-                            {name: "Background", path: "M3 3h18v18H3zM3 17l6-7 4 5 3-3 5 5"}
-                        ]
-                        delegate: Rectangle {
-                            required property var modelData
-                            width: (parent.width - 14) / 3; height: 64; radius: 8
-                            color: panel.raised; border.color: panel.line
-                            Icon { anchors.horizontalCenter: parent.horizontalCenter; y: 10; size: 20; path: parent.modelData.path; color: panel.muted }
-                            Copy { width: parent.width; y: 36; text: parent.modelData.name; horizontalAlignment: Text.AlignHCenter }
-                        }
-                    }
-                }
-                Repeater {
-                    model: ["Landscape", "Objects", "Brush", "Linear Gradient", "Radial Gradient"]
-                    delegate: Item {
-                        required property string modelData
-                        width: parent.width; height: 37
-                        Copy { text: parent.modelData; x: 10; anchors.verticalCenter: parent.verticalCenter }
-                        Copy { text: "\uff0b"; color: panel.subtle; anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter }
-                    }
-                }
-                Section {
-                    inset: 0; topPadding: 8; title: "Range"; Row { spacing: 6; Action { text: "Color"; pending: true; enabled: false } Action { text: "Luminance"; pending: true; enabled: false } } }
-                Section {
-                    inset: 0; topPadding: 8; title: "People"; Copy { width: parent.width; text: "Availability depends on the photo and installed models."; wrapMode: Text.WordWrap; color: panel.muted; font.pixelSize: 11 } }
-                Section {
-                    inset: 0; topPadding: 8
-                    title: "Local adjustments"; expanded: true
-                    Copy { text: "No masks yet"; color: panel.muted; bottomPadding: 14 }
-                    Field { label: "Amount"; low: 0; high: 100; initialValue: 45 }
-                }
-                Pending {}
+            RawMaskPanel {
+                objectName: "rawMaskPanel"
+                visible: panel.tool === "Mask"; x: 13; width: parent.width-26; topPadding: 12
+                model: panel.model.maskEditor; raw: panel.model
             }
-            Column {
-                visible: panel.tool === "Remove"; x: 13; width: parent.width - 16; topPadding: 12
-                PageTitle { text: "Remove"; height: 22 }
-                Row { width: parent.width; spacing: 7; topPadding: 10; bottomPadding: 6
-                    Repeater { model: ["Remove", "Heal", "Clone"]; delegate: Action { required property string modelData; text: modelData; width: (parent.width - 14) / 3; height: 39; selected: modelData === "Remove"; pending: true; enabled: false } }
-                }
-                Check { label: "Use Generative AI" }
-                Check { label: "Detect Objects" }
-                Field { label: "Size"; low: 4; high: 100 }
-                Field { label: "Opacity"; low: 0; high: 100 }
-                Check { label: "Show overlay"; checked: true; height: 37 }
-                Check { label: "Visualize spots" }
-                Copy { text: "0 retouch points"; topPadding: 12; bottomPadding: 12 }
-                Action { text: "Clear retouch points"; pending: true; enabled: false }
-                Section {
-                    inset: 0; topPadding: 8
-                    title: "Distraction Removal"; expanded: true
-                    Repeater {
-                        model: ["Reflections", "People", "Blemishes", "Dust"]
-                        delegate: Item {
-                            required property string modelData
-                            width: parent.width; height: 36.84
-                            Copy { text: parent.modelData; x: 10; anchors.verticalCenter: parent.verticalCenter }
-                            Copy { text: "\u203a"; color: panel.subtle; anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter }
-                        }
-                    }
-                }
-                Pending {}
+            RawRetouchPanel {
+                objectName: "rawRetouchPanel"
+                visible: panel.tool === "Remove"; x: 13; width: parent.width-26; topPadding: 12
+                model: panel.model.retouchEditor; raw: panel.model
             }
             Column {
                 visible: panel.tool === "Red Eye"; x: 13; width: parent.width - 16; topPadding: 12

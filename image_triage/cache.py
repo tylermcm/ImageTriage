@@ -9,7 +9,7 @@ from queue import SimpleQueue
 from threading import Lock, Thread
 from typing import Callable
 
-from PySide6.QtCore import QStandardPaths
+from PySide6.QtCore import QIODevice, QSaveFile, QStandardPaths
 from PySide6.QtGui import QImage, QImageReader
 
 from . import memtrace
@@ -272,7 +272,14 @@ class DiskThumbnailCache:
 
         target = self._file_path(key)
         target.parent.mkdir(parents=True, exist_ok=True)
-        image.save(str(target), "JPEG", quality=88)
+        output = QSaveFile(str(target))
+        if not output.open(QIODevice.OpenModeFlag.WriteOnly):
+            return
+        if not image.save(output, "JPEG", 88):
+            output.cancelWriting()
+            return
+        if not output.commit():
+            return
 
         self._save_count += 1
         if self._save_count % _EVICTION_CHECK_INTERVAL == 0:

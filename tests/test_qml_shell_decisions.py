@@ -112,6 +112,33 @@ def test_it_is_the_widgets_decision_store(qapp, folder):
     assert [p.replace("\\", "/").rsplit("/", 1)[-1] for p in paths] == ["b.jpg"]
 
 
+def test_cull_bulk_apply_and_single_undo_persist_exact_decisions(qapp, folder):
+    from image_triage.qml_shell.cull_model import CullModel
+
+    photos, bridge, _ = open_folder(qapp, folder)
+    photos.setDecision(row_of(photos, "a.jpg"), "win")
+    photos.setDecision(row_of(photos, "b.jpg"), "keep")
+    photos.setRating(row_of(photos, "b.jpg"), 4)
+    cull = CullModel(photos, memory=True, parent=qapp)
+    cull._flags = {row["path"]: "soft" for row in photos.collect()}
+    cull._set(done=True, page="apply")
+    cull.apply()
+    deadline = time.monotonic() + 5
+    while cull.applying and time.monotonic() < deadline:
+        pump(qapp, .02)
+    assert not cull.applying
+    bridge.flush()
+    again, bridge2, _ = open_folder(qapp, folder)
+    assert {r["name"]: (r["decision"], r["rating"]) for r in again.all_rows()} == {
+        "a.jpg": ("win", 0), "b.jpg": ("rej", 4), "c.jpg": ("rej", 0)}
+    cull.undo()
+    bridge.flush()
+    restored, _, _ = open_folder(qapp, folder)
+    assert {r["name"]: (r["decision"], r["rating"]) for r in restored.all_rows()} == {
+        "a.jpg": ("win", 0), "b.jpg": ("keep", 4), "c.jpg": ("", 0)}
+    assert not bridge.failures and not bridge2.failures
+
+
 def test_clearing_a_decision_removes_it_from_the_store(qapp, folder):
     photos, bridge, _ = open_folder(qapp, folder)
     row = row_of(photos, "a.jpg")

@@ -139,6 +139,7 @@ def test_restoring_and_applying_and_undoing(qapp, photos, cull):
     cull.toApply()
     assert cull.view["page"] == "apply" and cull.view["applyLabel"] == "Mark 2 as Rejects"
     cull.apply()
+    pump(qapp, .2)
     decisions = {r["name"]: r["decision"] for r in photos.collect()}
     assert [n for n, d in decisions.items() if d == "rej"] == ["DSC_4207", "DSC_4226"] and cull.view["doneTitle"] == "2 frames marked as Rejects"
     cull.undo()
