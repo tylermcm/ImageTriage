@@ -78,7 +78,7 @@ class _AnnotationPersistTask(QRunnable):
             if entry.record_path not in persisted_paths:
                 continue
             try:
-                sync_sidecar_annotation(entry.record, entry.annotation)
+                sync_sidecar_annotation(entry.record, entry.annotation, entry.previous_annotation)
             except Exception as exc:  # pragma: no cover - worker/runtime path
                 warning_count += 1
                 self.result_queue.put(("warning", entry.record_path, str(exc)))
@@ -152,12 +152,16 @@ class AnnotationPersistenceQueue(QObject):
         normalized_path = record_path or record.path
         current = _clone_annotation(annotation_delta)
         previous = _clone_annotation(previous_annotation)
+        waiting = self._pending.get(normalized_path)
+        # Several changes to one photo before a write become one write: what the photo had before the first of them is what
+        # the sidecar still holds, and that is what the writer compares against.
+        written_before = waiting.previous_annotation if waiting is not None else previous
         self._pending[normalized_path] = AnnotationQueueEntry(
             record_path=normalized_path,
             record=record,
             session_id=session_id,
             annotation=current,
-            previous_annotation=previous,
+            previous_annotation=written_before,
             winner_sync=winner_sync,
         )
         if previous_annotation is not None:
