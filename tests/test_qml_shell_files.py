@@ -333,3 +333,36 @@ def test_a_trash_that_fails_part_way_puts_back_the_photo_it_was_on(qapp, world, 
     monkeypatch.setattr(fa.shutil, "move", real)
     assert (w.shoot / "a.nef").exists() and (w.shoot / "a.jpg").exists()
     assert w.toasts.items[-1]["title"] == "Could not move them to the recycle bin"
+
+
+def _recipe(folder, photo_name):
+    from image_triage.edit_storage import EDIT_STORAGE_ROOT_NAME
+
+    root = folder / EDIT_STORAGE_ROOT_NAME
+    root.mkdir(exist_ok=True)
+    target = root / f"{photo_name}.cameraraw.json"
+    target.write_text('{"version": 1}', encoding="utf-8")
+    return target
+
+
+def test_a_deleted_photos_edits_go_with_it_and_come_back_with_it(qapp, world):
+    w = world
+    recipe = _recipe(w.shoot, "b.jpg")
+    w.files.deleteRow(row_of(w.photos, "b"))
+    assert not recipe.exists() and (w.tmp / "trash" / "b.jpg.cameraraw.json").exists()   # nothing left for a later b.jpg to inherit
+    assert w.photos.undo() == "delete of b.jpg"
+    pump(qapp, 0.8)
+    assert recipe.exists() and (w.shoot / "b.jpg").exists()
+
+
+def test_a_moved_photos_edits_move_with_it_and_back_on_undo(qapp, world):
+    from image_triage.edit_storage import EDIT_STORAGE_ROOT_NAME
+
+    w = world
+    recipe = _recipe(w.shoot, "c.jpg")
+    dest = w.tmp / "delivered"
+    w.files.moveRow(row_of(w.photos, "c"), str(dest))
+    assert not recipe.exists() and (dest / EDIT_STORAGE_ROOT_NAME / "c.jpg.cameraraw.json").exists()
+    assert w.photos.undo() == "move of c.jpg"
+    pump(qapp, 0.8)
+    assert recipe.exists() and not (dest / EDIT_STORAGE_ROOT_NAME / "c.jpg.cameraraw.json").exists()

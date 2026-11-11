@@ -16,12 +16,34 @@ from types import SimpleNamespace
 
 from PySide6.QtCore import QFile, QObject, Signal, Slot
 
+from ..edit_carry import carry_edits, edit_files_for
 from ..file_ops import FileMove, bundle_destinations, copy_paths, move_paths, record_paths
 from ..models import SessionAnnotation
 from .decision_bridge import session_id
 
 SAFE_TRASH = "Safe Trash (Undoable)"
 RECENT_KEY = "folders/recent_destinations"
+
+
+def delete_bundle(record) -> tuple[str, ...]:
+    """Everything that goes when a photo is deleted: its files, its sidecars and its edit data (which would otherwise be left for a later file of the same name to inherit)."""
+    paths = list(record_paths(record))
+    seen = {os.path.normcase(os.path.normpath(p)) for p in paths}
+    for image in record.stack_paths:
+        for item in edit_files_for(image):
+            key = os.path.normcase(os.path.normpath(str(item)))
+            if key not in seen:
+                seen.add(key)
+                paths.append(str(item))
+    return tuple(paths)
+
+
+def _carry(moves, toast, *, back: bool = False) -> None:
+    """Take the edit data along with photos that were just moved (or moved back)."""
+    pairs = [(m.target_path, m.source_path) if back else (m.source_path, m.target_path) for m in moves]
+    left = carry_edits(pairs)
+    if left:
+        toast("warn", "Some edits did not move with the photo", ", ".join(left[:3]) + (f" and {len(left) - 3} more" if len(left) > 3 else ""))
 
 
 def _is_recycle_folder(folder: str) -> bool:
@@ -122,7 +144,7 @@ class FileActions(QObject):
         if record is None:
             return
         folder = self._photos.folder_dir()
-        bundle = record_paths(record)
+        bundle = delete_bundle(record)
         name = record.name
         if _is_recycle_folder(folder):
             self._ask(f"Delete {name} permanently?", "It is in a recycle bin, so this cannot be undone.", "Delete", lambda: self._delete_for_good(record, bundle))
@@ -166,7 +188,7 @@ class FileActions(QObject):
         trashed, failed = [], []
         for record in records:
             ok = True
-            for path in record_paths(record):
+            for path in delete_bundle(record):
                 if os.path.exists(path):
                     handle = QFile(path)
                     ok = (handle.moveToTrash() if hasattr(handle, "moveToTrash") else False) and ok
@@ -181,7 +203,7 @@ class FileActions(QObject):
         gone, failed = [], ""
         for record in records:
             try:
-                for path in record_paths(record):
+                for path in delete_bundle(record):
                     if os.path.exists(path):
                         os.remove(path)
             except OSError as exc:
@@ -238,7 +260,7 @@ class FileActions(QObject):
             root.mkdir(parents=True, exist_ok=True)
             for row in rows:
                 moves = []
-                _move_bundle(record_paths(row["record"]), str(root), moves)
+                _move_bundle(delete_bundle(row["record"]), str(root), moves)
                 moved.append((row["record"], tuple(moves), row.get("annotation")))
                 moves = []
         except OSError as exc:
@@ -366,6 +388,7 @@ class FileActions(QObject):
             return
         for record, moves, annotation in done:
             self._rekey(record, moves, annotation)
+            _carry(moves, self._toast)
         self._photos.remove_paths([record.path for record, _m, _a in done])
         entry = {}
         entry["id"] = self._photos.push_undo(f"move of {what}", lambda: self._undo_moves(done))
@@ -380,6 +403,8 @@ class FileActions(QObject):
         except OSError as exc:
             self._toast("error", "Could not move them back", str(exc))
             return False
+        for _record, moves, _annotation in done:
+            _carry(moves, self._toast, back=True)
         for record, moves, annotation in done:
             if annotation is not None and not annotation.is_empty:
                 moved = next((m.target_path for m in moves if m.source_path == record.path), "")
@@ -395,6 +420,7 @@ class FileActions(QObject):
         except OSError as exc:
             self._toast("error", f"Could not move {record.name} back", str(exc))
             return False
+        _carry(moves, self._toast, back=True)
         if annotation is not None and not annotation.is_empty:
             moved = next((m.target_path for m in moves if m.source_path == record.path), "")
             if moved:

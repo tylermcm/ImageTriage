@@ -334,6 +334,11 @@ class BatchModel(QObject):
             from ..decision_store import DecisionStore
 
             DecisionStore().move_annotations(session_id(), [(old.path, new, annotation) for old, new, annotation in updates])
+        from ..edit_carry import carry_edits
+
+        left = carry_edits([(m.source_path, m.target_path) for item in renamed for m in item.planned_moves])   # the edits are named after the photo
+        if left and self._toasts is not None:
+            self._toasts.push("warn", "Some edits did not follow the rename", ", ".join(left[:3]))
         if self._toasts is not None:
             entry = {"id": self._photos.push_undo(f"rename of {len(renamed)} photos", lambda: self._undo_rename(renamed, updates))}
             self._toasts.push("success", f"Renamed {len(renamed)} photo{'s' if len(renamed) != 1 else ''}", "", "Undo", lambda: self._photos.undo_entry(entry["id"]))
@@ -350,6 +355,9 @@ class BatchModel(QObject):
             if self._toasts is not None:
                 self._toasts.push("error", "Could not undo the rename", str(exc))
             return False
+        from ..edit_carry import carry_edits
+
+        carry_edits([(m.source_path, m.target_path) for m in back])
         if updates:
             from ..decision_store import DecisionStore
 
