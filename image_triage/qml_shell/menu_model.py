@@ -130,6 +130,11 @@ class MenuModel(QObject):
                 return i
         return -1
 
+    def _action_rows(self, row: int) -> list[int]:
+        """The rows a menu action applies to: the whole selection when the photo that was right-clicked is part of it, else that photo alone."""
+        picked = self._photos.selectionRows(-1)
+        return picked if len(picked) > 1 and row in picked else [row]
+
     def _put_decision(self, path: str, target: str) -> None:
         row = self._row_of(path)
         if row < 0:
@@ -262,6 +267,10 @@ class MenuModel(QObject):
             return
         self.close()
         t = self._toasts
+        many = self._action_rows(row)
+        if key in ("win", "keep", "rej") and len(many) > 1:
+            self._photos.setDecisionMany(many, key)          # one step; Ctrl+Z takes all of them back
+            return
         if key in ("win", "keep", "rej"):
             prev = d.get("decision", "")
             target = "" if prev == key else key
@@ -279,12 +288,12 @@ class MenuModel(QObject):
         elif key.startswith("with:"):
             self._open_with(key[5:], path, name)
         elif key in ("mv:copy", "mv:move"):
-            self.uiRequest.emit("chooseDest", f"{key[3:]}:{row}")       # the window asks for the folder, then calls files.copyRow / moveRow
+            self.uiRequest.emit("chooseDest", f"{key[3:]}:{row}")       # the window asks for the folder, then calls files.copyRows / moveRows on the selection
         elif key.startswith("mv:r"):
             recent = self._recent()
             index = int(key[4:]) if key[4:].isdigit() else -1
             if self._files is not None and 0 <= index < len(recent):
-                self._files.moveRow(row, recent[index])
+                self._files.moveRows(many, recent[index])
         elif key in ("rename", "resize", "convert"):
             self.uiRequest.emit("batch", key)
         elif key == "coll:new":
@@ -311,7 +320,7 @@ class MenuModel(QObject):
                 reveal_in_file_explorer(path)
         elif key == "del":
             if self._files is not None:
-                self._files.deleteRow(row)
+                self._files.deleteRows(many)
         elif key == "flagwhy":
             self.uiRequest.emit("review", path)
         elif key == "flagrestore":

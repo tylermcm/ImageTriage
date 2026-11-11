@@ -72,13 +72,54 @@ def unique_destination(directory: str, filename: str) -> str:
         counter += 1
 
 
+def bundle_destinations(source_paths: tuple[str, ...], destination_dir: str) -> list[str]:
+    """Where each file of one photo's bundle goes in ``destination_dir``, keeping the bundle together.
+
+    When any name is taken, every member gets the same ``_N`` added to the shared stem (``IMG_9_1.CR2``,
+    ``IMG_9_1.JPG``, ``IMG_9_1.CR2.xmp``), so the RAW, its JPEG and its sidecar still pair up afterwards. Renaming
+    only the member that collided would split them.
+    """
+    names = [Path(path).name for path in source_paths]
+    if not names:
+        return []
+    if len({name.casefold() for name in names}) != len(names):
+        # Two members share a name (they came from different folders): no common rename can keep both.
+        taken: set[str] = set()
+        targets: list[str] = []
+        for name in names:
+            counter = 0
+            while True:
+                target = str(Path(destination_dir) / _with_counter(name, "", counter))
+                if target.casefold() not in taken and not os.path.exists(target):
+                    break
+                counter += 1
+            taken.add(target.casefold())
+            targets.append(target)
+        return targets
+    shared = Path(names[0]).stem
+    counter = 0
+    while True:
+        candidates = [Path(destination_dir) / _with_counter(name, shared, counter) for name in names]
+        if not any(candidate.exists() for candidate in candidates):
+            return [str(candidate) for candidate in candidates]
+        counter += 1
+
+
+def _with_counter(name: str, shared_stem: str, counter: int) -> str:
+    if counter <= 0:
+        return name
+    if shared_stem and name.casefold().startswith(shared_stem.casefold()):
+        return f"{name[:len(shared_stem)]}_{counter}{name[len(shared_stem):]}"
+    path = Path(name)
+    return f"{path.stem}_{counter}{path.suffix}"
+
+
 def move_paths(source_paths: tuple[str, ...], destination_dir: str) -> tuple[FileMove, ...]:
     Path(destination_dir).mkdir(parents=True, exist_ok=True)
     file_moves: list[FileMove] = []
     moved_targets: list[FileMove] = []
     try:
-        for source_path in source_paths:
-            destination = unique_destination(destination_dir, Path(source_path).name)
+        for source_path, destination in zip(source_paths, bundle_destinations(source_paths, destination_dir)):
             shutil.move(source_path, destination)
             file_move = FileMove(source_path=source_path, target_path=destination)
             file_moves.append(file_move)
@@ -97,8 +138,7 @@ def copy_paths(source_paths: tuple[str, ...], destination_dir: str) -> tuple[Fil
     file_copies: list[FileMove] = []
     created_targets: list[FileMove] = []
     try:
-        for source_path in source_paths:
-            destination = unique_destination(destination_dir, Path(source_path).name)
+        for source_path, destination in zip(source_paths, bundle_destinations(source_paths, destination_dir)):
             shutil.copy2(source_path, destination)
             file_copy = FileMove(source_path=source_path, target_path=destination)
             file_copies.append(file_copy)
@@ -466,4 +506,7 @@ def record_after_moves(record: ImageRecord, moves: tuple[FileMove, ...]) -> Imag
             )
             for variant in record.variants
         ),
+        has_editor_session=record.has_editor_session,
+        primary_size=record.primary_size,
+        primary_modified_ns=record.primary_modified_ns,
     )

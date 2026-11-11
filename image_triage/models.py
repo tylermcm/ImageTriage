@@ -27,6 +27,19 @@ class ImageRecord:
     variants: tuple[ImageVariant, ...] = ()
     is_folder: bool = False
     has_editor_session: bool = False
+    # The primary file's own size and modified time. ``size`` and ``modified_ns`` are totals over the whole bundle
+    # (companions and edits), so they change when a JPEG or an exported edit appears beside the photo; anything that
+    # asks "is this still the same photo?" must use these. -1 means the record was built without them.
+    primary_size: int = -1
+    primary_modified_ns: int = -1
+
+    @property
+    def identity_size(self) -> int:
+        return self.primary_size if self.primary_size >= 0 else self.size
+
+    @property
+    def identity_modified_ns(self) -> int:
+        return self.primary_modified_ns if self.primary_modified_ns >= 0 else self.modified_ns
 
     @property
     def all_paths(self) -> tuple[str, ...]:

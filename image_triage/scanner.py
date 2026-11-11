@@ -428,6 +428,8 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
                     edited_paths=tuple(item.path for item in edit_files),
                     variants=stack_variants,
                     has_editor_session=_has_editor_session(raw.path, hints),
+                    primary_size=raw.size,
+                    primary_modified_ns=raw.modified_ns,
                 )
             )
 
@@ -460,6 +462,8 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
                 edited_paths=tuple(item.path for item in edit_files),
                 variants=stack_variants,
                 has_editor_session=_has_editor_session(primary.path, hints),
+                primary_size=primary.size,
+                primary_modified_ns=primary.modified_ns,
             )
         )
     return records

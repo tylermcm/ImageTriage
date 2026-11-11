@@ -67,6 +67,7 @@ class PhotoModel(QAbstractListModel):
     loadingChanged = Signal()
     annotationChanged = Signal(object)      # a row's decision or rating changed (the row dict, with its scanner record): save it
     undoChanged = Signal()
+    undoFailed = Signal(str)                         # a step could not be taken back; it stays on the history
     selectionChanged = Signal()             # the set of photos picked with Ctrl, Shift or Ctrl+A changed
     searchChanged = Signal()
     searchRequested = Signal(str)
@@ -619,25 +620,35 @@ class PhotoModel(QAbstractListModel):
         """Take back one specific step (a toast's Undo button), wherever it is in the history."""
         for i, step in enumerate(self._history):
             if step.get("id") == entry_id:
-                del self._history[i]
-                self.undoChanged.emit()
-                return bool(step["call"]())
+                try:
+                    done = bool(step["call"]())
+                except OSError:
+                    done = False
+                if done:  # a step that could not be taken back stays, so it can be tried again
+                    self._history = [other for other in self._history if other is not step]
+                    self.undoChanged.emit()
+                return done
         return False
 
     @Slot(result=str)
     def undo(self) -> str:
         """Step back the last change made in this folder (a decision, a rating, a delete or a move); returns what it undid ("" when there is nothing)."""
         while self._history:
-            step = self._history.pop()
-            self.undoChanged.emit()
+            step = self._history[-1]
             if "call" in step:
                 try:
                     done = bool(step["call"]())
                 except OSError:
                     done = False
-                if done:
-                    return step["label"]
-                continue
+                if not done:
+                    # Leave it on the history and stop: falling through would take back an older, unrelated change.
+                    self.undoFailed.emit(step["label"])
+                    return ""
+                self._history.pop()
+                self.undoChanged.emit()
+                return step["label"]
+            self._history.pop()
+            self.undoChanged.emit()
             target = next((r for r in self._all if r["path"] == step["path"]), None)
             if target is None:
                 continue                           # the photo is gone (moved or deleted): its change cannot be taken back

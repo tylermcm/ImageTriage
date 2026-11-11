@@ -315,8 +315,11 @@ Window {
     // delete, move and copy (file_actions.py): the folder to move or copy to, and the questions it may ask (delete for good)
     property string destMode: "move"
     property int destRow: -1
-    function chooseDestination(mode, row) { destMode = mode; destRow = row; destDialog.title = mode === "copy" ? "Copy to folder" : "Move to folder"; destDialog.open() }
-    FolderDialog { id: destDialog; onAccepted: { var path = selectedFolder.toString().replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/"); if (win.destMode === "copy") fileActions.copyRow(win.destRow, path); else fileActions.moveRow(win.destRow, path); viewer.refocus() } onRejected: viewer.refocus() }
+    // The rows a command applies to: the photos picked on purpose, else the one the grid is on. A right-click on a photo outside the selection means that photo alone.
+    function actionRows(row) { var picked = photos.selectionRows(row); return picked.length > 1 && picked.indexOf(row) >= 0 ? picked : [row] }
+    property var destRows: []
+    function chooseDestination(mode, row, rows) { destMode = mode; destRow = row; destRows = rows !== undefined ? rows : [row]; destDialog.title = mode === "copy" ? "Copy to folder" : "Move to folder"; destDialog.open() }
+    FolderDialog { id: destDialog; onAccepted: { var path = selectedFolder.toString().replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/"); if (win.destMode === "copy") fileActions.copyRows(win.destRows, path); else fileActions.moveRows(win.destRows, path); viewer.refocus() } onRejected: viewer.refocus() }
     property string fileQuestion: ""
     ConfirmCard { id: fileCard; cancelText: "Cancel"; onAccepted: { fileActions.answer(win.fileQuestion, true); viewer.refocus() } onRejected: { fileActions.answer(win.fileQuestion, false); viewer.refocus() } }
     Connections { target: fileActions; function onConfirmRequested(id, title, body, confirm) { win.fileQuestion = id; fileCard.title = title; fileCard.body = body; fileCard.confirmText = confirm; fileCard.open() } }
@@ -365,7 +368,7 @@ Window {
             else if (what === "clearFilters") { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters(); advFilters.clearApplied() }
             else if (what === "view") { if (arg === "view:names") UiState.showNames = !UiState.showNames; else if (arg === "view:badges") UiState.showBadges = !UiState.showBadges; else UiState.setDens(arg.slice(5)) }
             else if (what === "sort") UiState.sort = arg
-            else if (what === "chooseDest") win.chooseDestination(String(arg).split(":")[0], Number(String(arg).split(":")[1]))
+            else if (what === "chooseDest") win.chooseDestination(String(arg).split(":")[0], Number(String(arg).split(":")[1]), win.actionRows(Number(String(arg).split(":")[1])))
         }
     }
     Connections {   // a button in a help article opens a tab or a window of the shell
@@ -385,7 +388,7 @@ Window {
     CommandPalette { id: commandPalette; sourceItem: appContent }
     Shortcut { sequence: "F1"; enabled: settingsWindow.recording === ""; onActivated: reference.toggleHelp() }
     Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; autoRepeat: false; enabled: editor.active || editor.state === "closing"; onActivated: editor.close() }
-    Shortcut { sequence: "Escape"; enabled: UiState.zen && !viewer.shown; onActivated: win.runCommand("view.zen_mode") }
+    Shortcut { sequence: "Escape"; enabled: UiState.zen && !viewer.shown && !win.modalInputBlocked && !UiState.paletteOpen; onActivated: win.runCommand("view.zen_mode") }
     Shortcut { sequence: "Ctrl+/"; enabled: settingsWindow.recording === ""; onActivated: reference.toggleKeys() }
     Shortcut { sequence: "Ctrl+F"; enabled: settingsWindow.recording === "" && !UiState.settingsOpen && !UiState.paletteOpen && !viewer.shown && !editor.active; onActivated: top.focusSearch() }
     Shortcut { sequence: { void settings.shortcutRevision; return settings.seq("open_command_palette") }
@@ -403,7 +406,9 @@ Window {
         delegate: Shortcut {
             required property var modelData
             sequence: modelData.seq
+            // A dialog over the app owns the keyboard: nothing here may act on the photos behind it (the two windows that toggle on their own key excepted).
             enabled: settingsWindow.recording === "" && (!UiState.settingsOpen || modelData.cmd === "file.workflow_settings")
+                     && (!win.modalInputBlocked || modelData.cmd === "file.workflow_settings" || modelData.cmd === "workflow.handoff_builder")
                      && !(popout.isOpen && (modelData.cmd === "edit.undo" || modelData.cmd === "review.delete_selection"))
             onActivated: win.runShortcut(modelData.cmd)
         }
@@ -451,19 +456,19 @@ Window {
         else if (id === "review.compare_mode") UiState.compare = !UiState.compare
         else if (id === "review.open_preview") popout.open(grid.row)
         else if (id === "window.reset_layout") { UiState.tab = "lib"; UiState.insp = true }
-        else if (id === "review.accept_selection") photos.setDecision(grid.row, "win")
-        else if (id === "review.reject_selection") photos.setDecision(grid.row, "rej")
-        else if (id === "review.keep_selection") photos.setDecision(grid.row, "keep")
+        else if (id === "review.accept_selection") photos.setDecisionMany(photos.selectionRows(grid.row), "win")
+        else if (id === "review.reject_selection") photos.setDecisionMany(photos.selectionRows(grid.row), "rej")
+        else if (id === "review.keep_selection") photos.setDecisionMany(photos.selectionRows(grid.row), "keep")
         else if (id === "file.refresh_folder") { win.savePositionNow(); libraryNav.refreshFolder() }
         else if (id === "file.reveal_folder") libraryNav.reveal(libraryNav.openPath)
         else if (id === "file.browse_library") reference.open("lib")
-        else if (id === "review.delete_selection") fileActions.deleteRow(grid.row)
-        else if (id === "review.move_selection") chooseDestination("move", grid.row)
-        else if (id === "edit.undo") { var what = photos.undo(); toasts.show(what !== "" ? "success" : "info", what !== "" ? "Undid the " + what : "Nothing to undo", "") }
+        else if (id === "review.delete_selection") fileActions.deleteRows(photos.selectionRows(grid.row))
+        else if (id === "review.move_selection") chooseDestination("move", grid.row, photos.selectionRows(grid.row))
+        else if (id === "edit.undo") { win.undoFailed = false; var what = photos.undo(); if (what !== "") toasts.show("success", "Undid the " + what, ""); else if (!win.undoFailed) toasts.show("info", "Nothing to undo", "") }
         else if (id === "file.exit") win.close()
         else if (id === "workflow.share_to_phone") { pocketDrop.refreshLibrary(grid.row); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
-        else if (id === "review.clear_decision") photos.setDecision(grid.row, "")
-        else if (id.indexOf("review.rate.") === 0) photos.setRating(grid.row, Number(id.slice(12)))
+        else if (id === "review.clear_decision") photos.setDecisionMany(photos.selectionRows(grid.row), "")
+        else if (id.indexOf("review.rate.") === 0) photos.setRatingMany(photos.selectionRows(grid.row), Number(id.slice(12)))
         else if (id === "review.reveal") libraryNav.revealFile(photos.get(grid.row).path || "")
         else if (id === "view.names") UiState.showNames = !UiState.showNames
         else if (id === "view.badges") UiState.showBadges = !UiState.showBadges
@@ -498,8 +503,11 @@ Window {
     }
     Connections { target: settings; function onShortcutsChanged() { win.refreshShortcutHints() } }
     TopMenus { id: topMenus; onRun: (id) => win.runCommand(id) }
-    Shortcut { sequence: "Delete"; enabled: !popout.isOpen && !UiState.settingsOpen; onActivated: win.runCommand("review.delete_selection") }
+    Shortcut { sequence: "Delete"; enabled: !popout.isOpen && !UiState.settingsOpen && !win.modalInputBlocked && !UiState.paletteOpen; onActivated: win.runCommand("review.delete_selection") }
     Connections { target: UiState; function onUndoRequested() { win.runCommand("edit.undo") } }
+    // A step that could not be taken back says why itself (the file action's own toast) and stays on the history; "Nothing to undo" would be wrong.
+    property bool undoFailed: false
+    Connections { target: photos; function onUndoFailed(what) { win.undoFailed = true } }
     Connections { target: collections; function onExportRequested() { UiState.handoffOpen = true } }
     Connections { target: UiState; function onZenChanged() { if (UiState.zen) { UiState.zenTab = UiState.tab; UiState.zenInsp = UiState.insp; UiState.tab = ""; UiState.insp = false } else { UiState.tab = UiState.zenTab; UiState.insp = UiState.zenInsp } } }
     Connections { target: UiState; function onCompareChanged() { cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off") } }

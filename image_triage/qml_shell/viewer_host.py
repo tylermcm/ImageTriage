@@ -538,8 +538,14 @@ class ViewerHost(QObject):
 
     @Slot()
     def undo(self) -> None:
-        what = self._photos.undo()
-        self._say(f"Undid the {what}" if what else "Nothing to undo", "info", undo=False)
+        failed: list[str] = []
+        self._photos.undoFailed.connect(failed.append)
+        try:
+            what = self._photos.undo()
+        finally:
+            self._photos.undoFailed.disconnect(failed.append)
+        if what or not failed:                               # a step that could not be taken back has said why itself
+            self._say(f"Undid the {what}" if what else "Nothing to undo", "info", undo=False)
 
     @Slot(int)
     def delete(self, row: int) -> None:

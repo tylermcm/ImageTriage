@@ -53,8 +53,8 @@ Rectangle {
     function runPin(k) {          // what a pinned button does when it is pressed (the buttons below do the same; the "..." menu runs it for the ones it holds)
         if (k === "open") UiState.openFolderRequested()
         else if (k === "undo") UiState.undoRequested()
-        else if (k === "accept") photos.setDecision(row, "keep")
-        else if (k === "reject") photos.setDecision(row, "rej")
+        else if (k === "accept") photos.setDecisionMany(photos.selectionRows(row), "keep")
+        else if (k === "reject") photos.setDecisionMany(photos.selectionRows(row), "rej")
         else if (k === "compare") UiState.compare = !UiState.compare
         else if (k === "preview") popout.open(row)
         else if (k === "rename") UiState.batchMode = "rename"
@@ -149,11 +149,11 @@ Rectangle {
             Popover {
                 id: reviewMenu; name: "review"; placement: 1; parent: rail.over("review") ? moreBtn : reviewBtn
                 PopHeader { caption: "Decision for selection" }
-                PopItem { label: "Mark winner"; icon: "star"; kbd: { void settings.shortcutRevision; return settings.seq("accept_selection") } onClicked: { photos.setDecision(rail.row, "win"); reviewMenu.close() } }
-                PopItem { label: "Keep"; icon: "check"; kbd: { void settings.shortcutRevision; return settings.seq("keep_at_cursor") } onClicked: { photos.setDecision(rail.row, "keep"); reviewMenu.close() } }
-                PopItem { label: "Reject"; icon: "x"; kbd: { void settings.shortcutRevision; return settings.seq("reject_selection") } onClicked: { photos.setDecision(rail.row, "rej"); reviewMenu.close() } }
+                PopItem { label: "Mark winner"; icon: "star"; kbd: { void settings.shortcutRevision; return settings.seq("accept_selection") } onClicked: { photos.setDecisionMany(photos.selectionRows(rail.row), "win"); reviewMenu.close() } }
+                PopItem { label: "Keep"; icon: "check"; kbd: { void settings.shortcutRevision; return settings.seq("keep_at_cursor") } onClicked: { photos.setDecisionMany(photos.selectionRows(rail.row), "keep"); reviewMenu.close() } }
+                PopItem { label: "Reject"; icon: "x"; kbd: { void settings.shortcutRevision; return settings.seq("reject_selection") } onClicked: { photos.setDecisionMany(photos.selectionRows(rail.row), "rej"); reviewMenu.close() } }
                 PopDivider {}
-                PopItem { label: "Clear decision"; icon: "minus"; kbd: "U"; onClicked: { photos.setDecision(rail.row, ""); reviewMenu.close() } }
+                PopItem { label: "Clear decision"; icon: "minus"; kbd: "U"; onClicked: { photos.setDecisionMany(photos.selectionRows(rail.row), ""); reviewMenu.close() } }
             }
         }
         RailButton {
@@ -233,8 +233,8 @@ Rectangle {
                 }
             }
         }
-        RailButton { visible: rail.vis("accept"); icon: "accept"; tip: "Accept selection"; hoverColor: theme.win; onClicked: photos.setDecision(rail.row, "keep") }
-        RailButton { visible: rail.vis("reject"); icon: "reject"; tip: "Reject selection"; hoverColor: theme.rej; onClicked: photos.setDecision(rail.row, "rej") }
+        RailButton { visible: rail.vis("accept"); icon: "accept"; tip: "Keep selection"; hoverColor: theme.win; onClicked: photos.setDecisionMany(photos.selectionRows(rail.row), "keep") }
+        RailButton { visible: rail.vis("reject"); icon: "reject"; tip: "Reject selection"; hoverColor: theme.rej; onClicked: photos.setDecisionMany(photos.selectionRows(rail.row), "rej") }
         RailButton {
             id: sortBtn
             visible: rail.vis("sort"); icon: "sort"; tip: "Sort"; menu: true; on: sortMenu.opened

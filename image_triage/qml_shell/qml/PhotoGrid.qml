@@ -212,7 +212,7 @@ Item {
                 if (k === Qt.Key_Escape) { e.accepted = true; return }
             }
             var shift = (e.modifiers & Qt.ShiftModifier) !== 0, ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
-            if (settings.keyIs("accept_selection", k, e.modifiers)) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") for (var i = 0; i < rows.length; ++i) collections.addSelection(collections.activeId, rows[i]); advance(rows) }
+            if (settings.keyIs("accept_selection", k, e.modifiers)) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") for (var i = 0; i < rows.length; ++i) if (photos.get(rows[i]).decision === "win") collections.addSelection(collections.activeId, rows[i]); advance(rows) }
             else if (settings.keyIs("collect_at_cursor", k, e.modifiers)) root.addToCollection();
             else if (settings.keyIs("keep_at_cursor", k, e.modifiers)) { var kr = pick(); photos.setDecisionMany(kr, "keep"); advance(kr) }
             else if (settings.keyIs("reject_selection", k, e.modifiers)) { var xr = pick(); photos.setDecisionMany(xr, "rej"); advance(xr) }

@@ -11,6 +11,16 @@ from .models import ImageRecord, SessionAnnotation
 from .perf import perf_logger
 
 
+def _row_matches_record(row, record: ImageRecord) -> bool:
+    """Whether a saved decision still belongs to the photo at this path.
+
+    A decision is kept against the primary file's own size and date. Rows saved by earlier builds hold the totals
+    over the whole bundle, so those are accepted too; they are rewritten with the primary's values on the next save.
+    """
+    stored = (row["modified_ns"], row["file_size"])
+    return stored == (record.identity_modified_ns, record.identity_size) or stored == (record.modified_ns, record.size)
+
+
 class DecisionStore:
     DEFAULT_SESSION = "Default"
     SCHEMA_VERSION = 6
@@ -73,7 +83,7 @@ class DecisionStore:
                     row = row_map.get(record.path)
                     if row is None:
                         continue
-                    if row["modified_ns"] != record.modified_ns or row["file_size"] != record.size:
+                    if not _row_matches_record(row, record):
                         continue
                     annotation = SessionAnnotation(
                         winner=bool(row["winner"]),
@@ -122,8 +132,8 @@ class DecisionStore:
                 (
                     normalized_session,
                     record.path,
-                    record.modified_ns,
-                    record.size,
+                    record.identity_modified_ns,
+                    record.identity_size,
                     int(annotation.winner),
                     int(annotation.reject),
                     int(annotation.photoshop),
@@ -177,8 +187,8 @@ class DecisionStore:
                     (
                         normalized_session,
                         record.path,
-                        record.modified_ns,
-                        record.size,
+                        record.identity_modified_ns,
+                        record.identity_size,
                         int(annotation.winner),
                         int(annotation.reject),
                         int(annotation.photoshop),
@@ -221,8 +231,8 @@ class DecisionStore:
                 (
                     normalized_session,
                     record.path,
-                    record.modified_ns,
-                    record.size,
+                    record.identity_modified_ns,
+                    record.identity_size,
                     int(annotation.winner),
                     int(annotation.reject),
                     int(annotation.photoshop),
@@ -267,8 +277,8 @@ class DecisionStore:
                     (
                         normalized_session,
                         record.path,
-                        record.modified_ns,
-                        record.size,
+                        record.identity_modified_ns,
+                        record.identity_size,
                         int(annotation.winner),
                         int(annotation.reject),
                         int(annotation.photoshop),
@@ -585,8 +595,8 @@ class DecisionStore:
         has_decisions = connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'decisions'"
         ).fetchone()
-        self._create_schema(connection)
-        self._ensure_session_row(connection, self.DEFAULT_SESSION)
+        # Rebuild an old sessionless table first: _create_schema indexes decisions(session_id, ...), which fails
+        # against the old shape.
         if has_decisions:
             columns = {
                 row[1]
@@ -629,6 +639,8 @@ class DecisionStore:
                 )
                 connection.execute("DROP TABLE decisions")
                 connection.execute("ALTER TABLE decisions_v3 RENAME TO decisions")
+        self._create_schema(connection)
+        self._ensure_session_row(connection, self.DEFAULT_SESSION)
 
     def _migrate_to_v4(self, connection: sqlite3.Connection) -> None:
         columns = {

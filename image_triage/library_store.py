@@ -384,7 +384,7 @@ class LibraryStore:
                 """,
                 (normalized_id,),
             ).fetchone()
-            start_order = int(row[0] or -1) + 1
+            start_order = int(row[0]) + 1
             connection.executemany(
                 """
                 INSERT INTO collection_items (collection_id, item_path, sort_order)
