@@ -93,7 +93,7 @@ Window {
         // input for the complete fade, including passive pointer handlers.
         enabled: !win.modalInputBlocked && !viewer.visible
         anchors.fill: parent
-        TopBar { id: top; objectName: "topBar"; width: parent.width }
+        TopBar { id: top; objectName: "topBar"; width: parent.width; onSearchLeft: grid.view.forceActiveFocus() }
         StatusBar { id: status; width: parent.width; anchors.bottom: parent.bottom }
 
         Item {

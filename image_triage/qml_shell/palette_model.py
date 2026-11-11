@@ -43,7 +43,7 @@ _COMMANDS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     ("view.burst_groups", "View", "Burst Groups", "", ("burst grouping", "burst shots", "toggle bursts", "capture sequence")),
     ("sort.name", "View", "View: Sort By Name", "", ("view", "sort", "name")),
     ("sort.ai", "View", "View: Sort By AI Score", "", ("view", "sort", "ai score")),
-    ("columns.5", "View", "View: Columns 5 Across", "", ("view", "columns", "5 across")),
+    ("view.cols.5", "View", "View: Columns 5 Across", "", ("view", "columns", "5 across")),
     ("search.advanced_filters", "Search", "Advanced Filters", "", ("metadata filters", "search filters")),
     ("search.save_current", "Search", "Save Current Search", "", ("save search", "save preset")),
     ("search.clear_filters", "Search", "Clear Filters", "clear_filters", ("reset filters", "clear search")),

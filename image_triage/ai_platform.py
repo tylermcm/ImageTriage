@@ -59,9 +59,22 @@ def dll_failure_hint(message: str) -> str:
     )
 
 
-@functools.lru_cache(maxsize=1)
+_gpu_name: str | None = None
+
+
 def nvidia_gpu_name() -> str | None:
-    """The first NVIDIA graphics card's name, or None when there is none (or the driver tool is missing). Asked once per run: it starts a process."""
+    """The first NVIDIA graphics card's name, or None when there is none (or the driver tool is missing).
+
+    A name is remembered for the run (asking starts a process). "Not found" is not: the driver tool can time out on a
+    slow first start, and remembering that would hide the card until the app is restarted.
+    """
+    global _gpu_name
+    if _gpu_name is None:
+        _gpu_name = _query_nvidia_gpu_name()
+    return _gpu_name
+
+
+def _query_nvidia_gpu_name() -> str | None:
     exe = shutil.which("nvidia-smi")
     if exe is None and is_windows():
         candidate = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvidia-smi.exe")

@@ -112,6 +112,7 @@ class CascadeRunTask(QRunnable):
     def run(self) -> None:
         folder_text = str(self.folder)
         scorers = Scorers()
+        self._opened: list[Scorers] = []       # every set of ranker workers this run started, so a cancel or a failure closes them too
         try:
             self.signals.started.emit(folder_text)
             frames = self._read_frames(folder_text)
@@ -132,10 +133,11 @@ class CascadeRunTask(QRunnable):
             self.signals.detail.emit(folder_text, traceback.format_exc())
             self.signals.failed.emit(folder_text, str(error) or error.__class__.__name__)
         finally:
-            try:
-                scorers.close()
-            except Exception:  # noqa: BLE001
-                pass
+            for opened in (scorers, *self._opened):
+                try:
+                    opened.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     # -- steps ---------------------------------------------------------------------------------------------------------------------------------
 
@@ -232,6 +234,7 @@ class CascadeRunTask(QRunnable):
             except Exception as error:  # noqa: BLE001
                 notes.append(f"Ranking skipped: {error}")
                 self.signals.detail.emit(folder, notes[-1])
+        self._opened.append(scorers)
 
         def progress(done: int, total: int) -> None:
             self._progress(folder, STAGES[2], done, total, started)

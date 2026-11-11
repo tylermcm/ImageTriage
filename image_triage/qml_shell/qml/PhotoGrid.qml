@@ -221,6 +221,12 @@ Item {
             else if (ctrl) return;
             else if (shift && (k === Qt.Key_Left || k === Qt.Key_Right || k === Qt.Key_Up || k === Qt.Key_Down))
                 stepTo(currentIndex + (k === Qt.Key_Left ? -1 : k === Qt.Key_Right ? 1 : k === Qt.Key_Up ? -root.cols : root.cols), true);
+            else if (k === Qt.Key_Home) stepTo(0, shift);
+            else if (k === Qt.Key_End) stepTo(count - 1, shift);
+            else if (k === Qt.Key_PageUp || k === Qt.Key_PageDown) {
+                var page = Math.max(1, Math.floor(height / Math.max(1, cellHeight))) * root.cols;
+                stepTo(currentIndex + (k === Qt.Key_PageUp ? -page : page), shift);
+            }
             else if (k === Qt.Key_Escape && photos.picked > 0) photos.clearSelection();
             else if (k === Qt.Key_U) photos.setDecisionMany(pick(), "");
             else if (k >= Qt.Key_1 && k <= Qt.Key_5) photos.setRatingMany(pick(), k - Qt.Key_0);
@@ -274,8 +280,9 @@ Item {
                     readonly property real edge: Math.max(40, Math.min(width, height) * 0.55)
                     readonly property real nameSize: Math.max(13, Math.min(20, width * 0.058))
                     readonly property real groupTop: (height - edge - 10 - nameSize * 1.5) / 2
+                    id: folderCard
                     property int summaryRev: 0
-                    Connections { target: photos; function onFolderSummaryReady(p) { if (p === cell.path) parent.summaryRev++ } }
+                    Connections { target: photos; function onFolderSummaryReady(p) { if (p === cell.path) folderCard.summaryRev++ } }
                     Rectangle { anchors.fill: parent; color: theme.s3; opacity: hover.hovered ? 1 : 0; Behavior on opacity { NumberAnimation { duration: 150 } } }
                     Icon {
                         x: (parent.width - parent.edge) / 2; y: parent.groupTop
@@ -464,11 +471,11 @@ Item {
         Icon { anchors.horizontalCenter: parent.horizontalCenter; name: photos.folderPath === "" ? "library" : (photos.total > 0 ? "funnel" : "view"); size: 52; strokeWidth: 1.2; color: theme.fg3 }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg2; font.pointSize: UiState.pt(14); font.weight: Font.Medium
-            text: photos.folderPath === "" ? "Choose a folder to start triaging images" : (photos.total > 0 ? "No photos match the filters" : "No photos in this folder")
+            text: photos.folderPath === "" ? "Choose a folder to start triaging images" : photos.loadError !== "" ? "This folder could not be read" : (photos.total > 0 ? "No photos match the filters" : "No photos in this folder")
         }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg3; font.pointSize: UiState.pt(11.5)
-            text: photos.folderPath === "" ? "Pick a drive or folder in the Library on the left." : (photos.total > 0 ? "Clear the filters from the bar below to see them." : "It has no supported images and no folders. Pick another from the Library.")
+            text: photos.folderPath === "" ? "Pick a drive or folder in the Library on the left." : photos.loadError !== "" ? photos.loadError + " Press F5 to try again." : (photos.total > 0 ? "Clear the filters from the bar below to see them." : "It has no supported images and no folders. Pick another from the Library.")
         }
     }
     MouseArea {   // right click: the photo's menu, or the folder's menu on empty space (left clicks pass through to the cells)

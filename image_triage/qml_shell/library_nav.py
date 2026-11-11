@@ -436,7 +436,7 @@ class LibraryNavModel(QObject):
             self._watcher.removePaths(old)
         if self._watch_timer is not None:
             self._watch_timer.stop()
-        if folder and self._watching() and os.path.isdir(folder) and path_policy.is_plain_local(folder):
+        if folder and self._watching() and path_policy.is_plain_local(folder) and os.path.isdir(folder):   # the cheap check first: a stat of an offline share stalls the window
             self._watcher.addPath(folder)
 
     def _watched_change(self) -> None:

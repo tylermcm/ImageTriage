@@ -26,8 +26,19 @@ FocusScope {
 
     function open(mode) { UiState.batchMode = mode }
     function close() { UiState.batchMode = ""; batch.end() }
-    function apply() { batch.apply(); close() }
+    // Resize and Convert have no undo, so writing over the originals asks first and says how many.
+    function apply() {
+        if ((UiState.batchMode === "resize" || UiState.batchMode === "convert") && batch.get("over") === true) { overwriteCard.open(); return }
+        batch.apply(); close()
+    }
     onShownChanged: if (shown) { batch.begin(UiState.batchMode); forceActiveFocus() }
+    ConfirmCard {
+        id: overwriteCard; objectName: "batchOverwriteCard"; warn: true; cancelText: "Cancel"; confirmText: "Overwrite"
+        title: "Write over the original files?"
+        body: batch.summary + (batch.summary !== "" ? " " : "") + "The originals are replaced and this cannot be undone."
+        onAccepted: { batch.apply(); root.close() }
+        onRejected: root.forceActiveFocus()
+    }
     Keys.onEscapePressed: root.close()
 
     ShaderEffectSource { id: snap; anchors.fill: parent; sourceItem: root.sourceItem; live: true; visible: false }
@@ -177,8 +188,8 @@ FocusScope {
                             Pick { label: "Preset"; key: "preset" }
                             Item { width: 1; height: 8 }
                             Note { text: { void root.rev; return batch.presetDesc() } }
-                            Item { visible: batch.get("preset") === "custom"; width: 1; height: visible ? 12 : 0 }
-                            Row { visible: batch.get("preset") === "custom"; spacing: 8
+                            Item { visible: { void root.rev; return batch.get("preset") === "custom" } width: 1; height: visible ? 12 : 0 }
+                            Row { visible: { void root.rev; return batch.get("preset") === "custom" } spacing: 8
                                 Field { width: 145.5; label: "Width"; key: "cw"; placeholder: "1920"; suffix: "px" }
                                 Field { width: 145.5; label: "Height"; key: "ch"; placeholder: "1080"; suffix: "px" } }
                             Item { width: 1; height: 22 }

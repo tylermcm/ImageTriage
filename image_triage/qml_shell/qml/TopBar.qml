@@ -9,6 +9,7 @@ import QtQuick.Controls
 Rectangle {
     id: top
     height: 42
+    signal searchLeft()          // Esc or Enter in the search box: the window hands the keyboard back to the grid
     color: theme.s1
     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
 
@@ -92,7 +93,9 @@ Rectangle {
             color: theme.fg; font.pixelSize: 13; clip: true; selectByMouse: true
             text: photos.searchText
             onTextEdited: photos.setSearch(text)
-            Keys.onEscapePressed: { photos.setSearch(""); focus = false }
+            Keys.onEscapePressed: { photos.setSearch(""); focus = false; top.searchLeft() }
+            Keys.onReturnPressed: { focus = false; top.searchLeft() }
+            Keys.onEnterPressed: { focus = false; top.searchLeft() }
             Text { visible: !parent.text; width: parent.width; elide: Text.ElideRight; text: "Search photos…"; color: theme.fg3; font: parent.font }
             Accessible.name: "Search photos"; Accessible.description: photos.searchStatus
         }

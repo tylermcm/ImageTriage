@@ -509,7 +509,7 @@ FocusScope {
                         Accessible.role: Accessible.Button; Accessible.name: "Previous photo" }
                     Item { width: Math.max(56, countText.implicitWidth + 12); height: 34
                         Text { id: countText; anchors.centerIn: parent; textFormat: Text.StyledText; color: v.cFg; font.pixelSize: 12
-                            text: (v.row + 1) + " <font color='" + v.cFg3 + "'>/ " + photos.rowCount() + "</font>" } }
+                            text: (v.row + 1) + " <font color='" + v.cFg3 + "'>/ " + photos.shown + "</font>" } }
                     Item { width: 30; height: 34
                         Rectangle { anchors.fill: parent; anchors.margins: 1; radius: 9; color: nx.hovered ? Qt.alpha("white", 0.08) : "transparent" }
                         Icon { anchors.centerIn: parent; path: "M9 5l7 7-7 7"; size: 15; color: nx.hovered ? v.cFg : v.cFg2 }

@@ -7,7 +7,7 @@ Rectangle {
     Row {
         anchors.verticalCenter: parent.verticalCenter; x: 12; spacing: 16
         Text { text: photos.shown + " photos"; color: theme.fg3; font.pointSize: UiState.pt(11.5) }
-        Text { text: (photos.picked > 0 ? photos.picked : 1) + " selected"; color: theme.fg3; font.pointSize: UiState.pt(11.5); visible: !UiState.compact }
-        Text { text: photos.loading ? "Reading folder…" : "Thumbnails ready"; color: theme.fg3; font.pointSize: UiState.pt(11.5) }
+        Text { text: photos.picked + " selected"; color: theme.fg3; font.pointSize: UiState.pt(11.5); visible: !UiState.compact && photos.picked > 0 }
+        Text { visible: photos.loading; text: "Reading folder…"; color: theme.fg3; font.pointSize: UiState.pt(11.5) }
     }
 }

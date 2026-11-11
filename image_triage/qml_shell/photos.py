@@ -15,7 +15,7 @@ from PySide6.QtCore import Property, QAbstractListModel, QObject, QByteArray, QM
 
 from ..formats import RAW_SUFFIXES
 from ..formats import is_image_file_candidate
-from ..scanner import scan_child_folders, scan_folder
+from ..scanner import format_scan_error, scan_child_folders, scan_folder
 from .inspector_sample import sample_ai, sample_measured
 
 PathRole, NameRole, ExtRole, RawRole, DecisionRole, RatingRole, AiRole, TitleRole, SelectedRole, FolderRole = (Qt.ItemDataRole.UserRole + n for n in range(1, 11))
@@ -67,6 +67,7 @@ class PhotoModel(QAbstractListModel):
     loadingChanged = Signal()
     annotationChanged = Signal(object)      # a row's decision or rating changed (the row dict, with its scanner record): save it
     undoChanged = Signal()
+    loadErrorChanged = Signal()
     undoFailed = Signal(str)                         # a step could not be taken back; it stays on the history
     selectionChanged = Signal()             # the set of photos picked with Ctrl, Shift or Ctrl+A changed
     searchChanged = Signal()
@@ -78,6 +79,8 @@ class PhotoModel(QAbstractListModel):
         self._all: list[dict] = []
         self._subfolders: list[dict] = []   # the open folder's child folders, shown as cards above its photos
         self._found_folders: dict[int, list[dict]] = {}
+        self._scan_errors: dict[int, str] = {}        # why a folder could not be read, by load token
+        self._load_error = ""
         self._summaries: dict[str, str] = {}
         self._after_scan = None             # fn(folder), run on the scan thread beside the scan (the thumbnail service reads its file stats)
         self._annotation_loader = None      # fn(records) -> {path: {"decision", "rating", "annotation"}}, called off the UI thread
@@ -161,8 +164,9 @@ class PhotoModel(QAbstractListModel):
                 self._found_folders[token] = []
             try:
                 records = [r for r in scan_folder(folder) if not r.is_folder]
-            except Exception:
+            except Exception as error:                 # an offline share or a folder we may not read: say so, do not show it as empty
                 records = []
+                self._scan_errors[token] = format_scan_error(error)
             if primer is not None:
                 primer.join()
             saved: dict = {}
@@ -200,7 +204,13 @@ class PhotoModel(QAbstractListModel):
 
     def _apply_loaded(self, rows: list, folder: str, token: int = -1) -> None:
         if token != -1 and token != self._load_token:
+            self._found_folders.pop(token, None)
+            self._scan_errors.pop(token, None)
             return                          # superseded by a newer loadFolder: that one reports when it is done
+        error = self._scan_errors.pop(token, "") if token != -1 else ""
+        if error != self._load_error:
+            self._load_error = error
+            self.loadErrorChanged.emit()
         self._all = rows
         if folder != self._folder and self._selected:
             self._selected = set()
@@ -503,6 +513,8 @@ class PhotoModel(QAbstractListModel):
         return [self._rows[i] for i in picked] if picked else list(self._rows)
 
     picked = Property(int, lambda self: len(self._selected_rows()), notify=selectionChanged)
+    # Why the open folder could not be read ("" when it could): an offline share or a folder we may not open is not an empty folder.
+    loadError = Property(str, lambda self: self._load_error, notify=loadErrorChanged)
 
     def _decide_many(self, rows: list[int], decision: str | None = None, rating: int | None = None) -> None:
         """Set a decision or a rating on several photos as one step (Ctrl+Z takes all of them back). It clears when every one already has it."""
