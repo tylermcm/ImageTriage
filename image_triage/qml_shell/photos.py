@@ -15,7 +15,7 @@ from PySide6.QtCore import Property, QAbstractListModel, QObject, QByteArray, QM
 
 from ..formats import RAW_SUFFIXES
 from ..formats import is_image_file_candidate
-from ..scanner import format_scan_error, scan_child_folders, scan_folder
+from ..scanner import format_scan_error, normalized_path_key, scan_child_folders, scan_folder
 from .inspector_sample import sample_ai, sample_measured
 
 PathRole, NameRole, ExtRole, RawRole, DecisionRole, RatingRole, AiRole, TitleRole, SelectedRole, FolderRole = (Qt.ItemDataRole.UserRole + n for n in range(1, 11))
@@ -32,6 +32,24 @@ def _title(row: dict) -> str:
 
 def _path_key(path: str) -> str:
     return os.path.normcase(os.path.normpath(path))
+
+
+_FOLDER_KEYS: dict[str, str] = {}
+
+
+def member_key(path: str) -> str:
+    """What a photo is called when it is looked up in a set of saved paths (a collection's members): its folder as the filesystem
+    resolves it, and its name without regard to case.
+
+    Only the folder is resolved, once per folder: resolving every photo costs a filesystem call each (a network round trip on a share),
+    and a folder's photos all share the folder. Both sides of a comparison must be made here."""
+    head, tail = os.path.split(path)
+    folder = _FOLDER_KEYS.get(head)
+    if folder is None:
+        if len(_FOLDER_KEYS) > 4096:
+            _FOLDER_KEYS.clear()
+        folder = _FOLDER_KEYS[head] = normalized_path_key(head) if head else ""
+    return os.path.join(folder, tail.casefold())
 
 
 def _sample(name: str) -> tuple[str, int, int]:
@@ -72,7 +90,7 @@ class PhotoModel(QAbstractListModel):
     selectionChanged = Signal()             # the set of photos picked with Ctrl, Shift or Ctrl+A changed
     searchChanged = Signal()
     searchRequested = Signal(str)
-    _loaded = Signal(list, str, int)
+    _loaded = Signal(object, str, int)      # `object`, not `list`: a list is copied row by row on its way through the signal
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -101,6 +119,7 @@ class PhotoModel(QAbstractListModel):
         self._folder = ""
         self._loading = False
         self._load_token = 0                # the newest loadFolder request: an older scan that finishes later is dropped
+        self._load_cancel: threading.Event | None = None    # set when a newer loadFolder replaces the read that holds it
         self._revision = 0
         self._loaded.connect(self._apply_loaded)
         self._mock: dict[str, dict] = {}
@@ -150,11 +169,23 @@ class PhotoModel(QAbstractListModel):
     def loadFolder(self, folder: str) -> None:
         self._load_token += 1               # a click on another folder while one is still being read wins
         token = self._load_token
+        if self._load_cancel is not None:
+            self._load_cancel.set()         # the read this one replaces stops at its next step instead of reading a folder nobody will see
+        cancel = self._load_cancel = threading.Event()
         if not self._loading:
             self._loading = True
             self.loadingChanged.emit()
 
+        def dropped() -> bool:
+            if not cancel.is_set():
+                return False
+            self._found_folders.pop(token, None)
+            self._scan_errors.pop(token, None)
+            return True
+
         def work() -> None:
+            if dropped():
+                return
             primer = None
             if self._after_scan is not None:
                 primer = threading.Thread(target=self._after_scan, args=(folder,), name="qml-prime", daemon=True)
@@ -163,6 +194,8 @@ class PhotoModel(QAbstractListModel):
                 self._found_folders[token] = [{"name": f.name, "path": f.path} for f in scan_child_folders(folder)]
             except Exception:
                 self._found_folders[token] = []
+            if dropped():
+                return
             try:
                 records = [r for r in scan_folder(folder) if not r.is_folder]
             except Exception as error:                 # an offline share or a folder we may not read: say so, do not show it as empty
@@ -170,12 +203,16 @@ class PhotoModel(QAbstractListModel):
                 self._scan_errors[token] = format_scan_error(error)
             if primer is not None:
                 primer.join()
+            if dropped():
+                return
             saved: dict = {}
             if self._annotation_loader is not None and records:
                 try:
                     saved = self._annotation_loader(records)
                 except Exception:                      # an unreadable store: the folder opens with nothing decided
                     saved = {}
+            if dropped():
+                return
             rows = []
             for record in records:
                 suffix = Path(record.path).suffix.lower()
@@ -187,8 +224,10 @@ class PhotoModel(QAbstractListModel):
                     "path": record.path, "name": record.name, "ext": suffix.lstrip(".").upper() or "FILE",
                     "raw": suffix in RAW_SUFFIXES, "decision": decision, "rating": rating, "ai": ai,
                     "companions": tuple(record.companion_paths), "record": record, "annotation": mine.get("annotation"),
+                    "key": member_key(record.path),
                 })
-            self._loaded.emit(rows, folder, token)
+            if not dropped():
+                self._loaded.emit(rows, folder, token)
 
         threading.Thread(target=work, name="qml-scan", daemon=True).start()
 
@@ -323,6 +362,12 @@ class PhotoModel(QAbstractListModel):
         self._search_status = status
         self._rebuild(follow=True)
         self.searchChanged.emit()
+
+    def set_search_status(self, status: str) -> None:
+        """Change what the search box says is going on, and nothing else: the photos shown stay as they are."""
+        if status != self._search_status:
+            self._search_status = status
+            self.searchChanged.emit()
 
     searchText = Property(str, lambda self: self._search_text, notify=searchChanged)
     searchStatus = Property(str, lambda self: self._search_status, notify=searchChanged)
@@ -459,9 +504,9 @@ class PhotoModel(QAbstractListModel):
 
     # -- picking several photos ---------------------------------------------------------------------------------------------
     def _notify_selection(self, rows: list[int]) -> None:
-        for row in rows:
-            index = self.index(row)
-            self.dataChanged.emit(index, index, [SelectedRole])
+        if rows:
+            # One change for the span the rows lie in: one per row made Select All of a large folder emit tens of thousands.
+            self.dataChanged.emit(self.index(min(rows)), self.index(max(rows)), [SelectedRole])
         self.selectionChanged.emit()
 
     def _selected_rows(self) -> list[int]:
@@ -538,10 +583,8 @@ class PhotoModel(QAbstractListModel):
         before = {t["path"]: (t["decision"], t["rating"]) for t in targets}
         for t in targets:
             t[field] = new
-        for i in rows:
-            if 0 <= i < len(self._rows):
-                index = self.index(i)
-                self.dataChanged.emit(index, index, [DecisionRole if field == "decision" else RatingRole])
+        inside = [i for i in rows if 0 <= i < len(self._rows)]
+        self.dataChanged.emit(self.index(min(inside)), self.index(max(inside)), [DecisionRole if field == "decision" else RatingRole])
         self.countsChanged.emit()
         self._bump()
         changed = [t for t in targets if before[t["path"]] != (t["decision"], t["rating"])]
@@ -722,6 +765,7 @@ class PhotoModel(QAbstractListModel):
                           aiCall=sample_ai(item["ai"], item["decision"], mock["focus"], mock["expo"], group))
         detail.pop("record", None)           # Python objects: QML has no use for them
         detail.pop("annotation", None)
+        detail.pop("key", None)
         return detail
 
     def all_rows(self) -> list[dict]:
