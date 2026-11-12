@@ -224,8 +224,9 @@ checks the host schema against that explicit source, freezes the app and checks
 QML startup with synthetic photos. It does not create a release or install on the
 owner's machine. Both complete host suites also pass at `4ca3813`:
 https://github.com/tylermcm/ImageTriage/actions/runs/43249852541.
-The first Windows prototype has passed native release I/O/Red Eye tests, the editor
-build and the explicit host schema check; its RAW helper/packaging remain in progress:
+The first Windows prototype passed native release I/O/Red Eye tests, the editor
+build and the explicit host schema check, then failed in the helper dependency setup
+described below:
 https://github.com/tylermcm/ImageTriage/actions/runs/43249852916.
 
 Host `531e89e` advances only the validation pin to `97ceee530`, adds the complete
@@ -234,6 +235,35 @@ Current runs:
 
 - https://github.com/tylermcm/ImageTriage/actions/runs/43257733516 (corrected MSI candidate)
 - https://github.com/tylermcm/ImageTriage/actions/runs/43257733290 (host tests)
+
+## RAW helper packaging follow-up
+
+The first Windows prototype passed 640 native release I/O tests (two existing
+ignores), five Red Eye regressions, the editor release build and the actual source
+schema check. Its separate RAW helper then failed to compile: Cargo applies
+`[patch.crates-io]` only at the root workspace, and the duplicated CI manifest setup
+had omitted the editor's patched Hayro dependencies. Registry crates lack the
+`craft-pdf` cancellation/render APIs. No installer was produced by that prototype.
+
+The existing local `scripts/build_raw_preview.ps1` already carries the correct
+patches and seeds the editor lockfile. Host `433d0d7` adds its release option and
+uses that shared builder in CI. With the same generated root, local `cargo check`
+passes for the complete helper. Every dependency name/version/source matches the
+editor lock; the only added package is the helper binary itself. The workflow now
+saves the validated editor build before attempting the helper or freezing, so a
+later packaging failure does not discard the expensive native compile cache.
+
+The corrected Windows source at `97ceee530` has independently passed its release
+I/O and complete algorithm/Red Eye gates in run `43257733516`; that older run still
+contains the duplicated helper setup and cannot certify the repaired packaging.
+The current build/test runs include the shared helper fix:
+
+- https://github.com/tylermcm/ImageTriage/actions/runs/43261425393 (paired MSI candidate)
+- https://github.com/tylermcm/ImageTriage/actions/runs/43261425205 (host suites)
+
+Both complete host suites also pass at `531e89e` in run `43257733290`. Continue the
+current packaging run through the frozen QML startup check before calling the
+Windows artifact complete. Production pin/default binaries/main are unchanged.
 
 ## Remaining release gates
 

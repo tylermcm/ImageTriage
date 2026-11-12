@@ -42,6 +42,17 @@ pin without advancing the release pin or the default editor. See [the audit vali
 for live run links, native gates and subsequent results. No candidate is promoted.
 
 
+### Paired build blocker found and repaired
+
+The Windows prototype compiled the editor and passed release I/O/Red Eye tests,
+but its separately generated RAW helper workspace omitted PhotoCraft's root Cargo
+patches and selected incompatible registry PDF APIs. Host `433d0d7` reuses the
+existing shared PowerShell builder, including editor patches/lockfile, with a
+release option. The complete helper type-checks locally, and its resolved dependency
+versions/sources match the editor lock (only the helper package is new). The
+current paired Windows build is run `43261425393`. No prototype installer was
+produced or promoted; complete frozen startup and native acceptance remain gates.
+
 ## 2026-11-06: full-resolution RAW zoom candidate
 
 Hosted Camera Raw kept browsing-sized RAW stand-ins indefinitely: its detail path
