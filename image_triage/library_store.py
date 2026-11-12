@@ -29,6 +29,7 @@ from .scanner import (
     EDIT_DIRECTORIES,
     JPEG_PAIR_DIRECTORIES,
     is_editor_asset_path,
+    is_app_recycle_directory,
     is_ignored_system_directory,
     normalize_filesystem_path,
     normalized_path_key,
@@ -583,6 +584,7 @@ class LibraryStore:
                 if progress_callback is not None:
                     progress_callback(index - 1, total_roots, f"Scanning catalog root: {normalized_root}")
                 self._ensure_catalog_root(connection, normalized_root)
+                connection.commit()                       # nothing is left open while the drive is asked about below
                 root_is_folder = bool(normalized_root) and os.path.isdir(normalized_root)
                 if not root_is_folder and normalized_root and not _drive_is_answering(normalized_root):
                     # The drive or share holding this root is not answering (asleep NAS, VPN off). That is
@@ -593,6 +595,7 @@ class LibraryStore:
                         (UNREACHABLE_ROOT_MESSAGE, normalized_root),
                     )
                     unreachable_roots.append(normalized_root)
+                    connection.commit()
                     continue
                 if not root_is_folder:
                     connection.execute("DELETE FROM catalog_records WHERE root_path = ?", (normalized_root,))
@@ -612,6 +615,7 @@ class LibraryStore:
                         ("Folder not found.", normalized_root),
                     )
                     missing_roots.append(normalized_root)
+                    connection.commit()
                     continue
 
                 folder_state_rows = connection.execute(
@@ -696,6 +700,9 @@ class LibraryStore:
                     )
                     if record_count > 0:
                         indexed_folder_count += 1
+                    # Each folder is its own transaction. Held open across the whole walk (minutes on a NAS), the write lock
+                    # made every other change to the library, such as adding a photo to a collection, fail as "locked".
+                    connection.commit()
 
                 stale_folders = [folder for folder in folder_state_by_path.keys() if folder not in seen_folders]
                 if stale_folders:
@@ -741,6 +748,7 @@ class LibraryStore:
                         total_roots,
                         f"Indexed {total_root_records} image bundle(s) from {Path(normalized_root).name or normalized_root}",
                     )
+                connection.commit()
             connection.commit()
 
         return CatalogRefreshSummary(
@@ -872,7 +880,8 @@ class LibraryStore:
 
     @contextmanager
     def _connect(self):
-        connection = sqlite3.connect(self._db_path)
+        # A short write elsewhere (the catalog refresh commits folder by folder) is waited for, not reported as "locked".
+        connection = sqlite3.connect(self._db_path, timeout=10.0)
         connection.execute("PRAGMA foreign_keys = ON")
         try:
             yield connection
@@ -1128,7 +1137,7 @@ def _catalog_folder_signature(folder_path: str) -> str:
                 entry_name = entry.name.casefold()
                 if entry_name.endswith(EDITOR_ASSET_DIR_SUFFIX):
                     continue
-                if entry.is_dir(follow_symlinks=False) and is_ignored_system_directory(entry.name):
+                if entry.is_dir(follow_symlinks=False) and (is_ignored_system_directory(entry.name) or is_app_recycle_directory(entry.name)):
                     continue
                 if is_appledouble_path(entry_name):
                     continue
@@ -1156,8 +1165,9 @@ def _iter_catalog_candidate_folders(root_path: str):
             name for name in dirnames
             if not name.casefold().endswith(EDITOR_ASSET_DIR_SUFFIX)
             and not is_ignored_system_directory(name)
+            and not is_app_recycle_directory(name)       # photos deleted on a card are not part of the library
         ]
-        if is_editor_asset_path(current_dir) or is_ignored_system_directory(current_dir):
+        if is_editor_asset_path(current_dir) or is_ignored_system_directory(current_dir) or is_app_recycle_directory(current_dir):
             continue
         lower_dirs = {name.casefold() for name in dirnames}
         if any(is_image_file_candidate(name) for name in filenames) or lower_dirs.intersection(JPEG_PAIR_DIRECTORIES | EDIT_DIRECTORIES):

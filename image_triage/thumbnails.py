@@ -144,8 +144,9 @@ class ThumbnailTask(QRunnable):
         if image.isNull():
             message = sanitize_display_error(error, path=self.request.path)
             image = _placeholder_thumbnail(self.request.path, self.request.target_size, message)
+            # Kept for this run only, so the same photo is not decoded again and again. Not written to disk: a failure may be
+            # a share that stopped answering for a moment, and the placeholder would be this photo's thumbnail from then on.
             self.memory_cache.put(self.request.key, image)
-            self.disk_cache.save(self.request.key, image)
             if self._drop_stale_result(start, "failed_placeholder"):
                 return
             self.result_queue.put(("ready", self.request.key, image))

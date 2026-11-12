@@ -81,6 +81,17 @@ IGNORED_SYSTEM_DIRECTORY_NAMES = frozenset(
 )
 
 
+# The folder the app moves deleted photos into on a removable drive (``safe_trash``), beside the folder they were in.
+APP_RECYCLE_DIRECTORY_NAME = "recycle bin"
+
+
+def is_app_recycle_directory(path: str | Path) -> bool:
+    """Whether a directory is the app's own recycle folder. It can still be opened like any folder (that is how a deleted
+    photo is looked at or removed for good), but its contents are not part of the library: the catalog does not index it."""
+    name = str(path).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].casefold()
+    return name == APP_RECYCLE_DIRECTORY_NAME
+
+
 def is_editor_asset_path(path: str | Path) -> bool:
     """Return whether ``path`` is inside an editor-generated asset directory."""
     normalized_parts = str(path).replace("\\", "/").split("/")
@@ -917,6 +928,7 @@ __all__ = [
     "format_scan_error",
     "ImageRecord",
     "is_editor_asset_path",
+    "is_app_recycle_directory",
     "is_ignored_system_directory",
     "normalize_filesystem_path",
     "normalized_path_key",

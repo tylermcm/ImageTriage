@@ -31,6 +31,9 @@ if TYPE_CHECKING:
     from ..review_workflows import BurstRecommendation, TasteProfile
 
 
+_SQL_PATH_CHUNK = 400
+
+
 @dataclass(slots=True, frozen=True)
 class CatalogStats:
     """Summary counters used by settings/debug surfaces to explain catalog state."""
@@ -627,44 +630,47 @@ class CatalogRepository:
         direct_paths = tuple(record_map.keys())
         if not direct_paths:
             return {}
-        placeholders = ", ".join("?" for _ in direct_paths)
-        params = [folder_key, *direct_paths]
+        # A few hundred paths at a time: one statement naming every photo of a large folder has more parameters than SQLite takes.
+        rows: list = []
         try:
             with closing(connect_catalog_db(self.db_path)) as connection:
                 apply_catalog_migrations(connection)
-                rows = connection.execute(
-                    f"""
-                    SELECT
-                        record_path,
-                        cache_key,
-                        source_path,
-                        camera_make,
-                        camera_model,
-                        camera,
-                        exposure,
-                        aperture,
-                        iso,
-                        focal_length,
-                        lens,
-                        captured_at,
-                        captured_at_iso,
-                        orientation,
-                        exposure_seconds,
-                        aperture_value,
-                        iso_value,
-                        focal_length_value,
-                        width,
-                        height,
-                        dhash_hex,
-                        avg_luma,
-                        detail_score,
-                        exposure_score,
-                        sha1_digest
-                    FROM catalog_review_feature_cache
-                    WHERE folder_key = ? AND record_path IN ({placeholders})
-                    """,
-                    params,
-                ).fetchall()
+                for chunk_start in range(0, len(direct_paths), _SQL_PATH_CHUNK):
+                    chunk = direct_paths[chunk_start:chunk_start + _SQL_PATH_CHUNK]
+                    placeholders = ", ".join("?" for _ in chunk)
+                    rows.extend(connection.execute(
+                        f"""
+                        SELECT
+                            record_path,
+                            cache_key,
+                            source_path,
+                            camera_make,
+                            camera_model,
+                            camera,
+                            exposure,
+                            aperture,
+                            iso,
+                            focal_length,
+                            lens,
+                            captured_at,
+                            captured_at_iso,
+                            orientation,
+                            exposure_seconds,
+                            aperture_value,
+                            iso_value,
+                            focal_length_value,
+                            width,
+                            height,
+                            dhash_hex,
+                            avg_luma,
+                            detail_score,
+                            exposure_score,
+                            sha1_digest
+                        FROM catalog_review_feature_cache
+                        WHERE folder_key = ? AND record_path IN ({placeholders})
+                        """,
+                        [folder_key, *chunk],
+                    ).fetchall())
         except sqlite3.DatabaseError as exc:
             if logger.enabled:
                 logger.duration(
