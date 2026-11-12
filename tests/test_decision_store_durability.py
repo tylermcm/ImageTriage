@@ -186,7 +186,7 @@ def test_a_sidecar_that_cannot_be_written_is_said_once_for_the_folder(qapp, tmp_
         QStandardPaths.setTestModeEnabled(False)
 
 
-def test_opening_a_folder_prunes_the_decisions_of_photos_no_longer_in_it(qapp, tmp_path, monkeypatch):
+def test_opening_a_folder_keeps_the_decisions_of_photos_that_are_not_there_now(qapp, tmp_path, monkeypatch):
     from image_triage.qml_shell import decision_bridge as bridge_module
     from image_triage.qml_shell.decision_bridge import DecisionBridge
     from image_triage.scanner import scan_folder
@@ -202,13 +202,13 @@ def test_opening_a_folder_prunes_the_decisions_of_photos_no_longer_in_it(qapp, t
         records = [r for r in scan_folder(str(shoot)) if not r.is_folder]
         store = DecisionStore()
         store.save_annotations(session, [(record, SessionAnnotation(winner=True)) for record in records])
-        (shoot / "b.jpg").unlink()
+        moved_out = (shoot / "b.jpg").read_bytes()
+        (shoot / "b.jpg").unlink()                                   # moved out of the folder outside the app ...
         left = [r for r in scan_folder(str(shoot)) if not r.is_folder]
 
         bridge = DecisionBridge.__new__(DecisionBridge)
         loaded = DecisionBridge.load(bridge, left)
-
         assert list(loaded) == [left[0].path]
-        assert store.winner_paths(session) == [left[0].path]
+        assert len(store.winner_paths(session)) == 2                 # ... its decision is not thrown away for that
     finally:
         QStandardPaths.setTestModeEnabled(False)

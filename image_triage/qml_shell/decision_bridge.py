@@ -67,30 +67,13 @@ class DecisionBridge(QObject):
         records = list(records)
         store = DecisionStore()
         stored = store.load_annotations(session_id(), records)
-        self._prune(store, records)
+        # Rows for photos that are no longer in the folder are kept: a photo moved out and back, or renamed outside the app, must not
+        # lose its decision for it (`DecisionStore.prune_missing` exists for an explicit clean-up).
         out = {}
         for path, annotation in stored.items():
             decision, rating = annotation_to_view(annotation)
             out[path] = {"decision": decision, "rating": rating, "annotation": annotation}
         return out
-
-    @staticmethod
-    def _prune(store, records: list) -> None:
-        """Drop the decisions of photos that are gone from the folder just listed. Only on a plain local drive, where a missing
-        file is known to be missing and not on a share that has stopped answering; never allowed to spoil the load."""
-        import os
-
-        from .. import path_policy
-
-        folders = {os.path.dirname(record.path) for record in records if record.path}
-        if len(folders) != 1:
-            return
-        folder = folders.pop()
-        try:
-            if path_policy.is_plain_local(folder):
-                store.prune_missing(session_id(), folder, [record.path for record in records])
-        except Exception:
-            pass
 
     @Slot(object)
     def save(self, row: dict) -> None:
