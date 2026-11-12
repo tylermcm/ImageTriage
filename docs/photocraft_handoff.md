@@ -23,15 +23,22 @@ work. No textual conflicts occurred; the automatic merges in clipboard validatio
 and control dispatch retain the v0.22 context and add the matching host capability.
 Five native Red Eye regressions pass. I/O/algo strict all-target release clippy,
 31-crate dependency layers, panel routing and 24-crate/HEIF WASM checks pass.
-Two broader algorithm release checks fail on NaN sign bits; a narrow scalar fallback
-is being validated. All pinned corpus inputs are fetched and checksum-verified;
-corpus execution remains a gate.
+Commit `97ceee530b1f91977cfff896d8d859c2440c329a` fixes two release-only NaN sign-bit
+comparisons by retaining scalar arithmetic for nonfinite pixels. All original
+bitwise assertions remain; the complete algorithm library passes 836 tests (26
+existing ignores). Final clippy/WASM/layers and targeted quick performance checks
+pass. The I/O corpus gate passes 1,287 tests (12 existing ignores) using serial
+execution, release LTO=false/codegen-units=16 and bounded glibc arenas with prompt
+trimming. Earlier runs hit real memory-admission limits after large PSD oracles;
+no approval or memory-budget guard was bypassed. See the linked record for exact
+allocator settings, corpus provenance and timing limitations.
 
 The candidate is pushed only to the owner's fork. No PR was created: automatic
 approval review rejected optional draft PR creation as repository communication
-outside explicit authorization. Host commit `4ca3813` starts a paired Windows
-artifact build against the separate validation pin, without advancing the release
-pin or the default editor. See [the audit validation record](audit_cloud_validation_20261112.md)
+outside explicit authorization. Host `4ca3813` starts a paired Windows prototype; native I/O/Red Eye, editor build
+and host schema checks pass there. `531e89e` starts the corrected validation build
+at `97ceee530` with the full algorithm sweep. Both use the separate validation
+pin without advancing the release pin or the default editor. See [the audit validation record](audit_cloud_validation_20261112.md)
 for live run links, native gates and subsequent results. No candidate is promoted.
 
 

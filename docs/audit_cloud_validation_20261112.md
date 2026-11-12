@@ -189,11 +189,32 @@ the 178 files were recovered from GitHub mirrors and each matches the unchanged
 committed SHA-256 manifest, including the original README line endings. No corpus
 pin, checksum or assertion was changed.
 
-The broader algorithm release sweep exposed **two failures**, 834 passes and 26
-existing ignores: `pixelate::tests::facet_reuse_matches_scalar_in_every_model` and
+The broader algorithm release sweep initially exposed two NaN sign-bit failures:
+`pixelate::tests::facet_reuse_matches_scalar_in_every_model` and
 `pixelate::tests::cell_filters_match_scalar_models_edges_and_fractional_cells`.
-Both compare NaN sign bits. A narrow scalar fallback for nonfinite pixels is under
-test; do not describe that follow-up as validated yet.
+Commit `97ceee530b1f91977cfff896d8d859c2440c329a` preserves the existing scalar
+arithmetic for nonfinite samples, retaining cached processing for finite input.
+The original strict bitwise assertions are unchanged. All nine pixelate checks and
+**836 algorithm library tests pass**, with 26 existing ignores. Final strict clippy,
+WASM and layers pass. The targeted quick performance run completes; its regression
+comparison correctly skips the unrelated machine-class baseline. No baseline was
+updated. Separate 1.5 MP RGB medians are 61 ms Facet, 39 ms Pointillize and 36 ms
+Crystallize; these are diagnostic timings, not a before/after speedup claim.
+
+The full I/O corpus gate passes **1,287 tests**, with 12 existing ignores across four
+binaries. It uses environment-only release `LTO=false`, 16 codegen units and serial
+tests. Parallel tests first hit the existing memory-admission policy for a large
+CMYK spot PSD; the serial oracle then passed, but allocator retention in the long
+process left the later spot check short of admission headroom. That check passes in
+a fresh process. The complete serial command passes with `MALLOC_ARENA_MAX=2`,
+`MALLOC_TRIM_THRESHOLD_=65536`, and `MALLOC_MMAP_THRESHOLD_=131072`, returning freed
+buffers to the OS. Application budgets, approval flags, corpus hashes, the oracle
+floor and assertions are unchanged. The exact stack regression and algorithm sweep
+also pass separately under the normal release profile.
+
+The final host process/QML subset also passes **28 tests with no skips** using the
+actual isolated core runtime interpreter. Models remain `[]`; this is not model
+inference or GPU acceptance.
 
 Host commit `4ca3813` adds a separate immutable validation pin and a branch-only
 Windows artifact build. Tag releases continue to use the unchanged production pin
@@ -201,10 +222,18 @@ and render-algorithm guard. The candidate workflow first runs native release I/O
 and Red Eye regressions, builds the editor and RAW helper from the same checkout,
 checks the host schema against that explicit source, freezes the app and checks
 QML startup with synthetic photos. It does not create a release or install on the
-owner's machine. Build and final host-harness CI are running:
+owner's machine. Both complete host suites also pass at `4ca3813`:
+https://github.com/tylermcm/ImageTriage/actions/runs/43249852541.
+The first Windows prototype has passed native release I/O/Red Eye tests, the editor
+build and the explicit host schema check; its RAW helper/packaging remain in progress:
+https://github.com/tylermcm/ImageTriage/actions/runs/43249852916.
 
-- https://github.com/tylermcm/ImageTriage/actions/runs/43249852916 (MSI candidate)
-- https://github.com/tylermcm/ImageTriage/actions/runs/43249852541 (host tests)
+Host `531e89e` advances only the validation pin to `97ceee530`, adds the complete
+native algorithm sweep, and separates the Windows native steps for diagnosis.
+Current runs:
+
+- https://github.com/tylermcm/ImageTriage/actions/runs/43257733516 (corrected MSI candidate)
+- https://github.com/tylermcm/ImageTriage/actions/runs/43257733290 (host tests)
 
 ## Remaining release gates
 
@@ -216,8 +245,8 @@ owner's machine. Build and final host-harness CI are running:
    stash/restore, Save/grid propagation, reopen, hidden startup, failed-save confirmation,
    theme/resize/fullscreen, shutdown and cleanup. Windows hardware/native binaries from
    the original machine are not present here. Existing executable copies are untouched.
-4. Complete Windows native validation of the SVG/Red Eye candidate, resolve the two
-   algorithm NaN comparisons, and finish corpus/hosted acceptance before promotion.
+4. Complete the corrected Windows native build and hosted acceptance before promotion.
+   The SVG/NaN fixes, native algorithm sweep, WASM and I/O corpus now pass locally.
 5. Advance the packaging pin only to a validated compatible editor. It is still
    `0988078e4f9f8735bb99587a5f6e1d67a4b511e4`, render algorithm 2, while the host expects 3.
    Tag release builds correctly refuse this combination. Validation artifacts use
