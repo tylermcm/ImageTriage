@@ -149,6 +149,20 @@ class ProductionWorkflowTests(unittest.TestCase):
         self.assertEqual(Path(archive_path).as_posix(), shots + "/Delivery.zip")
         self.assertEqual(record_folder, "DSC4914 (Large)")
 
+    def test_workflow_archive_path_is_one_safe_file_name_and_never_an_existing_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            recipe = WorkflowRecipe(key="k", name="Client: A/B?", destination_subfolder="Clients/Smith", archive_format="zip")
+            first = Path(workflow_archive_path(recipe, temp_dir))
+            self.assertEqual(first.name, "Clients_Smith.zip")
+            self.assertEqual(first.parent, Path(temp_dir))
+            first.write_bytes(b"earlier run")
+
+            self.assertEqual(Path(workflow_archive_path(recipe, temp_dir)).name, "Clients_Smith_1.zip")
+
+            named = WorkflowRecipe(key="k", name="Client: A/B?", archive_format="zip")
+            self.assertEqual(Path(workflow_archive_path(named, temp_dir)).name, "Client_ A_B.zip")
+            self.assertEqual(Path(workflow_archive_path(WorkflowRecipe(key="k", name="..", archive_format="zip"), temp_dir)).name, "handoff.zip")
+
     def test_build_workflow_export_plan_applies_affixes_and_unique_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)

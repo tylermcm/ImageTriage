@@ -25,8 +25,24 @@ def workflow_archive_path(recipe: WorkflowRecipe, destination_root: str) -> str:
     if not root:
         return ""
     archive_format = archive_format_for_key(recipe.archive_format)
-    base_name = recipe.destination_subfolder.strip() or recipe.name or "handoff"
-    return str(Path(root) / f"{base_name}{archive_format.suffix}")
+    base_name = _archive_base_name(recipe.destination_subfolder) or _archive_base_name(recipe.name) or "handoff"
+    # A handoff run again must not replace the archive of the run before it: the next free name is taken.
+    candidate = Path(root) / f"{base_name}{archive_format.suffix}"
+    counter = 1
+    while candidate.exists():
+        candidate = Path(root) / f"{base_name}_{counter}{archive_format.suffix}"
+        counter += 1
+    return str(candidate)
+
+
+_UNSAFE_NAME_CHARS = frozenset('<>:"/\\|?*')
+
+
+def _archive_base_name(text: str) -> str:
+    """``text`` (a recipe's subfolder or name, typed by a person) as one file name: a separator would put the archive in another
+    folder, and the other characters cannot be in a Windows file name at all."""
+    cleaned = "".join("_" if char in _UNSAFE_NAME_CHARS or ord(char) < 32 else char for char in (text or ""))
+    return cleaned.strip(" ._")
 
 
 def workflow_record_folder_name(record_name: str) -> str:

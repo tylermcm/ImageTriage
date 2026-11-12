@@ -47,6 +47,16 @@ class _TransferTask(QRunnable):
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        # Whatever happens in here, one of `finished` or `failed` must be emitted: the runner stays "running" until it hears one,
+        # and a handoff could not be started again until the app was restarted.
+        try:
+            result = self._transfer()
+        except Exception as exc:
+            self.signals.failed.emit(str(exc) or type(exc).__name__)
+            return
+        self.signals.finished.emit(result)
+
+    def _transfer(self) -> dict:
         done_items: list = []
         failures: list = []
         bytes_done = 0
@@ -57,14 +67,14 @@ class _TransferTask(QRunnable):
             try:
                 size = sum(os.path.getsize(p) for p in bundle if os.path.exists(p))
                 moves = move_paths(bundle, target_dir) if self.move else copy_paths(bundle, target_dir)
-            except OSError as exc:
-                failures.append((record.name, str(exc)))
+            except Exception as exc:                # not only OSError: a bad name or path raises ValueError, and the rest still go
+                failures.append((record.name, str(exc) or type(exc).__name__))
                 self.signals.progress.emit(index, total, record.name, bytes_done)
                 continue
             bytes_done += size
             done_items.append((record, moves))
             self.signals.progress.emit(index, total, record.name, bytes_done)
-        self.signals.finished.emit({"done": done_items, "failed": failures, "cancelled": self.cancelled})
+        return {"done": done_items, "failed": failures, "cancelled": self.cancelled}
 
 
 class WorkflowRunner(QObject):

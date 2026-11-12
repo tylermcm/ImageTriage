@@ -270,29 +270,98 @@ def _write_tar_archive(target_path: Path, entries: tuple[ArchiveEntry, ...], *, 
                 progress_callback(index, total, f"Added {Path(entry.source_path).name}")
 
 
+class _Extraction:
+    """What one extraction has put on disk, so that a failed one can take all of it away again.
+
+    An extraction never replaces a file: every target is checked before anything is written, and each file is created
+    exclusively, so the only files this removes after a failure are ones it made itself.
+    """
+
+    def __init__(self) -> None:
+        self.files: list[Path] = []
+        self.directories: list[Path] = []
+
+    def check_targets(self, targets: list[tuple[Path, bool]]) -> None:
+        """``targets`` is every ``(path, is a directory)`` of the archive. Refuses the whole archive, before a byte is written,
+        when it would replace something or holds the same file twice."""
+        seen: set[str] = set()
+        existing: list[str] = []
+        for target, is_directory in targets:
+            if is_directory:
+                if target.exists() and not target.is_dir():
+                    existing.append(target.name)
+                continue
+            key = _path_key(target)
+            if key in seen:
+                raise ValueError(f"The archive holds {target.name} more than once.")
+            seen.add(key)
+            if os.path.lexists(target):
+                existing.append(target.name)
+        if existing:
+            shown = ", ".join(existing[:3]) + ("..." if len(existing) > 3 else "")
+            raise FileExistsError(
+                f"{len(existing)} file(s) in the archive are already in the destination folder ({shown}). "
+                "Nothing was extracted; choose an empty folder."
+            )
+
+    def make_directory(self, directory: Path) -> None:
+        missing: list[Path] = []
+        current = directory
+        while not current.exists() and current != current.parent:
+            missing.append(current)
+            current = current.parent
+        directory.mkdir(parents=True, exist_ok=True)
+        self.directories.extend(reversed(missing))
+
+    def create_file(self, target: Path):
+        """Open ``target`` for writing; fails when it exists (something made it since the check)."""
+        self.make_directory(target.parent)
+        handle = target.open("xb")
+        self.files.append(target)
+        return handle
+
+    def undo(self) -> None:
+        for path in reversed(self.files):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        for directory in reversed(self.directories):
+            try:
+                directory.rmdir()               # only when empty: a folder something else has written to since stays
+            except OSError:
+                pass
+
+
 def _extract_zip_archive(archive_path: str, destination_dir: Path, *, progress_callback=None) -> tuple[str, ...]:
+    extraction = _Extraction()
     with zipfile.ZipFile(archive_path, "r") as archive:
         infos = archive.infolist()
         _validate_archive_limits(len(infos), (max(0, info.file_size) for info in infos))
         targets = [(info, _validated_archive_member_path(destination_dir, info.filename)) for info in infos]
+        if any(_zip_info_is_symlink(info) for info in infos):
+            raise ValueError("Archives with symbolic links are not supported.")
+        extraction.check_targets([(target_path, info.is_dir()) for info, target_path in targets])
         extracted: list[str] = []
         total = max(1, len(targets))
-        for index, (info, target_path) in enumerate(targets, start=1):
-            if _zip_info_is_symlink(info):
-                raise ValueError("Archives with symbolic links are not supported.")
-            if info.is_dir():
-                target_path.mkdir(parents=True, exist_ok=True)
-            else:
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(info, "r") as source, target_path.open("wb") as destination:
-                    shutil.copyfileobj(source, destination)
-                extracted.append(str(target_path))
-            if progress_callback is not None:
-                progress_callback(index, total, f"Extracted {Path(info.filename).name or info.filename}")
+        try:
+            for index, (info, target_path) in enumerate(targets, start=1):
+                if info.is_dir():
+                    extraction.make_directory(target_path)
+                else:
+                    with archive.open(info, "r") as source, extraction.create_file(target_path) as destination:
+                        shutil.copyfileobj(source, destination)
+                    extracted.append(str(target_path))
+                if progress_callback is not None:
+                    progress_callback(index, total, f"Extracted {Path(info.filename).name or info.filename}")
+        except BaseException:
+            extraction.undo()
+            raise
     return tuple(extracted)
 
 
 def _extract_tar_archive(archive_path: str, destination_dir: Path, *, mode: str, progress_callback=None) -> tuple[str, ...]:
+    extraction = _Extraction()
     with tarfile.open(archive_path, mode) as archive:
         members = archive.getmembers()
         _validate_archive_limits(len(members), (max(0, member.size) for member in members))
@@ -301,26 +370,31 @@ def _extract_tar_archive(archive_path: str, destination_dir: Path, *, mode: str,
             if member.issym() or member.islnk():
                 raise ValueError("Archives with symbolic links are not supported.")
             targets.append((member, _validated_archive_member_path(destination_dir, member.name)))
+        extraction.check_targets([(target_path, member.isdir()) for member, target_path in targets if member.isdir() or member.isfile()])
 
         extracted: list[str] = []
         total = max(1, len(targets))
-        for index, (member, target_path) in enumerate(targets, start=1):
-            if member.isdir():
-                target_path.mkdir(parents=True, exist_ok=True)
-            elif member.isfile():
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                extracted_stream = archive.extractfile(member)
-                if extracted_stream is None:
-                    raise ValueError(f"Could not extract {member.name}.")
-                with extracted_stream, target_path.open("wb") as destination:
-                    shutil.copyfileobj(extracted_stream, destination)
-                extracted.append(str(target_path))
-            if progress_callback is not None:
-                progress_callback(index, total, f"Extracted {Path(member.name).name or member.name}")
+        try:
+            for index, (member, target_path) in enumerate(targets, start=1):
+                if member.isdir():
+                    extraction.make_directory(target_path)
+                elif member.isfile():
+                    extracted_stream = archive.extractfile(member)
+                    if extracted_stream is None:
+                        raise ValueError(f"Could not extract {member.name}.")
+                    with extracted_stream, extraction.create_file(target_path) as destination:
+                        shutil.copyfileobj(extracted_stream, destination)
+                    extracted.append(str(target_path))
+                if progress_callback is not None:
+                    progress_callback(index, total, f"Extracted {Path(member.name).name or member.name}")
+        except BaseException:
+            extraction.undo()
+            raise
     return tuple(extracted)
 
 
 def _extract_7z_archive(archive_path: str, destination_dir: Path, *, progress_callback=None) -> tuple[str, ...]:
+    extraction = _Extraction()
     with py7zr.SevenZipFile(archive_path, "r") as archive:
         infos = archive.list()
         _validate_archive_limits(len(infos), (_archive_info_size(info) for info in infos))
@@ -329,19 +403,28 @@ def _extract_7z_archive(archive_path: str, destination_dir: Path, *, progress_ca
             if getattr(info, "is_symlink", False):
                 raise ValueError("Archives with symbolic links are not supported.")
             targets.append((info, _validated_archive_member_path(destination_dir, info.filename)))
+        extraction.check_targets([(target_path, bool(getattr(info, "is_directory", False))) for info, target_path in targets])
 
         extracted: list[str] = []
         total = max(1, len(targets))
-        for index, (info, target_path) in enumerate(targets, start=1):
-            if getattr(info, "is_directory", False):
-                target_path.mkdir(parents=True, exist_ok=True)
-            else:
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                archive.extract(path=destination_dir, targets=[info.filename])
-                archive.reset()
-                extracted.append(str(target_path))
-            if progress_callback is not None:
-                progress_callback(index, total, f"Extracted {Path(info.filename).name or info.filename}")
+        try:
+            for index, (info, target_path) in enumerate(targets, start=1):
+                if getattr(info, "is_directory", False):
+                    extraction.make_directory(target_path)
+                else:
+                    extraction.make_directory(target_path.parent)
+                    # The library writes the file itself, so it cannot be created exclusively: look once more just before.
+                    if os.path.lexists(target_path):
+                        raise FileExistsError(f"{target_path.name} is already in the destination folder.")
+                    extraction.files.append(target_path)
+                    archive.extract(path=destination_dir, targets=[info.filename])
+                    archive.reset()
+                    extracted.append(str(target_path))
+                if progress_callback is not None:
+                    progress_callback(index, total, f"Extracted {Path(info.filename).name or info.filename}")
+        except BaseException:
+            extraction.undo()
+            raise
     return tuple(extracted)
 
 

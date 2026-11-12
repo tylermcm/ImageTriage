@@ -9,7 +9,7 @@ from PySide6.QtCore import QObject, QRunnable, QSize, Signal
 from .formats import FITS_SUFFIXES, MODEL_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .image_ops import normalized_output_path_key, save_transformed_image
 from .edited_export import BatchOutcome, EditedRenderFailed
-from .image_resize import OUTPUT_FORMAT_NAMES, load_image_for_export
+from .image_resize import OUTPUT_FORMAT_NAMES, item_failure_reason, load_image_for_export
 
 
 @dataclass(slots=True, frozen=True)
@@ -245,6 +245,12 @@ def apply_convert_plan(
             note = _convert_item(item, plan, options)
         except EditedRenderFailed as error:
             failed.append((item.source.source_path, error.reason))
+            if progress_callback is not None:
+                progress_callback(index, total_steps, f"Left out {item.source.source_name}")
+            continue
+        except Exception as error:
+            # One photo that cannot be read or written must not stop the rest: the files before it are already on disk.
+            failed.append((item.source.source_path, item_failure_reason(error)))
             if progress_callback is not None:
                 progress_callback(index, total_steps, f"Left out {item.source.source_name}")
             continue
