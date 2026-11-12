@@ -29,6 +29,8 @@ Backdrop {
     }
 
     function load() {
+        // asked of UiState itself: this runs as the dialog opens, before the `editing` binding has followed the same change
+        var editing = UiState.collDlg === "edit"
         if (editing) {
             var c = collections.get(UiState.collDlgId)
             name = c.name || ""; color = c.color || ""; icon = c.icon || ""; winners = c.id === collections.activeId

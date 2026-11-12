@@ -17,6 +17,7 @@ Popup {
     property bool answered: false
 
     modal: true; dim: true
+    focus: true                         // the card has the keyboard while it is up: Return answers it, Escape cancels it
     anchors.centerIn: Overlay.overlay
     width: Math.min(460, (parent ? parent.width : 460) - 48)
     padding: 22
@@ -35,12 +36,17 @@ Popup {
     }
     contentItem: Column {
         spacing: 0
+        focus: true
+        // Return is the highlighted button. A key still held from the grid (Return opens a photo there) must not answer a question that has just appeared.
+        Keys.onPressed: (e) => {
+            if ((e.key === Qt.Key_Return || e.key === Qt.Key_Enter) && !e.isAutoRepeat) { card.answered = true; card.close(); card.accepted(card.checked); e.accepted = true }
+        }
         Text { width: parent.width; wrapMode: Text.WordWrap; text: card.title; color: theme.fg; font.pixelSize: 15; font.weight: Font.DemiBold; lineHeight: 20.25; lineHeightMode: Text.FixedHeight }
         Text { width: parent.width; topPadding: 8; wrapMode: Text.WordWrap; text: card.body; color: theme.fg2; font.pixelSize: 13; lineHeight: 19.5; lineHeightMode: Text.FixedHeight }
         Row {
             visible: card.checkText !== ""; width: parent.width; topPadding: 14; spacing: 12
             Text { width: parent.width - 30 - 12; anchors.verticalCenter: parent.verticalCenter; text: card.checkText; color: theme.fg2; font.pixelSize: 13; wrapMode: Text.WordWrap }
-            SSwitch { checked: card.checked; onToggled: (v) => card.checked = v; anchors.verticalCenter: parent.verticalCenter }
+            SSwitch { name: card.checkText; checked: card.checked; onToggled: (v) => card.checked = v; anchors.verticalCenter: parent.verticalCenter }
         }
         Item { width: 1; height: 20 }
         Row {

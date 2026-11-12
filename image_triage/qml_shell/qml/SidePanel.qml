@@ -479,8 +479,10 @@ Item {
                 Stag { active: faces.on; n: 2; visible: people.hasIndex; Column { width: parent.width
                     SectionLabel { caption: "Face index" }
                     Item { width: 1; height: 1 }
-                    Meter { x: 16; width: parent.width - 32; value: people.indexInfo().value }
-                    PanelRow { text: people.indexInfo().text; count: people.indexInfo().pct; interactive: false; muted: true } } }
+                    // The model reports a fraction only where it has one (it gives no percentage otherwise): a bar that is always full says nothing.
+                    readonly property var info: { void people.revision; return people.indexInfo() }
+                    Meter { visible: parent.info.pct !== ""; x: 16; width: parent.width - 32; value: parent.info.value }
+                    PanelRow { text: parent.info.text; count: parent.info.pct; interactive: false; muted: true } } }
             }
         }
 

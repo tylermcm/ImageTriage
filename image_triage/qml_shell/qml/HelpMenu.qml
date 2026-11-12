@@ -46,5 +46,6 @@ Item {
             }
         }
     }
-    Keys.onEscapePressed: reference.closeMenu()
+    // The menu never takes the keyboard (the grid keeps it), so Escape is a shortcut that exists only while the menu is open.
+    Shortcut { sequence: "Escape"; enabled: root.v.menu; onActivated: reference.closeMenu() }
 }

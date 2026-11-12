@@ -63,7 +63,6 @@ FocusScope {
                 Text { x: 40; anchors.verticalCenter: parent.verticalCenter; text: "Image Triage settings"; color: theme.fg2; font.pixelSize: 13; font.weight: Font.Medium }
                 Row {
                     anchors.right: parent.right; height: parent.height
-                    Item { width: 44; height: 40; Icon { anchors.centerIn: parent; size: 12; color: theme.fg3; path: "M5 12h14" } }
                     Item {
                         width: 44; height: 40
                         Rectangle { anchors.fill: parent; color: theme.rej; opacity: xh.hovered ? 1 : 0 }

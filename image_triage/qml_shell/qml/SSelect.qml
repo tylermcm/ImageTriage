@@ -7,6 +7,7 @@ Item {
     property var options: []          // [{label, value}]
     property var current              // the chosen value
     property real menuMax: 10000       // cap on the menu's height; longer lists scroll
+    property string name: ""          // what is being chosen, for a screen reader (the label beside it)
     signal picked(var value)
     readonly property string currentLabel: {
         for (var i = 0; i < options.length; ++i) if (options[i].value === current) return options[i].label
@@ -30,8 +31,24 @@ Item {
         rotation: sel.opened ? 180 : 0
         Behavior on rotation { SpringAnimation { spring: 6; damping: 0.45; epsilon: 0.5 } }
     }
+    Rectangle { visible: sel.activeFocus; anchors.fill: parent; anchors.margins: -3; radius: 13; color: "transparent"; border.width: 2; border.color: theme.accent }
     HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
     TapHandler { onTapped: menu.opened ? menu.close() : menu.open() }
+    // Reached with Tab. Up and Down choose the entry before or after the current one, Space or Return opens the list (Escape closes it).
+    activeFocusOnTab: true
+    function stepChoice(d) {
+        var at = -1
+        for (var i = 0; i < options.length; ++i) if (options[i].value === current) at = i
+        var to = Math.max(0, Math.min(options.length - 1, at + d))
+        if (options.length > 0 && to !== at) sel.picked(options[to].value)
+    }
+    Keys.onPressed: (e) => {
+        if (e.key === Qt.Key_Up) stepChoice(-1)
+        else if (e.key === Qt.Key_Down) stepChoice(1)
+        else if ((e.key === Qt.Key_Space || e.key === Qt.Key_Return || e.key === Qt.Key_Enter) && !e.isAutoRepeat) menu.open()
+        else return
+        e.accepted = true
+    }
 
     Popover {
         id: menu; placement: 2; minWidth: sel.width - 14; maxHeight: sel.menuMax - 14
@@ -46,11 +63,20 @@ Item {
                 Row { id: row; x: 10; anchors.verticalCenter: parent.verticalCenter
                     Text { text: modelData.label; font.pixelSize: 13; color: on || h.hovered ? theme.fg : theme.fg2 } }
                 Icon { x: parent.width - 24; anchors.verticalCenter: parent.verticalCenter; size: 14; color: theme.accentFg; path: "M4.5 12.5l4.5 4.5 10.5-10.5"; opacity: on ? 1 : 0 }
+                Rectangle { visible: parent.activeFocus; anchors.fill: parent; radius: 9; color: "transparent"; border.width: 2; border.color: theme.accent }
                 HoverHandler { id: h; cursorShape: Qt.PointingHandCursor }
                 TapHandler { onTapped: { sel.picked(modelData.value); menu.close() } }
+                activeFocusOnTab: true
+                Keys.onPressed: (e) => {
+                    if (e.key === Qt.Key_Down) nextItemInFocusChain(true).forceActiveFocus()
+                    else if (e.key === Qt.Key_Up) nextItemInFocusChain(false).forceActiveFocus()
+                    else if ((e.key === Qt.Key_Space || e.key === Qt.Key_Return || e.key === Qt.Key_Enter) && !e.isAutoRepeat) { sel.picked(modelData.value); menu.close() }
+                    else return
+                    e.accepted = true
+                }
                 Accessible.role: Accessible.MenuItem; Accessible.name: modelData.label
             }
         }
     }
-    Accessible.role: Accessible.ComboBox; Accessible.name: sel.currentLabel
+    Accessible.role: Accessible.ComboBox; Accessible.name: sel.name !== "" ? sel.name + ": " + sel.currentLabel : sel.currentLabel
 }

@@ -38,6 +38,19 @@ Item {
             Behavior on x { SpringAnimation { spring: 5; damping: 0.4; epsilon: 0.25 } }
         }
     }
+    Rectangle { visible: row.activeFocus; anchors.fill: parent; radius: 10; color: "transparent"; border.width: 2; border.color: theme.accent }
     HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
     TapHandler { onTapped: row.clicked() }
+    // A menu row: Tab or the arrows move between rows, Space or Return chooses the one the keyboard is on (Escape closes the menu).
+    activeFocusOnTab: true
+    Keys.onPressed: (e) => {
+        if (e.key === Qt.Key_Down) nextItemInFocusChain(true).forceActiveFocus()
+        else if (e.key === Qt.Key_Up) nextItemInFocusChain(false).forceActiveFocus()
+        else if ((e.key === Qt.Key_Space || e.key === Qt.Key_Return || e.key === Qt.Key_Enter) && !e.isAutoRepeat) row.clicked()
+        else return
+        e.accepted = true
+    }
+    Accessible.role: row.mode === "switch" ? Accessible.CheckBox : row.mode === "tick" ? Accessible.RadioButton : Accessible.MenuItem
+    Accessible.name: row.label
+    Accessible.checkable: row.mode !== "none"; Accessible.checked: row.mode !== "none" && row.checked
 }
