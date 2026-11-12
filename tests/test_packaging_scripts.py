@@ -125,7 +125,7 @@ class PackagingConsistencyTests(unittest.TestCase):
         self.assertIn("python -m pytest -q -p no:cacheprovider\n", text)
         self.assertIn("windows-latest", text)
         self.assertIn("ubuntu-latest", text)
-        self.assertEqual(1, text.count("continue-on-error: true"))      # the Linux job only
+        self.assertNotIn("continue-on-error", text)                    # both jobs block: the suite is clean on Linux and Windows
         for package in ("libegl1", "libgl1", "libxkbcommon0", "libfontconfig1", "libdbus-1-3", "libglib2.0-0"):
             self.assertIn(package, text)
 
