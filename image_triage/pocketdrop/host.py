@@ -70,7 +70,7 @@ class PocketDropHost(QObject):
             pd.VOID(self._s_open_bluetooth_setup),
             pd.CONFIRM(self._s_confirm_anywhere_risk),
             pd.WITH_TEXT(lambda _ctx, path: reveal_in_file_manager(pd.text(path))),
-            pd.VOID(lambda _ctx: QGuiApplication.alert(QGuiApplication.focusWindow())),
+            pd.VOID(self._s_flash),
             pd.POPUP_MENU(lambda _ctx, _items, _x, _y: 0),
             pd.ALERT(lambda _ctx, title, message: self.alertRequested.emit(pd.text(title), pd.text(message))),
             pd.LOAD_SETTING(self._s_load_setting),
@@ -81,6 +81,11 @@ class PocketDropHost(QObject):
             pd.TEXT_INTO_SINK(self._s_clean_path),
             pd.NATIVE_WINDOW(lambda _ctx: self._topmost_window),
         )
+
+    def _s_flash(self, _ctx) -> None:
+        window = QGuiApplication.focusWindow()
+        if window is not None:
+            window.alert(0)
 
     # -- lifecycle -------------------------------------------------------------------------------------------------------
     @property

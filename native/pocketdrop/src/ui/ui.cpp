@@ -175,12 +175,10 @@ void Ui::start() {
     mode_ = savedMode == 1 ? 1 : (savedMode == 2 && hotspot_->supported() ? 2 : 0);
     server_.onEvent = [this](HttpServer::Event e) { post([this, e] { onServer(e); }); };
     server_.setInbox(inbox_);
-    if (!server_.start(DEFAULT_PORT)) shell_.alert("PocketDrop", "PocketDrop couldn't start its local server.");
     addrs_ = plat::lan_addresses();
+    refreshBinding();
     server_.publish(nullptr);
     if (topmost_) shell_.setTopmost(true);
-    if (mode_ == 1) rotateReceiveCode();
-    if (mode_ == 1 || (autoAnywhere_ && !Tunnel::findBinary().empty())) tunnel_->start(server_.port(), false);
     if (mode_ == 2) hotspot_->start();
     std::thread(cleanOldPastes).detach();
     refreshQr();
@@ -309,20 +307,12 @@ void Ui::setMode(int m) {
         if (!shell_.confirmAnywhereRisk(dismiss)) return;
         if (dismiss) shell_.saveSetting("AnywhereRiskDismissed", 1);
     }
+    if (m < 0 || m > 2) return;
+    bool changed = mode_ != m;
     if (mode_ == 2 && m != 2) hotspot_->stop();
-    if (mode_ == 1 && m != 1) {
-        server_.newLink();
-        if (!autoAnywhere_) tunnel_->stop();
-        receiveCode_.clear();
-        server_.setReceiveCode({});
-    }
-    bool enteringAnywhere = m == 1 && mode_ != 1;
     mode_ = m;
-    if (m == 1) {
-        if (enteringAnywhere) {
-            server_.newLink();
-            rotateReceiveCode();
-        }
+    refreshBinding(changed);
+    if (m == 1 && !changed && server_.port()) {
         auto st = tunnel_->state();
         if (st == Tunnel::State::Off || st == Tunnel::State::Failed || st == Tunnel::State::Missing)
             tunnel_->start(server_.port(), false);
@@ -337,7 +327,7 @@ void Ui::setMode(int m) {
 
 void Ui::newLink() {
     server_.newLink();
-    if (mode_ == 1) rotateReceiveCode();
+    rotateReceiveCode();
     refreshQr();
 }
 
@@ -381,9 +371,32 @@ void Ui::refreshQr() {
     invalidate();
 }
 
+void Ui::refreshBinding(bool force) {
+    std::string address = "127.0.0.1";
+    if (mode_ == 0 && !addrs_.empty()) address = addrs_[(size_t)addrIndex_].ip;
+    if (mode_ == 2 && hotspot_->state() == plat::HotspotState::On && !hotspot_->local_ip().empty())
+        address = hotspot_->local_ip();
+    if (!force && address == listenAddress_ && server_.port()) return;
+
+    // End the old exposure before opening the newly selected interface. Sessions
+    // and receive codes must not carry across networks or sharing modes.
+    tunnel_->stop();
+    server_.stop();
+    server_.newLink();
+    rotateReceiveCode();
+    listenAddress_.clear();
+    if (!server_.start(DEFAULT_PORT, false, address)) {
+        shell_.alert("PocketDrop", "PocketDrop couldn't listen on the selected network address.");
+        return;
+    }
+    listenAddress_ = address;
+    if (mode_ == 1) tunnel_->start(server_.port(), false);
+}
+
 void Ui::refreshNetwork() {
     addrs_ = plat::lan_addresses();
     if (addrIndex_ >= (int)addrs_.size()) addrIndex_ = 0;
+    refreshBinding();
     refreshQr();
 }
 
@@ -528,7 +541,7 @@ void Ui::click(const HitTarget& t) {
         if (cardState() == CardState::NoNetwork) setMode(2);
         else if (cardState() == CardState::BluetoothSetup) shell_.openBluetoothSetup();
         else if (mode_ == 2) hotspot_->start();
-        else tunnel_->start(server_.port(), cardState() == CardState::TunnelMissing);
+        else if (mode_ == 1 && server_.port()) tunnel_->start(server_.port(), cardState() == CardState::TunnelMissing);
         updateAnimation();
         break;
     case Hit::Url:
@@ -637,7 +650,7 @@ void Ui::menuCommand(int cmd) {
     case ID_BURN: burnAfter_ = !burnAfter_; break;
     case ID_AUTO_ANY:
         autoAnywhere_ = !autoAnywhere_;
-        if (autoAnywhere_ && tunnel_->state() == Tunnel::State::Off && !Tunnel::findBinary().empty())
+        if (mode_ == 1 && server_.port() && autoAnywhere_ && tunnel_->state() == Tunnel::State::Off && !Tunnel::findBinary().empty())
             tunnel_->start(server_.port(), false);
         break;
     case ID_WARN_ANY:
@@ -668,6 +681,7 @@ void Ui::menuCommand(int cmd) {
     default:
         if (cmd >= ID_ADDR_BASE && cmd < ID_ADDR_BASE + (int)addrs_.size()) {
             addrIndex_ = cmd - ID_ADDR_BASE;
+            refreshBinding();
             refreshQr();
         } else if (cmd >= 1000) {
             shell_.handleExtraMenu(cmd);
@@ -1030,7 +1044,7 @@ void Ui::paint(Gfx& g) {
         g.fillRound(bar, 1, rgb(SURF3));
         g.fillRound(rc(bar.left, bar.top, bar.left + (float)((bar.right - bar.left) * frac), bar.bottom), 1,
                     rgb(active->incoming ? ACC2 : ACC));
-    } else if (mode_ == 1 && !receiveCode_.empty()) {
+    } else if (!shareUrl().empty() && !receiveCode_.empty()) {
         std::string code = receiveCode_.substr(0, 4) + "-" + receiveCode_.substr(4);
         g.text("Receive code  " + code + "  \xC2\xB7  required for phone uploads", in, Font::SmallBold, rgb(ACCTXT),
                Align::Center);
@@ -1240,7 +1254,7 @@ void Ui::command(const std::string& name, const std::string& arg) {
         if (cs == CardState::NoNetwork) setMode(2);
         else if (cs == CardState::BluetoothSetup) shell_.openBluetoothSetup();
         else if (mode_ == 2) hotspot_->start();
-        else tunnel_->start(server_.port(), cs == CardState::TunnelMissing);
+        else if (mode_ == 1 && server_.port()) tunnel_->start(server_.port(), cs == CardState::TunnelMissing);
         updateAnimation();
     } else if (name == "copy") copyLink();
     else if (name == "share") shareLink();
@@ -1276,6 +1290,7 @@ void Ui::command(const std::string& name, const std::string& arg) {
     } else if (name == "addr") {
         if (number() >= 0 && number() < (int)addrs_.size()) {
             addrIndex_ = number();
+            refreshBinding();
             refreshQr();
         }
     } else if (name == "menu") {
@@ -1374,7 +1389,7 @@ std::string Ui::stateJson() {
         right = sp != speeds_.end() && sp->second.bps > 0 ? sizeStr((uint64_t)sp->second.bps) + "/s" : "";
         left = std::to_string((int)(frac * 100)) + "%" + DOT + active->name + (active->incoming ? "  \xE2\x86\x90  " : "  \xE2\x86\x92  ") + active->device;
         incoming = active->incoming;
-    } else if (mode_ == 1 && !receiveCode_.empty()) {
+    } else if (!shareUrl().empty() && !receiveCode_.empty()) {
         kind = "code";
         code = receiveCode_.substr(0, 4) + "-" + receiveCode_.substr(4);
     } else if (doneAt_ && now - doneAt_ < 6000) {

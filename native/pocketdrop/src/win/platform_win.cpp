@@ -209,7 +209,7 @@ bool net_init() {
     return ok;
 }
 
-Sock tcp_listen(int port, bool loopbackOnly, int* boundPort) {
+Sock tcp_listen(int port, bool loopbackOnly, int* boundPort, const std::string& bindAddress) {
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) return BAD_SOCK;
     SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
@@ -217,7 +217,13 @@ Sock tcp_listen(int port, bool loopbackOnly, int* boundPort) {
     setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (char*)&one, sizeof one);
     sockaddr_in a{};
     a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(loopbackOnly ? INADDR_LOOPBACK : INADDR_ANY);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (!loopbackOnly && !bindAddress.empty()) {
+        if (InetPtonA(AF_INET, bindAddress.c_str(), &a.sin_addr) != 1 || a.sin_addr.s_addr == htonl(INADDR_ANY)) {
+            closesocket(s);
+            return BAD_SOCK;
+        }
+    }
     a.sin_port = htons((u_short)port);
     if (bind(s, (sockaddr*)&a, sizeof a) != 0 || listen(s, SOMAXCONN) != 0) {
         closesocket(s);

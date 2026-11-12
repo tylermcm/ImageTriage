@@ -15,7 +15,8 @@ namespace plat {
 using Sock = intptr_t;
 constexpr Sock BAD_SOCK = -1;
 bool net_init();
-Sock tcp_listen(int port, bool loopbackOnly, int* boundPort);
+// An empty address binds loopback; callers must explicitly select a LAN address.
+Sock tcp_listen(int port, bool loopbackOnly, int* boundPort, const std::string& bindAddress = {});
 Sock tcp_accept(Sock s, int timeoutMs); // BAD_SOCK on timeout or error
 void tcp_configure(Sock s, int recvTimeoutMs); // no Nagle, receive timeout, no SIGPIPE
 int tcp_recv(Sock s, char* buf, int len);      // <= 0: closed or error

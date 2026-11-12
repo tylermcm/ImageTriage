@@ -15,6 +15,16 @@ if errorlevel 1 (
     exit /b 1
 )
 verify-cloudflared.exe "%ASSET%" "%OUT%\scratch"
+if errorlevel 1 (
+    popd
+    exit /b 1
+)
+cl /nologo /std:c++20 /O2 /EHsc /W4 /utf-8 /MT /DUNICODE /D_UNICODE "%~dp0http_security_win_test.cpp" "%~dp0..\src\core\http.cpp" "%~dp0..\src\core\bundle.cpp" "%~dp0..\src\core\deflate.cpp" /Fe:verify-http.exe /link user32.lib gdi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib ws2_32.lib iphlpapi.lib winhttp.lib bcrypt.lib advapi32.lib windowscodecs.lib runtimeobject.lib
+if errorlevel 1 (
+    popd
+    exit /b 1
+)
+verify-http.exe
 set "RESULT=%ERRORLEVEL%"
 popd
 exit /b %RESULT%

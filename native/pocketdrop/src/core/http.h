@@ -46,7 +46,7 @@ public:
     std::function<void(Event)> onEvent; // invoked on worker threads
 
     ~HttpServer() { stop(); }
-    bool start(int preferredPort, bool loopbackOnly = false);
+    bool start(int preferredPort, bool loopbackOnly = false, const std::string& bindAddress = {});
     void stop();
     int port() const { return port_; }
 
@@ -63,7 +63,7 @@ public:
     bool phoneConnected() const;
 
     void setInbox(const std::string& dir); // where received files are saved
-    void setReceiveCode(const std::string& code); // empty disables phone -> computer authorization
+    void setReceiveCode(const std::string& code); // empty disables phone -> computer transfers
     std::vector<ReceivedItem> takeReceived(); // items that arrived since the last call
 
     std::vector<TransferInfo> transfers() const;

@@ -41,3 +41,24 @@ when no public tunnel should be created. The normal build script copies its
 result into the repository, so do not use it merely to stage a candidate.
 
 This pin policy is Windows-specific. The macOS/Linux policies are unchanged.
+
+## Receive authorization and listener isolation
+
+The same runner also builds a real-socket HTTP harness. It checks empty-code
+denial, successful authorization, code reset, failed-attempt lockout, session
+revocation, invalid/wildcard address rejection and loopback binding. It never
+opens a public tunnel.
+
+The QML engine suite checks unauthorized text and upload routes, authorized file
+and text receipt, new-link revocation, selected-interface binding, address
+changes and Local/Anywhere transitions. Its isolated transition test requires
+Windows with no helper in the executable/current/system/PATH search locations;
+otherwise it skips rather than launch a tunnel. Multiple-address validation
+requires two local IPv4 addresses. Hotspot radio pairing still needs a phone.
+
+Every sharing mode now requires the displayed receive code for phone uploads.
+An unset code disables receiving. Same-Wi-Fi binds the selected address; Offline
+binds the hotspot address once available; Anywhere binds loopback. Switching
+mode/address revokes sessions and changes the code. Leaving Anywhere stops its
+tunnel regardless of the old keep-ready preference. Local transfers still use
+HTTP: a receive code authorizes uploads but does not encrypt traffic.

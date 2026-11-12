@@ -414,7 +414,7 @@ bool streamFile(plat::Sock s, plat::File h, uint64_t offset, uint64_t len, std::
 
 // ---------------------------------------------------------------- lifecycle
 
-bool HttpServer::start(int preferredPort, bool loopbackOnly) {
+bool HttpServer::start(int preferredPort, bool loopbackOnly, const std::string& bindAddress) {
     if (!plat::net_init()) return false;
     g_pcName = plat::host_name();
     {
@@ -423,7 +423,7 @@ bool HttpServer::start(int preferredPort, bool loopbackOnly) {
         tokenIssuedAt_ = plat::tick_ms();
     }
     for (int p : {preferredPort, preferredPort + 1, preferredPort + 2, 0}) {
-        listen_ = plat::tcp_listen(p, loopbackOnly, &port_);
+        listen_ = plat::tcp_listen(p, loopbackOnly, &port_, bindAddress);
         if (listen_ != plat::BAD_SOCK) break;
     }
     if (listen_ == plat::BAD_SOCK) return false;
@@ -437,6 +437,7 @@ void HttpServer::stop() {
     if (acceptThread_.joinable()) acceptThread_.join();
     plat::tcp_close(listen_);
     listen_ = plat::BAD_SOCK;
+    port_ = 0;
     {
         std::lock_guard<std::mutex> l(mu_);
         for (plat::Sock c : clients_) plat::tcp_shutdown(c);
@@ -463,7 +464,7 @@ void HttpServer::setReceiveCode(const std::string& code) {
     std::lock_guard<std::mutex> l(mu_);
     receiveCode_ = code;
     for (auto& [id, session] : sessions_) {
-        session->receiveAuthorized = code.empty();
+        session->receiveAuthorized = false;
         session->authFailures = 0;
     }
 }
@@ -811,9 +812,8 @@ bool HttpServer::handleSession(plat::Sock s, const Req& r, std::string& buf, boo
         {
             std::lock_guard<std::mutex> l(mu_);
             if (receiveCode_.empty()) {
-                session.receiveAuthorized = true;
-                session.authFailures = 0;
-                status = 204;
+                session.receiveAuthorized = false;
+                status = 403;
             } else if (session.authFailures >= 8) {
                 status = 429;
             } else if (tokenMatch(receiveCode_, code.data(), code.size())) {
@@ -834,7 +834,7 @@ bool HttpServer::handleSession(plat::Sock s, const Req& r, std::string& buf, boo
         bool allowed;
         {
             std::lock_guard<std::mutex> l(mu_);
-            allowed = receiveCode_.empty() || session.receiveAuthorized;
+            allowed = !receiveCode_.empty() && session.receiveAuthorized;
         }
         if (!allowed) {
             if (!drain(s, buf, bodyLen)) return false;
@@ -979,8 +979,8 @@ bool HttpServer::handleSession(plat::Sock s, const Req& r, std::string& buf, boo
         bool receiveAuth, receiveOk;
         {
             std::lock_guard<std::mutex> l(mu_);
-            receiveAuth = !receiveCode_.empty();
-            receiveOk = !receiveAuth || session.receiveAuthorized;
+            receiveAuth = true;
+            receiveOk = !receiveCode_.empty() && session.receiveAuthorized;
         }
         std::string j = manifest(b.get(), rev, receiveAuth, receiveOk);
         std::string h = header(200, "application/json; charset=utf-8", j.size(), keep, "Cache-Control: no-store\r\n");

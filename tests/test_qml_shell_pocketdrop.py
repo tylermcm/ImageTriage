@@ -243,7 +243,7 @@ def test_engine_shows_a_real_qr_and_shares_files(qapp, engine_model, photos, tmp
     pump(qapp, 0.8)
     rows = engine_model.rows
     assert [r["title"] for r in rows] == ["share.txt"] and rows[0]["path"] == str(target)
-    assert engine_model.st["info"]["kind"] == "sum"
+    assert engine_model.st["info"]["kind"] == "code"
     engine_model.removeRow(rows[0]["key"])
     pump(qapp, 0.5)
     assert engine_model.rows == []
@@ -255,7 +255,12 @@ def test_engine_library_group_hides_its_files_and_removes_them_again(qapp, engin
     pump(qapp, 0.8)
     rows = engine_model.rows
     assert [r["kind"] for r in rows] == ["coll"] and rows[0]["title"] == "Winners"
-    assert engine_model.st["info"]["left"].startswith("3 files")        # the engine was handed all three files
+    import json
+    from urllib.parse import urlsplit
+    url = 'http://' + engine_model.st['linkText']
+    _, headers, _ = local_request(url, 'GET', urlsplit(url).path)
+    manifest = json.loads(local_request(url, 'GET', headers['Location'] + 'api/manifest')[2])
+    assert len(manifest['files']) == 3  # the engine was handed all three files
     engine_model.removeRow(rows[0]["key"])
     pump(qapp, 0.6)
     assert engine_model.rows == [] and not engine_model.st["sharing"]
@@ -284,3 +289,128 @@ def test_engine_copy_and_menu_commands(qapp, engine_model):
     old = engine_model.st["linkText"]
     engine_model.command("new_link")
     assert engine_model.st["linkText"] != old
+
+# Real HTTP requests to this test process's native server (no public tunnel).
+def local_request(url, method, path, body=None):
+    import http.client
+    from urllib.parse import urlsplit
+    target = urlsplit(url)
+    connection = http.client.HTTPConnection(target.hostname, target.port, timeout=3)
+    try:
+        connection.request(method, path, body=body)
+        reply = connection.getresponse()
+        return reply.status, dict(reply.getheaders()), reply.read()
+    finally:
+        connection.close()
+
+
+def test_engine_local_uploads_require_code_and_new_link_revokes_sessions(qapp, engine_model, tmp_path):
+    import json
+    from urllib.parse import urlsplit
+    url = 'http://' + engine_model.st['linkText'].removeprefix('http://')
+    status, headers, _ = local_request(url, 'GET', urlsplit(url).path)
+    assert status == 302
+    session = headers['Location']
+    engine_model.command('set_inbox', str(tmp_path))
+    assert local_request(url, 'POST', session + 'text', b'unauthorized test')[0] == 401
+    assert local_request(url, 'POST', session + 'up?name=test.txt&size=1')[0] == 401
+    for method in ('PUT', 'GET', 'DELETE'):
+        assert local_request(url, method, session + 'up/unknown')[0] == 401
+    assert not list(tmp_path.glob('*.pdpart'))
+    assert local_request(url, 'POST', session + 'auth', b'WRONG')[0] == 401
+    manifest = json.loads(local_request(url, 'GET', session + 'api/manifest')[2])
+    assert manifest['receiveAuth'] and not manifest['receiveOk']
+    code = engine_model.st['info']['code']
+    assert code and code.encode() not in json.dumps(manifest).encode()
+    assert local_request(url, 'POST', session + 'auth', code.encode())[0] == 204
+    assert local_request(url, 'POST', session + 'text', b'authorized test')[0] == 204
+    status, _, body = local_request(url, 'POST', session + 'up?name=test.txt&size=5')
+    assert status == 200
+    upload = session + 'up/' + json.loads(body)['id']
+    assert local_request(url, 'PUT', upload + '?offset=0', b'hello')[0] == 200
+    assert (tmp_path / 'test.txt').read_bytes() == b'hello'
+    assert not list(tmp_path.glob('*.pdpart'))
+    engine_model.command('new_link'); pump(qapp, .2)
+    assert local_request(url, 'GET', session + 'api/manifest')[0] == 404
+    newer = 'http://' + engine_model.st['linkText'].removeprefix('http://')
+    status, headers, _ = local_request(newer, 'GET', urlsplit(newer).path)
+    assert status == 302
+    assert local_request(newer, 'POST', headers['Location'] + 'auth', code.encode())[0] == 401
+    assert engine_model.st['info']['code'] != code
+
+
+def test_engine_local_listener_does_not_accept_on_loopback(engine_model):
+    import socket
+    from urllib.parse import urlsplit
+    url = 'http://' + engine_model.st['linkText'].removeprefix('http://')
+    endpoint = urlsplit(url)
+    assert endpoint.hostname != '127.0.0.1'
+    assert local_request(url, 'GET', '/ping')[0] == 204
+    with pytest.raises(OSError):
+        with socket.create_connection(('127.0.0.1', endpoint.port), timeout=1):
+            pass
+
+
+def test_engine_mode_changes_rebind_and_revoke_local_sessions(qapp, engine_model, monkeypatch, tmp_path):
+    """Exercise Anywhere's listener without creating a public tunnel."""
+    import ctypes
+    import socket
+    from urllib.parse import urlsplit
+    if sys.platform != 'win32':
+        pytest.skip('Windows helper search isolation')
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    monkeypatch.setenv('PATH', os.environ['SystemRoot'] + '/System32')
+    # SearchPath includes the executable/current/system directories, beyond PATH.
+    found = ctypes.create_unicode_buffer(32768)
+    if ctypes.windll.kernel32.SearchPathW(None, 'cloudflared.exe', None, len(found), found, None):
+        pytest.skip('helper present; keep this test local-only')
+    url = 'http://' + engine_model.st['linkText']
+    endpoint = urlsplit(url)
+    _, headers, _ = local_request(url, 'GET', endpoint.path)
+    session = headers['Location']
+    code = engine_model.st['info']['code']
+    assert local_request(url, 'POST', session + 'auth', code.encode())[0] == 204
+    engine_model.command('menu', 'auto_any')
+    assert not engine_model.st['menu']['tunnelOpen']
+    engine_model.command('card')
+    assert not engine_model.st['menu']['tunnelOpen']
+    engine_model.setMode(1)
+    engine_model.confirmRisk(True, False)
+    pump(qapp, .4)
+    assert engine_model.st['mode'] == 1 and engine_model.st['card'] == 'missing'
+    loopback = f'http://127.0.0.1:{endpoint.port}'
+    assert local_request(loopback, 'GET', '/ping')[0] == 204
+    assert local_request(loopback, 'GET', session + 'api/manifest')[0] == 404
+    with pytest.raises(OSError):
+        with socket.create_connection((endpoint.hostname, endpoint.port), timeout=1):
+            pass
+    engine_model.setMode(0)
+    pump(qapp, .3)
+    assert not engine_model.st['menu']['tunnelOpen']
+    newer = 'http://' + engine_model.st['linkText']
+    assert engine_model.st['info']['code'] and engine_model.st['info']['code'] != code
+    assert local_request(newer, 'GET', session + 'api/manifest')[0] == 404
+    _, headers, _ = local_request(newer, 'GET', urlsplit(newer).path)
+    assert local_request(newer, 'POST', headers['Location'] + 'auth', code.encode())[0] == 401
+    test_engine_local_listener_does_not_accept_on_loopback(engine_model)
+
+
+def test_engine_selected_address_rebinds(qapp, engine_model):
+    import socket
+    from urllib.parse import urlsplit
+    addresses = engine_model.st['menu']['addrs']
+    if len(addresses) < 2:
+        pytest.skip('needs two local IPv4 addresses')
+    old = urlsplit('http://' + engine_model.st['linkText'])
+    code = engine_model.st['info']['code']
+    index = next(i for i, address in enumerate(addresses) if address['ip'] != old.hostname)
+    engine_model.command('addr', str(index))
+    pump(qapp, .2)
+    url = 'http://' + engine_model.st['linkText']
+    new = urlsplit(url)
+    assert new.hostname == addresses[index]['ip']
+    assert engine_model.st['info']['code'] != code
+    assert local_request(url, 'GET', '/ping')[0] == 204
+    with pytest.raises(OSError):
+        with socket.create_connection((old.hostname, old.port), timeout=1):
+            pass

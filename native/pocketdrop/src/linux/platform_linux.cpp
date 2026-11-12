@@ -80,14 +80,20 @@ bool net_init() {
     return true;
 }
 
-Sock tcp_listen(int port, bool loopbackOnly, int* boundPort) {
+Sock tcp_listen(int port, bool loopbackOnly, int* boundPort, const std::string& bindAddress) {
     int s = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (s < 0) return BAD_SOCK;
     int one = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     sockaddr_in a{};
     a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(loopbackOnly ? INADDR_LOOPBACK : INADDR_ANY);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (!loopbackOnly && !bindAddress.empty()) {
+        if (inet_pton(AF_INET, bindAddress.c_str(), &a.sin_addr) != 1 || a.sin_addr.s_addr == htonl(INADDR_ANY)) {
+            close(s);
+            return BAD_SOCK;
+        }
+    }
     a.sin_port = htons((uint16_t)port);
     if (bind(s, (sockaddr*)&a, sizeof a) != 0 || listen(s, SOMAXCONN) != 0) {
         close(s);
