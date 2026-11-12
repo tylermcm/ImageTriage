@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from image_triage.cli_culler_process import WorkerOutput
+from image_triage.cli_culler_process import WorkerOutput, bootstrap_script
 
 
 @pytest.fixture
@@ -57,6 +57,17 @@ def test_long_unterminated_event_is_rejected_before_eof(pipe):
     os.write(writer, b"x" * 33)
     with pytest.raises(ValueError, match="exceeds 1 MiB"):
         output.readline()
+
+
+def test_frozen_app_uses_its_bundled_cleanup_bootstrap(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "ImageTriage.exe"))
+    with pytest.raises(RuntimeError, match="bootstrap is missing"):
+        bootstrap_script()
+    bundled = tmp_path / "ai_workers/cli_culler/image_triage/cli_culler_process.py"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("# bundled by freeze_support\n")
+    assert bootstrap_script() == bundled
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cleanup-job bootstrap")

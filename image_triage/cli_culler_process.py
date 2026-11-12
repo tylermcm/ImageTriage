@@ -12,6 +12,15 @@ import uuid
 from pathlib import Path
 
 
+def bootstrap_script():
+    """Use this host's cleanup protocol even with an older managed runtime."""
+    script = (Path(sys.executable).parent / "ai_workers/cli_culler/image_triage/cli_culler_process.py"
+              if getattr(sys, "frozen", False) else Path(__file__).resolve())
+    if not script.is_file():
+        raise RuntimeError("The culler cleanup bootstrap is missing; repair the application installation")
+    return script
+
+
 class WorkerProcessTree:
     def __init__(self, process=None):
         self.process = process

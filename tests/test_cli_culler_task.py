@@ -262,6 +262,19 @@ def test_worker_exit_still_cleans_descendant_holding_stdout(tmp_path):
     assert time.monotonic() - started < 10
 
 
+def test_older_runtime_snapshot_cannot_supply_the_cleanup_bootstrap(tmp_path):
+    task = task_for(tmp_path, "print('not json', flush=True)\n")
+    task.app_path = tmp_path / "old-runtime-app"
+    stale = task.app_path / "image_triage/cli_culler_process.py"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("raise RuntimeError('stale bootstrap must not run')\n")
+    seen = run_in_pool(task)
+    assert seen["failed"]
+    assert not task.run_root.exists()
+    assert "stale bootstrap" not in task.log_path.read_text()
+    assert "Expecting" in seen["failed"][0][1]  # the fake worker ran and its JSON was rejected
+
+
 def test_cancel_before_start_does_not_launch_or_publish(tmp_path):
     task = task_for(tmp_path, "raise AssertionError('must not launch')\n")
     task.cancel()

@@ -12,7 +12,7 @@ import uuid
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from .cli_culler_process import WorkerOutput, WorkerProcessTree
+from .cli_culler_process import WorkerOutput, WorkerProcessTree, bootstrap_script
 from .cli_culler_runs import activate_generation, cull_run_paths, validate_generation
 from .cli_culler_worker import PROTOCOL
 
@@ -121,7 +121,7 @@ class CliCullerRunTask(QRunnable):
                     tree = WorkerProcessTree()
                 process = subprocess.Popen(
                     [str(self.python), "-I", "-X", "utf8",
-                     str(self.app_path / "image_triage/cli_culler_process.py"),
+                     str(bootstrap_script()),
                      *([tree.job_name] if os.name == "nt" else []),
                      str(self.worker), "--await-start", str(request_path)],
                     cwd=self.run_root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
