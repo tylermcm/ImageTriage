@@ -54,7 +54,9 @@ class DecisionBridge(QObject):
 
         self._queue = AnnotationPersistenceQueue(parent=self)
         self._queue.failed.connect(self._failed)
+        self._queue.warning.connect(self._sidecar_warning)
         self.failures: list[tuple[str, str]] = []
+        self._sidecar_warned: set[str] = set()         # folders already told that their sidecars cannot be written
         photos.set_annotation_loader(self.load)
         photos.annotationChanged.connect(self.save)
 
@@ -62,12 +64,33 @@ class DecisionBridge(QObject):
     def load(self, records) -> dict:
         from ..decision_store import DecisionStore
 
-        stored = DecisionStore().load_annotations(session_id(), list(records))
+        records = list(records)
+        store = DecisionStore()
+        stored = store.load_annotations(session_id(), records)
+        self._prune(store, records)
         out = {}
         for path, annotation in stored.items():
             decision, rating = annotation_to_view(annotation)
             out[path] = {"decision": decision, "rating": rating, "annotation": annotation}
         return out
+
+    @staticmethod
+    def _prune(store, records: list) -> None:
+        """Drop the decisions of photos that are gone from the folder just listed. Only on a plain local drive, where a missing
+        file is known to be missing and not on a share that has stopped answering; never allowed to spoil the load."""
+        import os
+
+        from .. import path_policy
+
+        folders = {os.path.dirname(record.path) for record in records if record.path}
+        if len(folders) != 1:
+            return
+        folder = folders.pop()
+        try:
+            if path_policy.is_plain_local(folder):
+                store.prune_missing(session_id(), folder, [record.path for record in records])
+        except Exception:
+            pass
 
     @Slot(object)
     def save(self, row: dict) -> None:
@@ -87,3 +110,13 @@ class DecisionBridge(QObject):
         self.failures.append((path, message))
         if self._toasts is not None:
             self._toasts.push("error", "Could not save the decision", f"{path.replace(chr(92), '/').rsplit('/', 1)[-1]}: {message}")
+
+    def _sidecar_warning(self, path: str, message: str) -> None:
+        """The decision is saved, but its XMP sidecar could not be written (a read-only card, a full disk). Said once for a
+        folder: every photo in it will fail the same way, and one toast per keypress would bury the screen."""
+        folder, _, name = path.replace(chr(92), "/").rpartition("/")
+        if folder in self._sidecar_warned:
+            return
+        self._sidecar_warned.add(folder)
+        if self._toasts is not None:
+            self._toasts.push("warn", "Could not write the XMP sidecar", f"{name}: {message}. The decision itself is saved; other programs will not see it for photos in this folder.")

@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 from PySide6.QtCore import QFile, QObject, Signal, Slot
 
-from ..edit_carry import carry_edits, edit_files_for
+from ..edit_carry import carry_edits, copy_edits, edit_files_for
 from ..file_ops import FileMove, bundle_destinations, copy_paths, move_paths, record_paths
 from ..models import SessionAnnotation
 from .decision_bridge import session_id
@@ -58,6 +58,60 @@ def rekey_after_move(record, moves, annotation) -> None:
     from ..file_ops import record_after_moves
 
     DecisionStore().move_annotation(session_id(), record.path, record_after_moves(record, tuple(moves)), annotation)
+
+
+def rekey_collections(pairs) -> bool:
+    """Collections hold photos by path, so they follow a photo the app moved or renamed. ``pairs`` is ``(old path, new path)``.
+    False when the library could not be updated (the photos themselves have already moved)."""
+    pairs = [(old, new) for old, new in pairs if old and new and old != new]
+    if not pairs:
+        return True
+    try:
+        from ..library_store import LibraryStore
+
+        LibraryStore().rename_item_paths(pairs)
+    except Exception:
+        return False
+    return True
+
+
+def _trash_bundle(bundle) -> tuple[bool, list[str]]:
+    """Send one photo's files to the system trash, all or none.
+
+    Stops at the first file the system refuses and brings back the ones already sent, so a RAW is not left behind while its
+    JPEG and sidecar are in the trash. Returns whether everything went, and the names that are in the trash and could not be
+    brought back (the system does not always say where it put a file).
+    """
+    trashed: list[tuple[str, str]] = []                  # (where it was, where the system put it)
+    for path in bundle:
+        if not os.path.exists(path):
+            continue
+        handle = QFile(path)
+        if hasattr(handle, "moveToTrash") and handle.moveToTrash():
+            trashed.append((path, str(handle.fileName() or "") if hasattr(handle, "fileName") else ""))
+            continue
+        stranded: list[str] = []
+        for original, in_trash in reversed(trashed):
+            try:
+                if not in_trash or not os.path.exists(in_trash) or os.path.exists(original):
+                    raise OSError("cannot be brought back")
+                shutil.move(in_trash, original)
+                _forget_trash_info(in_trash)
+            except OSError:
+                stranded.append(Path(original).name)
+        return False, stranded
+    return True, []
+
+
+def _forget_trash_info(in_trash: str) -> None:
+    """A freedesktop trash keeps a note beside each file (``info/<name>.trashinfo``); a file taken back out leaves it orphaned."""
+    files_dir = Path(in_trash).parent
+    if files_dir.name != "files":
+        return
+    try:
+        (files_dir.parent / "info" / (Path(in_trash).name + ".trashinfo")).unlink()
+    except OSError:
+        pass
 
 
 def _label(path: str) -> str:
@@ -117,6 +171,10 @@ class FileActions(QObject):
     def _rekey(self, record, moves: tuple[FileMove, ...], annotation: SessionAnnotation | None) -> None:
         rekey_after_move(record, moves, annotation)
 
+    def _rekey_collections(self, pairs) -> None:
+        if not self._memory and not rekey_collections(pairs):
+            self._toast("warn", "Collections were not updated", "The photos moved, but the collections they are in still point at the old place.")
+
     # ---------------- recent destinations ----------------
     def recent(self) -> list[str]:
         if self._memory:
@@ -124,8 +182,12 @@ class FileActions(QObject):
         raw = self._settings().value(RECENT_KEY, [], list)
         if isinstance(raw, str):
             raw = [raw]
+        from .. import path_policy
+
         here = os.path.normcase(os.path.normpath(self._photos.folder_dir())) if self._photos.folder_dir() else ""
-        return [p for p in raw or [] if isinstance(p, str) and p and os.path.isdir(p) and os.path.normcase(os.path.normpath(p)) != here][:6]
+        # This runs on the UI thread every time a menu is built. Only a folder on a plain local drive is asked whether it is
+        # still there; a share or a removable drive is listed unasked (a sleeping one would hold the window for seconds).
+        return [p for p in raw or [] if isinstance(p, str) and p and not path_policy.confirmed_missing(p) and os.path.normcase(os.path.normpath(p)) != here][:6]
 
     def _remember(self, destination: str) -> None:
         if self._memory:
@@ -153,13 +215,12 @@ class FileActions(QObject):
         if self._delete_mode() == SAFE_TRASH or recycle.is_temporary_storage_folder():
             self._safe_trash(item, record, bundle, recycle)
             return
-        moved_all = True
-        for path in bundle:
-            if os.path.exists(path):
-                handle = QFile(path)
-                moved_all = (handle.moveToTrash() if hasattr(handle, "moveToTrash") else False) and moved_all
+        moved_all, stranded = _trash_bundle(bundle)
         if not moved_all:
-            self._ask(f"Delete {name} permanently?", "It could not be moved to the trash.", "Delete", lambda: self._delete_for_good(record, bundle))
+            why = "It could not be moved to the trash."
+            if stranded:
+                why += f" Already in the trash: {', '.join(stranded[:3])}{' and more' if len(stranded) > 3 else ''}."
+            self._ask(f"Delete {name} permanently?", why, "Delete", lambda: self._delete_for_good(record, bundle))
             return
         self._finish_delete(record)
         self._toast("success", f"Moved {name} to the trash", "Use the system trash to bring it back.")
@@ -185,19 +246,19 @@ class FileActions(QObject):
         if self._delete_mode() == SAFE_TRASH or self._recycle(folder).is_temporary_storage_folder():
             self.trashPaths([record.path for record in records], "")
             return
-        trashed, failed = [], []
+        trashed, failed, stranded = [], [], []
         for record in records:
-            ok = True
-            for path in delete_bundle(record):
-                if os.path.exists(path):
-                    handle = QFile(path)
-                    ok = (handle.moveToTrash() if hasattr(handle, "moveToTrash") else False) and ok
+            ok, left = _trash_bundle(delete_bundle(record))
             (trashed if ok else failed).append(record)
+            stranded.extend(left)
         self._finish_delete_many(trashed)
         if trashed:
             self._toast("success", f"Moved {len(trashed)} photo{'s' if len(trashed) != 1 else ''} to the trash", "Use the system trash to bring them back.")
         if failed:
-            self._toast("error", f"{len(failed)} photo{'s' if len(failed) != 1 else ''} could not be moved to the trash", ", ".join(r.name for r in failed[:3]) + (" and more" if len(failed) > 3 else ""))
+            body = ", ".join(r.name for r in failed[:3]) + (" and more" if len(failed) > 3 else "")
+            if stranded:
+                body += f". Already in the trash: {', '.join(stranded[:3])}{' and more' if len(stranded) > 3 else ''}"
+            self._toast("error", f"{len(failed)} photo{'s' if len(failed) != 1 else ''} could not be moved to the trash", body)
 
     def _delete_many_for_good(self, records: list) -> None:
         gone, failed = [], ""
@@ -221,9 +282,7 @@ class FileActions(QObject):
             return
         if not self._memory:
             try:
-                store = self._store()
-                for record in records:
-                    store.delete_annotation(session_id(), record.path)
+                self._store().delete_annotations(session_id(), [record.path for record in records])
             except Exception:
                 pass
         self._photos.remove_paths([record.path for record in records])
@@ -268,12 +327,11 @@ class FileActions(QObject):
             self._toast("error", "Could not move them to the recycle bin", _with_leftovers(str(exc), left, str(root)))
             return 0
         recycle.remember_recycle_origins(tuple(m for _r, moves, _a in moved for m in moves))
-        for record, _moves, _a in moved:
-            if not self._memory:
-                try:
-                    self._store().delete_annotation(session_id(), record.path)
-                except Exception:
-                    pass
+        if not self._memory:
+            try:                                          # one store and one commit, not one of each per photo, on the UI thread
+                self._store().delete_annotations(session_id(), [record.path for record, _moves, _a in moved])
+            except Exception:
+                pass
         self._photos.remove_paths([record.path for record, _m, _a in moved])
         entry = {}
         entry["id"] = self._photos.push_undo(f"move of {len(moved)} photos to the recycle bin", lambda: self._undo_trash(moved, recycle))
@@ -288,9 +346,9 @@ class FileActions(QObject):
             self._toast("error", "Could not bring them back", str(exc))
             return False
         recycle.forget_recycle_origins(tuple(m.target_path for _r, moves, _a in moved for m in moves))
-        for record, _moves, annotation in moved:
-            if annotation is not None and not annotation.is_empty:
-                self._store().save_annotation(session_id(), record, annotation)
+        saved = [(record, annotation) for record, _moves, annotation in moved if annotation is not None and not annotation.is_empty]
+        if saved:
+            self._store().save_annotations(session_id(), saved)
         self._photos.reload()
         self._toast("success", f"Brought back {len(moved)} photo{'s' if len(moved) != 1 else ''}")
         return True
@@ -374,6 +432,10 @@ class FileActions(QObject):
                 failure = f"{record.name}: {exc}" if many else str(exc)
                 break
             done.append((record, moves, item.get("annotation")))
+        if not move:
+            left = copy_edits([(m.source_path, m.target_path) for _record, moves, _a in done for m in moves])
+            if left:
+                self._toast("warn", "Some edits were not copied with the photo", ", ".join(left[:3]) + (f" and {len(left) - 3} more" if len(left) > 3 else ""))
         if failure:
             title = f"Stopped after {'moving' if move else 'copying'} {len(done)} of {len(picked)}" if many else f"Could not {verb} {picked[0][1].name}"
             self._toast("error", title, failure)
@@ -389,6 +451,7 @@ class FileActions(QObject):
         for record, moves, annotation in done:
             self._rekey(record, moves, annotation)
             _carry(moves, self._toast)
+        self._rekey_collections([(m.source_path, m.target_path) for _record, moves, _a in done for m in moves])
         self._photos.remove_paths([record.path for record, _m, _a in done])
         entry = {}
         entry["id"] = self._photos.push_undo(f"move of {what}", lambda: self._undo_moves(done))
@@ -405,6 +468,7 @@ class FileActions(QObject):
             return False
         for _record, moves, _annotation in done:
             _carry(moves, self._toast, back=True)
+        self._rekey_collections([(m.target_path, m.source_path) for _record, moves, _a in done for m in moves])
         for record, moves, annotation in done:
             if annotation is not None and not annotation.is_empty:
                 moved = next((m.target_path for m in moves if m.source_path == record.path), "")
@@ -421,11 +485,10 @@ class FileActions(QObject):
             self._toast("error", f"Could not move {record.name} back", str(exc))
             return False
         _carry(moves, self._toast, back=True)
+        self._rekey_collections([(m.target_path, m.source_path) for m in moves])
         if annotation is not None and not annotation.is_empty:
             moved = next((m.target_path for m in moves if m.source_path == record.path), "")
             if moved:
-                from ..file_ops import record_after_moves
-
                 self._store().move_annotation(session_id(), moved, record, annotation)
         self._photos.reload()
         self._toast("success", f"Moved {record.name} back")

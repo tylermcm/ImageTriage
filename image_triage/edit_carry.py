@@ -1,4 +1,4 @@
-"""Keep a photo's edit data with the photo when the app renames, moves or deletes it.
+"""Keep a photo's edit data with the photo when the app renames, moves, copies or deletes it.
 
 Camera Raw recipes, PhotoCraft projects and their renders live in the folder's hidden edit root, named after the
 photo (``IMG_1.NEF.cameraraw.json``, ``IMG_1.NEF.pcraft``, ``IMG_1.NEF.photocraft.*``). Nothing ties them to the photo
@@ -88,6 +88,47 @@ def carry_edits(pairs) -> list[str]:
             continue
         if old_name != new_name and final.name.casefold().endswith(_MANIFEST_TAIL):
             _rename_manifest_outputs(final, old_name, new_name)
+    return failed
+
+
+def copy_edits(pairs) -> list[str]:
+    """Give each copied photo a copy of the original's edit data. ``pairs`` is ``(original image path, copy's path)``.
+
+    Call it after the photos themselves have been copied. The original keeps its edit data. Returns the names of edit
+    files that could not be copied (a file with that name is already there, or the copy failed). Never replaces a file.
+    """
+    failed: list[str] = []
+    for source_image, copied_image in pairs:
+        source, copied = Path(source_image), Path(copied_image)
+        if source == copied:
+            continue
+        files = edit_files_for(source)
+        if not files:
+            continue
+        try:
+            target_root = ensure_edit_root(copied.parent)
+        except OSError:
+            failed.extend(item.name for item in files)
+            continue
+        for item in files:
+            final = target_root / (copied.name + item.name[len(source.name):])
+            holding = target_root / f".carry-{uuid.uuid4().hex}.tmp"
+            try:
+                if final.exists():
+                    raise FileExistsError(final.name)
+                shutil.copy2(str(item), str(holding))
+                if final.exists():
+                    raise FileExistsError(final.name)
+                os.replace(holding, final)
+            except OSError:
+                failed.append(item.name)
+                try:
+                    holding.unlink()
+                except OSError:
+                    pass
+                continue
+            if source.name != copied.name and final.name.casefold().endswith(_MANIFEST_TAIL):
+                _rename_manifest_outputs(final, source.name, copied.name)
     return failed
 
 

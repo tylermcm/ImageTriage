@@ -431,6 +431,42 @@ class LibraryStore:
             connection.commit()
         return self.load_collection(normalized_id)
 
+    def rename_item_paths(self, pairs) -> int:
+        """Point every collection at a photo's new path after the app moved or renamed it. ``pairs`` is ``(old path, new path)``.
+
+        The photo keeps its place in each collection. Where a collection already holds the new path, the old entry is simply
+        dropped. Returns how many entries changed.
+        """
+        wanted: list[tuple[str, str]] = []
+        for old_path, new_path in pairs:
+            old = normalize_filesystem_path(old_path)
+            new = normalize_filesystem_path(new_path)
+            if old and new and old != new:
+                wanted.append((old, new))
+        if not wanted:
+            return 0
+        changed = 0
+        with self._connect() as connection:
+            touched: set[str] = set()
+            for old, new in wanted:
+                rows = connection.execute("SELECT collection_id FROM collection_items WHERE item_path = ?", (old,)).fetchall()
+                for (collection_id,) in rows:
+                    cursor = connection.execute(
+                        "UPDATE OR IGNORE collection_items SET item_path = ? WHERE collection_id = ? AND item_path = ?",
+                        (new, collection_id, old),
+                    )
+                    if cursor.rowcount == 0:
+                        connection.execute(
+                            "DELETE FROM collection_items WHERE collection_id = ? AND item_path = ?",
+                            (collection_id, old),
+                        )
+                    changed += 1
+                    touched.add(str(collection_id))
+            for collection_id in touched:
+                connection.execute("UPDATE virtual_collections SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (collection_id,))
+            connection.commit()
+        return changed
+
     def delete_collection(self, collection_id: str) -> bool:
         """Delete a virtual collection and all of its stored item references."""
         normalized_id = (collection_id or "").strip()
