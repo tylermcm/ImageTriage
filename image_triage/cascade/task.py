@@ -59,6 +59,7 @@ class Scorers:
     faces: Scorer | None = None  # the face finder (see faces.py): a WorkerRanker, so ``faces.details[key]`` holds each frame's faces after a call
     names: tuple[str, ...] = ()
     close: Callable[[], None] = lambda: None
+    notes: tuple[str, ...] = ()  # what the factory left out and why (a model that is not installed), shown with the results
 
 
 # Builds the rankers for one run. It receives the task's cancel check and a progress callback (done, total, label).
@@ -102,6 +103,9 @@ class CascadeRunTask(QRunnable):
         self.result: FolderResult | None = None
         self.ledger_summary: dict | None = None      # the ledger's counts for the run (also in cull_ledger_summary.json beside the report)
         self.blink_checked = False
+        self.notes: tuple[str, ...] = ()             # what was skipped and why ("Ranking skipped: ...", "People were not updated: ..."), for the review page
+        self.ranked_with: tuple[str, ...] = ()       # the rankers still in use when the run ended (empty when ranking was skipped, at the start or part way)
+        self.ranking_device = ""                     # the device a ranker's worker said it runs on ("cuda", "cpu"); "" when none was started
 
     def cancel(self) -> None:
         self._cancel_requested = True
@@ -115,8 +119,12 @@ class CascadeRunTask(QRunnable):
         self._opened: list[Scorers] = []       # every set of ranker workers this run started, so a cancel or a failure closes them too
         try:
             self.signals.started.emit(folder_text)
+            self._check_writable()
             frames = self._read_frames(folder_text)
             result, scorers, notes = self._decide(folder_text, frames)
+            self.notes, self.ranked_with = tuple(notes), tuple(scorers.names)
+            self.ranking_device = next((device for ranker in (scorers.maniqa, scorers.aesthetic)
+                                        if ranker is not None and (device := str(getattr(ranker, "active_device", "") or ""))), "")
             self._check_cancelled()
             self.signals.stage.emit(folder_text, 3, len(STAGES), STAGES[3])
             rows = build_rows(result.outcomes, [r.path for r in self.records], _capture_strings(frames))
@@ -144,6 +152,23 @@ class CascadeRunTask(QRunnable):
     def _check_cancelled(self) -> None:
         if self._cancel_requested:
             raise _Cancelled()
+
+    def _check_writable(self) -> None:
+        """The results are written beside the photos. A folder that cannot be written to (a locked card, a read-only share) is found out now,
+        not after the whole folder has been read and ranked."""
+        import tempfile
+
+        for directory in (self.paths.artifacts_dir, self.paths.report_dir):
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(dir=directory, prefix=".write-test-"):
+                    pass
+            except OSError as error:
+                reason = error.strerror or str(error)
+                raise RuntimeError(
+                    f"The results cannot be saved in {self.paths.hidden_root} ({reason}). The analysis keeps its results in a folder beside the photos, "
+                    "so a read-only card or folder cannot be analysed. Copy the photos to a folder you can write to and analyse them there."
+                ) from error
 
     def _progress(self, folder: str, label: str, done: int, total: int, started: float) -> None:
         elapsed = time.perf_counter() - started
@@ -235,6 +260,9 @@ class CascadeRunTask(QRunnable):
                 notes.append(f"Ranking skipped: {error}")
                 self.signals.detail.emit(folder, notes[-1])
         self._opened.append(scorers)
+        for note in scorers.notes:
+            notes.append(note)
+            self.signals.detail.emit(folder, note)
 
         def progress(done: int, total: int) -> None:
             self._progress(folder, STAGES[2], done, total, started)

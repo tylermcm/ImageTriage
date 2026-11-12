@@ -72,7 +72,9 @@ def run_cascade(
         survivors = reps
         ranked = False
         cut_roles: dict[int, FrameRole] = {}
-        if maniqa is not None and len(survivors) > settings.maniqa_keep:
+        # The quality ranker normally only trims a big stack down for the appeal ranker. When it is the only ranker installed there is
+        # nothing after it, so it also orders a stack of two or three (nothing is cut from those: the slice below is empty).
+        if maniqa is not None and (len(survivors) > settings.maniqa_keep or (aesthetic is None and len(survivors) > 1)):
             scores = maniqa([keys[i] for i in survivors])
             scored_maniqa += len(survivors)
             order = sorted(survivors, key=lambda i: (-scores[keys[i]], i))

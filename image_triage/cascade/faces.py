@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -180,7 +181,23 @@ class FaceCache:
         if self._path is None or not self._dirty:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._path.with_name(self._path.name + ".tmp")
-        temporary.write_text(json.dumps({"version": self.VERSION, "model": self._model, "entries": self._entries}), encoding="utf-8")
-        os.replace(temporary, self._path)
+        # The cull and the People index both keep this file. Entries another writer added since it was read are kept (ours win for the same
+        # file), and each writer has its own temporary file, so two saves at once cannot write into each other's half-written copy.
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+            if data.get("version") == self.VERSION and data.get("model") == self._model:
+                for key, value in dict(data.get("entries", {})).items():
+                    self._entries.setdefault(str(key), dict(value))
+        except (OSError, ValueError, AttributeError, TypeError):
+            pass
+        temporary = self._path.with_name(f"{self._path.name}.{os.getpid()}-{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            temporary.write_text(json.dumps({"version": self.VERSION, "model": self._model, "entries": self._entries}), encoding="utf-8")
+            os.replace(temporary, self._path)
+        except BaseException:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
         self._dirty = False

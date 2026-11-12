@@ -60,6 +60,23 @@ def _decide_device(runtime_device: str | None, rank_on_cpu: bool) -> RankingDeci
     return RankingDecision(False, use_blink=True, note="Ranking skipped: no usable GPU. Turn on ranking on the CPU in settings to include it (slow).")
 
 
+def face_recognizer_missing() -> str:
+    """Why the People pass cannot run, in plain words, or "" when the face recognizer is installed. The recognizer is a 166 MB download of its
+    own (the eyes-closed check does not need it), so a run never fetches it: the AI Center installs it."""
+    from ..ai_manifest import MODEL_BUNDLES
+    from ..ai_model_store import bundle_status
+    from .rankers.bundles import FACES_IDENTITY_KEY, register_bundles
+
+    register_bundles()
+    try:
+        if bundle_status(FACES_IDENTITY_KEY).is_ready:
+            return ""
+    except Exception:  # noqa: BLE001 - a status that cannot be read is treated as not installed
+        pass
+    size = MODEL_BUNDLES[FACES_IDENTITY_KEY].approx_mb
+    return f"the face recognizer (about {size} MB) is not installed. Install it in the AI Center, then run the analysis again."
+
+
 def default_scorer_factory(
     device: str, *, rankers: bool = True, blink: bool = True, faces: bool | None = None, quality: bool = True, appeal: bool = True
 ) -> ScorerFactory:
@@ -73,25 +90,31 @@ def default_scorer_factory(
         made: list = []
         maniqa = aesthetic = eyes = people = None
         names: list[str] = []
+        notes: list[str] = []
+        # Nothing is downloaded from inside a run: a model that is not installed is left out (and said so), never fetched without asking.
         if rankers and quality:
-            maniqa = maniqa_ranker(device=device, cancel_check=cancel, progress=lambda done, total: progress(done, total, "Ranking (quality)"))
+            maniqa = maniqa_ranker(device=device, cancel_check=cancel, download=False, progress=lambda done, total: progress(done, total, "Ranking (quality)"))
             made.append(maniqa)
             names.append("maniqa")
         if rankers and appeal:
-            aesthetic = qrealign_ranker(device=device, cancel_check=cancel, progress=lambda done, total: progress(done, total, "Ranking (aesthetic)"))
+            aesthetic = qrealign_ranker(device=device, cancel_check=cancel, download=False, progress=lambda done, total: progress(done, total, "Ranking (aesthetic)"))
             made.append(aesthetic)
             names.append("q-realign aesthetic")
         if blink:
-            eyes = blink_ranker(device="cpu", cancel_check=cancel, progress=lambda done, total: progress(done, total, "Checking for closed eyes"))
+            eyes = blink_ranker(device="cpu", cancel_check=cancel, download=False, progress=lambda done, total: progress(done, total, "Checking for closed eyes"))
             made.append(eyes)
         if with_faces:
-            people = faces_ranker(device="cpu", cancel_check=cancel, progress=lambda done, total: progress(done, total, "Finding people"))
-            made.append(people)
+            missing = face_recognizer_missing()
+            if missing:
+                notes.append(f"People were not updated: {missing}")
+            else:
+                people = faces_ranker(device="cpu", cancel_check=cancel, download=False, progress=lambda done, total: progress(done, total, "Finding people"))
+                made.append(people)
 
         def close() -> None:
             for worker in made:
                 worker.close()
 
-        return Scorers(maniqa=maniqa, aesthetic=aesthetic, blink=eyes, faces=people, names=tuple(names), close=close)
+        return Scorers(maniqa=maniqa, aesthetic=aesthetic, blink=eyes, faces=people, names=tuple(names), close=close, notes=tuple(notes))
 
     return factory

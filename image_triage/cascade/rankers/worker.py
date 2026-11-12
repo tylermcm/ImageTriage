@@ -347,8 +347,14 @@ ENGINES: dict[str, Callable[..., object]] = {"maniqa": ManiqaEngine, "qrealign":
 # -- protocol loop --------------------------------------------------------------------------------------------------------
 
 
+# A frame the engine cannot score is that frame's problem. This many in a row that are not plain read errors is the engine's (out of memory,
+# a broken model), and the worker stops with the error instead of calling every remaining frame unreadable.
+MAX_CONSECUTIVE_ENGINE_FAILURES = 3
+
+
 def serve(engine, stdin, emit: Callable[[dict], None]) -> None:
     """Answer score requests until ``quit`` or EOF. ``engine.score(path) -> float`` is the only thing the loop needs."""
+    engine_failures = 0
     for line in stdin:
         line = line.strip()
         if not line:
@@ -368,7 +374,14 @@ def serve(engine, stdin, emit: Callable[[dict], None]) -> None:
                     emit({"event": "score", "id": request_id, "key": key, "value": float(len(detail.get("faces", ()))), "detail": detail})
                 else:
                     emit({"event": "score", "id": request_id, "key": key, "value": engine.score(item["path"])})
+                engine_failures = 0
             except (OSError, ValueError) as exc:  # unreadable or corrupt image: this frame only
+                emit({"event": "frame_error", "id": request_id, "key": key, "message": f"{type(exc).__name__}: {exc}"})
+            except Exception as exc:  # noqa: BLE001 - one odd frame (a size the model rejects, a bad tensor) must not end the whole stage
+                engine_failures += 1
+                if engine_failures >= MAX_CONSECUTIVE_ENGINE_FAILURES:
+                    raise
+                traceback.print_exc()
                 emit({"event": "frame_error", "id": request_id, "key": key, "message": f"{type(exc).__name__}: {exc}"})
         emit({"event": "done", "id": request_id})
 
