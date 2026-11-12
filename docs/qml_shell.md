@@ -221,3 +221,15 @@ path from omitting strokes. Limits are 128 strokes, 4,096 points per stroke,
 native preview/full-render entry points reject oversized domains with a request
 for smaller separate strokes. Generative AI and automatic distraction removal
 remain unavailable.
+
+## Red Eye
+
+The RAW popout Red Eye pane uses PhotoCraft's existing correction algorithm.
+Set Pupil Size and Darken, then click a red pupil. Click a correction marker or
+its list entry to adjust it; Next pupil starts another correction. Delete, Clear
+and normal editor undo/redo are available. Auto and Pet Eye are disabled.
+
+Corrections persist in `cameraRaw.redEye` and replay for preview, native Save and
+export without changing the original RAW. At most 64 corrections are accepted.
+The paired helper/editor must advertise Red Eye support; older binaries reject
+these recipes rather than silently ignoring corrections.

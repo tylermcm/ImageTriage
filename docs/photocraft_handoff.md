@@ -3443,3 +3443,195 @@ Native feature commit `150587cb8` was pushed normally to the user fork
 integration branch. All six unrelated companion drafts retained their original
 SHA256 fingerprints. The push used the configured GitHub noreply identity and
 `[skip ci]`; no release tag or installer workflow was started.
+
+## 2026-11-09: Red Eye candidate and hidden-cursor memory fix
+
+Implemented non-destructive `cameraRaw.redEye` corrections using PhotoCraft's
+existing main-editor red-eye kernel. The QML pane provides Pupil Size, Darken,
+click-to-correct, correction selection/deletion, Clear and recipe undo/redo.
+Coordinates map through the host crop to the original image. The native pipeline
+replays corrections after retouch and before masks. Auto and Pet Eye remain
+unavailable. Full-size replay preserves original RAW bytes; proxy replay uses
+bounded local patches and applies only the computed correction delta.
+
+The helper advertises `redEye: 1`; hosted handoff advertises `cameraRawRedEye: 1`.
+Older binaries reject affected recipes before accepting edits. A paired helper
+and hosted candidate were built in isolation from the six unrelated companion
+drafts. Their checksums are recorded in the private validation artifacts; the
+previously validated default executables remain installed.
+
+Validation: 807 native algorithm tests passed; strict algorithm/UI Clippy,
+layer checks and WASM checks passed. UI tests passed 4,828 cases with 21 ignored
+and four previously identified GPU-dependent cases filtered. Synthetic RAW live
+QML clicks, preview, full-resolution Save/export and hosted lifecycle/handoff
+checks passed. The broad quick performance gate did not pass: P50 collected only
+five frames during its blur job. This is an incomplete measurement, not evidence
+of a measured performance regression. Candidate promotion remains pending that
+gate; no release package was built.
+
+A broader viewer run exposed runaway memory at extreme zoom. An isolated test
+reproduced about 6 GiB private memory before its watchdog stopped it. Hidden brush
+cursor rectangles were still sized from the magnified image. Their geometry now
+collapses when inactive, as do inactive mask/retouch Canvas buffers. The same
+6400-percent wheel-zoom regression passes at about 285 MiB peak private memory.
+The user's earlier 30 GiB peak was not captured, so that precise peak is not
+independently attributed. No active test Python process was left running.
+
+Upstream assessment: both companion remotes fetched successfully. Upstream moved
+from `9394960e428771fb94e79ef1644bd788c69df927` to
+`d6b97e5b4b1d9a03c3ef9b904dd5de864f5e8aa8` with release `v0.22.0`.
+Our integration base is `150587cb89b61203ab8fb2c66de384989646492c`.
+The non-mutating merge assessment reports 37 conflicted files, including 20
+translation tables. Camera Raw open/save/navigation, automation output policy,
+GPU startup and host window/control paths overlap. No release merge was started;
+the user requested an explanation of conflicts before choosing an integration.
+Existing fork host behavior and unrelated drafts remain preserved.
+Focused Red Eye, retouch and masking regression tests also passed all 42 cases
+under a process-family watchdog, with about 607 MiB peak private memory.
+
+## 2026-11-10: v0.22.0 release merge (validation in progress)
+
+The user authorized the release integration. Both companion remotes fetched
+successfully. Upstream main was `2772ac1e7` at the fetch; integration deliberately
+targets release `v0.22.0`, commit
+`5000240c6e5dc30a024d20f97a620c78eca10d1e`, rather than subsequent development.
+The previous fork head is `150587cb89b61203ab8fb2c66de384989646492c`; the release
+adds 2,573 commits beyond it. The fork remote has no additional integration work.
+
+Resolution uses the existing isolated worktree on
+`codex/photocraft-v022-integration`. The companion integration checkout and its
+local drafts, including pending Red Eye work, remain byte-for-byte unchanged.
+No installed executable has been replaced.
+
+Resolution decisions:
+
+- Use upstream's background GPU compositor startup and completion/memo handling.
+  Remove the superseded fork warm-up state, entry points and tests; retain
+  upstream's compositor-switch pixel tests.
+- Combine upstream pen-end startup handling with hosted window setup. Preserve
+  hidden startup, host-owned placement and native service overrides.
+- Keep upstream streamed atomic document writes. Route the host's narrowly
+  validated sidecar replacements through the same writer with explicit bytes;
+  ordinary automation writes do not receive that replacement authority.
+- Combine upstream RAW shelf/multi-image Open and Done behavior and XMP sidecar
+  crop handling with the host's separately queued prepared RAW, recipe targets,
+  full-resolution dimensions and saved-document continuation. Use upstream's
+  proxy geometry/box-averaging implementation through host cache adapters.
+- Preserve host Save/stash job completion tracking alongside upstream batch
+  cancellation reporting; combine service exports and public control hooks.
+- Take upstream translations for shared context/source keys, retaining only
+  fork-added keys missing from upstream. Keep both host protocol and upstream
+  Frame Tool documentation.
+- Review automatic merges in services, frame rendering, authorization, state,
+  window startup, raw IO and control inspection in addition to conflict blocks.
+  Host render tuning leaves native XMP crop unset because host crop is replayed
+  separately after development.
+
+Desktop and UI compilation, including test targets, passed. The source merge is
+resolved on the isolated branch; promotion remains blocked by the release-only
+SVG failure recorded below. A merge without textual conflicts is not promoted
+as a validated editor build.
+
+The release-tag merge has 36 conflicted files (the earlier 37-file assessment
+was against a later upstream main):
+
+- `apps/photocraft/src/main.rs`: hosted startup plus upstream pen service.
+- `crates/automation/src/workspace.rs`: streamed writer plus host sidecar policy.
+- `crates/io/src/lib.rs`: upstream IO exports plus host display-JPEG exports.
+- `crates/ui-egui/src/app.rs`: upstream RAW shelf plus host workspace state.
+- `crates/ui-egui/src/canvas/gpu_canvas.rs`: take upstream compositor implementation.
+- `crates/ui-egui/src/control/dispatch.rs`: retain host dispatch plus job cancellation imports.
+- `crates/ui-egui/src/dialogs/camera_raw_ui.rs`: upstream filmstrip module plus host adapters.
+- `crates/ui-egui/src/dialogs/camera_raw_ui/controls.rs`: upstream batch Open/Done plus host persistence.
+- `crates/ui-egui/src/dialogs/camera_raw_ui/convert.rs`: upstream proxy functions plus prepared-proxy adapter.
+- `crates/ui-egui/src/dialogs/camera_raw_ui/identity_tests.rs`: combine crop and host fields.
+- `crates/ui-egui/src/dialogs/camera_raw_ui/menu.rs`: upstream Done plus atomic host settings validation.
+- `crates/ui-egui/src/dialogs/camera_raw_ui/open.rs`: upstream XMP crop and shelf plus host prepared opens.
+- `crates/ui-egui/src/dialogs/camera_raw_ui/tests.rs`: retain both behavior suites; adapt queued-open helpers.
+- `crates/ui-egui/src/jobs_ui.rs`: preserve stash tracking and upstream cancellation reporting.
+- `crates/ui-egui/src/lib.rs`: combine service exports and host/shelf state.
+- `docs/control-protocol.md`: retain both protocol additions.
+- `crates/ui-egui/src/i18n/{cs,de,el,es,fr,hu,id,it,ja,ko,nl,pl,pt-br,ru,sr,tr,uk,vi,zh-hans,zh-hant}.tsv`:
+  upstream values plus fork-added translation keys.
+
+A new regression ensures a standalone RAW waiting in the upstream shelf is not
+claimed by the host's workspace auto-opener before its proper dialog is shown.
+
+Validation follow-up:
+
+- Algorithm suites passed 880 cases (26 existing ignores); IO suites passed
+  1,234 cases (12 existing ignores).
+- Automation passed all 126 cases after bounding its cancellation fixture.
+  The old 6,000-square/radius-1,000 blur was refused by working-memory admission
+  before a job started. The smaller exact-kernel workload and short caller
+  deadline exercise cancellation without weakening production memory guards.
+- Upstream's display-name guard requires RAW Develop labels. Remaining fork
+  presentation/error strings and corresponding catalog keys now follow that
+  naming; stored `cameraRaw` identifiers and allowed XMP interoperability names
+  stay compatible. Upstream translations win when renamed host keys collide.
+- Headless egui snapshot setup prefers a CPU adapter; on this machine that
+  default fails device creation with `Core(Device(Lost))`. An isolated failing
+  snapshot passes with `WGPU_BACKEND=vulkan`. Full UI validation used that backend
+  rather than skipping the failed snapshots.
+- The RAW render/Open equivalence fixture now takes standalone opens from the
+  upstream shelf rather than the host-only pending slot.
+- The standalone RAW helper needs PhotoCraft's root Cargo patches: dependency
+  manifests cannot activate their parent's patches. The build script now carries
+  those overrides and starts from the editor's dependency lock. This fixes the
+  incompatible registry Hayro selection. A matching helper built and passed a
+  synthetic DNG decode/exposure/reset/source-hash check.
+- The hosted executable built and passed live QML-host acceptance on PNG fixtures:
+  hidden startup, persistent same-process navigation, stash/restore, native Save
+  and grid notification, closed-tab reopen, five themes, resize/fullscreen and
+  shutdown/process cleanup. The same handoff passed with synthetic DNG files.
+  These runs used the candidate before the final presentation-label changes;
+  they are not acceptance of a sealed release binary or a real-camera corpus.
+
+Final source-validation status:
+
+Resolved merge commit: `a826e4f06` on `codex/photocraft-v022-integration`, with
+parents `150587cb8` and release `5000240c6`. The original dirty integration
+checkout has not been advanced. The host helper build-script change and this
+handoff remain local alongside the pre-existing host drafts.
+
+- Native UI: 6,512 passing cases, 24 existing ignores, combining the Vulkan run
+  with the rerun of three corrected RAW Develop label-query targets. The library
+  itself passed 6,188 cases. Desktop: 218 passed, 3 existing ignores. The ignored
+  adversarial command panic-hunt was explicitly run and passed.
+- Strict Clippy passed for desktop, UI, automation and IO, including all targets.
+  Workspace formatting passed. Dependency layers passed for 31 crates; the
+  final wasm refresh passed for 24 crates plus HEIF.
+- The release RAW benchmark completed on a dense 36 MP image. Exposure-proxy
+  update p95 was 6.64 ms. This is CPU development/scopes measurement, excluding
+  GPU upload and presentation. Cross-machine baseline comparison was skipped by
+  the benchmark because its stored baseline is for a different machine class.
+- **Promotion blocker:** `cargo xtask test-corpus -p photocraft-io --
+  --test-threads=1` aborts in the release IO library test
+  `svg::tests::bounded_embedded_svg_gets_only_the_nesting_depth_the_drawing_left`
+  with Windows `STATUS_STACK_OVERFLOW` (`0xc00000fd`). Running that exact release
+  test independently reproduces it. The corresponding debug test passes. Both
+  `crates/io/src/svg.rs` and `crates/io/src/svg/tests.rs` are byte-for-byte upstream
+  v0.22.0; this test deliberately creates a 1 MiB stack, so increasing
+  `RUST_MIN_STACK` does not change it. Do not weaken its depth assertion, enlarge
+  its stack merely to pass, or report the release corpus as green. Resolve this
+  upstream-format issue separately before promoting the editor.
+- The installed hosted executable, installed RAW helper and the previous shared
+  debug executable remain unchanged. Existing companion drafts, including Red
+  Eye, are excluded from this merge and preserved in the original checkout.
+  The isolated branch has not been pushed or substituted for that dirty branch.
+
+### 2026-11-11 source push
+
+The resolved release merge was pushed to the user's fork on
+`codex/photocraft-v022-integration` at `a826e4f06`. Pending native Red Eye work
+was committed separately as `b5b39157c` and pushed on
+`codex/image-triage-integration`; the release-merge branch does not yet include
+that separate commit. Six unrelated companion draft files remain untouched.
+Host source checks passed: 45 distinct Red Eye/retouch/mask/QML-architecture
+cases, with all 12 mask cases rerun using the application's Basic Qt style after
+the default Windows style emitted unsupported-customization warnings. No native
+rebuild, installer, binary promotion or further upstream merge was started.
+Upstream now advertises v0.23.0/v0.23.1; a non-mutating merge assessment against
+its main reports further RAW, dependency and translation conflicts. These newer
+releases remain outside this source-push task. Image Triage branch fetch succeeded
+without tags; tag fetching refused to overwrite existing differing release tags.

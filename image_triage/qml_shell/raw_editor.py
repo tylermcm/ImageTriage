@@ -56,6 +56,7 @@ WHEELS = ("gradeShadows", "gradeMidtones", "gradeHighlights", "gradeGlobal")
 DEFAULTS = {
     "masks": [],
     "retouch": [],
+    "redEye": [],
     "hostCrop": DEFAULT_CROP,
     **dict.fromkeys(FIELDS, 0),
     "gradeBlending": 50,
@@ -123,6 +124,10 @@ class RawEditor(QObject):
         self._mask_editor = RawMasks(self)
         from .raw_retouch import RawRetouch
         self._retouch_editor=RawRetouch(self)
+        from .raw_red_eye import RawRedEye
+        self._red_eye_editor = RawRedEye(self)
+
+    redEyeEditor = Property(QObject, lambda self: self._red_eye_editor, constant=True)
 
     retouchEditor=Property(QObject,lambda self:self._retouch_editor,constant=True)
 
@@ -442,7 +447,7 @@ class RawEditor(QObject):
         draft = dict(self._draft)
         for key, default in DEFAULTS.items():
             # Global Reset keeps authored masks, as it did before the Mask tab.
-            if key in ("masks","retouch"):
+            if key in ("masks","retouch","redEye"):
                 continue
             if key in self._original:
                 draft[key] = deepcopy(default)
@@ -689,6 +694,7 @@ class RawEditor(QObject):
                 raise ValueError("The photo is outside the editor's read folder.")
             bridge.require_masks_support({"recipe": _recipe(draft)}, getattr(proc.control, "camera_raw_masks_supported", False) is True)
             bridge.require_retouch_support({"recipe": _recipe(draft)}, getattr(proc.control, "camera_raw_retouch_supported", False) is True)
+            bridge.require_red_eye_support({"recipe": _recipe(draft)}, getattr(proc.control, "camera_raw_red_eye_supported", False) is True)
             if not saving:
                 if not proc.control.full_render_supported:
                     raise ValueError("This PhotoCraft build cannot render RAW recipes.")
@@ -711,7 +717,7 @@ class RawEditor(QObject):
                     return _display_preview(preview)
                 finally:
                     preview.unlink(missing_ok=True)
-            if any(key in draft or key in original for key in ("hostCrop", "masks", "retouch")):
+            if any(key in draft or key in original for key in ("hostCrop", "masks", "retouch", "redEye")):
                 from ..full_render import _without_host_settings
                 from ..raw_crop import publish
                 signature = bridge.file_signature(path)
@@ -747,7 +753,7 @@ class RawEditor(QObject):
             if not (opened.get("cameraRaw") or {}).get("dialog"):
                 raise ValueError("PhotoCraft could not develop this RAW.")
             proc.control.call("ui.menu.invoke", {"id": "filter.cameraRaw",
-                "params": {"ui": {"set": {key: draft.get(key, default) for key, default in DEFAULTS.items() if key not in ("hostCrop", "masks", "retouch")}}}})
+                "params": {"ui": {"set": {key: draft.get(key, default) for key, default in DEFAULTS.items() if key not in ("hostCrop", "masks", "retouch", "redEye")}}}})
             previous_render = bridge.saved_render_path(path)
             result = proc.control.call("ui.cameraRaw", {"done": True})
             if result.get("open"):

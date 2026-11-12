@@ -603,8 +603,13 @@ def test_wheel_zoom_is_variable_pointer_anchored_and_scoped_to_the_photo(shell, 
     assert (pan.property("contentX"), pan.property("contentY")) == pytest.approx(position)
     assert not pan.property("moving")
     assert pan.property("interactive")  # Mouse dragging remains available.
+    # Hidden editing cursors must not grow with the photo. The software renderer
+    # allocates rounded-rectangle buffers even for a hidden giant brush circle.
+    cursor = window.findChild(QQuickItem, "rawMaskBrushCursor")
+    assert cursor.width() == 0
     wheel(12000, QPointF(pan.width()/2, pan.height()/2))
     assert viewer.property("zoomScale") == pytest.approx(64)
+    assert cursor.width() == 0
     wheel(-12000, QPointF(pan.width()/2,pan.height()/2))
     assert viewer.property("zoomScale") == pytest.approx(fit * .5)
     assert photo.width() < pan.width()  # Below-fit zoom is not stretched back up.

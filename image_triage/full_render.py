@@ -279,6 +279,7 @@ class FullRenderService:
                 bridge.require_calibration_support({"recipe": what["recipe"]}, getattr(proc.control, "camera_raw_calibration_supported", False) is True)
                 bridge.require_masks_support({"recipe": what["recipe"]}, getattr(proc.control, "camera_raw_masks_supported", False) is True)
                 bridge.require_retouch_support({"recipe": what["recipe"]}, getattr(proc.control, "camera_raw_retouch_supported", False) is True)
+                bridge.require_red_eye_support({"recipe": what["recipe"]}, getattr(proc.control, "camera_raw_red_eye_supported", False) is True)
                 params["recipe"] = _without_host_settings(what["recipe"])
             reply = self._run_job(proc.render_lane(), params)
             if reply.get("out") not in (out + ".png", out + ".tif", out + ".tiff"):

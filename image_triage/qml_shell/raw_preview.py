@@ -120,13 +120,18 @@ class Connection:
         if own:
             own(self)
         try:
-            if self.call({"op": "hello"})[0].get("protocol") != 2:
+            hello = self.call({"op": "hello"})[0]
+            if hello.get("protocol") != 2:
                 raise RuntimeError("The RAW preview worker needs to be rebuilt.")
+            self._red_eye_supported = type(hello.get("redEye")) is int and hello["redEye"] >= 1
         except Exception:
             self.close()
             raise
 
     def call(self, request):
+        if (request.get("recipe", {}).get("cameraRaw", {}).get("redEye")
+                and not getattr(self, "_red_eye_supported", False)):
+            raise RuntimeError("Red Eye needs the updated RAW preview worker.")
         self.proc.stdin.write((json.dumps(request, allow_nan=False) + "\n").encode())
         self.proc.stdin.flush()
         line = self.proc.stdout.readline(128 * 1024)

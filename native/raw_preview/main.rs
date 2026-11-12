@@ -346,7 +346,7 @@ fn run() -> Result<()> {
         let result = (|| -> Result<(Value, Vec<u8>)> {
             let request: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
             if request["op"] == "hello" {
-                Ok((json!({"ok":true,"protocol":2,"bytes":0}), vec![]))
+                Ok((json!({"ok":true,"protocol":2,"redEye":1,"bytes":0}), vec![]))
             } else if request["op"] == "open" {
                 let start = Instant::now();
                 source = None;

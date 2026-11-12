@@ -322,7 +322,7 @@ FocusScope {
         MouseArea {
             parent: pan
             anchors.fill: parent
-            enabled: !rawPanel.whiteBalancePicking && !(rawPanel.visible && (rawPanel.tool === "Crop" || rawPanel.tool === "Remove" || rawPanel.tool === "Mask" && v.rawEditor.maskEditor.tool))
+            enabled: !rawPanel.whiteBalancePicking && !(rawPanel.visible && (rawPanel.tool === "Crop" || rawPanel.tool === "Remove" || rawPanel.tool === "Red Eye" || rawPanel.tool === "Mask" && v.rawEditor.maskEditor.tool))
             acceptedButtons: Qt.NoButton
             // Intercept wheels before Flickable can also scroll the image.
             // Button events pass through so dragging still pans normally.
@@ -383,6 +383,17 @@ FocusScope {
         y: stage.y + pan.y - pan.contentY + photoImg.y + (photoImg.height-photoImg.paintedHeight)/2
         width: photoImg.paintedWidth; height: photoImg.paintedHeight
         z: 3
+    }
+    RawRedEyeOverlay {
+        parent: stage
+        objectName: "rawRedEyeOverlay"
+        model: v.rawEditor.redEyeEditor; raw: v.rawEditor; viewport: stage
+        visible: rawPanel.visible && rawPanel.tool === "Red Eye" && !rawPanel.before
+        enabled: visible && rawPanel.editable; showOverlay: v.rawOverlay
+        x: pan.x - pan.contentX + photoImg.x + (photoImg.width-photoImg.paintedWidth)/2
+        y: pan.y - pan.contentY + photoImg.y + (photoImg.height-photoImg.paintedHeight)/2
+        width: photoImg.paintedWidth; height: photoImg.paintedHeight
+        clip: true; z: 3
     }
     RawRetouchOverlay {
         parent: stage
@@ -885,7 +896,7 @@ FocusScope {
                 onClicked: rawPanel.before = !rawPanel.before
             }
             SButton {
-                visible: rawPanel.visible && (rawPanel.tool === "Crop" || rawPanel.tool === "Remove" || rawPanel.tool === "Mask"); text: "Overlay"
+                visible: rawPanel.visible && (rawPanel.tool === "Crop" || rawPanel.tool === "Remove" || rawPanel.tool === "Red Eye" || rawPanel.tool === "Mask"); text: "Overlay"
                 h: 30; hpad: 10; variant: v.rawOverlay ? "primary" : "ghost"
                 onClicked: v.rawOverlay = !v.rawOverlay
             }

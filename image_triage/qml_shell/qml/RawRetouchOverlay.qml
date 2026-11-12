@@ -8,7 +8,7 @@ Item {
     readonly property var crop: raw.values.hostCrop
     property var points: []
     property bool drawing: false
-    readonly property real diameter: model.size/100*Math.min(width/crop.w,height/crop.h)
+    readonly property real diameter: visible ? model.size/100*Math.min(width/crop.w,height/crop.h) : 0
     function toView(p) { return Qt.point((p[0]-crop.x)/crop.w*width,(p[1]-crop.y)/crop.h*height) }
     function acceptsPoint(x, y) {
         if (x < 0 || y < 0 || x >= width || y >= height) return false
@@ -23,8 +23,11 @@ Item {
     }
     onVisibleChanged: { if(!visible) {drawing=false;points=[];path.requestPaint()} }
     Canvas {
-        id: path; anchors.fill: parent
+        id: path
+        width: overlay.visible ? overlay.width : 0
+        height: overlay.visible ? overlay.height : 0
         onPaint: {
+            if (width < 1 || height < 1) return
             var ctx=getContext('2d');ctx.reset();ctx.clearRect(0,0,width,height)
             if(!overlay.drawing || !overlay.points.length)return
             ctx.strokeStyle='#88589fff';ctx.lineWidth=overlay.diameter;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath()

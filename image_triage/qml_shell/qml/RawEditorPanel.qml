@@ -384,18 +384,10 @@ Rectangle {
                 visible: panel.tool === "Remove"; x: 13; width: parent.width-26; topPadding: 12
                 model: panel.model.retouchEditor; raw: panel.model
             }
-            Column {
-                visible: panel.tool === "Red Eye"; x: 13; width: parent.width - 16; topPadding: 12
-                PageTitle { text: "Red Eye" }
-                Row {
-                    width: parent.width; spacing: 8
-                    Choice { label: "Type"; width: parent.width - 63; choices: ["Red Eye", "Pet Eye"] }
-                    Action { text: "Auto"; pending: true; enabled: false }
-                }
-                Field { label: "Pupil size"; low: 0; high: 100 }
-                Field { label: "Darken"; low: 0; high: 100 }
-                Check { label: "Overlay"; checked: true; height: 37 }
-                Pending {}
+            RawRedEyePanel {
+                objectName: "rawRedEyePanel"
+                visible: panel.tool === "Red Eye"; x: 13; width: parent.width-26; topPadding: 12
+                model: panel.model.redEyeEditor; raw: panel.model
             }
             Column {
                 visible: panel.tool === "Presets"; x: 13; width: parent.width - 26; topPadding: 12

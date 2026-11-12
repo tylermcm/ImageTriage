@@ -22,9 +22,11 @@ Item {
     Image { anchors.fill: parent; visible: overlay.showCoverage && !(overlay.model.autoOverlay && overlay.model.adjusting); source: overlay.visible ? overlay.model.overlay : ""; fillMode: Image.Stretch; asynchronous: true; cache: false }
     Canvas {
         id: guides
-        anchors.fill: parent
+        width: overlay.visible && visible ? overlay.width : 0
+        height: overlay.visible && visible ? overlay.height : 0
         visible: overlay.model.showPins && (!!overlay.model.tool || overlay.dragging)
         onPaint: {
+            if (width < 1 || height < 1) return
             var ctx=getContext("2d");ctx.reset();ctx.clearRect(0,0,width,height)
             var shape=overlay.current.shape || ({})
             ctx.strokeStyle="white";ctx.lineWidth=1.5;ctx.fillStyle="#35ff4d62"
@@ -85,8 +87,9 @@ Item {
         }
     }
     Rectangle {
+        objectName: "rawMaskBrushCursor"
         visible: overlay.model.showPins && input.containsMouse && overlay.model.tool === "brush"
-        width: overlay.model.brushSize/100*Math.min(overlay.width/overlay.crop.w,overlay.height/overlay.crop.h)
+        width: overlay.visible && visible ? overlay.model.brushSize/100*Math.min(overlay.width/overlay.crop.w,overlay.height/overlay.crop.h) : 0
         height: width; radius: width/2
         x: input.mouseX-width/2; y: input.mouseY-height/2
         color: "transparent"; border.color: "white"; border.width: 1
