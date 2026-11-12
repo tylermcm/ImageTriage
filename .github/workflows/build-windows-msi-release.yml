@@ -10,6 +10,9 @@ on:
     paths:
       - 'packaging/photocraft_validation_pin.txt'
       - '.github/workflows/build-windows-msi-release.yml'
+      - 'freeze_support.py'
+      - 'setup_msi.py'
+      - 'scripts/build_raw_preview.ps1'
 
 permissions:
   contents: write
@@ -213,6 +216,8 @@ jobs:
           app = app.resolve()
           assert (app.parent / 'photocraft/photocraft.exe').is_file()
           assert (app.parent / 'image-triage-raw-preview.exe').is_file()
+          for name in ('site-packages', 'dist-packages'):
+              assert not (app.parent / 'ai_stdlib' / name).exists(), 'Build-host packages leaked into the stdlib bundle'
           capture = root / 'startup.png'
           env = dict(os.environ, LOCALAPPDATA=str(root / 'profile/local'), APPDATA=str(root / 'profile/roaming'),
                      IMAGE_TRIAGE_LOG_DIR=str(root / 'profile/logs'))

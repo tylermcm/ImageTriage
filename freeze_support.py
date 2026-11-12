@@ -453,6 +453,10 @@ def stage_ai_stdlib(layout: FreezeAssetLayout) -> None:
         ignore=shutil.ignore_patterns(
             "__pycache__",
             "*.pyc",
+            # Windows keeps installed build dependencies below Lib. Bundle AI
+            # packages only through the separate, explicitly selected tree.
+            "site-packages",
+            "dist-packages",
             "test",
             "tkinter",
             "turtledemo",

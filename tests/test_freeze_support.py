@@ -128,6 +128,25 @@ class FreezeSupportTests(unittest.TestCase):
                 with self.assertRaisesRegex(FileNotFoundError, "Required bundled AI dependency"):
                     prepare_ai_build_assets(layout)
 
+    def test_stdlib_does_not_bundle_build_host_third_party_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            layout = self._layout(root, site_packages=root / "managed-packages", bundle=False)
+            # Windows installs third-party packages inside the same Lib folder
+            # selected as the stdlib source. They must not bypass the opt-out.
+            for name in ("site-packages", "dist-packages"):
+                dependency = layout.ai_stdlib_source / name / "build_only_dependency"
+                dependency.mkdir(parents=True)
+                (dependency / "__init__.py").write_text("# build host only\n", encoding="utf-8")
+
+            prepare_ai_build_assets(layout)
+
+            self.assertTrue((layout.ai_stdlib_stage_root / "json.py").is_file())
+            self.assertTrue((layout.ai_binary_modules_stage_root / "_struct.pyd").is_file())
+            self.assertFalse(layout.ai_site_packages_stage_root.exists())
+            for name in ("site-packages", "dist-packages"):
+                self.assertFalse((layout.ai_stdlib_stage_root / name).exists())
+
 
 if __name__ == "__main__":
     unittest.main()
