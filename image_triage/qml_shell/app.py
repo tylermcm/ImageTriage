@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
+import tempfile
+import threading
+import time
+import traceback
 from pathlib import Path
 
 QML_DIR = Path(__file__).resolve().parent / "qml"
@@ -26,6 +31,7 @@ def _configure_qt_dll_search() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m image_triage.qml_shell", description=__doc__)
     parser.add_argument("--folder", help="photo folder to open")
+    parser.add_argument("--select", default="", help="a photo of that folder to put the grid on once it has been read (a photo opened from the file manager)")
     parser.add_argument("--mock", metavar="DIR", help="open p01..p12.jpg from DIR with the HTML mockup's exact data (for pixel comparison)")
     parser.add_argument("--light", action="store_true", help="start in the light theme")
     parser.add_argument("--size", default="", help="window size in device-independent pixels (default: 1440x900, or 92%% of the screen if that is smaller)")
@@ -38,8 +44,131 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# The --ui keys that play a scripted scene or fill a window with sample data. They exist for the sample page and its pixel checks; on a
+# real folder some of them write (the cull's "done" scene saves reject decisions), so only --mock may use them.
+_SCENE_KEYS = ("cullScene", "ctxScene", "refScene", "vwScene", "hoRecipe")
+_SCENE_PREFIXES = ("pd", "tx")
+
+
+def startup_settings(ui: str, *, mock: bool, grab: bool) -> str:
+    """What `--ui` may set in this launch: everything on the sample page, the plain interface settings in a headless render of a real
+    folder, and nothing in a normal launch (the flag is a hook for checks, not a way to start the app)."""
+    if mock:
+        return ui
+    if not grab:
+        return ""
+    kept = [pair for pair in ui.split(";")
+            if pair.split("=", 1)[0] not in _SCENE_KEYS and not pair.startswith(_SCENE_PREFIXES)]
+    return ";".join(kept)
+
+
+def saved_window_place(saved, screens) -> tuple[str, tuple[int, int, int, int], bool] | None:
+    """Where the window was when the app was last closed, if it can be put back there: (screen name, (x, y, width, height), maximised).
+
+    `saved` is what `window_place` stored, `screens` the monitors there are now as (name, (x, y, width, height)) of their usable area.
+    None when nothing usable was saved, the monitor is gone, or the window would not be on it (its layout changed): the app then
+    opens the way it always did."""
+    if not isinstance(saved, dict):
+        return None
+    try:
+        x, y, width, height = (int(saved[key]) for key in ("x", "y", "width", "height"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    area = next((rect for name, rect in screens if name == saved.get("screen")), None)
+    if area is None or width < 640 or height < 400:
+        return None
+    ax, ay, aw, ah = area
+    shown_w = min(x + width, ax + aw) - max(x, ax)
+    shown_h = min(y + height, ay + ah) - max(y, ay)
+    if shown_w < 200 or shown_h < 120 or y < ay - 8:              # enough of it on the monitor to find, and its top bar within reach
+        return None
+    return str(saved["screen"]), (x, y, width, height), bool(saved.get("maximized", True))
+
+
+def window_place(screen: str, rect: tuple[int, int, int, int] | None, maximized: bool) -> dict | None:
+    """What is stored for `saved_window_place`: the monitor, the window's own (not maximised) rectangle and whether it was maximised."""
+    if rect is None or not screen:
+        return None
+    x, y, width, height = rect
+    return {"screen": screen, "x": int(x), "y": int(y), "width": int(width), "height": int(height), "maximized": bool(maximized)}
+
+
+def sweep_viewer_temp(root: str | None = None, older_than_s: float = 600.0) -> list[str]:
+    """Remove the viewer's picture folders that an earlier run left in the temporary folder (they are only removed on a clean exit, so a
+    crash or a kill left one behind every time). Only called by the one running app, and only folders that have not been touched for a
+    while are taken, so a headless check running beside it keeps its own. Returns what was removed."""
+    removed = []
+    base = Path(root or tempfile.gettempdir())
+    try:
+        candidates = [entry for entry in base.iterdir() if entry.name.startswith("imagetriage-viewer-")]
+    except OSError:
+        return removed
+    now = time.time()
+    for entry in candidates:
+        try:
+            if entry.is_symlink() or not entry.is_dir() or now - entry.stat().st_mtime < older_than_s:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        if not entry.exists():
+            removed.append(str(entry))
+    return removed
+
+
+def stop_background(runner, pools, services, wait_ms: int = 2500) -> None:
+    """Quitting: stop what runs behind the window, so the process ends with it.
+
+    A copy or move stops between photos, everything still queued is dropped, and what is already running gets a bounded moment to
+    end. Before, nothing was told to stop and the process stayed until every queued thumbnail and job had been worked through."""
+    from PySide6.QtCore import QCoreApplication, QEvent, QThreadPool
+
+    deadline = time.monotonic() + wait_ms / 1000.0
+    left = lambda: max(0, int((deadline - time.monotonic()) * 1000))
+    transfer = bool(getattr(runner, "running", False))
+    try:
+        runner.cancel()
+    except Exception:
+        pass
+    for service in services:
+        try:
+            service.shutdown(min(left(), 500))
+        except Exception:
+            pass
+    for pool in (*pools, QThreadPool.globalInstance()):
+        pool.clear()
+    for pool in (*pools, QThreadPool.globalInstance()):
+        pool.waitForDone(left())
+    if transfer:
+        # The copy or move that was stopped reports what it had done on a queued signal; hand that over now, while there is still someone
+        # to take the moved photos' decisions with them.
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.MetaCall)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    headless = bool(args.grab or args.mock)
+    if not args.grab:                                  # headless checks have their own output; a real session keeps a log (it has no console to print to)
+        from . import diagnostics
+
+        diagnostics.install()                          # before the application object: a failure while Qt starts is then in the log too
+    state: dict = {}
+    try:
+        return _run(args, state)
+    except Exception:
+        from . import diagnostics
+
+        hide = state.get("hide_splash")
+        if hide is not None:
+            try:
+                hide()                                 # the message must not sit behind a splash that will never go away
+            except Exception:
+                pass
+        diagnostics.report_fatal("Image Triage could not start.", traceback.format_exc(), dialog=not headless)
+        return 1
+
+
+def _run(args, state: dict) -> int:
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
     _configure_qt_dll_search()
 
@@ -85,10 +214,21 @@ def main(argv: list[str] | None = None) -> int:
     # device-independent pixels on every monitor; Qt 6 turns high-DPI scaling on by itself
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QGuiApplication(sys.argv[:1])
-    if not args.grab:                                  # headless checks have their own output; a real session keeps a log (it has no console to print to)
+    if not args.grab:
         from . import diagnostics
 
-        diagnostics.install(app)
+        diagnostics.attach(app)
+    # One app per person: a normal launch hands what it was asked to open to the app that is already running and ends. The headless
+    # and sample launches (and anything driven by the check flags) are separate on purpose.
+    instance = None
+    if not (args.grab or args.mock or args.size or args.ui or args.set or args.click or args.hover):
+        from .single_instance import InstanceServer, send_to_running
+
+        if send_to_running({"folder": args.folder or "", "select": args.select or ""}):
+            return 0
+        instance = InstanceServer(parent=app)
+        if not instance.listen():
+            instance = None
     from PySide6.QtGui import QIcon
 
     app.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "assets" / "app_icon-v5.ico")))      # the taskbar and every window
@@ -123,7 +263,12 @@ def main(argv: list[str] | None = None) -> int:
     batch = BatchModel(photos, memory=bool(args.mock), parent=app, toasts=toasts)
     files = FileActions(photos, toasts, memory=bool(args.mock), parent=app)
     cull = CullModel(photos, memory=bool(args.mock), parent=app, toasts=toasts, files=files)
+    cull.runFinished.connect(people.reload)            # an analysis has just written the face index: the People page reads it again
     app.aboutToQuit.connect(cull.shutdown)
+    # Connected here, before the decisions are flushed below: a move that is stopped still hands over the photos it had moved. The
+    # services it stops are made further down and added to `stoppable` then.
+    stoppable: list = []
+    app.aboutToQuit.connect(lambda: stop_background(runner, (), stoppable))
     menu = MenuModel(photos, collections, cull, toasts, memory=bool(args.mock), parent=app, files=files)
     pocket_drop = PocketDropModel(photos, memory=bool(args.mock), parent=app, collections=collections)
     reference = ReferenceModel(photos, toasts, memory=bool(args.mock), parent=app)
@@ -179,9 +324,11 @@ def main(argv: list[str] | None = None) -> int:
     context.setContextProperty("handoff", handoff)
     context.setContextProperty("transfers", transfers)
     context.setContextProperty("thumbs", thumbs)
-    context.setContextProperty("histograms", HistogramService(parent=app))
-    context.setContextProperty("inspection", InspectionService(parent=app))
-    context.setContextProperty("captureData", CaptureService(parent=app))
+    photo_services = (HistogramService(parent=app), InspectionService(parent=app), CaptureService(parent=app))
+    context.setContextProperty("histograms", photo_services[0])
+    context.setContextProperty("inspection", photo_services[1])
+    context.setContextProperty("captureData", photo_services[2])
+    stoppable.extend((thumbs, *photo_services))
     ai_scores = AiScores(photos, memory=bool(args.mock), parent=app)
     photo_search = SearchModel(photos, parent=app)
     ai_scores.revisionChanged.connect(photo_search.refresh)
@@ -191,7 +338,8 @@ def main(argv: list[str] | None = None) -> int:
     settings.aiScoringChanged.connect(ai_scores.reload)           # a saved report is classified as it is read: read it again with the new sliders
     cull.runFinished.connect(ai_scores.reload)          # an analysis has just written its report: the inspector reads it
     context.setContextProperty("aiScores", ai_scores)
-    context.setContextProperty("uiMemory", UiMemory(memory=bool(args.mock or args.grab), parent=app))     # the interface as it was left; headless checks start from the defaults
+    ui_memory = UiMemory(memory=bool(args.mock or args.grab), parent=app)     # the interface as it was left; headless checks start from the defaults
+    context.setContextProperty("uiMemory", ui_memory)
     library_nav = LibraryNavModel(photos, memory=bool(args.mock), persist=not args.grab, parent=app)
     context.setContextProperty("libraryNav", library_nav)
     popout = ViewerHost(photos, thumbs, collections, files=files, cull=cull, toasts=toasts, memory=bool(args.mock or args.grab), parent=app)
@@ -203,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
         editor.setBrowseSource(photos, thumbs, popout)
     app.aboutToQuit.connect(editor.shutdown)
     context.setContextProperty("editor", editor)
-    context.setContextProperty("startup", args.ui)
+    context.setContextProperty("startup", startup_settings(args.ui, mock=bool(args.mock), grab=bool(args.grab)))
     engine.addImportPath(str(QML_DIR))
     if args.size:
         width, height = (int(part) for part in args.size.lower().split("x"))
@@ -214,7 +362,10 @@ def main(argv: list[str] | None = None) -> int:
         width, height = min(1440, int(area.width() * 0.92)), min(900, int(area.height() * 0.92))
     # the launch splash (its own frameless window) is up while the main window is built; not for headless checks, which have their own scenes
     splash = not (args.grab or args.mock)
+    qml_problems: list[str] = []
+    engine.warnings.connect(lambda problems: qml_problems.extend(problem.toString() for problem in problems))
     if splash:
+        state["hide_splash"] = reference.splashHide
         engine.load(QUrl.fromLocalFile(str(QML_DIR / "SplashWindow.qml")))
         reference.splashShow("Starting\u2026", 8)
         app.processEvents()
@@ -223,6 +374,13 @@ def main(argv: list[str] | None = None) -> int:
     engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
     roots = engine.rootObjects()
     if not roots or (splash and len(roots) < 2):
+        # The interface did not load. Without this the app ended (or sat behind its splash) with nothing said.
+        from . import diagnostics
+
+        if splash:
+            reference.splashHide()
+            app.processEvents()
+        diagnostics.report_fatal("Image Triage could not load its interface.", "\n".join(qml_problems), dialog=not (args.grab or args.mock))
         return 1
     window = roots[-1]
     pocket_drop.setWindowHandle(int(window.winId()))
@@ -232,20 +390,81 @@ def main(argv: list[str] | None = None) -> int:
     window.setHeight(height)
     if not args.size:
         window.setPosition(area.x() + (area.width() - width) // 2, area.y() + (area.height() - height) // 2)
-    QMetaObject.invokeMethod(window, "applyStartup", Q_ARG("QVariant", width))
-    if not (args.size or args.grab or args.mock):
+    real_window = not (args.size or args.grab or args.mock)
+    place = None
+    if real_window:
+        # Where the window was left: its monitor, its size there and whether it was maximised. When that monitor is not there any more
+        # (or nothing was saved) it opens as it always did, maximised on the main one.
+        place = saved_window_place(ui_memory.get("window", None), [(s.name(), s.availableGeometry().getRect()) for s in app.screens()])
+    QMetaObject.invokeMethod(window, "applyStartup", Q_ARG("QVariant", place[1][2] if place and not place[2] else width))
+    if real_window:
+        from PySide6.QtCore import QRect
+        from PySide6.QtGui import QWindow
+
         if splash:
             window.setOpacity(0.0)                        # it builds out of sight behind the splash and is shown whole (see `reveal`)
-        window.showMaximized()                            # the real app opens maximised; headless checks keep their exact size
+        if place is not None:
+            window.setScreen(next(s for s in app.screens() if s.name() == place[0]))
+            window.setGeometry(QRect(*place[1]))
+        if place is None or place[2]:
+            window.showMaximized()                        # the real app opens maximised; headless checks keep their exact size
+        else:
+            window.show()
+        own_rect = [place[1] if place else None]          # the window's rectangle when it is not maximised
+        was_maximized = [place[2] if place else True]
+        settle = QTimer(window)
+        settle.setSingleShot(True)
+        settle.setInterval(300)                           # after a maximise or restore has finished changing the geometry
+
+        def note_place() -> None:
+            visibility = window.visibility()
+            if visibility == QWindow.Visibility.Windowed:
+                own_rect[0], was_maximized[0] = window.geometry().getRect(), False
+            elif visibility in (QWindow.Visibility.Maximized, QWindow.Visibility.FullScreen):
+                was_maximized[0] = True
+
+        def save_place() -> None:
+            if settle.isActive():
+                note_place()
+            stored = window_place(window.screen().name() if window.screen() else "", own_rect[0], was_maximized[0])
+            if stored is not None:
+                ui_memory.set("window", stored)
+
+        settle.timeout.connect(note_place)
+        for changed in (window.xChanged, window.yChanged, window.widthChanged, window.heightChanged, window.visibilityChanged):
+            changed.connect(lambda *_: settle.start())
+        app.aboutToQuit.connect(save_place)
     for pair in filter(None, args.set.split(";")):
         key, _, raw = pair.partition("=")
         settings.set(key, True if raw == "true" else False if raw == "false" else (float(raw) if "." in raw else int(raw)) if raw.lstrip("-").replace(".", "", 1).isdigit() else raw)
     if args.mock:
         photos.loadMock(args.mock)
+    elif args.folder and args.select:
+        library_nav.open_file(args.select)                 # a photo opened from the file manager: its folder, with the grid on that photo
     elif args.folder:
         library_nav.openFolder(args.folder)                # loads it, and puts the Library page's tree on its drive
     else:
         library_nav.restoreLastFolder()                    # no folder asked for: the one that was open when the app was closed, on the photo that was current
+    if instance is not None:
+        from PySide6.QtGui import QWindow as _Window
+
+        def another_launch(message: dict) -> None:
+            """A later launch handed over what it was asked to open: open it here and come to the front."""
+            folder, select = str(message.get("folder") or ""), str(message.get("select") or "")
+            if select:
+                library_nav.open_file(select)
+            elif folder:
+                library_nav.openFolder(folder)
+            if window.visibility() == _Window.Visibility.Minimized:
+                window.showMaximized() if was_maximized[0] else window.showNormal()
+            window.raise_()
+            window.requestActivate()
+
+        instance.received.connect(another_launch)
+        app.aboutToQuit.connect(instance.close)
+        # Only the one running app clears what earlier runs left behind, off the interface thread.
+        threading.Thread(target=sweep_viewer_temp, name="qml-temp-sweep", daemon=True).start()
+
     def reveal() -> None:
         window.setOpacity(1.0)
         reference.splashHide()

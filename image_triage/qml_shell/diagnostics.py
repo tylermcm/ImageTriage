@@ -38,7 +38,10 @@ def _write(text: str) -> None:
 
 
 def install(app=None) -> Path | None:
-    """Start logging. `app` is the Qt application: with it, the interface heartbeat and the stall watchdog run too. Returns the log file's path."""
+    """Start logging. `app` is the Qt application: with it, the interface heartbeat and the stall watchdog run too. Returns the log file's path.
+
+    It is called before the application object exists, so that a failure while Qt starts is in the log too; `attach` adds the heartbeat
+    once there is an application."""
     try:
         path = log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,3 +123,42 @@ def _watch(app) -> None:
         threading.Thread(target=watch, name="stall-watchdog", daemon=True).start()
     except Exception:
         pass
+
+
+def attach(app) -> None:
+    """Start the interface heartbeat and the stall watchdog for `app` (logging was started earlier, with `install()`)."""
+    if _state["file"] is not None and "timer" not in _state:
+        _watch(app)
+
+
+def _message_box(title: str, text: str) -> None:
+    """A native message window. Only Windows has one that needs no toolkit; elsewhere the text on stderr is all there is."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, text, title, 0x10 | 0x10000)  # type: ignore[attr-defined]  # an error icon, in front
+    except Exception:
+        pass
+
+
+def report_fatal(summary: str, detail: str = "", dialog: bool = True) -> str:
+    """Say that the app cannot start: in the log, on stderr and, with `dialog`, in a native message window. The app has no console and
+    its own window is not up, so without this a failed start leaves nothing to see. Returns the text that was shown."""
+    _write(f"fatal: {summary}\n{detail}" if detail else f"fatal: {summary}")
+    lines = [summary]
+    if detail:
+        tail = detail.strip().splitlines()[-12:]                  # the end of a traceback or of the QML errors says what went wrong
+        lines += ["", *tail]
+    if _state["file"] is not None:
+        lines += ["", f"Details are in {log_path()}"]
+    text = "\n".join(lines)
+    try:
+        if sys.stderr is not None:
+            print(text, file=sys.stderr)
+    except Exception:
+        pass
+    if dialog:
+        _message_box("Image Triage", text)
+    return text
