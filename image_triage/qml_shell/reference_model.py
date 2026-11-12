@@ -5,9 +5,10 @@ and publishes a `view` map the QML only draws.
 
 Real: the version (`_version`), the update check (`updater.check_for_update`, in a worker thread), Open the log folder, Release notes and Report
 a problem (the default browser), the keys (`ui/shortcuts.SHORTCUT_REGISTRY` and the user's overrides), the library (`LibraryStore`: roots,
-search, add, remove, re-index) and the Windows file associations (`file_associations.py`; on any other system the window says they are managed by
-the system). Not connected yet (they say so in a toast): downloading an update, Licences and credits, and "Show in the grid" for library
-results. `memory=True` (--mock, tests) uses the mockup's sample library, sample file-association states and a scripted update check.
+search, add, remove, re-index), the Windows file associations (`file_associations.py`; on any other system the window says they are managed by
+the system) and installing an update on Windows (`updater.py`: download, verify, then install when the app closes; on any other system the
+button opens the release page). Not connected: "Show in the grid" for library results (the button is off).
+`memory=True` (--mock, tests) uses the mockup's sample library, sample file-association states and a scripted update check.
 See docs/qml_unwired.md, section "Help, shortcuts, library, file types and splash".
 """
 from __future__ import annotations
@@ -16,12 +17,14 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, QRunnable, QThreadPool, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QCoreApplication, QObject, QRunnable, QThreadPool, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
 from . import reference_content as C
 
 REPO = "https://github.com/tylermcm/ImageTriage"
+LIB_SEARCH_DELAY_MS = 180                        # typing in the library search waits this long before the catalog is read
+STARTUP_CHECK_DELAY_MS = 4000                    # after the window is up, so the check never competes with the first folder
 KEY_SPLIT = "+"
 
 
@@ -71,6 +74,31 @@ class _UpdateTask(QRunnable):
         self.signals.done.emit(result, error)
 
 
+class _DownloadSignals(QObject):
+    progress = Signal(int, object, object)      # which download, bytes so far, bytes in all (0 = not known)
+    done = Signal(int, str, str)                # which download, the verified installer's path, the error text
+
+
+class _DownloadTask(QRunnable):
+    """Downloads and verifies the installer of a newer version. `token` says which download a signal belongs to, so a cancelled one is ignored."""
+
+    def __init__(self, update, token: int) -> None:
+        super().__init__()
+        self.update = update
+        self.token = token
+        self.signals = _DownloadSignals()
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        try:
+            from ..updater import download_update_installer
+
+            path = download_update_installer(self.update, progress_callback=lambda done, total, _name: self.signals.progress.emit(self.token, done, total))
+            self.signals.done.emit(self.token, str(path), "")
+        except Exception as exc:
+            self.signals.done.emit(self.token, "", str(exc) or exc.__class__.__name__)
+
+
 class _IndexSignals(QObject):
     done = Signal(object, str)
 
@@ -111,9 +139,21 @@ class ReferenceModel(QObject):
         self._lq = ""
         self._lscope = "all"
         self._fopen: dict[str, bool] = {"raw": True}
-        self._upd = "ok" if memory else "idle"   # idle (real, not asked yet), ok, avail, checking, error
+        # idle (real, not asked yet), ok, avail, checking, error; then for an update being installed: downloading, dlerror, ready, armed
+        self._upd = "ok" if memory else "idle"
         self._upd_info = None                    # the real UpdateInfo of a newer version
         self._upd_error = ""
+        self._upd_quiet = False                  # the check at startup: no window, a toast only when there is something newer
+        self._download = 0                       # the running download's token; 0 when none is wanted
+        self._download_serial = 0
+        self._dl_progress = ""
+        self._installer = ""                     # the verified installer, once downloaded
+        self._startup_checked = False
+        self._lib_store_obj = None               # one library store for the window's reads, opened the first time it is needed
+        self._lib_timer = QTimer(self)
+        self._lib_timer.setSingleShot(True)
+        self._lib_timer.setInterval(LIB_SEARCH_DELAY_MS)
+        self._lib_timer.timeout.connect(self._lib_search_now)
         self._last_checked = "14:08" if memory else ""
         self._task = None
         self._splash = {"on": False, "p": 8, "status": "Starting…", "preview": False}
@@ -248,9 +288,43 @@ class ReferenceModel(QObject):
             self._task = None
             self._emit()
             return
-        if self._upd == "avail":
-            self._toast("warn", "Downloading the update isn’t connected yet", "Use Check for updates in the Widgets app for now.")
+        if self._upd in ("avail", "dlerror"):
+            self._start_download()
             return
+        if self._upd == "downloading":           # cancel: the task finishes on its own and its file is thrown away
+            self._download = 0
+            self._upd = "avail"
+            self._emit()
+            return
+        if self._upd == "ready":
+            self._arm_install()
+            return
+        if self._upd == "armed":                 # changed their mind: closing the app no longer installs
+            self._disarm_install()
+            self._upd = "ready"
+            self._emit()
+            return
+        self._upd_quiet = False
+        self._start_check()
+
+    @Slot()
+    def checkOnStartup(self) -> None:
+        """The check the "Check for updates when the app starts" setting asks for. Says nothing unless there is a newer version."""
+        if self._memory or self._startup_checked:
+            return
+        self._startup_checked = True
+        try:
+            from ..app_identity import user_settings
+
+            wanted = bool(user_settings().value("updates/check_on_startup", True, bool))
+        except Exception:                        # unreadable settings: the default is to check
+            wanted = True
+        if not wanted or self._upd != "idle":
+            return
+        self._upd_quiet = True
+        self._start_check()
+
+    def _start_check(self) -> None:
         self._upd = "checking"
         self._upd_error = ""
         self._emit()
@@ -272,20 +346,112 @@ class ReferenceModel(QObject):
         if self._task is None:                   # cancelled meanwhile
             return
         self._task = None
+        quiet, self._upd_quiet = self._upd_quiet, False
         self._last_checked = datetime.now().strftime("%H:%M")
         if error or result is None:
-            self._upd, self._upd_error = "error", error
+            # nobody asked for the startup check, so being offline is not worth an error on the About page
+            self._upd, self._upd_error = ("idle", "") if quiet else ("error", error)
         elif result.update_available:
             self._upd, self._upd_info = "avail", result.latest
+            if quiet and self._toasts is not None:
+                self._toasts.push("info", f"Version {result.latest.version} is available", "Help › About has the download.", "Show", self.openAbout)
         else:
             self._upd = "ok"
         self._emit()
 
+    # ---- installing an update: download, verify, and install when the app closes (Windows; elsewhere the release page) ----
+    def _release_page(self) -> str:
+        info = self._upd_info
+        return info.release_notes_url if info is not None and getattr(info, "release_notes_url", "") else f"{REPO}/releases"
+
+    def _can_install(self) -> bool:
+        """Only the Windows MSI can be installed from here, and only one whose published checksum can be checked."""
+        return _is_windows() and self._upd_info is not None and bool(getattr(self._upd_info, "is_verifiable", False))
+
+    def _start_download(self) -> None:
+        if self._upd_info is None:               # the sample data's "newer version"
+            self._toast("info", "Downloads the update", "Sample data: nothing was downloaded.")
+            return
+        if not self._can_install():
+            QDesktopServices.openUrl(QUrl(self._release_page()))
+            return
+        self._download_serial += 1
+        self._download = self._download_serial
+        task = _DownloadTask(self._upd_info, self._download)
+        self._dl_progress = "Starting…"
+        self._upd, self._upd_error = "downloading", ""
+        task.signals.progress.connect(self._download_progress)
+        task.signals.done.connect(self._download_done)
+        QThreadPool.globalInstance().start(task)
+        self._emit()
+
+    def _download_progress(self, token: int, done, total) -> None:
+        if token != self._download:
+            return
+        mb = 1024 * 1024
+        text = f"{int(done) / mb:.1f} of {int(total) / mb:.1f} MB" if total else f"{int(done) / mb:.1f} MB"
+        if text != self._dl_progress:
+            self._dl_progress = text
+            self._emit()
+
+    def _download_done(self, token: int, path: str, error: str) -> None:
+        if token != self._download:              # cancelled meanwhile: do not leave the installer lying in the temporary folder
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            return
+        self._download = 0
+        if error or not path:
+            self._upd, self._upd_error = "dlerror", error
+        else:
+            self._installer = path
+            self._upd = "ready"
+        self._emit()
+
+    def _arm_install(self) -> None:
+        """Install when the app closes, not now: closing can still be refused (unsaved edits), and nothing may be installed under a running app."""
+        app = QCoreApplication.instance()
+        if app is None or not self._installer:
+            return
+        app.aboutToQuit.connect(self._install_on_quit)
+        self._upd = "armed"
+        self._emit()
+        self._quit_app()
+
+    @staticmethod
+    def _quit_app() -> None:
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.quit()
+
+    def _disarm_install(self) -> None:
+        app = QCoreApplication.instance()
+        if app is not None:
+            try:
+                app.aboutToQuit.disconnect(self._install_on_quit)
+            except (RuntimeError, TypeError):    # was not connected
+                pass
+
+    def _install_on_quit(self) -> None:
+        if self._upd != "armed" or not self._installer or self._upd_info is None:
+            return
+        try:
+            from ..updater import launch_update_installer_and_restart
+
+            # hashed again here: the file has been in a temporary folder since it was verified
+            launch_update_installer_and_restart(self._installer, expected_sha256=self._upd_info.sha256)
+        except Exception as exc:
+            # the app is going away, so this cannot be shown; the log is where the next start can find it
+            import logging
+
+            logging.getLogger(__name__).error("The update was not installed: %s", exc)
+
     @Slot(str)
     def openLink(self, link: str) -> None:
         if link == "notes":
-            url = self._upd_info.release_notes_url if self._upd_info is not None and self._upd_info.release_notes_url else f"{REPO}/releases"
-            QDesktopServices.openUrl(QUrl(url))
+            QDesktopServices.openUrl(QUrl(self._release_page()))
         elif link == "report":
             QDesktopServices.openUrl(QUrl(f"{REPO}/issues/new"))
         elif link == "logs":
@@ -340,11 +506,24 @@ class ReferenceModel(QObject):
             if topic.get("sepBefore"):
                 rows.append({"sep": True})
             rows.append({"sep": False, "id": topic["id"], "title": topic["title"], "d": topic["icon"], "cur": bool(cur and cur["id"] == topic["id"]), "n": str(hits(topic)) if hits(topic) else ""})
+        info = self._upd_info
+        newer = info.version if info is not None else "2.4.0"        # only the sample data has no real version to name
+        if info is None:
+            avail_body = "Sample data: nothing is downloaded."
+        elif getattr(info, "summary", ""):
+            avail_body = info.summary
+        elif self._can_install():
+            avail_body = "Download it here; it installs when Image Triage closes."
+        else:
+            avail_body = "The release page has the download and what changed."
         upd = {
             "ok": ("win", "You are up to date", f"Version {_version()} is the newest." + (f" Last checked today at {self._last_checked}." if self._last_checked else ""), "Check again", False),
             "idle": ("fg3", f"Version {_version()}", "Check whether a newer version is available.", "Check for updates", False),
-            "avail": ("accent", f"Version {self._upd_info.version} is available" if self._upd_info is not None else "Version 2.4.0 is available",
-                      (self._upd_info.summary if self._upd_info is not None and self._upd_info.summary else "It adds faster thumbnails and fixes the closed-eyes setup on older Windows."), "Download", True),
+            "avail": ("accent", f"Version {newer} is available", avail_body, "Download" if self._can_install() or info is None else "Open the release page", True),
+            "downloading": ("rev", f"Downloading version {newer}…", self._dl_progress, "Cancel", False),
+            "dlerror": ("rej", "Could not download the update", self._upd_error or "Check your internet connection and try again.", "Try again", False),
+            "ready": ("win", f"Version {newer} is ready to install", "Image Triage closes, installs it and starts again.", "Install and restart", True),
+            "armed": ("accent", f"Version {newer} installs when Image Triage closes", "Close the app to install it. It starts again afterwards.", "Don’t install", False),
             "checking": ("rev", "Checking for updates…", "This takes a moment.", "Cancel", False),
             "error": ("rej", "Could not check for updates", self._upd_error or "Check your internet connection and try again.", "Try again", False),
         }[self._upd]
@@ -402,7 +581,16 @@ class ReferenceModel(QObject):
     def setLibQuery(self, text: str) -> None:
         if text != self._lq:
             self._lq = text
-            self._lib_refresh()
+            if self._memory:
+                self._lib_refresh()
+            else:
+                # The catalog is a database on disk: read it once the typing pauses, not on every key.
+                self._lib_timer.start()
+            self._emit()
+
+    def _lib_search_now(self) -> None:
+        if self._window == "lib":
+            self._lib_refresh(roots=False)
             self._emit()
 
     @Slot(str)
@@ -412,9 +600,12 @@ class ReferenceModel(QObject):
         self._emit()
 
     def _store(self):
-        from ..library_store import LibraryStore
+        # Opening a store sets its database up again each time, so the window keeps one instead of opening two per search.
+        if self._lib_store_obj is None:
+            from ..library_store import LibraryStore
 
-        return LibraryStore()
+            self._lib_store_obj = LibraryStore()
+        return self._lib_store_obj
 
     def _lib_load_roots(self) -> None:
         if self._memory:
@@ -425,9 +616,11 @@ class ReferenceModel(QObject):
             roots = []
         self._roots = [{"path": r.path, "name": Path(r.path).name or r.path, "count": r.indexed_record_count, "when": _ago(r.last_indexed_at), "error": r.last_error} for r in roots]
 
-    def _lib_refresh(self) -> None:
-        """Roots from the library store and the results for the search and scope."""
-        self._lib_load_roots()
+    def _lib_refresh(self, roots: bool = True) -> None:
+        """Roots from the library store and the results for the search and scope. A search alone (`roots=False`) keeps the roots it has."""
+        self._lib_timer.stop()
+        if roots:
+            self._lib_load_roots()
         if self._lscope != "all" and not any(r["path"] == self._lscope or r["name"] == self._lscope for r in self._roots):
             self._lscope = "all"
         q = self._lq.strip().lower()
@@ -507,10 +700,6 @@ class ReferenceModel(QObject):
         self._lib_refresh()
         self._emit()
 
-    @Slot()
-    def showInGrid(self) -> None:
-        self._toast("warn", "Showing library results in the grid isn’t connected yet", "The results stay in this window.")
-
     def _lib_view(self) -> dict:
         roots = self._roots
         empty = self._lib_empty or not roots
@@ -524,7 +713,6 @@ class ReferenceModel(QObject):
             "cards": cards, "noResults": not cards and not empty,
             "roots": [{"path": r["path"], "name": r["path"], "meta": f"{r['count']:,} bundles · indexed {r['when']}" + (f" · {r['error']}" if r.get("error") else "")} for r in roots],
             "foot": self._lib_busy or ("Nothing indexed" if empty else f"Searching {total:,} bundles in {len(roots)} {'folder' if len(roots) == 1 else 'folders'}"),
-            "show": f"Show {shown} in the grid", "canShow": shown > 0,
         }
 
     # ---------------- file associations ----------------
@@ -664,6 +852,9 @@ class ReferenceModel(QObject):
         if self._splash["on"]:
             self._splash = dict(self._splash, on=False)
             self._emit()
+            # The launch splash going away is when startup is over, and only the real app shows it: the check the setting asks for starts here.
+            if not self._splash.get("preview"):
+                QTimer.singleShot(STARTUP_CHECK_DELAY_MS, self.checkOnStartup)
 
     # ---------------- view ----------------
     def _view(self) -> dict:
@@ -706,6 +897,10 @@ class ReferenceModel(QObject):
         if window == "lib":
             self._lib_refresh()
         self._emit()
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
 
 
 def _version() -> str:
