@@ -494,3 +494,22 @@ def test_the_window_moves_the_grid_to_the_restored_row_and_saves_where_it_is(qap
     window.close()
     engine.deleteLater()
     pump(qapp, 0.2)
+
+
+def test_the_apps_own_files_in_the_open_folder_do_not_make_it_read_again(qapp, nav, library, monkeypatch):
+    import time
+
+    monkeypatch.setattr(library_nav, "WATCH_DELAY_MS", 100)
+    nav._watch_timer.setInterval(100)
+    day = library / "2025" / "Trip" / "Day1"
+    nav.openFolder(str(day))
+    photos_loaded(qapp, nav, 3)
+    resets: list[int] = []
+    nav.photos.modelReset.connect(lambda: resets.append(1))
+    (day / ".image_triage_ai").mkdir()                       # the first analysis of a folder
+    (day / "IMG_1.xmp").write_text("<x/>")                   # a sidecar written for a decision
+    end = time.monotonic() + 1.2
+    while time.monotonic() < end:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert resets == [] and not nav.photos.loading

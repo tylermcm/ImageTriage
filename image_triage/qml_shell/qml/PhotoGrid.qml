@@ -16,10 +16,17 @@ Item {
     // The list is rebuilt (a scope or filter change, a refresh) and the number of folder cards in front can change with it: stay on the same photo,
     // not the same position in the list, or the current photo slips by the difference. (`gridModel.folders` is read directly: `nf` follows a moment later.)
     property int keepRow: -1
+    property string keepPath: ""
     Connections {
         target: gridModel
-        function onModelAboutToBeReset() { root.stopAutoScroll(); root.keepRow = root.row }
-        function onModelReset() { if (!root.restoringScope && root.keepRow >= 0) gv.currentIndex = root.keepRow + gridModel.folders }
+        // Results that arrive on their own (AI scores, search matches, a refresh) reorder the list under the cursor: follow the photo then, or the
+        // next W or R lands on a different one. A decision or a delete keeps the position, so the next photo comes under the cursor.
+        function onModelAboutToBeReset() { root.stopAutoScroll(); root.keepRow = root.row; root.keepPath = root.row >= 0 && photos.resetFollowsPhoto() ? (photos.get(root.row).path || "") : "" }
+        function onModelReset() {
+            if (root.restoringScope || root.keepRow < 0) return
+            var same = root.keepPath !== "" ? photos.rowForPath(root.keepPath) : -1
+            gv.currentIndex = (same >= 0 ? same : root.keepRow) + gridModel.folders
+        }
     }
     property bool restoringScope: false
     property var scopePositions: ({})

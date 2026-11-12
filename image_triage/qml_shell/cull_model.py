@@ -1140,7 +1140,11 @@ class CullModel(QObject):
     # -- results saved with the folder -------------------------------------------------------------------------------------------
     def _folder_changed(self) -> None:
         """A folder was opened: forget the last folder's results and look for ones saved beside this folder."""
+        folder_now = self._photos.folder_dir()
+        same_folder, self._folder_seen = folder_now == getattr(self, "_folder_seen", None), folder_now
         if self._s["running"]:
+            if same_folder:
+                return                                  # the open folder was only read again (a refresh): the analysis of it carries on
             self._run.cancel()
         self._token += 1
         token = self._token

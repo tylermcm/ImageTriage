@@ -65,6 +65,20 @@ _SAMPLE_FAVORITES = (("Wedding 2026", "1,284"), ("Client selects", "212"))
 _SAMPLE_DRIVES = (("Photos (D:)", "612 GB free of 2 TB", 0.70), ("Cards (E:)", "41 GB free of 256 GB", 0.84))
 
 
+def _listing(folder: str):
+    """What a refresh of `folder` could change: the names in it, without the files the app writes there itself.
+
+    The watcher fires for any new entry, and the app adds entries of its own while the person works (an XMP sidecar on
+    every decision, the hidden AI and edit folders). Reading the folder again for those resets the grid under them
+    and used to stop a running analysis. None when the folder cannot be listed.
+    """
+    try:
+        with os.scandir(folder) as entries:
+            return frozenset(e.name for e in entries if not e.name.startswith(".") and not e.name.lower().endswith((".xmp", ".tmp")))
+    except OSError:
+        return None
+
+
 class _RowsModel(QAbstractListModel):
     """A list of dicts for a QML Repeater. `set_rows` inserts, removes or updates only the rows that differ, so a listing that arrives
     does not rebuild the rows around it (which would also make the panel's scroll position jump)."""
@@ -162,6 +176,7 @@ class LibraryNavModel(QObject):
         self._watch_timer: QTimer | None = None
         if not memory:
             self._watcher = QFileSystemWatcher(self)
+            self._watch_seen = None
             self._watch_timer = QTimer(self)
             self._watch_timer.setSingleShot(True)
             self._watch_timer.setInterval(WATCH_DELAY_MS)
@@ -436,8 +451,10 @@ class LibraryNavModel(QObject):
             self._watcher.removePaths(old)
         if self._watch_timer is not None:
             self._watch_timer.stop()
+        self._watch_seen = None
         if folder and self._watching() and path_policy.is_plain_local(folder) and os.path.isdir(folder):   # the cheap check first: a stat of an offline share stalls the window
             self._watcher.addPath(folder)
+            self._watch_seen = _listing(folder)
 
     def _watched_change(self) -> None:
         if not self._open or not self._watching():
@@ -445,6 +462,10 @@ class LibraryNavModel(QObject):
         if self._photos.loading:
             self._watch_timer.start(450)                        # a read is still going: look again once it is done
         elif not path_policy.confirmed_missing(self._open):
+            seen = _listing(self._open)
+            if seen is not None and seen == self._watch_seen:
+                return                                          # only the app's own files changed (a sidecar, its hidden AI and edit folders): nothing to read again
+            self._watch_seen = seen
             self.refreshFolder()
 
     @Slot()

@@ -133,6 +133,22 @@ class RawEditor(QObject):
     saving = Property(bool, lambda self: self._saving, notify=changed)
     loaded = Property(bool, lambda self: self._loaded, notify=changed)
     dirty = Property(bool, lambda self: self._draft != self._original, notify=changed)
+
+    def unsaved_names(self) -> list[str]:
+        """The photos with RAW adjustments that were never saved with Done: the one open now and the ones stepped away from (their drafts are only in memory)."""
+        import os
+
+        paths = [path for path, session in self._sessions.items() if session[1] != session[0]]
+        if self._path and self._loaded and self._draft != self._original:
+            paths.append(self._path)
+        return [os.path.basename(path) for path in paths]
+
+    unsavedCount = Property(int, lambda self: len(self.unsaved_names()), notify=changed)
+
+    @Slot(result=str)
+    def unsavedSummary(self) -> str:
+        names = self.unsaved_names()
+        return ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
     @Property("QVariantMap", notify=changed)
     def values(self):
         values = deepcopy(DEFAULTS)

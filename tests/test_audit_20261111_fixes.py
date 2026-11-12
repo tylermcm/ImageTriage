@@ -62,3 +62,21 @@ def test_every_module_the_freeze_scripts_force_include_exists(script):
     includes = text[text.index('"includes"'):text.index('"excludes"')]     # excludes may name retired modules on purpose
     for name in sorted(set(re.findall(r'"((?:image_triage|aiculler)(?:\.\w+)+)"', includes))):
         assert importlib.util.find_spec(name) is not None, f"{script} includes {name}, which does not exist"
+
+
+def _rows(names):
+    return [{"path": f"/p/{n}", "name": n, "ext": "JPG", "raw": False, "decision": "", "rating": 0, "ai": -1} for n in names]
+
+
+def test_scores_that_arrive_on_their_own_ask_the_grid_to_follow_the_photo_and_a_decision_does_not(qapp):
+    photos = PhotoModel(parent=qapp)
+    photos.setRows(_rows(["a.jpg", "b.jpg", "c.jpg"]), "/p")
+    asked: list[bool] = []
+    photos.modelAboutToBeReset.connect(lambda: asked.append(photos.resetFollowsPhoto()))
+    photos.setSort("ai")
+    photos.rescore(lambda row: {"a.jpg": 10, "b.jpg": 90, "c.jpg": 50}[row["name"]])
+    assert asked and all(asked)                               # a new sort and new scores: stay on the photo
+    assert [photos.get(i)["name"] for i in range(3)] == ["b.jpg", "c.jpg", "a.jpg"]
+    asked.clear()
+    photos.setFilter("win")
+    assert asked == [False]                                   # the person's own filter: the position is kept, as before

@@ -79,6 +79,7 @@ class PhotoModel(QAbstractListModel):
         self._all: list[dict] = []
         self._subfolders: list[dict] = []   # the open folder's child folders, shown as cards above its photos
         self._found_folders: dict[int, list[dict]] = {}
+        self._follow_photo = False
         self._scan_errors: dict[int, str] = {}        # why a folder could not be read, by load token
         self._load_error = ""
         self._summaries: dict[str, str] = {}
@@ -212,6 +213,7 @@ class PhotoModel(QAbstractListModel):
             self._load_error = error
             self.loadErrorChanged.emit()
         self._all = rows
+        same_folder = folder == self._folder
         if folder != self._folder and self._selected:
             self._selected = set()
             self.selectionChanged.emit()
@@ -232,7 +234,7 @@ class PhotoModel(QAbstractListModel):
         if self._matcher is not None:
             self._matcher.forget()                                   # what was read for the last folder's photos is dropped
         self._read_for_query()
-        self._rebuild()
+        self._rebuild(follow=same_folder)
         self.loadingChanged.emit()
         self.subfoldersChanged.emit()
         self.folderChanged.emit()
@@ -269,7 +271,10 @@ class PhotoModel(QAbstractListModel):
             return decision != "rej"
         return decision == self._filter
 
-    def _rebuild(self) -> None:
+    def _rebuild(self, follow: bool = False) -> None:
+        """Filter and sort again. `follow` says the grid should stay on the photo it is on (results that arrive on their own:
+        AI scores, search matches, a refresh, a new sort) and not on the position in the list, where another photo now is."""
+        self._follow_photo = follow
         rows = [
             r for r in self._scoped()
             if self._filter_ok(r["decision"])
@@ -316,7 +321,7 @@ class PhotoModel(QAbstractListModel):
     def search_results(self, paths, status: str) -> None:
         self._search_matches = {_path_key(path) for path in paths}
         self._search_status = status
-        self._rebuild()
+        self._rebuild(follow=True)
         self.searchChanged.emit()
 
     searchText = Property(str, lambda self: self._search_text, notify=searchChanged)
@@ -395,7 +400,7 @@ class PhotoModel(QAbstractListModel):
     def setSort(self, key: str) -> None:
         if key != self._sort:
             self._sort = key
-            self._rebuild()
+            self._rebuild(follow=True)
 
     @Slot()
     def clearFilters(self) -> None:
@@ -513,6 +518,11 @@ class PhotoModel(QAbstractListModel):
         return [self._rows[i] for i in picked] if picked else list(self._rows)
 
     picked = Property(int, lambda self: len(self._selected_rows()), notify=selectionChanged)
+
+    @Slot(result=bool)
+    def resetFollowsPhoto(self) -> bool:
+        """Asked by the grid while the list is being rebuilt: stay on the same photo (True) or the same position (False)."""
+        return self._follow_photo
     # Why the open folder could not be read ("" when it could): an offline share or a folder we may not open is not an empty folder.
     loadError = Property(str, lambda self: self._load_error, notify=loadErrorChanged)
 
@@ -728,7 +738,7 @@ class PhotoModel(QAbstractListModel):
             value = score_of(row)
             row["ai"] = -1 if value is None else int(value)
         if self._sort == "ai" or self._adv:                         # the order, or what an applied filter keeps, may follow the scores
-            self._rebuild()
+            self._rebuild(follow=True)
         elif self._rows:
             self.dataChanged.emit(self.index(0), self.index(len(self._rows) - 1), [AiRole])
             self._bump()
