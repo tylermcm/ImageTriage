@@ -274,9 +274,15 @@ def test_host_recipe_schema_tracks_the_editor_schema():
     if not source.is_file():
         pytest.skip("companion checkout is not available")
     body = re.search(r"pub struct CameraRaw \{(.*?)\n\}", source.read_text(), re.S).group(1)
-    names = re.findall(r"pub (\w+):", body)
     camel = lambda name: name.split("_")[0] + "".join(word.title() for word in name.split("_")[1:])
-    assert {camel(name) for name in names} == bridge.RECIPE_FIELDS
+    names = set()
+    for attributes, name in re.findall(r"((?:\s*#\[[^\n]*\]\s*)*)pub (\w+):", body):
+        # PhotoCraft's upstream calibration names retain the host's aliases.
+        # raw_recipe.rs writes those legacy names back to the host sidecar.
+        aliases = set(re.findall(r'alias = "([^"]+)"', attributes))
+        names.add(next(iter(aliases & bridge.RECIPE_FIELDS), camel(name)))
+    # Crop belongs to the host envelope and is replayed after native development.
+    assert names == bridge.RECIPE_FIELDS - {"hostCrop"}
 
 
 def test_live_edits_without_any_sidecar_reach_export(photo, monkeypatch):

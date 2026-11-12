@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 import time
 
 import pytest
@@ -106,16 +107,15 @@ def test_qml_native_run_completes_and_reloads_exact_decisions(tmp_path, monkeypa
 
 
 def test_qml_shutdown_cancels_an_in_progress_worker(tmp_path, monkeypatch):
-    python = os.environ.get("CLI_CULLER_PYTHON")
-    if not python:
-        pytest.skip("Requires the standalone worker interpreter")
+    # This fake worker needs only the stdlib; exercise shutdown on clean CI too.
+    python = sys.executable
     app = QApplication.instance() or QApplication([])
     from image_triage import cli_culler_runtime
     worker = tmp_path / "worker.py"
     worker.write_text("import sys,json,pathlib,time\nassert sys.stdin.readline() == 'start\\n'\n"
                       "print(json.dumps({'event':'progress','stage':'maniqa','done':0,'total':500}),flush=True)\n"
                       "time.sleep(60)\n", encoding="utf-8")
-    manifest = {"python": python, "worker": str(worker), "app_path": str(tmp_path),
+    manifest = {"python": python, "worker": str(worker), "app_path": str(Path(__file__).resolve().parents[1]),
                 "namespace": "qml-shutdown", "default_settings": {"models": []}}
     monkeypatch.setattr(cli_culler_runtime, "load_native_runtime", lambda: manifest)
     monkeypatch.setattr(cli_culler_runtime, "verify_native_runtime", lambda value: None)

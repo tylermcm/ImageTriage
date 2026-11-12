@@ -5,7 +5,6 @@ import copy
 import json
 import os
 from pathlib import Path
-import queue
 import shutil
 import subprocess
 import threading
@@ -13,7 +12,7 @@ import uuid
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from .cli_culler_process import WorkerProcessTree
+from .cli_culler_process import WorkerOutput, WorkerProcessTree
 from .cli_culler_runs import activate_generation, cull_run_paths, validate_generation
 from .cli_culler_worker import PROTOCOL
 
@@ -114,71 +113,41 @@ class CliCullerRunTask(QRunnable):
             from .cli_culler_comparison import snapshot_start_cache
             self.signals.progress.emit(folder, "Preparing CLI comparison", 0, 0, "")
             snapshot_start_cache(self.paths.cache, self.run_root / "comparison-start", self._check_cancelled)
-        events = queue.Queue(maxsize=128)
-        stop_reader = threading.Event()
         complete = None
-        process = tree = reader = None
+        process = tree = None
         try:
             with self.log_path.open("w", encoding="utf-8") as diagnostics:
+                if os.name == "nt":
+                    tree = WorkerProcessTree()
                 process = subprocess.Popen(
                     [str(self.python), "-I", "-X", "utf8",
-                     *([str(self.app_path / "image_triage/cli_culler_process.py")] if os.name != "nt" else []),
+                     str(self.app_path / "image_triage/cli_culler_process.py"),
+                     *([tree.job_name] if os.name == "nt" else []),
                      str(self.worker), "--await-start", str(request_path)],
                     cwd=self.run_root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=diagnostics, text=True, encoding="utf-8", errors="strict",
+                    stderr=diagnostics, bufsize=0,
                     start_new_session=os.name != "nt",
-                    creationflags=(subprocess.CREATE_NO_WINDOW | 0x4) if os.name == "nt" else 0,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
-                tree = WorkerProcessTree(process)
-                if os.name == "nt":
-                    tree.resume_windows_process()
+                if tree is None:
+                    tree = WorkerProcessTree(process)
                 # The worker cannot import models or spawn metadata children
                 # until its Windows job/POSIX group is owned by this task.
-                process.stdin.write("start\n")
+                process.stdin.write(b"start\n")
                 process.stdin.close()
 
-                def read_events():
-                    try:
-                        while not stop_reader.is_set():
-                            line = process.stdout.readline(1024 * 1024 + 1)
-                            if not line:
-                                item = None
-                            elif len(line) > 1024 * 1024:
-                                raise ValueError("Native worker protocol line exceeds 1 MiB")
-                            else:
-                                item = json.loads(line)
-                            while not stop_reader.is_set():
-                                try:
-                                    events.put(item, timeout=0.05)
-                                    break
-                                except queue.Full:
-                                    continue
-                            if item is None:
-                                return
-                    except Exception as error:
-                        while not stop_reader.is_set():
-                            try:
-                                events.put(error, timeout=0.05)
-                                return
-                            except queue.Full:
-                                continue
-
-                reader = threading.Thread(target=read_events, daemon=True)
-                reader.start()
+                output = WorkerOutput(process.stdout)
                 while True:
                     self._check_cancelled()
-                    try:
-                        event = events.get(timeout=0.05)
-                    except queue.Empty:
-                        if process.poll() is not None:
-                            # A metadata child may still hold stdout open after
-                            # its worker died. Close its tree so EOF can arrive.
-                            tree.close()
+                    exited = process.poll() is not None
+                    if exited:
+                        tree.close()
+                    line = output.readline(exited=exited)
+                    if line is None:
                         continue
-                    if event is None:
+                    if not line:
                         break
-                    if isinstance(event, Exception):
-                        raise event
+                    event = json.loads(line.decode("utf-8", errors="strict"))
                     if not isinstance(event, dict):
                         raise ValueError("Native worker event must be an object")
                     diagnostics.write(json.dumps(event, ensure_ascii=True) + "\n")
@@ -213,16 +182,15 @@ class CliCullerRunTask(QRunnable):
                     {"warnings": complete.get("warnings", []), "models": complete.get("models", {})}))
                 return descriptor
         finally:
-            stop_reader.set()
-            if tree is not None:
-                tree.close()
-            elif process is not None and process.poll() is None:
-                process.kill()
-            if process is not None:
-                process.wait()
-                if process.stdin and not process.stdin.closed:
-                    process.stdin.close()
-                if reader is not None:
-                    reader.join(timeout=5)
-                if process.stdout:
-                    process.stdout.close()
+            try:
+                if tree is not None:
+                    tree.close()
+            finally:
+                if process is not None:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait()
+                    if process.stdin and not process.stdin.closed:
+                        process.stdin.close()
+                    if process.stdout:
+                        process.stdout.close()

@@ -195,6 +195,22 @@ def test_cancellation_stops_descendant_and_discards_output(tmp_path, stage):
         for pid in pids:
             state = Path(f"/proc/{pid}/stat")
             assert not state.exists(), "The per-run supervisor must reap metadata descendants"
+    elif os.name == "nt":
+        import ctypes
+        from ctypes import wintypes as w
+
+        api = ctypes.WinDLL("kernel32", use_last_error=True)
+        api.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+        api.OpenProcess.restype = w.HANDLE
+        api.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
+        api.CloseHandle.argtypes = [w.HANDLE]
+        for pid in pids:
+            handle = api.OpenProcess(0x100000, False, pid)  # SYNCHRONIZE
+            if handle:
+                try:
+                    assert api.WaitForSingleObject(handle, 1000) == 0, "Culler descendant survived cancellation"
+                finally:
+                    api.CloseHandle(handle)
 
 
 def test_complete_event_then_nonzero_exit_never_activates(tmp_path):
@@ -253,6 +269,34 @@ def test_cancel_before_start_does_not_launch_or_publish(tmp_path):
     assert seen["cancelled"]
     assert not task.run_root.exists()
     assert not task.log_path.exists()
+
+
+def test_successful_generation_drains_progress_before_publication(tmp_path):
+    task = task_for(tmp_path,
+        "generation = root / 'generation'\ngeneration.mkdir()\n"
+        f"document = {document()!r}\n"
+        "decisions = generation / 'decisions.json'\n"
+        "decisions.write_text(json.dumps(document), encoding='utf-8')\n"
+        "for i in range(150):\n"
+        "    print(json.dumps({'event':'progress','stage':'ingest','done':i,'total':150}), flush=True)\n"
+        "print(json.dumps({'event':'complete','decisions':str(decisions),'index':None}), end='', flush=True)\n")
+    seen = run_in_pool(task)
+    assert seen["finished"] and not seen["failed"]
+    assert len(seen["progress"]) == 150
+    assert load_active_generation(task.paths.active).to_document() == document()
+
+
+def test_cancellation_during_partial_protocol_line_does_not_wait_for_eof(tmp_path):
+    task = task_for(tmp_path,
+        "print(json.dumps({'event':'progress','stage':'metadata','done':0,'total':0}), flush=True)\n"
+        "sys.stdout.write('{\"event\":')\nsys.stdout.flush()\ntime.sleep(60)\n")
+    task.signals.progress.connect(lambda *_: task.cancel())
+    started = time.monotonic()
+    seen = run_in_pool(task)
+    assert seen["progress"]
+    assert seen["cancelled"] and not seen["finished"]
+    assert time.monotonic() - started < 5
+    assert not task.run_root.exists()
 
 
 def test_runtime_namespaces_do_not_reuse_legacy_or_other_runtime_cache(tmp_path):

@@ -23,6 +23,9 @@ from image_triage.qml_shell.app import _configure_qt_dll_search
 _configure_qt_dll_search()
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Match app._run before any test imports Qt Quick Controls. Native Windows
+# styles do not support the shell's custom control delegates.
+os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
 _SANDBOX = tempfile.TemporaryDirectory(prefix="image_triage_tests_")
 _SANDBOX_ROOT = Path(_SANDBOX.name)
