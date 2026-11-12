@@ -49,9 +49,15 @@ def test_saved_crop_is_current_grid_render_and_export_crops_once(tmp_path):
     image_file(source)
     signature = bridge.file_signature(str(raw))
     target = publish(str(raw), source, {"hostCrop": CROP}, signature)
-    assert bridge.saved_render_path(str(raw)) == Path(target)
+    assert bridge.full_render_path(str(raw)) == Path(target)
     manifest = bridge.current_render_manifest(str(raw), verify_project=True)
     assert (manifest.outputs["png"].width, manifest.outputs["png"].height) == (50, 48)
+    # thumbnails and the viewer get a small 8-bit JPEG, not the full-size 16-bit PNG
+    display = manifest.outputs["display"]
+    assert bridge.saved_render_path(str(raw)) == display.path and display.path.name.endswith(".jpg")
+    assert (display.format, display.width, display.height, display.depth) == ("jpeg", 50, 48, 8)
+    shown = QImage(str(display.path))
+    assert (shown.width(), shown.height()) == (50, 48) and shown.depth() <= 32 and shown.pixelColor(10, 10).red() > 200
     result = apply_render(RenderResult(RENDERED, path=source, format="png", width=100, height=80, depth=16, icc=True), bridge.load_recipe(str(raw)))
     try:
         assert result.outcome == RENDERED
@@ -60,6 +66,35 @@ def test_saved_crop_is_current_grid_render_and_export_crops_once(tmp_path):
         assert source.exists() and raw.read_bytes() == b"unchanged original raw"
     finally:
         result.release()
+
+
+def test_the_display_picture_is_screen_sized(tmp_path):
+    from image_triage.raw_crop import DISPLAY_LONG_SIDE, write_display_jpeg
+
+    image = QImage(DISPLAY_LONG_SIDE * 2, DISPLAY_LONG_SIDE, QImage.Format_RGBA64)
+    image.setColorSpace(QColorSpace(QColorSpace.SRgb))
+    image.fill(QColor("green"))
+    target = tmp_path / "shown.jpg"
+    assert write_display_jpeg(image, target)[:2] == (DISPLAY_LONG_SIDE, DISPLAY_LONG_SIDE // 2)
+    assert QImage(str(target)).width() == DISPLAY_LONG_SIDE
+
+
+def test_publishing_again_clears_the_pictures_of_the_save_before(tmp_path):
+    import os
+    import time
+
+    raw, source = tmp_path / "sample.NEF", tmp_path / "develop.png"
+    raw.write_bytes(b"raw")
+    image_file(source)
+    signature = bridge.file_signature(str(raw))
+    first = Path(publish(str(raw), source, {"hostCrop": CROP}, signature))
+    first_display = bridge.saved_render_path(str(raw))
+    long_ago = time.time() - bridge.UNREFERENCED_RENDER_GRACE_S - 60
+    for old in (first, first_display):
+        os.utime(old, (long_ago, long_ago))
+    second = Path(publish(str(raw), source, {"hostCrop": {**CROP, "w": .4}}, signature))
+    assert second.exists() and bridge.saved_render_path(str(raw)).exists()
+    assert not first.exists() and not first_display.exists()
 
 
 def test_crop_draft_dimensions_history_and_navigation(qapp):

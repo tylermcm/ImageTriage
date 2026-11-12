@@ -12,11 +12,15 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import Property, QMetaMethod, QObject, Qt, QTimer, Signal, Slot
 
 LOG = logging.getLogger(__name__)
 
 IDLE, STARTING, EDITING, CLOSING, FAILED = "idle", "starting", "editing", "closing", "failed"
+
+# How long quitting the app waits for the editor to save the open photo. The editor is closed after that whether or not it
+# answered: a save that hangs (an unreachable share) must not keep the app from closing.
+SHUTDOWN_SETTLE_S = 5.0
 
 
 class WindowMover:
@@ -78,6 +82,9 @@ class EditorHost(QObject):
     opened = Signal(str)                    # the photo is open in the editor
     closed = Signal(str)                    # the editor was put away (the photo that was in it)
     failed = Signal(str)
+    # Closing could not save the photo and the editor is still up. Its own signal so the shell can offer "Close without saving"
+    # (`closeWithoutSaving`); while nothing listens to it, the failure goes out as `failed` like any other.
+    closeFailed = Signal(str)
     editSaved = Signal(str)
     _done = Signal(str, object, str)        # worker -> main thread: (what finished, its result, an error message)
 
@@ -200,6 +207,7 @@ class EditorHost(QObject):
                     in_place = False
             if proc is not None and switching and proc.is_running() and not in_place:
                 self._settle(proc)
+                self._saved(getattr(proc, "source_path", ""))
             if proc is not None and (not proc.is_running() or proc.path_within_root(path) is None
                                      or getattr(proc, "camera_raw_first", True) != raw_workspace):
                 self._stop(proc)               # the editor can only read the folder it was started on
@@ -231,6 +239,9 @@ class EditorHost(QObject):
                 recipe = photocraft_bridge.load_recipe(path)
                 if recipe is not None:
                     spec["recipe"] = recipe
+                elif photocraft_bridge.recipe_is_newer(path):
+                    # Opening it without its settings would have the editor write this version's recipe over them.
+                    raise RuntimeError("This photo's Camera Raw settings were saved by a newer version of Image Triage. Update Image Triage to edit it.")
                 if sidecar.exists():
                     spec["continueFrom"] = sidecar.name
             previous = getattr(proc, "source_path", "")
@@ -354,7 +365,10 @@ class EditorHost(QObject):
             self.closed.emit(path)
         elif what == "close-failed":
             self._set(EDITING, error)
-            self.failed.emit(error)
+            if self.isSignalConnected(QMetaMethod.fromSignal(self.closeFailed)):
+                self.closeFailed.emit(error)
+            else:
+                self.failed.emit(error)
         elif what == "switch-failed":
             self._close_requested = False
             self._path = self._proc.source_path
@@ -382,9 +396,21 @@ class EditorHost(QObject):
         path = proc.source_path
         try:
             self._settle(proc)
-            self.editSaved.emit(path)
+            self._saved(path)
         except Exception as error:
             LOG.warning("PhotoCraft did not save: %s", error, exc_info=True)
+
+    def _saved(self, path: str) -> None:
+        """The photo's edits were saved (called on the worker that saved them): clear away the pictures of its earlier saves,
+        which nothing names any more, and tell the grid."""
+        if path:
+            try:
+                from .. import photocraft_bridge
+
+                photocraft_bridge.prune_render_generations(path)
+            except Exception:
+                LOG.debug("could not clear old renders of %s", path, exc_info=True)
+        self.editSaved.emit(path)
 
     @Slot()
     def close(self) -> None:
@@ -405,11 +431,29 @@ class EditorHost(QObject):
         self._set(CLOSING)
         threading.Thread(target=self._close_worker, args=(proc,), name="editor-close", daemon=True).start()
 
+    @Slot()
+    def closeWithoutSaving(self) -> None:
+        """Leave the editor and drop what was changed in the open photo since its last save. The way out when the save on close
+        fails (a share that went away): without it the editor could not be left at all. The process is kept for the next photo,
+        which replaces the unsaved document."""
+        if self._memory:
+            self.close()
+            return
+        if self._proc is None or self._state != EDITING:
+            return
+        self._close_requested = False
+        self._switching = False
+        self._hide()
+        path, self._path = self._path, ""
+        self.pathChanged.emit()
+        self._set(IDLE, "")
+        self.closed.emit(path)
+
     def _close_worker(self, proc) -> None:
         message = ""
         try:
             self._settle(proc)
-            self.editSaved.emit(proc.source_path)
+            self._saved(proc.source_path)
         except Exception as error:
             LOG.warning("PhotoCraft did not save on close: %s", error, exc_info=True)
             self._done.emit("close-failed", None, "The edit could not be saved. " + str(error))
@@ -458,4 +502,35 @@ class EditorHost(QObject):
             self._space_shortcut.stop()
         proc, self._proc = self._proc, None
         if proc is not None:
+            if not self._memory and self._state in (EDITING, CLOSING) and self._running(proc):
+                self._settle_within(proc, SHUTDOWN_SETTLE_S)
             self._stop(proc)
+
+    @staticmethod
+    def _running(proc) -> bool:
+        try:
+            return bool(proc.is_running())
+        except Exception:
+            return False
+
+    def _settle_within(self, proc, seconds: float) -> bool:
+        """Save the open photo as closing the editor does, waiting at most `seconds`. True when it was saved in time."""
+        outcome: list[str] = []
+
+        def work() -> None:
+            try:
+                self._settle(proc)
+                outcome.append("")
+            except Exception as error:
+                outcome.append(str(error) or error.__class__.__name__)
+
+        worker = threading.Thread(target=work, name="editor-quit-save", daemon=True)
+        worker.start()
+        worker.join(seconds)
+        if not outcome:
+            LOG.warning("The editor did not save %s within %.0f s of quitting; it was closed without it", getattr(proc, "source_path", ""), seconds)
+            return False
+        if outcome[0]:
+            LOG.warning("The editor could not save %s while quitting: %s", getattr(proc, "source_path", ""), outcome[0])
+            return False
+        return True

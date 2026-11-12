@@ -59,7 +59,54 @@ def test_a_stored_recipe_is_loaded(tmp_path):
     assert bridge.load_recipe(str(photo)) == recipe
 
 
-@pytest.mark.parametrize("content", ["not json", "[1, 2]", '{"version": 2, "cameraRaw": {}}', '{"version": 1}', '{"version": 1, "cameraRaw": 5}'])
+@pytest.mark.parametrize("content", ['{"version": 2, "cameraRaw": {"exposure": 1}}', '{"version": 7, "settings": []}'])
+def test_a_recipe_from_a_newer_version_is_left_where_it_is(tmp_path, content):
+    photo = tmp_path / "frame.NEF"
+    target = write_recipe(photo, json.loads(content))
+    before = target.read_bytes()
+    assert bridge.load_recipe(str(photo)) is None and bridge.recipe_is_newer(str(photo))
+    assert target.read_bytes() == before and not target.with_name(target.name + ".bad").exists()
+    state, recipe, reason = bridge.recipe_state(str(photo))
+    assert (state, recipe) == (bridge.RECIPE_INVALID, None) and "newer version" in reason      # refused, and it says why
+
+
+@pytest.mark.parametrize("recipe", [
+    {"version": 1, "cameraRaw": {"exposure": 1.5}}, {"version": 2, "cameraRaw": {}}, {"version": 1}, {"version": 1, "cameraRaw": 5},
+    {"version": "1", "cameraRaw": {}}, {"version": 1.0, "cameraRaw": {}}, {"version": True, "cameraRaw": {}}, {"version": 0, "cameraRaw": {}}, [1, 2],
+])
+def test_loading_and_classifying_agree_on_what_is_a_recipe(tmp_path, recipe):
+    photo = tmp_path / "frame.NEF"
+    write_recipe(photo, recipe)
+    readable = bridge.recipe_shape(recipe) == bridge.RECIPE_SHAPE_OK
+    assert (bridge.classify_recipe(recipe)[0] != bridge.RECIPE_INVALID) is readable
+    assert (bridge.load_recipe(str(photo)) is not None) is readable
+
+
+def test_a_set_aside_recipe_stops_counting_once_a_good_one_is_there(tmp_path):
+    photo = tmp_path / "frame.NEF"
+    target = write_recipe(photo, {"version": 1, "cameraRaw": 5})
+    assert bridge.load_recipe(str(photo)) is None and target.with_name(target.name + ".bad").exists()
+    assert bridge.recipe_state(str(photo))[0] == bridge.RECIPE_INVALID
+    good = {"version": 1, "cameraRaw": {"exposure": 0.5}}
+    write_recipe(photo, good)
+    assert bridge.recipe_state(str(photo))[:2] == (bridge.RECIPE_EDITED, good) and bridge.load_recipe(str(photo)) == good
+
+
+def test_token_files_left_by_a_crash_are_cleared_when_old(tmp_path):
+    import os
+    import time
+
+    old, fresh, other = tmp_path / "photocraft_token_old.txt", tmp_path / "photocraft_token_new.txt", tmp_path / "something_else.txt"
+    for path in (old, fresh, other):
+        path.write_text("t", encoding="utf-8")
+    long_ago = time.time() - bridge.STALE_TOKEN_FILE_S - 60
+    os.utime(old, (long_ago, long_ago))
+    os.utime(other, (long_ago, long_ago))
+    assert bridge.sweep_stale_token_files(directory=tmp_path) == 1
+    assert not old.exists() and fresh.exists() and other.exists()      # a running editor's token and other programs' files stay
+
+
+@pytest.mark.parametrize("content", ["not json", "[1, 2]", '{"version": 0, "cameraRaw": {}}', '{"version": 1}', '{"version": 1, "cameraRaw": 5}'])
 def test_an_unusable_recipe_is_set_aside_not_deleted_and_not_used(tmp_path, content):
     photo = tmp_path / "frame.NEF"
     target = bridge.recipe_path(str(photo))
