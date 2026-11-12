@@ -150,6 +150,9 @@ def _load_exif_capture_metadata(path: str) -> CaptureMetadata:
     except Exception:  # pragma: no cover - parser/runtime path
         return CaptureMetadata(path=path)
 
+    lens_value = _tag_value(tags, "EXIF LensModel")
+    if not lens_value:
+        lens_value = _maker_note_lens(path)
     camera_make_value = _tag_value(tags, "Image Make")
     camera_model_value = _tag_value(tags, "Image Model")
     width_value = _tag_value(tags, "EXIF ExifImageWidth") or _tag_value(tags, "Image ImageWidth")
@@ -177,11 +180,7 @@ def _load_exif_capture_metadata(path: str) -> CaptureMetadata:
             )
         ),
         focal_length=_format_focal_length(focal_value := _tag_value(tags, "EXIF FocalLength")),
-        lens=_format_text(
-            _tag_value(tags, "EXIF LensModel")
-            or _tag_value(tags, "MakerNote LensType")
-            or _tag_value(tags, "MakerNote Lens")
-        ),
+        lens=_format_text(lens_value),
         captured_at=_format_datetime(captured_at_value := _tag_value(tags, "EXIF DateTimeOriginal")),
         orientation=_format_orientation(width_pixels, height_pixels),
         exposure_seconds=_to_float(exposure_value),
@@ -192,6 +191,20 @@ def _load_exif_capture_metadata(path: str) -> CaptureMetadata:
         width=width_pixels,
         height=height_pixels,
     )
+
+
+def _maker_note_lens(path: str):
+    """The lens as the camera maker's own notes name it, for a file with no standard lens tag.
+
+    The quick read above skips maker notes (they are slow to decode and most files do not need them), so their lens
+    tags are never in its result. Only a file without the standard tag pays for this second, full read.
+    """
+    try:
+        with open(path, "rb") as stream:
+            tags = exifread.process_file(stream, details=True)
+    except Exception:
+        return None
+    return _tag_value(tags, "MakerNote LensModel") or _tag_value(tags, "MakerNote LensType") or _tag_value(tags, "MakerNote Lens")
 
 
 def _import_astropy_fits_module():
@@ -382,10 +395,12 @@ def _format_exposure(value) -> str:
     exposure = _to_float(value)
     if exposure is None or exposure <= 0:
         return ""
-    if exposure >= 1:
-        if exposure.is_integer():
-            return f"{int(exposure)}s"
-        return f"{exposure:.1f}s"
+    # Cameras show 0.3 s and longer in seconds. As a fraction those round to nonsense: 0.4 s to "1/2s", 0.8 s to "1/1s".
+    if exposure >= 0.3:
+        seconds = round(exposure, 1)
+        if seconds.is_integer():
+            return f"{int(seconds)}s"
+        return f"{seconds:.1f}s"
     denominator = max(1, round(1 / exposure))
     return f"1/{denominator}s"
 

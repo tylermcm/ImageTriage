@@ -13,26 +13,45 @@
 - Nikon RAW `.NEF` support for thumbnails and preview
 - Fast keyboard workflow
 - Full-screen preview that loads asynchronously
-- EXIF capture details in preview and compare mode
+- EXIF capture details in the inspector
 - Persistent accepted/rejected/rating/tag decisions
 - Persistent warm-start folder scan cache for faster folder reopen
-- Smart compare that can auto-size to detected exposure brackets
 - Right-click file actions including Explorer reveal and app handoff
-- Sorting by filename, date modified, or file size
+- Sorting by name, AI score, rating or decision
 
 ## Keyboard Controls
 
-- `Arrow keys`: move selection
-- `Page Up / Page Down / Home / End`: jump through the grid
-- `Space` or `Enter`: open full-screen preview
-- `Delete`: move selected file to trash when available
-- `W`: accept the selected image
-- `X`: reject the selected image
-- `K`: move selected file into a `_keep` subfolder
-- `M`: move selected file to a folder you choose
-- `0-5`: assign a rating
-- `T`: assign tags
-- `Esc`: close full-screen preview
+The keys marked * can be changed in Settings > Shortcuts; the others are fixed.
+
+In the grid:
+
+- `Arrow keys`: move between photos (`Shift` + arrows extends the selection)
+- `Home / End / Page Up / Page Down`: jump through the grid
+- `Ctrl+A`: select every photo; `Esc`: clear the selection
+- `Space` or `Enter`: open the photo in the viewer
+- `W`*: winner, `K`*: keep, `R`*: reject (pressing the key again takes the decision off); `U`: clear the decision
+- `1-5`: rate the photo; `0`: remove the rating
+- `B`*: add the photo to the active collection
+- `Delete`*: delete the selected photos (Safe Trash or the system trash, as chosen in Settings)
+- `I`: show or hide the inspector
+
+In the viewer:
+
+- `Left / Right` (also `A / D`, `Up / Down`, `Page Up / Page Down`): previous or next photo; `Home / End`: first or last
+- `W`*, `K`*, `R`*, `U`, `1-5`, `Delete`*: as in the grid, on the photo shown
+- `Z`: 100% zoom, `0`: fit (the zoom is kept while stepping)
+- `F`: focus assist, `Shift+F`: its colour
+- `H`: hide the controls, `Tab`: hide the action bar
+- `B` or `G`: add to a collection, `M`: move to a folder
+- `E`: open in PhotoCraft
+- `Ctrl+Z`: undo
+- `Space` or `Esc`: back to the grid
+
+Anywhere:
+
+- `Ctrl+K`*: command palette, `Ctrl+F`: search, `Ctrl+O`*: open a folder, `F5`*: refresh
+- `Ctrl+Z`*: undo, `F2`*: rename, `Ctrl+,`*: settings, `F11`*: Zen mode
+- `F1`: help, `Ctrl+/`: the full list of shortcuts
 
 ## Run
 

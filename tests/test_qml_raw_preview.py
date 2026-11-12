@@ -93,6 +93,43 @@ def test_native_frames_are_validated_before_use(header):
         connection.call({"op": "render"})
 
 
+def _fake_worker(tmp_path, after_hello):
+    """A stand-in for the native worker: answers hello, then runs `after_hello` (Python source) for the next request."""
+    import sys
+
+    script = tmp_path / "worker.py"
+    script.write_text(
+        "#!" + sys.executable + "\n"
+        "import sys, time\n"
+        "sys.stdin.readline()\n"
+        "sys.stdout.write('{\"ok\": true, \"protocol\": 2, \"bytes\": 0}\\n'); sys.stdout.flush()\n"
+        "sys.stdin.readline()\n" + after_hello + "\n", encoding="utf-8")
+    script.chmod(0o755)
+    return str(script)
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="the stand-in worker is a script with a shebang line")
+def test_a_worker_that_hangs_is_stopped_and_its_error_output_is_reported(tmp_path):
+    connection = raw_preview.Connection(_fake_worker(tmp_path, "sys.stderr.write('decoder stuck at tile 7\\n'); sys.stderr.flush(); time.sleep(60)"))
+    connection.timeout = 0.5
+    started = time.monotonic()
+    with pytest.raises(RuntimeError) as error:
+        connection.call({"op": "render"})
+    assert time.monotonic() - started < 10
+    assert "did not answer" in str(error.value) and "decoder stuck at tile 7" in str(error.value)
+    assert connection.proc.poll() is not None
+    connection.close()
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="the stand-in worker is a script with a shebang line")
+def test_a_worker_that_dies_says_what_it_wrote_before_it_went(tmp_path):
+    connection = raw_preview.Connection(_fake_worker(tmp_path, "sys.stderr.write('out of memory\\n'); sys.exit(3)"))
+    with pytest.raises(RuntimeError) as error:
+        connection.call({"op": "render"})
+    assert "worker stopped" in str(error.value) and "out of memory" in str(error.value)
+    connection.close()
+
+
 def test_worker_reuses_source_and_reopens_when_signature_changes(qapp, monkeypatch, tmp_path):
     path = tmp_path / "sample.NEF"
     path.write_bytes(b"raw")

@@ -16,7 +16,9 @@ except ImportError:  # pragma: no cover - Windows only
 APP_NAME = "Image Triage"
 APP_EXE_NAME = "ImageTriage.exe"
 APP_PROG_ID = "ImageTriage.SupportedImage"
-SUPPORTED_SUFFIXES = (
+# What an older build of this tool knew. Only used when the application's own list cannot be imported (the tool
+# run by itself, away from the application), so that it still removes something instead of nothing.
+_FALLBACK_SUFFIXES = (
     ".jpg",
     ".jpeg",
     ".png",
@@ -40,6 +42,24 @@ SUPPORTED_SUFFIXES = (
     ".fts",
     ".psd",
 )
+
+
+def _association_suffixes() -> tuple[str, ...]:
+    """Every file type the application registers itself for, from the module that does the registering: a second
+    list kept here went stale, and the types it lacked were left pointing at the uninstalled program."""
+    if not getattr(sys, "frozen", False):
+        root = str(Path(__file__).resolve().parent.parent)
+        if root not in sys.path:
+            sys.path.append(root)
+    try:
+        from image_triage.file_associations import supported_file_association_suffixes
+
+        return tuple(supported_file_association_suffixes())
+    except Exception:
+        return _FALLBACK_SUFFIXES
+
+
+SUPPORTED_SUFFIXES = _association_suffixes()
 
 
 def _env_path(name: str) -> Path | None:

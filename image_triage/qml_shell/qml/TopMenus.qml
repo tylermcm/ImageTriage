@@ -38,7 +38,7 @@ Item {
                 for (var i = 0; i < recent.length; ++i) out.push(mr(recent[i].name, "recent:" + recent[i].path, "", "library"))
             }
             return out.concat([
-                ms(), mr("Refresh Folder", "file.refresh_folder", "F5", "convert"), mo("New Folder…", "Ctrl Shift N", "newfolder"),
+                ms(), mr("Refresh Folder", "file.refresh_folder", "F5", "convert"),
                 mr("Show in File Explorer", "file.reveal_folder", "", "library"),
                 ms(), mr("Browse Library…", "file.browse_library", "", "collections"),
                 mr("Batch Rename…", "tools.batch_rename", "Ctrl Shift R", "tag"), mr("Batch Resize…", "tools.batch_resize", "Ctrl Shift E", "convert"),
@@ -53,10 +53,10 @@ Item {
                 ms(), mr("Mark Winner", "review.accept_selection", "W", "star"), mr("Keep", "review.keep_selection", "K", "check"),
                 mr("Reject", "review.reject_selection", "R", "x"), mr("Clear Decision", "review.clear_decision", "U", "minus"),
                 mf("Rating", "star", [mr("1 star", "review.rate.1", "1"), mr("2 stars", "review.rate.2", "2"), mr("3 stars", "review.rate.3", "3"),
-                                     mr("4 stars", "review.rate.4", "4"), mr("5 stars", "review.rate.5", "5"), ms(), mr("No rating", "review.rate.0", "0")]),
-                ms(), mr("Rename Selection…", "edit.rename_selection", "", "tag"), mo("Move…", "M", "newfolder"), mo("Delete", "Del", "x"),
+                                     mr("4 stars", "review.rate.4", "4"), mr("5 stars", "review.rate.5", "5"), ms(), mr("No rating", "review.rate.0", "")]),
+                ms(), mr("Rename Selection…", "edit.rename_selection", "", "tag"), mr("Move…", "review.move_selection", "", "newfolder"), mr("Delete", "review.delete_selection", "Del", "x"),
                 ms(), mr("Add to Collection…", "library.add_selected_to_collection", "B", "collections"), mr("New Collection…", "library.create_collection", "", "plus"),
-                ms(), mr("Show in File Explorer", "review.reveal", "", "library"), mo("Open in Photoshop", "", "editor"), mo("Open in Editor", "E", "editor")]
+                ms(), mr("Show in File Explorer", "review.reveal", "", "library"), mr("Open in Editor", "review.open_editor", "", "editor")]
         }
         if (name === "view") {
             var themes = [], sizes = [["Small", "s"], ["Medium", "m"], ["Large", "l"]], sorts = [["Name", "name"], ["AI score", "ai"], ["Rating", "rating"], ["Decision", "decision"]]
@@ -78,7 +78,7 @@ Item {
             return [
                 mr("Analyze Folder…", "ai.analyze", "", "spark"), mr("AI Center…", "ai.center", "", "bars"),
                 ms(), mr("People…", "ai.people", "", "people"), mr("Choose best photos…", "workflow.best_of", "Ctrl Alt B", "star"),
-                ms(), mo("Re-rank AI Culling", "", "sort"), mo("Sort into Semantic Folders", "", "library"), mo("Next AI Pick", "", "spark")]
+                ms(), mo("Re-rank AI Culling", "", "sort"), mo("Sort into Semantic Folders", "", "library"), mr("Next AI Pick", "ai.next_top_pick", "", "spark")]
         }
         return []
     }

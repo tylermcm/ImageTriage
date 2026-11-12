@@ -723,7 +723,10 @@ def _torch_cuda_binaries_present(site_packages_dir: Path) -> bool:
         "torch_cuda_cpp.dll",
     }
     try:
-        return any((torch_lib / name).exists() for name in cuda_dll_names)
+        if any((torch_lib / name).exists() for name in cuda_dll_names):
+            return True
+        # A Linux wheel ships shared objects (libtorch_cuda.so, libc10_cuda.so), not DLLs.
+        return any(torch_lib.glob("libtorch_cuda*.so*")) or any(torch_lib.glob("libc10_cuda*.so*"))
     except OSError:
         return False
 

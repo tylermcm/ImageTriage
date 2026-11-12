@@ -17,11 +17,22 @@ Item {
     implicitHeight: 36
     implicitWidth: row.implicitWidth + 4
     clip: true                           // nothing of the pill's shadow shows outside the track
+    // One stop in the Tab order; Left and Right choose the segment before or after the current one.
+    activeFocusOnTab: true
+    Keys.onPressed: (e) => {
+        var d = e.key === Qt.Key_Left ? -1 : e.key === Qt.Key_Right ? 1 : 0
+        if (d === 0) return
+        var to = Math.max(0, Math.min(rep.count - 1, seg.current + d))
+        if (to !== seg.current) seg.activated(to)
+        e.accepted = true
+    }
+    Rectangle { visible: seg.activeFocus; anchors.fill: parent; radius: 14; color: "transparent"; border.width: 2; border.color: theme.accent; z: 5 }
 
     Rectangle { anchors.fill: parent; radius: 14; color: Qt.alpha(theme.base, 0.6) }
     Item {
         id: thumb
         y: 2; height: seg.height - 4
+        visible: target !== null             // no segment is the current one: no highlight, not one on the first segment
         property Item target: { void row.width; void rep.count; return rep.itemAt(seg.current); }
         x: target ? target.x + 2 : 2
         width: target ? target.width : 40
@@ -75,7 +86,7 @@ Item {
                 }
                 HoverHandler { cursorShape: Qt.PointingHandCursor }
                 TapHandler { onTapped: seg.activated(cell.index) }
-                Accessible.role: Accessible.Button
+                Accessible.role: Accessible.RadioButton; Accessible.checked: seg.current === cell.index
                 Accessible.name: cell.text !== "" ? cell.text : cell.icon
             }
         }

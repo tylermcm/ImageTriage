@@ -125,8 +125,9 @@ def test_library_groups_are_one_row_with_their_files_behind_them(qapp, photos):
     assert len(row["thumbs"]) == 3
     model.addLibrary(key)                                   # adding twice changes nothing
     assert [r["kind"] for r in model.rows].count("coll") == 1
-    model.toggleSendAs(row["key"])
-    assert model.rows[0]["asLabel"] == "Proofing JPEGs" and "as JPEG" in model.rows[0]["sub"]
+    before = dict(model.rows[0])
+    model.toggleSendAs(row["key"])                          # the files are sent as they are: nothing may say otherwise
+    assert model.rows[0] == before and "as JPEG" not in model.rows[0]["sub"]
     model.removeRow(row["key"])
     assert not [r for r in model.rows if r["kind"] == "coll"]
 
@@ -142,7 +143,11 @@ def test_collection_membership_uses_the_real_decisions(qapp, photos):
     assert entries[f"col:{cid}"]["count"] == 1 and entries["col:c5"]["empty"]       # the sample "Client proofs" has nobody in it
     assert entries["sel"]["count"] == 1 and entries["sel"]["paths"][0].endswith("A1.NEF")
     assert len(entries["sel"]["paths"]) == 2                          # the RAW's JPG goes with it
-    assert entries["win"]["sub"].startswith("2 photos · ")
+    assert entries["win"]["sub"] == "2 photos"                         # the count at once; the size when the files have been measured, off the interface thread
+    deadline = time.monotonic() + 5
+    while "size" not in entries["win"] and time.monotonic() < deadline:
+        pump(qapp, 0.02)
+    assert entries["win"]["sub"].startswith("2 photos · ") and entries["win"]["size"] > 0
 
 
 def test_js_random_numbers_match_the_mockup():

@@ -34,7 +34,7 @@ def launch_target_from_argv(argv: Sequence[str]) -> str:
 
 
 def is_quick_view_launch_target(target: str) -> bool:
-    """Return whether a shell launch should open directly in the popout viewer."""
+    """Return whether a shell launch names a photo: the app then opens its folder with the grid on that photo."""
 
     candidate = str(target or "").strip()
     return bool(candidate and is_image_file_candidate(candidate) and Path(candidate).is_file())
@@ -49,7 +49,9 @@ def qml_argv_from_launch(argv: Sequence[str]) -> list[str]:
     target = Path(qml_args[0].strip().strip('"'))
     rest = qml_args[1:]
     if target.is_file():
-        target = target.parent
+        # A photo was opened: its folder, with the grid on that photo. Any other file just opens the folder it is in.
+        select = ["--select", str(target)] if is_quick_view_launch_target(str(target)) else []
+        return [*rest, "--folder", str(target.parent), *select]
     return [*rest, "--folder", str(target)] if str(target) else rest
 
 

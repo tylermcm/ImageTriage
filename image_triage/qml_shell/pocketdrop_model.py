@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
 SAMPLE_NAMES = ("DSC_4821.NEF", "Kutaisi picks", "Anna portrait final.jpg", "Meet at the old gate at 6")
-_AS_LABELS = ("Originals", "Proofing JPEGs")
+_AS_LABEL = "Originals"            # what a library group is sent as: the files themselves (nothing here converts them)
 _SAMPLE_THUMBS = {"sel": (1, 2, 3), "win": (4, 6, 10), "keep": (2, 7, 9)}
 _SAMPLE_COUNTS = {"sel": ("4 photos", "96 MB"), "win": ("96 photos", "1.4 GB"), "keep": ("412 photos", "5.9 GB")}
 
@@ -93,6 +94,7 @@ class PocketDropModel(QObject):
     riskChanged = Signal()
     alertRequested = Signal(str, str)
     notice = Signal(str)
+    _sized = Signal(int, object)            # the Library entries' files were measured off the interface thread: (token, {key: bytes})
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None, settings=None, collections=None) -> None:
         super().__init__(parent)
@@ -110,6 +112,8 @@ class PocketDropModel(QObject):
         self._groups: list[dict] = []       # newest first: {key, title, sub, thumbs, paths, size, as}
         self._rows: list[dict] = []
         self._library: dict = {"current": [], "collections": []}
+        self._size_token = 0                # the newest measuring asked for: an older one that answers later is dropped
+        self._sized.connect(self._apply_sizes)
         self._risk = False
         self._sample = self._fresh_sample()
         self._started = False
@@ -166,7 +170,7 @@ class PocketDropModel(QObject):
         state = self._host.state() if self._host is not None else self._sample_state()
         if not state:
             return
-        key = json.dumps(state, sort_keys=True) + json.dumps([g["key"] + str(g["as"]) for g in self._groups])
+        key = json.dumps(state, sort_keys=True) + json.dumps([g["key"] + g["sub"] for g in self._groups])
         if key == self._last:
             return
         self._last = key
@@ -186,11 +190,8 @@ class PocketDropModel(QObject):
         rest = [r for r in engine_rows if r.get("tone") != "recv" and r.get("path", "").lower() not in claimed]
         merged = [dict(r, key=f"e{r['index']}", group="", thumbs=[], asLabel="") for r in received]
         for g in self._groups:
-            sub = g["sub"]
-            if g["as"]:
-                sub = f"{g['count']} photos \u00b7 ~{max(1, round(g['size'] * 0.07 / 1024 ** 2))} MB as JPEG"
-            merged.append({"index": -1, "kind": "coll", "title": g["title"], "sub": sub, "path": "", "tone": "", "key": g["key"], "group": g["key"],
-                           "thumbs": g["thumbs"], "asLabel": _AS_LABELS[g["as"]]})
+            merged.append({"index": -1, "kind": "coll", "title": g["title"], "sub": g["sub"], "path": "", "tone": "", "key": g["key"], "group": g["key"],
+                           "thumbs": g["thumbs"], "asLabel": _AS_LABEL})
         merged += [dict(r, key=f"e{r['index']}", group="", thumbs=[], asLabel="") for r in rest]
         return merged
 
@@ -273,11 +274,8 @@ class PocketDropModel(QObject):
 
     @Slot(str)
     def toggleSendAs(self, key: str) -> None:
-        for g in self._groups:
-            if g["key"] == key:
-                g["as"] = 1 - g["as"]
-        self._last = ""
-        self._refresh()
+        """Does nothing. It used to switch a group's label to "Proofing JPEGs" and show a smaller size while the original files were
+        still what was sent. The slot stays so the panel's chip has something to call until the chip is taken out."""
 
     @Slot()
     def clearAll(self) -> None:
@@ -312,14 +310,60 @@ class PocketDropModel(QObject):
                 rows = [everything[(n - 1) % len(everything)] for n in _SAMPLE_THUMBS[key]] if everything else []
                 paths, total_count = [], int(count.split()[0])
             else:
-                total = sum(_file_size(path) for path in paths)
-                sub = f"{len(rows)} photo{'s' if len(rows) != 1 else ''} \u00b7 {_size(total)}" if rows else "None yet"
+                # The count now, the size when the files have been measured (`_measure`): a look at every file of a large folder, or of
+                # one on a share, is not something to wait for with the window.
+                sub = _count_text(len(rows)) if rows else "None yet"
                 total_count = len(rows)
             entry = {"key": key, "title": title, "sub": sub, "thumbs": [r["path"] for r in rows[:3]] + [""] * (3 - min(3, len(rows))),
                      "paths": paths, "count": total_count, "empty": not rows, "added": any(g["key"] == key for g in self._groups)}
             (current if not key.startswith("col:") else collections).append(entry)
         self._library = {"current": current, "collections": collections}
         self.libraryChanged.emit()
+        self._measure()
+
+    def _measure(self) -> None:
+        """Add up each Library entry's files on a thread; `_apply_sizes` writes the sizes into the entries when it is done."""
+        self._size_token += 1
+        token = self._size_token
+        wanted = {entry["key"]: list(entry["paths"]) for bucket in self._library.values() for entry in bucket if entry["paths"]}
+        if not wanted:
+            return
+
+        def work() -> None:
+            known: dict[str, int] = {}                 # a photo is often in several entries (the selection, the winners, a collection)
+            sizes = {}
+            for key, paths in wanted.items():
+                total = 0
+                for path in paths:
+                    if token != self._size_token:
+                        return                         # the picker was asked for again: this answer is not wanted
+                    size = known.get(path)
+                    if size is None:
+                        size = known[path] = _file_size(path)
+                    total += size
+                sizes[key] = total
+            self._sized.emit(token, sizes)
+
+        threading.Thread(target=work, name="qml-pocketdrop-sizes", daemon=True).start()
+
+    def _apply_sizes(self, token: int, sizes: dict) -> None:
+        if token != self._size_token:
+            return
+        for bucket in self._library.values():
+            for entry in bucket:
+                if entry["key"] in sizes:
+                    entry["size"] = sizes[entry["key"]]
+                    entry["sub"] = f"{_count_text(entry['count'])} \u00b7 {_size(entry['size'])}"
+        changed = False
+        for group in self._groups:                     # a group added before its size was known gets it now
+            if group["key"] in sizes and not group["size"]:
+                group["size"] = sizes[group["key"]]
+                group["sub"] = f"{_count_text(group['count'])} \u00b7 {_size(group['size'])}"
+                changed = True
+        self.libraryChanged.emit()
+        if changed:
+            self._last = ""
+            self._refresh()
 
     @staticmethod
     def _paths_of(rows: list[dict]) -> list[str]:
@@ -341,9 +385,9 @@ class PocketDropModel(QObject):
         entry = next((e for bucket in self._library.values() for e in bucket if e["key"] == key), None)
         if entry is None or entry["empty"] or any(g["key"] == key for g in self._groups):
             return
-        size = sum(_file_size(p) for p in entry["paths"]) or _sample_bytes(entry["sub"])
+        size = entry.get("size", 0) or _sample_bytes(entry["sub"])        # 0 until the files have been measured (`_apply_sizes` fills it in)
         self._groups.insert(0, {"key": key, "title": entry["title"], "sub": entry["sub"], "thumbs": entry["thumbs"], "paths": entry["paths"],
-                                "count": entry["count"], "size": size, "as": 0})
+                                "count": entry["count"], "size": size})
         if self._host is not None:
             self._host.add_paths(entry["paths"])
         self._last = ""
@@ -474,6 +518,10 @@ class PocketDropModel(QObject):
                      "addrs": [{"ip": ip, "adapter": name, "selected": i == s["addr"]} for i, (ip, name) in enumerate(ips)]},
             "busy": st in ("busy", "downloading"), "recent": False,
         }
+
+
+def _count_text(count: int) -> str:
+    return f"{count} photo{'s' if count != 1 else ''}"
 
 
 def _row_mb(row: dict) -> float:

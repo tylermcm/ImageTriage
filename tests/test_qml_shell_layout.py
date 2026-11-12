@@ -50,10 +50,10 @@ def test_startup_grid_fills_the_window_after_hidden_maximize(qapp, tmp_path, ins
 
 def test_the_widths_stay_between_their_minimum_and_maximum(qapp, tmp_path):
     engine, window, warnings = open_window(qapp, tmp_path, "tab=lib;panelW=100;inspW=900")
-    assert window.property("panelWanted") == 260 and window.property("inspWanted") == 352        # too small, too big
+    assert window.property("panelWanted") == 260 and window.property("inspWanted") == 480        # too small, too big
     close(qapp, engine, window)
     engine, window, warnings = open_window(qapp, tmp_path, "tab=lib;panelW=700;inspW=100")
-    assert window.property("panelWanted") == 300 and window.property("inspWanted") == 300
+    assert window.property("panelWanted") == 420 and window.property("inspWanted") == 300
     close(qapp, engine, window)
 
 
@@ -94,7 +94,7 @@ def test_dragging_the_edge_changes_the_width_and_it_is_remembered(qapp, tmp_path
         pump(qapp, 0.01)
     QTest.mouseRelease(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(1400, edge.y()))
     pump(qapp, 0.3)
-    assert window.property("panelWanted") == 300                                                    # the ceiling is the default width
+    assert window.property("panelWanted") == 420                                                    # the ceiling is wider than the default width
     close(qapp, engine, window)
 
 

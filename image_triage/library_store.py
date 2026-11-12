@@ -29,6 +29,7 @@ from .scanner import (
     EDIT_DIRECTORIES,
     JPEG_PAIR_DIRECTORIES,
     is_editor_asset_path,
+    is_app_recycle_directory,
     is_ignored_system_directory,
     normalize_filesystem_path,
     normalized_path_key,
@@ -384,7 +385,7 @@ class LibraryStore:
                 """,
                 (normalized_id,),
             ).fetchone()
-            start_order = int(row[0] or -1) + 1
+            start_order = int(row[0]) + 1
             connection.executemany(
                 """
                 INSERT INTO collection_items (collection_id, item_path, sort_order)
@@ -430,6 +431,42 @@ class LibraryStore:
             self._resequence_collection_items(connection, normalized_id)
             connection.commit()
         return self.load_collection(normalized_id)
+
+    def rename_item_paths(self, pairs) -> int:
+        """Point every collection at a photo's new path after the app moved or renamed it. ``pairs`` is ``(old path, new path)``.
+
+        The photo keeps its place in each collection. Where a collection already holds the new path, the old entry is simply
+        dropped. Returns how many entries changed.
+        """
+        wanted: list[tuple[str, str]] = []
+        for old_path, new_path in pairs:
+            old = normalize_filesystem_path(old_path)
+            new = normalize_filesystem_path(new_path)
+            if old and new and old != new:
+                wanted.append((old, new))
+        if not wanted:
+            return 0
+        changed = 0
+        with self._connect() as connection:
+            touched: set[str] = set()
+            for old, new in wanted:
+                rows = connection.execute("SELECT collection_id FROM collection_items WHERE item_path = ?", (old,)).fetchall()
+                for (collection_id,) in rows:
+                    cursor = connection.execute(
+                        "UPDATE OR IGNORE collection_items SET item_path = ? WHERE collection_id = ? AND item_path = ?",
+                        (new, collection_id, old),
+                    )
+                    if cursor.rowcount == 0:
+                        connection.execute(
+                            "DELETE FROM collection_items WHERE collection_id = ? AND item_path = ?",
+                            (collection_id, old),
+                        )
+                    changed += 1
+                    touched.add(str(collection_id))
+            for collection_id in touched:
+                connection.execute("UPDATE virtual_collections SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (collection_id,))
+            connection.commit()
+        return changed
 
     def delete_collection(self, collection_id: str) -> bool:
         """Delete a virtual collection and all of its stored item references."""
@@ -547,6 +584,7 @@ class LibraryStore:
                 if progress_callback is not None:
                     progress_callback(index - 1, total_roots, f"Scanning catalog root: {normalized_root}")
                 self._ensure_catalog_root(connection, normalized_root)
+                connection.commit()                       # nothing is left open while the drive is asked about below
                 root_is_folder = bool(normalized_root) and os.path.isdir(normalized_root)
                 if not root_is_folder and normalized_root and not _drive_is_answering(normalized_root):
                     # The drive or share holding this root is not answering (asleep NAS, VPN off). That is
@@ -557,6 +595,7 @@ class LibraryStore:
                         (UNREACHABLE_ROOT_MESSAGE, normalized_root),
                     )
                     unreachable_roots.append(normalized_root)
+                    connection.commit()
                     continue
                 if not root_is_folder:
                     connection.execute("DELETE FROM catalog_records WHERE root_path = ?", (normalized_root,))
@@ -576,6 +615,7 @@ class LibraryStore:
                         ("Folder not found.", normalized_root),
                     )
                     missing_roots.append(normalized_root)
+                    connection.commit()
                     continue
 
                 folder_state_rows = connection.execute(
@@ -660,6 +700,9 @@ class LibraryStore:
                     )
                     if record_count > 0:
                         indexed_folder_count += 1
+                    # Each folder is its own transaction. Held open across the whole walk (minutes on a NAS), the write lock
+                    # made every other change to the library, such as adding a photo to a collection, fail as "locked".
+                    connection.commit()
 
                 stale_folders = [folder for folder in folder_state_by_path.keys() if folder not in seen_folders]
                 if stale_folders:
@@ -705,6 +748,7 @@ class LibraryStore:
                         total_roots,
                         f"Indexed {total_root_records} image bundle(s) from {Path(normalized_root).name or normalized_root}",
                     )
+                connection.commit()
             connection.commit()
 
         return CatalogRefreshSummary(
@@ -836,7 +880,8 @@ class LibraryStore:
 
     @contextmanager
     def _connect(self):
-        connection = sqlite3.connect(self._db_path)
+        # A short write elsewhere (the catalog refresh commits folder by folder) is waited for, not reported as "locked".
+        connection = sqlite3.connect(self._db_path, timeout=10.0)
         connection.execute("PRAGMA foreign_keys = ON")
         try:
             yield connection
@@ -1092,7 +1137,7 @@ def _catalog_folder_signature(folder_path: str) -> str:
                 entry_name = entry.name.casefold()
                 if entry_name.endswith(EDITOR_ASSET_DIR_SUFFIX):
                     continue
-                if entry.is_dir(follow_symlinks=False) and is_ignored_system_directory(entry.name):
+                if entry.is_dir(follow_symlinks=False) and (is_ignored_system_directory(entry.name) or is_app_recycle_directory(entry.name)):
                     continue
                 if is_appledouble_path(entry_name):
                     continue
@@ -1120,8 +1165,9 @@ def _iter_catalog_candidate_folders(root_path: str):
             name for name in dirnames
             if not name.casefold().endswith(EDITOR_ASSET_DIR_SUFFIX)
             and not is_ignored_system_directory(name)
+            and not is_app_recycle_directory(name)       # photos deleted on a card are not part of the library
         ]
-        if is_editor_asset_path(current_dir) or is_ignored_system_directory(current_dir):
+        if is_editor_asset_path(current_dir) or is_ignored_system_directory(current_dir) or is_app_recycle_directory(current_dir):
             continue
         lower_dirs = {name.casefold() for name in dirnames}
         if any(is_image_file_candidate(name) for name in filenames) or lower_dirs.intersection(JPEG_PAIR_DIRECTORIES | EDIT_DIRECTORIES):

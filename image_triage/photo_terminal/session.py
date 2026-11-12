@@ -9,7 +9,7 @@ import shutil
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from xml.sax.saxutils import escape
 
-from .io import IMAGE_EXTENSIONS, open_image
+from .io import IMAGE_EXTENSIONS, open_image, write_text_atomic
 
 
 SCHEMA_VERSION = 1
@@ -201,11 +201,9 @@ def load_session(path: Path) -> Dict[str, Any]:
 def save_session(path: Path, session: Dict[str, Any]) -> None:
     session = deepcopy(session)
     session["updatedAt"] = utc_now()
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with path.open("w", encoding="utf-8") as handle:
-            json.dump(session, handle, indent=2)
-            handle.write("\n")
+        # Never opened for writing in place: a failure part way must leave the session that was there readable.
+        write_text_atomic(path, json.dumps(session, indent=2) + "\n")
     except OSError as exc:
         raise WriteError(str(exc)) from exc
 

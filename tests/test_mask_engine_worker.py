@@ -32,6 +32,7 @@ def _host() -> tuple[meng.MaskEngineHost, _FakeEngine, _FakeEngine]:
         prompt_engine=_FakeEngine(),
         depth_engine=_FakeEngine(),
     )
+    host._time_imports = lambda: None  # Routing tests use fake engines, not the managed AI runtime.
     return host, subject, semantic
 
 
@@ -142,6 +143,7 @@ class MaskEnginePromptEngineTests(unittest.TestCase):
             prompt_engine=sam,
             depth_engine=_FakeEngine(),
         )
+        host._time_imports = lambda: None
         return host, sam
 
     def test_embed_and_segment_route_to_the_prompt_engine(self) -> None:

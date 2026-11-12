@@ -9,7 +9,7 @@ Column {
 
     Row {
         height: 27; spacing: 5
-        Text { text: "Adjust"; color: theme.fg2; font.family: "Segoe UI"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter; rightPadding: 4 }
+        Text { text: "Adjust"; color: theme.fg2; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter; rightPadding: 4 }
         Repeater {
             model: [
                 {label: "Three way", glyph: "M9 5a3 3 0 1 0 6 0 3 3 0 0 0-6 0M3 16a3 3 0 1 0 6 0 3 3 0 0 0-6 0m12 0a3 3 0 1 0 6 0 3 3 0 0 0-6 0"},

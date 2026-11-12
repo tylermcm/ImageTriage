@@ -98,11 +98,36 @@ def recipe_path(image_path: str) -> Path:
     return edit_root_for(path.parent) / (path.name + ".cameraraw.json")
 
 
+RECIPE_SHAPE_OK = "ok"
+RECIPE_SHAPE_NEWER = "newer"      # written by a later version of the recipe format: good data this build cannot read
+RECIPE_SHAPE_DAMAGED = "damaged"  # not a recipe at all
+
+
+def recipe_shape(recipe) -> str:
+    """Whether parsed JSON is a recipe of this version, of a later one, or not a recipe. The one place that decides it:
+    ``load_recipe`` and ``classify_recipe`` both ask here, so they cannot disagree about the same file."""
+    if not isinstance(recipe, dict):
+        return RECIPE_SHAPE_DAMAGED
+    version = recipe.get("version")
+    if type(version) is not int:
+        return RECIPE_SHAPE_DAMAGED
+    if version > RECIPE_VERSION:
+        return RECIPE_SHAPE_NEWER
+    if version != RECIPE_VERSION or not isinstance(recipe.get("cameraRaw"), dict):
+        return RECIPE_SHAPE_DAMAGED
+    return RECIPE_SHAPE_OK
+
+
+RECIPE_NEWER_REASON = "the Camera Raw settings were saved by a newer version of Image Triage"
+
+
 def load_recipe(image_path: str) -> dict | None:
     """The photo's stored recipe, or ``None`` when it has none or the file is unusable.
 
     A damaged file is set aside (``.bad``) rather than deleted, so a bad write can never make a photo
-    unopenable and never silently throws a user's adjustments away.
+    unopenable and never silently throws a user's adjustments away. A recipe from a later version of the
+    format is not damaged and is left exactly where it is: setting it aside would hide the user's edits
+    from the newer build that can read them (``recipe_is_newer`` tells a caller that this is why it got ``None``).
     """
     target = recipe_path(image_path)
     try:
@@ -117,12 +142,22 @@ def load_recipe(image_path: str) -> dict | None:
         return None
     try:
         recipe = json.loads(text)
-        if isinstance(recipe, dict) and recipe.get("version") == RECIPE_VERSION and isinstance(recipe.get("cameraRaw"), dict):
-            return recipe
     except ValueError:
-        pass
-    quarantine_recipe(image_path)
+        recipe = None
+    shape = recipe_shape(recipe)
+    if shape == RECIPE_SHAPE_OK:
+        return recipe
+    if shape == RECIPE_SHAPE_DAMAGED:
+        quarantine_recipe(image_path)
     return None
+
+
+def recipe_is_newer(image_path: str) -> bool:
+    """Whether the photo's stored recipe is from a later version of the format than this build reads."""
+    try:
+        return recipe_shape(json.loads(recipe_path(image_path).read_text(encoding="utf-8"))) == RECIPE_SHAPE_NEWER
+    except (OSError, ValueError):
+        return False
 
 
 # What a photo's Camera Raw recipe amounts to (``recipe_state``).
@@ -205,11 +240,14 @@ def require_super_resolution_support(camera_raw, supported: bool) -> None:
 
 def classify_recipe(recipe) -> tuple[str, str]:
     """``(state, reason)`` for a recipe's content (a parsed recipe file, or the open dialog's settings in the same form)."""
-    if not isinstance(recipe, dict) or type(recipe.get("version")) is not int or recipe.get("version") != RECIPE_VERSION:
+    shape = recipe_shape(recipe)
+    if shape == RECIPE_SHAPE_NEWER:
+        return RECIPE_INVALID, RECIPE_NEWER_REASON
+    if shape == RECIPE_SHAPE_DAMAGED:
+        if isinstance(recipe, dict) and recipe.get("version") == RECIPE_VERSION and type(recipe.get("version")) is int:
+            return RECIPE_INVALID, "the recipe has no settings"
         return RECIPE_INVALID, "not a Camera Raw recipe this version of Image Triage reads"
-    settings = recipe.get("cameraRaw")
-    if not isinstance(settings, dict):
-        return RECIPE_INVALID, "the recipe has no settings"
+    settings = recipe["cameraRaw"]
     for name, value in settings.items():
         if name not in RECIPE_FIELDS:
             return RECIPE_INVALID, f"the recipe's {name} is not a supported setting"
@@ -903,10 +941,6 @@ class PhotoCraftProcess:
     # Which document is open, counted: every open or replacement starts a new one, and its revisions start again. A save is
     # matched to a requirement by (sidecar, document generation), never by revision alone.
     document_generation: int = 0
-    # Saves that must happen, found when a Camera Raw dialog closed on a document that was already changed: sidecar ->
-    # (document generation, revision). Only a successful save of the same sidecar and generation, at that revision or later,
-    # clears one (see PreviewController._save_photocraft_sidecar_if_dirty).
-    save_required: dict[str, tuple[int, int]] = field(default_factory=dict)
     # What each save job was sent for: job id -> (sidecar, document generation, revision).
     stash_meta: dict[int, tuple[str, int, int]] = field(default_factory=dict)
     stash_errors: dict[str, str] = field(default_factory=dict)
@@ -936,9 +970,6 @@ class PhotoCraftProcess:
     idle_priority: bool = False
     # Where the editor's own output goes (see ``_open_editor_log``); None when no file could be made.
     log_path: Path | None = None
-    # Sidecars (as ``str``) whose last save left the full-size render out (an autosave while the editor is up writes the project and
-    # the screen-sized JPEG only): leaving the photo saves it again, with the render, even if nothing changed since.
-    preview_missing: set[str] = field(default_factory=set)
     # When the open photo was last found changed (``time.monotonic()``): the autosave writes the full-size render after a pause in editing.
     last_edit_at: float = 0.0
     # The editor's colours have been fetched once (the filmstrip follows them); the autosave tick keeps them current after that.
@@ -1047,6 +1078,31 @@ class PhotoCraftProcess:
 def _automation_path(path: str) -> str:
     """PhotoCraft's control channel refuses backslashes in automation paths."""
     return path.replace("\\", "/")
+
+
+# A token file is removed when its editor is shut down. After a crash (of either program) it stays in the temporary folder
+# for good, so each start clears the ones that are this old: an editor reads its token once, as it starts, and none runs for a day
+# on a file it still needs.
+STALE_TOKEN_FILE_S = 24 * 60 * 60.0
+
+
+def sweep_stale_token_files(*, now: float | None = None, directory: str | Path | None = None) -> int:
+    """Deletes ``photocraft_token_*.txt`` files older than ``STALE_TOKEN_FILE_S`` from the temporary folder. Returns how many."""
+    root = Path(directory) if directory is not None else Path(tempfile.gettempdir())
+    now = time.time() if now is None else now
+    removed = 0
+    try:
+        candidates = list(root.glob("photocraft_token_*.txt"))
+    except OSError:
+        return 0
+    for candidate in candidates:
+        try:
+            if now - candidate.stat().st_mtime >= STALE_TOKEN_FILE_S:
+                candidate.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def _free_tcp_port() -> int:
@@ -1164,6 +1220,7 @@ def _launch_photocraft_binary(
     started = time.perf_counter()
     timings = {}
 
+    sweep_stale_token_files()
     port = _free_tcp_port()
     token = secrets.token_hex(32)
     fd, token_path_str = tempfile.mkstemp(prefix="photocraft_token_", suffix=".txt")

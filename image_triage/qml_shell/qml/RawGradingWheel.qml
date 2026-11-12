@@ -16,7 +16,7 @@ Column {
     Text {
         anchors.horizontalCenter: parent.horizontalCenter
         text: wheel.label; color: theme.fg2
-        font.family: "Segoe UI"; font.pixelSize: 12
+        font.pixelSize: 12
     }
     Item {
         anchors.horizontalCenter: parent.horizontalCenter

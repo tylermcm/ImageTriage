@@ -47,6 +47,54 @@ ENGINE_PROMPT = "prompt"
 ENGINE_DEPTH = "depth"
 
 
+# How long the host may say nothing while it works on one command before it is taken to be hung. Every line it prints (progress, a
+# metric) starts the wait again, so this bounds silence, not the length of a job. A cold first start imports torch and reads a model from
+# disk without a word for a long while, hence minutes rather than seconds.
+COMMAND_SILENCE_TIMEOUT_SECONDS = 600.0
+SHUTDOWN_TIMEOUT_SECONDS = 5.0  # for the host's answer to "shutdown", and for another thread's request to let go of the lock
+
+
+class MaskEngineTimeout(RuntimeError):
+    """The host stopped answering and was ended. Not retried: a command that hung once would hang the same way again."""
+
+
+class _SilenceWatchdog:
+    """Ends ``process`` when ``touch`` has not been called for ``timeout`` seconds. The blocked ``readline`` then sees end of file."""
+
+    def __init__(self, process, timeout: float) -> None:
+        self._process = process
+        self._timeout = max(0.01, float(timeout))
+        self._deadline = time.monotonic() + self._timeout
+        self._stopped = threading.Event()
+        self.fired = False
+        self._thread = threading.Thread(target=self._watch, name="mask-engine-watchdog", daemon=True)
+        self._thread.start()
+
+    def touch(self) -> None:
+        self._deadline = time.monotonic() + self._timeout
+
+    def stop(self) -> None:
+        self._stopped.set()
+
+    def _watch(self) -> None:
+        while True:
+            remaining = self._deadline - time.monotonic()
+            if self._stopped.wait(min(1.0, max(0.01, remaining))):
+                return
+            if time.monotonic() >= self._deadline:
+                self.fired = True
+                _kill_process(self._process)
+                return
+
+
+def _kill_process(process) -> None:
+    try:
+        if process.poll() is None:
+            process.kill()
+    except OSError:
+        pass
+
+
 def _elapsed_ms(started: float) -> float:
     return (time.perf_counter() - started) * 1000.0
 
@@ -73,6 +121,8 @@ class MaskEngineService:
         self._device = "unknown"
         self._request_id = 0
         self._idle_timer: threading.Timer | None = None
+        self.command_timeout_seconds = COMMAND_SILENCE_TIMEOUT_SECONDS
+        self.shutdown_timeout_seconds = SHUTDOWN_TIMEOUT_SECONDS
         #: Set before a speculative warm-up so the host starts below normal priority; ``restore_priority`` ends it.
         self.start_low_priority = False
 
@@ -383,7 +433,15 @@ class MaskEngineService:
             raise last_error or RuntimeError("MaskEngine batch prompt failed.")
 
     def shutdown(self) -> None:
-        with self._lock:
+        if not self._lock.acquire(timeout=self.shutdown_timeout_seconds):
+            # Another thread's request holds the lock and its host is not answering. Waiting for it would keep the app from exiting, so
+            # the host is ended from here; that request then sees the pipe close and gives up.
+            process = self._process
+            if process is not None:
+                write_execution_log("mask-engine: shutdown could not wait for a running command; ending the host")
+                _kill_process(process)
+            return
+        try:
             self._cancel_idle_locked()
             process = self._process
             if process is None:
@@ -392,7 +450,8 @@ class MaskEngineService:
             try:
                 if process.poll() is None:
                     try:
-                        self._command_locked({"command": "shutdown"})
+                        # Sent once, with a short wait: a host that does not answer "shutdown" is ended below, not started again to be asked twice.
+                        self._send_command_locked({"command": "shutdown"}, silence_timeout=self.shutdown_timeout_seconds)
                     except Exception:
                         process.terminate()
                     try:
@@ -403,6 +462,8 @@ class MaskEngineService:
             finally:
                 self._clear_process_locked()
                 perf_logger().duration("ai.mask.engine.service.shutdown", _elapsed_ms(started))
+        finally:
+            self._lock.release()
 
     # -- process management --------------------------------------------------
     def _ensure_process_locked(self) -> None:
@@ -487,7 +548,9 @@ class MaskEngineService:
                     self._loaded_models[engine] = Path(str(model_dir)).resolve()
             return self._send_command_locked(payload, progress_callback=progress_callback)
 
-    def _send_command_locked(self, payload: dict[str, object], *, progress_callback: ProgressCallback | None = None) -> dict[str, object]:
+    def _send_command_locked(
+        self, payload: dict[str, object], *, progress_callback: ProgressCallback | None = None, silence_timeout: float | None = None
+    ) -> dict[str, object]:
         process = self._process
         if process is None or process.poll() is not None:
             raise _WorkerTransportError("MaskEngine host is not running.")
@@ -507,10 +570,25 @@ class MaskEngineService:
         write_execution_log(
             f"mask-engine: cmd={command_name} sent (pid={process.pid}), awaiting response..."
         )
+        watchdog = _SilenceWatchdog(process, self.command_timeout_seconds if silence_timeout is None else silence_timeout)
+        try:
+            return self._read_response_locked(process, request_id, payload, command_name, started, progress_callback, watchdog)
+        finally:
+            watchdog.stop()
+
+    def _read_response_locked(self, process, request_id: int, payload: dict[str, object], command_name: str, started: float,
+                              progress_callback: ProgressCallback | None, watchdog: _SilenceWatchdog) -> dict[str, object]:
         recent_lines: list[str] = []
         while True:
             raw_line = process.stdout.readline()
+            watchdog.touch()
             if raw_line == "":
+                if watchdog.fired:
+                    self._clear_process_locked()
+                    write_execution_log(f"mask-engine: cmd={command_name} gave no sign of life; the host was ended after {_elapsed_ms(started):.0f} ms")
+                    raise MaskEngineTimeout(
+                        f"The mask engine stopped responding while working on {command_name} and was closed. Try again; it starts afresh."
+                    )
                 return_code = process.poll()
                 self._clear_process_locked()
                 detail = "\n".join(recent_lines[-20:])
@@ -594,6 +672,8 @@ class MaskEngineService:
         self._device = "unknown"
         if process is None:
             return
+        # A host that is being let go of (it broke the protocol, or its pipe failed) is ended, not left running with its models loaded.
+        _kill_process(process)
         for stream in (process.stdin, process.stdout):
             if stream is not None:
                 try:

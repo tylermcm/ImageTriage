@@ -18,6 +18,8 @@ FocusScope {
 
     readonly property real winW: Math.min(960, width - 96)
     readonly property real winH: Math.min(640, height - 68 - 64)
+    // The page holds two columns of fields. They are 312 px at the window's full width and narrow with it, so nothing is cut off in a small window.
+    readonly property real colW: Math.max(140, Math.min(312, (winW - 248 - 64 - 8 - 16) / 2))
     readonly property int rev: advFilters.revision
     readonly property var chips: { void rev; return advFilters.chips() }
     readonly property var presets: { void rev; return advFilters.presets() }
@@ -38,7 +40,8 @@ FocusScope {
     ShaderEffectSource { id: snap; anchors.fill: parent; sourceItem: root.sourceItem; live: true; visible: false }
     MultiEffect { anchors.fill: parent; source: snap; blurEnabled: true; blur: 1.0; blurMax: 20 }
     Rectangle { anchors.fill: parent; color: theme.scrim }
-    MouseArea { anchors.fill: parent; hoverEnabled: true; onClicked: root.close(); onWheel: (w) => { w.accepted = true } }
+    // a click beside the window closes it, unless that would throw away changes that were not applied (Cancel and Escape say so on purpose)
+    MouseArea { anchors.fill: parent; hoverEnabled: true; onClicked: { if (!root.dirty) root.close() } onWheel: (w) => { w.accepted = true } }
 
     Item {
         id: win
@@ -63,7 +66,6 @@ FocusScope {
                 Text { x: 40; anchors.verticalCenter: parent.verticalCenter; text: "Advanced filters"; color: theme.fg2; font.pixelSize: 13; font.weight: Font.Medium }
                 Row {
                     anchors.right: parent.right; height: parent.height
-                    Item { width: 44; height: 40; Icon { anchors.centerIn: parent; size: 12; color: theme.fg3; path: "M5 12h14" } }
                     Item {
                         width: 44; height: 40
                         Rectangle { anchors.fill: parent; color: theme.rej; opacity: xh.hovered ? 1 : 0 }
@@ -264,15 +266,15 @@ FocusScope {
                             x: 4; width: parent.width - 8; spacing: 14
                             Row { spacing: 16
                                 Repeater { model: [["quick", "Quick filter"], ["ftype", "File type"]]
-                                    delegate: Column { required property var modelData; spacing: 6; width: 312
+                                    delegate: Column { required property var modelData; spacing: 6; width: root.colW
                                         Text { height: 16.8; verticalAlignment: Text.AlignVCenter; text: modelData[1]; color: theme.fg2; font.pixelSize: 12 }
-                                        SSelect { width: 312; menuMax: 268; options: { void root.rev; return advFilters.options(modelData[0]) }
+                                        SSelect { width: root.colW; menuMax: 268; options: { void root.rev; return advFilters.options(modelData[0]) }
                                                   current: { void root.rev; return advFilters.get(modelData[0]) } onPicked: (v) => advFilters.set(modelData[0], v) } } } }
                             Row { spacing: 16
                                 Repeater { model: [["review", "Review state"], ["ai", "AI state"]]
-                                    delegate: Column { required property var modelData; spacing: 6; width: 312
+                                    delegate: Column { required property var modelData; spacing: 6; width: root.colW
                                         Text { height: 16.8; verticalAlignment: Text.AlignVCenter; text: modelData[1]; color: theme.fg2; font.pixelSize: 12 }
-                                        SSelect { width: 312; menuMax: 268; options: { void root.rev; return advFilters.options(modelData[0]) }
+                                        SSelect { width: root.colW; menuMax: 268; options: { void root.rev; return advFilters.options(modelData[0]) }
                                                   current: { void root.rev; return advFilters.get(modelData[0]) } onPicked: (v) => advFilters.set(modelData[0], v) } } } }
                             Column { spacing: 6; width: parent.width
                                 Text { height: 16.8; verticalAlignment: Text.AlignVCenter; text: "Orientation"; color: theme.fg2; font.pixelSize: 12 }
@@ -283,10 +285,10 @@ FocusScope {
                                     current: { void root.rev; return Math.max(0, values.indexOf(advFilters.get("orient"))) }
                                     onActivated: (i) => advFilters.set("orient", values[i])
                                 } }
-                            Column { spacing: 6; width: 312
+                            Column { spacing: 6; width: root.colW
                                 Text { height: 16.8; verticalAlignment: Text.AlignVCenter; text: "Minimum rating"; color: theme.fg2; font.pixelSize: 12 }
                                 SStepper {
-                                    width: 312
+                                    width: root.colW
                                     text: { void root.rev; var r = advFilters.get("rating"); return r > 0 ? r + " stars or more" : "Any" }
                                     onDecrement: advFilters.set("rating", advFilters.get("rating") - 1)
                                     onIncrement: advFilters.set("rating", advFilters.get("rating") + 1)
@@ -306,9 +308,9 @@ FocusScope {
                             Repeater {
                                 model: [["camera", "Camera", "Sony, Canon, Fujifilm, A7R..."], ["lens", "Lens", "24-70, 50mm, GM, RF..."],
                                         ["tags", "Tags", "portrait, product, wedding..."], ["folder", "Folder", "restaurant, beach, set-b..."]]
-                                delegate: Column { required property var modelData; spacing: 6; width: 312
+                                delegate: Column { required property var modelData; spacing: 6; width: root.colW
                                     Text { height: 16.8; verticalAlignment: Text.AlignVCenter; text: modelData[1]; color: theme.fg2; font.pixelSize: 12 }
-                                    FInput { width: 312; placeholder: modelData[2]; text: { void root.rev; return advFilters.get(modelData[0]) }
+                                    FInput { width: root.colW; placeholder: modelData[2]; text: { void root.rev; return advFilters.get(modelData[0]) }
                                              onEdited: (t) => advFilters.set(modelData[0], t) } }
                             }
                         }
@@ -325,10 +327,10 @@ FocusScope {
                             x: 4; width: parent.width - 8; columns: 2; columnSpacing: 16; rowSpacing: 14
                             Repeater {
                                 model: [["Captured", "after", "before", "", true], ["ISO", "isoMin", "isoMax", "", false], ["Focal length", "focMin", "focMax", "mm", false]]
-                                delegate: Column { required property var modelData; spacing: 6; width: 312
+                                delegate: Column { required property var modelData; spacing: 6; width: root.colW
                                     Text { height: 16.8; verticalAlignment: Text.AlignVCenter; text: modelData[0]; color: theme.fg2; font.pixelSize: 12 }
                                     Row { spacing: 10
-                                        readonly property real cell: (312 - 20 - toText.implicitWidth) / 2
+                                        readonly property real cell: (root.colW - 20 - toText.implicitWidth) / 2
                                         FInput { width: parent.cell; placeholder: "Any"; suffix: modelData[3]
                                                  text: { void root.rev; return advFilters.get(modelData[1]) }
                                                  error: { void root.rev; return modelData[4] && advFilters.dateBad(modelData[1]) ? "YYYY-MM-DD" : "" }
@@ -339,10 +341,10 @@ FocusScope {
                                                  error: { void root.rev; return modelData[4] && advFilters.dateBad(modelData[2]) ? "YYYY-MM-DD" : "" }
                                                  onEdited: (t) => advFilters.set(modelData[2], t) } } }
                             }
-                            Column { spacing: 6; width: 312
+                            Column { spacing: 6; width: root.colW
                                 Text { height: 16.8; verticalAlignment: Text.AlignVCenter; text: "Minimum search confidence"; color: theme.fg2; font.pixelSize: 12 }
-                                Item { width: 312; height: 29.5
-                                    SSlider { y: 5; trackW: 312 - 14 - 52; from: 0; to: 1; step: 0.05
+                                Item { width: root.colW; height: 29.5
+                                    SSlider { y: 5; trackW: root.colW - 14 - 52; from: 0; to: 1; step: 0.05
                                               value: { void root.rev; return advFilters.get("conf") }
                                               text: { void root.rev; var c = advFilters.get("conf"); return c > 0 ? c.toFixed(2) : "Auto" }
                                               onMoved: (v) => advFilters.set("conf", v) } } }
@@ -364,7 +366,7 @@ FocusScope {
                         Rectangle { anchors.fill: parent; radius: 4; color: root.dirty ? theme.accent : theme.fg3; opacity: root.dirty ? 1 : 0.5 }
                     }
                     Text {
-                        font.pixelSize: 12; width: 650; elide: Text.ElideRight
+                        font.pixelSize: 12; width: Math.max(0, root.winW - 330); elide: Text.ElideRight
                         text: (root.dirty ? "Changes are not applied yet." : "These are the filters the grid is using.")
                               + (root.unsupported > 0 ? "  " + root.unsupported + (root.unsupported === 1 ? " filter is" : " filters are") + " saved but not applied by this window yet." : "")
                         color: root.dirty ? theme.fg : theme.fg3

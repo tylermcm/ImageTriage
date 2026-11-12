@@ -65,7 +65,9 @@ class WorkerProcessTree:
         self._closed = True
         if os.name == "nt":
             if self._job is not None:
-                self._api.TerminateJobObject(self._job, 1)
+                import ctypes
+                if not self._api.TerminateJobObject(self._job, 1):
+                    raise ctypes.WinError(ctypes.get_last_error())
                 self._api.CloseHandle(self._job)
                 self._job = None
         else:
@@ -81,6 +83,52 @@ class WorkerProcessTree:
                     pass
             except ProcessLookupError:
                 pass
+
+    def resume_windows_process(self):
+        """Resume the suspended launcher only after its job owns the entire tree.
+
+        A Windows venv launcher can spawn the real interpreter before Python
+        reaches the stdin handshake. Suspending it closes that ownership race.
+        """
+        import ctypes
+        from ctypes import wintypes as w
+
+        class ThreadEntry(ctypes.Structure):
+            _fields_ = [("size", w.DWORD), ("usage", w.DWORD),
+                        ("thread", w.DWORD), ("process", w.DWORD),
+                        ("priority", w.LONG), ("base", w.LONG), ("flags", w.DWORD)]
+
+        api = self._api
+        api.CreateToolhelp32Snapshot.argtypes = [w.DWORD, w.DWORD]
+        api.CreateToolhelp32Snapshot.restype = w.HANDLE
+        api.Thread32First.argtypes = [w.HANDLE, ctypes.POINTER(ThreadEntry)]
+        api.Thread32Next.argtypes = [w.HANDLE, ctypes.POINTER(ThreadEntry)]
+        api.OpenThread.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+        api.OpenThread.restype = w.HANDLE
+        api.ResumeThread.argtypes = [w.HANDLE]
+        api.ResumeThread.restype = w.DWORD
+        snapshot = api.CreateToolhelp32Snapshot(4, 0)  # TH32CS_SNAPTHREAD
+        if snapshot == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            entry = ThreadEntry()
+            entry.size = ctypes.sizeof(entry)
+            found = api.Thread32First(snapshot, ctypes.byref(entry))
+            while found:
+                if entry.process == self.process.pid:
+                    thread = api.OpenThread(2, False, entry.thread)  # THREAD_SUSPEND_RESUME
+                    if not thread:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    try:
+                        if api.ResumeThread(thread) == 0xFFFFFFFF:
+                            raise ctypes.WinError(ctypes.get_last_error())
+                        return
+                    finally:
+                        api.CloseHandle(thread)
+                found = api.Thread32Next(snapshot, ctypes.byref(entry))
+            raise RuntimeError("Suspended worker's primary thread was not found")
+        finally:
+            api.CloseHandle(snapshot)
 
 
 def supervise(arguments):

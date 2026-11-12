@@ -81,6 +81,17 @@ IGNORED_SYSTEM_DIRECTORY_NAMES = frozenset(
 )
 
 
+# The folder the app moves deleted photos into on a removable drive (``safe_trash``), beside the folder they were in.
+APP_RECYCLE_DIRECTORY_NAME = "recycle bin"
+
+
+def is_app_recycle_directory(path: str | Path) -> bool:
+    """Whether a directory is the app's own recycle folder. It can still be opened like any folder (that is how a deleted
+    photo is looked at or removed for good), but its contents are not part of the library: the catalog does not index it."""
+    name = str(path).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].casefold()
+    return name == APP_RECYCLE_DIRECTORY_NAME
+
+
 def is_editor_asset_path(path: str | Path) -> bool:
     """Return whether ``path`` is inside an editor-generated asset directory."""
     normalized_parts = str(path).replace("\\", "/").split("/")
@@ -340,11 +351,19 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
     nested_edit_files_by_family: dict[str, list[ScannedFile]] = {}
     family_by_stem: dict[str, str] = {}
 
+    root_files_by_stem: dict[str, list[ScannedFile]] = {}
+    for scanned in root_files:
+        root_files_by_stem.setdefault(scanned.stem_key, []).append(scanned)
+
     def _family_for_stem(stem_key: str) -> str:
         cached_family = family_by_stem.get(stem_key)
         if cached_family is not None:
             return cached_family
-        resolved_family = variant_family_key(stem_key, exact_stems)
+        parent = numbered_parent_stem(stem_key, exact_stems)
+        if parent is None or stands_alone(root_files_by_stem.get(stem_key, ()), root_files_by_stem.get(parent, ())):
+            resolved_family = stem_key
+        else:
+            resolved_family = _family_for_stem(parent)
         family_by_stem[stem_key] = resolved_family
         return resolved_family
 
@@ -428,6 +447,8 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
                     edited_paths=tuple(item.path for item in edit_files),
                     variants=stack_variants,
                     has_editor_session=_has_editor_session(raw.path, hints),
+                    primary_size=raw.size,
+                    primary_modified_ns=raw.modified_ns,
                 )
             )
 
@@ -460,6 +481,8 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
                 edited_paths=tuple(item.path for item in edit_files),
                 variants=stack_variants,
                 has_editor_session=_has_editor_session(primary.path, hints),
+                primary_size=primary.size,
+                primary_modified_ns=primary.modified_ns,
             )
         )
     return records
@@ -571,16 +594,28 @@ def discover_edited_paths(record: ImageRecord) -> tuple[str, ...]:
     return (*rendered, *(item.path for item in candidates))
 
 
-def variant_family_key(stem: str, exact_stems: set[str]) -> str:
-    family = stem
-    while True:
-        stripped = re.sub(r"([_\- ]\d+)$", "", family)
-        if stripped == family or not stripped:
-            return family
-        if stripped in exact_stems:
-            family = stripped
-            continue
-        return family
+def numbered_parent_stem(stem: str, exact_stems: set[str]) -> str | None:
+    """The stem this one would be a numbered edit of (``IMG_1_2`` -> ``IMG_1``), when a file with that stem is in the folder."""
+    stripped = re.sub(r"([_\- ]\d+)$", "", stem)
+    if stripped == stem or not stripped or stripped not in exact_stems:
+        return None
+    return stripped
+
+
+def stands_alone(files, parent_files) -> bool:
+    """Whether files named like a numbered edit (``beach 2``) are photos of their own rather than edits of ``beach``.
+
+    A trailing number is how cameras, phones and file managers name separate photos as often as it is how an editor
+    names an export, and a wrong guess bundles two photos so that deleting one deletes the other. So a numbered file
+    is taken as an edit only when it is a different format from the photo it would belong to (``IMG_1.CR2`` and
+    ``IMG_1_2.jpg``): a RAW is never an edit of anything, and neither is a file of the primary's own format.
+    """
+    files, parent_files = list(files), list(parent_files)
+    if not files or not parent_files:
+        return False                      # only in an edits folder, or nothing to compare with: leave it attached
+    parent_raws = {item.suffix for item in parent_files if item.suffix in RAW_SUFFIXES}
+    primary_suffixes = parent_raws or {min(parent_files, key=lambda item: root_primary_sort_key(item.stem_key, item)).suffix}
+    return any(item.suffix in RAW_SUFFIXES or item.suffix in primary_suffixes for item in files)
 
 
 def edit_stem_matches(primary_stem: str, candidate_stem: str) -> bool:
@@ -893,6 +928,7 @@ __all__ = [
     "format_scan_error",
     "ImageRecord",
     "is_editor_asset_path",
+    "is_app_recycle_directory",
     "is_ignored_system_directory",
     "normalize_filesystem_path",
     "normalized_path_key",

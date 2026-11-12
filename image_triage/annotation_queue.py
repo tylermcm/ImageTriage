@@ -43,7 +43,15 @@ class _AnnotationPersistTask(QRunnable):
     def run(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
-        store = DecisionStore()
+        try:
+            store = DecisionStore()
+        except Exception as exc:
+            # The store could not be opened at all. Every entry failed, and "done" must still be said: without it the queue
+            # believes this batch is running for ever and writes nothing again.
+            for entry in self.entries:
+                self.result_queue.put(("failed", entry.record_path, str(exc)))
+            self.result_queue.put(("done", len(self.entries)))
+            return
         by_session: dict[str, list[AnnotationQueueEntry]] = {}
         for entry in self.entries:
             by_session.setdefault(entry.session_id, []).append(entry)
@@ -78,7 +86,7 @@ class _AnnotationPersistTask(QRunnable):
             if entry.record_path not in persisted_paths:
                 continue
             try:
-                sync_sidecar_annotation(entry.record, entry.annotation)
+                sync_sidecar_annotation(entry.record, entry.annotation, entry.previous_annotation)
             except Exception as exc:  # pragma: no cover - worker/runtime path
                 warning_count += 1
                 self.result_queue.put(("warning", entry.record_path, str(exc)))
@@ -152,12 +160,16 @@ class AnnotationPersistenceQueue(QObject):
         normalized_path = record_path or record.path
         current = _clone_annotation(annotation_delta)
         previous = _clone_annotation(previous_annotation)
+        waiting = self._pending.get(normalized_path)
+        # Several changes to one photo before a write become one write: what the photo had before the first of them is what
+        # the sidecar still holds, and that is what the writer compares against.
+        written_before = waiting.previous_annotation if waiting is not None else previous
         self._pending[normalized_path] = AnnotationQueueEntry(
             record_path=normalized_path,
             record=record,
             session_id=session_id,
             annotation=current,
-            previous_annotation=previous,
+            previous_annotation=written_before,
             winner_sync=winner_sync,
         )
         if previous_annotation is not None:
@@ -184,9 +196,21 @@ class AnnotationPersistenceQueue(QObject):
         return _clone_annotation(self._rollback_by_path.pop(record_path, None))
 
     def flush_blocking(self, timeout_ms: int = 4_000) -> None:
-        self.flush()
-        self._pool.waitForDone(max(1, int(timeout_ms)))
-        self._drain_results()
+        """Write everything that is waiting and return when it is on disk (or the time is up).
+
+        When a batch is already being written, the changes made since are a second batch that only starts once the first
+        has finished, so one wait is not enough: this keeps going until nothing is waiting and nothing is running.
+        """
+        deadline = time.monotonic() + max(1, int(timeout_ms)) / 1000.0
+        while True:
+            self.flush()
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                break
+            self._pool.waitForDone(remaining_ms)
+            self._drain_results()
+            if not self._active and not self._pending:
+                break
 
     def _drain_results(self) -> None:
         logger = perf_logger()

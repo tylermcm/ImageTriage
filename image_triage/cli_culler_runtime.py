@@ -10,6 +10,11 @@ import subprocess
 from .ai_paths import managed_ai_root
 
 
+def _no_window() -> int:
+    """On Windows a console program started from the app opens a console window unless it is told not to."""
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
+
+
 def load_native_runtime() -> dict:
     location = Path(os.environ.get("IMAGE_TRIAGE_CLI_CULLER_RUNTIME") or
                     managed_ai_root() / "rt" / "cli-culler" / "runtime.json")
@@ -46,7 +51,7 @@ def validate_native_settings(python: str, settings: dict):
     result = subprocess.run(
         [python, "-I", "-c",
          "import json,sys; from aiculler import CullSettings; CullSettings.from_dict(json.loads(sys.argv[1]))",
-         json.dumps(settings)], capture_output=True, text=True, timeout=30)
+         json.dumps(settings)], capture_output=True, text=True, timeout=30, creationflags=_no_window())
     if result.returncode:
         raise ValueError(result.stderr.strip())
 
@@ -67,7 +72,7 @@ print(json.dumps({name: {'url': json.loads(distribution(name).read_text('direct_
                   for name in ('ai-culler', 'bracketeering')}))
 """
     probe = subprocess.run([manifest["python"], "-I", "-c", code],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30, creationflags=_no_window())
     if probe.returncode:
         raise ValueError(f"Native runtime probe failed: {probe.stderr}")
     installed = json.loads(probe.stdout)

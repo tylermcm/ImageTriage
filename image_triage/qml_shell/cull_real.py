@@ -111,7 +111,7 @@ def stacks_of(rows: list[dict], outcomes: dict[str, Outcome]) -> list[list[dict]
 
 class CullRun(QObject):
     stage = Signal(int, float)          # which of the window's four stages, how far into it (0..1)
-    finished = Signal(object, bool, bool)   # the FolderResult, whether the eyes were checked, whether the rankers ran
+    finished = Signal(object, bool, bool)   # the FolderResult, whether the eyes were checked, whether the rankers ran (not: were asked for)
     failed = Signal(str)
     cancelled = Signal()
 
@@ -120,10 +120,26 @@ class CullRun(QObject):
         self._task = None
         self._signals = None
         self._eyes = self._rank = False
+        self._device = ""                                   # what the rankers were asked to run on ("gpu", "cpu")
         self._decided = 0.0                                 # how far the deciding stage has got: it never goes back
         self.running = False
+        self.notes: list[str] = []                          # what the last finished run skipped or could not do, in its own words
+        self.device_text = ""                               # where its rankers really ran, as their workers reported ("" when none ran)
+
+    @property
+    def alive(self) -> bool:
+        """A task was started and has not said it ended yet (a cancelled one counts until it has really stopped)."""
+        return self._task is not None
+
+    def _current(self) -> bool:
+        """Whether the signal being handled comes from the task now running. A signal a replaced task queued earlier is not acted on."""
+        sender = self.sender()
+        return sender is None or sender is self._signals
 
     def start(self, *, folder: str, records: list, cascade, blink_threshold: float, decision, protected: list[str]) -> None:
+        if self._task is not None:
+            # Two tasks at once would both report to this object, and the first one's late end would be taken for the second's.
+            raise RuntimeError("The previous analysis is still stopping. Try again in a moment.")
         from ..aiculler_workflow import build_aiculler_workflow_paths
         from ..cascade.launch import default_scorer_factory
         from ..cascade.task import CascadeRunSettings, CascadeRunTask
@@ -136,7 +152,9 @@ class CullRun(QObject):
                               protected_paths=protected, ranking_note=decision.note)
         self._task, self._signals = task, task.signals
         self._eyes, self._rank = decision.use_blink, decision.use_rankers
+        self._device = decision.device if decision.use_rankers else ""
         self._decided = 0.0
+        self.notes, self.device_text = [], ""
         queued = Qt.ConnectionType.QueuedConnection
         task.signals.progress.connect(self._progress, queued)
         task.signals.stage.connect(self._stage, queued)
@@ -153,11 +171,15 @@ class CullRun(QObject):
     # the cascade has four stages (reading capture times, reading previews, deciding, writing); the window shows the eyes check and the ranking inside
     # "deciding", so the progress labels tell which of the window's stages is on
     def _stage(self, folder: str, index: int, total: int, label: str) -> None:
+        if not self._current():
+            return
         if index < 2:
             self._decided = 0.0
         self.stage.emit({0: 0, 1: 1, 2: 3, 3: 3}.get(index, 3), 0.0 if index < 3 else 0.97)
 
     def _progress(self, folder: str, label: str, done: int, total: int, eta: str) -> None:
+        if not self._current():
+            return
         fraction = done / max(1, total)
         low = label.lower()
         if "closed eyes" in low:
@@ -173,16 +195,33 @@ class CullRun(QObject):
             self.stage.emit(3, self._decided)
 
     def _finished(self, folder: str, report_dir: str, html: str) -> None:
+        if not self._current():
+            return
         task, self._task, self._signals = self._task, None, None
         self.running = False
-        self.finished.emit(task.result if task is not None else None, bool(task and task.blink_checked), self._rank)
+        # What the run did, not what it was asked to do: a ranker that could not start, or failed part way, leaves `ranked_with` empty and a
+        # note saying why.
+        ranked = bool(getattr(task, "ranked_with", ())) if task is not None else False
+        self.notes = [str(note) for note in getattr(task, "notes", ())] if task is not None else []
+        reported = str(getattr(task, "ranking_device", "") or "") if task is not None else ""
+        self.device_text = ""
+        if ranked and reported:
+            on_card = reported.lower().startswith("cuda")
+            self.device_text = "the graphics card" if on_card else "the CPU"
+            if self._device == "gpu" and not on_card:
+                self.notes.append("Ranking ran on the CPU: the AI runtime could not use the graphics card, so it was much slower than estimated.")
+        self.finished.emit(task.result if task is not None else None, bool(task and task.blink_checked), ranked)
 
     def _failed(self, folder: str, message: str) -> None:
+        if not self._current():
+            return
         self._task = self._signals = None
         self.running = False
         self.failed.emit(message)
 
     def _cancelled(self, folder: str, message: str) -> None:
+        if not self._current():
+            return
         self._task = self._signals = None
         self.running = False
         self.cancelled.emit()

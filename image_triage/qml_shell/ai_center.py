@@ -5,7 +5,8 @@ are on disk. It installs, repairs and removes them with the shared code:
 * detection: `ai_runtime_packages.load_ai_runtime_installation_status`, `ai_platform.nvidia_gpu_name` and `vc_runtime_version`, and
   `ai_model_store.bundle_status` (size, pinned revision and file digests, not just "the folder exists");
 * the runtime: the same installer process the Widgets "Set Up AI" runs (`tasks.ai_tasks.AIRuntimeInstallTask`, `packaging/ai_runtime_installer.py`);
-* the models: `ai_model_store.install_bundle`, `repair_bundle` and `uninstall_bundle` (hash checked, resumable, atomic), with cancel;
+* the models: `ai_model_store.install_bundle`, `repair_bundle` and `uninstall_bundle` (hash checked, atomic), with cancel. A download that is
+  cancelled or fails is thrown away: the next try starts again from the beginning;
 * progress: `ai_setup_progress.SetupProgress`, one honest percent for the whole run.
 
 Everything slow runs on a worker thread; the GUI only ever reads `state()`. `ops` is what touches the machine, so the tests hand in a fake and
@@ -21,8 +22,9 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from ..ai_setup_plan import format_mb
 
-# the three models the cull shows, and the bundle each one is (cascade/rankers/bundles.py)
-MODELS = {"face": "faces_blink", "quality": "maniqa", "appeal": "qrealign"}
+# the models the cull shows, and the bundle each one is (cascade/rankers/bundles.py, ai_manifest.py). "search" is what semantic search and the
+# People pre-filter read photos with; "people" is the recognizer that groups faces. Both are installed here, never from inside a run.
+MODELS = {"face": "faces_blink", "quality": "maniqa", "appeal": "qrealign", "search": "tinyclip", "people": "faces_identity"}
 STATE_WORDS = {"ready": "Installed", "missing": "Not installed", "partial": "Incomplete", "corrupt": "Damaged", "stale": "Out of date"}
 
 
@@ -119,6 +121,12 @@ class RealOps:
 
         return MODEL_BUNDLES[MODELS.get(key, key)].approx_mb
 
+    def forget_gpu(self) -> None:
+        """Ask the driver for the graphics card again on the next look, instead of answering from what was found earlier."""
+        from .. import ai_platform
+
+        ai_platform.forget_gpu_name()
+
     def friendly(self, message: str) -> str:
         """A failure told in plain words: a Windows DLL failure gets the Visual C++ instruction."""
         from ..ai_platform import dll_failure_hint
@@ -213,7 +221,7 @@ class AiCenterBackend(QObject):
     # -- doing things ---------------------------------------------------------------------------------------------------------
     @Slot()
     def cancel(self) -> None:
-        """Stop what is running: the installer process is ended, a download stops at its next chunk, and what was already downloaded is kept."""
+        """Stop what is running: the installer process is ended and a download stops at its next chunk. Nothing half-downloaded is kept."""
         if self._job is not None:
             self._cancel.set()
             cancel_runtime = getattr(self._ops, "cancel_runtime", None)
@@ -224,8 +232,11 @@ class AiCenterBackend(QObject):
 
     @Slot()
     def recheck(self) -> None:
-        """"Check again": forget the last failure and look at the machine again (a Visual C++ update, say)."""
+        """"Check again": forget the last failure and look at the machine again (a Visual C++ update, a new driver, a card that was added)."""
         self._errors.pop("runtime", None)
+        forget_gpu = getattr(self._ops, "forget_gpu", None)
+        if callable(forget_gpu):
+            forget_gpu()
         self.refresh()
 
     def _start(self, kind: str, key: str, verb: str, work) -> bool:
@@ -268,19 +279,21 @@ class AiCenterBackend(QObject):
         self._event.emit("progress", {"pct": progress.percent(), "step": text + (f" · {eta}" if eta else "")})
 
     # -- the runtime ----------------------------------------------------------------------------------------------------------
-    def variant(self) -> str:
-        """The runtime build to install: what is installed decides, else a graphics card does (as the Widgets `ai_setup_hardware`)."""
+    def variant(self, repair: bool = False) -> str:
+        """The runtime build to install: what is installed decides, else a graphics card does (as the Widgets `ai_setup_hardware`).
+        A repair of a CPU-only install on a PC that has a graphics card installs the graphics card build: that is what the AI Center
+        tells the person Repair is for."""
         raw = self._raw or {}
         installed = list(raw.get("installed", []))
         if raw.get("gpuBuild"):
             return "gpu"
         if installed == ["cpu"]:
-            return "cpu"
+            return "gpu" if repair and raw.get("gpu") else "cpu"
         return "gpu" if raw.get("gpu") else "cpu"
 
-    def runtime_plan(self) -> dict:
-        """What Set up AI would download: the build, and its size in MB with the face model."""
-        variant = self.variant()
+    def runtime_plan(self, repair: bool = False) -> dict:
+        """What Set up AI (or, with `repair`, Repair) would download: the build, and its size in MB with the face model."""
+        variant = self.variant(repair)
         return {"variant": variant, "mb": self._ops.runtime_mb(variant) + self._ops.bundle_mb("face")}
 
     @Slot()
@@ -296,7 +309,7 @@ class AiCenterBackend(QObject):
         from ..ai_setup_progress import SetupProgress
 
         raw = self._raw or {}
-        variant = self.variant()
+        variant = self.variant(force)
         runtime_missing = not raw.get("installed") or not raw.get("torch") or force
         face_missing = (raw.get("models", {}).get("face", {}).get("state", "missing")) != "ready"
 

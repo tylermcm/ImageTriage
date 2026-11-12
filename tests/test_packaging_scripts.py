@@ -97,3 +97,40 @@ class PackagingScriptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PackagingConsistencyTests(unittest.TestCase):
+    def test_the_cleanup_tool_removes_every_type_the_app_registers(self) -> None:
+        import importlib.util
+
+        from image_triage.file_associations import supported_file_association_suffixes
+
+        spec = importlib.util.spec_from_file_location("image_triage_cleanup_under_test", ROOT / "packaging" / "image_triage_cleanup.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(set(supported_file_association_suffixes()), set(module.SUPPORTED_SUFFIXES))
+        self.assertGreater(len(module.SUPPORTED_SUFFIXES), len(module._FALLBACK_SUFFIXES))
+
+    def test_every_declared_dependency_is_imported_and_the_native_module_is_package_data(self) -> None:
+        import tomllib
+
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        names = [dependency.split(">")[0].split("=")[0].strip().lower() for dependency in project["project"]["dependencies"]]
+        self.assertNotIn("qrcode", names)      # nothing imports it
+        data = project["tool"]["setuptools"]["package-data"]
+        self.assertIn("pocketdrop.dll", data["image_triage.pocketdrop"])
+
+    def test_the_test_workflow_runs_the_whole_suite_on_main(self) -> None:
+        text = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        self.assertIn("python -m pytest -q -p no:cacheprovider\n", text)
+        self.assertIn("windows-latest", text)
+        self.assertIn("ubuntu-latest", text)
+        self.assertNotIn("continue-on-error", text)                    # both jobs block: the suite is clean on Linux and Windows
+        for package in ("libegl1", "libgl1", "libxkbcommon0", "libfontconfig1", "libdbus-1-3", "libglib2.0-0"):
+            self.assertIn(package, text)
+
+    def test_the_release_build_makes_and_bundles_the_raw_preview_worker(self) -> None:
+        text = (ROOT / ".github" / "workflows" / "build-windows-msi-release.yml").read_text(encoding="utf-8")
+        self.assertIn("IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW_EXE=", text)
+        self.assertLess(text.index("Build the RAW preview worker"), text.index("Build MSI"))
+        self.assertIn("RENDER_ALGORITHM", text)

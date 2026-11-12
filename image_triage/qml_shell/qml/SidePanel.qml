@@ -479,8 +479,10 @@ Item {
                 Stag { active: faces.on; n: 2; visible: people.hasIndex; Column { width: parent.width
                     SectionLabel { caption: "Face index" }
                     Item { width: 1; height: 1 }
-                    Meter { x: 16; width: parent.width - 32; value: people.indexInfo().value }
-                    PanelRow { text: people.indexInfo().text; count: people.indexInfo().pct; interactive: false; muted: true } } }
+                    // The model reports a fraction only where it has one (it gives no percentage otherwise): a bar that is always full says nothing.
+                    readonly property var info: { void people.revision; return people.indexInfo() }
+                    Meter { visible: parent.info.pct !== ""; x: 16; width: parent.width - 32; value: parent.info.value }
+                    PanelRow { text: parent.info.text; count: parent.info.pct; interactive: false; muted: true } } }
             }
         }
 
@@ -633,7 +635,7 @@ Item {
                 Item { width: parent.width; height: 13; Rectangle { x: 4; y: 6; width: parent.width - 8; height: 1; color: theme.lineSoft } }
                 MItem { label: "Open collection"; off: cmenu.inside; onClicked: collections.open(cmenu.cid) }
                 MItem { label: "Edit\u2026"; onClicked: { UiState.collDlgId = cmenu.cid; UiState.collDlg = "edit" } }
-                MItem { label: "Add selection here"; off: cmenu.inside; onClicked: { var rows = photos.selectionRows(UiState.selRow); for (var i = 0; i < rows.length; ++i) collections.addSelection(cmenu.cid, rows[i]) } }
+                MItem { label: "Add selection here"; off: cmenu.inside; onClicked: { collections.addRows(cmenu.cid, photos.selectionRows(UiState.selRow)) } }
                 MItem { label: "Add all " + photos.shown + " visible here"; off: cmenu.inside; onClicked: collections.addVisible(cmenu.cid) }
                 MItem { label: "New winners go here"; tick: cmenu.c.id !== undefined && cmenu.cid === collections.activeId; onClicked: collections.toggleActive(cmenu.cid) }
                 MItem { label: "Share to phone"; onClicked: panel.shareToPhone("col:" + cmenu.cid) }

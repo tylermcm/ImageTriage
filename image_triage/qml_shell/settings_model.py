@@ -7,14 +7,14 @@ from PySide6.QtCore import Property, QObject, Qt, Signal, Slot
 from PySide6.QtGui import QKeySequence
 
 # -- settings limits, kept in one place -----------------------------------------------------
-UI_GAMMA_MIN, UI_GAMMA_MAX = 0.60, 1.60
-PRELOAD_DEFAULT, PRELOAD_MAX = 10, 128
-AI_BATCH_MAX = 64            # the dialog's spin box range; the window itself clamps at 256
-AI_DISPUTE = (2, 5, 3)       # min, max, default
+# The viewer reads ahead at most this many photos and keeps a few more temporary pictures than that (viewer_host.FILES_KEPT), so a full
+# read-ahead never pushes out the photo being looked at. The setting offers exactly the range the viewer honours.
+PRELOAD_DEFAULT, PRELOAD_MAX = 10, 24
 AI_KEEP_TOP = (1, 50, 10)
 AI_REVIEW_BAND = (0, 30, 10)
 AI_BASE_WEIGHT = (0, 100, 65)
-_AI_SCORING_ROWS = ("keepTop", "reviewBand", "baseWeight")
+# The three scoring values have no row any more (they reach only the retired engine), but what was stored for them is still applied at start.
+_AI_SCORING_KEYS = {"keepTop": "ai/keep_top_percent", "reviewBand": "ai/review_band_percent", "baseWeight": "ai/base_score_weight_percent"}
 KEYPAD_MODIFIER = 0x20000000        # Qt.KeypadModifier: set for a key on the number pad, and not part of a chord
 
 # The registry shortcuts the shell carries out through Main.qml's runCommand: registry id -> the shell's command id (the palette's). Their keys (the
@@ -25,16 +25,22 @@ BOUND_ACTIONS = (
     ("batch_resize_selection", "tools.batch_resize"), ("batch_convert_selection", "tools.batch_convert"), ("handoff_builder", "workflow.handoff_builder"),
     ("share_to_phone", "workflow.share_to_phone"), ("best_of_set_auto_assembly", "workflow.best_of"), ("delete_selection", "review.delete_selection"),
     ("move_selection", "review.move_selection"), ("clear_filters", "search.clear_filters"), ("open_ai_workflow_center", "ai.workflow_center"),
-    ("compare_mode", "review.compare_mode"), ("zen_mode", "view.zen_mode"), ("next_ai_pick", "ai.next_top_pick"),
+    ("zen_mode", "view.zen_mode"), ("next_ai_pick", "ai.next_top_pick"),
 )
+# Registry rows whose key is asked for where it is pressed (`keyIs` in the grid and the viewer, `seq` for the palette's own shortcut).
+KEY_ACTIONS = ("accept_selection", "reject_selection", "keep_at_cursor", "collect_at_cursor", "open_preview", "open_command_palette")
+# Settings > Shortcuts lists these and no others: a row for a command the shell never carries out would take a key and do nothing.
+LISTED_ACTIONS = frozenset(action for action, _cmd in BOUND_ACTIONS) | frozenset(KEY_ACTIONS)
+# Defaults the shell gives a registry row that has none of its own. Delete used to be a second, fixed shortcut beside the bindable row; a key
+# bound on that row then made two shortcuts on one chord and neither fired.
+SHELL_DEFAULTS = {"delete_selection": "Delete"}
 # Keys the shell binds itself and the registry has no row for: a shortcut changed to one of them is refused, as two rows on one chord are.
 FIXED_KEYS = {
     "Ctrl+F": "Search photos",
     "Ctrl+A": "Select all photos", "Ctrl+/": "Keyboard shortcuts", "F1": "Help", "Esc": "Close", "Return": "Open the photo", "Space": "Open the photo",
     "U": "Clear the decision", "I": "Show or hide the inspector", "Left": "Previous photo", "Right": "Next photo", "Up": "Photo above", "Down": "Photo below",
-    "Home": "First photo", "End": "Last photo", "1": "Rate 1 star", "2": "Rate 2 stars", "3": "Rate 3 stars", "4": "Rate 4 stars", "5": "Rate 5 stars",
+    "Home": "First photo", "End": "Last photo", "0": "Clear the rating", "1": "Rate 1 star", "2": "Rate 2 stars", "3": "Rate 3 stars", "4": "Rate 4 stars", "5": "Rate 5 stars",
 }
-PHASH_HAMMING_MAX = 64
 
 APPEARANCE_MODES = (
     ("Slate", "slate"), ("Indigo", "indigo"), ("Dark", "dark"), ("Midnight", "midnight"), ("Graphite", "graphite"),
@@ -43,13 +49,6 @@ APPEARANCE_MODES = (
 DARK_TONE_OPTIONS = (("Slate (darkest)", "slate"), ("Soft (default)", "soft"), ("Dim (lightest)", "dim"))
 GRID_FADE_OPTIONS = (("Soft (default)", "soft"), ("Deep", "deep"), ("Dark", "dark"), ("Off", "off"))
 DELETE_MODES = (("Safe Trash (Undoable)", "Safe Trash (Undoable)"), ("System Trash", "System Trash"))
-INTERFACE_SIZES = (("Automatic (recommended)", "automatic"), ("Compact", "compact"), ("Comfortable", "standard"), ("Large", "spacious"))
-CARD_STYLES = (("Detailed", "detailed"), ("Zen", "zen"), ("Gallery", "gallery"))
-OVERLAY_REGIONS = (
-    ("Image area only (editor panels stay visible)", "canvas"),
-    ("Whole editor (panels appear once the photo settles)", "full"),
-    ("Off (the editor draws every photo itself)", "off"),
-)
 # Accent hues offered as swatches (OKLCH hue); the shell's own theme feature, not a setting of the Widgets app.
 ACCENTS = (("Blue", 255), ("Violet", 300), ("Rose", 10), ("Amber", 75), ("Green", 155), ("Teal", 195))
 
@@ -99,12 +98,13 @@ def _t(id, label, desc, key, default, **kw):
 
 def build_schema(shortcut_registry=()) -> tuple:
     """The settings pages. Wording and ranges follow the Widgets dialog; sections are regrouped as in the mockup (Appearance and
-    Browsing & editor are the old Interface page split in two)."""
+    Browsing are the old Interface page split in two). Every stored row is read by something (tests/test_qml_shell_settings.py checks it):
+    a switch that is saved and never read is not shown."""
     general = Section("general", "General", "M4 7h9M17 7h3M4 17h3M11 17h9M15 4.5v5M9 14.5v5",
         "Choose what happens to deleted images, and manage reusable review presets.", (
         Group("Review behavior", "Defaults used when a new review starts", (
             F("session", "select", "Profile preset", "Named workspace preset used for review behaviour like accepted-image handling and delete behaviour.",
-              key="workflow/session", kind="str", default="Default", btn="Save preset"),
+              key="workflow/session", kind="str", default="Default"),
             F("deleteMode", "select", "Delete behavior", "Where rejected or deleted images go when you delete from Image Triage.",
               key="workflow/delete_mode", kind="str", default=DELETE_MODES[0][1], options=DELETE_MODES),
         )),
@@ -115,10 +115,6 @@ def build_schema(shortcut_registry=()) -> tuple:
         Group("Processing", "Performance and visibility", (
             _t("perfLog", "Log detailed performance timings", "Writes step timings to a log for diagnosing slowness. Also available from the Tools menu.",
                "diagnostics/performance_logging", False),
-            _t("aiTags", "Show AI tags on cards in the grid", "AI badges, and the reason on hover, appear on grid cards during manual review, not only in the inspector.",
-               "workflow/show_ai_tags_in_grid", True),
-            _t("pocketEdits", "Apply edits before sending to PocketDrop", "Off by default. When on, a photo with a built-in editor session is sent as a rendered copy with its edits applied.",
-               "workflow/apply_edits_to_pocketdrop", False),
         )),
     ))
     appearance = Section("appearance", "Appearance", "M12 3.5a8.5 8.5 0 100 17 8.5 8.5 0 000-17zM12 3.5v17",
@@ -139,38 +135,16 @@ def build_schema(shortcut_registry=()) -> tuple:
             _t("dimRejects", "Gray out rejected photos", "Dims and desaturates rejects in the grid and preview filmstrip. The Rejected tab's grid stays in full color. Does not hide decision badges.",
                "view/dim_rejected_photos", True),
         )),
-        Group("Interface", "Size and card style", (
-            F("size", "select", "Interface size", "Automatic adapts the interface to the window's usable size. Choose another size to keep the same control density on every display.",
-              key="view/interface_size", kind="str", default="automatic", options=INTERFACE_SIZES),
-            F("gamma", "slider", "UI gamma", "Brightens or darkens the whole interface to compensate for monitor differences. 1.00 is the designed appearance.",
-              key="view/ui_gamma", kind="float", default=1.0, lo=UI_GAMMA_MIN, hi=UI_GAMMA_MAX, step=0.05, fmt="f2", btn="Reset"),
-            F("card", "select", "Card style", "Detailed shows filenames and review status. Zen removes most labels. Gallery keeps a compact caption.",
-              key="view/loupe_card_style", kind="str", default="detailed", options=CARD_STYLES),
-        )),
     ))
-    browsing = Section("browsing", "Browsing & editor", "M3.5 7a2.5 2.5 0 012.5-2.5h12A2.5 2.5 0 0120.5 7v10a2.5 2.5 0 01-2.5 2.5H6A2.5 2.5 0 013.5 17zM9.5 4.5v15",
-        "How the grid scrolls, how previews load, and how the photo editor opens next to them.", (
+    browsing = Section("browsing", "Browsing", "M3.5 7a2.5 2.5 0 012.5-2.5h12A2.5 2.5 0 0120.5 7v10a2.5 2.5 0 01-2.5 2.5H6A2.5 2.5 0 013.5 17zM9.5 4.5v15",
+        "How the grid scrolls, how previews load, and how review moves between photos.", (
         Group("Navigation and preview", "How browsing feels", (
             _t("smooth", "Use free smooth scrolling", "Scrolls pixel by pixel instead of snapping by rows.", "view/free_smooth_scroll", False),
             F("preload", "step", "Preview preload", "Nearby images to preload while using the popout preview. Higher values can speed up rapid navigation but use more CPU and memory.",
               key="preview/preload_batch_size", kind="int", default=PRELOAD_DEFAULT, lo=0, hi=PRELOAD_MAX, step=2, fmt="images", zero="Off"),
         )),
-        Group("Photo editor", "PhotoCraft inside the viewer", (
-            F("overlay", "select", "Editor browsing", "While you move through photos, Image Triage paints each one itself in front of the embedded editor. This chooses how much of the editor that picture covers.",
-              key="preview/photocraft_overlay_region", kind="str", default="canvas", options=OVERLAY_REGIONS),
-            _t("editorOnDemand", "Open the editor only when I press E", "Moving through photos stays as fast as the viewer alone. Press E to bring the editor up, and E again to put it away.",
-               "preview/editor_on_demand", True),
-            _t("editorOpen", "Open the viewer with the editor up", "The viewer opens with the editor already on the photo, as if you had pressed E. Only applies when the editor waits for E.",
-               "preview/editor_starts_open", True, dep="editorOnDemand"),
-            _t("editorPrestart", "Start the editor in the background when Image Triage opens", "The first press of E finds the editor already running. It uses a couple of hundred MB of memory while idle.",
-               "preview/editor_prestart", True),
-            _t("rawFirst", "Open photos in Camera Raw first", "The embedded editor opens each photo in Camera Raw first. Takes effect the next time the editor starts.",
-               "preview/photocraft_camera_raw_first", True),
-        )),
         Group("Review flow", "How review moves between images", (
             _t("autoAdvance", "Advance after Winner, Keep or Reject", "Moves to the next image automatically after you mark the current one Winner, Keep or Reject.", "view/auto_advance", True),
-            _t("bursts", "Group burst sequences", "Groups likely capture bursts so related frames are easier to review together.", "view/burst_groups", False),
-            _t("stacks", "Stack similar burst frames", "Stacks very similar burst frames behind one visible representative in the grid.", "view/burst_stacks", False),
         )),
     ))
     library = Section("library", "Library & folders", "M3.5 7.5a2 2 0 012-2h4l2 2.5h7a2 2 0 012 2v7.5a2 2 0 01-2 2h-13a2 2 0 01-2-2z",
@@ -185,54 +159,24 @@ def build_schema(shortcut_registry=()) -> tuple:
                "view/restore_folder_position", True),
         )),
         Group("Catalog", "Local browsing acceleration", (
-            _t("catalogCache", "Use catalog cache for faster folder open", "Stores lightweight folder information so previously indexed folders open faster.", "catalog/cache_enabled", True),
             F("catalogInfo", "text", "Catalog summary", "Current catalog cache status and indexed-file summary."),
         )),
     ))
     ai = Section("ai", "AI culling", "M12 3.5l1.8 4.7 4.7 1.8-4.7 1.8L12 16.5l-1.8-4.7L5.5 10l4.7-1.8zM18.5 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z",
-        "Tune processing and decide how much of a finished ranking is treated as likely winners or needs review.", (
+        "How the AI culling uses this computer.", (
         Group("Processing", "Performance and visibility", (
-            F("aiBatch", "step", "AI batch size", "How many images the AI prepares at the same time. Auto chooses a balanced value for your computer; higher can finish sooner but uses more memory.",
-              key="ai/embed_batch_size", kind="int", default=0, lo=0, hi=AI_BATCH_MAX, step=1, fmt="int", zero="Auto"),
-            _t("aiProgress", "Show detailed AI Review activity", "Shows model loading, library loading and per-stage activity in the AI Review progress window.", "ai/review_detail_progress", False),
             _t("cpuRank", "Rank survivors on the CPU when there is no GPU", "Off by default. Ranking uses two small AI models: automatic on a GPU, roughly 3 to 4 seconds per frame on a CPU.",
                "ai/cascade_rank_on_cpu", False),
-        )),
-        Group("Result ranges", "Tune how the finished ranking is divided", (
-            F("keepTop", "slider", "Likely winners", "Top share of the folder marked as Winner after each run.",
-              key="ai/keep_top_percent", kind="int", default=AI_KEEP_TOP[2], lo=AI_KEEP_TOP[0], hi=AI_KEEP_TOP[1], step=1, fmt="%"),
-            F("reviewBand", "slider", "Review band", "Extra band just below the Winner cutoff marked Needs Review. 0 turns the band off.",
-              key="ai/review_band_percent", kind="int", default=AI_REVIEW_BAND[2], lo=AI_REVIEW_BAND[0], hi=AI_REVIEW_BAND[1], step=1, fmt="%"),
-            F("cull", "text", "Cull breakdown", "How the two settings above split the folder into keep, review and reject."),
-        )),
-        Group("Adapter", "How the learned model is blended in", (
-            F("dispute", "step", "Dispute weight", "How heavily a disputed image counts in adapter training. 3x means each dispute is worth three normal labels.",
-              key="ai/dispute_weight", kind="int", default=AI_DISPUTE[2], lo=AI_DISPUTE[0], hi=AI_DISPUTE[1], step=1, fmt="x"),
-            F("baseWeight", "slider", "Base score weight", "Weight of the tag-penalty-aware base score against the trained adapter. Higher keeps penalised images out of the winners.",
-              key="ai/base_score_weight_percent", kind="int", default=AI_BASE_WEIGHT[2], lo=AI_BASE_WEIGHT[0], hi=AI_BASE_WEIGHT[1], step=5, fmt="%"),
-        )),
-    ))
-    dups = Section("dups", "Duplicates", "M9 9h9.5a1.5 1.5 0 011.5 1.5V19a1.5 1.5 0 01-1.5 1.5H10A1.5 1.5 0 018.5 19V9.5zM15.5 9V6A1.5 1.5 0 0014 4.5H5.5A1.5 1.5 0 004 6v8.5A1.5 1.5 0 005.5 16H8.5",
-        "Find nearly identical frames before the slower AI scoring pass. This uses a visual fingerprint called pHash; it never deletes an image.", (
-        Group("Detection", "How similar images are grouped", (
-            _t("phash", "Enable pHash Prefilter", "Runs a perceptual hash duplicate pass before AI scoring. Manual winners are always preserved and preferred as group representatives.",
-               "ai/phash_prefilter/enabled", True),
-            F("hamming", "step", "Duplicate distance", "Maximum pHash Hamming distance treated as a duplicate. Lower is stricter; 6 catches tight repeats and avoids broad pose changes.",
-              key="ai/phash_prefilter/hamming_threshold", kind="int", default=6, lo=0, hi=PHASH_HAMMING_MAX, step=1, fmt="int", dep="phash"),
-        )),
-        Group("Storage and diagnostics", "What is kept between runs", (
-            _t("phashCache", "Cache pHash metadata", "Stores hash values only. It does not copy or cache image files.", "ai/phash_prefilter/cache_enabled", True, dep="phash"),
-            _t("phashDiag", "Write per-run diagnostics and audit rows", "Writes per-run duplicate groups and decision rows for debugging and threshold tuning.",
-               "ai/phash_prefilter/diagnostics", True, dep="phash"),
         )),
     ))
     by_cat: dict = {}
     for attr, category, default, display in shortcut_registry:
-        by_cat.setdefault(category, []).append(F("k:" + attr, "keys", display, "", default=default))
+        if attr in LISTED_ACTIONS:
+            by_cat.setdefault(category, []).append(F("k:" + attr, "keys", display, "", default=SHELL_DEFAULTS.get(attr, default)))
     keys = Section("keys", "Shortcuts", "M5 6.5h14A2.5 2.5 0 0121.5 9v6a2.5 2.5 0 01-2.5 2.5H5A2.5 2.5 0 012.5 15V9A2.5 2.5 0 015 6.5zM6.5 10.5h.01M10 10.5h.01M13.5 10.5h.01M17 10.5h.01M7.5 14h9",
         "Customize keyboard commands used throughout Image Triage. Press Change, then the new chord. Backspace clears a binding. Conflicts are reported when you save.",
         tuple(Group(cat, "", tuple(rows)) for cat, rows in by_cat.items()))
-    return (general, appearance, browsing, library, ai, dups, keys)
+    return (general, appearance, browsing, library, ai, keys)
 
 
 def _shortcut_registry() -> tuple:
@@ -247,7 +191,7 @@ class SettingsModel(QObject):
     revisionChanged = Signal()      # any value, dirty flag or mode changed: bindings re-read
     savedChanged = Signal()
     previewChanged = Signal()       # theme, accent or contrast moved (the window behind is the live preview)
-    aiScoringChanged = Signal()     # the Likely winners, Review band or Base score weight sliders were saved with a new value
+    aiScoringChanged = Signal()     # kept for the window that connects it; nothing changes the scoring values from Settings any more
     shortcutsChanged = Signal()     # the saved shortcuts changed: the keys the shell bound are read again
     closeRequested = Signal()
 
@@ -317,8 +261,6 @@ class SettingsModel(QObject):
             return f.default
         if f.options:
             allowed = {v for _l, v in f.options}
-            if f.id == "size":
-                value = {"auto": "automatic", "comfortable": "standard", "large": "spacious"}.get(str(value).lower(), value)
             if value not in allowed and f.id != "session":
                 return f.default
         if f.type in ("slider", "step") and f.kind in ("int", "float"):
@@ -335,6 +277,14 @@ class SettingsModel(QObject):
                 self._overrides = dict(load_shortcut_overrides())
             except Exception:
                 self._overrides = {}
+            # The registry's loader drops a stored value equal to the registry default, which for these rows is "": a row the person cleared
+            # would come back with the shell's default. Read what is stored for them directly.
+            for attr, default in SHELL_DEFAULTS.items():
+                key = "shortcuts/" + attr
+                if self._qs.contains(key):
+                    self._overrides[attr] = str(self._qs.value(key) or "").strip()
+                if self._overrides.get(attr) == default:
+                    self._overrides.pop(attr, None)
         if self._memory:
             self._store = {f.id: f.default for f in self._fields.values() if f.type not in ("text", "keys")}
             self._store["accent"] = 0          # the mockup shows the blue swatch chosen
@@ -363,7 +313,9 @@ class SettingsModel(QObject):
                 self._qs.setValue(f.key, value)
         shortcut_ids = [fid for fid, f in self._fields.items() if f.type == "keys"]
         if any(self._vals[i] != self._init[i] for i in shortcut_ids):
-            overrides = {i[2:]: self._vals[i] for i in shortcut_ids if self._vals[i] != (self._fields[i].default or "")}
+            # what was saved for a registry row this page does not list is kept as it is
+            overrides = {action: chord for action, chord in self._overrides.items() if "k:" + action not in self._fields}
+            overrides.update({i[2:]: self._vals[i] for i in shortcut_ids if self._vals[i] != (self._fields[i].default or "")})
             self._overrides = overrides
             if not self._memory:
                 from ..shortcuts import save_shortcut_overrides
@@ -377,9 +329,6 @@ class SettingsModel(QObject):
                 from ..perf import perf_logger
 
                 perf_logger().set_enabled(bool(self._vals.get("perfLog")), reason="settings")      # the Widgets app starts or stops the logger as it is switched
-            if any(self._vals.get(i) != self._init.get(i) for i in _AI_SCORING_ROWS):
-                self.apply_ai_scoring()
-                self.aiScoringChanged.emit()
         self._init = dict(self._vals)
         self._saved = True
         self._revision += 1
@@ -388,15 +337,16 @@ class SettingsModel(QObject):
         return True
 
     def apply_ai_scoring(self) -> None:
-        """Push the Likely winners and Review band sliders into the classifier and the Base score weight into the workflow, as the Widgets app
-        does when it starts and when the dialog is saved (`settings_controller.apply_cull_thresholds_to_classifier`, `apply_base_score_blend_to_workflow`).
-        A saved AI report is classified when it is read, so `aiScoringChanged` makes the shell read it again."""
+        """Push the stored Likely winners, Review band and Base score weight into the classifier and the workflow, as the Widgets app does when
+        it starts (`settings_controller.apply_cull_thresholds_to_classifier`, `apply_base_score_blend_to_workflow`). Settings no longer shows
+        these three: they reach only the retired engine. A value saved by an earlier version is still honoured."""
         from ..ai_results import set_cull_thresholds
         from ..aiculler_workflow import set_base_score_blend_weight
 
         def clamped(fid: str, limits: tuple) -> int:
             try:
-                return max(limits[0], min(limits[1], int(self._vals.get(fid, limits[2]))))
+                stored = limits[2] if self._qs is None else self._qs.value(_AI_SCORING_KEYS[fid], limits[2])
+                return max(limits[0], min(limits[1], int(stored)))
             except (TypeError, ValueError):
                 return limits[2]
 
@@ -499,11 +449,6 @@ class SettingsModel(QObject):
 
     @Slot(str, result=str)
     def text(self, fid: str) -> str:
-        if fid == "cull":
-            keep = int(self._vals.get("keepTop", AI_KEEP_TOP[2]))
-            review = int(self._vals.get("reviewBand", AI_REVIEW_BAND[2]))
-            review = min(review, max(0, 100 - keep))
-            return f"~{keep}% Winner · ~{review}% Review · ~{max(0, 100 - keep - review)}% Reject"
         if fid == "catalogInfo":
             return _compact_catalog_summary(self._catalog_text)
         return ""
@@ -520,7 +465,7 @@ class SettingsModel(QObject):
 
             stats = CatalogRepository().stats()
             override = catalog_cache_env_override()
-            enabled = bool(self._vals.get("catalogCache", True)) if override is None else override
+            enabled = True if override is None else override
             lines = [f"Catalog cache reads: {'Enabled' if enabled else 'Disabled'}" + (" (environment override)" if override is not None else ""),
                      f"Folder watch: {'Enabled' if self._vals.get('watch', True) else 'Disabled'}"]
             if stats.error_message:
@@ -555,6 +500,7 @@ class SettingsModel(QObject):
     def _rebuild_effective(self) -> None:
         """The chord in force for each registry row: what Settings > Shortcuts saved, else the Widgets default."""
         defaults = {row[0]: row[2] for row in _shortcut_registry()}                  # the real registry's defaults, also while the sample page shows its short list
+        defaults.update(SHELL_DEFAULTS)
         defaults.update({f.id[2:]: f.default or "" for f in self._fields.values() if f.type == "keys"})
         self._effective = {action: self._portable(self._overrides.get(action, default)) for action, default in defaults.items()}
 

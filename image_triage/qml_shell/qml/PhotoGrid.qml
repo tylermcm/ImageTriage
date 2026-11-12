@@ -16,10 +16,17 @@ Item {
     // The list is rebuilt (a scope or filter change, a refresh) and the number of folder cards in front can change with it: stay on the same photo,
     // not the same position in the list, or the current photo slips by the difference. (`gridModel.folders` is read directly: `nf` follows a moment later.)
     property int keepRow: -1
+    property string keepPath: ""
     Connections {
         target: gridModel
-        function onModelAboutToBeReset() { root.stopAutoScroll(); root.keepRow = root.row }
-        function onModelReset() { if (!root.restoringScope && root.keepRow >= 0) gv.currentIndex = root.keepRow + gridModel.folders }
+        // Results that arrive on their own (AI scores, search matches, a refresh) reorder the list under the cursor: follow the photo then, or the
+        // next W or R lands on a different one. A decision or a delete keeps the position, so the next photo comes under the cursor.
+        function onModelAboutToBeReset() { root.stopAutoScroll(); root.keepRow = root.row; root.keepPath = root.row >= 0 && photos.resetFollowsPhoto() ? (photos.get(root.row).path || "") : "" }
+        function onModelReset() {
+            if (root.restoringScope || root.keepRow < 0) return
+            var same = root.keepPath !== "" ? photos.rowForPath(root.keepPath) : -1
+            gv.currentIndex = (same >= 0 ? same : root.keepRow) + gridModel.folders
+        }
     }
     property bool restoringScope: false
     property var scopePositions: ({})
@@ -139,6 +146,7 @@ Item {
         anchors.margins: 1
         clip: true
         focus: true
+        activeFocusOnTab: true                // Tab leaves the grid for the controls around it and comes back to it
         keyNavigationEnabled: true
         boundsBehavior: Flickable.StopAtBounds
         // Scrolling belongs to the wheel handler and middle-button autoscroll.
@@ -185,8 +193,9 @@ Item {
         }
         property int anchorIndex: 0       // where a Shift+click or Shift+arrow range starts: the last photo picked on its own
         function pick() { return root.row < 0 ? [] : photos.selectionRows(root.row) }
-        // Review advances a single photo; a multi-photo selection stays in place.
-        function advance(rows) { if (rows.length === 1 && settings.value("autoAdvance") === true && currentIndex < count - 1) stepTo(currentIndex + 1, false) }
+        // Review advances a single photo; a multi-photo selection stays in place. A press that took the decision off (W on a winner) stays too:
+        // moving on would leave the photo undecided and out of sight.
+        function advance(rows, decision) { if (rows.length === 1 && photos.get(rows[0]).decision === decision && settings.value("autoAdvance") === true && currentIndex < count - 1) stepTo(currentIndex + 1, false) }
         function revealCurrent() {
             if (root.restoringScope) return
             if (currentIndex < 0 || currentIndex >= count) return
@@ -212,18 +221,24 @@ Item {
                 if (k === Qt.Key_Escape) { e.accepted = true; return }
             }
             var shift = (e.modifiers & Qt.ShiftModifier) !== 0, ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
-            if (settings.keyIs("accept_selection", k, e.modifiers)) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") for (var i = 0; i < rows.length; ++i) collections.addSelection(collections.activeId, rows[i]); advance(rows) }
+            if (settings.keyIs("accept_selection", k, e.modifiers)) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") { var won = rows.filter(function (r) { return photos.get(r).decision === "win" }); if (won.length) collections.addRows(collections.activeId, won) } advance(rows, "win") }
             else if (settings.keyIs("collect_at_cursor", k, e.modifiers)) root.addToCollection();
-            else if (settings.keyIs("keep_at_cursor", k, e.modifiers)) { var kr = pick(); photos.setDecisionMany(kr, "keep"); advance(kr) }
-            else if (settings.keyIs("reject_selection", k, e.modifiers)) { var xr = pick(); photos.setDecisionMany(xr, "rej"); advance(xr) }
+            else if (settings.keyIs("keep_at_cursor", k, e.modifiers)) { var kr = pick(); photos.setDecisionMany(kr, "keep"); advance(kr, "keep") }
+            else if (settings.keyIs("reject_selection", k, e.modifiers)) { var xr = pick(); photos.setDecisionMany(xr, "rej"); advance(xr, "rej") }
             else if (settings.keyIs("open_preview", k, e.modifiers)) { if (!e.isAutoRepeat) root.openCurrent() }
             else if (ctrl && k === Qt.Key_A) photos.selectAll();
             else if (ctrl) return;
             else if (shift && (k === Qt.Key_Left || k === Qt.Key_Right || k === Qt.Key_Up || k === Qt.Key_Down))
                 stepTo(currentIndex + (k === Qt.Key_Left ? -1 : k === Qt.Key_Right ? 1 : k === Qt.Key_Up ? -root.cols : root.cols), true);
+            else if (k === Qt.Key_Home) stepTo(0, shift);
+            else if (k === Qt.Key_End) stepTo(count - 1, shift);
+            else if (k === Qt.Key_PageUp || k === Qt.Key_PageDown) {
+                var page = Math.max(1, Math.floor(height / Math.max(1, cellHeight))) * root.cols;
+                stepTo(currentIndex + (k === Qt.Key_PageUp ? -page : page), shift);
+            }
             else if (k === Qt.Key_Escape && photos.picked > 0) photos.clearSelection();
             else if (k === Qt.Key_U) photos.setDecisionMany(pick(), "");
-            else if (k >= Qt.Key_1 && k <= Qt.Key_5) photos.setRatingMany(pick(), k - Qt.Key_0);
+            else if (k >= Qt.Key_0 && k <= Qt.Key_5) photos.setRatingMany(pick(), k - Qt.Key_0);      // 0 takes the rating off (in the viewer 0 is Fit)
             else if (k === Qt.Key_I) UiState.insp = !UiState.insp;
             else if (k === Qt.Key_Return || k === Qt.Key_Space) { if (!e.isAutoRepeat) root.openCurrent() }
             else return;
@@ -251,6 +266,11 @@ Item {
             readonly property bool current: GridView.isCurrentItem
             readonly property var flag: { void cull.flagRev; return cell.isFolder ? ({}) : (cull.gridFlag(cell.path) || ({})) }
             readonly property bool hot: hover.hovered || current
+            Accessible.role: Accessible.ListItem
+            Accessible.name: cell.isFolder ? "Folder " + cell.name
+                : cell.name + (cell.decision === "win" ? ", winner" : cell.decision === "keep" ? ", keep" : cell.decision === "rej" ? ", rejected" : "")
+                  + (cell.rating > 0 ? ", " + cell.rating + (cell.rating === 1 ? " star" : " stars") : "") + (cell.selected ? ", selected" : "")
+            Accessible.selected: cell.selected || cell.current
 
             Item {
                 anchors.fill: parent
@@ -274,8 +294,9 @@ Item {
                     readonly property real edge: Math.max(40, Math.min(width, height) * 0.55)
                     readonly property real nameSize: Math.max(13, Math.min(20, width * 0.058))
                     readonly property real groupTop: (height - edge - 10 - nameSize * 1.5) / 2
+                    id: folderCard
                     property int summaryRev: 0
-                    Connections { target: photos; function onFolderSummaryReady(p) { if (p === cell.path) parent.summaryRev++ } }
+                    Connections { target: photos; function onFolderSummaryReady(p) { if (p === cell.path) folderCard.summaryRev++ } }
                     Rectangle { anchors.fill: parent; color: theme.s3; opacity: hover.hovered ? 1 : 0; Behavior on opacity { NumberAnimation { duration: 150 } } }
                     Icon {
                         x: (parent.width - parent.edge) / 2; y: parent.groupTop
@@ -464,11 +485,11 @@ Item {
         Icon { anchors.horizontalCenter: parent.horizontalCenter; name: photos.folderPath === "" ? "library" : (photos.total > 0 ? "funnel" : "view"); size: 52; strokeWidth: 1.2; color: theme.fg3 }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg2; font.pointSize: UiState.pt(14); font.weight: Font.Medium
-            text: photos.folderPath === "" ? "Choose a folder to start triaging images" : (photos.total > 0 ? "No photos match the filters" : "No photos in this folder")
+            text: photos.folderPath === "" ? "Choose a folder to start triaging images" : photos.loadError !== "" ? "This folder could not be read" : (photos.total > 0 ? "No photos match the filters" : "No photos in this folder")
         }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg3; font.pointSize: UiState.pt(11.5)
-            text: photos.folderPath === "" ? "Pick a drive or folder in the Library on the left." : (photos.total > 0 ? "Clear the filters from the bar below to see them." : "It has no supported images and no folders. Pick another from the Library.")
+            text: photos.folderPath === "" ? "Pick a drive or folder in the Library on the left." : photos.loadError !== "" ? photos.loadError + " Press F5 to try again." : (photos.total > 0 ? "Clear the filters from the bar below to see them." : "It has no supported images and no folders. Pick another from the Library.")
         }
     }
     MouseArea {   // right click: the photo's menu, or the folder's menu on empty space (left clicks pass through to the cells)

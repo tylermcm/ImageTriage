@@ -261,12 +261,23 @@ def apply_resize_plan(
             if progress_callback is not None:
                 progress_callback(index, total_steps, f"Left out {item.source.source_name}")
             continue
+        except Exception as error:
+            # One photo that cannot be read or written must not stop the rest: the files before it are already on disk.
+            failed.append((item.source.source_path, item_failure_reason(error)))
+            if progress_callback is not None:
+                progress_callback(index, total_steps, f"Left out {item.source.source_name}")
+            continue
         if note:
             notes.append(note)
         written_paths.append(item.target_path)
         if progress_callback is not None:
             progress_callback(index, total_steps, f"Saved {item.target_name}")
     return BatchOutcome(written_paths, failed, notes)
+
+
+def item_failure_reason(error: BaseException) -> str:
+    """Why one photo of a batch was left out, for the list the batch reports."""
+    return f"could not be read or written ({str(error).strip() or type(error).__name__})"
 
 
 class ResizeApplySignals(QObject):
@@ -505,7 +516,26 @@ def _save_resized_image(
             return note
         except Exception:
             pass
+    # The plain writer cannot take EXIF. It does write the picture's colour space, so give it the profile: without one the
+    # colours of a wide-gamut photo would be read as sRGB. What is lost is said, not dropped quietly.
+    kept_profile = False
+    if icc_profile:
+        from PySide6.QtGui import QColorSpace
+
+        colour_space = QColorSpace.fromIccProfile(icc_profile)
+        if colour_space.isValid():
+            image = QImage(image)
+            image.setColorSpace(colour_space)
+            kept_profile = True
     _save_qimage_with_writer(image, target_path=target_path, target_suffix=target_suffix)
+    lost = []
+    if exif_bytes:
+        lost.append("camera metadata (EXIF)")
+    if icc_profile and not kept_profile:
+        lost.append("colour profile")
+    if lost:
+        fallback_note = f"{Path(target_path).name}: written without its {' and '.join(lost)}"
+        note = f"{note}; {fallback_note.split(': ', 1)[1]}" if note else fallback_note
     return note
 
 

@@ -151,7 +151,7 @@ Backdrop {
                 Row { anchors.right: parent.right; anchors.rightMargin: 20; anchors.verticalCenter: parent.verticalCenter; spacing: 8
                     SButton { visible: root.sel.length > 0; text: "Merge Selected"; h: 28; hpad: 11; radius: 9; enabled: root.sel.length >= 2; onClicked: root.merge() }
                     SButton { visible: root.sel.length > 0; text: "Ignore Selected"; h: 28; hpad: 11; radius: 9; onClicked: { root.hidden = people.ignore(root.sel); root.sel = [] } }
-                    SButton { visible: root.sel.length > 0; text: "Clear Selected"; h: 28; hpad: 11; radius: 9; onClicked: { people.clearNames(root.sel); root.sel = [] } }
+                    SButton { visible: root.sel.length > 0; text: "Clear Selected"; h: 28; hpad: 11; radius: 9; onClicked: clearCard.open() }
                     SButton { visible: root.showUndo; text: "Undo"; h: 28; hpad: 11; radius: 9; onClicked: { people.restore(root.hidden); root.hidden = [] } } }
             }
             // footer
@@ -164,6 +164,15 @@ Backdrop {
         Rectangle { anchors.fill: parent; anchors.margins: -1; radius: 15; color: "transparent"; border.color: theme.line; z: 10 }
     }
 
+    // Clearing takes the names off for good (there is no undo for it), so it asks first.
+    ConfirmCard {
+        id: clearCard
+        objectName: "clearNamesCard"
+        warn: true; cancelText: "Cancel"; confirmText: "Clear names"
+        title: "Clear the name" + (root.sel.length === 1 ? "" : "s") + " of " + root.sel.length + (root.sel.length === 1 ? " person?" : " people?")
+        body: "The faces stay grouped, but their names are removed and cannot be brought back with Undo."
+        onAccepted: { people.clearNames(root.sel); root.sel = [] }
+    }
     // "Merge as Same Person": one name for all the selected faces when none of them has one yet
     Item {
         id: mergePrompt

@@ -98,8 +98,9 @@ class CullModel(QObject):
     applyingChanged = Signal()
     gridChanged = Signal()
     runFinished = Signal()              # a real analysis has written its report: the inspector's AI tab reads it again
-    _savedLoaded = Signal(int, object)
+    _savedLoaded = Signal(int, object, str)
     _timesLoaded = Signal(int, object)
+    _dataDeleted = Signal(int, str)
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None, ai: AiCenterBackend | None = None, toasts=None, files=None) -> None:
         super().__init__(parent)
@@ -112,6 +113,17 @@ class CullModel(QObject):
         self._picks: set[str] = set()
         self._t0 = 0.0
         self._token = 0
+        self._run_token = -1                      # the value of `_token` when the analysis now running (or last run) was started
+        self._run_notes: list[str] = []           # what the last run skipped and why, shown above the results
+        self._extra_notes: dict[str, str] = {}    # "search" / "people": why the background index did not run or could not finish
+        self._run_device = ""                     # where the rankers really ran ("the graphics card", "the CPU"), as the worker reported it
+        self._face_wanted = False                 # the People pass waits for both the cull and the search index of this run
+        self._extras_token = -1
+        self._native_load_failed = False          # the native defaults could not be read: not asked again on every redraw
+        self._flag_map: dict[str, str] = {}
+        self._flags_rev = 0
+        self._grid_sig = None
+        self._grid_rev = 0
         self._run = None
         self._apply_job = None
         self._apply_timer = QTimer(self)
@@ -133,7 +145,7 @@ class CullModel(QObject):
         if self._ai is not None:                  # until the first look at the machine nothing is assumed (the scripted defaults say "installed")
             self._ai_state = self._ai.state()
             self._s.update(rt="checking", faceOk=False, gpu=False, vcOld=False, models={"quality": False, "appeal": False})
-        self._flags: dict[str, str] = {}
+        self._flags = {}
         self._stacks: list[list[dict]] = []
         self._review_rows = []
         self._times: dict[str, str] = {}
@@ -163,15 +175,19 @@ class CullModel(QObject):
             self._run.failed.connect(self._run_failed)
             self._run.cancelled.connect(self._run_cancelled)
             self._savedLoaded.connect(self._saved_arrived)
+            self._dataDeleted.connect(self._data_deleted)
             self._timesLoaded.connect(self._times_arrived)
             photos.folderChanged.connect(self._folder_changed)
+        photos.countsChanged.connect(self._decisions_changed)
 
     def _on_ai(self) -> None:
         """What the machine really has changed (or an install moved on): the Cull window and the AI Center follow."""
         a = self._ai.state()
         self._ai_state = a
         m = a["models"]
+        installed = lambda key: key not in m or m[key]["state"] == "ready"      # a model the look did not report is not called missing
         self._set(rt=a["rt"], rtp=a["pct"] / 100, vcOld=a["vcOld"], gpu=a["gpuUsable"], faceOk=m["face"]["state"] == "ready",
+                  searchOk=installed("search"), peopleOk=installed("people"),
                   models={"quality": m["quality"]["state"] == "ready", "appeal": m["appeal"]["state"] == "ready"})
         if a["gpuUsable"] and not self._s["rankTouched"] and not self._s["rank"]:
             self._set(rank=True)                        # a graphics card was found: ranking is cheap, so it starts on (until the person has chosen)
@@ -179,11 +195,33 @@ class CullModel(QObject):
     @staticmethod
     def _defaults(cpu: bool = False) -> dict:
         return {"window": "", "page": "prep", "sens": "balanced", "vals": dict(PRESETS["balanced"]), "tune": False, "eyes": True, "semantic": True, "rank": False, "rankTouched": False,
-                "cpuAsk": False, "cpuDefault": cpu, "rt": "ready", "rtp": 0.0, "vcOld": False, "gpu": False, "faceOk": True, "models": {"quality": True, "appeal": False},
+                "cpuAsk": False, "cpuDefault": cpu, "rt": "ready", "rtp": 0.0, "vcOld": False, "gpu": False, "faceOk": True, "searchOk": True, "peopleOk": True, "models": {"quality": True, "appeal": False},
                 "stage": 0, "p": 0.0, "running": False, "done": False, "hidden": False, "ranked": False, "filter": "all", "sort": "stack", "sel": "", "restored": {},
                 "act": "reject", "inc": {**{r: True for r in REJECTS}, "duplicate": False}, "applied": None, "runs": True, "back": False, "eyesRan": False}
 
     # -- helpers -----------------------------------------------------------------------------------------------------------------
+    @property
+    def _flags(self) -> dict[str, str]:
+        return self._flag_map
+
+    @_flags.setter
+    def _flags(self, value: dict[str, str]) -> None:
+        self._flag_map = value
+        self._flags_rev += 1                      # the grid redraws its flags only when this (or what was restored) changes
+
+    def _row_of(self, path: str) -> dict | None:
+        """The photo's row, without copying the folder: among the shown photos first, else anywhere in the folder."""
+        index = self._photos.row_for_path(path)
+        if index >= 0:
+            return self._photos.row_at(index)
+        return next((r for r in self._photos.all_rows() if r["path"] == path), None)
+
+    def _decisions_changed(self) -> None:
+        """A decision was made in the grid: a flagged frame that is now decided loses its flag there."""
+        if self._flag_map and self._s["done"]:
+            self._grid_rev += 1
+            self.gridChanged.emit()
+
     def _rows(self) -> list[dict]:
         return self._photos.collect()
 
@@ -278,7 +316,7 @@ class CullModel(QObject):
         reason = self._flags.get(path)
         if not self._s["done"] or not reason or self._s["restored"].get(path):
             return {}
-        row = next((r for r in self._rows() if r["path"] == path), None)
+        row = self._row_of(path)
         if row is None or row["decision"]:
             return {}
         return {"label": REASONS[reason][0], "color": REASONS[reason][1]}
@@ -297,7 +335,11 @@ class CullModel(QObject):
     @Slot(str, result="QVariantMap")
     def gridFlag(self, path: str) -> dict:
         """What the grid draws on a flagged frame: its reason and colour (nothing for a frame that was decided, restored or not flagged)."""
-        row = next((r for r in self._rows() if r["path"] == path), None)
+        # Asked once per visible cell each time the flags change, so it must not walk the folder: the flag is looked up first (most
+        # frames have none), and the row comes from the model's own path index.
+        if not self._flag_map.get(path) or not self._s["done"] or self._s["restored"].get(path):
+            return {}
+        row = self._row_of(path)
         if row is None or row["decision"]:
             return {}
         return self.flagFor(path)
@@ -367,6 +409,10 @@ class CullModel(QObject):
                          "The eyes-closed check was skipped: the AI runtime is not set up. The cleanup runs without it.")
         if not s["rank"]:
             notes.append("Ranking is off. Cleanup and stacks only.")
+        if rt_ready and s["semantic"] and not s["searchOk"]:
+            notes.append("Semantic search is skipped: the search model is not installed. The AI Center installs it.")
+        if eyes_on and not s["peopleOk"]:
+            notes.append("People will not be updated: the face recognizer is not installed. The AI Center installs it.")
         # review
         chips = [{"key": "all", "label": "All flags", "n": len(flagged), "color": "", "dot": False}]
         chips += [{"key": r, "label": REASONS[r][0], "n": cnt(r), "color": REASONS[r][1], "dot": True} for r in REASONS if cnt(r)]
@@ -430,7 +476,7 @@ class CullModel(QObject):
         done_body = ("They are in the program’s recycle bin; Undo brings them back. Your winners were not touched." if binned else "They are marked red in the grid and listed under Rejected. Your winners were not touched."
                      + (" Moving files to the recycle bin is not connected yet, so they were rejected instead." if applied and applied["act"] == "bin" and not (self._real and self._files is not None) else ""))
         opts = [{"key": "reject", "label": "Mark them as Rejects", "desc": "Sets their decision to Reject. The files stay where they are, and Ctrl+Z undoes it.", "rec": True},
-                {"key": "bin", "label": "Move them to the recycle bin", "desc": "Moves each file, with its paired RAW or JPG and sidecars, to the program’s recycle bin. You can restore them from there." + ("" if self._real and self._files is not None else " (Not connected yet: they are marked as Rejects.)"), "rec": False},
+                {"key": "bin", "label": "Move them to the recycle bin", "desc": "Moves each file, with its paired RAW or JPG and sidecars, to the program’s recycle bin. Undo brings them back during this session." + ("" if self._real and self._files is not None else " (Not connected yet: they are marked as Rejects.)"), "rec": False},
                 {"key": "none", "label": "Keep them as flags only", "desc": "Nothing changes on disk or in your decisions. They stay dimmed in the grid.", "rec": False}]
         for o in opts:
             o["on"] = s["act"] == o["key"]
@@ -442,10 +488,11 @@ class CullModel(QObject):
             "centerDot": "ok" if rt_ready else ("bad" if s["rt"] == "error" else "warn"),
             "centerText": {"ready": "Ready", "missing": "Not set up", "installing": "Installing…", "error": "Needs attention", "checking": "Checking…"}[s["rt"]],
             "eyes": {"on": eyes_on, "desc": rt_desc},
-            "semantic": {"on": s["semantic"] and rt_ready, "desc": (
+            "semantic": {"on": s["semantic"] and rt_ready and s["searchOk"], "desc": (
+                "Needs the AI runtime, a one-time download." if not rt_ready else
+                "The search model is not installed yet (about 98 MB). Install it in the AI Center and the folder can be searched in plain words." if not s["searchOk"] else
                 "Reads every photo once with a small image model on this PC, so you can search the folder in plain words afterwards "
-                "(\"red lanterns\", \"a dog on a beach\"). It runs in the background after the cleanup and does not hold up the review."
-                if rt_ready else "Needs the AI runtime, a one-time download.")},
+                "(\"red lanterns\", \"a dog on a beach\"). It runs in the background after the cleanup and does not hold up the review.")},
             "rt": {"state": s["rt"], "pct": rtp, "step": rt_step,
                 **self._rt_error()},
             "rank": {"on": s["rank"], "desc": rank_desc, "canSetup": not rank_has, "ask": s["cpuAsk"]},
@@ -457,7 +504,7 @@ class CullModel(QObject):
             "tiles": [{"n": n, "l": "Frames"}, {"n": len(self._stacks), "l": "Stacks"}, {"n": sum(cnt(r) for r in REJECTS), "l": "Flagged"}, {"n": cnt("duplicate"), "l": "Near-duplicates"},
                       self._people_tile()],
             "chips": chips, "stacks": stacks_out, "sort": s["sort"], "noRows": not stacks_out, "det": det,
-            "revNote": "Ranking suggestions are marked 1st choice. Nothing is selected for you." if s["ranked"] else "Cleanup only. Turn on ranking in Run again to get suggestions.",
+            "revNote": self._review_footer(s), "runNotes": self._review_notes(s),
             "applyCount": n_ap, "opts": opts, "groups": groups,
             "applyLabel": (f"Move {n_ap} to the recycle bin" if s["act"] == "bin" and self._real and self._files is not None else f"Mark {n_ap} as Rejects") if s["act"] in ("reject", "bin") else "Keep as flags",
             "applyNote": "Nothing is deleted. You can undo this." if s["act"] != "none" else "Nothing will change.",
@@ -503,10 +550,33 @@ class CullModel(QObject):
                     {"key": "faces", "title": "Face and eyes-closed check", "description": "Finds prominent faces and checks closed eyes. The selected thresholds are available in Fine-tune.", "icon": "eye", "on": controls.value("models.faces"), "fixed": False},
                     {"key": "search", "title": "Semantic search", "description": "Makes this folder searchable in everyday words, such as ‘red lanterns’ or ‘a dog on a beach’.", "icon": "search", "on": controls.value("models.search"), "fixed": False},
                     {"key": "ranking", "title": "Ranking · optional", "description": "Compares frames using technical quality and appeal. Keep counts and quality thresholds stay at your saved values.", "icon": "bars", "on": controls.value("models.maniqa") or controls.value("models.appeal"), "fixed": False}]
-            self._view["revNote"] = "The culler's decisions are suggestions. Review them before Apply."
+            self._view["revNote"] = "The culler's decisions are suggestions. Review them before Apply." + (f" Ranking ran on {self._run_device}." if self._run_device and s["done"] else "")
         self._rev += 1
         self.changed.emit()
-        self.gridChanged.emit()
+        # The grid asks every visible cell for its flag when this fires, so it fires only when a flag could have changed (not on each
+        # progress step of a run).
+        grid = (s["running"], s["done"], self._flags_rev, frozenset(p for p, on in s["restored"].items() if on))
+        if grid != self._grid_sig:
+            self._grid_sig = grid
+            self._grid_rev += 1
+            self.gridChanged.emit()
+
+    def _review_notes(self, s: dict) -> list[str]:
+        """What the review page says above the results: everything the run skipped or could not do, in the run's own words."""
+        if not (s["done"] and self._real):
+            return []
+        notes: list[str] = []
+        for note in [*self._run_notes, *self._extra_notes.values()]:
+            if note and note not in notes:
+                notes.append(note)
+        return notes
+
+    def _review_footer(self, s: dict) -> str:
+        if s["ranked"]:
+            return "Ranking suggestions are marked 1st choice. Nothing is selected for you." + (f" Ranking ran on {self._run_device}." if self._run_device and self._real else "")
+        if self._real and any(note.startswith("Ranking skipped") for note in self._run_notes):
+            return "Ranking did not run; the reason is above the results. These are the cleanup's results only."
+        return "Cleanup only. Turn on ranking in Run again to get suggestions."
 
     def _people_tile(self) -> dict:
         """How many people the folder's face index holds, and how many faces they come from: the way to tell whether face detection did anything.
@@ -535,8 +605,8 @@ class CullModel(QObject):
                     self._people_cache = (stamp, (people, faces))
             except Exception:
                 people = faces = 0
-        looking = getattr(self, "_face_task", None) is not None or getattr(self, "_semantic_task", None) is not None
-        return {"n": people, "l": "People" + (f" · {faces} faces" if faces else (" · looking…" if looking else ""))}
+        looking = getattr(self, "_face_task", None) is not None or getattr(self, "_semantic_task", None) is not None or (self._face_wanted and self._extras_token == self._token)
+        return {"n": people, "l": "People" + (f" · {faces} faces" if faces else (" · looking…" if looking else (" · not updated" if self._extra_notes.get("people") else "")))}
 
     @staticmethod
     def _clip_files():
@@ -556,8 +626,22 @@ class CullModel(QObject):
         if token != getattr(self, "_semantic_token", -1):
             return
         self._semantic_task = None
-        if getattr(self, "_face_wanted", False):
-            self._start_face(folder)
+        self._maybe_start_face()
+
+    def _maybe_start_face(self) -> None:
+        """Start the People pass once the cull and the search index of this run have both ended. The cull finds the faces of every frame it
+        keeps and the People pass reads them from the shared cache, so run one after the other they do not analyse the same photos twice
+        (or save the cache over each other)."""
+        if not self._face_wanted or self._extras_token != self._token:
+            return
+        if self._s["running"] or getattr(self, "_semantic_task", None) is not None:
+            return
+        self._face_wanted = False
+        self._start_face(self._photos.folder_dir())
+
+    def _people_note(self, text: str) -> None:
+        self._extra_notes["people"] = "People were not updated: " + text
+        self._rebuild()
 
     def _start_face(self, folder: str) -> None:
         try:
@@ -572,7 +656,17 @@ class CullModel(QObject):
             paths = build_aiculler_workflow_paths(folder, resolve=False)
             db = aiculler_db_path(paths)
             text_model, tokenizer = self._clip_files()
-            if not db.exists() or text_model is None:
+            if text_model is None:
+                self._people_note("finding people uses the search model, which is not installed. Install it in the AI Center.")
+                return
+            if not db.exists():
+                self._people_note("this folder has no search index yet. Run the analysis with Semantic search switched on.")
+                return
+            from ..cascade.launch import face_recognizer_missing
+
+            missing = face_recognizer_missing()         # never downloaded from inside a run (166 MB, and nobody was asked)
+            if missing:
+                self._people_note(missing)
                 return
             previous = getattr(self, "_face_task", None)
             if previous is not None:
@@ -583,15 +677,16 @@ class CullModel(QObject):
                 clip_fallback_text_model=None, device="auto", face_cache_path=face_cache_path(paths.artifacts_dir),
             )
             task.signals.finished.connect(self._face_finished)
-            task.signals.failed.connect(self._extras_failed)
+            task.signals.failed.connect(self._face_failed)
             self._face_task = task
             if getattr(self, "_face_pool", None) is None:
                 self._face_pool = QThreadPool()
                 self._face_pool.setMaxThreadCount(1)
             self._face_pool.start(task)
             self._rebuild()                         # the People tile says it is looking
-        except Exception:
+        except Exception as error:
             self._face_task = None
+            self._people_note(f"the face index could not start ({error}).")
 
     def _face_finished(self, folder: str, token: int, faces_indexed: int, people_count: int) -> None:
         if token != getattr(self, "_face_token", -1):
@@ -600,10 +695,21 @@ class CullModel(QObject):
         self._people_cache = None
         self._rebuild()                             # the People tile now counts them
 
-    def _extras_failed(self, folder: str, token: int, message: str) -> None:
+    def _semantic_failed(self, folder: str, token: int, message: str) -> None:
+        if token != getattr(self, "_semantic_token", -1):
+            return                                  # an index that was replaced by a newer one
         self._semantic_task = None
-        self._face_task = None
+        self._extra_notes["search"] = f"Semantic search could not finish: {message}"
+        if self._face_wanted and self._extras_token == self._token:
+            self._face_wanted = False
+            self._extra_notes["people"] = "People were not updated: the search index they are found with could not be built."
         self._rebuild()
+
+    def _face_failed(self, folder: str, token: int, message: str) -> None:
+        if token != getattr(self, "_face_token", -1):
+            return
+        self._face_task = None
+        self._people_note(message)
 
     def _rt_error(self) -> dict:
         """The runtime's failure card. On a real PC it says what this PC has (the Visual C++ complaint only when the Visual C++ runtime really is
@@ -639,7 +745,7 @@ class CullModel(QObject):
         python = a["python"]
         rt_desc = {"ready": f"Python {python} with the packages the cull needs. It lives in Image Triage’s own folder and can be removed at any time.",
                    "missing": "The cleanup works without it. The eyes-closed check and ranking need it: a one-time download that Set up AI shows the size of first.",
-                   "installing": "Setting up. What was already downloaded is kept if you cancel.",
+                   "installing": "Setting up. If you cancel, the next setup downloads it again from the start.",
                    "error": a["error"] or "It was installed but does not start on this PC." if not a["vcOld"] else
                             f"It was installed but does not start: this PC has Visual C++ {a['vcFound']} and the runtime needs 14.40 or newer.",
                    "checking": "Looking at what is installed…"}[rt]
@@ -647,8 +753,12 @@ class CullModel(QObject):
         for key, name, desc in (
                 ("face", "Face model (eyes-closed check)", "MediaPipe face landmarks. Runs on the CPU."),
                 ("quality", "Quality ranker", "Scores technical quality (MANIQA)."),
-                ("appeal", "Appeal ranker", "Scores how appealing a frame is (Q-ReAlign). Best with a graphics card.")):
-            m = a["models"][key]
+                ("appeal", "Appeal ranker", "Scores how appealing a frame is (Q-ReAlign). Best with a graphics card."),
+                ("search", "Search model (semantic search)", "Reads each photo once so the folder can be searched in plain words (TinyCLIP). People uses it too."),
+                ("people", "Face recognizer (People)", "Groups the faces found in a folder into people (AdaFace). Runs on the CPU.")):
+            m = a["models"].get(key)
+            if m is None:
+                continue
             size = format_mb(m["mb"]) if m["mb"] else ""
             ready = m["state"] == "ready"
             if m["busy"]:
@@ -675,6 +785,7 @@ class CullModel(QObject):
                 "gpuDot": "ok" if gpu_tone == "ok" else "warn", "gpuState": "Found" if a["gpuFound"] else "Not found", "gpuDesc": gpu_desc,
                 "vcShow": a["vcOld"], "vcFound": f"Visual C++ {a['vcFound']}", "vcNeeded": "14.40",
                 "models": models, "cpu": s["cpuDefault"], "defSens": s["sens"] if self._settings is None else str(self._settings.value(SENS_KEY, "balanced", str)),
+                "dataFolder": self._photos.folderName if self._photos.folder_dir() else "",
                 "runs": self._runs(flagged, applied) if s["runs"] else [], "noRuns": not s["runs"] or not self._runs(flagged, applied)}
 
     @staticmethod
@@ -698,11 +809,14 @@ class CullModel(QObject):
         from ..cli_culler_runtime import load_native_runtime, native_settings
         try:
             if self._native_controls is None:
+                if self._native_load_failed:
+                    return "{}"                     # reading the defaults starts the engine's Python: not again on every redraw after it failed
                 from .native_cull_controls import NativeCullControls
                 runtime = load_native_runtime()
                 self._native_controls = NativeCullControls.load(runtime, native_settings(self._settings, runtime))
             return json.dumps(self._native_controls.draft, indent=2)
         except Exception as error:
+            self._native_load_failed = True
             self._native_error = str(error)
             return "{}"
 
@@ -756,7 +870,12 @@ class CullModel(QObject):
 
     @Slot(result=bool)
     def saveNativeDraft(self):
-        return self.saveNativeSettings(self._native_settings_text())
+        self._native_load_failed = False            # asked for by the person (Start, Close): try the engine again
+        text = self._native_settings_text()
+        if self._native_controls is None:           # still unreadable: an empty profile must not replace the saved one
+            self._rebuild()
+            return False
+        return self.saveNativeSettings(text)
 
     @Slot(str)
     def setNativeDevice(self, device):
@@ -780,7 +899,7 @@ class CullModel(QObject):
             self._run.cancel()
             if self._native:
                 self._run.shutdown()
-    flagRev = Property(int, lambda self: self._rev, notify=gridChanged)
+    flagRev = Property(int, lambda self: self._grid_rev, notify=gridChanged)
 
     def _set(self, **kw) -> None:
         self._s.update(kw)
@@ -791,6 +910,8 @@ class CullModel(QObject):
     def openCull(self) -> None:
         s = self._s
         page = "run" if s["running"] else ("rev" if s["done"] else "prep")
+        if s["window"] != "cull":
+            self._native_load_failed = False        # opening the window is a reason to try the native settings again
         self._set(window="cull", hidden=False, page=page, back=False)
 
     @Slot()
@@ -886,7 +1007,7 @@ class CullModel(QObject):
         if self._ai is None:
             mb, gpu = 2900, False
         else:
-            plan = self._ai.runtime_plan()
+            plan = self._ai.runtime_plan(repair)
             mb, gpu = plan["mb"], plan["variant"] == "gpu"
         size = format_mb(mb)
         build = "the build that uses your graphics card" if gpu else "the CPU build"
@@ -961,10 +1082,65 @@ class CullModel(QObject):
         """Clear all results. In the app that forgets what this window found and applied (the frames you rejected stay rejected: your decisions are not results)."""
         if self._ai is not None:
             self._timer.stop()
+            if self._run is not None and self._s["running"]:
+                self._run.cancel()                  # its late end is ignored (the token below)
+            self._token += 1
+            self._face_wanted = False
+            self._run_notes, self._extra_notes, self._run_device = [], {}, ""
             self._flags, self._outcomes, self._picks, self._stacks, self._real = {}, {}, set(), [], False
             self._set(runs=False, done=False, running=False, applied=None, restored={}, sel="", stage=0, p=0.0, page="prep", ranked=False)
             return
         self._set(runs=False)
+
+    # -- the AI data kept with the open folder ----------------------------------------------------------------------------------
+    @Slot(result="QVariantMap")
+    def deleteDataText(self) -> dict:
+        """The words of the card that asks before a folder's AI data is deleted."""
+        name = self._photos.folderName or "this folder"
+        return {"title": f"Delete the AI data for {name}?", "confirm": "Delete",
+                "body": "This deletes what the analysis saved in a hidden folder beside these photos: its results, the search index, and the faces "
+                        "and names found in them. Your photos and your decisions are not touched. It cannot be undone; analysing the folder again makes new data."}
+
+    @Slot()
+    def deleteFolderData(self) -> None:
+        """Delete everything the AI keeps beside the open folder's photos (results, search index, faces and names)."""
+        folder = self._photos.folder_dir()
+        if self._memory or not folder:
+            return
+        busy = (self._s["running"] or bool(self._run is not None and getattr(self._run, "alive", False)) or self._apply_job is not None
+                or getattr(self, "_semantic_task", None) is not None or getattr(self, "_face_task", None) is not None)
+        if busy:
+            if self._toasts is not None:
+                self._toasts.push("error", "The AI data is in use", "An analysis of this folder is still working. Wait for it to finish, or cancel it, then delete.")
+            return
+        self._token += 1
+        token = self._token
+        self._face_wanted = False
+        self._run_notes, self._extra_notes, self._run_device = [], {}, ""
+        self._flags, self._outcomes, self._picks, self._stacks, self._real = {}, {}, set(), [], False
+        self._set(done=False, running=False, applied=None, restored={}, sel="", stage=0, p=0.0, page="prep", ranked=False)
+
+        def work() -> None:
+            error = ""
+            try:
+                from ..ai_workflow import reset_hidden_ai_review_cache
+
+                reset_hidden_ai_review_cache(folder, clear_logs=True)
+            except Exception as exc:
+                error = str(exc) or type(exc).__name__
+            self._dataDeleted.emit(token, error)
+
+        threading.Thread(target=work, name="qml-cull-delete-data", daemon=True).start()
+
+    def _data_deleted(self, token: int, error: str) -> None:
+        self._people_cache = None
+        if self._toasts is not None:
+            if error:
+                self._toasts.push("error", "Some AI data could not be deleted", error)
+            else:
+                self._toasts.push("success", "The folder's AI data was deleted", "Results, search index and faces are gone. Your photos and decisions were not touched.")
+        self.runFinished.emit()                     # the inspector reads the folder again and finds no report
+        self._rebuild()
 
     # -- the run (scripted) ------------------------------------------------------------------------------------------------------
     @Slot()
@@ -972,6 +1148,12 @@ class CullModel(QObject):
         s = self._s
         if self._run is not None and any(r.get("record") is not None for r in self._photos.all_rows()):
             self._start_real()
+            return
+        if not self._memory:
+            # The scripted run below is the mockup's (flags from a hash of the names). On a real folder there is nothing to script:
+            # a folder with no photos to read simply has nothing to analyse.
+            if self._toasts is not None:
+                self._toasts.push("error", "Nothing to analyse", "This folder has no photos the analysis can read.")
             return
         self._real = False
         self._build_stacks()
@@ -1024,11 +1206,20 @@ class CullModel(QObject):
         return out
 
     def _start_real(self) -> None:
+        if getattr(self._run, "alive", False):
+            # The analysis that was cancelled (or belongs to the folder just left) has not stopped yet. Starting over it would let its late
+            # end land on the new run.
+            if self._toasts is not None:
+                self._toasts.push("error", "The previous analysis is still stopping", "Try again in a moment.")
+            return
         if self._native:
             if not self.saveNativeDraft():
                 return
             self._real, self._outcomes, self._picks, self._flags, self._stacks = True, {}, set(), {}, []
             self._token += 1
+            self._run_token = self._token
+            self._face_wanted = False
+            self._run_notes, self._extra_notes, self._run_device = [], {}, ""
             self._t0 = time.monotonic()
             self._native_progress = ("Starting CLI-Culler", 0, 0)
             self._set(page="run", running=True, done=False, stage=0, p=0.0, hidden=False,
@@ -1036,7 +1227,7 @@ class CullModel(QObject):
             try:
                 self._run.start(folder=self._photos.folder_dir())
             except Exception as error:
-                self._run_failed(str(error))
+                self._fail(str(error))
             return
         s = self._s
         v = s["vals"]
@@ -1046,6 +1237,9 @@ class CullModel(QObject):
         decision = self._ranking_decision()
         self._real, self._outcomes, self._picks, self._flags, self._stacks = True, {}, set(), {}, []
         self._token += 1
+        self._run_token = self._token
+        self._face_wanted = False
+        self._run_notes, self._extra_notes, self._run_device = [], {}, ""
         self._t0 = time.monotonic()
         self._set(page="run", running=True, done=False, stage=0, p=0.0, hidden=False, restored={}, applied=None, ranked=decision.use_rankers,
                   eyesRan=decision.use_blink, sel="", filter="all")
@@ -1053,11 +1247,17 @@ class CullModel(QObject):
             self._run.start(folder=self._photos.folder_dir(), records=records, cascade=cascade, blink_threshold=v["blink"] / 100, decision=decision,
                             protected=self._protected_paths())
         except Exception as exc:
-            self._run_failed(str(exc))
+            self._fail(str(exc))
             return
-        if not self._native and (s["semantic"] or s["eyes"]) and s["rt"] == "ready":
+        if s["rt"] == "ready":
+            # The People pass needs the faces the cull finds and the search index: it starts when both have ended (`_maybe_start_face`).
+            self._extras_token = self._token
             self._face_wanted = bool(s["eyes"] and s["faceOk"])
-            self._start_semantic(records)
+            if s["semantic"]:
+                self._start_semantic(records)
+            elif self._face_wanted:
+                # Semantic search is switched off, so nothing is indexed for this run; People can still use an index made earlier.
+                self._extra_notes["people"] = "Semantic search is switched off for this run, so People only covers photos that were indexed before."
 
     def _start_semantic(self, records: list) -> None:
         """Semantic search for the folder: the shared background indexer (TinyCLIP embeddings into the folder's aiculler database), started
@@ -1075,6 +1275,7 @@ class CullModel(QObject):
 
             model, _tokenizer = self._clip_files()
             if model is None:
+                self._extra_notes["search"] = "Semantic search was skipped: the search model is not installed. Install it in the AI Center, then run the analysis again."
                 return
             fallback = None
             identity = compute_semantic_model_identity(model, embedding_dim=SEMANTIC_EMBEDDING_DIM, fallback_model=fallback)
@@ -1090,40 +1291,57 @@ class CullModel(QObject):
             )
             self._semantic_task = task
             task.signals.finished.connect(self._semantic_finished)
-            task.signals.failed.connect(self._extras_failed)
+            task.signals.failed.connect(self._semantic_failed)
             if getattr(self, "_semantic_pool", None) is None:
                 self._semantic_pool = QThreadPool()
                 self._semantic_pool.setMaxThreadCount(1)
             self._semantic_pool.start(task)
-        except Exception:
-            pass                                    # the cull itself is not affected
+        except Exception as error:                  # the cull itself is not affected, but the person is told search was not built
+            self._semantic_task = None
+            self._extra_notes["search"] = f"Semantic search could not start: {error}"
 
     def _run_stage(self, stage: int, fraction: float) -> None:
         if self._s["running"]:
             self._set(stage=stage, p=fraction)
 
+    def _stale_run(self) -> bool:
+        """The run that has just ended is not the one this window is waiting for: another folder was opened (or the results were cleared)
+        after it started. Its end must not touch what the window shows now, which may be the next folder's saved results."""
+        return self._run_token != self._token or not self._s["running"]
+
     def _run_finished(self, result, eyes: bool, ranked: bool) -> None:
-        if self._native and not self._s["running"]:
-            return  # a folder change invalidated this run before its queued completion
+        if self._stale_run():
+            return
         if result is None:
-            self._run_failed("The analysis gave no result.")
+            self._fail("The analysis gave no result.")
             return
         s = self._s
+        self._run_notes = [str(note) for note in getattr(self._run, "notes", ()) if note]
+        self._run_device = str(getattr(self._run, "device_text", "") or "")
         self._apply_outcomes(outcomes_from_bundle(result, self._rows()) if self._native else outcomes_from_result(result))
         first = next((r for r, _x in self._active_flags()), None)
         self._set(running=False, done=True, stage=4, p=1.0, page=s["page"] if s["hidden"] else "rev", sel=first["path"] if first else "", ranked=ranked, eyesRan=eyes)
         self.runFinished.emit()
+        self._maybe_start_face()
         if self._toasts is not None and s["hidden"]:
             self._toasts.push("success", "The analysis has finished", f"{len(self._active_flags())} frames are flagged.", "Review", self.openCull)
 
     def _run_failed(self, message: str) -> None:
+        if not self._stale_run():
+            self._fail(message)
+
+    def _fail(self, message: str) -> None:
         self._real = False
+        self._face_wanted = False
         self._set(running=False, done=False, page="prep", hidden=False, stage=0, p=0.0)
         if self._toasts is not None:
             self._toasts.push("error", "The analysis could not finish", message)
 
     def _run_cancelled(self) -> None:
+        if self._stale_run():
+            return
         self._real = False
+        self._face_wanted = False
         self._set(running=False, done=False, page="prep", hidden=False, stage=0, p=0.0)
 
     def _apply_outcomes(self, outcomes: dict) -> None:
@@ -1140,10 +1358,16 @@ class CullModel(QObject):
     # -- results saved with the folder -------------------------------------------------------------------------------------------
     def _folder_changed(self) -> None:
         """A folder was opened: forget the last folder's results and look for ones saved beside this folder."""
+        folder_now = self._photos.folder_dir()
+        same_folder, self._folder_seen = folder_now == getattr(self, "_folder_seen", None), folder_now
         if self._s["running"]:
+            if same_folder:
+                return                                  # the open folder was only read again (a refresh): the analysis of it carries on
             self._run.cancel()
         self._token += 1
         token = self._token
+        self._face_wanted = False
+        self._run_notes, self._extra_notes, self._run_device = [], {}, ""
         self._real, self._outcomes, self._picks, self._flags, self._stacks = False, {}, set(), {}, []
         self._set(done=False, running=False, page="prep", restored={}, applied=None, sel="", filter="all", ranked=False, stage=0, p=0.0)
         folder = self._photos.folder_dir()
@@ -1154,16 +1378,18 @@ class CullModel(QObject):
         import threading
 
         def work() -> None:
-            from .ai_scores import load_bundle
+            from .ai_scores import load_bundle_shared
 
-            bundle = load_bundle(folder)
-            self._savedLoaded.emit(token, outcomes_from_bundle(bundle, rows) if bundle is not None else {})
+            bundle = load_bundle_shared(folder)             # the inspector's AI tab asks for the same report: it is read once for both
+            note = str((getattr(bundle, "summary", None) or {}).get("note") or "") if bundle is not None else ""
+            self._savedLoaded.emit(token, outcomes_from_bundle(bundle, rows) if bundle is not None else {}, note)
 
         threading.Thread(target=work, name="qml-cull-saved", daemon=True).start()
 
-    def _saved_arrived(self, token: int, outcomes: dict) -> None:
+    def _saved_arrived(self, token: int, outcomes: dict, note: str = "") -> None:
         if token != self._token or self._s["running"] or not outcomes:
             return
+        self._run_notes = [note] if note else []
         self._apply_outcomes(outcomes)
         self._set(done=True, page="prep", stage=4, p=1.0, ranked=any(o.ranked for o in outcomes.values()), eyesRan=any("blink" in o.flags for o in outcomes.values()))
 
@@ -1312,6 +1538,8 @@ class CullModel(QObject):
     def scene(self, name: str) -> None:
         if self._run is not None and self._run.running:
             return  # a delayed capture preset must not reset a live analysis
+        if not self._memory:
+            return  # the scenes are the sample page's: on a real folder they would show invented flags and write real Reject decisions
         self._timer.stop()
         self._install.stop()
         cpu = self._s["cpuDefault"]

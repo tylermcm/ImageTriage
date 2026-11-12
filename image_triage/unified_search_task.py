@@ -15,7 +15,9 @@ from .semantic_search import SearchFilters
 
 def _search_match_path_key(path: str | Path) -> str:
     text = str(path or "").strip()
-    return os.path.normpath(os.path.abspath(text)).casefold() if text else ""
+    # The grid looks a hit up with os.path.normcase (photos._path_key): folding case here as well dropped every hit
+    # on a case-sensitive file system.
+    return os.path.normcase(os.path.normpath(os.path.abspath(text))) if text else ""
 
 
 class UnifiedSearchSignals(QObject):

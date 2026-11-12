@@ -405,6 +405,9 @@ class FaceFolderIndexTask(QRunnable):
                     faces_indexed = 0
                     pending = 0
                     faces_since_cluster = 0
+                    faces_at_last_cluster = 0
+                    analysis_errors = 0
+                    last_analysis_error = ""
                     for item in plan.to_embed:
                         if self._cancelled:
                             store.connection.commit()
@@ -416,12 +419,20 @@ class FaceFolderIndexTask(QRunnable):
                                 bgr = loader(item.source_path)
                                 result = analyzer.analyze(bgr)
                             faces = list(result.get("faces") or [])
-                        except Exception as error:
-                            if type(error).__name__.startswith("Ranker"):  # the helper could not run at all: say so instead of marking every photo face-free
-                                raise
+                        except (OSError, ValueError):
                             # Unreadable image: record state so we do not retry it
                             # forever (a changed file gets a new signature).
                             faces = []
+                        except Exception as error:
+                            if type(error).__name__.startswith("Ranker"):  # the helper could not run at all: say so instead of marking every photo face-free
+                                raise
+                            # Anything else (the model failing, memory) says nothing about the photo. Nothing is recorded for it, so the next
+                            # scan looks at it again instead of remembering it as a photo with no faces.
+                            analysis_errors += 1
+                            last_analysis_error = f"{type(error).__name__}: {error}"
+                            write_execution_log(f"face-index: analysis failed for one image ({last_analysis_error}); it will be retried")
+                            completed += 1
+                            continue
                         upsert_faces(store.connection, item.image_id, faces)
                         store.set_face_index_state(
                             item.image_id,
@@ -442,13 +453,23 @@ class FaceFolderIndexTask(QRunnable):
                             self.signals.progress.emit(self.folder, self.token, completed, total)
                             # Re-cluster progressively so the People panel fills in
                             # as faces are found, instead of staying empty until the
-                            # whole folder finishes. Cheap for a few hundred faces.
-                            if faces_since_cluster:
+                            # whole folder finishes. A clustering pass rewrites every
+                            # face found so far, so it runs each time the number of
+                            # faces has doubled (not after every batch): all the
+                            # passes together cost about as much as the last one.
+                            if faces_since_cluster and faces_indexed >= 2 * faces_at_last_cluster:
                                 self._cluster(store)
                                 faces_since_cluster = 0
+                                faces_at_last_cluster = faces_indexed
                                 self.signals.progress.emit(self.folder, self.token, completed, total)
                     store.connection.commit()
                     self.signals.progress.emit(self.folder, self.token, completed, total)
+
+                if analysis_errors and analysis_errors == total:
+                    # Not one photo could be analysed: that is the face finder failing, not a folder without faces.
+                    write_execution_log(f"face-index: FAILED - every image failed analysis ({last_analysis_error})")
+                    self.signals.failed.emit(self.folder, self.token, f"The face finder failed on every photo: {last_analysis_error}")
+                    return
 
                 # Final clustering over the active recognizer's embeddings only.
                 self._cluster(store)

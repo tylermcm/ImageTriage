@@ -197,13 +197,173 @@ def test_the_update_check_cycles_through_its_states(qapp, ref, monkeypatch):
     assert ref.view["help"]["upTitle"] == "You are up to date" and "Last checked today at" in ref.view["help"]["upBody"]
 
 
-def test_a_newer_version_offers_a_download_that_is_not_connected(ref):
+def test_the_sample_newer_version_downloads_nothing(ref):
     ref.scene("hlp-about-new")
     h = ref.view["help"]
     assert h["upTitle"] == "Version 2.4.0 is available" and h["upPrimary"] is True and h["upBtn"] == "Download"
+    assert "Sample data" in h["upBody"]
     before = len(ref.toasts.items)
     ref.checkUpdates()
-    assert len(ref.toasts.items) == before + 1 and "isn\u2019t connected" in ref.toasts.items[-1]["title"]
+    assert len(ref.toasts.items) == before + 1 and "Sample data" in ref.toasts.items[-1]["body"]
+    assert ref.view["help"]["upTitle"] == "Version 2.4.0 is available"
+
+
+def _newer(photos, qapp, monkeypatch, *, windows=True, sha="a" * 64, summary=""):
+    """A real (not sample) model that has just been told version 9.9.9 exists."""
+    import image_triage.qml_shell.reference_model as module
+    import image_triage.updater as updater
+
+    info = updater.UpdateInfo(version="9.9.9", installer_url="https://example.invalid/ImageTriage-9.9.9.msi",
+                              release_notes_url="https://example.invalid/notes", sha256=sha, summary=summary)
+    monkeypatch.setattr(updater, "check_for_update", lambda: SimpleNamespace(update_available=True, latest=info))
+    monkeypatch.setattr(module, "_is_windows", lambda: windows)
+    toasts = ToastModel(parent=qapp)
+    ref = ReferenceModel(photos, toasts, memory=False, parent=qapp)
+    ref.toasts = toasts
+    ref.openAbout()
+    ref.checkUpdates()
+    pump(qapp, 0.8)
+    assert ref.view["help"]["upTitle"] == "Version 9.9.9 is available"
+    return ref, info
+
+
+def test_an_update_with_no_notes_shows_no_made_up_text(qapp, photos, monkeypatch):
+    ref, _ = _newer(photos, qapp, monkeypatch)
+    body = ref.view["help"]["upBody"]
+    assert "thumbnails" not in body and "closed-eyes" not in body and body
+
+
+def test_download_verifies_then_installs_when_the_app_closes(qapp, photos, monkeypatch, tmp_path):
+    import image_triage.updater as updater
+
+    ref, info = _newer(photos, qapp, monkeypatch)
+    assert ref.view["help"]["upBtn"] == "Download"
+    installer = tmp_path / "ImageTriage-9.9.9.msi"
+
+    def download(update, *, destination_dir=None, progress_callback=None):
+        assert update is info
+        progress_callback(5 * 1024 * 1024, 10 * 1024 * 1024, installer.name)
+        installer.write_bytes(b"msi")
+        return installer
+
+    launched, quits = [], []
+    monkeypatch.setattr(updater, "download_update_installer", download)
+    monkeypatch.setattr(updater, "launch_update_installer_and_restart", lambda path, **kw: launched.append((str(path), kw)))
+    monkeypatch.setattr(ReferenceModel, "_quit_app", staticmethod(lambda: quits.append(True)))
+    ref.checkUpdates()
+    assert ref.view["help"]["upTitle"] == "Downloading version 9.9.9\u2026" and ref.view["help"]["upBtn"] == "Cancel"
+    pump(qapp, 0.6)
+    h = ref.view["help"]
+    assert (h["upTitle"], h["upBtn"]) == ("Version 9.9.9 is ready to install", "Install and restart")
+    ref.checkUpdates()
+    assert quits == [True] and launched == []                       # asking to quit installs nothing: the quit can still be refused
+    assert ref.view["help"]["upBtn"] == "Don\u2019t install"
+    ref._install_on_quit()                                          # what aboutToQuit runs
+    assert launched == [(str(installer), {"expected_sha256": "a" * 64})]
+    ref._disarm_install()
+
+
+def test_an_armed_install_can_be_called_off(qapp, photos, monkeypatch, tmp_path):
+    import image_triage.updater as updater
+
+    ref, _ = _newer(photos, qapp, monkeypatch)
+    launched = []
+    monkeypatch.setattr(updater, "launch_update_installer_and_restart", lambda path, **kw: launched.append(path))
+    monkeypatch.setattr(ReferenceModel, "_quit_app", staticmethod(lambda: None))
+    ref._installer, ref._upd = str(tmp_path / "a.msi"), "ready"
+    ref.checkUpdates()
+    ref.checkUpdates()                                              # Don't install
+    assert ref.view["help"]["upBtn"] == "Install and restart"
+    ref._install_on_quit()
+    assert launched == []
+
+
+def test_a_failed_or_cancelled_download_installs_nothing(qapp, photos, monkeypatch, tmp_path):
+    import image_triage.updater as updater
+
+    ref, _ = _newer(photos, qapp, monkeypatch)
+    monkeypatch.setattr(updater, "download_update_installer", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("Update checksum mismatch.")))
+    ref.checkUpdates()
+    pump(qapp, 0.6)
+    h = ref.view["help"]
+    assert (h["upTitle"], h["upBtn"]) == ("Could not download the update", "Try again") and "checksum mismatch" in h["upBody"]
+    leftover = tmp_path / "ImageTriage-9.9.9.msi"
+
+    def slow(update, *, destination_dir=None, progress_callback=None):
+        time.sleep(0.2)
+        leftover.write_bytes(b"msi")
+        return leftover
+
+    monkeypatch.setattr(updater, "download_update_installer", slow)
+    ref.checkUpdates()                                              # try again
+    ref.checkUpdates()                                              # cancel
+    assert ref.view["help"]["upBtn"] == "Download"
+    pump(qapp, 0.8)
+    assert ref.view["help"]["upBtn"] == "Download" and not leftover.exists() and ref._installer == ""
+
+
+def test_other_systems_and_unverifiable_updates_open_the_release_page(qapp, photos, monkeypatch):
+    opened = []
+    monkeypatch.setattr("image_triage.qml_shell.reference_model.QDesktopServices.openUrl", lambda url: opened.append(url.toString()))
+    for windows, sha in ((False, "a" * 64), (True, "")):
+        ref, _ = _newer(photos, qapp, monkeypatch, windows=windows, sha=sha)
+        assert ref.view["help"]["upBtn"] == "Open the release page"
+        ref.checkUpdates()
+        assert opened[-1] == "https://example.invalid/notes" and ref.view["help"]["upTitle"] == "Version 9.9.9 is available"
+    assert len(opened) == 2
+
+
+def test_the_startup_check_follows_the_setting_and_stays_quiet(qapp, photos, monkeypatch):
+    import image_triage.app_identity as identity
+    import image_triage.updater as updater
+
+    info = SimpleNamespace(version="9.9.9", summary="", release_notes_url="", is_verifiable=False)
+    checks = []
+
+    def check():
+        checks.append(True)
+        return SimpleNamespace(update_available=True, latest=info)
+
+    monkeypatch.setattr(updater, "check_for_update", check)
+    wanted = {"value": False}
+    monkeypatch.setattr(identity, "user_settings", lambda *a: SimpleNamespace(value=lambda key, default, kind: wanted["value"] if key == "updates/check_on_startup" else default))
+
+    def model():
+        toasts = ToastModel(parent=qapp)
+        ref = ReferenceModel(photos, toasts, memory=False, parent=qapp)
+        ref.toasts = toasts
+        return ref
+
+    off = model()
+    off.checkOnStartup()
+    pump(qapp, 0.4)
+    assert checks == [] and off.toasts.items == []
+    wanted["value"] = True
+    on = model()
+    on.checkOnStartup()
+    on.checkOnStartup()                                             # once per run
+    pump(qapp, 0.6)
+    assert checks == [True] and on.toasts.items[-1]["title"] == "Version 9.9.9 is available" and on.window == ""
+    monkeypatch.setattr(updater, "check_for_update", lambda: (_ for _ in ()).throw(OSError("no network")))
+    offline = model()
+    offline.checkOnStartup()
+    pump(qapp, 0.6)
+    offline.openAbout()
+    assert offline.toasts.items == [] and offline.view["help"]["upBtn"] == "Check for updates"      # being offline at startup is not an error
+
+
+def test_the_startup_check_starts_when_the_launch_splash_goes(qapp, photos, monkeypatch):
+    import image_triage.qml_shell.reference_model as module
+
+    monkeypatch.setattr(module, "STARTUP_CHECK_DELAY_MS", 10)
+    called = []
+    monkeypatch.setattr(ReferenceModel, "checkOnStartup", lambda self: called.append(True))
+    ref = ReferenceModel(photos, ToastModel(parent=qapp), memory=False, parent=qapp)
+    ref.splashShow("Starting", 8)
+    ref.splashHide()
+    ref.splashHide()
+    pump(qapp, 0.3)
+    assert called == [True]
 
 
 def test_the_real_update_check_reports_what_the_feed_says(qapp, photos, monkeypatch):
@@ -217,7 +377,7 @@ def test_the_real_update_check_reports_what_the_feed_says(qapp, photos, monkeypa
     ref.checkUpdates()
     pump(qapp, 0.8)
     h = ref.view["help"]
-    assert (h["upTitle"], h["upBody"], h["upBtn"]) == ("Version 9.9.9 is available", "Faster.", "Download")
+    assert (h["upTitle"], h["upBody"], h["upBtn"]) == ("Version 9.9.9 is available", "Faster.", "Open the release page")      # nothing here can be verified and installed
     monkeypatch.setattr(updater, "check_for_update", lambda: (_ for _ in ()).throw(OSError("no network")))
     ref._upd = "idle"
     ref.checkUpdates()
@@ -256,8 +416,8 @@ def test_the_guide_has_the_mockups_groups_and_marks_a_changed_key(ref):
     ref.open("keys")
     k = ref.view["keys"]
     assert [c["name"] for c in k["cats"]] == ["Review", "Collections", "File", "Edit", "View", "Everywhere"]
-    compare = next(r for c in k["cats"] for r in c["rows"] if r["t"] == "Compare")
-    assert compare["keys"] == ["V"] and compare["changed"] is True       # the sample override
+    changed = next(r for c in k["cats"] for r in c["rows"] if r["t"] == "Open the large view")
+    assert changed["keys"] == ["V"] and changed["changed"] is True       # the sample override
     winner = next(r for c in k["cats"] for r in c["rows"] if r["t"] == "Mark a winner")
     assert winner["keys"] == ["W"] and winner["changed"] is False
     assert k["count"] == sum(len(c["rows"]) for c in k["cats"])
@@ -304,7 +464,7 @@ def test_the_library_lists_roots_stats_and_results(ref):
     assert lib["stats"][0]["n"] == "3" and lib["stats"][1]["n"] == "4,812"
     assert [c["label"] for c in lib["scopes"]] == ["All indexed folders", "Georgia trip", "Iceland", "Wedding 2026"]
     assert len(lib["cards"]) == len(NAMES) and lib["cards"][0]["name"] == "DSC_4201.nef"
-    assert lib["show"] == f"Show {len(NAMES)} in the grid" and lib["canShow"]
+    assert "show" not in lib and "canShow" not in lib        # cross-folder results in the grid do not exist, so no button offers them
 
 
 def test_searching_and_scoping_the_library(ref):
@@ -316,7 +476,7 @@ def test_searching_and_scoping_the_library(ref):
     assert len(ref.view["lib"]["cards"]) == 4
     ref.setLibQuery("zzz")
     lib = ref.view["lib"]
-    assert lib["noResults"] and lib["canShow"] is False and lib["show"] == "Show 0 in the grid"
+    assert lib["noResults"]
 
 
 def test_removing_adding_and_reindexing_a_root(ref):
@@ -334,10 +494,38 @@ def test_removing_adding_and_reindexing_a_root(ref):
     assert lib["empty"] and lib["cards"] == [] and lib["foot"] == "Nothing indexed"
 
 
-def test_showing_results_in_the_grid_says_it_is_not_connected(ref):
+def test_the_library_window_offers_nothing_it_cannot_do(ref):
+    assert not hasattr(ref, "showInGrid")
+    qml = (shell_app.QML_DIR / "LibraryWindow.qml").read_text(encoding="utf-8")
+    assert "in the grid" not in qml and "showInGrid" not in qml
+    assert "root.askRemove(rr.modelData.path)" in qml and "onAccepted: reference.removeRoot(root.removePath)" in qml      # Remove asks first
+
+
+def test_typing_in_the_library_search_reads_the_catalog_once_with_one_store(qapp, photos, monkeypatch):
+    import image_triage.library_store as store
+
+    opened, searches = [], []
+
+    class Fake:
+        def __init__(self):
+            opened.append(self)
+
+        def list_catalog_roots(self):
+            return [SimpleNamespace(path="D:/Shoots/Iceland", indexed_record_count=3, last_indexed_at="2020-01-01T10:00:00", last_error="", enabled=True)]
+
+        def search_catalog(self, *, search_text="", root_path="", limit=800):
+            searches.append(search_text)
+            return []
+
+    monkeypatch.setattr(store, "LibraryStore", Fake)
+    ref = ReferenceModel(photos, ToastModel(parent=qapp), memory=False, parent=qapp)
     ref.open("lib")
-    ref.showInGrid()
-    assert "isn\u2019t connected" in ref.toasts.items[-1]["title"]
+    assert len(opened) == 1 and searches == [""]
+    for text in ("i", "ic", "ice"):
+        ref.setLibQuery(text)
+    assert searches == [""] and ref.view["lib"]["query"] == "ice"      # the box follows the typing; the catalog waits for a pause
+    pump(qapp, 0.5)
+    assert searches == ["", "ice"] and len(opened) == 1
 
 
 def test_the_real_library_reads_the_store(qapp, photos, monkeypatch):

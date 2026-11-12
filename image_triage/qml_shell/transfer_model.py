@@ -34,6 +34,7 @@ class TransferModel(QObject):
         self._toasts = toasts
         self._runner = runner               # workflow_runner.WorkflowRunner, or None (the cards then play a scripted progress)
         self._job = None                    # what handoff_model prepared for the next run: {"recipe", "records", "root", "folder"}
+        self._job_records = None            # that job's photos, kept for the cards after the run has taken the job (None: no job)
         self._real = False                  # the cards are following a real run
         self._started = 0.0
         self._bytes = 0
@@ -61,7 +62,7 @@ class TransferModel(QObject):
         photos.countsChanged.connect(self._photos_changed)
 
     def _photos_changed(self) -> None:
-        if self._state:
+        if self._state and self._job_records is None:      # a job's photos are its own: the grid changing does not change them
             self._names = []
             self._rebuild()
 
@@ -69,6 +70,7 @@ class TransferModel(QObject):
     @Slot(str, int, str, str)
     def ask(self, kind: str, count: int, from_dir: str, to_dir: str) -> None:
         """Move / Copy To Folder: confirm first."""
+        self._job_records = None
         self._begin(kind, count, from_dir, to_dir)
         self._state = "confirm"
         self._rebuild()
@@ -85,8 +87,16 @@ class TransferModel(QObject):
             self._start()
 
     def _scan(self) -> None:
-        """File names and total size from the photos the grid shows (the sample 1.4 GB when the files are not there)."""
+        """File names and total size of the photos being handed off: the job's own photos (the selection, which need not be the
+        first photos shown), or without a job the photos the grid shows (the sample 1.4 GB when the files are not there)."""
         total, names = 0, []
+        if self._job_records is not None:
+            # the scanner already read each photo's size: nothing is asked of the disk here, on the UI thread
+            names = [str(record.name) for record in self._job_records]
+            total = sum(int(getattr(record, "size", 0) or 0) for record in self._job_records)
+            self._names = [n for n in names if n]
+            self._total = _SAMPLE_BYTES if self._memory else (total or _SAMPLE_BYTES)
+            return
         for index in range(min(self._count, self._photos.shown)):
             row = self._photos.get(index)
             names.append(str(row.get("name", "")) + ("." + str(row.get("ext", "")) if row.get("ext") else ""))
@@ -108,6 +118,8 @@ class TransferModel(QObject):
     def setJob(self, job) -> None:
         """What the next handoff run does (None for sample photos): set by `handoff_model` just before it asks for the cards."""
         self._job = job
+        self._job_records = list(job["records"]) if job else None
+        self._names = []
 
     def _start(self) -> None:
         self._state, self._p, self._cancel = "progress", 0.0, False
@@ -171,13 +183,14 @@ class TransferModel(QObject):
 
     def _after_move(self, moved: list) -> None:
         """A move: the saved decisions follow their photos, the photos leave the grid, and one Undo moves them all back."""
-        from .decision_bridge import session_id
-        from .file_actions import rekey_after_move
+        from .file_actions import rekey_after_move, rekey_collections
 
         rows = {os.path.normcase(os.path.normpath(r["path"])): r for r in self._photos.all_rows()}
         for record, moves in moved:
             row = rows.get(os.path.normcase(os.path.normpath(record.path)))
             rekey_after_move(record, moves, row.get("annotation") if row else None)
+        if not rekey_collections([(m.source_path, m.target_path) for _record, moves in moved for m in moves]) and self._toasts is not None:
+            self._toasts.push("warn", "Collections were not updated", "The photos moved, but the collections they are in still point at the old place.")
         self._photos.remove_paths([record.path for record, _ in moved])
         self._photos.push_undo(f"handoff of {len(moved)} photos", lambda: self._undo_move(moved, rows))
 
@@ -185,7 +198,7 @@ class TransferModel(QObject):
         import shutil
         from pathlib import Path
 
-        from .file_actions import rekey_after_move
+        from .file_actions import rekey_collections
 
         try:
             for record, moves in moved:
@@ -196,6 +209,7 @@ class TransferModel(QObject):
             if self._toasts is not None:
                 self._toasts.push("error", "Could not move them back", str(exc))
             return False
+        rekey_collections([(m.target_path, m.source_path) for _record, moves in moved for m in moves])
         for record, moves in moved:
             row = rows.get(os.path.normcase(os.path.normpath(record.path)))
             annotation = row.get("annotation") if row else None
@@ -248,6 +262,7 @@ class TransferModel(QObject):
     @Slot(str, str, int, float)
     def show(self, state: str, kind: str, count: int, progress: float) -> None:
         """Test hook: put the cards in a state (`--ui txState=progress;txKind=copy;txP=0.42`)."""
+        self._job_records = None
         self._begin(kind if kind != "wf" else "move", count, self._photos.folderPath or "D:\\Photos\\2026\\Georgia trip\\Kutaisi",
                     "E:\\Cards\\Kutaisi, Georgia")
         if kind == "wf":

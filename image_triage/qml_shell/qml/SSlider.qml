@@ -10,6 +10,7 @@ Item {
     property real trackW: 220
     property real value: 0
     property string text
+    property string name: ""            // what the slider sets, for a screen reader (the label beside it)
     signal moved(real value)
     signal committed(real value)
     width: trackW + 14 + 52; height: 20
@@ -30,8 +31,10 @@ Item {
             Behavior on scale { SpringAnimation { spring: 6; damping: 0.4; epsilon: 0.001 } }
             Rectangle { x: 0; y: 2; width: 16; height: 16; radius: 8; color: Qt.rgba(0, 0, 0, 0.30) }
             Rectangle { width: 16; height: 16; radius: 8; color: "#ffffff"; border.color: Qt.rgba(0, 0, 0, 0.25); border.width: 1 }
+            Rectangle { visible: s.visualFocus; x: -3; y: -3; width: 22; height: 22; radius: 11; color: "transparent"; border.width: 2; border.color: theme.accent }
         }
         HoverHandler { cursorShape: Qt.PointingHandCursor }
+        Accessible.name: sl.name !== "" ? sl.name : sl.text
     }
     Text { x: sl.trackW + 14; width: 52; height: 20; horizontalAlignment: Text.AlignRight; verticalAlignment: Text.AlignVCenter; text: sl.text; color: theme.fg2; font.pixelSize: 13 }
 }

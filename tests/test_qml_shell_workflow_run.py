@@ -222,3 +222,51 @@ def test_the_cancel_button_is_only_for_what_can_stop(qapp, world):
     transfers._real = True
     transfers._rebuild()
     assert transfers.card["canCancel"] is False                                           # nothing running that can stop
+
+
+def test_a_transfer_always_ends_even_when_a_copy_raises_something_unexpected(qapp, tmp_path, monkeypatch):
+    """Whatever a copy raises, the task reports an end, so the runner is not left "running" until the app is restarted."""
+    from types import SimpleNamespace
+
+    from image_triage.qml_shell import workflow_runner as wr
+
+    def copy(bundle, target):
+        if "bad" in bundle[0]:
+            raise ValueError("not a usable name")
+        return ()
+
+    monkeypatch.setattr(wr, "copy_paths", copy)
+    task = _TransferTask([(SimpleNamespace(name="bad.jpg"), ("bad.jpg",), str(tmp_path)), (SimpleNamespace(name="ok.jpg"), ("ok.jpg",), str(tmp_path))], move=False)
+    finished, failed = [], []
+    task.signals.finished.connect(finished.append)
+    task.signals.failed.connect(failed.append)
+    task.run()
+    assert not failed and len(finished) == 1
+    assert finished[0]["failed"] == [("bad.jpg", "not a usable name")] and len(finished[0]["done"]) == 1
+
+    broken = _TransferTask([(object(), ("x.jpg",), str(tmp_path))], move=False)      # a record with no name: the loop itself fails
+    broken.signals.finished.connect(finished.append)
+    broken.signals.failed.connect(failed.append)
+    monkeypatch.setattr(wr, "copy_paths", lambda bundle, target: (_ for _ in ()).throw(ValueError("x")))
+    broken.run()
+    assert len(failed) == 1 and len(finished) == 1
+
+
+
+def test_the_cards_describe_the_photos_of_the_job_not_the_first_ones_shown(qapp, world, monkeypatch):
+    """A handoff of a selection: the name and size on the card are the selected photo's, read from what the scan already knows."""
+    from image_triage.qml_shell import transfer_model as tm
+
+    shoot, photos, toasts, bridge, records, tmp = world
+    last = next(r for r in records if r.name == "c.jpg")
+    stats = []
+    monkeypatch.setattr(tm.os.path, "getsize", lambda path: stats.append(path) or 1)
+    transfers = TransferModel(photos, memory=False, parent=qapp, toasts=toasts, runner=WorkflowRunner(parent=qapp))
+    recipe = WorkflowRecipe(key="k", name="Move", content_mode=RECIPE_CONTENT_BUNDLE, transfer_mode=RECIPE_TRANSFER_MOVE)
+    transfers.setJob({"recipe": recipe, "records": [last], "root": str(tmp / "out"), "folder": str(shoot)})
+
+    transfers.handoff("move", 1, str(shoot), str(tmp / "out"))             # a move asks first: the card is up, nothing has run
+
+    assert transfers.card["state"] == "confirm" and transfers.card["name"] == "c.jpg"
+    assert transfers._total == last.size and not stats
+    transfers.dismiss()

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -135,6 +137,7 @@ class FaceCache:
     analysed again."""
 
     VERSION = 1
+    _io_lock = threading.RLock()
 
     def __init__(self, path: str | Path | None, model: str = FACE_MODEL_TAG) -> None:
         self._path = Path(path) if path is not None else None
@@ -143,11 +146,15 @@ class FaceCache:
         self._dirty = False
         if self._path is not None:
             try:
-                data = json.loads(self._path.read_text(encoding="utf-8"))
+                data = self._read_disk()
                 if data.get("version") == self.VERSION and data.get("model") == model:
                     self._entries = {str(k): dict(v) for k, v in dict(data.get("entries", {})).items()}
             except (OSError, ValueError, AttributeError, TypeError):
                 self._entries = {}
+
+    def _read_disk(self):
+        with self._io_lock:
+            return json.loads(self._path.read_text(encoding="utf-8"))
 
     @staticmethod
     def _signature(path: str) -> list[int] | None:
@@ -177,10 +184,31 @@ class FaceCache:
         return len(self._entries)
 
     def save(self) -> None:
+        # Keep the read/merge/replace transaction together across cache instances.
+        with self._io_lock:
+            self._save_locked()
+
+    def _save_locked(self) -> None:
         if self._path is None or not self._dirty:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._path.with_name(self._path.name + ".tmp")
-        temporary.write_text(json.dumps({"version": self.VERSION, "model": self._model, "entries": self._entries}), encoding="utf-8")
-        os.replace(temporary, self._path)
+        # The cull and the People index both keep this file. Entries another writer added since it was read are kept (ours win for the same
+        # file), and each writer has its own temporary file, so two saves at once cannot write into each other's half-written copy.
+        try:
+            data = self._read_disk()
+            if data.get("version") == self.VERSION and data.get("model") == self._model:
+                for key, value in dict(data.get("entries", {})).items():
+                    self._entries.setdefault(str(key), dict(value))
+        except (OSError, ValueError, AttributeError, TypeError):
+            pass
+        temporary = self._path.with_name(f"{self._path.name}.{os.getpid()}-{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            temporary.write_text(json.dumps({"version": self.VERSION, "model": self._model, "entries": self._entries}), encoding="utf-8")
+            os.replace(temporary, self._path)
+        except BaseException:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
         self._dirty = False

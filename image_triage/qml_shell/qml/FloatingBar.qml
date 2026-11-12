@@ -33,11 +33,11 @@ Item {
             onClicked: UiState.setMenu("fReview")
             Popover {
                 id: reviewMenu; name: "fReview"
-                PopItem { label: "Mark winner"; icon: "star"; kbd: { void settings.shortcutRevision; return settings.seq("accept_selection") } onClicked: { photos.setDecision(bar.row, "win"); reviewMenu.close() } }
-                PopItem { label: "Keep"; icon: "check"; kbd: { void settings.shortcutRevision; return settings.seq("keep_at_cursor") } onClicked: { photos.setDecision(bar.row, "keep"); reviewMenu.close() } }
-                PopItem { label: "Reject"; icon: "x"; kbd: { void settings.shortcutRevision; return settings.seq("reject_selection") } onClicked: { photos.setDecision(bar.row, "rej"); reviewMenu.close() } }
+                PopItem { label: "Mark winner"; icon: "star"; kbd: { void settings.shortcutRevision; return settings.seq("accept_selection") } onClicked: { photos.setDecisionMany(photos.selectionRows(bar.row), "win"); reviewMenu.close() } }
+                PopItem { label: "Keep"; icon: "check"; kbd: { void settings.shortcutRevision; return settings.seq("keep_at_cursor") } onClicked: { photos.setDecisionMany(photos.selectionRows(bar.row), "keep"); reviewMenu.close() } }
+                PopItem { label: "Reject"; icon: "x"; kbd: { void settings.shortcutRevision; return settings.seq("reject_selection") } onClicked: { photos.setDecisionMany(photos.selectionRows(bar.row), "rej"); reviewMenu.close() } }
                 PopDivider {}
-                PopItem { label: "Clear decision"; icon: "minus"; kbd: "U"; onClicked: { photos.setDecision(bar.row, ""); reviewMenu.close() } }
+                PopItem { label: "Clear decision"; icon: "minus"; kbd: "U"; onClicked: { photos.setDecisionMany(photos.selectionRows(bar.row), ""); reviewMenu.close() } }
             }
         }
         FbButton {
@@ -78,8 +78,8 @@ Item {
             id: sizes
             visible: bar.sizeSwitch
             icons: ["densS", "densM", "densL"]; padH: 9
-            current: [9, 4, 1].indexOf(UiState.cols)      // small, medium, large: 9, 4 and 1 columns
-            onActivated: (i) => { UiState.cols = [9, 4, 1][i] }
+            current: UiState.cols === 0 ? ["s", "m", "l"].indexOf(UiState.dens) : -1      // small, medium, large thumbnails, as in the View menus; none while a column count is fixed
+            onActivated: (i) => UiState.setDens(["s", "m", "l"][i])
         }
         Rectangle { width: 1; height: 22; y: 7; color: theme.line }
         AiChip { id: ai }

@@ -216,8 +216,8 @@ class ScannerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
             root = Path(temp_dir)
             primary = root / "shot.jpg"
-            edit_one = root / "shot_1.jpg"
-            edit_two = root / "shot_2.jpg"
+            edit_one = root / "shot_1.tif"          # numbered files in another format are edits of the photo
+            edit_two = root / "shot_2.png"
             for path in (primary, edit_one, edit_two):
                 _write_image(path)
 
@@ -230,6 +230,39 @@ class ScannerTests(unittest.TestCase):
                 _path_set((edit_one, edit_two)),
                 _path_set(record.edited_paths),
             )
+
+    def test_numbered_files_of_the_same_format_are_photos_of_their_own(self) -> None:
+        # A trailing number names separate photos as often as edits; bundling them would delete both when one is deleted.
+        for names in (("beach.jpg", "beach 2.jpg"), ("wedding.jpg", "wedding-2023.jpg"), ("shot.jpg", "shot_1.jpg", "shot_2.jpg")):
+            with self.subTest(names=names), tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
+                root = Path(temp_dir)
+                for name in names:
+                    _write_image(root / name)
+                records = scan_folder(str(root))
+                self.assertEqual(_path_set(root / name for name in names), _path_set(record.path for record in records))
+                self.assertTrue(all(not record.edited_paths and not record.companion_paths for record in records))
+
+    def test_a_raw_is_never_an_edit_of_another_raw(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
+            root = Path(temp_dir)
+            first, second, second_jpeg, first_edit = root / "IMG_1.CR2", root / "IMG_1_2.CR2", root / "IMG_1_2.JPG", root / "IMG_1_3.tif"
+            for path in (first, second, second_jpeg, first_edit):
+                _write_image(path)
+            records = {_path_key(record.path): record for record in scan_folder(str(root))}
+            self.assertEqual({_path_key(first), _path_key(second)}, set(records))
+            self.assertEqual(_path_set((first_edit,)), _path_set(records[_path_key(first)].edited_paths))        # a TIFF beside a RAW is still its edit
+            self.assertEqual(_path_set((second_jpeg,)), _path_set(records[_path_key(second)].companion_paths))  # the second RAW keeps its own JPEG
+            self.assertEqual((), records[_path_key(second)].edited_paths)
+
+    def test_a_numbered_jpeg_beside_a_raw_is_still_its_edit(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
+            root = Path(temp_dir)
+            raw, export = root / "IMG_7.NEF", root / "IMG_7_1.jpg"
+            for path in (raw, export):
+                _write_image(path)
+            records = scan_folder(str(root))
+            self.assertEqual(1, len(records))
+            self.assertEqual(_path_set((export,)), _path_set(records[0].edited_paths))
 
     def test_discover_edited_paths_skips_existing_stack_paths(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:

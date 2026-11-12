@@ -65,6 +65,11 @@ class FakeEditor:
 
     def stop(self) -> None:
         self._stop = True
+        # Closing a listening socket does not wake a thread blocked in accept() on Linux, and the port keeps accepting; shutting it down does.
+        try:
+            self.listener.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass  # Windows refuses to shut down a listener; close() is enough there
         self.listener.close()
         self.drop_idle_connections()
 

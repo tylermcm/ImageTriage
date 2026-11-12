@@ -154,7 +154,7 @@ class FaceIndexTests(unittest.TestCase):
 
             def boom(path: str):
                 if path.endswith("a.jpg"):
-                    raise RuntimeError("corrupt")
+                    raise OSError("corrupt")  # what a file that cannot be decoded raises
                 return _fake_loader(path)
 
             analyzer = _FakeAnalyzer()
@@ -169,6 +169,57 @@ class FaceIndexTests(unittest.TestCase):
                 self.assertEqual(0, int(state["face_count"]))  # recorded, won't loop
             finally:
                 store.close()
+
+    def test_an_analysis_error_is_not_remembered_as_a_photo_without_faces(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="face_idx_") as temp_dir:
+            folder, _ = self._seed(temp_dir, [("a.jpg", 0.9), ("b.jpg", 0.9)])
+
+            class FlakyAnalyzer(_FakeAnalyzer):
+                def analyze(self, bgr) -> dict:
+                    if not self.calls:
+                        self.calls.append(1)
+                        raise RuntimeError("the model ran out of memory")  # nothing to do with the photo
+                    return super().analyze(bgr)
+
+            events = _run(self._task(folder, FlakyAnalyzer()))
+            self.assertEqual([], events["failed"])
+            store = SQLiteFeatureStore(folder / "aiculler.sqlite")
+            try:
+                first = next(r for r in store.list_images() if r["source_path"].endswith("a.jpg"))
+                self.assertIsNone(store.get_face_index_state(int(first["id"])))  # not recorded as face-free
+            finally:
+                store.close()
+
+            again = _FakeAnalyzer()
+            _run(self._task(folder, again, token=2))
+            self.assertEqual(1, sum(again.calls))  # the next scan looks at that photo again, and only that one
+
+    def test_a_face_finder_that_fails_on_every_photo_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="face_idx_") as temp_dir:
+            folder, _ = self._seed(temp_dir, [("a.jpg", 0.9), ("b.jpg", 0.9)])
+
+            class BrokenAnalyzer(_FakeAnalyzer):
+                def analyze(self, bgr) -> dict:
+                    raise RuntimeError("no such model")
+
+            events = _run(self._task(folder, BrokenAnalyzer()))
+            self.assertEqual([], events["finished"])
+            self.assertEqual(1, len(events["failed"]))
+            self.assertIn("no such model", events["failed"][0])
+
+    def test_clustering_runs_when_the_faces_have_doubled_not_after_every_batch(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="face_idx_") as temp_dir:
+            folder, _ = self._seed(temp_dir, [(f"p{n:02d}.jpg", 0.9) for n in range(32)])
+            task = self._task(folder, _FakeAnalyzer())
+            task.commit_batch = 1
+            passes: list[int] = []
+            cluster = task._cluster
+            task._cluster = lambda store: (passes.append(1), cluster(store))[1]
+            events = _run(task)
+            self.assertEqual([], events["failed"])
+            # at 1, 2, 4, 8, 16 and 32 faces, then the final pass: 7, where one pass per photo would be 33
+            self.assertEqual(7, len(passes))
+            self.assertEqual((32, 1), events["finished"][0])
 
     def test_cancelled_task_does_no_work(self) -> None:
         with tempfile.TemporaryDirectory(prefix="face_idx_") as temp_dir:

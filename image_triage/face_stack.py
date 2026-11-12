@@ -63,7 +63,7 @@ class FaceStackAnalyzer:
         if self._ranker is None:
             from .cascade.rankers import faces_ranker
 
-            self._ranker = faces_ranker(device=self._worker_device(), cancel_check=self._cancel_check)
+            self._ranker = faces_ranker(device=self._worker_device(), cancel_check=self._cancel_check, download=False)   # a run never fetches a model: the AI Center installs it
         return self._ranker
 
     @staticmethod

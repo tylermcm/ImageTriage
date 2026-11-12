@@ -16,8 +16,8 @@ from pathlib import Path
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from ..app_identity import user_settings
-from ..scanner import normalized_path_key
 from ..formats import IMAGE_SUFFIXES
+from .photos import member_key
 
 ACTIVE_KEY = "collections/also_add_to"          # catalog_controller.ACTIVE_COLLECTION_KEY
 ICONS_KEY = "collections/icons"
@@ -82,6 +82,10 @@ class CollectionsModel(QObject):
         self._rows: list[dict] = []
         self._members: dict[str, set[str]] = {}
         self._previews: dict[str, list[str]] = {}
+        self._headers: list[dict] = []
+        self._here: dict[str, list[dict]] = {}      # collection id -> the open folder's photos that are in it (see `_match_folder`)
+        self._matched_rows: list | None = None      # the photo list `_here` was worked out for, and how long it was
+        self._matched_count = -1
         self._revision = 0
         if memory:
             self._mem = {c[0]: {"id": c[0], "name": c[1], "color": c[2], "icon": c[3], "members": list(c[4])} for c in _DEMO}
@@ -90,7 +94,7 @@ class CollectionsModel(QObject):
             self._icons = self._load_json(ICONS_KEY)
             self._recent = list(self._load_json(RECENT_KEY, []))
             self._active = str(self._settings.value(ACTIVE_KEY, "", str) or "")
-        photos.countsChanged.connect(self._refresh_rows)
+        photos.countsChanged.connect(self._photos_changed)
         self._reload()
 
     # -- store -------------------------------------------------------------------------------------------------------------------
@@ -108,7 +112,32 @@ class CollectionsModel(QObject):
         return self._store
 
     def _key(self, path: str, name: str) -> str:
-        return name if self._memory else normalized_path_key(path)
+        return name if self._memory else member_key(path)
+
+    def _row_key(self, row: dict) -> str:
+        """A photo's key among the members. A photo read from a folder carries it from the read; any other gets it the first time it is asked for."""
+        if self._memory:
+            return row["name"]
+        key = row.get("key")
+        if key is None:
+            key = row["key"] = member_key(row["path"])
+        return key
+
+    def _read_members(self, store, cid: str, paths) -> None:
+        """Take in one collection's stored paths: who is in it, and its three newest pictures."""
+        self._members[cid] = {member_key(p) for p in paths}
+        seen = set()
+        preview = []
+        for path in store.recent_collection_paths(cid):
+            image = Path(path)
+            key = member_key(str(image.with_suffix("")))
+            if image.suffix.lower() not in IMAGE_SUFFIXES or key in seen:
+                continue
+            seen.add(key)
+            preview.append(path)
+            if len(preview) == 3:
+                break
+        self._previews[cid] = preview
 
     def _reload(self) -> None:
         """Re-read the collections (names, colours, who is in them) and rebuild the rows."""
@@ -124,22 +153,30 @@ class CollectionsModel(QObject):
             store = self._db()
             for c in store.list_collections():
                 full = store.load_collection(c.id)
-                paths = full.item_paths if full is not None else ()
-                self._members[c.id] = {normalized_path_key(p) for p in paths}
-                seen = set()
-                preview = []
-                for path in store.recent_collection_paths(c.id):
-                    image = Path(path)
-                    key = normalized_path_key(str(image.with_suffix("")))
-                    if image.suffix.lower() not in IMAGE_SUFFIXES or key in seen:
-                        continue
-                    seen.add(key)
-                    preview.append(path)
-                    if len(preview) == 3:
-                        break
-                self._previews[c.id] = preview
+                self._read_members(store, c.id, full.item_paths if full is not None else ())
                 headers.append({"id": c.id, "name": c.name, "color": c.color, "icon": self._icons.get(c.id, ""), "count": c.item_count})
         self._headers = headers
+        self._members_changed()
+
+    def _reload_one(self, cid: str, full=None) -> None:
+        """One collection's members changed (photos were added to it or taken out): read that one again, not every collection."""
+        if self._memory:
+            self._reload()
+            return
+        store = self._db()
+        if full is None:
+            full = store.load_collection(cid)
+        if full is None:
+            self._reload()                          # it is gone: start from what the store has
+            return
+        self._read_members(store, cid, full.item_paths)
+        for header in self._headers:
+            if header["id"] == cid:
+                header["count"] = len(full.item_paths)
+        self._members_changed()
+
+    def _members_changed(self) -> None:
+        self._matched_rows = None
         if self._photos.scopeKind == "collection" and self._photos.scopeId in self._members:
             # The open scope captured the old membership set. Rebind it after
             # edits so removed members disappear immediately from the grid.
@@ -147,12 +184,42 @@ class CollectionsModel(QObject):
         else:
             self._refresh_rows()
 
+    def _match_folder(self) -> None:
+        """Work out which of the open folder's photos are in which collection: one pass over the photos, each looked up by its key.
+
+        This is the costly part of the rows, so it is done when the members or the folder's photos change and not when a decision does."""
+        rows = self._photos.all_rows()
+        owners: dict[str, list[str]] = {}
+        for cid, keys in self._members.items():
+            for key in keys:
+                owners.setdefault(key, []).append(cid)
+        here: dict[str, list[dict]] = {cid: [] for cid in self._members}
+        if owners:
+            key_of = self._row_key
+            for row in rows:
+                for cid in owners.get(key_of(row), ()):
+                    here[cid].append(row)
+        self._here = here
+        self._matched_rows, self._matched_count = rows, len(rows)
+
+    def _matched(self) -> bool:
+        """Is `_here` still about the photos the model holds? Its list is replaced when the folder is read or photos leave it."""
+        rows = self._photos.all_rows()
+        return rows is self._matched_rows and len(rows) == self._matched_count
+
+    def _photos_changed(self) -> None:
+        """The photo model's counts changed: a decision (most often), a filter, or the folder's photos themselves."""
+        if not self._matched():
+            self._refresh_rows()
+            return
+        self._revision += 1                         # nobody joined or left: only what is counted from the decisions (the winners) is stale
+        self.revisionChanged.emit()
+
     def _refresh_rows(self) -> None:
         rows = []
-        everything = self._photos.collect()
+        self._match_folder()
         for h in self._headers:
-            keys = self._members.get(h["id"], set())
-            mine = [r for r in everything if self._key(r["path"], r["name"]) in keys]
+            mine = self._here.get(h["id"], [])
             thumbs = [r["path"] for r in mine[:3]]
             while thumbs and len(thumbs) < 3:
                 thumbs.append(thumbs[len(thumbs) % len(mine[:3])])
@@ -184,8 +251,9 @@ class CollectionsModel(QObject):
 
     def member_rows(self, cid: str) -> list[dict]:
         """The open folder's photos that are in this collection."""
-        keys = self._members.get(cid, set())
-        return [r for r in self._photos.collect() if self._key(r["path"], r["name"]) in keys]
+        if not self._matched():
+            self._match_folder()
+        return [{"path": r["path"], "name": r["name"], "decision": r["decision"], "companions": tuple(r.get("companions", ()))} for r in self._here.get(cid, ())]
 
     def _find(self, cid: str) -> dict | None:
         return next((r for r in self._rows if r["id"] == cid), None)
@@ -283,6 +351,7 @@ class CollectionsModel(QObject):
         if not rows or self._find(cid) is None:
             return 0
         new = 0
+        full = None
         if self._memory:
             members = self._mem[cid]["members"]
             for r in rows:
@@ -295,20 +364,26 @@ class CollectionsModel(QObject):
                 paths.append(r["path"])
                 paths.extend(r.get("companions", ()))
             before = len(self._members.get(cid, ()))
-            self._db().add_paths_to_collection(cid, paths)
-            full = self._db().load_collection(cid)
-            self._members[cid] = {normalized_path_key(x) for x in (full.item_paths if full else ())}
-            new = len(self._members[cid]) - before
-        self._recent = [cid] + [x for x in self._recent if x != cid]
-        if not self._memory:
-            self._settings.setValue(RECENT_KEY, json.dumps(self._recent[:8]))
-        self._reload()
+            full = self._db().add_paths_to_collection(cid, paths)        # it answers with the collection as it now is
+            new = len({member_key(x) for x in (full.item_paths if full else ())}) - before
+        recent = [cid] + [x for x in self._recent if x != cid]
+        if recent != self._recent:
+            self._recent = recent
+            if not self._memory:
+                self._settings.setValue(RECENT_KEY, json.dumps(self._recent[:8]))
+        self._reload_one(cid, full)
         return new
 
     @Slot(str, int, result=int)
     def addSelection(self, cid: str, row: int) -> int:
         """Adds the photo the grid is on (and a RAW's companions); returns how many were new."""
         return self._add(cid, self._rows_for(row, False))
+
+    @Slot(str, "QVariantList", result=int)
+    def addRows(self, cid: str, rows: list) -> int:
+        """Adds these rows of the grid in one step (one write, one re-read), where a call per row re-read the collection each time."""
+        p = self._photos
+        return self._add(cid, [p.get(int(row)) for row in rows if 0 <= int(row) < p.shown])
 
     @Slot(str, result=int)
     def addVisible(self, cid: str) -> int:
@@ -318,7 +393,7 @@ class CollectionsModel(QObject):
     def hasRow(self, cid: str, row: int) -> bool:
         """Is the photo on this row of the grid in the collection?"""
         item = self._photos.row_at(row)
-        return item is not None and self._key(item["path"], item["name"]) in self._members.get(cid, ())
+        return item is not None and self._row_key(item) in self._members.get(cid, ())
 
     @Slot(str, int)
     def removeSelection(self, cid: str, row: int) -> None:
@@ -338,7 +413,8 @@ class CollectionsModel(QObject):
             self._mem[cid]["members"] = [m for m in self._mem[cid]["members"] if m not in {r["name"] for r in rows}]
         else:
             paths = [r["path"] for r in rows] + [c for r in rows for c in r.get("companions", ())]
-            self._db().remove_paths_from_collection(cid, paths)
+            self._reload_one(cid, self._db().remove_paths_from_collection(cid, paths))
+            return
         self._reload()
 
     @Slot(result="QVariantMap")
@@ -372,7 +448,7 @@ class CollectionsModel(QObject):
         keys = self._members.get(cid)
         if keys is None:
             return
-        self._photos.set_scope("collection", cid, lambda r, k=keys: self._key(r["path"], r["name"]) in k)
+        self._photos.set_scope("collection", cid, lambda r, k=keys, key_of=self._row_key: key_of(r) in k)
 
     @Slot()
     def openWinners(self) -> None:

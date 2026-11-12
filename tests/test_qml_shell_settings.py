@@ -44,10 +44,8 @@ def fields(model):
 
 def test_empty_store_gives_the_documented_defaults(qapp, store):
     m = SettingsModel()
-    expect = dict(updates=True, perfLog=False, aiTags=True, pocketEdits=False, smooth=False, preload=10, editorOnDemand=True, editorOpen=True,
-                  editorPrestart=True, rawFirst=True, autoAdvance=True, bursts=False, stacks=False, hidden=False, oneBranch=True, watch=True,
-                  restorePos=True, catalogCache=True, aiBatch=0, aiProgress=False, cpuRank=False, keepTop=10, reviewBand=10, dispute=3,
-                  baseWeight=65, phash=True, hamming=6, phashCache=True, phashDiag=True, size="automatic", card="detailed", gamma=1.0, theme="slate")
+    expect = dict(updates=True, perfLog=False, smooth=False, preload=10, autoAdvance=True, hidden=False, oneBranch=True, watch=True,
+                  restorePos=True, cpuRank=False, contrast=90, theme="slate")
     for key, value in expect.items():
         assert m.value(key) == value, key
     assert m.dirtyCount == 0
@@ -55,39 +53,88 @@ def test_empty_store_gives_the_documented_defaults(qapp, store):
 
 def test_stored_values_are_clamped_like_the_window_does(qapp, store):
     qs = QSettings(store, QSettings.Format.IniFormat)
-    qs.setValue("ai/keep_top_percent", 99)
-    qs.setValue("ai/review_band_percent", -4)
-    qs.setValue("ai/dispute_weight", 17)
+    qs.setValue("view/text_contrast", 250)
     qs.setValue("preview/preload_batch_size", 999)
-    qs.setValue("view/ui_gamma", 9.0)
-    qs.setValue("view/interface_size", "large")
-    qs.setValue("view/loupe_card_style", "retired-style")
+    qs.setValue("view/dark_tone", "retired-tone")
     qs.sync()
     m = SettingsModel()
-    assert m.value("keepTop") == 50 and m.value("reviewBand") == 0 and m.value("dispute") == 5
-    assert m.value("preload") == 128 and m.value("gamma") == 1.6
-    assert m.value("size") == "spacious"          # the alias the window also accepts
-    assert m.value("card") == "detailed"
+    assert m.value("contrast") == 100
+    assert m.value("preload") == sm.PRELOAD_MAX       # the most the viewer reads ahead, not a number it would ignore
+    assert m.value("darkTone") == "soft"
+
+
+def test_the_preload_setting_offers_what_the_viewer_honours():
+    from image_triage.qml_shell import viewer_host
+
+    assert viewer_host.PRELOAD_LIMIT == sm.PRELOAD_MAX
+    assert viewer_host.FILES_KEPT > viewer_host.PRELOAD_LIMIT + 1      # a full read-ahead does not push out the photo being looked at
+    preload = next(f for s in sm.build_schema() for g in s.groups for f in g.rows if f.id == "preload")
+    assert (preload.lo, preload.hi, preload.default) == (0, sm.PRELOAD_MAX, sm.PRELOAD_DEFAULT)
+
+
+# Rows the model applies itself (properties the theme and the window bind, the perf logger, the AI scoring it pushes on save), and the one row whose
+# reader is being connected elsewhere. Everything else must be read by another module or by the QML.
+_PENDING_READER = {"updates/check_on_startup"}
+
+
+def test_every_stored_setting_is_read_by_something():
+    """A row that is saved and never read is a switch that does nothing. A reader is: the QSettings key in another module, the row's id asked
+    of `settings` in QML, or the id used by the model itself outside the page definitions."""
+    import inspect
+    import re
+    from pathlib import Path
+
+    package = Path(sm.__file__).resolve().parents[1]
+    others = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in package.rglob("*.py") if p.name != "settings_model.py")
+    qml = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in package.rglob("*.qml"))
+    own = Path(sm.__file__).read_text(encoding="utf-8").replace(inspect.getsource(sm.build_schema), "")
+    unread = []
+    for section in sm.build_schema():
+        for group in section.groups:
+            for row in group.rows:
+                if not row.key or row.key in _PENDING_READER:
+                    continue
+                in_qml = re.search(r'settings\.(value|set)\("%s"' % re.escape(row.id), qml) is not None and 'settings.value("%s")' % row.id in qml
+                if row.key in others or in_qml or '"%s"' % row.id in own:
+                    continue
+                unread.append((row.id, row.key))
+    assert unread == [], unread
+    stored = {row.key for section in sm.build_schema() for group in section.groups for row in group.rows if row.key}
+    for gone in ("workflow/show_ai_tags_in_grid", "view/ui_gamma", "view/burst_groups", "preview/editor_on_demand", "catalog/cache_enabled",
+                 "ai/embed_batch_size", "ai/dispute_weight", "ai/phash_prefilter/enabled", "ai/keep_top_percent", "ai/base_score_weight_percent"):
+        assert gone not in stored, gone
+
+
+def test_removing_a_row_leaves_what_was_stored_for_it(qapp, store):
+    qs = QSettings(store, QSettings.Format.IniFormat)
+    qs.setValue("view/ui_gamma", 1.3)
+    qs.setValue("ai/phash_prefilter/hamming_threshold", 9)
+    qs.sync()
+    m = SettingsModel()
+    m.set("autoAdvance", False)
+    assert m.save()
+    qs = QSettings(store, QSettings.Format.IniFormat)
+    assert float(qs.value("view/ui_gamma")) == 1.3 and int(qs.value("ai/phash_prefilter/hamming_threshold")) == 9
 
 
 def test_save_writes_the_real_keys_and_discard_restores(qapp, store):
     m = SettingsModel()
     m.set("autoAdvance", False)
-    m.set("keepTop", 20)
+    m.set("preload", 20)
     m.set("theme", "forest")
-    assert m.dirtyCount == 3 and m.isDirty("keepTop") and m.sectionDirty("ai")
+    assert m.dirtyCount == 3 and m.isDirty("preload") and m.sectionDirty("browsing")
     m.discard()
-    assert m.dirtyCount == 0 and m.value("keepTop") == 10
+    assert m.dirtyCount == 0 and m.value("preload") == 10
     m.set("autoAdvance", False)
-    m.set("keepTop", 20)
+    m.set("preload", 20)
     m.set("deleteMode", "System Trash")
     assert m.save()
     assert m.dirtyCount == 0 and m.saved
     qs = QSettings(store, QSettings.Format.IniFormat)
     assert qs.value("view/auto_advance", True, bool) is False
-    assert qs.value("ai/keep_top_percent", 0, int) == 20
+    assert qs.value("preview/preload_batch_size", 0, int) == 20
     assert qs.value("workflow/delete_mode", "", str) == "System Trash"
-    assert SettingsModel().value("keepTop") == 20          # a new session sees it
+    assert SettingsModel().value("preload") == 20          # a new session sees it
 
 
 def test_reject_appearance_toggle_is_saved_and_can_be_discarded(qapp, store):
@@ -113,46 +160,28 @@ def scoring_globals():
     aiculler_workflow.set_base_score_blend_weight(before[2])
 
 
-def test_the_cull_sliders_reach_the_classifier_when_saved_and_at_start(qapp, store, scoring_globals):
-    ai_results, workflow = scoring_globals
-    m = SettingsModel()
-    seen = []
-    m.aiScoringChanged.connect(lambda: seen.append(True))
-    m.set("keepTop", 20)
-    m.set("reviewBand", 5)
-    m.set("baseWeight", 40)
-    assert m.save() and seen == [True]
-    # Keep top 20 % is a keeper percentile of 80, the review band sits just below it (the Widgets app's own arithmetic)
-    assert ai_results._SINGLETON_KEEPER_PERCENTILE_THRESHOLD == 80.0 and ai_results._SINGLETON_REJECT_PERCENTILE_THRESHOLD == 75.0
-    assert workflow._BASE_SCORE_BLEND_WEIGHT == 0.4
-    ai_results.set_cull_thresholds(keeper_percentile=1.0, reject_percentile=0.0)
-    SettingsModel().apply_ai_scoring()                                      # a new session: what the app does as it starts
-    assert ai_results._SINGLETON_KEEPER_PERCENTILE_THRESHOLD == 80.0 and ai_results._SINGLETON_REJECT_PERCENTILE_THRESHOLD == 75.0
-
-
-def test_saving_something_else_does_not_reread_the_ai_report(qapp, store, scoring_globals):
-    m = SettingsModel()
-    seen = []
-    m.aiScoringChanged.connect(lambda: seen.append(True))
-    m.set("autoAdvance", False)
-    assert m.save() and seen == []
-
-
 def test_dependent_rows_and_reset_section(qapp, store):
     m = SettingsModel()
-    assert m.enabled("hamming")
-    m.set("phash", False)
-    assert not m.enabled("hamming") and not m.enabled("phashCache")
-    m.resetSection("dups")
-    assert m.value("phash") is True and m.dirtyCount == 0
+    m.set("preload", 20)
+    m.set("smooth", True)
+    assert m.dirtyCount == 2
+    m.resetSection("browsing")
+    assert m.value("preload") == 10 and m.value("smooth") is False and m.dirtyCount == 0
+    assert m.enabled("preload") and m.enabled("no-such-row")            # a row with no switch it depends on is always available
 
 
-def test_cull_breakdown_follows_the_two_sliders(qapp, store):
+def test_stored_scoring_values_still_reach_the_classifier_at_start(qapp, store, scoring_globals):
+    ai_results, workflow = scoring_globals
+    qs = QSettings(store, QSettings.Format.IniFormat)
+    qs.setValue("ai/keep_top_percent", 20)
+    qs.setValue("ai/review_band_percent", 5)
+    qs.setValue("ai/base_score_weight_percent", 40)
+    qs.sync()
     m = SettingsModel()
-    assert m.text("cull") == "~10% Winner · ~10% Review · ~80% Reject"
-    m.set("keepTop", 45)
-    m.set("reviewBand", 30)
-    assert m.text("cull") == "~45% Winner · ~30% Review · ~25% Reject"
+    assert m.value("keepTop") is None                                   # no row for it
+    m.apply_ai_scoring()                                                # what the app does as it starts
+    assert ai_results._SINGLETON_KEEPER_PERCENTILE_THRESHOLD == 80.0 and ai_results._SINGLETON_REJECT_PERCENTILE_THRESHOLD == 75.0
+    assert workflow._BASE_SCORE_BLEND_WEIGHT == 0.4
 
 
 def test_shortcut_chords_and_conflicts(qapp, store):
@@ -160,7 +189,7 @@ def test_shortcut_chords_and_conflicts(qapp, store):
     assert m.chord(Qt.Key.Key_N.value, (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier).value) == "Ctrl+Shift+N"
     assert m.chord(Qt.Key.Key_Shift.value, 0) == ""
     ids = [i for i in fields(m) if i.startswith("k:")]
-    assert len(ids) > 30
+    assert len(ids) == len(sm.LISTED_ACTIONS)        # the rows the shell carries out, and no others
     m.set(ids[0], "Ctrl+Q")
     m.set(ids[1], "Ctrl+Q")
     assert m.save() is False and "Ctrl+Q" in m.conflict()
@@ -173,10 +202,10 @@ def test_shortcut_chords_and_conflicts(qapp, store):
 
 def test_search_counts_and_page(qapp, store):
     m = SettingsModel()
-    counts = m.counts("cache")
-    assert counts["library"] >= 2 and counts["dups"] >= 1 and counts["general"] == 0
-    page = m.page("general", "cache")
-    assert {g["title"] for g in page} >= {"Library & folders", "Duplicates"}
+    counts = m.counts("folder")
+    assert counts["library"] >= 2 and counts["general"] == 0 and "dups" not in counts
+    page = m.page("general", "folder")
+    assert {g["title"] for g in page} >= {"Library & folders"}
     assert all(row["section"] for g in page for row in g["rows"])
     assert m.page("general", "")[0]["title"] == "Review behavior"
 

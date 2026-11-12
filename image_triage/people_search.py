@@ -84,33 +84,16 @@ def cluster_face_identities(
         return []
 
     previous = _load_existing_clusters(connection)
-    groups: list[list[FaceIdentity]] = []
-    centroids: list[np.ndarray] = []
-    for face in faces:
-        vector = _normalize(np.asarray(face.embedding, dtype=np.float32))
-        best_index = -1
-        best_score = -1.0
-        for index, centroid in enumerate(centroids):
-            score = cosine_similarity(vector, centroid)
-            if score > best_score:
-                best_index = index
-                best_score = score
-        if best_index >= 0 and best_score >= threshold:
-            groups[best_index].append(face)
-            centroids[best_index] = _centroid([item.embedding for item in groups[best_index]])
-        else:
-            groups.append([face])
-            centroids.append(vector)
+    groups, centroids = _group_faces(faces, threshold)
 
-    used_previous: set[int] = set()
+    reused = _match_previous_clusters(previous, centroids, threshold=threshold)
     clusters: list[PersonCluster] = []
     stamp = datetime.now(timezone.utc).isoformat()
     with connection:
         connection.execute("UPDATE image_faces SET cluster_id = NULL")
-        for group, centroid in zip(groups, centroids):
-            cluster_id, name, ignored = _reuse_cluster(
-                previous, used_previous, centroid, threshold=threshold
-            )
+        for index, (group, centroid) in enumerate(zip(groups, centroids)):
+            earlier = reused.get(index)
+            cluster_id, name, ignored = (None, "", False) if earlier is None else (earlier.cluster_id, earlier.name, earlier.ignored)
             blob, dim, dtype = _vector_to_db(centroid)
             if cluster_id is None:
                 cursor = connection.execute(
@@ -454,31 +437,66 @@ def _load_existing_clusters(connection: sqlite3.Connection) -> list[PersonCluste
     ]
 
 
-def _reuse_cluster(
+def _group_faces(faces: list[FaceIdentity], threshold: float) -> tuple[list[list[FaceIdentity]], list[np.ndarray]]:
+    """Each face joins the group whose centre it is closest to (at or above ``threshold``), else starts one. Returns the groups and their centres.
+
+    A group's centre is the normalised mean of its faces. It is kept as a running sum, and all centres sit in one matrix, so a face costs one
+    matrix product: a thousand faces of one person used to rebuild that person's centre from every earlier face a thousand times over."""
+    groups: list[list[FaceIdentity]] = []
+    sums: list[np.ndarray] = []
+    centres = np.zeros((0, 0), dtype=np.float32)        # one row per group, grown by doubling
+    for face in faces:
+        vector = _normalize(np.asarray(face.embedding, dtype=np.float32))
+        count = len(groups)
+        best_index, best_score = -1, -1.0
+        if count:
+            if vector.size != centres.shape[1]:
+                raise ValueError(f"Embedding dimensions differ: {vector.size} vs {centres.shape[1]}")
+            scores = centres[:count] @ vector
+            best_index = int(np.argmax(scores))
+            best_score = float(scores[best_index])
+        if best_index >= 0 and best_score >= threshold:
+            groups[best_index].append(face)
+            sums[best_index] = sums[best_index] + vector
+            centres[best_index] = _normalize(sums[best_index])
+        else:
+            if count == 0:
+                centres = np.zeros((16, vector.size), dtype=np.float32)
+            elif count == centres.shape[0]:
+                centres = np.vstack([centres, np.zeros_like(centres)])
+            groups.append([face])
+            sums.append(vector.copy())
+            centres[count] = vector
+    return groups, [centres[index].copy() for index in range(len(groups))]
+
+
+def _match_previous_clusters(
     previous: list[PersonCluster],
-    used_previous: set[int],
-    centroid: np.ndarray,
+    centroids: list[np.ndarray],
     *,
     threshold: float,
-) -> tuple[int | None, str, bool]:
-    best: PersonCluster | None = None
-    best_score = -1.0
-    for candidate in previous:
-        if candidate.cluster_id in used_previous:
+) -> dict[int, PersonCluster]:
+    """Which earlier cluster (its id, name and ignored mark) each new group continues: {index of the new group: earlier cluster}.
+
+    The closest pairs are settled first, so a name stays with the group that looks most like the person it was given to. Taking the groups in
+    order instead handed a name to the first group over the threshold even when a later group was the better match."""
+    pairs: list[tuple[float, int, int]] = []
+    for new_index, centroid in enumerate(centroids):
+        for old_index, candidate in enumerate(previous):
+            if len(candidate.centroid) != centroid.size:
+                continue  # an earlier recognizer's cluster: a different space, never the same person
+            score = cosine_similarity(candidate.centroid, centroid)
+            if score >= threshold:
+                pairs.append((score, new_index, old_index))
+    pairs.sort(key=lambda item: (-item[0], item[1], item[2]))
+    matched: dict[int, PersonCluster] = {}
+    used: set[int] = set()
+    for _score, new_index, old_index in pairs:
+        if new_index in matched or old_index in used:
             continue
-        score = cosine_similarity(candidate.centroid, centroid)
-        if score > best_score:
-            best = candidate
-            best_score = score
-    if best is None or best_score < threshold:
-        return None, "", False
-    used_previous.add(best.cluster_id)
-    return best.cluster_id, best.name, best.ignored
-
-
-def _centroid(vectors: list[tuple[float, ...]]) -> np.ndarray:
-    matrix = np.vstack([_normalize(np.asarray(vector, dtype=np.float32)) for vector in vectors])
-    return _normalize(matrix.mean(axis=0))
+        matched[new_index] = previous[old_index]
+        used.add(old_index)
+    return matched
 
 
 def _normalize(vector: np.ndarray) -> np.ndarray:

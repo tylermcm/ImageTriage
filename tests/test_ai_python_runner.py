@@ -22,6 +22,10 @@ def _load_runner_module():
     return module
 
 
+# Made-up runtime locations, spelled for the platform: a drive letter is not a root (and holds os.pathsep) off Windows.
+_ROOT = Path("C:/" if os.name == "nt" else "/")
+
+
 class AIPythonRunnerTests(unittest.TestCase):
     def test_configure_runtime_adds_packaged_aiculler_root_for_cli_script(self) -> None:
         runner = _load_runner_module()
@@ -49,12 +53,12 @@ class AIPythonRunnerTests(unittest.TestCase):
 
     def test_cached_runtime_site_packages_take_precedence_over_bundled_fallback(self) -> None:
         runner = _load_runner_module()
-        fallback_site_packages = Path(r"C:\fallback\ai_site_packages")
-        cached_site_packages = Path(r"C:\runtime\site-packages")
+        fallback_site_packages = _ROOT / "fallback" / "ai_site_packages"
+        cached_site_packages = _ROOT / "runtime" / "site-packages"
         captured_path: list[str] = []
 
         with (
-            patch.object(runner, "_candidate_runtime_roots", return_value=[Path(r"C:\fallback")]),
+            patch.object(runner, "_candidate_runtime_roots", return_value=[_ROOT / "fallback"]),
             patch.object(runner, "_cached_runtime_site_packages", return_value=(cached_site_packages,)),
             patch.object(Path, "exists", autospec=True, side_effect=lambda self: self in {fallback_site_packages, cached_site_packages}),
             patch.object(runner.sys, "path", []),
@@ -69,9 +73,9 @@ class AIPythonRunnerTests(unittest.TestCase):
 
     def test_cached_runtime_binary_paths_take_precedence_over_bundled_fallback(self) -> None:
         runner = _load_runner_module()
-        fallback_root = Path(r"C:\fallback")
+        fallback_root = _ROOT / "fallback"
         fallback_torch_lib = fallback_root / "ai_site_packages" / "torch" / "lib"
-        cached_site_packages = Path(r"C:\runtime\site-packages")
+        cached_site_packages = _ROOT / "runtime" / "site-packages"
         cached_torch_lib = cached_site_packages / "torch" / "lib"
         captured_path_entries: list[str] = []
 

@@ -4,6 +4,7 @@ import QtQuick
 Item {
     id: sw
     property bool checked: false
+    property string name: ""            // what the switch turns on, for a screen reader (the label beside it)
     signal toggled(bool value)
     width: 38; height: 22
     Rectangle {
@@ -23,7 +24,10 @@ Item {
         Behavior on x { SpringAnimation { spring: 5.5; damping: 0.38; epsilon: 0.1 } }
         Behavior on color { ColorAnimation { duration: 200 } }
     }
+    Rectangle { visible: sw.activeFocus; anchors.fill: parent; anchors.margins: -3; radius: 14; color: "transparent"; border.width: 2; border.color: theme.accent }
     HoverHandler { cursorShape: Qt.PointingHandCursor }
     TapHandler { onTapped: sw.toggled(!sw.checked) }
-    Accessible.role: Accessible.CheckBox; Accessible.checked: sw.checked
+    activeFocusOnTab: true
+    Keys.onPressed: (e) => { if ((e.key === Qt.Key_Space || e.key === Qt.Key_Return || e.key === Qt.Key_Enter) && !e.isAutoRepeat) { sw.toggled(!sw.checked); e.accepted = true } }
+    Accessible.role: Accessible.CheckBox; Accessible.checked: sw.checked; Accessible.name: sw.name
 }

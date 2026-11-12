@@ -16,12 +16,34 @@ from types import SimpleNamespace
 
 from PySide6.QtCore import QFile, QObject, Signal, Slot
 
-from ..file_ops import FileMove, copy_paths, move_paths, record_paths, unique_destination
+from ..edit_carry import carry_edits, copy_edits, edit_files_for
+from ..file_ops import FileMove, bundle_destinations, copy_paths, move_paths, record_paths
 from ..models import SessionAnnotation
 from .decision_bridge import session_id
 
 SAFE_TRASH = "Safe Trash (Undoable)"
 RECENT_KEY = "folders/recent_destinations"
+
+
+def delete_bundle(record) -> tuple[str, ...]:
+    """Everything that goes when a photo is deleted: its files, its sidecars and its edit data (which would otherwise be left for a later file of the same name to inherit)."""
+    paths = list(record_paths(record))
+    seen = {os.path.normcase(os.path.normpath(p)) for p in paths}
+    for image in record.stack_paths:
+        for item in edit_files_for(image):
+            key = os.path.normcase(os.path.normpath(str(item)))
+            if key not in seen:
+                seen.add(key)
+                paths.append(str(item))
+    return tuple(paths)
+
+
+def _carry(moves, toast, *, back: bool = False) -> None:
+    """Take the edit data along with photos that were just moved (or moved back)."""
+    pairs = [(m.target_path, m.source_path) if back else (m.source_path, m.target_path) for m in moves]
+    left = carry_edits(pairs)
+    if left:
+        toast("warn", "Some edits did not move with the photo", ", ".join(left[:3]) + (f" and {len(left) - 3} more" if len(left) > 3 else ""))
 
 
 def _is_recycle_folder(folder: str) -> bool:
@@ -36,6 +58,60 @@ def rekey_after_move(record, moves, annotation) -> None:
     from ..file_ops import record_after_moves
 
     DecisionStore().move_annotation(session_id(), record.path, record_after_moves(record, tuple(moves)), annotation)
+
+
+def rekey_collections(pairs) -> bool:
+    """Collections hold photos by path, so they follow a photo the app moved or renamed. ``pairs`` is ``(old path, new path)``.
+    False when the library could not be updated (the photos themselves have already moved)."""
+    pairs = [(old, new) for old, new in pairs if old and new and old != new]
+    if not pairs:
+        return True
+    try:
+        from ..library_store import LibraryStore
+
+        LibraryStore().rename_item_paths(pairs)
+    except Exception:
+        return False
+    return True
+
+
+def _trash_bundle(bundle) -> tuple[bool, list[str]]:
+    """Send one photo's files to the system trash, all or none.
+
+    Stops at the first file the system refuses and brings back the ones already sent, so a RAW is not left behind while its
+    JPEG and sidecar are in the trash. Returns whether everything went, and the names that are in the trash and could not be
+    brought back (the system does not always say where it put a file).
+    """
+    trashed: list[tuple[str, str]] = []                  # (where it was, where the system put it)
+    for path in bundle:
+        if not os.path.exists(path):
+            continue
+        handle = QFile(path)
+        if hasattr(handle, "moveToTrash") and handle.moveToTrash():
+            trashed.append((path, str(handle.fileName() or "") if hasattr(handle, "fileName") else ""))
+            continue
+        stranded: list[str] = []
+        for original, in_trash in reversed(trashed):
+            try:
+                if not in_trash or not os.path.exists(in_trash) or os.path.exists(original):
+                    raise OSError("cannot be brought back")
+                shutil.move(in_trash, original)
+                _forget_trash_info(in_trash)
+            except OSError:
+                stranded.append(Path(original).name)
+        return False, stranded
+    return True, []
+
+
+def _forget_trash_info(in_trash: str) -> None:
+    """A freedesktop trash keeps a note beside each file (``info/<name>.trashinfo``); a file taken back out leaves it orphaned."""
+    files_dir = Path(in_trash).parent
+    if files_dir.name != "files":
+        return
+    try:
+        (files_dir.parent / "info" / (Path(in_trash).name + ".trashinfo")).unlink()
+    except OSError:
+        pass
 
 
 def _label(path: str) -> str:
@@ -95,6 +171,10 @@ class FileActions(QObject):
     def _rekey(self, record, moves: tuple[FileMove, ...], annotation: SessionAnnotation | None) -> None:
         rekey_after_move(record, moves, annotation)
 
+    def _rekey_collections(self, pairs) -> None:
+        if not self._memory and not rekey_collections(pairs):
+            self._toast("warn", "Collections were not updated", "The photos moved, but the collections they are in still point at the old place.")
+
     # ---------------- recent destinations ----------------
     def recent(self) -> list[str]:
         if self._memory:
@@ -102,8 +182,12 @@ class FileActions(QObject):
         raw = self._settings().value(RECENT_KEY, [], list)
         if isinstance(raw, str):
             raw = [raw]
+        from .. import path_policy
+
         here = os.path.normcase(os.path.normpath(self._photos.folder_dir())) if self._photos.folder_dir() else ""
-        return [p for p in raw or [] if isinstance(p, str) and p and os.path.isdir(p) and os.path.normcase(os.path.normpath(p)) != here][:6]
+        # This runs on the UI thread every time a menu is built. Only a folder on a plain local drive is asked whether it is
+        # still there; a share or a removable drive is listed unasked (a sleeping one would hold the window for seconds).
+        return [p for p in raw or [] if isinstance(p, str) and p and not path_policy.confirmed_missing(p) and os.path.normcase(os.path.normpath(p)) != here][:6]
 
     def _remember(self, destination: str) -> None:
         if self._memory:
@@ -122,7 +206,7 @@ class FileActions(QObject):
         if record is None:
             return
         folder = self._photos.folder_dir()
-        bundle = record_paths(record)
+        bundle = delete_bundle(record)
         name = record.name
         if _is_recycle_folder(folder):
             self._ask(f"Delete {name} permanently?", "It is in a recycle bin, so this cannot be undone.", "Delete", lambda: self._delete_for_good(record, bundle))
@@ -131,35 +215,87 @@ class FileActions(QObject):
         if self._delete_mode() == SAFE_TRASH or recycle.is_temporary_storage_folder():
             self._safe_trash(item, record, bundle, recycle)
             return
-        moved_all = True
-        for path in bundle:
-            if os.path.exists(path):
-                handle = QFile(path)
-                moved_all = (handle.moveToTrash() if hasattr(handle, "moveToTrash") else False) and moved_all
+        moved_all, stranded = _trash_bundle(bundle)
         if not moved_all:
-            self._ask(f"Delete {name} permanently?", "It could not be moved to the trash.", "Delete", lambda: self._delete_for_good(record, bundle))
+            why = "It could not be moved to the trash."
+            if stranded:
+                why += f" Already in the trash: {', '.join(stranded[:3])}{' and more' if len(stranded) > 3 else ''}."
+            self._ask(f"Delete {name} permanently?", why, "Delete", lambda: self._delete_for_good(record, bundle))
             return
         self._finish_delete(record)
         self._toast("success", f"Moved {name} to the trash", "Use the system trash to bring it back.")
+
+    @Slot("QVariantList")
+    def deleteRows(self, rows) -> None:
+        """Delete every photo the action applies to (the selection, else the row the grid is on) as one step."""
+        picked = []
+        for row in dict.fromkeys(int(r) for r in rows):
+            item = self._photos.row_at(row)
+            if item is not None and item.get("record") is not None:
+                picked.append((row, item))
+        if len(picked) <= 1:
+            for row in ([picked[0][0]] if picked else [int(r) for r in list(rows)[:1]]):
+                self.deleteRow(row)
+            return
+        records = [item["record"] for _row, item in picked]
+        count = len(records)
+        folder = self._photos.folder_dir()
+        if _is_recycle_folder(folder):
+            self._ask(f"Delete {count} photos permanently?", "They are in a recycle bin, so this cannot be undone.", "Delete", lambda: self._delete_many_for_good(records))
+            return
+        if self._delete_mode() == SAFE_TRASH or self._recycle(folder).is_temporary_storage_folder():
+            self.trashPaths([record.path for record in records], "")
+            return
+        trashed, failed, stranded = [], [], []
+        for record in records:
+            ok, left = _trash_bundle(delete_bundle(record))
+            (trashed if ok else failed).append(record)
+            stranded.extend(left)
+        self._finish_delete_many(trashed)
+        if trashed:
+            self._toast("success", f"Moved {len(trashed)} photo{'s' if len(trashed) != 1 else ''} to the trash", "Use the system trash to bring them back.")
+        if failed:
+            body = ", ".join(r.name for r in failed[:3]) + (" and more" if len(failed) > 3 else "")
+            if stranded:
+                body += f". Already in the trash: {', '.join(stranded[:3])}{' and more' if len(stranded) > 3 else ''}"
+            self._toast("error", f"{len(failed)} photo{'s' if len(failed) != 1 else ''} could not be moved to the trash", body)
+
+    def _delete_many_for_good(self, records: list) -> None:
+        gone, failed = [], ""
+        for record in records:
+            try:
+                for path in delete_bundle(record):
+                    if os.path.exists(path):
+                        os.remove(path)
+            except OSError as exc:
+                failed = f"{record.name}: {exc}"
+                break
+            gone.append(record)
+        self._finish_delete_many(gone)
+        if failed:
+            self._toast("error", f"Stopped after deleting {len(gone)} of {len(records)}", failed)
+        elif gone:
+            self._toast("success", f"Deleted {len(gone)} photos for good")
+
+    def _finish_delete_many(self, records: list) -> None:
+        if not records:
+            return
+        if not self._memory:
+            try:
+                self._store().delete_annotations(session_id(), [record.path for record in records])
+            except Exception:
+                pass
+        self._photos.remove_paths([record.path for record in records])
 
     def _safe_trash(self, item: dict, record, bundle: tuple[str, ...], recycle) -> None:
         root = recycle.recycle_root_for_folder()
         moves: list[FileMove] = []
         try:
             root.mkdir(parents=True, exist_ok=True)
-            for source in bundle:
-                if not os.path.exists(source):
-                    continue
-                target = unique_destination(str(root), Path(source).name)
-                shutil.move(source, target)
-                moves.append(FileMove(source_path=source, target_path=target))
+            _move_bundle(bundle, str(root), moves)
         except OSError as exc:
-            for done in reversed(moves):                      # put back what was already moved
-                try:
-                    shutil.move(done.target_path, done.source_path)
-                except OSError:
-                    pass
-            self._toast("error", f"Could not delete {record.name}", str(exc))
+            left = _put_back(moves)
+            self._toast("error", f"Could not delete {record.name}", _with_leftovers(str(exc), left, str(root)))
             return
         recycle.remember_recycle_origins(tuple(moves))
         annotation = item.get("annotation")
@@ -178,32 +314,24 @@ class FileActions(QObject):
         recycle = self._recycle(self._photos.folder_dir())
         root = recycle.recycle_root_for_folder()
         moved: list[tuple] = []                                   # (record, moves, annotation)
+        moves: list[FileMove] = []                                # the photo being moved, kept apart so a failure half way through it is put back too
         try:
             root.mkdir(parents=True, exist_ok=True)
             for row in rows:
                 moves = []
-                for source in record_paths(row["record"]):
-                    if os.path.exists(source):
-                        target = unique_destination(str(root), Path(source).name)
-                        shutil.move(source, target)
-                        moves.append(FileMove(source_path=source, target_path=target))
+                _move_bundle(delete_bundle(row["record"]), str(root), moves)
                 moved.append((row["record"], tuple(moves), row.get("annotation")))
+                moves = []
         except OSError as exc:
-            for _record, moves, _a in moved:                      # put back everything already moved
-                for done in reversed(moves):
-                    try:
-                        shutil.move(done.target_path, done.source_path)
-                    except OSError:
-                        pass
-            self._toast("error", "Could not move them to the recycle bin", str(exc))
+            left = _put_back([*(m for _record, done, _a in moved for m in done), *moves])
+            self._toast("error", "Could not move them to the recycle bin", _with_leftovers(str(exc), left, str(root)))
             return 0
         recycle.remember_recycle_origins(tuple(m for _r, moves, _a in moved for m in moves))
-        for record, _moves, _a in moved:
-            if not self._memory:
-                try:
-                    self._store().delete_annotation(session_id(), record.path)
-                except Exception:
-                    pass
+        if not self._memory:
+            try:                                          # one store and one commit, not one of each per photo, on the UI thread
+                self._store().delete_annotations(session_id(), [record.path for record, _moves, _a in moved])
+            except Exception:
+                pass
         self._photos.remove_paths([record.path for record, _m, _a in moved])
         entry = {}
         entry["id"] = self._photos.push_undo(f"move of {len(moved)} photos to the recycle bin", lambda: self._undo_trash(moved, recycle))
@@ -213,27 +341,21 @@ class FileActions(QObject):
     def _undo_trash(self, moved: list, recycle) -> bool:
         try:
             for _record, moves, _a in moved:
-                for move in moves:
-                    Path(move.source_path).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(move.target_path, move.source_path)
+                _restore(moves)
         except OSError as exc:
             self._toast("error", "Could not bring them back", str(exc))
             return False
         recycle.forget_recycle_origins(tuple(m.target_path for _r, moves, _a in moved for m in moves))
-        for record, _moves, annotation in moved:
-            if annotation is not None and not annotation.is_empty:
-                self._store().save_annotation(session_id(), record, annotation)
+        saved = [(record, annotation) for record, _moves, annotation in moved if annotation is not None and not annotation.is_empty]
+        if saved:
+            self._store().save_annotations(session_id(), saved)
         self._photos.reload()
         self._toast("success", f"Brought back {len(moved)} photo{'s' if len(moved) != 1 else ''}")
         return True
 
     def _undo_delete(self, record, moves: tuple[FileMove, ...], annotation, recycle) -> bool:
         try:
-            for move in moves:
-                if not os.path.exists(move.target_path):
-                    raise OSError(f"{Path(move.target_path).name} is no longer in the safe trash")
-                Path(move.source_path).parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(move.target_path, move.source_path)
+            _restore(moves, gone="is no longer in the safe trash")
         except OSError as exc:
             self._toast("error", f"Could not bring back {record.name}", str(exc))
             return False
@@ -272,48 +394,101 @@ class FileActions(QObject):
     def copyRow(self, row: int, destination: str) -> None:
         self._transfer(row, destination, move=False)
 
+    @Slot("QVariantList", str)
+    def moveRows(self, rows, destination: str) -> None:
+        self._transfer_many([int(r) for r in rows], destination, move=True)
+
+    @Slot("QVariantList", str)
+    def copyRows(self, rows, destination: str) -> None:
+        self._transfer_many([int(r) for r in rows], destination, move=False)
+
     def _transfer(self, row: int, destination: str, *, move: bool) -> None:
-        item, record = self._row(row)
+        self._transfer_many([row], destination, move=move)
+
+    def _transfer_many(self, rows: list[int], destination: str, *, move: bool) -> None:
+        """Move or copy every photo the action applies to, as one step with one Undo. Stops at the first failure and says how far it got."""
         destination = os.path.normpath(destination.strip()) if destination.strip() else ""
-        if record is None or not destination:
+        rows = list(dict.fromkeys(rows))
+        if len(rows) == 1:
+            item, record = self._row(rows[0])
+            picked = [(item, record)] if record is not None else []
+        else:
+            picked = [(item, item["record"]) for item in (self._photos.row_at(r) for r in rows) if item is not None and item.get("record") is not None]
+        if not picked or not destination:
             return
         folder = self._photos.folder_dir()
+        many = len(picked) > 1
         if os.path.normcase(os.path.normpath(folder)) == os.path.normcase(destination):
-            self._toast("warn", "That is the folder the photo is in", "Pick another folder.")
+            self._toast("warn", "That is the folder the photos are in" if many else "That is the folder the photo is in", "Pick another folder.")
             return
-        bundle = record_paths(record)
-        try:
-            moves = move_paths(bundle, destination) if move else copy_paths(bundle, destination)
-        except OSError as exc:
-            self._toast("error", f"Could not {'move' if move else 'copy'} {record.name}", str(exc))
+        verb = "move" if move else "copy"
+        done: list[tuple] = []                                     # (record, moves, annotation)
+        failure = ""
+        for item, record in picked:
+            try:
+                bundle = record_paths(record)
+                moves = move_paths(bundle, destination) if move else copy_paths(bundle, destination)
+            except OSError as exc:
+                failure = f"{record.name}: {exc}" if many else str(exc)
+                break
+            done.append((record, moves, item.get("annotation")))
+        if not move:
+            left = copy_edits([(m.source_path, m.target_path) for _record, moves, _a in done for m in moves])
+            if left:
+                self._toast("warn", "Some edits were not copied with the photo", ", ".join(left[:3]) + (f" and {len(left) - 3} more" if len(left) > 3 else ""))
+        if failure:
+            title = f"Stopped after {'moving' if move else 'copying'} {len(done)} of {len(picked)}" if many else f"Could not {verb} {picked[0][1].name}"
+            self._toast("error", title, failure)
+        if not done:
             return
         self._remember(destination)
         where = _label(destination)
+        what = f"{len(done)} photos" if len(done) != 1 else done[0][0].name
         if not move:
-            self._toast("success", f"Copied {record.name}", f"To {where}.")
+            if not failure or many:
+                self._toast("success", f"Copied {what}", f"To {where}.")
             return
-        annotation = item.get("annotation")
-        self._rekey(record, moves, annotation)
-        self._photos.remove_paths([record.path])
+        for record, moves, annotation in done:
+            self._rekey(record, moves, annotation)
+            _carry(moves, self._toast)
+        self._rekey_collections([(m.source_path, m.target_path) for _record, moves, _a in done for m in moves])
+        self._photos.remove_paths([record.path for record, _m, _a in done])
         entry = {}
-        entry["id"] = self._photos.push_undo(f"move of {record.name}", lambda: self._undo_move(record, moves, annotation))
-        self._toast("success", f"Moved {record.name}", f"To {where}.", "Undo", lambda: self._photos.undo_entry(entry["id"]))
+        entry["id"] = self._photos.push_undo(f"move of {what}", lambda: self._undo_moves(done))
+        self._toast("success", f"Moved {what}", f"To {where}.", "Undo", lambda: self._photos.undo_entry(entry["id"]))
+
+    def _undo_moves(self, done: list) -> bool:
+        if len(done) == 1:
+            return self._undo_move(*done[0])
+        try:
+            for _record, moves, _annotation in done:
+                _restore(moves, gone="is no longer where it was moved to")
+        except OSError as exc:
+            self._toast("error", "Could not move them back", str(exc))
+            return False
+        for _record, moves, _annotation in done:
+            _carry(moves, self._toast, back=True)
+        self._rekey_collections([(m.target_path, m.source_path) for _record, moves, _a in done for m in moves])
+        for record, moves, annotation in done:
+            if annotation is not None and not annotation.is_empty:
+                moved = next((m.target_path for m in moves if m.source_path == record.path), "")
+                if moved:
+                    self._store().move_annotation(session_id(), moved, record, annotation)
+        self._photos.reload()
+        self._toast("success", f"Moved {len(done)} photos back")
+        return True
 
     def _undo_move(self, record, moves: tuple[FileMove, ...], annotation) -> bool:
         try:
-            for move in moves:
-                if not os.path.exists(move.target_path):
-                    raise OSError(f"{Path(move.target_path).name} is no longer where it was moved to")
-                Path(move.source_path).parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(move.target_path, move.source_path)
+            _restore(moves, gone="is no longer where it was moved to")
         except OSError as exc:
             self._toast("error", f"Could not move {record.name} back", str(exc))
             return False
+        _carry(moves, self._toast, back=True)
+        self._rekey_collections([(m.target_path, m.source_path) for m in moves])
         if annotation is not None and not annotation.is_empty:
             moved = next((m.target_path for m in moves if m.source_path == record.path), "")
             if moved:
-                from ..file_ops import record_after_moves
-
                 self._store().move_annotation(session_id(), moved, record, annotation)
         self._photos.reload()
         self._toast("success", f"Moved {record.name} back")
@@ -335,3 +510,44 @@ class FileActions(QObject):
         then = self._pending.pop(ident, None)
         if yes and then is not None:
             then()
+
+
+def _move_bundle(bundle, root: str, moves: list) -> None:
+    """Move one photo's files into ``root`` under names that keep them paired; ``moves`` fills as each file lands, so the caller can put them back."""
+    present = tuple(path for path in bundle if os.path.exists(path))
+    for source, target in zip(present, bundle_destinations(present, root)):
+        shutil.move(source, target)
+        moves.append(FileMove(source_path=source, target_path=target))
+
+
+def _put_back(moves) -> list[str]:
+    """Return moved files to where they came from after a failure; gives the names that could not be returned."""
+    left: list[str] = []
+    for done in reversed(list(moves)):
+        try:
+            if os.path.exists(done.source_path):
+                raise OSError("a file with that name is there now")
+            shutil.move(done.target_path, done.source_path)
+        except OSError:
+            left.append(Path(done.target_path).name)
+    return left
+
+
+def _with_leftovers(message: str, left: list[str], where: str) -> str:
+    if not left:
+        return message
+    shown = ", ".join(left[:3]) + (f" and {len(left) - 3} more" if len(left) > 3 else "")
+    return f"{message} These could not be put back and are in {where}: {shown}."
+
+
+def _restore(moves, gone: str = "is no longer there") -> None:
+    """Take files back to their original places. Never replaces a file that is there now, and can be run again after a partial failure."""
+    for move in moves:
+        if not os.path.exists(move.target_path):
+            if os.path.exists(move.source_path):
+                continue                                  # already back from an earlier attempt
+            raise OSError(f"{Path(move.target_path).name} {gone}")
+        if os.path.exists(move.source_path):
+            raise OSError(f"A file named {Path(move.source_path).name} is already in the original folder")
+        Path(move.source_path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(move.target_path, move.source_path)

@@ -27,7 +27,11 @@ Item {
         font.weight: b.variant === "primary" ? Font.Medium : Font.Normal
         color: b.variant === "primary" ? theme.onAccent : (b.variant === "ghost" && !hover.hovered ? theme.fg2 : theme.fg)
     }
+    Rectangle { visible: b.activeFocus; anchors.fill: parent; anchors.margins: -3; radius: b.radius + 3; color: "transparent"; border.width: 2; border.color: theme.accent }
     HoverHandler { id: hover; enabled: b.enabled; cursorShape: Qt.PointingHandCursor }
     TapHandler { id: tap; enabled: b.enabled; onTapped: b.clicked() }
+    // reached with Tab and pressed with Space or Return, like any button; a held key presses once
+    activeFocusOnTab: true
+    Keys.onPressed: (e) => { if ((e.key === Qt.Key_Space || e.key === Qt.Key_Return || e.key === Qt.Key_Enter) && !e.isAutoRepeat) { b.clicked(); e.accepted = true } }
     Accessible.role: Accessible.Button; Accessible.name: b.text
 }

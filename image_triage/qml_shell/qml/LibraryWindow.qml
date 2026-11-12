@@ -8,13 +8,22 @@ Backdrop {
     id: root
     objectName: "libraryWindow"
     readonly property var v: reference.view
-    readonly property var l: v.lib || ({ empty: false, stats: [], scopes: [], cards: [], roots: [], query: "", scope: "all", noResults: false, foot: "", show: "", canShow: false })
+    readonly property var l: v.lib || ({ empty: false, stats: [], scopes: [], cards: [], roots: [], query: "", scope: "all", noResults: false, foot: "" })
     shown: v.window === "lib"
     onDismissed: reference.close()
     z: 106
 
     readonly property real winW: Math.min(780, width - 64)
     readonly property real winH: Math.min(660, height - 72)
+    // Removing a folder drops its whole index, and a large one takes a long time to index again: ask first.
+    property string removePath: ""
+    function askRemove(path) { removePath = path; removeCard.open() }
+    ConfirmCard {
+        id: removeCard; objectName: "libraryRemoveCard"; warn: true; cancelText: "Cancel"; confirmText: "Remove"
+        title: "Remove this folder from the library?"
+        body: root.removePath + "\n\nIts index is deleted; no files are moved or deleted. Add the folder again to index it again."
+        onAccepted: reference.removeRoot(root.removePath)
+    }
     component SecLabel: Text { color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
 
     DialogCard {
@@ -28,7 +37,7 @@ Backdrop {
             RHeader {
                 id: hd
                 width: parent.width
-                title: "Browse Library"; sub: "Search across the folders you chose to index, without leaving your normal folder-first workflow. Results open in the grid."
+                title: "Browse Library"; sub: "Search across the folders you chose to index, without leaving your normal folder-first workflow."
                 iconPath: "M4 5h4v14H4zM10 5h4v14h-4zM16 6l4 1-3 12-4-1z"
                 onCloseRequested: reference.close()
             }
@@ -120,7 +129,7 @@ Backdrop {
                                             Rectangle { anchors.fill: parent; radius: 7; color: Qt.alpha(theme.lift, ah.hovered ? 0.08 : 0) }
                                             Text { id: at; anchors.centerIn: parent; text: ab.modelData.t; color: ah.hovered ? theme.fg : theme.fg3; font.pointSize: UiState.pt(12) }
                                             HoverHandler { id: ah; cursorShape: Qt.PointingHandCursor }
-                                            TapHandler { onTapped: ab.modelData.a === "reindex" ? reference.reindex(rr.modelData.path) : reference.removeRoot(rr.modelData.path) }
+                                            TapHandler { onTapped: ab.modelData.a === "reindex" ? reference.reindex(rr.modelData.path) : root.askRemove(rr.modelData.path) }
                                             Accessible.role: Accessible.Button; Accessible.name: ab.modelData.t } } } }
                         }
                     }
@@ -144,8 +153,7 @@ Backdrop {
                 Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
                 Text { x: 26; anchors.verticalCenter: parent.verticalCenter; text: root.l.foot; color: theme.fg3; font.pointSize: UiState.pt(12.5) }
                 Row { anchors.right: parent.right; anchors.rightMargin: 20; anchors.verticalCenter: parent.verticalCenter; spacing: 8
-                    SButton { text: "Close"; h: 34; hpad: 16; radius: 12; onClicked: reference.close() }
-                    SButton { text: root.l.show; variant: "primary"; h: 34; hpad: 16; radius: 12; enabled: root.l.canShow; onClicked: reference.showInGrid() } }
+                    SButton { text: "Close"; h: 34; hpad: 16; radius: 12; onClicked: reference.close() } }
             }
         }
     }

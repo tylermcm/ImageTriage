@@ -18,10 +18,13 @@ Item {
     property real desaturate: 0          // 0..1, like CSS grayscale()
     readonly property int status: img.status
     property int rev: 0
-    property string asked: ""
+    // The photo this card has told the service it wants. A plain object, so that `source` can read and change it without becoming bound
+    // to it: the service is told once per photo, not once per URL asked for (a new size and every `ready` ask again).
+    readonly property var held: ({ path: "" })
     property url shown                   // the last picture that finished loading: stays up while the next size (or stand-in) loads, so a size change does not flash blank
 
-    function release() { if (asked !== "") { thumbs.unwant(asked); asked = "" } }
+    function release() { if (held.path !== "") { thumbs.unwant(held.path); held.path = "" } }
+    function claim() { if (held.path !== path) { release(); held.path = path; thumbs.want(path) } }
     Component.onDestruction: release()
     onPathChanged: { release(); shown = ""; rev++ }
 
@@ -49,7 +52,7 @@ Item {
         id: img
         anchors.fill: parent
         onStatusChanged: if (status === Image.Ready) { t.shown = source; thumbs.notePainted() }
-        source: { void t.rev; void t.bucket; if (t.path === "") return ""; t.asked = t.path; return thumbs.url(t.path, t.bucket) }
+        source: { void t.rev; void t.bucket; if (t.path === "") return ""; t.claim(); return thumbs.url(t.path, t.bucket) }
         sourceSize: Qt.size(t.bucket, Math.round(t.bucket * 2 / 3))
         asynchronous: true
         fillMode: t.shape

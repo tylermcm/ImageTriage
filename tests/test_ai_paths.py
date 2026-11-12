@@ -12,6 +12,7 @@ from image_triage import ai_paths
 
 
 class ManagedRootTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "patches os.name to 'nt', and pathlib cannot build a WindowsPath off Windows")
     def test_windows_root_ignores_store_virtualized_local_appdata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store_cache = Path(temp_dir) / (
@@ -43,6 +44,7 @@ class ManagedRootTests(unittest.TestCase):
                     ai_paths.managed_models_root(), Path(temp_dir).resolve() / "models"
                 )
 
+    @unittest.skipUnless(os.name == "nt", "patches os.name to 'nt', and pathlib cannot build a WindowsPath off Windows")
     def test_managed_root_is_short_enough_for_deep_package_paths(self) -> None:
         # The Store-virtualized root that caused the field failure was ~120
         # characters before any package path was appended.
@@ -84,6 +86,7 @@ class MigrationTests(unittest.TestCase):
             env = {
                 ai_paths.AI_ROOT_ENV: str(managed),
                 "LOCALAPPDATA": str(legacy_root),
+                "XDG_CACHE_HOME": str(legacy_root),  # where the legacy cache is looked for off Windows
                 "USERPROFILE": str(legacy_root),
             }
             with patch.dict(os.environ, env, clear=False):
@@ -108,6 +111,7 @@ class MigrationTests(unittest.TestCase):
             env = {
                 ai_paths.AI_ROOT_ENV: str(managed),
                 "LOCALAPPDATA": str(legacy_root),
+                "XDG_CACHE_HOME": str(legacy_root),  # where the legacy cache is looked for off Windows
                 "USERPROFILE": str(legacy_root),
             }
             with patch.dict(os.environ, env, clear=False):
@@ -127,6 +131,7 @@ class MigrationTests(unittest.TestCase):
             env = {
                 ai_paths.AI_ROOT_ENV: str(managed),
                 "LOCALAPPDATA": str(legacy_root),
+                "XDG_CACHE_HOME": str(legacy_root),  # where the legacy cache is looked for off Windows
                 "USERPROFILE": str(legacy_root),
             }
             with patch.dict(os.environ, env, clear=False):

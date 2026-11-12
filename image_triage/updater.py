@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -75,6 +76,7 @@ def check_for_update(*, current_version: str | None = None, feed_url: str | None
         raise ValueError(
             f"No update feed is configured. Set {UPDATE_FEED_URL_ENV} or configure DEFAULT_UPDATE_FEED_URL."
         )
+    _require_https(resolved_feed_url, "The update feed")
     latest = fetch_update_info(resolved_feed_url)
     resolved_current = current_version or current_app_version()
     return UpdateCheckResult(
@@ -115,6 +117,7 @@ def download_update_installer(
             "This update does not publish a valid SHA-256 checksum, so it cannot be verified "
             "and will not be downloaded or installed."
         )
+    _require_https(update.installer_url, "The update installer")
     destination_root = Path(destination_dir) if destination_dir is not None else Path(tempfile.gettempdir()) / "ImageTriageUpdates"
     destination_root.mkdir(parents=True, exist_ok=True)
     filename = _safe_filename(update.installer_filename)
@@ -127,6 +130,7 @@ def download_update_installer(
     bytes_read = 0
     try:
         with urllib.request.urlopen(request, timeout=120) as response, temp_destination.open("wb") as handle:
+            _require_https_response(response, "The update installer")
             total_bytes = _response_content_length(response)
             while True:
                 chunk = response.read(DOWNLOAD_CHUNK_SIZE)
@@ -142,7 +146,12 @@ def download_update_installer(
     except urllib.error.URLError as exc:
         _remove_partial_download(temp_destination)
         raise RuntimeError(f"Update download failed: {exc.reason}") from exc
-    except OSError:
+    except http.client.HTTPException as exc:
+        # A connection that drops part way raises IncompleteRead, which is not an OSError: without this the
+        # half-written file stayed behind and the caller saw a bare traceback.
+        _remove_partial_download(temp_destination)
+        raise RuntimeError("Update download was interrupted before it finished. Try again.") from exc
+    except BaseException:
         _remove_partial_download(temp_destination)
         raise
 
@@ -156,7 +165,23 @@ def download_update_installer(
     return destination
 
 
-def launch_update_installer(installer_path: str | Path, *, passive: bool = True) -> subprocess.Popen:
+def verify_installer_checksum(installer_path: str | Path, expected_sha256: str) -> None:
+    """Hash the installer again. Raises when it is not the file that was verified after the download.
+
+    The file sits in a temporary folder between the download and the launch, so the check made when it was
+    downloaded says nothing about what is there now.
+    """
+    expected = _normalize_sha256(expected_sha256)
+    if not _SHA256_PATTERN.fullmatch(expected):
+        raise RuntimeError("The update has no valid SHA-256 checksum, so the installer cannot be verified.")
+    digest = _sha256_file(Path(installer_path))
+    if digest.casefold() != expected.casefold():
+        raise RuntimeError("The downloaded installer changed after it was verified. It was not started.")
+
+
+def launch_update_installer(
+    installer_path: str | Path, *, passive: bool = True, expected_sha256: str | None = None
+) -> subprocess.Popen:
     path = Path(installer_path)
     if not path.exists():
         raise FileNotFoundError(f"Installer not found: {path}")
@@ -164,6 +189,8 @@ def launch_update_installer(installer_path: str | Path, *, passive: bool = True)
         raise ValueError(f"Update installer must be an MSI file: {path}")
     if os.name != "nt" and sys.platform != "win32":
         raise OSError("MSI updates are only supported on Windows.")
+    if expected_sha256 is not None:
+        verify_installer_checksum(path, expected_sha256)
 
     command = ["msiexec.exe", "/i", str(path)]
     if passive:
@@ -176,6 +203,7 @@ def launch_update_installer_and_restart(
     *,
     app_executable: str | Path | None = None,
     current_pid: int | None = None,
+    expected_sha256: str | None = None,
 ) -> subprocess.Popen:
     path = Path(installer_path)
     if not path.exists():
@@ -188,6 +216,8 @@ def launch_update_installer_and_restart(
     executable = Path(app_executable) if app_executable is not None else Path(sys.executable)
     if not executable.exists():
         raise FileNotFoundError(f"Application executable not found: {executable}")
+    if expected_sha256 is not None:
+        verify_installer_checksum(path, expected_sha256)
 
     command = [
         "powershell.exe",
@@ -228,7 +258,22 @@ def _powershell_quote(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _require_https(url: str, what: str) -> None:
+    """Refuse anything but https: the feed names the installer and its checksum, so a plain-http answer could name both."""
+    if urlparse(str(url or "").strip()).scheme.casefold() != "https":
+        raise ValueError(f"{what} must use https.")
+
+
+def _require_https_response(response: object, what: str) -> None:
+    """The address that finally answered must be https too (a redirect can leave it)."""
+    geturl = getattr(response, "geturl", None)
+    final_url = geturl() if callable(geturl) else ""
+    if final_url:
+        _require_https(final_url, what)
+
+
 def _fetch_json(url: str) -> object:
+    _require_https(url, "The update feed")
     request = urllib.request.Request(
         url,
         headers={
@@ -238,11 +283,14 @@ def _fetch_json(url: str) -> object:
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
+            _require_https_response(response, "The update feed")
             payload = response.read()
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"Update check failed with HTTP {exc.code}: {exc.reason}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Update check failed: {exc.reason}") from exc
+    except http.client.HTTPException as exc:
+        raise RuntimeError("Update check was interrupted before it finished.") from exc
     try:
         return json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:

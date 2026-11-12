@@ -71,6 +71,25 @@ jobs:
           ref: ${{ steps.pin.outputs.ref }}
           path: photocraft-src
 
+      # The pictures the app shows are only current when they were made by the render algorithm the app expects. A pinned editor
+      # with another algorithm would make every saved edit look out of date, so the build stops here instead of shipping it.
+      - name: Check the editor's render algorithm matches the app
+        shell: python
+        run: |
+          import re
+          from pathlib import Path
+
+          source = Path("photocraft-src/crates/ui-egui/src/render_manifest.rs").read_text(encoding="utf-8")
+          editor = re.search(r"pub const ALGORITHM: u64 = (\d+);", source)
+          bridge = re.search(r"^RENDER_ALGORITHM = (\d+)$", Path("image_triage/photocraft_bridge.py").read_text(encoding="utf-8"), re.M)
+          if editor is None or bridge is None:
+              raise SystemExit("Could not read the render algorithm from the editor source or from photocraft_bridge.py.")
+          if editor.group(1) != bridge.group(1):
+              raise SystemExit(
+                  f"The pinned PhotoCraft renders with algorithm {editor.group(1)}; image_triage/photocraft_bridge.py expects "
+                  f"{bridge.group(1)}. Bump packaging/photocraft_pin.txt to the validated editor commit."
+              )
+
       - name: Set up Rust
         shell: pwsh
         run: |
@@ -92,6 +111,23 @@ jobs:
         shell: pwsh
         working-directory: photocraft-src
         run: cargo build --release -p photocraft
+
+      # The RAW preview worker (native/raw_preview) is built against the same PhotoCraft source, into the same target folder so
+      # the crates the editor build compiled are reused. Its manifest is made from the template, as scripts/build_raw_preview.ps1 does.
+      - name: Build the RAW preview worker
+        shell: pwsh
+        run: |
+          $pc = (Resolve-Path photocraft-src).Path.Replace('\','/')
+          $src = (Resolve-Path native/raw_preview).Path.Replace('\','/')
+          New-Item -ItemType Directory -Force -Path raw-preview-build | Out-Null
+          $manifest = (Get-Content -LiteralPath native/raw_preview/Cargo.toml.in -Raw).Replace('@PHOTOCRAFT@',$pc).Replace('@SOURCE@',$src)
+          Set-Content -LiteralPath raw-preview-build/Cargo.toml -Value $manifest -Encoding utf8
+          $env:CARGO_TARGET_DIR = "$pc/target"
+          cargo build --release --manifest-path raw-preview-build/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw 'RAW preview worker build failed' }
+          $exe = (Resolve-Path photocraft-src/target/release/image-triage-raw-preview.exe).Path
+          "IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW_EXE=$exe" >> $env:GITHUB_ENV
+          Write-Host "Bundling $exe"
 
       - name: Point the installer at the editor
         shell: pwsh

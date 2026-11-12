@@ -112,7 +112,15 @@ def histogram(header):
     return result
 
 
+# How long one request to the preview worker may take before the worker is taken to have hung and is stopped. Opening a large
+# RAW on a slow disk takes seconds; nothing it does takes minutes.
+CALL_TIMEOUT_S = 120.0
+ERROR_TAIL_BYTES = 2000
+
+
 class Connection:
+    timeout = None          # seconds for one request; None uses CALL_TIMEOUT_S
+
     def __init__(self, path, own=None):
         self.log = tempfile.TemporaryFile()
         self.proc = subprocess.Popen([path], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -129,14 +137,54 @@ class Connection:
             raise
 
     def call(self, request):
+        """One request and its reply. A worker that does not answer in time is stopped, so the thread waiting here (and the
+        editor's "working" state with it) is never left waiting for good."""
         if (request.get("recipe", {}).get("cameraRaw", {}).get("redEye")
                 and not getattr(self, "_red_eye_supported", False)):
             raise RuntimeError("Red Eye needs the updated RAW preview worker.")
-        self.proc.stdin.write((json.dumps(request, allow_nan=False) + "\n").encode())
-        self.proc.stdin.flush()
+        limit = CALL_TIMEOUT_S if self.timeout is None else self.timeout
+        hung = threading.Event()
+
+        def stop():
+            hung.set()
+            self.interrupt()
+
+        watchdog = threading.Timer(limit, stop)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            return self._exchange(request)
+        except Exception as error:
+            if hung.is_set():
+                raise RuntimeError(f"The RAW preview worker did not answer within {limit:g} s and was stopped." + self._error_tail()) from error
+            raise
+        finally:
+            watchdog.cancel()
+
+    def _error_tail(self):
+        """The end of what the worker wrote to its error output, for the message of a worker that stopped. Read only once the
+        worker has exited: until then it is still writing through the same file position."""
+        proc, log = self.proc, getattr(self, "log", None)
+        if log is None:
+            return ""
+        try:
+            proc.wait(timeout=1)
+            size = log.seek(0, os.SEEK_END)
+            log.seek(max(0, size - ERROR_TAIL_BYTES))
+            text = log.read().decode("utf-8", "replace").strip()
+        except (OSError, ValueError, subprocess.TimeoutExpired, AttributeError):
+            return ""
+        return f" Its last output: {text}" if text else ""
+
+    def _exchange(self, request):
+        try:
+            self.proc.stdin.write((json.dumps(request, allow_nan=False) + "\n").encode())
+            self.proc.stdin.flush()
+        except OSError as error:
+            raise RuntimeError("The RAW preview worker stopped." + self._error_tail()) from error
         line = self.proc.stdout.readline(128 * 1024)
         if not line:
-            raise RuntimeError("The RAW preview worker stopped.")
+            raise RuntimeError("The RAW preview worker stopped." + self._error_tail())
         header = json.loads(line)
         if not header.get("ok"):
             raise RuntimeError(header.get("error", "RAW preview failed."))
@@ -153,7 +201,7 @@ class Connection:
         while len(data) < size:
             chunk = self.proc.stdout.read(size - len(data))
             if not chunk:
-                raise RuntimeError("Incomplete RAW preview frame.")
+                raise RuntimeError("Incomplete RAW preview frame." + self._error_tail())
             data.extend(chunk)
         image = QImage(data, width, height, width * 4, QImage.Format_RGBA8888).copy()
         image.setColorSpace(QColorSpace(QColorSpace.SRgb))

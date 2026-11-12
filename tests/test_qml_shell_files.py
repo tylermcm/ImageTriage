@@ -252,3 +252,117 @@ def test_the_menu_asks_for_a_folder_and_lists_recent_ones(qapp, world):
     menu.openPhoto(row_of(w.photos, "c"))
     menu.act("del")
     assert not (w.shoot / "c.jpg").exists()
+
+
+# ---- the selection, bundles that stay together, and undo that can be tried again ----
+def test_delete_takes_every_selected_photo_as_one_undoable_step(qapp, world):
+    w = world
+    w.photos.selectAll()
+    rows = w.photos.selectionRows(0)
+    assert len(rows) == 3
+    w.files.deleteRows(rows)
+    assert w.photos.shown == 0 and not any((w.shoot / n).exists() for n in ("a.jpg", "a.nef", "b.jpg", "c.jpg"))
+    assert w.toasts.items[-1]["title"] == "Moved 3 photos to the recycle bin"
+    assert w.photos.undo() == "move of 3 photos to the recycle bin"
+    pump(qapp, 0.8)
+    assert all((w.shoot / n).exists() for n in ("a.jpg", "a.nef", "b.jpg", "c.jpg")) and w.photos.shown == 3
+
+
+def test_delete_with_one_row_is_the_single_photo_delete(qapp, world):
+    w = world
+    w.files.deleteRows([row_of(w.photos, "b")])
+    assert w.toasts.items[-1]["title"] == "Deleted b.jpg" and w.photos.shown == 2
+
+
+def test_move_takes_every_selected_photo_and_one_undo_brings_them_all_back(qapp, world):
+    w = world
+    dest = w.tmp / "picked"
+    w.photos.selectAll()
+    w.files.moveRows(w.photos.selectionRows(0), str(dest))
+    assert {p.name for p in dest.iterdir()} >= {"a.nef", "a.jpg", "b.jpg", "c.jpg"} and w.photos.shown == 0
+    assert w.toasts.items[-1]["title"] == "Moved 3 photos"
+    assert w.photos.undo() == "move of 3 photos"
+    pump(qapp, 0.8)
+    assert all((w.shoot / n).exists() for n in ("a.jpg", "a.nef", "b.jpg", "c.jpg")) and not any(dest.iterdir())
+
+
+def test_a_bundle_is_renamed_together_when_one_of_its_names_is_taken(qapp, world):
+    w = world
+    dest = w.tmp / "taken"
+    dest.mkdir()
+    (dest / "a.jpg").write_bytes(b"someone else's")
+    w.files.moveRow(row_of(w.photos, "a"), str(dest))
+    assert (dest / "a.jpg").read_bytes() == b"someone else's"
+    assert (dest / "a_1.nef").exists() and (dest / "a_1.jpg").exists()          # still a pair, not a.nef + a_1.jpg
+
+
+def test_a_failed_undo_stays_on_the_history_and_does_not_undo_something_older(qapp, world):
+    w = world
+    w.photos.setRating(row_of(w.photos, "c"), 4)                # the older, unrelated change
+    w.files.deleteRow(row_of(w.photos, "b"))
+    (w.tmp / "trash" / "b.jpg").unlink()                       # the trashed file is gone: this undo cannot work
+    failed = []
+    w.photos.undoFailed.connect(failed.append)
+    assert w.photos.undo() == ""
+    assert failed == ["delete of b.jpg"] and w.photos.canUndo
+    assert w.photos.get(row_of(w.photos, "c"))["rating"] == 4   # the rating was not touched
+    assert w.toasts.items[-1]["title"] == "Could not bring back b.jpg"
+
+
+def test_undo_never_replaces_a_file_that_now_has_the_original_name(qapp, world):
+    w = world
+    w.files.deleteRow(row_of(w.photos, "b"))
+    (w.shoot / "b.jpg").write_bytes(b"a new photo with the old name")
+    assert w.photos.undo() == ""
+    assert (w.shoot / "b.jpg").read_bytes() == b"a new photo with the old name" and (w.tmp / "trash" / "b.jpg").exists()
+    assert w.photos.canUndo
+
+
+def test_a_trash_that_fails_part_way_puts_back_the_photo_it_was_on(qapp, world, monkeypatch):
+    w = world
+    real, calls = fa.shutil.move, []
+
+    def flaky(source, target):
+        calls.append(source)
+        if len(calls) == 2:                                    # the second file of the first photo's bundle
+            raise OSError("share went away")
+        return real(source, target)
+
+    monkeypatch.setattr(fa.shutil, "move", flaky)
+    assert w.files.trashPaths([str(w.shoot / "a.nef")], "") == 0
+    monkeypatch.setattr(fa.shutil, "move", real)
+    assert (w.shoot / "a.nef").exists() and (w.shoot / "a.jpg").exists()
+    assert w.toasts.items[-1]["title"] == "Could not move them to the recycle bin"
+
+
+def _recipe(folder, photo_name):
+    from image_triage.edit_storage import EDIT_STORAGE_ROOT_NAME
+
+    root = folder / EDIT_STORAGE_ROOT_NAME
+    root.mkdir(exist_ok=True)
+    target = root / f"{photo_name}.cameraraw.json"
+    target.write_text('{"version": 1}', encoding="utf-8")
+    return target
+
+
+def test_a_deleted_photos_edits_go_with_it_and_come_back_with_it(qapp, world):
+    w = world
+    recipe = _recipe(w.shoot, "b.jpg")
+    w.files.deleteRow(row_of(w.photos, "b"))
+    assert not recipe.exists() and (w.tmp / "trash" / "b.jpg.cameraraw.json").exists()   # nothing left for a later b.jpg to inherit
+    assert w.photos.undo() == "delete of b.jpg"
+    pump(qapp, 0.8)
+    assert recipe.exists() and (w.shoot / "b.jpg").exists()
+
+
+def test_a_moved_photos_edits_move_with_it_and_back_on_undo(qapp, world):
+    from image_triage.edit_storage import EDIT_STORAGE_ROOT_NAME
+
+    w = world
+    recipe = _recipe(w.shoot, "c.jpg")
+    dest = w.tmp / "delivered"
+    w.files.moveRow(row_of(w.photos, "c"), str(dest))
+    assert not recipe.exists() and (dest / EDIT_STORAGE_ROOT_NAME / "c.jpg.cameraraw.json").exists()
+    assert w.photos.undo() == "move of c.jpg"
+    pump(qapp, 0.8)
+    assert recipe.exists() and not (dest / EDIT_STORAGE_ROOT_NAME / "c.jpg.cameraraw.json").exists()

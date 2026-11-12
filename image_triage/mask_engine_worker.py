@@ -138,6 +138,8 @@ class MaskEngineHost:
     import_timings: dict[str, float] = {}
 
     def warm_imports(self, engine: str | None = None) -> str:
+        if engine:
+            self._engine(engine)  # Reject an invalid request before importing heavy runtimes.
         # No engine -> warm the whole host (torch/CUDA shared; later warms are
         # cheap because torch is already imported process-wide).
         if not self.import_timings:

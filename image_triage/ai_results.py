@@ -719,11 +719,19 @@ def _build_folder_percentile_map(results_by_group: dict[str, tuple[AIImageResult
     if total == 1:
         return {normalized_path_key(ordered[0].file_path): 100.0}
 
+    # Photos with the same score share one percentile (the middle of the places they take up). The file name only orders them for
+    # display: it must not make one of several identical results read as better than the others.
     percentiles: dict[str, float] = {}
     denominator = max(1, total - 1)
-    for index, result in enumerate(ordered):
-        percentile = 100.0 - ((index / denominator) * 100.0)
-        percentiles[normalized_path_key(result.file_path)] = percentile
+    start = 0
+    while start < total:
+        end = start
+        while end + 1 < total and ordered[end + 1].score == ordered[start].score:
+            end += 1
+        percentile = 100.0 - ((((start + end) / 2.0) / denominator) * 100.0)
+        for result in ordered[start : end + 1]:
+            percentiles[normalized_path_key(result.file_path)] = percentile
+        start = end + 1
     return percentiles
 
 

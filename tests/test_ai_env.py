@@ -166,6 +166,12 @@ class SelectRuntimeTests(unittest.TestCase):
         self.assertEqual(selection.device, "cpu")
 
 
+# A drive letter holds os.pathsep everywhere but on Windows, so PYTHONPATH entries are spelled for the platform.
+_ROOT = "C:/" if os.name == "nt" else "/"
+_MANAGED_SITE = Path(_ROOT + "managed/profiles/gpu-abc123/site-packages")
+_OTHER_ENTRIES = (_ROOT + "other", _ROOT + "more")
+
+
 class WorkerEnvironmentTests(unittest.TestCase):
     def _selection(self, site: Path) -> RuntimeSelection:
         return RuntimeSelection(
@@ -177,17 +183,17 @@ class WorkerEnvironmentTests(unittest.TestCase):
         )
 
     def test_managed_site_packages_come_first_on_pythonpath(self) -> None:
-        selection = self._selection(Path("C:/managed/profiles/gpu-abc123/site-packages"))
+        selection = self._selection(_MANAGED_SITE)
         env = ai_env.build_worker_env(
-            selection, base_env={"PYTHONPATH": os.pathsep.join(["C:/other", "C:/more"])}
+            selection, base_env={"PYTHONPATH": os.pathsep.join(_OTHER_ENTRIES)}
         )
 
         entries = env["PYTHONPATH"].split(os.pathsep)
         self.assertEqual(entries[0], str(selection.primary_site_packages))
-        self.assertEqual(entries[1:], ["C:/other", "C:/more"])
+        self.assertEqual(entries[1:], list(_OTHER_ENTRIES))
 
     def test_a_repeated_launch_does_not_stack_the_same_profile(self) -> None:
-        selection = self._selection(Path("C:/managed/profiles/gpu-abc123/site-packages"))
+        selection = self._selection(_MANAGED_SITE)
         first = ai_env.build_worker_env(selection, base_env={})
         second = ai_env.build_worker_env(selection, base_env=first)
 
@@ -195,7 +201,7 @@ class WorkerEnvironmentTests(unittest.TestCase):
         self.assertEqual(entries.count(str(selection.primary_site_packages)), 1)
 
     def test_the_environment_isolates_the_worker_from_a_user_python(self) -> None:
-        selection = self._selection(Path("C:/managed/profiles/gpu-abc123/site-packages"))
+        selection = self._selection(_MANAGED_SITE)
         env = ai_env.build_worker_env(selection, base_env={})
 
         self.assertEqual(env["PYTHONNOUSERSITE"], "1")
@@ -203,7 +209,7 @@ class WorkerEnvironmentTests(unittest.TestCase):
         self.assertEqual(env["TRANSFORMERS_OFFLINE"], "1")
 
     def test_the_selected_profile_and_device_travel_with_the_process(self) -> None:
-        selection = self._selection(Path("C:/managed/profiles/gpu-abc123/site-packages"))
+        selection = self._selection(_MANAGED_SITE)
         env = ai_env.build_worker_env(selection, base_env={}, protocol_version=7)
 
         self.assertEqual(env[ai_env.AI_PROFILE_ENV], "gpu-abc123")
@@ -211,7 +217,7 @@ class WorkerEnvironmentTests(unittest.TestCase):
         self.assertEqual(env[ai_env.AI_PROTOCOL_ENV], "7")
 
     def test_a_worker_reads_back_what_its_parent_pinned(self) -> None:
-        selection = self._selection(Path("C:/managed/profiles/gpu-abc123/site-packages"))
+        selection = self._selection(_MANAGED_SITE)
         env = ai_env.build_worker_env(selection, base_env={}, protocol_version=3)
         with patch.dict(os.environ, env, clear=False):
             self.assertEqual(ai_env.worker_reported_profile(), "gpu-abc123")

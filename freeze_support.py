@@ -23,6 +23,11 @@ AI_BINARY_MODULES_ENV_NAMES = ("IMAGE_TRIAGE_AI_DLLS", "IMAGE_TRIAGE_AI_BINARY_M
 PHOTOCRAFT_BUNDLE_ENV = "IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT_EXE"
 PHOTOCRAFT_BUNDLE_SWITCH_ENV = "IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT"
 PHOTOCRAFT_BUNDLE_DIR = "photocraft"
+# The RAW preview worker the in-app RAW editor draws its live preview with (native/raw_preview, built against the PhotoCraft
+# checkout). The application looks for it beside its own executable (qml_shell/raw_preview.executable).
+RAW_PREVIEW_BUNDLE_ENV = "IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW_EXE"
+RAW_PREVIEW_BUNDLE_SWITCH_ENV = "IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW"
+RAW_PREVIEW_EXE_NAME = "image-triage-raw-preview.exe"
 PHOTOCRAFT_LICENSE_FILES = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "ATTRIBUTION.md")
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -283,6 +288,25 @@ def photocraft_bundle_files() -> list[tuple[str, str]]:
         else:
             files.append((str(source), f"{PHOTOCRAFT_BUNDLE_DIR}/{name}"))
     return files
+
+
+def raw_preview_bundle_files() -> list[tuple[str, str]]:
+    """The RAW preview worker for the installer, as ``(source, destination under the install dir)``.
+
+    Without it the installed app starts a whole editor for every slider change and range masks do not work, so a build that
+    cannot find it stops; ``IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW=0`` says that an installer without it is what is wanted.
+    """
+    if os.environ.get(RAW_PREVIEW_BUNDLE_SWITCH_ENV, "1").strip().lower() in {"0", "false", "no", "off"}:
+        print(f"Leaving the RAW preview worker out ({RAW_PREVIEW_BUNDLE_SWITCH_ENV}=0): RAW editing in this installer is slow.")
+        return []
+    executable = _configured_path(RAW_PREVIEW_BUNDLE_ENV)
+    if executable is None or not executable.is_file():
+        raise SystemExit(
+            f"The installer carries the RAW preview worker ({RAW_PREVIEW_EXE_NAME}), and there is none to put in it. Build it "
+            f"(scripts/build_raw_preview.ps1) and name it with {RAW_PREVIEW_BUNDLE_ENV}, or set {RAW_PREVIEW_BUNDLE_SWITCH_ENV}=0 "
+            "for an installer without it."
+        )
+    return [(str(executable), RAW_PREVIEW_EXE_NAME)]
 
 
 def _configured_path(env_name: str) -> Path | None:

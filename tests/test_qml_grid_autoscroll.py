@@ -1,4 +1,6 @@
 """Middle-button autoscroll stays independent of selection and normal wheels."""
+import sys
+
 from PySide6.QtCore import QObject, QPoint, QPointF, Qt
 from PySide6.QtGui import QGuiApplication, QWheelEvent
 from PySide6.QtTest import QTest
@@ -54,7 +56,8 @@ def test_middle_click_autoscroll_sticky_drag_cancel_and_bounds(qapp, tmp_path):
     pump(qapp, .05)
     assert root.property("autoScrolling")
     anchor = window.findChild(QObject, "gridAutoScrollAnchor")
-    assert anchor.isVisible()
+    # The anchor mark is the reader-mode cursor Windows ships (scroll_cursor.py); elsewhere there is no artwork and it stays hidden.
+    assert anchor.isVisible() == (sys.platform == "win32")
     initial = grid.property("contentY")
     pump(qapp, .08)
     assert grid.property("contentY") == initial  # Dead zone at the anchor.

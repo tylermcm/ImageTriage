@@ -258,6 +258,154 @@ def test_close_settles_camera_raw_and_save_failure_keeps_editor_open(qapp, folde
     assert ("show", 77, False) not in mover.calls
 
 
+def _failed_close(qapp, folder):
+    host, mover, launched = make(qapp, folder)
+    host.openPath(str(folder / "a.jpg"))
+    assert wait(qapp, lambda: host.state == EDITING)
+
+    def fail_save():
+        raise OSError("Synthetic disk failure")
+
+    host._proc.control.app_save = fail_save
+    return host, mover, launched
+
+
+def test_a_failed_save_on_close_can_be_left_without_saving(qapp, folder):
+    host, mover, launched = _failed_close(qapp, folder)
+    proc = host._proc
+    closed, close_failed, failed = [], [], []
+    host.closed.connect(closed.append)
+    host.closeFailed.connect(close_failed.append)
+    host.failed.connect(failed.append)
+    host.close()
+    assert wait(qapp, lambda: bool(close_failed))
+    assert "could not be saved" in close_failed[0] and failed == [] and host.state == EDITING and not closed
+    host.closeWithoutSaving()
+    assert host.state == IDLE and host.path == "" and host.error == "" and closed == [str(folder / "a.jpg")]
+    assert ("show", 77, False) in mover.calls and not proc.stopped
+    (folder / "b.jpg").write_bytes(b"x")
+    del proc.control.app_save                                                 # the share is back
+    host.openPath(str(folder / "b.jpg"))                                      # the same editor takes the next photo, replacing the unsaved one
+    assert wait(qapp, lambda: host.state == EDITING)
+    assert host._proc is proc and len(launched) == 1 and proc.control.opened[-1] == ("b.jpg", True) and proc.control.saved == 0
+
+
+def test_a_failed_close_is_still_reported_when_nothing_offers_the_way_out(qapp, folder):
+    host, mover, launched = _failed_close(qapp, folder)
+    failed = []
+    host.failed.connect(failed.append)
+    host.close()
+    assert wait(qapp, lambda: bool(failed)) and "could not be saved" in failed[0]
+
+
+def test_shell_confirmation_hides_native_editor_and_restores_it_without_saving(qapp, folder):
+    host, mover, launched = make(qapp, folder)
+    host.openPath(str(folder / "a.jpg"))
+    assert wait(qapp, lambda: host.state == EDITING)
+    proc = host._proc
+    host.setPresentationBlocked(True)
+    assert mover.calls[-1] == ("show", 77, False)
+    assert host.state == EDITING and not proc.stopped
+    host.setPresentationBlocked(False)
+    assert mover.calls[-1] == ("show", 77, True)
+    assert proc.control.saved == 0
+    host.setPresentationBlocked(True)
+    host.closeWithoutSaving()
+    mover.calls.clear()
+    host.setPresentationBlocked(False)
+    assert not mover.calls and host.state == IDLE
+
+
+def test_close_without_saving_does_nothing_unless_the_editor_is_up(qapp, folder):
+    host, mover, launched = make(qapp, folder)
+    closed = []
+    host.closed.connect(closed.append)
+    host.closeWithoutSaving()
+    assert host.state == IDLE and closed == []
+
+
+def test_quitting_saves_the_open_photo_before_the_editor_is_stopped(qapp, folder):
+    host, mover, launched = make(qapp, folder)
+    host.openPath(str(folder / "a.jpg"))
+    assert wait(qapp, lambda: host.state == EDITING)
+    proc = host._proc
+    order = []
+    save, stop = proc.control.app_save, proc.shutdown
+    proc.control.app_save = lambda: (order.append("save"), save())[1]
+    proc.shutdown = lambda **kw: (order.append("stop"), stop(**kw))[1]
+    host.shutdown()
+    assert order == ["save", "stop"] and proc.stopped
+    assert ("ui.cameraRaw", {"done": True}) in proc.control.calls
+
+
+def test_quitting_does_not_wait_long_for_an_editor_that_does_not_answer(qapp, folder, monkeypatch):
+    import threading
+
+    import image_triage.qml_shell.editor_host as module
+
+    monkeypatch.setattr(module, "SHUTDOWN_SETTLE_S", 0.2)
+    host, mover, launched = make(qapp, folder)
+    host.openPath(str(folder / "a.jpg"))
+    assert wait(qapp, lambda: host.state == EDITING)
+    proc = host._proc
+    release = threading.Event()
+    proc.control.app_save = lambda: release.wait(10)
+    started = time.monotonic()
+    host.shutdown()
+    release.set()
+    assert proc.stopped and time.monotonic() - started < 3
+
+
+def test_quitting_with_the_editor_put_away_saves_nothing(qapp, folder):
+    host, mover, launched = make(qapp, folder)
+    host.openPath(str(folder / "a.jpg"))
+    assert wait(qapp, lambda: host.state == EDITING)
+    proc = host._proc
+    host.close()
+    assert wait(qapp, lambda: host.state == IDLE)
+    calls = len(proc.control.calls)
+    host.shutdown()
+    assert proc.stopped and proc.control.saved == 1 and len(proc.control.calls) == calls
+
+
+def test_a_saved_edit_clears_the_pictures_of_earlier_saves(qapp, folder, monkeypatch):
+    from image_triage import photocraft_bridge as bridge
+
+    pruned = []
+    monkeypatch.setattr(bridge, "prune_render_generations", lambda path, **_: pruned.append(path) or 0)
+    host, mover, launched = make(qapp, folder)
+    host.openPath(str(folder / "a.jpg"))
+    assert wait(qapp, lambda: host.state == EDITING)
+    host.save()
+    assert wait(qapp, lambda: pruned == [str(folder / "a.jpg")])
+    (folder / "b.jpg").write_bytes(b"x")
+    host.openPath(str(folder / "b.jpg"))                                      # switching saves a.jpg first
+    assert wait(qapp, lambda: host.state == EDITING and host.path.endswith("b.jpg"))
+    assert pruned == [str(folder / "a.jpg")] * 2
+    host.close()
+    assert wait(qapp, lambda: host.state == IDLE)
+    assert pruned[-1] == str(folder / "b.jpg")
+
+
+def test_a_raw_with_settings_from_a_newer_version_is_not_opened_over_them(qapp, folder):
+    import json
+
+    from image_triage import photocraft_bridge as bridge
+
+    path = str(folder / "raw.nef")
+    target = bridge.recipe_path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"version": bridge.RECIPE_VERSION + 1, "cameraRaw": {"exposure": 1}}), encoding="utf-8")
+    before = target.read_bytes()
+    host, mover, launched = make(qapp, folder)
+    failed = []
+    host.failed.connect(failed.append)
+    host.openPath(path)
+    assert wait(qapp, lambda: bool(failed))
+    assert "newer version" in failed[0] and host.state == IDLE
+    assert target.read_bytes() == before and not target.with_name(target.name + ".bad").exists()
+
+
 def test_space_during_launch_closes_after_open_without_flashing_editor(qapp, folder):
     import threading
     ready = threading.Event()
@@ -410,3 +558,34 @@ def test_the_stage_stays_up_while_the_next_photo_loads(qapp, tmp_path, folder):
     assert wait(qapp, lambda: host.state == EDITING)
     assert not host.property("switching")
     window.close()
+
+
+def test_the_editors_mask_and_super_resolution_requests_are_polled_while_it_is_open(qapp, folder, monkeypatch):
+    # The editor cannot call the host: it holds a request until the host polls. Nothing polled in the QML shell, so Subject,
+    # Landscape and People masks and Super Resolution never ran, and the mask models were never warmed.
+    from image_triage.qml_shell import editor_host as host_module
+
+    monkeypatch.setattr(host_module, "HOST_JOB_POLL_S", 0.02)
+
+    class Jobs:
+        def __init__(self):
+            self.polled = []
+
+        def poll(self, proc):
+            self.polled.append(proc)
+            return False
+
+    jobs = Jobs()
+    host, mover, launched = make(qapp, folder)
+    host._host_jobs = jobs
+    host.openPath(str(folder / "a.jpg"))
+    assert wait(qapp, lambda: host.state == EDITING)
+    assert wait(qapp, lambda: len(jobs.polled) >= 3)
+    assert all(proc is host._proc for proc in jobs.polled)
+    host.close()
+    assert wait(qapp, lambda: host.state == "idle")
+    assert wait(qapp, lambda: not host._host_job_thread.is_alive())
+    seen = len(jobs.polled)
+    wait(qapp, lambda: False, seconds=0.15)
+    assert len(jobs.polled) == seen                      # put away: nothing is asked of an editor nobody is using
+    host.shutdown()

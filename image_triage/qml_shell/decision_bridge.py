@@ -54,7 +54,9 @@ class DecisionBridge(QObject):
 
         self._queue = AnnotationPersistenceQueue(parent=self)
         self._queue.failed.connect(self._failed)
+        self._queue.warning.connect(self._sidecar_warning)
         self.failures: list[tuple[str, str]] = []
+        self._sidecar_warned: set[str] = set()         # folders already told that their sidecars cannot be written
         photos.set_annotation_loader(self.load)
         photos.annotationChanged.connect(self.save)
 
@@ -62,7 +64,11 @@ class DecisionBridge(QObject):
     def load(self, records) -> dict:
         from ..decision_store import DecisionStore
 
-        stored = DecisionStore().load_annotations(session_id(), list(records))
+        records = list(records)
+        store = DecisionStore()
+        stored = store.load_annotations(session_id(), records)
+        # Rows for photos that are no longer in the folder are kept: a photo moved out and back, or renamed outside the app, must not
+        # lose its decision for it (`DecisionStore.prune_missing` exists for an explicit clean-up).
         out = {}
         for path, annotation in stored.items():
             decision, rating = annotation_to_view(annotation)
@@ -87,3 +93,13 @@ class DecisionBridge(QObject):
         self.failures.append((path, message))
         if self._toasts is not None:
             self._toasts.push("error", "Could not save the decision", f"{path.replace(chr(92), '/').rsplit('/', 1)[-1]}: {message}")
+
+    def _sidecar_warning(self, path: str, message: str) -> None:
+        """The decision is saved, but its XMP sidecar could not be written (a read-only card, a full disk). Said once for a
+        folder: every photo in it will fail the same way, and one toast per keypress would bury the screen."""
+        folder, _, name = path.replace(chr(92), "/").rpartition("/")
+        if folder in self._sidecar_warned:
+            return
+        self._sidecar_warned.add(folder)
+        if self._toasts is not None:
+            self._toasts.push("warn", "Could not write the XMP sidecar", f"{name}: {message}. The decision itself is saved; other programs will not see it for photos in this folder.")

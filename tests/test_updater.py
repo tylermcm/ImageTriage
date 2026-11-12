@@ -173,6 +173,77 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual("", info.sha256)
         self.assertFalse(info.is_verifiable)
 
+    def test_a_feed_or_installer_that_is_not_https_is_refused_before_the_network(self) -> None:
+        with patch.object(updater.urllib.request, "urlopen", side_effect=AssertionError("must not touch the network")):
+            for feed in ("http://example.test/update.json", "file:///tmp/update.json", "ftp://example.test/u.json"):
+                with self.assertRaisesRegex(ValueError, "must use https"):
+                    updater.check_for_update(current_version="1.0.0", feed_url=feed)
+                with self.assertRaisesRegex(ValueError, "must use https"):
+                    updater.fetch_update_info(feed)
+            info = updater.UpdateInfo(version="1.2.0", installer_url="http://example.test/a.msi", sha256="a" * 64)
+            with tempfile.TemporaryDirectory() as temp_dir:
+                with self.assertRaisesRegex(ValueError, "must use https"):
+                    updater.download_update_installer(info, destination_dir=temp_dir)
+                self.assertEqual([], list(Path(temp_dir).iterdir()))
+
+    def test_a_redirect_that_leaves_https_is_refused_and_leaves_no_file(self) -> None:
+        payload = b"msi bytes"
+
+        class Redirected(_FakeResponse):
+            def geturl(self) -> str:
+                return "http://mirror.example.test/a.msi"
+
+        info = updater.UpdateInfo(
+            version="1.2.0", installer_url="https://example.test/a.msi", sha256=hashlib.sha256(payload).hexdigest()
+        )
+        with tempfile.TemporaryDirectory() as temp_dir, _urlopen_returning(Redirected(payload)):
+            with self.assertRaisesRegex(ValueError, "must use https"):
+                updater.download_update_installer(info, destination_dir=temp_dir)
+            self.assertEqual([], list(Path(temp_dir).iterdir()))
+        with _urlopen_returning(Redirected(b"{}")):
+            with self.assertRaisesRegex(ValueError, "must use https"):
+                updater.fetch_update_info("https://example.test/update.json")
+
+    def test_a_download_cut_off_part_way_is_reported_and_removed(self) -> None:
+        import http.client
+
+        class CutOff(_FakeResponse):
+            def read(self, size: int = -1) -> bytes:
+                if self._offset:
+                    raise http.client.IncompleteRead(b"", 10)
+                return super().read(4)
+
+        info = updater.UpdateInfo(version="1.2.0", installer_url="https://example.test/a.msi", sha256="a" * 64)
+        with tempfile.TemporaryDirectory() as temp_dir, _urlopen_returning(CutOff(b"msi bytes")):
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                updater.download_update_installer(info, destination_dir=temp_dir)
+            self.assertEqual([], list(Path(temp_dir).iterdir()))
+
+    def test_the_installer_is_hashed_again_before_it_is_started(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installer = Path(temp_dir) / "ImageTriage-1.2.0.msi"
+            installer.write_bytes(b"msi bytes")
+            expected = hashlib.sha256(b"msi bytes").hexdigest()
+            updater.verify_installer_checksum(installer, "sha256:" + expected.upper())
+            installer.write_bytes(b"swapped")
+            with self.assertRaisesRegex(RuntimeError, "changed after it was verified"):
+                updater.verify_installer_checksum(installer, expected)
+            with self.assertRaisesRegex(RuntimeError, "no valid SHA-256"):
+                updater.verify_installer_checksum(installer, "")
+            with patch.object(updater.sys, "platform", "win32"), patch.object(updater.subprocess, "Popen") as popen:
+                with self.assertRaisesRegex(RuntimeError, "changed after it was verified"):
+                    updater.launch_update_installer(installer, expected_sha256=expected)
+                with self.assertRaisesRegex(RuntimeError, "changed after it was verified"):
+                    updater.launch_update_installer_and_restart(
+                        installer, app_executable=installer, current_pid=1, expected_sha256=expected
+                    )
+                popen.assert_not_called()
+                installer.write_bytes(b"msi bytes")
+                updater.launch_update_installer_and_restart(
+                    installer, app_executable=installer, current_pid=1, expected_sha256=expected
+                )
+                popen.assert_called_once()
+
     def test_update_handoff_command_waits_installs_silently_and_restarts(self) -> None:
         command = updater._build_update_handoff_command(
             Path("C:/Users/Test User/Downloads/Image Triage 1.2.0.msi"),

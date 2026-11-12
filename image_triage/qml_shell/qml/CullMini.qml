@@ -23,5 +23,13 @@ Item {
         Item { width: 1; height: 19 }
         Row { spacing: 6
             SButton { text: "Show"; h: 28; hpad: 11; radius: 9; onClicked: cull.openCull() }
-            SButton { text: "Cancel"; h: 28; hpad: 11; radius: 9; onClicked: cull.cancelRun() } } }
+            SButton { text: "Cancel"; h: 28; hpad: 11; radius: 9; onClicked: cancelCard.open() } } }
+    // Cancelling throws away the analysis done so far and cannot be undone, so the small card asks first.
+    ConfirmCard {
+        id: cancelCard
+        objectName: "cullMiniCancelCard"
+        warn: true; title: "Cancel the analysis?"; confirmText: "Cancel analysis"; cancelText: "Keep running"
+        body: "The work done so far on " + mini.v.folder + " is discarded. Running it again starts from the beginning."
+        onAccepted: cull.cancelRun()
+    }
 }

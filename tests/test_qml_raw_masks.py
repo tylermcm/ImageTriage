@@ -259,3 +259,17 @@ def test_all_local_color_pages_load_shared_tools(shell,qapp):
         find("maskSection_"+title).setProperty("expanded",True);pump(qapp,.1)
     assert not [w for w in warnings if "Raw" in w],warnings
     assert raw.maskEditor.current["adjust"]["gradeBlending"]==50
+
+
+def test_nothing_started_during_a_save_can_leave_the_editor_stuck_saving(qapp):
+    # Selecting a range mask while "Saving edits..." showed moved the revision on; the save's result then counted as
+    # stale and the editor refused open, cancel, done and every slider for the rest of the session.
+    raw = RawEditor(memory=True); raw.open("sample.NEF")
+    raw._saving = True
+    revision = raw._revision
+    raw._enqueue("preview")
+    assert raw._revision == revision                         # refused: the save still owns the revision
+    raw._revision += 1                                       # and even if something did move it on ...
+    raw._arrived(revision, "save", "", "")
+    assert raw.saving is False                               # ... the save being over is never missed
+    raw.shutdown()

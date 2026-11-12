@@ -139,13 +139,15 @@ def _per_test_hard_timeout(request):
 def _forbid_real_mask_engine_worker(monkeypatch):
     real_popen = subprocess.Popen
 
-    def guarded_popen(args, *popen_args, **popen_kwargs):
-        command = args if isinstance(args, str) else " ".join(str(part) for part in args)
-        if "mask_engine_worker" in command:
-            raise AssertionError(
-                "test tried to spawn a real mask_engine_worker process; patch subprocess.Popen instead"
-            )
-        return real_popen(args, *popen_args, **popen_kwargs)
+    class guarded_popen(real_popen):
+        # Windows asyncio subclasses Popen during import; retain its type contract.
+        def __init__(self, args, *popen_args, **popen_kwargs):
+            command = args if isinstance(args, str) else " ".join(str(part) for part in args)
+            if "mask_engine_worker" in command:
+                raise AssertionError(
+                    "test tried to spawn a real mask_engine_worker process; patch subprocess.Popen instead"
+                )
+            super().__init__(args, *popen_args, **popen_kwargs)
 
     guarded_popen.__wrapped__ = real_popen
     monkeypatch.setattr(subprocess, "Popen", guarded_popen)

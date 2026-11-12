@@ -127,9 +127,11 @@ class CliCullerRunTask(QRunnable):
                     cwd=self.run_root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=diagnostics, text=True, encoding="utf-8", errors="strict",
                     start_new_session=os.name != "nt",
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+                    creationflags=(subprocess.CREATE_NO_WINDOW | 0x4) if os.name == "nt" else 0,
                 )
                 tree = WorkerProcessTree(process)
+                if os.name == "nt":
+                    tree.resume_windows_process()
                 # The worker cannot import models or spawn metadata children
                 # until its Windows job/POSIX group is owned by this task.
                 process.stdin.write("start\n")

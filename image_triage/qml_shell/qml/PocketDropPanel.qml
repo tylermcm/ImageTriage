@@ -318,21 +318,11 @@ Item {
                 }
             }
             Column {
-                x: 14 + (row.isColl ? 54 : 30) + 11; y: 6.5; width: parent.width - x - (row.isColl ? asChip.width + 14 : 40)
+                x: 14 + (row.isColl ? 54 : 30) + 11; y: 6.5; width: parent.width - x - 40
                 Text { width: parent.width; height: 18; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; text: modelData.title; color: theme.fg; font.pixelSize: 13 }
                 Text { width: parent.width; height: 15; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; text: modelData.sub; color: row.received ? page.recvGreen : theme.fg3; font.pointSize: UiState.pt(11.5) }
             }
-            // "Send as" chip of a library group (gives way to the remove button on hover)
-            Rectangle {
-                id: asChip
-                visible: row.isColl && !rowHover.hovered; anchors.right: parent.right; anchors.rightMargin: 6; y: 11; width: asRow.width + 16; height: 24; radius: 7; color: theme.s3
-                Row { id: asRow; anchors.centerIn: parent; spacing: 4
-                    Text { text: modelData.asLabel; color: asHover.hovered ? theme.fg : theme.fg2; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
-                    Icon { path: "M7 10l5 5 5-5"; size: 11; strokeWidth: 2.2; color: asHover.hovered ? theme.fg : theme.fg2; anchors.verticalCenter: parent.verticalCenter } }
-                HoverHandler { id: asHover; cursorShape: Qt.PointingHandCursor }
-                TapHandler { onTapped: pocketDrop.toggleSendAs(row.modelData.key) }
-                Accessible.role: Accessible.Button; Accessible.name: "Send as " + modelData.asLabel
-            }
+            // Files are always sent as they are: there is no proofing conversion, so the old "Send as" chip that only changed its own label is gone.
             Item {
                 visible: rowHover.hovered; anchors.right: parent.right; anchors.rightMargin: 6; y: 9; width: 28; height: 28
                 Rectangle { anchors.fill: parent; radius: 8; color: theme.s3; opacity: xHover.hovered ? 1 : 0 }

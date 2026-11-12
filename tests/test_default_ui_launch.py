@@ -40,4 +40,7 @@ def test_folder_target_becomes_folder_option(tmp_path: Path):
 def test_image_target_opens_its_folder(tmp_path: Path):
     photo = tmp_path / "DSC_0001.jpg"
     photo.write_bytes(b"")
-    assert qml_argv_from_launch(["ImageTriage.exe", str(photo)]) == ["--folder", str(tmp_path)]
+    assert qml_argv_from_launch(["ImageTriage.exe", str(photo)]) == ["--folder", str(tmp_path), "--select", str(photo)]
+    notes = tmp_path / "notes.txt"
+    notes.write_bytes(b"")
+    assert qml_argv_from_launch(["ImageTriage.exe", str(notes)]) == ["--folder", str(tmp_path)]      # not a photo: only its folder

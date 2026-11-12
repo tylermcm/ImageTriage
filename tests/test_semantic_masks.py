@@ -190,6 +190,8 @@ class SemanticMaskCacheTests(unittest.TestCase):
         np.testing.assert_array_less(source[4:6], tightened[4:6])
 
     def test_sky_boundary_repair_fills_an_image_supported_notch(self) -> None:
+        if semantic_masks._load_opencv() is None:
+            self.skipTest("needs OpenCV (cv2), which ships in the managed AI runtime and not with the application")
         height, width = 120, 180
         y, x = np.mgrid[:height, :width]
         ridge = 58 + (np.abs(x - width / 2) * 0.10).astype(int)
@@ -216,6 +218,8 @@ class SemanticMaskCacheTests(unittest.TestCase):
         np.testing.assert_array_equal(mask, repaired)
 
     def test_water_topology_removes_disconnected_upper_false_positives(self) -> None:
+        if semantic_masks._load_opencv() is None:
+            self.skipTest("needs OpenCV (cv2), which ships in the managed AI runtime and not with the application")
         mask = np.zeros((120, 180), dtype=np.float32)
         mask[70:, 20:160] = 0.95
         mask[67:70, 20:160] = 0.20

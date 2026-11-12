@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
-from ..scanner import normalized_path_key
 from ..face_groups import MAX_FACE_GROUPS, MIN_FACE_COUNT
+from .photos import member_key
 
 _DEMO = (
     ("p1", "Anna", 214, 20), ("p2", "Mark", 187, 150), ("p3", "Lena", 142, 260), ("p4", "Jonas", 96, 330), ("p5", "", 61, 200),
@@ -21,8 +22,39 @@ def _hue(ident) -> int:
     return (int(digits) * 47 + 20) % 360
 
 
+def _read_people(db: Path) -> list[dict]:
+    """Everyone the folder's face index holds who is not ignored, most photographed first; clusters with one name are one person."""
+    from ..people_search import list_person_clusters
+
+    connection = sqlite3.connect(str(db), timeout=5)
+    try:
+        connection.execute("PRAGMA busy_timeout=5000")
+        by_name: dict[str, dict] = {}
+        people: list[dict] = []
+        for cluster in list_person_clusters(connection):
+            name = cluster.name.strip()
+            if name and name.casefold() in by_name:
+                person = by_name[name.casefold()]
+                person["clusters"].append(cluster.cluster_id)
+                person["count"] += cluster.face_count
+                continue
+            person = {"id": str(cluster.cluster_id), "name": name, "count": cluster.face_count, "clusters": [cluster.cluster_id], "ignored": False}
+            if name:
+                by_name[name.casefold()] = person
+            people.append(person)
+        for person in people:
+            person["hue"] = _hue(person["id"])
+        people.sort(key=lambda p: p["count"], reverse=True)
+        return people
+    except sqlite3.DatabaseError:
+        return []
+    finally:
+        connection.close()
+
+
 class PeopleModel(QObject):
     revisionChanged = Signal()
+    _read = Signal(int, str, object, object)        # the index was read off the interface thread: (token, folder, its file or None, the people)
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -33,13 +65,16 @@ class PeopleModel(QObject):
         self._db: Path | None = None
         self._query = ""
         self._revision = 0
+        self._read_token = 0                # the newest read asked for: an older one that answers later is dropped
+        self._folder = ""                   # the folder `_people` belongs to
+        self._read.connect(self._apply_read)
         photos.folderChanged.connect(self.reload)
         self.reload()
 
     # -- the index --------------------------------------------------------------------------------------------------------------------
-    def _db_path(self) -> Path | None:
-        folder = self._photos.folderPath
-        if not folder or self._memory:
+    @staticmethod
+    def _db_path(folder: str) -> Path | None:
+        if not folder:
             return None
         try:
             from ..aiculler_workflow import aiculler_db_path, build_aiculler_workflow_paths
@@ -56,37 +91,40 @@ class PeopleModel(QObject):
 
     @Slot()
     def reload(self) -> None:
-        self._db = self._db_path()
+        """Read the open folder's face index again: when the folder changes, after an analysis has written it, after a name is changed.
+
+        Finding the index asks the disk whether a file exists and reading it waits up to five seconds for a writer to let go, so both
+        happen on a thread; the people appear when it answers."""
         if self._memory:
             self._people = [p for p in self._demo if not p["ignored"]]
-        elif self._db is None:
-            self._people = []
-        else:
-            from ..people_search import list_person_clusters
+            self._revision += 1
+            self.revisionChanged.emit()
+            return
+        folder = self._photos.folderPath
+        self._read_token += 1
+        token = self._read_token
+        if folder != self._folder:
+            # Another folder: the last folder's people are not this one's. (The same folder keeps what it shows until the new read is in.)
+            self._folder, self._db, self._people = folder, None, []
+            self._revision += 1
+            self.revisionChanged.emit()
+        if not folder:
+            return                          # no folder is open: there is nothing to read
 
-            connection = self._connect()
+        def work() -> None:
+            db = self._db_path(folder)
             try:
-                by_name: dict[str, dict] = {}
-                people: list[dict] = []
-                for cluster in list_person_clusters(connection):
-                    name = cluster.name.strip()
-                    if name and name.casefold() in by_name:
-                        person = by_name[name.casefold()]
-                        person["clusters"].append(cluster.cluster_id)
-                        person["count"] += cluster.face_count
-                        continue
-                    person = {"id": str(cluster.cluster_id), "name": name, "count": cluster.face_count, "clusters": [cluster.cluster_id], "ignored": False}
-                    if name:
-                        by_name[name.casefold()] = person
-                    people.append(person)
-                for person in people:
-                    person["hue"] = _hue(person["id"])
-                people.sort(key=lambda p: p["count"], reverse=True)
-                self._people = people
-            except sqlite3.DatabaseError:
-                self._people = []
-            finally:
-                connection.close()
+                people = _read_people(db) if db is not None else []
+            except Exception:
+                people = []
+            self._read.emit(token, folder, db, people)
+
+        threading.Thread(target=work, name="qml-people", daemon=True).start()
+
+    def _apply_read(self, token: int, folder: str, db, people) -> None:
+        if token != self._read_token:
+            return
+        self._folder, self._db, self._people = folder, db, people
         self._revision += 1
         self.revisionChanged.emit()
 
@@ -124,9 +162,16 @@ class PeopleModel(QObject):
     def indexInfo(self) -> dict:
         """The Face index block of the Faces page: a meter, a line of text, a percentage (sample data in --mock)."""
         if self._memory:
-            return {"value": 0.86, "text": "1,104 of 1,284 photos scanned", "pct": "86%"}
+            return {"meter": True, "value": 0.86, "text": "1,104 of 1,284 photos scanned", "pct": "86%"}
+        # The index does not say how much of the folder it has seen, so there is no share to draw: `meter` is false and the value is
+        # nothing, not a full bar.
         n = len(self._people)
-        return {"value": 1.0, "text": f"{n} {'person' if n == 1 else 'people'} found in this folder", "pct": ""}
+        return {"meter": False, "value": 0.0, "text": f"{n} {'person' if n == 1 else 'people'} found in this folder", "pct": ""}
+
+    # The same block as properties, so a binding follows the folder and a new analysis without asking again by hand.
+    indexShare = Property(float, lambda self: self.indexInfo()["value"] if self.indexInfo()["meter"] else -1.0, notify=revisionChanged)   # -1: not known, draw no meter
+    indexText = Property(str, lambda self: self.indexInfo()["text"], notify=revisionChanged)
+    indexPct = Property(str, lambda self: self.indexInfo()["pct"], notify=revisionChanged)
 
     @Slot(str)
     def openPerson(self, pid: str) -> None:
@@ -142,8 +187,9 @@ class PeopleModel(QObject):
         else:
             from ..face_groups import face_group_photo_paths
 
-            keys = {normalized_path_key(p) for p in face_group_photo_paths(self._db, person["clusters"])}
-            pred = lambda r, k=keys: normalized_path_key(r["path"]) in k
+            # The same cheap key on both sides (the folder resolved once, not every photo): this runs for every photo each time the grid is filtered.
+            keys = {member_key(p) for p in face_group_photo_paths(self._db, person["clusters"])}
+            pred = lambda r, k=keys: (r.get("key") or member_key(r["path"])) in k
         self._photos.set_scope("person", pid, pred)
 
     @Slot(str, result=str)

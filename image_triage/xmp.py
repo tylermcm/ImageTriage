@@ -59,15 +59,23 @@ def load_sidecar_annotation(image_path: str) -> SessionAnnotation:
     return SessionAnnotation()
 
 
-def sync_sidecar_annotation(record: ImageRecord, annotation: SessionAnnotation | None) -> None:
+def sync_sidecar_annotation(record: ImageRecord, annotation: SessionAnnotation | None, previous: SessionAnnotation | None = None) -> None:
+    """Write the photo's decision to its XMP sidecar.
+
+    ``previous`` is what the app held for the photo before this change. An existing sidecar is only changed where the
+    two differ: a rating or keywords another program wrote (Lightroom, Bridge) that the app never showed or touched
+    must not be erased because a winner was marked. A sidecar the app creates gets the whole annotation.
+    """
     effective = annotation or SessionAnnotation()
     paths = existing_sidecar_paths(record.path)
     if not paths:
         if effective.is_empty:
             return
-        paths = (_preferred_sidecar_path(record.path),)
+        _write_single_sidecar(_preferred_sidecar_path(record.path), effective, None)
+        return
+    before = previous or SessionAnnotation()
     for path in paths:
-        _write_single_sidecar(path, effective)
+        _write_single_sidecar(path, effective, before)
 
 
 def existing_sidecar_paths(image_path: str) -> tuple[str, ...]:
@@ -130,7 +138,9 @@ def _read_single_sidecar(sidecar_path: str) -> SessionAnnotation:
     )
 
 
-def _write_single_sidecar(sidecar_path: str, annotation: SessionAnnotation) -> None:
+def _write_single_sidecar(sidecar_path: str, annotation: SessionAnnotation, before: SessionAnnotation | None = None) -> None:
+    """``before`` None writes every field (a new sidecar); otherwise the rating and keywords are only changed by what changed since ``before``."""
+    packet = _has_xpacket(sidecar_path)
     tree = _load_sidecar_tree(sidecar_path)
     root = tree.getroot()
     rdf = root.find(RDF)
@@ -141,8 +151,20 @@ def _write_single_sidecar(sidecar_path: str, annotation: SessionAnnotation) -> N
     _set_field(description, REVIEW_STATE, _review_state_value(annotation))
     _set_field(description, PHOTOSHOP, "true" if annotation.photoshop else "")
     _set_field(description, REVIEW_ROUND, annotation.review_round.strip())
-    _set_rating(description, annotation.rating)
-    _set_tags(description, annotation.tags)
+    if before is None:
+        _set_rating(description, annotation.rating)
+        _set_tags(description, annotation.tags)
+    else:
+        if annotation.rating != before.rating:
+            _set_rating(description, annotation.rating)
+        now = {tag.casefold() for tag in _normalize_tags(annotation.tags)}
+        then = {tag.casefold() for tag in _normalize_tags(before.tags)}
+        if now != then:
+            removed = then - now
+            kept = [tag for tag in _read_bag(description, SUBJECT) if tag.casefold() not in removed]
+            have = {tag.casefold() for tag in kept}
+            added = [tag for tag in _normalize_tags(annotation.tags) if tag.casefold() in now - then and tag.casefold() not in have]
+            _set_tags(description, (*kept, *added))
     _sync_label_field(description, annotation)
 
     _prune_empty_descriptions(rdf)
@@ -154,7 +176,20 @@ def _write_single_sidecar(sidecar_path: str, annotation: SessionAnnotation) -> N
         return
 
     ET.indent(tree, space="  ")
-    _atomic_write(sidecar_path, tree)
+    _atomic_write(sidecar_path, tree, packet=packet)
+
+
+_XPACKET_BEGIN = b'<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+_XPACKET_END = b'\n<?xpacket end="w"?>'
+
+
+def _has_xpacket(sidecar_path: str) -> bool:
+    """Whether the sidecar is wrapped in an XMP packet (``<?xpacket ...?>``). The XML parser drops the wrapper, so it is put back on write."""
+    try:
+        with open(sidecar_path, "rb") as handle:
+            return b"<?xpacket" in handle.read(256)
+    except OSError:
+        return False
 
 
 def _sidecar_candidates(image_path: str) -> tuple[str, ...]:
@@ -386,14 +421,19 @@ def _element_has_payload(element: ET.Element) -> bool:
     return any(_element_has_payload(child) for child in list(element))
 
 
-def _atomic_write(sidecar_path: str, tree: ET.ElementTree) -> None:
+def _atomic_write(sidecar_path: str, tree: ET.ElementTree, *, packet: bool = False) -> None:
     destination = Path(sidecar_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp_path = None
     try:
         with NamedTemporaryFile("wb", delete=False, dir=destination.parent, prefix=f"{destination.name}.", suffix=".tmp") as handle:
             temp_path = Path(handle.name)
-            tree.write(handle, encoding="utf-8", xml_declaration=True)
+            if packet:
+                handle.write(_XPACKET_BEGIN)
+                tree.write(handle, encoding="utf-8", xml_declaration=False)
+                handle.write(_XPACKET_END)
+            else:
+                tree.write(handle, encoding="utf-8", xml_declaration=True)
         os.replace(temp_path, destination)
     finally:
         if temp_path is not None and temp_path.exists():

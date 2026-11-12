@@ -8,6 +8,7 @@ from freeze_support import (
     QT_WINDOWS_BINARY_EXCLUDES,
     photocraft_bundle_files,
     prepare_ai_build_assets,
+    raw_preview_bundle_files,
     read_project_version,
 )
 
@@ -32,10 +33,6 @@ build_exe_options = {
         "image_triage.ai_probe",
         "image_triage.upscale_core",
         "image_triage.upscale_service",
-        # window.py does `from .ui import layout_ratios`; ui/__init__ never
-        # imports it, so cx_Freeze's scan misses it and the frozen app dies
-        # on startup (hidden behind the splash) with an ImportError.
-        "image_triage.ui.layout_ratios",
         # The QML shell is the application. Its modules are imported inside main(); its .qml files ship as data (freeze_support).
         "image_triage.qml_shell",
         "image_triage.qml_shell.app",
@@ -60,7 +57,8 @@ build_exe_options = {
         "uuid",
     ],
     # The editor is part of the program: <install dir>\photocraft\photocraft.exe, found there by shell_actions.bundled_photocraft_executable.
-    "include_files": [*freeze_assets.include_files, *photocraft_bundle_files()],
+    # The RAW preview worker goes beside ImageTriage.exe, where qml_shell/raw_preview.executable looks for it.
+    "include_files": [*freeze_assets.include_files, *photocraft_bundle_files()] + raw_preview_bundle_files(),
     "excludes": [
         # QML is the only desktop UI. Shared helpers remain, but neither
         # retired Widgets application window is shipped in the frozen app.

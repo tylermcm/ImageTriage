@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -8,6 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts import ai_clean_machine_check as check
+
+# The script looks for the helper binaries under the name the platform gives them.
+_EXE = ".exe" if os.name == "nt" else ""
 
 
 class CleanMachineCheckTests(unittest.TestCase):
@@ -30,7 +34,7 @@ class CleanMachineCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             install_dir = Path(temp_dir) / "Program Files" / "ImageTriage"
             install_dir.mkdir(parents=True)
-            (install_dir / "ai_python_runner.exe").write_bytes(b"")
+            (install_dir / f"ai_python_runner{_EXE}").write_bytes(b"")
             site_packages = Path(temp_dir) / "managed" / "site-packages"
             site_packages.mkdir(parents=True)
             process = subprocess.CompletedProcess(
@@ -63,7 +67,7 @@ class CleanMachineCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             install_dir = Path(temp_dir) / "ImageTriage"
             install_dir.mkdir()
-            (install_dir / "ai_runtime_installer.exe").write_bytes(b"")
+            (install_dir / f"ai_runtime_installer{_EXE}").write_bytes(b"")
             process = subprocess.CompletedProcess([], 0, "AI runtime imports validated.\n", "")
 
             def fake_run(args, **_kwargs):

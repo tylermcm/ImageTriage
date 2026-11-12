@@ -127,3 +127,35 @@ def test_an_installer_without_the_editor_has_to_be_asked_for(tmp_path, monkeypat
 def test_the_installer_script_includes_what_the_bundle_function_returns():
     text = (Path(freeze_support.__file__).parent / "setup_msi.py").read_text(encoding="utf-8")
     assert "photocraft_bundle_files()" in text and '"include_files": [*freeze_assets.include_files, *photocraft_bundle_files()]' in text
+
+
+# ---- the RAW preview worker ------------------------------------------------------------------------------------------------------
+
+
+def test_the_installer_gets_the_raw_preview_worker_beside_the_app(tmp_path, monkeypatch):
+    worker = tmp_path / "image-triage-raw-preview.exe"
+    worker.write_bytes(b"worker")
+    monkeypatch.setenv(freeze_support.RAW_PREVIEW_BUNDLE_ENV, str(worker))
+    monkeypatch.delenv(freeze_support.RAW_PREVIEW_BUNDLE_SWITCH_ENV, raising=False)
+    # beside ImageTriage.exe, under the name the app looks for
+    assert freeze_support.raw_preview_bundle_files() == [(str(worker.resolve()), "image-triage-raw-preview.exe")]
+    text = (Path(freeze_support.__file__).parent / "setup_msi.py").read_text(encoding="utf-8")
+    assert "+ raw_preview_bundle_files()" in text
+    from image_triage.qml_shell import raw_preview
+
+    assert 'with_name("image-triage-raw-preview.exe")' in Path(raw_preview.__file__).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("named", [None, "nothing.exe"])
+def test_a_build_with_no_raw_preview_worker_stops_unless_asked_to_go_without(tmp_path, monkeypatch, capsys, named):
+    monkeypatch.delenv(freeze_support.RAW_PREVIEW_BUNDLE_SWITCH_ENV, raising=False)
+    if named is None:
+        monkeypatch.delenv(freeze_support.RAW_PREVIEW_BUNDLE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(freeze_support.RAW_PREVIEW_BUNDLE_ENV, str(tmp_path / named))
+    with pytest.raises(SystemExit) as stopped:
+        freeze_support.raw_preview_bundle_files()
+    assert freeze_support.RAW_PREVIEW_BUNDLE_ENV in str(stopped.value) and freeze_support.RAW_PREVIEW_BUNDLE_SWITCH_ENV in str(stopped.value)
+    monkeypatch.setenv(freeze_support.RAW_PREVIEW_BUNDLE_SWITCH_ENV, "0")
+    assert freeze_support.raw_preview_bundle_files() == []
+    assert "RAW preview worker out" in capsys.readouterr().out

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
@@ -11,9 +13,24 @@ from .models import ImageRecord, SessionAnnotation
 from .perf import perf_logger
 
 
+def _row_matches_record(row, record: ImageRecord) -> bool:
+    """Whether a saved decision still belongs to the photo at this path.
+
+    A decision is kept against the primary file's own size and date. Rows saved by earlier builds hold the totals
+    over the whole bundle, so those are accepted too; they are rewritten with the primary's values on the next save.
+    """
+    stored = (row["modified_ns"], row["file_size"])
+    return stored == (record.identity_modified_ns, record.identity_size) or stored == (record.modified_ns, record.size)
+
+
+class DecisionStoreTooNewError(RuntimeError):
+    """The decisions database was written by a later version of the app than this one."""
+
+
 class DecisionStore:
     DEFAULT_SESSION = "Default"
     SCHEMA_VERSION = 6
+    BUSY_TIMEOUT_MS = 10_000
 
     def __init__(self) -> None:
         app_data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
@@ -52,7 +69,7 @@ class DecisionStore:
             ordered_paths.append(path)
         if not ordered_paths:
             return loaded
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             connection.row_factory = sqlite3.Row
             for chunk_paths in _chunked_values(ordered_paths, 400):
                 placeholders = ",".join("?" for _ in chunk_paths)
@@ -73,7 +90,7 @@ class DecisionStore:
                     row = row_map.get(record.path)
                     if row is None:
                         continue
-                    if row["modified_ns"] != record.modified_ns or row["file_size"] != record.size:
+                    if not _row_matches_record(row, record):
                         continue
                     annotation = SessionAnnotation(
                         winner=bool(row["winner"]),
@@ -103,7 +120,7 @@ class DecisionStore:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         normalized_session = self._normalize_session_id(session_id)
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             self._ensure_session_row(connection, normalized_session)
             connection.execute(
                 """
@@ -122,8 +139,8 @@ class DecisionStore:
                 (
                     normalized_session,
                     record.path,
-                    record.modified_ns,
-                    record.size,
+                    record.identity_modified_ns,
+                    record.identity_size,
                     int(annotation.winner),
                     int(annotation.reject),
                     int(annotation.photoshop),
@@ -151,7 +168,7 @@ class DecisionStore:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         normalized_session = self._normalize_session_id(session_id)
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             self._ensure_session_row(connection, normalized_session)
             for record, annotation in entries:
                 if annotation is None or annotation.is_empty:
@@ -177,8 +194,8 @@ class DecisionStore:
                     (
                         normalized_session,
                         record.path,
-                        record.modified_ns,
-                        record.size,
+                        record.identity_modified_ns,
+                        record.identity_size,
                         int(annotation.winner),
                         int(annotation.reject),
                         int(annotation.photoshop),
@@ -201,7 +218,7 @@ class DecisionStore:
             self.delete_annotation(session_id, old_path)
             return
         normalized_session = self._normalize_session_id(session_id)
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             self._ensure_session_row(connection, normalized_session)
             connection.execute("DELETE FROM decisions WHERE session_id = ? AND path = ?", (normalized_session, old_path))
             connection.execute(
@@ -221,8 +238,8 @@ class DecisionStore:
                 (
                     normalized_session,
                     record.path,
-                    record.modified_ns,
-                    record.size,
+                    record.identity_modified_ns,
+                    record.identity_size,
                     int(annotation.winner),
                     int(annotation.reject),
                     int(annotation.photoshop),
@@ -241,7 +258,7 @@ class DecisionStore:
         if not entries:
             return
         normalized_session = self._normalize_session_id(session_id)
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             self._ensure_session_row(connection, normalized_session)
             for old_path, record, annotation in entries:
                 connection.execute(
@@ -267,8 +284,8 @@ class DecisionStore:
                     (
                         normalized_session,
                         record.path,
-                        record.modified_ns,
-                        record.size,
+                        record.identity_modified_ns,
+                        record.identity_size,
                         int(annotation.winner),
                         int(annotation.reject),
                         int(annotation.photoshop),
@@ -283,7 +300,7 @@ class DecisionStore:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         normalized_session = self._normalize_session_id(session_id)
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             connection.execute("DELETE FROM decisions WHERE session_id = ? AND path = ?", (normalized_session, path))
             connection.commit()
         if logger.enabled:
@@ -294,10 +311,57 @@ class DecisionStore:
                 session=normalized_session,
             )
 
+    def delete_annotations(self, session_id: str, paths: list[str] | tuple[str, ...]) -> None:
+        """Drop the decisions of several photos in one transaction (one commit, however many photos)."""
+        wanted = [path for path in paths if path]
+        if not wanted:
+            return
+        normalized_session = self._normalize_session_id(session_id)
+        with self._connect() as connection:
+            connection.executemany(
+                "DELETE FROM decisions WHERE session_id = ? AND path = ?",
+                [(normalized_session, path) for path in wanted],
+            )
+            connection.commit()
+
+    def prune_missing(self, session_id: str, folder: str, known_paths, *, exists=os.path.lexists) -> int:
+        """Drop the decisions saved for photos that were directly in ``folder`` and are gone from it.
+
+        ``known_paths`` are the photos a successful listing of the folder just found. A row is only dropped when its path is
+        not one of them *and* no file is at that path any more, so a file the listing merely groups under another photo keeps
+        its row. The caller must only ask for a folder it could read: a folder on a drive that is not answering looks empty.
+        Returns how many rows went.
+        """
+        if not folder:
+            return 0
+        normalized_session = self._normalize_session_id(session_id)
+        prefix = folder.rstrip("\\/") + os.sep
+        known = {os.path.normcase(path) for path in known_paths}
+        folder_key = os.path.normcase(os.path.normpath(folder))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT path FROM decisions WHERE session_id = ? AND path >= ? AND path < ?",
+                (normalized_session, prefix, prefix + chr(0x10FFFF)),
+            ).fetchall()
+            gone = [
+                str(row[0]) for row in rows
+                if os.path.normcase(os.path.dirname(str(row[0]))) == folder_key
+                and os.path.normcase(str(row[0])) not in known
+                and not exists(str(row[0]))
+            ]
+            if not gone:
+                return 0
+            connection.executemany(
+                "DELETE FROM decisions WHERE session_id = ? AND path = ?",
+                [(normalized_session, path) for path in gone],
+            )
+            connection.commit()
+        return len(gone)
+
     def winner_paths(self, session_id: str) -> list[str]:
         """Every photo marked winner in this session, in any folder (the Winners view)."""
         normalized_session = self._normalize_session_id(session_id)
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             rows = connection.execute(
                 "SELECT path FROM decisions WHERE session_id = ? AND winner = 1",
                 (normalized_session,),
@@ -306,7 +370,7 @@ class DecisionStore:
 
     def winner_count(self, session_id: str) -> int:
         normalized_session = self._normalize_session_id(session_id)
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             row = connection.execute(
                 "SELECT COUNT(*) FROM decisions WHERE session_id = ? AND winner = 1",
                 (normalized_session,),
@@ -314,7 +378,7 @@ class DecisionStore:
         return int(row[0] or 0) if row else 0
 
     def list_sessions(self) -> list[str]:
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT id
@@ -335,7 +399,7 @@ class DecisionStore:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         normalized_session = self._normalize_session_id(session_id)
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             connection.row_factory = sqlite3.Row
             parameters: list[object] = [normalized_session]
             query = """
@@ -423,7 +487,7 @@ class DecisionStore:
         payload: dict[str, object] | None = None,
     ) -> None:
         normalized_session = self._normalize_session_id(session_id)
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             self._ensure_session_row(connection, normalized_session)
             connection.execute(
                 """
@@ -470,14 +534,14 @@ class DecisionStore:
 
     def ensure_session(self, session_id: str) -> str:
         normalized_session = self._normalize_session_id(session_id)
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             self._ensure_session_row(connection, normalized_session)
             connection.commit()
         return normalized_session
 
     def touch_session(self, session_id: str) -> str:
         normalized_session = self._normalize_session_id(session_id)
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             self._ensure_session_row(connection, normalized_session)
             connection.execute(
                 "UPDATE sessions SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -486,9 +550,51 @@ class DecisionStore:
             connection.commit()
         return normalized_session
 
+    @contextmanager
+    def _connect(self):
+        """One connection for one piece of work, closed afterwards (``with sqlite3.connect(...)`` only ends the transaction and
+        leaves the connection open until it is collected). A writer elsewhere, such as the save worker, is waited for and not
+        reported as "database is locked"."""
+        connection = sqlite3.connect(self._db_path, timeout=self.BUSY_TIMEOUT_MS / 1000.0)
+        try:
+            connection.execute(f"PRAGMA busy_timeout = {self.BUSY_TIMEOUT_MS}")
+            yield connection
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    _wal_tried: set[str] = set()
+
+    def _use_wal(self, connection: sqlite3.Connection) -> None:
+        """Write-ahead logging: readers no longer block the writer and the writer no longer blocks readers. The file keeps the
+        setting, so this changes it once; a location that cannot hold a WAL file keeps its journal and is not asked again."""
+        key = str(self._db_path)
+        if key in DecisionStore._wal_tried:
+            return
+        try:
+            if str(connection.execute("PRAGMA journal_mode").fetchone()[0]).casefold() != "wal":
+                connection.execute("PRAGMA journal_mode = WAL").fetchone()
+        except sqlite3.Error:
+            return
+        DecisionStore._wal_tried.add(key)
+
     def _initialize(self) -> None:
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             current_version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if current_version <= self.SCHEMA_VERSION:
+                self._use_wal(connection)
+            if current_version == self.SCHEMA_VERSION:
+                # Up to date: a store is made for nearly every read and write, and none of those should cost a write of its own.
+                return
+            if current_version > self.SCHEMA_VERSION:
+                # A later version's database may hold columns and meanings this code does not know. Writing rows in the old
+                # shape into it could damage them, so it is left alone.
+                raise DecisionStoreTooNewError(
+                    f"The saved decisions were written by a newer version of Image Triage (format {current_version}; "
+                    f"this version reads up to {self.SCHEMA_VERSION}). Update the app to use them."
+                )
             if current_version < 3:
                 self._migrate_to_v3(connection)
             if current_version < 4:
@@ -499,8 +605,7 @@ class DecisionStore:
                 self._migrate_to_v6(connection)
             self._create_schema(connection)
             self._ensure_session_row(connection, self.DEFAULT_SESSION)
-            if current_version < self.SCHEMA_VERSION:
-                connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+            connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
             connection.commit()
 
     def _create_schema(self, connection: sqlite3.Connection) -> None:
@@ -585,8 +690,8 @@ class DecisionStore:
         has_decisions = connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'decisions'"
         ).fetchone()
-        self._create_schema(connection)
-        self._ensure_session_row(connection, self.DEFAULT_SESSION)
+        # Rebuild an old sessionless table first: _create_schema indexes decisions(session_id, ...), which fails
+        # against the old shape.
         if has_decisions:
             columns = {
                 row[1]
@@ -629,6 +734,8 @@ class DecisionStore:
                 )
                 connection.execute("DROP TABLE decisions")
                 connection.execute("ALTER TABLE decisions_v3 RENAME TO decisions")
+        self._create_schema(connection)
+        self._ensure_session_row(connection, self.DEFAULT_SESSION)
 
     def _migrate_to_v4(self, connection: sqlite3.Connection) -> None:
         columns = {

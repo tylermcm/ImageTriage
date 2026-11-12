@@ -12,13 +12,13 @@ Rectangle {
     signal photoFocusRequested()
     property string tool: "Adjust"
     readonly property string displaySource: visible && model ? model.preview : ""
-    readonly property color surface: theme.light ? theme.s1 : "#151618"
-    readonly property color raised: theme.light ? theme.s2 : "#191b1e"
-    readonly property color line: theme.light ? theme.line : "#2b2e33"
-    readonly property color ink: theme.light ? theme.fg : "#e8ebf0"
-    readonly property color muted: theme.light ? theme.fg2 : "#a3aab5"
-    readonly property color subtle: theme.light ? theme.fg3 : "#848c99"
-    readonly property color well: theme.light ? theme.base : "#111316"
+    readonly property color surface: theme.s1
+    readonly property color raised: theme.s2
+    readonly property color line: theme.line
+    readonly property color ink: theme.fg
+    readonly property color muted: theme.fg2
+    readonly property color subtle: theme.fg3
+    readonly property color well: theme.base
     readonly property bool editable: !!model && model.loaded && !model.saving
     readonly property var groups: [
         {label: "Light", fields: []},
@@ -56,7 +56,6 @@ Rectangle {
 
     component Copy: Text {
         color: panel.ink
-        font.family: "Segoe UI"
         font.pixelSize: 13
         renderType: Text.NativeRendering
     }
@@ -77,15 +76,15 @@ Rectangle {
                 id: caption
                 visible: !action.glyph
                 anchors.centerIn: parent; text: action.text
-                color: action.primary ? "#101b2a" : action.selected ? "#a8ceff" : panel.ink
+                color: action.primary ? theme.onAccent : action.selected ? theme.accentFg : panel.ink
                 font.weight: action.primary ? Font.DemiBold : Font.Normal
             }
             Icon { visible: !!action.glyph; anchors.centerIn: parent; size: 16; path: action.glyph; color: panel.ink }
         }
         background: Rectangle {
             radius: 8
-            color: action.selected ? "#20334e" : action.primary ? theme.accent : action.hovered ? (theme.light ? theme.s3 : "#22252a") : action.quiet ? "transparent" : panel.raised
-            border.color: action.selected ? "#3a5b85" : action.primary ? theme.accent : panel.line
+            color: action.selected ? Qt.alpha(theme.accent, 0.22) : action.primary ? theme.accent : action.hovered ? theme.s3 : action.quiet ? "transparent" : panel.raised
+            border.color: action.selected ? Qt.alpha(theme.accent, 0.5) : action.primary ? theme.accent : panel.line
         }
         opacity: enabled || pending ? 1 : 0.35
         Accessible.name: text
@@ -121,11 +120,11 @@ Rectangle {
             value: field.wired ? panel.model.values[field.key] : field.initialValue
             onPressedChanged: if (!pressed && enabled) { panel.before = false; panel.model.adjust(field.key, value) }
             onMoved: if (!pressed && enabled) { panel.before = false; panel.model.adjust(field.key, value) }
-            background: Rectangle { y: 12.5; width: parent.width; height: 3; radius: 1.5; color: theme.light ? theme.s3 : "#373d45" }
+            background: Rectangle { y: 12.5; width: parent.width; height: 3; radius: 1.5; color: theme.s3 }
             handle: Rectangle {
                 x: slider.visualPosition * (slider.width - width)
                 y: 9; width: 10; height: 10; radius: 5
-                color: slider.hovered ? "#bddeff" : "#91bfff"
+                color: slider.hovered ? Qt.lighter(theme.accentFg, 1.12) : theme.accentFg
             }
         }
         Rectangle {
@@ -153,7 +152,7 @@ Rectangle {
             model: parent.choices
             enabled: false
             width: Math.min(160, choice.width - choiceLabel.implicitWidth - (choice.label ? choice.spacing : 0)); height: 30
-            font.family: "Segoe UI"; font.pixelSize: 12
+            font.pixelSize: 12
             contentItem: Copy { text: parent.displayText; leftPadding: 11; rightPadding: 22; verticalAlignment: Text.AlignVCenter }
             indicator: Icon { x: parent.width - 20; anchors.verticalCenter: parent.verticalCenter; size: 12; path: "m6 9 6 6 6-6"; color: panel.ink }
             background: Rectangle { color: panel.raised; radius: 8; border.color: panel.line }
@@ -213,7 +212,7 @@ Rectangle {
         }
         Rectangle {
             x: 14; y: 55; width: parent.width - 28; height: 77; radius: 7
-            color: theme.light ? theme.base : "#101215"; border.color: panel.line
+            color: theme.base; border.color: panel.line
             Histogram {
                 objectName: "rawHistogram"
                 anchors.fill: parent; anchors.margins: 1; three: true; scopeStyle: true
@@ -265,10 +264,10 @@ Rectangle {
                 required property var modelData
                 objectName: "rawTool_" + modelData.label
                 y: 5; width: (tools.width - 6) / 7; height: 46; radius: 8
-                color: panel.tool === modelData.label ? "#20334e" : tabHover.hovered ? panel.raised : "transparent"
-                border.color: panel.tool === modelData.label ? "#3a5b85" : "transparent"
-                Icon { anchors.horizontalCenter: parent.horizontalCenter; y: 7; size: 15; path: tab.modelData.path; color: panel.tool === tab.modelData.label ? "#a8ceff" : panel.muted }
-                Copy { y: 25; width: parent.width; text: tab.modelData.label; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 9; color: panel.tool === tab.modelData.label ? "#a8ceff" : panel.muted }
+                color: panel.tool === modelData.label ? Qt.alpha(theme.accent, 0.22) : tabHover.hovered ? panel.raised : "transparent"
+                border.color: panel.tool === modelData.label ? Qt.alpha(theme.accent, 0.5) : "transparent"
+                Icon { anchors.horizontalCenter: parent.horizontalCenter; y: 7; size: 15; path: tab.modelData.path; color: panel.tool === tab.modelData.label ? theme.accentFg : panel.muted }
+                Copy { y: 25; width: parent.width; text: tab.modelData.label; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 9; color: panel.tool === tab.modelData.label ? theme.accentFg : panel.muted }
                 HoverHandler { id: tabHover; cursorShape: Qt.PointingHandCursor }
                 TapHandler { onTapped: panel.tool = tab.modelData.label }
                 Accessible.role: Accessible.Button; Accessible.name: modelData.label
@@ -286,7 +285,7 @@ Rectangle {
         contentWidth: availableWidth
         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
         ScrollBar.vertical.policy: ScrollBar.AlwaysOn
-        ScrollBar.vertical.contentItem: Rectangle { implicitWidth: 4; radius: 2; color: "#3c424a"; opacity: parent.active ? 1 : 0.5 }
+        ScrollBar.vertical.contentItem: Rectangle { implicitWidth: 4; radius: 2; color: theme.fg3; opacity: parent.active ? 1 : 0.5 }
         Column {
             width: scroll.availableWidth - 10
             Column {

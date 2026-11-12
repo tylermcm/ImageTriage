@@ -38,14 +38,14 @@ Column {
         width: parent.width; height: 32; spacing: 8
         Text {
             width: 60; anchors.verticalCenter: parent.verticalCenter
-            text: "Style"; color: theme.fg2; font.family: "Segoe UI"; font.pixelSize: 12
+            text: "Style"; color: theme.fg2; font.pixelSize: 12
         }
         ComboBox {
             width: parent.width - 68; height: 27
             model: choice.labels
             currentIndex: choice.options.indexOf(choice.effect === "glow" ? basic.model.values.glow.style : basic.model.values.vignetteStyle)
             onActivated: basic.model.setEffectStyle(choice.effect, choice.options[currentIndex])
-            contentItem: Text { text: parent.displayText; color: theme.fg; font.family: "Segoe UI"; font.pixelSize: 12; leftPadding: 8; verticalAlignment: Text.AlignVCenter }
+            contentItem: Text { text: parent.displayText; color: theme.fg; font.pixelSize: 12; leftPadding: 8; verticalAlignment: Text.AlignVCenter }
             background: Rectangle { radius: 6; color: theme.s2; border.color: theme.lineSoft }
             indicator: Icon { x: parent.width - 19; anchors.verticalCenter: parent.verticalCenter; name: "chevDown"; size: 12; color: theme.fg2 }
         }
@@ -57,7 +57,7 @@ Column {
         Text {
             id: balanceLabel
             anchors.verticalCenter: parent.verticalCenter
-            text: "White balance"; color: theme.fg2; font.family: "Segoe UI"; font.pixelSize: 12
+            text: "White balance"; color: theme.fg2; font.pixelSize: 12
         }
         ComboBox {
             objectName: "rawWhiteBalance"
@@ -70,9 +70,9 @@ Column {
                 required property string modelData
                 width: ListView.view.width
                 text: modelData; enabled: index === 0
-                font.family: "Segoe UI"; font.pixelSize: 12
+                font.pixelSize: 12
             }
-            contentItem: Text { text: parent.displayText; color: theme.fg; font.family: "Segoe UI"; font.pixelSize: 12; leftPadding: 8; rightPadding: 20; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter }
+            contentItem: Text { text: parent.displayText; color: theme.fg; font.pixelSize: 12; leftPadding: 8; rightPadding: 20; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter }
             background: Rectangle { radius: 6; color: theme.s2; border.color: theme.lineSoft }
             indicator: Icon { x: parent.width - 19; anchors.verticalCenter: parent.verticalCenter; name: "chevDown"; size: 12; color: theme.fg2 }
         }

@@ -15,6 +15,7 @@ from ..image_resize import (
     ResizeSourceItem,
     _save_resized_image,
     _scaled_image,
+    item_failure_reason,
     load_image_for_export,
     preset_for_key,
 )
@@ -169,21 +170,27 @@ def apply_workflow_export_plan(
         try:
             loaded = load_image_for_export(item.source.source_path, target_size=target_size, ignore_orientation=False,
                                            strip_metadata=plan.recipe.strip_metadata)
+            image = loaded.image
+            if item.width > 0 and item.height > 0:
+                image = _scaled_image(image, target_size=QSize(item.width, item.height), shrink_only=True)
+            note = _save_resized_image(
+                image,
+                target_path=item.target_path,
+                target_suffix=item.target_suffix,
+                exif_bytes=None if plan.recipe.strip_metadata else loaded.exif_bytes,
+                icc_profile=None if plan.recipe.strip_metadata else loaded.icc_profile,
+            )
         except EditedRenderFailed as error:
             failed.append((item.source.source_path, error.reason))
             if progress_callback is not None:
                 progress_callback(index, total, f"Left out {item.source.source_name}")
             continue
-        image = loaded.image
-        if item.width > 0 and item.height > 0:
-            image = _scaled_image(image, target_size=QSize(item.width, item.height), shrink_only=True)
-        note = _save_resized_image(
-            image,
-            target_path=item.target_path,
-            target_suffix=item.target_suffix,
-            exif_bytes=None if plan.recipe.strip_metadata else loaded.exif_bytes,
-            icc_profile=None if plan.recipe.strip_metadata else loaded.icc_profile,
-        )
+        except Exception as error:
+            # One photo that cannot be read or written must not stop the rest: the files before it are already on disk.
+            failed.append((item.source.source_path, item_failure_reason(error)))
+            if progress_callback is not None:
+                progress_callback(index, total, f"Left out {item.source.source_name}")
+            continue
         if note:
             notes.append(note)
         written_paths.append(item.target_path)

@@ -208,7 +208,9 @@ class AnnotationPersistenceQueueTests(unittest.TestCase):
         self.assertEqual(len(queue._pending), 1)  # type: ignore[attr-defined]
         pending = queue._pending[record.path]  # type: ignore[attr-defined]
         self.assertTrue(pending.annotation is not None and pending.annotation.reject)
-        self.assertTrue(pending.previous_annotation is not None and pending.previous_annotation.winner)
+        # What the photo had before the first of the coalesced changes: that is what the sidecar still holds, and
+        # the sidecar writer compares against it.
+        self.assertTrue(pending.previous_annotation is not None and pending.previous_annotation.is_empty)
 
     def test_rollback_returns_cloned_annotation(self) -> None:
         queue = AnnotationPersistenceQueue(flush_interval_ms=999_999)

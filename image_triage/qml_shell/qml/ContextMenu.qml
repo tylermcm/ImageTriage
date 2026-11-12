@@ -42,7 +42,12 @@ Item {
 
     MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; hoverEnabled: true; onWheel: (w) => { w.accepted = true }; onPressed: ctxMenu.close() }
     Keys.onEscapePressed: ctxMenu.close()
-    onVisibleChanged: if (visible) forceActiveFocus()
+    // The menu takes the keyboard while it is up and gives it back to whatever had it (the grid, usually), so the review keys work again without a click.
+    property Item focusBefore: null
+    onVisibleChanged: {
+        if (visible) { focusBefore = Window.activeFocusItem; forceActiveFocus() }
+        else if (focusBefore !== null) { var back = focusBefore; focusBefore = null; if (back.visible && back.enabled) back.forceActiveFocus() }
+    }
 
     component Panel: Item {
         id: pn
