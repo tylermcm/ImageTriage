@@ -26,11 +26,13 @@ from PySide6.QtGui import QImage, QImageIOHandler, QImageReader
 from ..app_identity import user_settings
 from ..formats import RAW_SUFFIXES, suffix_for_path
 from ..preload_order import candidate_indexes
+from .settings_model import PRELOAD_DEFAULT, PRELOAD_MAX
 
 DIRECT = frozenset({".jpg", ".jpeg", ".jpe", ".png", ".webp", ".bmp", ".gif"})      # shown from the file itself
 READ_LIMIT = 8192                  # the long side asked of the reader: the photo's own size for anything a camera makes
 ASSIST_LIMIT = 2400                # focus assist works on the photo read this big, as it works on the Widgets viewer's picture
-FILES_KEPT = 24                    # temporary pictures kept (read ahead included)
+PRELOAD_LIMIT = PRELOAD_MAX        # the most photos read ahead, which is also the most Settings offers
+FILES_KEPT = PRELOAD_LIMIT + 8     # temporary pictures kept: a full read-ahead, the photo shown and a few already passed
 PRELOAD_INTERVAL_MS = 120
 TOAST_MS = 3200
 STRIP_MIN, STRIP_MAX, STRIP_DEFAULT = 84, 260, 120
@@ -100,6 +102,8 @@ class ViewerHost(QObject):
         self._dir = ""
         self._pictures: OrderedDict[str, tuple[str, int, int]] = OrderedDict()      # path -> (temporary file, width, height)
         self._failed: dict[str, str] = {}
+        self._stamps: dict[str, int] = {}                # path -> the file's modification time when its picture was made
+        self._direct: tuple[str, tuple[str, int, int]] | None = None      # the size of the file shown as it is, read once per photo
         self._asked: set[str] = set()
         self._assist: dict[tuple[str, str], tuple[str, int, int]] = {}
         self._assist_asked: set[tuple[str, str]] = set()
@@ -288,6 +292,7 @@ class ViewerHost(QObject):
             self._raw_editor.open(item["path"])
         self._row = row
         self._path = item["path"]
+        self._refresh_stale(self._path)
         self._ask("picture", self._path)
         if self._assist_on:
             self._ask("assist", self._path)
@@ -329,17 +334,43 @@ class ViewerHost(QObject):
             self.rowChanged.emit()
 
     # -- reading the picture ------------------------------------------------------------------------------------------------
+    @staticmethod
+    def _stamp(path: str) -> int:
+        try:
+            return os.stat(path).st_mtime_ns
+        except OSError:
+            return 0
+
+    def _refresh_stale(self, path: str) -> None:
+        """Coming to a photo starts it afresh where what is held may be out of date: a read that failed is tried again (a share that dropped
+        for a moment is not a broken photo), and a picture made from a file that has changed since is read again."""
+        self._failed.pop(path, None)
+        stamp = self._stamp(path)
+        if self._stamps.get(path, stamp) != stamp:
+            found = self._pictures.pop(path, None)
+            if found is not None:
+                self._remove(found[0])
+            for key in [k for k in self._assist if k[0] == path]:
+                self._remove(self._assist.pop(key)[0])
+        self._stamps[path] = stamp
+        self._direct = None
+
     def _picture_for(self, path: str):
         if not path:
             return None
         if path in self._saved_previews:
             return self._saved_previews[path]
         if suffix_for_path(path) in DIRECT:
+            # src, the two sizes, loading and info each ask on every change of photo: the file's header is read once for all of them
+            if self._direct is not None and self._direct[0] == path:
+                return self._direct[1]
             reader = QImageReader(path)
             size = reader.size()
             if reader.transformation() & QImageIOHandler.Transformation.TransformationRotate90:
                 size = size.transposed()                   # a portrait photo's size is the way it is shown
-            return (_file_url(path), size.width(), size.height())
+            picture = (_file_url(path), size.width(), size.height())
+            self._direct = (path, picture)
+            return picture
         found = self._pictures.get(path)
         if found is None:
             return None
@@ -428,8 +459,10 @@ class ViewerHost(QObject):
         self._asked.discard(path)
         if file:
             self._pictures[path] = (file, width, height)
+            self._stamps.setdefault(path, self._stamp(path))
             while len(self._pictures) > FILES_KEPT:
-                _old, (old_file, _w, _h) = self._pictures.popitem(last=False)
+                old, (old_file, _w, _h) = self._pictures.popitem(last=False)
+                self._stamps.pop(old, None)
                 self._remove(old_file)
         elif error != "superseded":
             self._failed[path] = error
@@ -447,7 +480,7 @@ class ViewerHost(QObject):
     def _run_preload(self) -> None:
         if not self._open or self._row < 0:
             return
-        limit = self._read_int(PRELOAD_KEY, 4, 0, 24)
+        limit = self._read_int(PRELOAD_KEY, PRELOAD_DEFAULT, 0, PRELOAD_LIMIT)
         if limit <= 0:
             return
         taken = 0

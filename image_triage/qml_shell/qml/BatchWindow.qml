@@ -119,7 +119,6 @@ FocusScope {
                 Text { x: 40; anchors.verticalCenter: parent.verticalCenter; text: batch.title; color: theme.fg2; font.pixelSize: 13; font.weight: Font.Medium }
                 Row {
                     anchors.right: parent.right; height: parent.height
-                    Item { width: 44; height: 40; Icon { anchors.centerIn: parent; size: 12; color: theme.fg3; path: "M5 12h14" } }
                     Item {
                         width: 44; height: 40
                         Rectangle { anchors.fill: parent; color: theme.rej; opacity: xh.hovered ? 1 : 0 }
@@ -277,7 +276,7 @@ FocusScope {
                         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
                         Item {
                             x: 24; y: (parent.height - 1 - 28) / 2; width: 28; height: 28
-                            RoundClip { anchors.fill: parent; radius: 6; ThumbImage { anchors.fill: parent; path: row.modelData.thumb; bucket: 120 } }
+                            RoundClip { anchors.fill: parent; radius: 6; ThumbImage { anchors.fill: parent; path: row.modelData.thumb; bucket: 160 } }
                         }
                         Column {
                             id: nameCol

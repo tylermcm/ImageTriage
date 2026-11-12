@@ -77,7 +77,21 @@ FocusScope {
     signal moveRequested(int row)
     function refocus() { if (shown) keyboardTarget.forceActiveFocus() }
     function close() { popout.close() }
-    function go(r) { rawPanel.whiteBalancePicking = false; zoomed = false; popout.go(r); refocus() }
+    // Stepping keeps the zoom and the part of the photo being looked at, so focus can be compared across a burst. The RAW editor's detail view
+    // still starts each photo fitted. The next photo's size may arrive later (a RAW is read on a worker), so the place is put back when it is known.
+    property var keepCentre: null
+    function holdCentre() {
+        keepCentre = zoomed ? Qt.point((pan.contentX + pan.width / 2 - pan.imageLeft) / pan.drawWidth, (pan.contentY + pan.height / 2 - pan.imageTop) / pan.drawHeight) : null
+    }
+    function restoreCentre() {
+        if (!keepCentre || !zoomed) { keepCentre = null; return }
+        if (popout.pixelWidth <= 0) return
+        pan.contentX = Math.max(0, Math.min(pan.contentWidth - pan.width, pan.imageLeft + keepCentre.x * pan.drawWidth - pan.width / 2))
+        pan.contentY = Math.max(0, Math.min(pan.contentHeight - pan.height, pan.imageTop + keepCentre.y * pan.drawHeight - pan.height / 2))
+        keepCentre = null
+    }
+    Connections { target: popout; function onImageChanged() { if (v.keepCentre) Qt.callLater(v.restoreCentre) } }
+    function go(r) { rawPanel.whiteBalancePicking = false; if (rawEditing) zoomed = false; else holdCentre(); popout.go(r); restoreCentre(); refocus() }
     function step(n) { go(popout.row + n) }
     function decide(d) { popout.decide(row, d) }
     function openEditor() {
@@ -119,6 +133,7 @@ FocusScope {
         if (!opening && (settings.keyIs("accept_selection", e.key, e.modifiers) || settings.keyIs("keep_at_cursor", e.key, e.modifiers) || settings.keyIs("reject_selection", e.key, e.modifiers))) {
             decide(settings.keyIs("accept_selection", e.key, e.modifiers) ? "win" : settings.keyIs("keep_at_cursor", e.key, e.modifiers) ? "keep" : "rej"); e.accepted = true; return
         }
+        if (!opening && settings.keyIs("delete_selection", e.key, e.modifiers)) { popout.delete(row); e.accepted = true; return }      // the key Settings > Shortcuts has for Delete
         if (e.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) {
             if (e.key === Qt.Key_Z && (e.modifiers & Qt.ControlModifier)) {
                 if (rawEditing) {
@@ -133,7 +148,7 @@ FocusScope {
             return
         }
         var k = e.key
-        if (opening) { if (k === Qt.Key_Escape) opening = false; e.accepted = true; return }
+        if (opening) { e.accepted = true; return }      // the editor is starting and cannot be stopped from here: keys wait for it to open or fail
         e.accepted = true
         if (k === Qt.Key_Escape) {
             if (rawPanel.whiteBalancePicking) rawPanel.whiteBalancePicking = false
@@ -154,7 +169,6 @@ FocusScope {
         else if (k === Qt.Key_H) zen = !zen
         else if (k === Qt.Key_B || k === Qt.Key_G) collOpen = !collOpen
         else if (k === Qt.Key_M) moveRequested(row)
-        else if (k === Qt.Key_Delete) popout.delete(row)
         else if (k === Qt.Key_E) openEditor()
         else e.accepted = false
     }
@@ -637,10 +651,12 @@ FocusScope {
                 }
                 Item { width: 11; height: 40; Rectangle { anchors.centerIn: parent; width: 1; height: 26; color: v.cLine } }
                 Repeater {
-                    model: [{ id: "focus", k: "F", tip: "Focus assist (F, Shift+F colour)", icon: "focusAssist" },
+                    // Delete's key is the one Settings > Shortcuts has; the others are the viewer's own and cannot be changed
+                    model: { void settings.shortcutRevision; var del = settings.seq("delete_selection")
+                             return [{ id: "focus", k: "F", tip: "Focus assist (F, Shift+F colour)", icon: "focusAssist" },
                             { id: "move", k: "M", tip: "Move to… (M)", icon: "movePhoto" },
                             { id: "coll", k: "B", tip: "Add to a collection (B)", icon: "addCollection" },
-                            { id: "del", k: "Del", tip: "Move to the Recycle Bin (Delete)", icon: "trash" }]
+                            { id: "del", k: del, tip: "Delete this photo" + (del ? " (" + del + ")" : ""), icon: "trash" }] }
                     delegate: Item {
                         id: tb
                         required property var modelData
@@ -795,7 +811,7 @@ FocusScope {
                     Rectangle { anchors.fill: parent; radius: 7; color: v.cDeep; border.width: 2; border.color: fs.cur ? v.cFg : "transparent"
                         layer.enabled: fs.cur; layer.effect: MultiEffect { shadowEnabled: true; shadowColor: Qt.rgba(0, 0, 0, 0.55); shadowBlur: 0.5; shadowVerticalOffset: 10 } }
                     RoundClip { anchors.fill: parent; anchors.margins: 2; radius: 5
-                        ThumbImage { anchors.fill: parent; path: fs.path; bucket: strip.th > 100 ? 360 : 240; desaturate: fs.decision === "rej" && v.dimRejected ? 0.9 : 0 }
+                        ThumbImage { anchors.fill: parent; path: v.visible || v.shown ? fs.path : ""; bucket: strip.th > 100 ? 360 : 240; desaturate: fs.decision === "rej" && v.dimRejected ? 0.9 : 0 }
                         Rectangle { anchors.fill: parent; color: "black"; opacity: fs.decision === "rej" && v.dimRejected ? 0.4 : 0 }
                         Rectangle { visible: fs.flagged; anchors.bottom: parent.bottom; width: parent.width; height: 3; color: v.decColor("rev") }
                     }
@@ -986,12 +1002,6 @@ FocusScope {
                 Rectangle { anchors.fill: parent; radius: 2; color: v.cHover }
                 Rectangle { id: bar2; width: 88; height: 4; radius: 2; color: theme.accent; x: -88
                     SequentialAnimation on x { running: v.opening; loops: Animation.Infinite; NumberAnimation { from: -88; to: 220; duration: 1200; easing.type: Easing.InOutQuad } } } }
-            Item { anchors.horizontalCenter: parent.horizontalCenter; width: cr2.implicitWidth + 24; height: 30
-                Rectangle { anchors.fill: parent; radius: 8; color: "transparent"; border.color: v.cLine }
-                Row { id: cr2; x: 12; anchors.verticalCenter: parent.verticalCenter; spacing: 6
-                    Text { text: "Cancel"; color: v.cFg2; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
-                    Kbd { text: "Esc"; anchors.verticalCenter: parent.verticalCenter } }
-                TapHandler { onTapped: v.opening = false } }
         }
     }
 
