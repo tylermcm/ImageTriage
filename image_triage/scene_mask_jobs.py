@@ -22,6 +22,8 @@ from typing import Callable
 import numpy as np
 from PIL import Image
 
+from .camera_raw_recipe_masks import MAX_RASTER_SIDE
+
 ProgressCallback = Callable[[str], None]
 
 # The landscape categories offered in the editor, in the order they are listed. "trees" and "foliage" are one choice there (vegetation).
@@ -47,9 +49,9 @@ def _check(cancel: threading.Event | None) -> None:
         raise Cancelled()
 
 
-# The editor keeps a mask map of at most 1536 px a side; the host works on a 1600 px picture. Maps are written at this size, which is
-# plenty for a coverage map and keeps the files and their transfer small.
-MAP_LONG_SIDE = 1024
+# Keep all detail the native recipe can carry. An extra reduction here loses
+# thin features before the mask is sampled at export resolution.
+MAP_LONG_SIDE = MAX_RASTER_SIDE
 
 
 def _save_map(array: np.ndarray, path: Path) -> None:

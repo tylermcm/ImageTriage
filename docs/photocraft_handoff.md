@@ -3752,3 +3752,17 @@ synthetic orientation-tagged Bayer DNGs reproduced nine failures before the fix.
 The focused gate passed 82 tests (one skip), including pixel-level orientation,
 public resize/export, embedded preview and QML architecture checks. See D25 in
 the audit closeout log for the fixture scope.
+
+
+### 2026-11-12 E22 mask transfer detail
+
+Both companion remotes fetched successfully. Upstream advanced from `e660b4906`
+to `4a059d97c` (five commits; 86/4078 divergence), and the fork integration still
+matches HEAD. The dry merge retains 42 large conflicts, including Camera Raw.
+No merge, companion draft edits, schema changes or binary replacements.
+Scene/people masks now use the existing native 1536-pixel limit instead of losing
+extra detail at 1024 pixels. The unchanged `97ceee530` candidate accepted that
+mask size and rendered a synthetic 8256 x 5504 DNG to 16-bit ICC-tagged PNG,
+preserving a thin mask feature. Input integrity and cleanup passed; 132 focused
+tests passed (one skip). Full-resolution mask support remains a deferred feature
+by user choice. See E22 in the audit closeout log for scope and evidence.

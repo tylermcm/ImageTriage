@@ -221,3 +221,29 @@ def test_qml_sam_prompts_and_single_scene_choice(shell,qapp,monkeypatch):
     click(find("createMaskSelection"))
     assert len(raw.maskEditor.rows)==2 and "Vegetation" in raw.maskEditor.current["name"]
     assert not [w for w in warnings if "RawMask" in w],warnings
+
+@pytest.mark.parametrize('portrait', [False, True])
+def test_scene_mask_keeps_supported_fine_detail_through_recipe(tmp_path, monkeypatch, portrait):
+    from types import SimpleNamespace
+    from PIL import Image
+    from image_triage.qml_shell.raw_masks import decode_raster
+    from image_triage.camera_raw_recipe_masks import masks_valid
+
+    # A model result already within the native limit must survive byte-for-byte.
+    # Reducing it to 1024 loses much of the isolated thin feature before export.
+    values = np.zeros((1024, 1536), dtype=np.uint8)
+    values[:, :768] = 255
+    values[:, 1000] = 255
+    if portrait:
+        values = values.T.copy()
+    model_mask = tmp_path / 'model-sky.png'
+    Image.fromarray(values).save(model_mask)
+    source = tmp_path / 'source.png'
+    Image.new('RGB', (values.shape[1], values.shape[0]), 'grey').save(source)
+    monkeypatch.setattr('image_triage.semantic_masks.ensure_semantic_masks',
+                        lambda *a, **kw: SimpleNamespace(mask_paths={'sky': model_mask}))
+    results = run_mask_job('scene', source, tmp_path, [], [], lambda msg: None, threading.Event())
+    assert len(results) == 1
+    shape = results[0]['shape']
+    assert masks_valid([{'shape': shape, 'adjust': {'exposure': 1}}])
+    assert np.array_equal(decode_raster(shape), values)

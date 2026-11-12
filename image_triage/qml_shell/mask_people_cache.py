@@ -11,7 +11,7 @@ def cache_path(path, signature):
     from ..ai_paths import managed_cache_dir
     from ..ai_manifest import MODEL_BUNDLES
     versions = [MODEL_BUNDLES[k].revision for k in ("oneformer","sam","birefnet")]
-    key = json.dumps([os.path.normcase(os.path.abspath(path)),signature,versions,"people-v1"])
+    key = json.dumps([os.path.normcase(os.path.abspath(path)),signature,versions,"people-v2-1536"])
     return managed_cache_dir("editor_people")/(hashlib.sha256(key.encode()).hexdigest()+".json")
 
 

@@ -9,6 +9,7 @@ from PySide6.QtGui import QImageReader
 
 from .. import editor_tools, photocraft_bridge as bridge
 from .raw_masks import encode_raster
+from ..camera_raw_recipe_masks import MAX_RASTER_SIDE
 
 KINDS = {"subject": "subjectMask", "background": "subjectMask", "sky": "sceneMasks",
          "scene": "sceneMasks", "people": "peopleMasks", "object": "clickSelect"}
@@ -25,7 +26,7 @@ def read_coverage(path, aspect):
         if abs(opened.width/opened.height/aspect-1) > .025:
             raise ValueError("The model mask does not match the photo's proportions")
         image = opened.convert("L")
-        image.thumbnail((1536,1536), Image.Resampling.BILINEAR)
+        image.thumbnail((MAX_RASTER_SIDE,MAX_RASTER_SIDE), Image.Resampling.BILINEAR)
         values = np.asarray(image, dtype=np.uint8)
     return encode_raster(values), float((values >= 128).mean())
 

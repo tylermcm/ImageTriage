@@ -4,6 +4,9 @@ from __future__ import annotations
 import base64
 import binascii
 
+# Shared with PhotoCraft's native mask recipe contract.
+MAX_RASTER_SIDE = 1536
+
 LOCAL_SCALARS = {"exposure": (-5,5), **dict.fromkeys(("temperature","tint","contrast","highlights","shadows","whites","blacks","texture","clarity","dehaze","saturation","vibrance","curveHighlights","curveLights","curveDarks","curveShadows","gradeBalance","calibShadowTint"),(-100,100)), "gradeBlending":(0,100)}
 LOCAL_ARRAYS = {"hslHue":8,"hslSat":8,"hslLum":8,"calibHue":3,"calibSat":3}
 LOCAL_CURVES = ("pointCurve","pointCurveRed","pointCurveGreen","pointCurveBlue")
@@ -56,7 +59,7 @@ def _fields(value, required, optional=()):
 
 def _raster(shape):
     w, h, text = shape["w"], shape["h"], shape["data"]
-    if not (type(w) is int and type(h) is int and 1 <= w <= 1536 and 1 <= h <= 1536):
+    if not (type(w) is int and type(h) is int and 1 <= w <= MAX_RASTER_SIDE and 1 <= h <= MAX_RASTER_SIDE):
         return False
     if not isinstance(text, str) or len(text) > 6 * 1024 * 1024 or len(text) % 4:
         return False
