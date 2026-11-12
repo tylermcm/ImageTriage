@@ -540,3 +540,34 @@ def test_the_stage_stays_up_while_the_next_photo_loads(qapp, tmp_path, folder):
     assert wait(qapp, lambda: host.state == EDITING)
     assert not host.property("switching")
     window.close()
+
+
+def test_the_editors_mask_and_super_resolution_requests_are_polled_while_it_is_open(qapp, folder, monkeypatch):
+    # The editor cannot call the host: it holds a request until the host polls. Nothing polled in the QML shell, so Subject,
+    # Landscape and People masks and Super Resolution never ran, and the mask models were never warmed.
+    from image_triage.qml_shell import editor_host as host_module
+
+    monkeypatch.setattr(host_module, "HOST_JOB_POLL_S", 0.02)
+
+    class Jobs:
+        def __init__(self):
+            self.polled = []
+
+        def poll(self, proc):
+            self.polled.append(proc)
+            return False
+
+    jobs = Jobs()
+    host, mover, launched = make(qapp, folder)
+    host._host_jobs = jobs
+    host.openPath(str(folder / "a.jpg"))
+    assert wait(qapp, lambda: host.state == EDITING)
+    assert wait(qapp, lambda: len(jobs.polled) >= 3)
+    assert all(proc is host._proc for proc in jobs.polled)
+    host.close()
+    assert wait(qapp, lambda: host.state == "idle")
+    assert wait(qapp, lambda: not host._host_job_thread.is_alive())
+    seen = len(jobs.polled)
+    wait(qapp, lambda: False, seconds=0.15)
+    assert len(jobs.polled) == seen                      # put away: nothing is asked of an editor nobody is using
+    host.shutdown()

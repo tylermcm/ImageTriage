@@ -109,6 +109,7 @@ FocusScope {
         function onOpened() { v.opening = false }
         function onFailed(message) { v.opening = false; popout.notice(message) }
         // The save on close failed (a share that went away): without a way to leave, the editor could not be closed at all.
+        function onToolBlocked(message) { popout.notice(message) }
         function onCloseFailed(message) { v.opening = false; closeFailedCard.body = message; closeFailedCard.open() }
         function onClosed() { v.opening = false; popout.close() }
     }

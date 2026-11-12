@@ -21,6 +21,7 @@ IDLE, STARTING, EDITING, CLOSING, FAILED = "idle", "starting", "editing", "closi
 # How long quitting the app waits for the editor to save the open photo. The editor is closed after that whether or not it
 # answered: a save that hangs (an unreachable share) must not keep the app from closing.
 SHUTDOWN_SETTLE_S = 5.0
+HOST_JOB_POLL_S = 1.5        # how often the editor is asked for a mask or Super Resolution request while it is open
 
 
 class WindowMover:
@@ -85,10 +86,11 @@ class EditorHost(QObject):
     # Closing could not save the photo and the editor is still up. Its own signal so the shell can offer "Close without saving"
     # (`closeWithoutSaving`); while nothing listens to it, the failure goes out as `failed` like any other.
     closeFailed = Signal(str)
+    toolBlocked = Signal(str)               # a mask or tool the editor asked for cannot run (its model is not installed): what to turn on
     editSaved = Signal(str)
     _done = Signal(str, object, str)        # worker -> main thread: (what finished, its result, an error message)
 
-    def __init__(self, *, memory: bool = False, launcher=None, detector=None, mover=None, parent=None) -> None:
+    def __init__(self, *, memory: bool = False, launcher=None, detector=None, mover=None, host_jobs=None, parent=None) -> None:
         super().__init__(parent)
         self._memory = memory
         self._launcher = launcher
@@ -110,6 +112,11 @@ class EditorHost(QObject):
         self._edit_probe.setInterval(1000)
         self._edit_probe.timeout.connect(lambda: self.editSaved.emit(self._path))
         self._done.connect(self._finish, Qt.ConnectionType.QueuedConnection)
+        # The editor's Camera Raw dialog asks Image Triage for the heavy work (Subject, Landscape and People masks, Super Resolution). It
+        # cannot call the host, so it holds each request until the host polls; nothing answers unless something polls while it is open.
+        self._host_jobs = host_jobs
+        self._host_job_stop = threading.Event()
+        self._host_job_thread: threading.Thread | None = None
 
     # -- what QML sees ------------------------------------------------------------------------------------------------------
     def _available(self) -> bool:
@@ -142,9 +149,41 @@ class EditorHost(QObject):
             self._state = state
             if state == EDITING and not self._memory:
                 self._edit_probe.start()
+                self._start_host_jobs()
             else:
                 self._edit_probe.stop()
             self.stateChanged.emit()
+
+    # -- the editor's requests to the host ----------------------------------------------------------------------------------
+    def _start_host_jobs(self) -> None:
+        """Poll the editor for mask and Super Resolution requests while it is up. On a thread of its own: the poll talks to the editor
+        over its control socket, which must never be waited for on the interface thread."""
+        thread = self._host_job_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._host_job_stop.clear()
+        self._host_job_thread = threading.Thread(target=self._poll_host_jobs, name="editor-host-jobs", daemon=True)
+        self._host_job_thread.start()
+
+    def _poll_host_jobs(self) -> None:
+        runner = self._host_jobs
+        if runner is None:
+            try:
+                from ..camera_raw_host_jobs import HostJobRunner
+
+                runner = self._host_jobs = HostJobRunner(on_blocked=lambda _kind, why: self.toolBlocked.emit(why))
+            except Exception:
+                LOG.warning("the editor's mask and Super Resolution requests cannot be answered", exc_info=True)
+                return
+        while not self._host_job_stop.is_set():
+            proc = self._proc
+            if proc is None or self._state not in (EDITING, CLOSING):
+                return                                   # the editor is hidden or gone: polling starts again when a photo is opened in it
+            try:
+                runner.poll(proc)                        # logs and swallows its own failures
+            except Exception:
+                LOG.debug("host-job poll", exc_info=True)
+            self._host_job_stop.wait(HOST_JOB_POLL_S)
 
     # -- opening a photo ----------------------------------------------------------------------------------------------------
     def setBrowseSource(self, photos, thumbs, preview) -> None:
@@ -496,6 +535,7 @@ class EditorHost(QObject):
 
     @Slot()
     def shutdown(self) -> None:
+        self._host_job_stop.set()
         if self._filmstrip is not None:
             self._filmstrip.stop()
         if self._space_shortcut is not None:

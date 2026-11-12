@@ -77,10 +77,11 @@ Measured after that warm-up (12 s, in the background): first Landscape 2.0 s, fi
 (Landscape 0.5 s, Subject 0.2 s, People about 3.7 s, which is SAM per person plus BiRefNet edges). Turn the warm-up off with
 `IMAGE_TRIAGE_MASK_WARMUP=0`. Still true: a mask asked for in the first ~12 to 35 s after the editor first connects waits for the load.
 
-**Correction 2026-11-12: the warm-up is not wired in the QML shell today.** `image_triage/mask_warmup.py` is imported by nothing in the
-application (only its own test imports it); the Widgets host that started it was removed. The measurements above describe the resident
-mask-engine host with the warm-up running. In the QML shell nothing loads the models ahead of time, so the first Subject, Landscape or People
-mask after the mask engine starts pays the load described under "Where the start-up time goes". Treat this entry as open for the QML shell.
+**Update 2026-11-12: wired again in the QML shell, not yet verified with the editor.** A merge had left `camera_raw_host_jobs.py` without
+the Subject, Landscape and People mask jobs, and nothing in the QML shell polled the editor for its requests, so these masks and the
+warm-up did not run at all there. The runner has its mask jobs back (with the model gate that greys out tools whose models are missing),
+and `qml_shell/editor_host.py` polls it every 1.5 s on its own thread while the editor is open, which also ticks the warm-up. This is
+covered by unit tests with a stand-in editor only: the measurements above are from before the gap and have not been repeated.
 
 **Where the start-up time goes (measured 2026-10-20, warm file cache, two runs):** numpy/PIL/cv2 0.1 s, `import torch` 1.4 s, `import transformers` 2.2 s,
 importing the transformers model classes 3.0 s, CUDA init + first GPU tensor + first matmul 0.35 s. So the cost is Python imports, not CUDA and not model

@@ -57,6 +57,7 @@ class NoWarmer:
 
 def runner(render, **kw):
     kw.setdefault("warmer", NoWarmer())  # never load real models from a test
+    kw.setdefault("gate", lambda kind: "")  # every model counts as installed here; test_editor_tools covers the gate
     return hj.HostJobRunner(render=render, clock=Clock(), spawn_thread=sync, **kw)
 
 

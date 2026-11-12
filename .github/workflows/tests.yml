@@ -49,11 +49,6 @@ jobs:
     name: Linux (reported, not required)
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # The suite has known failures on Linux (51 when this workflow was added: tests that build Windows paths or call
-    # Windows-only APIs, and some drift; see the "Tests" section of docs/audit_20261111.md). Until those are fixed or
-    # marked, this job shows its result without failing the workflow. Remove this line once the Linux run is clean, so
-    # that a new Linux failure blocks a change the way a Windows one does.
-    continue-on-error: true
 
     steps:
       - name: Check out repository

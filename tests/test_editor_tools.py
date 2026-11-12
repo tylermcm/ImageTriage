@@ -62,10 +62,20 @@ def test_a_mask_job_without_its_model_is_answered_at_once_and_the_window_is_told
     assert not runner.busy
 
 
-def test_a_mask_job_with_its_model_is_left_for_its_handler_and_super_resolution_is_unaffected() -> None:
-    lane = Lane({"id": 3, "kind": "subjectMask"})
-    runner = hj.HostJobRunner(render=lambda *a, **k: kept(), gate=lambda kind: tools.block_reason(kind, {"birefnet"}))
-    assert runner.poll(proc(lane)) is False and not lane.of("claim") and not lane.of("finish")  # not blocked: not this runner's job to run it
+class _NoWarmer:
+    def tick(self):
+        pass
+
+
+def test_a_mask_job_with_its_model_is_run_and_super_resolution_is_unaffected(tmp_path) -> None:
+    source = tmp_path / "preview.png"
+    source.write_bytes(b"png")
+    lane = Lane({"id": 3, "kind": "subjectMask", "input": str(source), "output": str(tmp_path / "mask.png")})
+    ran = []
+    runner = hj.HostJobRunner(render=lambda *a, **k: kept(), gate=lambda kind: tools.block_reason(kind, {"birefnet"}), warmer=_NoWarmer(),
+                              subject_mask=lambda *a: ran.append(a[0]), spawn_thread=lambda target: target())
+    assert runner.poll(proc(lane)) is True and lane.of("claim") == [3]            # not blocked: the runner does the job
+    assert ran == [source] and lane.of("finish")[0]["ok"] is True
     # Super Resolution still runs, whatever models are installed.
     lane = Lane({"id": 4, "kind": hj.KIND_SUPER_RESOLUTION})
     started = hj.HostJobRunner(render=lambda *a, **k: kept(), spawn_thread=lambda target: target(), gate=lambda kind: tools.block_reason(kind, ()))

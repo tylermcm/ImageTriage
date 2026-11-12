@@ -13,15 +13,14 @@ Rules:
   skips with a reason that says what it needs. `pytest tests -rs` lists them.
 - Update this file whenever a row is added or removed.
 
-The suite is not green: 14 tests fail for the three causes below.
+The suite is green on Linux: 2,563 passed, 51 skipped, 5 expected failures. It has not been run on Windows since
+these changes.
 
 ## Open failures
 
-| Test | Count | Cause | Needs |
-|---|---|---|---|
-| `test_camera_raw_host_jobs` (every test in the file) | 12 | The tests are the mask-capable runner's: `HostJobRunner(warmer=, subject_mask=, scene_masks=, people_masks=)`, `KIND_SUBJECT_MASK`, `KIND_SCENE_MASKS`, `KIND_PEOPLE_MASKS`. The merge of the QML shell (`7769920`) kept these tests, `mask_warmup.py`, `scene_mask_jobs.py` and `subject_mask_service.py` from one parent (`c712256`) and took `camera_raw_host_jobs.py` from the other (`83b0efb`), which has the model gate and only the Super Resolution kind. The runner therefore lost the mask jobs and the warmer. Nothing in the QML shell instantiates `HostJobRunner` either. | A decision: restore the mask kinds and warmer in the runner and have the shell poll it, or retire the editor's host-job channel and delete the runner, `mask_warmup.py` and both test files together. `test_editor_tools.py` imports its fakes from this test file. |
-| `test_qml_shell_collection_dialog::test_the_hook_and_an_existing_colour_only_collection_open_on_color` | 1 | `CollectionDialog.qml` loads its fields in `onShownChanged`, which reads the `editing` binding. `shown` and `editing` both follow `UiState.collDlg`, and with Qt 6.12 `shown` is updated first, so `load()` still sees `editing === false`: Edit opens with an empty name, no colour and the default icon instead of the collection's own values. | `load()` should decide from `UiState.collDlg === "edit"` itself (or run after both bindings have settled). |
-| `test_qml_photo_search::test_imported_native_vectors_are_searchable_in_qml_grid` | 1 | Content-search hits are keyed with `casefold()` (`unified_search_task._search_match_path_key`) and looked up with `os.path.normcase` (`qml_shell/photos._path_key`). The two agree on Windows only; on a case-sensitive file system a hit whose path has a capital letter (`DSC_0001.jpg`) is never shown. | One key function for both sides. |
+None. The three causes listed here on 2026-11-12 were fixed the same day: the mask-capable host-job runner was
+restored (`test_camera_raw_host_jobs`), Edit Collection no longer opens blank (`test_qml_shell_collection_dialog`),
+and content-search hits match on case-sensitive file systems (`test_qml_photo_search`).
 
 ## Expected failures (strict `xfail`)
 
