@@ -6,28 +6,25 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 RECENT_KEY = "commands/recent"
 RECENT_MAX = 12
 
-# (id, section, title, shortcut registry id, keywords). Titles and keywords are the Widgets controller's.
+# (id, section, title, shortcut registry id, keywords). Titles and keywords are the Widgets controller's. Every id here has a branch in
+# Main.qml's runCommand (tests/test_qml_shell_palette.py checks it): a command the shell cannot carry out is not offered.
 _COMMANDS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     ("file.open_folder", "File", "Open Folder", "open_folder", ("open directory", "browse folder")),
     ("file.refresh_folder", "File", "Refresh Folder", "refresh_folder", ("reload folder", "rescan")),
-    ("file.new_folder", "File", "New Folder", "new_folder", ("create folder", "new directory")),
     ("file.workflow_settings", "File", "Settings", "workflow_settings", ("preferences", "settings")),
     ("edit.undo", "Edit", "Undo", "undo", ("revert", "undo last action")),
     ("edit.rename_selection", "Edit", "Rename Image", "rename_selection", ("rename image", "rename file")),
     ("tools.batch_rename", "Tools", "Batch Rename", "batch_rename_selection", ("batch rename tool", "rename many")),
     ("tools.batch_resize", "Tools", "Batch Resize", "batch_resize_selection", ("batch resize tool", "resize many", "convert size")),
     ("tools.batch_convert", "Tools", "Batch Convert", "batch_convert_selection", ("batch convert tool", "convert format", "png jpg webp")),
-    ("tools.extract_archive", "Tools", "Extract Archive", "", ("extract archive", "unzip", "decompress", "7z")),
     ("tools.performance_logging", "Tools", "Performance Logging", "", ("diagnostics", "profiler", "performance log", "speed")),
     ("workflow.handoff_builder", "Export", "Deliver / Handoff Builder", "handoff_builder", ("delivery", "handoff", "export workflow")),
     ("workflow.share_to_phone", "Export", "Send to PocketDrop", "share_to_phone", ("phone", "qr", "pocketdrop", "share", "transfer", "send")),
-    ("workflow.send_to_editor", "Export", "Send To Editor", "send_to_editor_pipeline", ("retouch", "editor queue", "send to editor")),
     ("workflow.best_of", "Export", "Choose best photos", "best_of_set_auto_assembly", ("best of", "shortlist", "auto assembly", "picks")),
     ("workflow.keyboard_shortcuts", "Export", "Keyboard Shortcuts", "", ("shortcuts", "keyboard mapping")),
     ("library.create_collection", "Library", "Create Virtual Collection", "", ("virtual collection", "portfolio picks", "proofing set")),
     ("library.add_selected_to_collection", "Library", "Add Selection To Collection", "collect_at_cursor", ("collection", "add selection", "save picks")),
     ("library.browse_catalog", "Library", "Browse Catalog", "", ("catalog", "cross folder search", "global index")),
-    ("library.refresh_catalog", "Library", "Refresh Catalog", "", ("refresh catalog", "reindex library")),
     ("review.open_preview", "Review", "Open Preview", "open_preview", ("viewer", "popout", "fullscreen")),
     ("review.accept_selection", "Review", "Mark Winner", "accept_selection", ("winner", "approve", "accept")),
     ("review.reject_selection", "Review", "Reject Selection", "reject_selection", ("reject", "decline")),
@@ -35,22 +32,16 @@ _COMMANDS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     ("review.move_selection", "Review", "Move Selection", "move_selection", ("relocate", "move")),
     ("review.delete_selection", "Review", "Delete Selection", "delete_selection", ("trash", "remove", "delete")),
     ("review.reveal_in_explorer", "Review", "Reveal In Explorer", "", ("show in explorer", "reveal file")),
-    ("review.compare_mode", "Review", "Compare", "compare_mode", ("toggle compare",)),
     ("review.auto_advance", "Review", "Auto Advance", "", ("toggle auto advance",)),
-    ("view.grid_view", "View", "Grid View", "grid_view", ("grid", "thumbnail grid", "tiles")),
-    ("view.details_view", "View", "Details View", "details_view", ("details", "list view", "file explorer")),
     ("view.zen_mode", "View", "Zen Mode", "zen_mode", ("fullscreen", "focus mode", "hide panels")),
-    ("view.burst_groups", "View", "Burst Groups", "", ("burst grouping", "burst shots", "toggle bursts", "capture sequence")),
     ("sort.name", "View", "View: Sort By Name", "", ("view", "sort", "name")),
     ("sort.ai", "View", "View: Sort By AI Score", "", ("view", "sort", "ai score")),
     ("view.cols.5", "View", "View: Columns 5 Across", "", ("view", "columns", "5 across")),
     ("search.advanced_filters", "Search", "Advanced Filters", "", ("metadata filters", "search filters")),
     ("search.save_current", "Search", "Save Current Search", "", ("save search", "save preset")),
     ("search.clear_filters", "Search", "Clear Filters", "clear_filters", ("reset filters", "clear search")),
-    ("smart_filter.sharp_keepers", "Search", "Apply Smart Filter: Sharp keepers", "", ("smart filter", "saved search", "sharp keepers")),
     ("ai.workflow_center", "AI", "AI Workflow Center", "open_ai_workflow_center", ("workflow center", "ai workflow", "guide", "steps", "wizard")),
     ("ai.run_pipeline", "AI", "Run AI Culling", "", ("start ai", "run ai culler", "rank images")),
-    ("ai.quick_rerank", "AI", "Quick Rerank", "quick_rerank_ai_culling", ("quick rerank", "rerank", "re-rank", "rerun rank", "fast rerank", "rerank only")),
     ("ai.apply_culling", "AI", "Apply AI Culling", "", ("apply ai culling", "auto cull", "move ai picks", "recycle ai rejects")),
     ("ai.next_top_pick", "AI", "Next AI Top Pick", "next_ai_pick", ("next ai pick", "jump ai")),
     ("ai.people", "AI", "People", "", ("people", "faces", "person names", "face search")),
@@ -73,16 +64,15 @@ _SECTION_ICON = {
 
 _DEMO_RECENT = ("file.open_folder", "review.accept_selection", "tools.batch_rename")
 _DEMO_SHORTCUTS = {
-    "open_folder": "Ctrl+O", "refresh_folder": "F5", "new_folder": "Ctrl+Shift+N", "workflow_settings": "Ctrl+,", "undo": "Ctrl+Z",
+    "open_folder": "Ctrl+O", "refresh_folder": "F5", "workflow_settings": "Ctrl+,", "undo": "Ctrl+Z",
     "rename_selection": "F2", "batch_rename_selection": "Ctrl+Shift+R", "batch_resize_selection": "Ctrl+Shift+E",
     "batch_convert_selection": "Ctrl+Shift+C", "handoff_builder": "Ctrl+Alt+H", "share_to_phone": "Ctrl+Alt+P",
-    "send_to_editor_pipeline": "Ctrl+Alt+E", "best_of_set_auto_assembly": "Ctrl+Alt+B", "collect_at_cursor": "B", "open_preview": "Space",
-    "accept_selection": "W", "reject_selection": "R", "keep_at_cursor": "K", "compare_mode": "C", "grid_view": "Ctrl+1",
-    "details_view": "Ctrl+2", "zen_mode": "F11", "clear_filters": "Ctrl+Shift+X", "open_ai_workflow_center": "Ctrl+Shift+W",
-    "quick_rerank_ai_culling": "Ctrl+Shift+Y", "next_ai_pick": "Ctrl+Alt+N",
+    "best_of_set_auto_assembly": "Ctrl+Alt+B", "collect_at_cursor": "B", "open_preview": "Space",
+    "accept_selection": "W", "reject_selection": "R", "keep_at_cursor": "K",
+    "zen_mode": "F11", "clear_filters": "Ctrl+Shift+X", "open_ai_workflow_center": "Ctrl+Shift+W", "next_ai_pick": "Ctrl+Alt+N",
 }
-_DEMO_STATES = {"tools.performance_logging": "Off", "review.auto_advance": "On", "view.zen_mode": "Off", "view.burst_groups": "On"}
-_SUBS = {"smart_filter.sharp_keepers": "Focus 70+, no reject"}
+_DEMO_STATES = {"tools.performance_logging": "Off", "review.auto_advance": "On", "view.zen_mode": "Off"}
+_SUBS: dict[str, str] = {}
 
 
 def _keys(text: str) -> list[str]:
@@ -94,7 +84,7 @@ class PaletteModel(QObject):
     never touches the real settings."""
 
     revisionChanged = Signal()
-    executed = Signal(str, arguments=["id"])        # a command was chosen: its id (the shell acts on the ones it has wired)
+    executed = Signal(str, arguments=["id"])        # a command was chosen: its id (Main.qml's runCommand carries it out)
 
     def __init__(self, memory: bool = False, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -102,8 +92,6 @@ class PaletteModel(QObject):
         self._revision = 0
         self._states: dict[str, str] = dict(_DEMO_STATES) if memory else {}
         self._subs: dict[str, str] = dict(_SUBS)
-        if memory:
-            self._subs["view.grid_view"] = "Current view"
         self._recent: list[str] = list(_DEMO_RECENT) if memory else self._load_recent()
         self._shortcuts = dict(_DEMO_SHORTCUTS) if memory else self._load_shortcuts()
         self._commands = self._build()

@@ -133,9 +133,9 @@ def test_a_row_that_is_not_connected_says_so_and_changes_nothing(qapp, shell):
     toasts = context.contextProperty("toasts")
     photos = context.contextProperty("photos")
     before = [photos.row_at(i)["decision"] for i in range(6)]
-    click(qapp, window, "menuTitle-File")
-    click(qapp, window, "menuOff-New Folder…")
-    assert toasts.items[-1]["kind"] == "warn" and toasts.items[-1]["title"] == "New Folder isn’t connected yet"
+    click(qapp, window, "menuTitle-AI")
+    click(qapp, window, "menuOff-Re-rank AI Culling")
+    assert toasts.items[-1]["kind"] == "warn" and toasts.items[-1]["title"] == "Re-rank AI Culling isn’t connected yet"
     assert open_menu(window) == "" and [photos.row_at(i)["decision"] for i in range(6)] == before
 
 
@@ -193,7 +193,7 @@ def test_the_menus_are_solid_not_frosted(qapp, shell):
 
 
 @pytest.mark.parametrize("title,action", [
-    ("File", "menuOff-New Folder…"),
+    ("File", "menuRow-file.reveal_folder"),
     ("Review", "menuRow-review.reject_selection"),
     ("View", "menuRow-view.names"),
     ("AI", "menuOff-Sort into Semantic Folders"),

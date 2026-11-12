@@ -146,6 +146,7 @@ Item {
         anchors.margins: 1
         clip: true
         focus: true
+        activeFocusOnTab: true                // Tab leaves the grid for the controls around it and comes back to it
         keyNavigationEnabled: true
         boundsBehavior: Flickable.StopAtBounds
         // Scrolling belongs to the wheel handler and middle-button autoscroll.
@@ -192,8 +193,9 @@ Item {
         }
         property int anchorIndex: 0       // where a Shift+click or Shift+arrow range starts: the last photo picked on its own
         function pick() { return root.row < 0 ? [] : photos.selectionRows(root.row) }
-        // Review advances a single photo; a multi-photo selection stays in place.
-        function advance(rows) { if (rows.length === 1 && settings.value("autoAdvance") === true && currentIndex < count - 1) stepTo(currentIndex + 1, false) }
+        // Review advances a single photo; a multi-photo selection stays in place. A press that took the decision off (W on a winner) stays too:
+        // moving on would leave the photo undecided and out of sight.
+        function advance(rows, decision) { if (rows.length === 1 && photos.get(rows[0]).decision === decision && settings.value("autoAdvance") === true && currentIndex < count - 1) stepTo(currentIndex + 1, false) }
         function revealCurrent() {
             if (root.restoringScope) return
             if (currentIndex < 0 || currentIndex >= count) return
@@ -219,10 +221,10 @@ Item {
                 if (k === Qt.Key_Escape) { e.accepted = true; return }
             }
             var shift = (e.modifiers & Qt.ShiftModifier) !== 0, ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
-            if (settings.keyIs("accept_selection", k, e.modifiers)) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") for (var i = 0; i < rows.length; ++i) if (photos.get(rows[i]).decision === "win") collections.addSelection(collections.activeId, rows[i]); advance(rows) }
+            if (settings.keyIs("accept_selection", k, e.modifiers)) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") for (var i = 0; i < rows.length; ++i) if (photos.get(rows[i]).decision === "win") collections.addSelection(collections.activeId, rows[i]); advance(rows, "win") }
             else if (settings.keyIs("collect_at_cursor", k, e.modifiers)) root.addToCollection();
-            else if (settings.keyIs("keep_at_cursor", k, e.modifiers)) { var kr = pick(); photos.setDecisionMany(kr, "keep"); advance(kr) }
-            else if (settings.keyIs("reject_selection", k, e.modifiers)) { var xr = pick(); photos.setDecisionMany(xr, "rej"); advance(xr) }
+            else if (settings.keyIs("keep_at_cursor", k, e.modifiers)) { var kr = pick(); photos.setDecisionMany(kr, "keep"); advance(kr, "keep") }
+            else if (settings.keyIs("reject_selection", k, e.modifiers)) { var xr = pick(); photos.setDecisionMany(xr, "rej"); advance(xr, "rej") }
             else if (settings.keyIs("open_preview", k, e.modifiers)) { if (!e.isAutoRepeat) root.openCurrent() }
             else if (ctrl && k === Qt.Key_A) photos.selectAll();
             else if (ctrl) return;
@@ -236,7 +238,7 @@ Item {
             }
             else if (k === Qt.Key_Escape && photos.picked > 0) photos.clearSelection();
             else if (k === Qt.Key_U) photos.setDecisionMany(pick(), "");
-            else if (k >= Qt.Key_1 && k <= Qt.Key_5) photos.setRatingMany(pick(), k - Qt.Key_0);
+            else if (k >= Qt.Key_0 && k <= Qt.Key_5) photos.setRatingMany(pick(), k - Qt.Key_0);      // 0 takes the rating off (in the viewer 0 is Fit)
             else if (k === Qt.Key_I) UiState.insp = !UiState.insp;
             else if (k === Qt.Key_Return || k === Qt.Key_Space) { if (!e.isAutoRepeat) root.openCurrent() }
             else return;
@@ -264,6 +266,11 @@ Item {
             readonly property bool current: GridView.isCurrentItem
             readonly property var flag: { void cull.flagRev; return cell.isFolder ? ({}) : (cull.gridFlag(cell.path) || ({})) }
             readonly property bool hot: hover.hovered || current
+            Accessible.role: Accessible.ListItem
+            Accessible.name: cell.isFolder ? "Folder " + cell.name
+                : cell.name + (cell.decision === "win" ? ", winner" : cell.decision === "keep" ? ", keep" : cell.decision === "rej" ? ", rejected" : "")
+                  + (cell.rating > 0 ? ", " + cell.rating + (cell.rating === 1 ? " star" : " stars") : "") + (cell.selected ? ", selected" : "")
+            Accessible.selected: cell.selected || cell.current
 
             Item {
                 anchors.fill: parent

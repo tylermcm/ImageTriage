@@ -72,7 +72,8 @@ def test_a_match_is_marked_and_a_miss_has_no_rows(qapp, store):
     first = model.results("rename", "main")[0]
     assert (first["pre"], first["hit"], first["post"]) == ("Batch ", "Rename", "")
     assert model.results("zzq", "main") == []
-    assert model.countText("rename", "main") == "2 of 53" and model.countText("", "main") == "53 commands"
+    total = len(pm._COMMANDS)
+    assert model.countText("rename", "main") == f"2 of {total}" and model.countText("", "main") == f"{total} commands"
 
 
 def test_preview_context_offers_only_the_commands_that_act_on_a_photo(qapp, store):
@@ -107,11 +108,36 @@ def test_running_a_command_remembers_it_under_the_widgets_key(qapp, store):
 
 def test_toggle_state_shows_beside_the_command_and_counts_for_ranking(qapp, store):
     model = PaletteModel(memory=True, parent=qapp)
-    model.setState("review.compare_mode", "On")
-    row = next(r for r in model.results("compare", "main") if r["id"] == "review.compare_mode")
+    model.setState("view.zen_mode", "On")
+    row = next(r for r in model.results("zen", "main") if r["id"] == "view.zen_mode")
     assert row["state"] == "On"
-    model.setState("review.compare_mode", "")
-    assert next(r for r in model.results("compare", "main") if r["id"] == "review.compare_mode")["state"] == ""
+    model.setState("view.zen_mode", "")
+    assert next(r for r in model.results("zen", "main") if r["id"] == "view.zen_mode")["state"] == ""
+
+
+def _handled(command_id: str, source: str) -> bool:
+    """Does Main.qml's runCommand have a branch for this id: the id itself, or a prefix it tests with indexOf(...) === 0?"""
+    import re
+
+    body = source[source.index("function runCommand(id) {"):source.index("Connections { target: cmdPalette; function onExecuted(id)")]
+    exact = set(re.findall(r'id === "([^"]+)"', body))
+    prefixes = re.findall(r'id\.indexOf\("([^"]+)"\) === 0', body)
+    return command_id in exact or any(command_id.startswith(prefix) for prefix in prefixes)
+
+
+def test_every_palette_command_has_a_handler_in_the_shell():
+    from pathlib import Path
+
+    source = (Path(shell_app.__file__).parent / "qml" / "Main.qml").read_text(encoding="utf-8")
+    assert _handled("file.open_folder", source) and _handled("appearance.slate", source) and not _handled("no.such_command", source)
+    missing = [command[0] for command in pm._COMMANDS if not _handled(command[0], source)]
+    assert missing == [], missing
+    for gone in ("file.new_folder", "tools.extract_archive", "workflow.send_to_editor", "library.refresh_catalog", "view.grid_view", "view.details_view",
+                 "view.burst_groups", "smart_filter.sharp_keepers", "ai.quick_rerank", "review.compare_mode"):
+        assert gone not in {command[0] for command in pm._COMMANDS}, gone
+    # an id nothing knows ends in a toast, not in silence
+    body = source[source.index("function runCommand(id) {"):source.index("Connections { target: cmdPalette; function onExecuted(id)")]
+    assert body.rstrip().rstrip("}").rstrip().splitlines()[-1].strip().startswith("else toasts.show(")
 
 
 def test_palette_opens_filters_navigates_runs_and_closes_in_qml(qapp, tmp_path, store):

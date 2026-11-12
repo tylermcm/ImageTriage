@@ -60,16 +60,11 @@ Item {
             id: main; anchors.verticalCenter: parent.verticalCenter
             sourceComponent: ({ toggle: toggleC, select: selectC, step: stepC, slider: sliderC, swatch: swatchC, text: textC, keys: keysC })[row.def.type]
         }
-        SButton {
-            visible: row.def.btn !== "" && row.def.type !== "keys"; anchors.verticalCenter: parent.verticalCenter
-            text: row.def.btn
-            onClicked: { if (row.def.id === "gamma") settings.set("gamma", 1.0) }
-        }
     }
 
-    Component { id: toggleC; SSwitch { checked: !!row.val; onToggled: (v) => settings.set(row.def.id, v) } }
+    Component { id: toggleC; SSwitch { name: row.def.label; checked: !!row.val; onToggled: (v) => settings.set(row.def.id, v) } }
     Component { id: selectC
-        SSelect { options: row.def.options; current: row.val; onPicked: (v) => settings.set(row.def.id, v) } }
+        SSelect { name: row.def.label; options: row.def.options; current: row.val; onPicked: (v) => settings.set(row.def.id, v) } }
     Component { id: stepC
         SStepper {
             text: { void settings.revision; return settings.display(row.def.id) }
@@ -78,6 +73,7 @@ Item {
         } }
     Component { id: sliderC
         SSlider {
+            name: row.def.label
             from: row.def.lo; to: row.def.hi; step: row.def.step; value: row.val
             text: { void settings.revision; return settings.display(row.def.id) }
             onMoved: (v) => settings.set(row.def.id, v)

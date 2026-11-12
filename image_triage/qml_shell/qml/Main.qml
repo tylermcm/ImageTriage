@@ -2,7 +2,6 @@ import QtQuick
 import QtQml
 import QtQuick.Window
 import QtQuick.Dialogs
-import QtQuick.Dialogs
 
 Window {
     id: win
@@ -362,6 +361,7 @@ Window {
             if (what === "share") sidePanel.shareToPhone("sel")
             else if (what === "showDrop") UiState.tab = "drop"
             else if (what === "open") popout.open(arg)
+            else if (what === "edit") win.openInEditor(Number(arg))
             else if (what === "batch") UiState.batchMode = arg
             else if (what === "newCollection") { UiState.collDlgId = ""; UiState.collDlg = "new" }
             else if (what === "review") cull.reviewFrame(arg)
@@ -409,7 +409,8 @@ Window {
             // A dialog over the app owns the keyboard: nothing here may act on the photos behind it (the two windows that toggle on their own key excepted).
             enabled: settingsWindow.recording === "" && (!UiState.settingsOpen || modelData.cmd === "file.workflow_settings")
                      && (!win.modalInputBlocked || modelData.cmd === "file.workflow_settings" || modelData.cmd === "workflow.handoff_builder")
-                     && !(popout.isOpen && (modelData.cmd === "edit.undo" || modelData.cmd === "review.delete_selection"))
+                     && !(popout.isOpen && (modelData.cmd === "edit.undo" || modelData.cmd === "review.delete_selection"))      // the viewer answers these itself
+                     && !(UiState.paletteOpen && modelData.cmd === "review.delete_selection")                                  // a key typed in the palette is text
             onActivated: win.runShortcut(modelData.cmd)
         }
     }
@@ -422,6 +423,7 @@ Window {
         onAccepted: libraryNav.openUrl(selectedFolder.toString())
     }
     Connections { target: UiState; function onOpenFolderRequested() { folderDialog.open() } }
+    Connections { target: UiState; function onOpenEditorRequested(row) { win.openInEditor(row) } }
     Connections {
         target: photos
         function onFolderChanged() { grid.row = 0 }
@@ -451,8 +453,14 @@ Window {
     }
     ConfirmCard { id: quitCard; objectName: "quitCard"; warn: true; confirmText: "Quit anyway"; cancelText: "Cancel"; onAccepted: { win.quitConfirmed = true; win.close() } }
 
-    // The commands the shell can carry out today, by the palette's command ids (the top bar's menus use the same ones). The palette lists every
-    // other command too and then does nothing; the menus say they are not connected yet (docs/qml_unwired.md).
+    // The commands the shell carries out, by the palette's command ids (the top bar's menus use the same ones). The palette offers only ids that have a
+    // branch here, and an id nothing here knows says so in a toast.
+    // The photo a command is about: the one the viewer shows while it is open (it covers the grid, whose own row may be another photo), else the
+    // grid's row, or the photos picked there.
+    readonly property int commandRow: viewer.shown ? popout.row : grid.row
+    function commandRows() { return viewer.shown ? [popout.row] : photos.selectionRows(grid.row) }
+    // Open in editor from the grid, the rail or a menu: the editor is started from the viewer, on that photo.
+    function openInEditor(row) { if (row < 0 || row >= photos.shown) return; if (!viewer.shown || popout.row !== row) popout.open(row); viewer.openEditor() }
     function runCommand(id) {
         if (id === "file.workflow_settings") UiState.settingsOpen = true
         else if (id.indexOf("appearance.") === 0) { settings.set("theme", id.slice(11)); settings.save() }
@@ -460,7 +468,7 @@ Window {
         else if (id === "workflow.handoff_builder") UiState.handoffOpen = true
         else if (id === "workflow.best_of") UiState.bestOfOpen = true
         else if (id === "library.create_collection") { UiState.collDlgId = ""; UiState.collDlg = "new" }
-        else if (id === "library.add_selected_to_collection") grid.addToCollection()
+        else if (id === "library.add_selected_to_collection") { if (viewer.shown) viewer.collOpen = true; else grid.addToCollection() }
         else if (id === "ai.people") UiState.peopleOpen = true
         else if (id === "tools.batch_rename" || id === "edit.rename_selection") UiState.batchMode = "rename"
         else if (id === "tools.batch_resize") UiState.batchMode = "resize"
@@ -468,23 +476,22 @@ Window {
         else if (id === "search.advanced_filters" || id === "search.save_current") UiState.filtersOpen = true
         else if (id === "search.clear_filters") { UiState.filter = "all"; UiState.minRate = 0; UiState.fmt = "all"; photos.clearFilters(); advFilters.clearApplied() }
         else if (id === "file.open_folder") UiState.openFolderRequested()
-        else if (id === "review.compare_mode") UiState.compare = !UiState.compare
-        else if (id === "review.open_preview") popout.open(grid.row)
+        else if (id === "review.open_preview") popout.open(win.commandRow)
         else if (id === "window.reset_layout") { UiState.tab = "lib"; UiState.insp = true }
-        else if (id === "review.accept_selection") photos.setDecisionMany(photos.selectionRows(grid.row), "win")
-        else if (id === "review.reject_selection") photos.setDecisionMany(photos.selectionRows(grid.row), "rej")
-        else if (id === "review.keep_selection") photos.setDecisionMany(photos.selectionRows(grid.row), "keep")
+        else if (id === "review.accept_selection") photos.setDecisionMany(win.commandRows(), "win")
+        else if (id === "review.reject_selection") photos.setDecisionMany(win.commandRows(), "rej")
+        else if (id === "review.keep_selection") photos.setDecisionMany(win.commandRows(), "keep")
         else if (id === "file.refresh_folder") { win.savePositionNow(); libraryNav.refreshFolder() }
         else if (id === "file.reveal_folder") libraryNav.reveal(libraryNav.openPath)
         else if (id === "file.browse_library") reference.open("lib")
-        else if (id === "review.delete_selection") fileActions.deleteRows(photos.selectionRows(grid.row))
-        else if (id === "review.move_selection") chooseDestination("move", grid.row, photos.selectionRows(grid.row))
+        else if (id === "review.delete_selection") fileActions.deleteRows(win.commandRows())
+        else if (id === "review.move_selection") chooseDestination("move", win.commandRow, win.commandRows())
         else if (id === "edit.undo") { win.undoFailed = false; var what = photos.undo(); if (what !== "") toasts.show("success", "Undid the " + what, ""); else if (!win.undoFailed) toasts.show("info", "Nothing to undo", "") }
         else if (id === "file.exit") win.close()
-        else if (id === "workflow.share_to_phone") { pocketDrop.refreshLibrary(grid.row); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
-        else if (id === "review.clear_decision") photos.setDecisionMany(photos.selectionRows(grid.row), "")
-        else if (id.indexOf("review.rate.") === 0) photos.setRatingMany(photos.selectionRows(grid.row), Number(id.slice(12)))
-        else if (id === "review.reveal") libraryNav.revealFile(photos.get(grid.row).path || "")
+        else if (id === "workflow.share_to_phone") { pocketDrop.refreshLibrary(win.commandRow); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
+        else if (id === "review.clear_decision") photos.setDecisionMany(win.commandRows(), "")
+        else if (id.indexOf("review.rate.") === 0) photos.setRatingMany(win.commandRows(), Number(id.slice(12)))
+        else if (id === "review.reveal") libraryNav.revealFile(photos.get(win.commandRow).path || "")
         else if (id === "view.names") UiState.showNames = !UiState.showNames
         else if (id === "view.badges") UiState.showBadges = !UiState.showBadges
         else if (id === "view.inspector") UiState.insp = !UiState.insp
@@ -501,15 +508,17 @@ Window {
         else if (id === "help.about") reference.openAbout(false)
         else if (id === "help.check_updates") reference.openAbout(true)
         else if (id === "workflow.keyboard_shortcuts") reference.open("keys")
-        else if (id === "review.reveal_in_explorer") libraryNav.revealFile(photos.get(grid.row).path || "")
+        else if (id === "review.reveal_in_explorer") libraryNav.revealFile(photos.get(win.commandRow).path || "")
+        else if (id === "review.open_editor") win.openInEditor(win.commandRow)
         else if (id === "library.browse_catalog") reference.open("lib")
         else if (id === "ai.workflow_center") cull.openCenter()
         else if (id === "ai.run_pipeline") cull.openCull()
         else if (id === "ai.apply_culling") cull.openReview()
-        else if (id === "ai.next_top_pick") { var tp = aiScores.nextTopPick(grid.row); if (tp >= 0) { grid.row = tp; grid.view.positionViewAtIndex(tp + grid.nf, GridView.Contain) } else toasts.show("info", "No AI top picks in this view", "Run the AI analysis first, or clear the filters.") }
+        else if (id === "ai.next_top_pick") { var tp = aiScores.nextTopPick(win.commandRow); if (tp >= 0) { if (viewer.shown) viewer.go(tp); else { grid.row = tp; grid.view.positionViewAtIndex(tp + grid.nf, GridView.Contain) } } else toasts.show("info", "No AI top picks in this view", "Run the AI analysis first, or clear the filters.") }
         else if (id === "review.auto_advance") { settings.set("autoAdvance", settings.value("autoAdvance") !== true); settings.save(); cmdPalette.setState("review.auto_advance", settings.value("autoAdvance") === true ? "On" : "Off") }
         else if (id === "tools.performance_logging") { settings.set("perfLog", settings.value("perfLog") !== true); settings.save(); cmdPalette.setState("tools.performance_logging", settings.value("perfLog") === true ? "On" : "Off") }
         else if (id === "view.zen_mode") { UiState.zen = !UiState.zen; cmdPalette.setState("view.zen_mode", UiState.zen ? "On" : "Off") }
+        else toasts.show("info", "That command is not available", "Nothing was changed.")      // an id nothing above knows: say so, never fail silently
     }
     Connections { target: cmdPalette; function onExecuted(id) { win.runCommand(id) } }
     function refreshShortcutHints() {
@@ -518,14 +527,12 @@ Window {
     }
     Connections { target: settings; function onShortcutsChanged() { win.refreshShortcutHints() } }
     TopMenus { id: topMenus; onRun: (id) => win.runCommand(id) }
-    Shortcut { sequence: "Delete"; enabled: !popout.isOpen && !UiState.settingsOpen && !win.modalInputBlocked && !UiState.paletteOpen; onActivated: win.runCommand("review.delete_selection") }
     Connections { target: UiState; function onUndoRequested() { win.runCommand("edit.undo") } }
     // A step that could not be taken back says why itself (the file action's own toast) and stays on the history; "Nothing to undo" would be wrong.
     property bool undoFailed: false
     Connections { target: photos; function onUndoFailed(what) { win.undoFailed = true } }
     Connections { target: collections; function onExportRequested() { UiState.handoffOpen = true } }
     Connections { target: UiState; function onZenChanged() { if (UiState.zen) { UiState.zenTab = UiState.tab; UiState.zenInsp = UiState.insp; UiState.tab = ""; UiState.insp = false } else { UiState.tab = UiState.zenTab; UiState.insp = UiState.zenInsp } } }
-    Connections { target: UiState; function onCompareChanged() { cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off") } }
     // ---- what the person left the interface like, put back (ui_memory.py): the rail tab, the inspector, thumbnail size, sort, names and badges, the rail's pins ----
     property bool interfaceRestored: false
     readonly property var interfaceNow: ({ tab: UiState.tab, inspector: UiState.insp, density: UiState.dens, sort: UiState.sort, names: UiState.showNames, badges: UiState.showBadges, pins: UiState.pins })   // a test hook: what the interface is like
@@ -577,7 +584,6 @@ Window {
     Component.onCompleted: {
         refreshShortcutHints()
         win.restoreInterface()
-        cmdPalette.setState("review.compare_mode", UiState.compare ? "On" : "Off")
         cmdPalette.setState("review.auto_advance", settings.value("autoAdvance") === true ? "On" : "Off")
         cmdPalette.setState("view.zen_mode", "Off")
         cmdPalette.setState("tools.performance_logging", settings.value("perfLog") === true ? "On" : "Off")

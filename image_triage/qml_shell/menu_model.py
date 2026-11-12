@@ -2,7 +2,8 @@
 
 Real: the decision (Winner, Keep, Reject), Collections (the library store, see collections_model), Copy path / file name / folder path
 (the clipboard), Show in File Explorer, Refresh folder, Sort, Share to phone, Rename / Resize / Convert (open the batch window), and
-Restore / Why for a frame the cull flagged. Copy to / Move to folder, the recent destinations and Delete are real (file_actions.py). Not connected yet (they say so in a toast): Open in editor, Open with. See docs/qml_unwired.md, section "Context menus and toasts".
+Restore / Why for a frame the cull flagged. Copy to / Move to folder, the recent destinations and Delete are real (file_actions.py). Open in editor
+asks the window, which opens the photo in the viewer and starts the editor there. Open with offers the system's default app and its chooser.
 """
 from __future__ import annotations
 
@@ -171,13 +172,13 @@ class MenuModel(QObject):
             quick_collection = self._row_item(
                 "coll-last", f'Add to “{last["name"]}”' if last else "Add to last collection",
                 "coll", off=not last or in_last, tick=in_last)
-            items += [SEP, self._row_item("open", "Open", "open", kbd="Space"), self._row_item("edit", "Open in editor", "editor", kbd="E"), self._arrow("with", "Open with", "with"), SEP,
+            items += [SEP, self._row_item("open", "Open", "open", kbd="Space"), self._row_item("edit", "Open in editor", "editor"), self._arrow("with", "Open with", "with"), SEP,
                       self._row_item("share", "Share to phone", "phone"), quick_collection, self._arrow("coll", "Collections", "coll"), self._arrow("mv", "Copy or move", "move"), SEP,
                       self._row_item("rename", "Rename…", "rename", kbd="F2"), self._row_item("resize", "Resize…", "resize"), self._row_item("convert", "Convert…", "convert"), SEP,
                       self._row_item("cpath", "Copy path", "link"), self._row_item("cname", "Copy file name", "text"), self._row_item("reveal", "Show in File Explorer", "folder"), SEP,
                       self._row_item("del", "Delete", "trash", kbd="Del", danger=True)]
             if self._sub == "with":
-                sub = [self._row_item("with:default", "Default app", "open"), self._row_item("with:other", "Choose another app…", "with"), SEP, self._row_item("with:ps", "Photoshop (not found)", "editor", off=True)]
+                sub = [self._row_item("with:default", "Default app", "open"), self._row_item("with:other", "Choose another app…", "with")]
             elif self._sub == "coll":
                 for c in self._collections.rows:
                     sub.append({"kind": "row", "key": "coll:" + c["id"], "label": c["name"], "tick": self._in_collection(c["id"], path), "color": c["color"], "iconPath": c["iconPath"], "mark": True})
@@ -283,8 +284,7 @@ class MenuModel(QObject):
         elif key == "open":
             self.uiRequest.emit("open", row)          # the popout (Main.qml hands it to `popout`)
         elif key == "edit":
-            self.uiRequest.emit("edit", row)
-            self._not_connected("The editor")
+            self.uiRequest.emit("edit", row)          # Main.qml opens the photo in the viewer and starts the editor from there
         elif key.startswith("with:"):
             self._open_with(key[5:], path, name)
         elif key in ("mv:copy", "mv:move"):

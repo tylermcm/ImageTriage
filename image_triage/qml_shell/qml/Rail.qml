@@ -31,12 +31,12 @@ Rectangle {
     readonly property var pinMeta: [      // in the order the buttons are declared below; `id` is the button's drag id (UiState.railOrder), `menu` ones open their own menu
         { k: "open", id: "openFolder", t: "Open folder", i: "openFolder" }, { k: "undo", id: "undo", t: "Undo", i: "undo" },
         { k: "review", id: "check", t: "Review", i: "check", menu: true }, { k: "view", id: "view", t: "View", i: "view", menu: true },
-        { k: "filters", id: "funnel", t: "Filters", i: "funnel", menu: true }, { k: "accept", id: "accept", t: "Accept selection", i: "accept" },
+        { k: "filters", id: "funnel", t: "Filters", i: "funnel", menu: true }, { k: "accept", id: "accept", t: "Keep selection", i: "accept" },
         { k: "reject", id: "reject", t: "Reject selection", i: "reject" }, { k: "sort", id: "sort", t: "Sort", i: "sort", menu: true },
-        { k: "columns", id: "columns", t: "Columns", i: "columns", menu: true }, { k: "compare", id: "compare", t: "Compare photos", i: "compare" },
+        { k: "columns", id: "columns", t: "Columns", i: "columns", menu: true },
         { k: "preview", id: "eye", t: "Open preview", i: "eye" }, { k: "rename", id: "tag", t: "Rename selection", i: "tag" },
         { k: "convert", id: "convert", t: "Resize and convert", i: "convert" }, { k: "share", id: "pocketdrop", t: "Share to phone", i: "pocketdrop" },
-        { k: "editor", id: "editor", t: "Open in editor", i: "editor" }, { k: "newfolder", id: "newfolder", t: "New folder", i: "newfolder" },
+        { k: "editor", id: "editor", t: "Open in editor", i: "editor" },
         { k: "palette", id: "palette", t: "Command palette", i: "palette" }, { k: "shortcuts", id: "keyboard", t: "Keyboard shortcuts", i: "keyboard" }
     ]
     // the pinned buttons that are on, in the order they are shown in (DragReorder's rule: the saved order, then the declaration order)
@@ -55,7 +55,8 @@ Rectangle {
         else if (k === "undo") UiState.undoRequested()
         else if (k === "accept") photos.setDecisionMany(photos.selectionRows(row), "keep")
         else if (k === "reject") photos.setDecisionMany(photos.selectionRows(row), "rej")
-        else if (k === "compare") UiState.compare = !UiState.compare
+        else if (k === "editor") UiState.openEditorRequested(row)
+        else if (k === "shortcuts") reference.toggleKeys()
         else if (k === "preview") popout.open(row)
         else if (k === "rename") UiState.batchMode = "rename"
         else if (k === "convert") UiState.batchMode = "resize"
@@ -279,7 +280,6 @@ Rectangle {
                 }
             }
         }
-        RailButton { visible: rail.vis("compare"); icon: "compare"; tip: "Compare photos"; on: UiState.compare; onClicked: UiState.compare = !UiState.compare }
         RailButton { visible: rail.vis("preview"); icon: "eye"; tip: "Open preview"; onClicked: popout.open(rail.row) }
         RailButton { visible: rail.vis("rename"); icon: "tag"; tip: "Rename selection"; onClicked: UiState.batchMode = "rename" }
         RailButton { visible: rail.vis("convert"); icon: "convert"; tip: "Resize and convert"; onClicked: UiState.batchMode = "resize" }
@@ -287,10 +287,9 @@ Rectangle {
             visible: rail.vis("share"); icon: "pocketdrop"; tip: "Share to phone"
             onClicked: { pocketDrop.refreshLibrary(rail.row); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
         }
-        RailButton { visible: rail.vis("editor"); icon: "editor"; tip: "Open in editor" }
-        RailButton { visible: rail.vis("newfolder"); icon: "newfolder"; tip: "New folder" }
+        RailButton { visible: rail.vis("editor"); icon: "editor"; tip: "Open in editor"; onClicked: UiState.openEditorRequested(rail.row) }
         RailButton { visible: rail.vis("palette"); icon: "palette"; tip: "Command palette (Ctrl K)"; onClicked: UiState.openPalette("main") }
-        RailButton { visible: rail.vis("shortcuts"); icon: "keyboard"; tip: "Keyboard shortcuts" }
+        RailButton { visible: rail.vis("shortcuts"); icon: "keyboard"; tip: "Keyboard shortcuts"; onClicked: reference.toggleKeys() }
 
         RailButton {   // the pinned buttons that did not fit: shown only then, in the slot the last button that fits would have had
             id: moreBtn
@@ -344,11 +343,11 @@ Rectangle {
                 }
                 Repeater { model: [["review", "Review"], ["view", "View"], ["filters", "Filters"], ["sort", "Sort"], ["columns", "Columns"]]; delegate: pinRow }
                 PopHeader { caption: "Selection" }
-                Repeater { model: [["accept", "Accept selection"], ["reject", "Reject selection"], ["rename", "Rename selection"]]; delegate: pinRow }
+                Repeater { model: [["accept", "Keep selection"], ["reject", "Reject selection"], ["rename", "Rename selection"]]; delegate: pinRow }
                 PopHeader { caption: "Files" }
-                Repeater { model: [["open", "Open folder"], ["newfolder", "New folder"], ["undo", "Undo"], ["convert", "Resize and convert"], ["share", "Share to phone"]]; delegate: pinRow }
+                Repeater { model: [["open", "Open folder"], ["undo", "Undo"], ["convert", "Resize and convert"], ["share", "Share to phone"]]; delegate: pinRow }
                 PopHeader { caption: "Tools" }
-                Repeater { model: [["compare", "Compare photos"], ["preview", "Open preview"], ["editor", "Open in editor"], ["palette", "Command palette"], ["shortcuts", "Keyboard shortcuts"]]; delegate: pinRow }
+                Repeater { model: [["preview", "Open preview"], ["editor", "Open in editor"], ["palette", "Command palette"], ["shortcuts", "Keyboard shortcuts"]]; delegate: pinRow }
             }
         }
     }

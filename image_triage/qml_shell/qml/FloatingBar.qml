@@ -78,8 +78,8 @@ Item {
             id: sizes
             visible: bar.sizeSwitch
             icons: ["densS", "densM", "densL"]; padH: 9
-            current: [9, 4, 1].indexOf(UiState.cols)      // small, medium, large: 9, 4 and 1 columns
-            onActivated: (i) => { UiState.cols = [9, 4, 1][i] }
+            current: UiState.cols === 0 ? ["s", "m", "l"].indexOf(UiState.dens) : -1      // small, medium, large thumbnails, as in the View menus; none while a column count is fixed
+            onActivated: (i) => UiState.setDens(["s", "m", "l"][i])
         }
         Rectangle { width: 1; height: 22; y: 7; color: theme.line }
         AiChip { id: ai }

@@ -12,13 +12,13 @@ QtObject {
     property real panelW: 300               // widths the user dragged the side panel and the inspector to (Main clamps them to what fits)
     property real inspW: 352
     readonly property real panelMin: 260    // narrower than this the library rows, faces and PocketDrop cards would clip
-    readonly property real panelMax: 300
+    readonly property real panelMax: 420    // wider than the default is allowed; Main still keeps 400 px for the grid
     readonly property real inspMin: 300
-    readonly property real inspMax: 352
+    readonly property real inspMax: 480
     property string menu: ""            // "" or the id of the open popover
     property string filter: "all"
     property string dens: "m"
-    property var railOrder: ["palette", "openFolder", "undo", "view", "funnel", "sort", "columns", "compare", "convert", "editor", "check", "accept", "reject", "tag", "newfolder", "pocketdrop", "eye", "keyboard"]   // the default order; the order the rail's pinned buttons and the floating bar's buttons are shown in (ids; DragReorder)
+    property var railOrder: ["palette", "openFolder", "undo", "view", "funnel", "sort", "columns", "convert", "editor", "check", "accept", "reject", "tag", "pocketdrop", "eye", "keyboard"]   // the default order; the order the rail's pinned buttons and the floating bar's buttons are shown in (ids; DragReorder)
     property var barOrder: []
     property var destOrder: []            // the order of the four destinations at the top of the rail
     property int cols: 0                  // a fixed number of columns, 1 to 9; 0 lets the thumbnail size (dens) decide how many fit
@@ -28,7 +28,6 @@ QtObject {
     property string sort: "name"
     property bool showNames: true
     property bool showBadges: true
-    property bool compare: false
     property int ai: 0                  // 0 idle, 1 analyzing, 2 ready
     property bool topAligned: false
     property bool settingsOpen: false
@@ -86,11 +85,12 @@ QtObject {
     property string topMenu: ""             // the open top-bar menu: file, review, view or ai ("" none; Help has its own, in `reference`)
     property real topMenuX: 0               // where it drops from
     property int topSub: -1                 // the row of that menu whose fly-out shows
+    signal openEditorRequested(int row)     // the rail's Open in editor pin: Main.qml opens the photo in the viewer and starts the editor from there
     signal openFolderRequested()            // the rail's Open folder pin, Ctrl+O and the palette: Main.qml shows the folder dialog
     property real railPin: 40              // the size of the rail's pinned buttons (Rail.qml shrinks it when the window is short)
     property var pins: ({
-        open: true, undo: true, view: true, filters: true, sort: true, columns: true, compare: true, convert: true, editor: true, palette: true,
-        review: false, accept: false, reject: false, rename: false, preview: false, share: false, newfolder: false, shortcuts: false
+        open: true, undo: true, view: true, filters: true, sort: true, columns: true, convert: true, editor: true, palette: true,
+        review: false, accept: false, reject: false, rename: false, preview: false, share: false, shortcuts: false
     })
     property bool pinsLocked: false       // locked: the pinned buttons cannot be switched on or off in the "+" menu, and nothing on the rail can be dragged
     function openPalette(context) { paletteContext = context || "main"; paletteQuery = ""; paletteSel = 0; paletteOpen = true }

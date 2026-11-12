@@ -51,7 +51,8 @@ def test_the_bindings_are_the_shortcuts_the_shell_carries_out(qapp, store):
     bindings = {b["cmd"]: b["seq"] for b in m.shortcutBindings}
     assert bindings["file.open_folder"] == "Ctrl+O" and bindings["edit.undo"] == "Ctrl+Z" and bindings["file.refresh_folder"] == "F5"
     assert bindings["tools.batch_rename"] == "Ctrl+Shift+R" and bindings["workflow.best_of"] == "Ctrl+Alt+B" and bindings["ai.workflow_center"] == "Ctrl+Shift+W"
-    assert "review.delete_selection" not in bindings and "review.accept_selection" not in bindings    # no default key / the grid's own key
+    assert bindings["review.delete_selection"] == "Del"                                     # the shell's default for a row the registry leaves empty
+    assert "review.accept_selection" not in bindings and "review.compare_mode" not in bindings      # the grid's own key / a command the shell does not have
     m.set("k:undo", "Ctrl+Alt+U")
     m.set("k:refresh_folder", "")                                                           # a cleared row has no key
     m.set("k:delete_selection", "Ctrl+Backspace")
