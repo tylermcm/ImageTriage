@@ -74,6 +74,12 @@ def nvidia_gpu_name() -> str | None:
     return _gpu_name
 
 
+def forget_gpu_name() -> None:
+    """Ask again next time (the person pressed "Check again": the card or its driver may have changed since it was first found)."""
+    global _gpu_name
+    _gpu_name = None
+
+
 def _query_nvidia_gpu_name() -> str | None:
     exe = shutil.which("nvidia-smi")
     if exe is None and is_windows():

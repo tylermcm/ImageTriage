@@ -47,6 +47,49 @@ def load_bundle(folder: str):
         return None
 
 
+_shared_lock = threading.Lock()
+_shared_entry: dict | None = None       # the last report read: {"key", "done" (an Event), "bundle"}
+
+
+def _report_stamp(folder: str):
+    """What the folder's saved report is right now (where it is, and its files' sizes and dates), or None when it has none."""
+    from ..ai_results import inspect_ai_bundle_source
+    from ..ai_workflow import existing_hidden_ai_report_dir
+
+    try:
+        report_dir = existing_hidden_ai_report_dir(folder)
+        if report_dir is None:
+            return None
+        return str(report_dir), inspect_ai_bundle_source(report_dir).cache_key
+    except Exception:
+        return None
+
+
+def load_bundle_shared(folder: str):
+    """`load_bundle`, read once for everyone who asks about the same report. Opening a folder makes both the inspector's AI tab and the Cull
+    window ask, each on a thread of its own: the second waits for the first one's read instead of parsing the report again. A report that
+    has changed on disk (a new analysis, deleted results) is read again."""
+    global _shared_entry
+    key = (_key(folder), _report_stamp(folder))
+    with _shared_lock:
+        entry = _shared_entry
+        owner = entry is None or entry["key"] != key
+        if owner:
+            entry = _shared_entry = {"key": key, "done": threading.Event(), "bundle": None}
+    if owner:
+        try:
+            entry["bundle"] = load_bundle(folder)
+        finally:
+            entry["done"].set()
+        if entry["bundle"] is None and key[1] is not None:
+            with _shared_lock:                  # a report that is there but could not be read is not remembered: the next ask tries again
+                if _shared_entry is entry:
+                    _shared_entry = None
+    else:
+        entry["done"].wait()
+    return entry["bundle"]
+
+
 def display_score(result) -> int:
     """0..100: the folder percentile the Widgets badge shows, else the within-group score, else the raw score as a percentage."""
     for value in (result.folder_percentile, result.normalized_score):
@@ -64,7 +107,7 @@ class AiScores(QObject):
         super().__init__(parent)
         self._photos = photos
         self._memory = memory                       # tests and --mock: nothing is read from the disk
-        self._loader = loader or load_bundle
+        self._loader = loader or load_bundle_shared
         self._bundle = None
         self._state = "none"
         self._token = 0

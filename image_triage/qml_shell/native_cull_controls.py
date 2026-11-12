@@ -55,7 +55,8 @@ class NativeCullControls:
     @classmethod
     def load(cls, runtime, selected):
         code = "import json; from dataclasses import asdict; from aiculler import CullSettings; print(json.dumps(asdict(CullSettings())))"
-        result = subprocess.run([runtime["python"], "-I", "-c", code], capture_output=True, text=True, timeout=30)
+        result = subprocess.run([runtime["python"], "-I", "-c", code], capture_output=True, text=True, timeout=30,
+                                creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0))   # no console window flashing up on Windows
         if result.returncode:
             raise ValueError(result.stderr.strip() or "Could not read native setting defaults")
         return cls(selected, json.loads(result.stdout))

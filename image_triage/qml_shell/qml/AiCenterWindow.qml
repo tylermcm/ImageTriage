@@ -23,6 +23,12 @@ Backdrop {
     }
     ConfirmCard { id: removeCard; objectName: "aiRemoveCard"; property string key; confirmText: "Remove"; cancelText: "Cancel"; onAccepted: cull.modelAction(removeCard.key) }
     ConfirmCard { id: setupCard; objectName: "aiSetupCard"; cancelText: "Cancel"; onAccepted: cull.setupRuntime() }
+    // neither of these can be taken back, so both ask first
+    ConfirmCard { id: clearCard; objectName: "aiClearCard"; confirmText: "Clear"; cancelText: "Cancel"; title: "Clear the results shown here?"
+                  body: "This forgets what the Cull window found for the open folder (a running analysis is stopped) and empties the list of recent runs. Your photos and your decisions are not touched."
+                  onAccepted: cull.clearRuns() }
+    ConfirmCard { id: deleteCard; objectName: "aiDeleteDataCard"; warn: true; cancelText: "Cancel"; onAccepted: cull.deleteFolderData() }
+    function deletePressed() { var t = cull.deleteDataText(); deleteCard.title = t.title; deleteCard.body = t.body; deleteCard.confirmText = t.confirm; deleteCard.open() }
     component Card: Rectangle { radius: 14; color: theme.s1; border.color: theme.lineSoft }
     component H3: Text { height: 13; verticalAlignment: Text.AlignVCenter; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
     component Status: Row { property string tone; property string label; spacing: 6; anchors.verticalCenter: parent ? parent.verticalCenter : undefined
@@ -99,6 +105,13 @@ Backdrop {
                         Seg { anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; width: 240; height: 38; fill: true; showExtras: false; labels: ["Careful", "Balanced", "Strict"]
                               current: { var s = cull.view.sens, d = root.c.defSens || ""; for (var i = 0; i < s.length; ++i) if (s[i].key === d) return i; return 1 }
                               onActivated: (i) => cull.setDefaultSens(cull.view.sens[i].key) } }
+                    Item { visible: folderData.visible; width: 1; height: 16 }
+                    H3 { visible: folderData.visible; text: "THIS FOLDER"; width: parent.width }
+                    Item { visible: folderData.visible; width: 1; height: 9 }
+                    Row2 { id: folderData; objectName: "aiFolderData"; visible: (root.c.dataFolder || "") !== ""; iconPath: "M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"
+                        title: "AI data for " + (root.c.dataFolder || ""); tone: ""; state: ""
+                        desc: "The analysis keeps its results, the search index, and the faces and names it found in a hidden folder beside these photos. Deleting it removes all of that for this folder; your photos and decisions stay."
+                        SButton { objectName: "aiDeleteDataButton"; text: "Delete AI data…"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: root.deletePressed() } }
                     Item { width: 1; height: 16 }
                     H3 { text: "RECENT RUNS"; width: parent.width }
                     Item { width: 1; height: 9 }
@@ -130,7 +143,7 @@ Backdrop {
                 Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
                 Text { x: 26; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 290; elide: Text.ElideRight; color: theme.fg3; font.pointSize: UiState.pt(12.5); text: "Results are kept with each folder; clearing them never touches your photos." }
                 Row { anchors.right: parent.right; anchors.rightMargin: 20; anchors.verticalCenter: parent.verticalCenter; spacing: 8
-                    SButton { text: "Clear all results"; h: 34; hpad: 16; radius: 12; onClicked: cull.clearRuns() }
+                    SButton { objectName: "aiClearButton"; text: "Clear all results"; h: 34; hpad: 16; radius: 12; onClicked: clearCard.open() }
                     SButton { text: "Done"; variant: "primary"; h: 34; hpad: 16; radius: 12; onClicked: cull.close() } }
             }
         }

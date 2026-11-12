@@ -16,6 +16,11 @@ Backdrop {
     readonly property real winW: Math.min(1180, width - 64)
     readonly property real winH: Math.min(780, height - 72)
 
+    // stopping a run throws away the work done so far, so it asks first
+    ConfirmCard { id: cancelCard; objectName: "cullCancelCard"; confirmText: "Cancel analysis"; cancelText: "Keep running"; title: "Cancel the analysis?"
+                  body: "The analysis stops and nothing it has worked out in this run is kept. Your photos are not changed, and you can start it again from Prepare."
+                  onAccepted: cull.cancelRun() }
+
     component Lbl: Text { color: theme.fg2; font.pixelSize: 13 }
     component H3: Text { property alias title: h.text; id: h; height: 13; verticalAlignment: Text.AlignVCenter; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
     component Ring: Item {
@@ -265,6 +270,12 @@ Backdrop {
                         Column {
                             id: rev
                             visible: root.page === "rev"; width: parent.width; spacing: 0
+                            // what the run skipped or could not do, in its own words: without these a run that ranked nothing looks like one that did
+                            Column { id: revNotes; objectName: "cullRunNotes"; width: parent.width; spacing: 6; bottomPadding: (root.v.runNotes || []).length > 0 ? 10 : 0
+                                Repeater { model: root.v.runNotes || []
+                                    delegate: Card { required property string modelData; width: revNotes.width; radius: 11; height: rnt.implicitHeight + 20
+                                        Icon { x: 12; y: 10; size: 15; strokeWidth: 1.8; color: theme.rev; path: "M12 8v5M12 16.5v.01M12 21a9 9 0 100-18 9 9 0 000 18z" }
+                                        Text { id: rnt; x: 37; y: 10; width: parent.width - 49; text: modelData; wrapMode: Text.WordWrap; color: theme.fg2; font.pointSize: UiState.pt(12.5); lineHeight: 18.1; lineHeightMode: Text.FixedHeight } } } }
                             Row { spacing: 8
                                 Repeater { model: root.v.tiles
                                     delegate: Card { required property var modelData; width: (rev.width - 8 * (root.v.tiles.length - 1)) / root.v.tiles.length; height: 64
@@ -290,7 +301,7 @@ Backdrop {
                             Item { width: 1; height: 12 }
                             // the stacks scroll in a list of their own that only builds the cards on screen (hundreds of stacks, each with its pictures, built at once made scrolling crawl and
                             // queued every thumbnail ahead of the one you picked); the detail card stays put beside it
-                            Item { id: split; width: parent.width; height: Math.max(260, body.height - 18 - 64 - 14 - 40 - chipFlow.height - 12)
+                            Item { id: split; width: parent.width; height: Math.max(260, body.height - 18 - revNotes.height - 64 - 14 - 40 - chipFlow.height - 12)
                                 ListView { id: stk; objectName: "cullReviewList"; width: parent.width - 262 - 16; height: parent.height; spacing: 8; clip: true; cacheBuffer: 500; boundsBehavior: Flickable.StopAtBounds; interactive: false; model: cull.reviewRows
                                         property real savedY: 0
                                         Connections { target: cull
@@ -411,7 +422,7 @@ Backdrop {
                         SButton { visible: root.page === "prep"; text: "Cancel"; h: 34; hpad: 16; radius: 12; onClicked: cull.close() }
                         SButton { visible: root.page === "prep"; text: "Start analysis"; variant: "primary"; h: 34; hpad: 16; radius: 12; onClicked: cull.start() }
                         SButton { visible: root.page === "run"; text: "Keep browsing"; h: 34; hpad: 16; radius: 12; onClicked: cull.hide() }
-                        SButton { visible: root.page === "run"; text: "Cancel analysis"; h: 34; hpad: 16; radius: 12; onClicked: cull.cancelRun() }
+                        SButton { objectName: "cullCancelButton"; visible: root.page === "run"; text: "Cancel analysis"; h: 34; hpad: 16; radius: 12; onClicked: cancelCard.open() }
                         SButton { visible: root.page === "rev"; text: "Run again…"; h: 34; hpad: 16; radius: 12; onClicked: cull.rerun() }
                         SButton { visible: root.page === "rev"; text: "Close"; h: 34; hpad: 16; radius: 12; onClicked: cull.close() }
                         SButton { visible: root.page === "rev"; text: "Apply flags…   " + root.v.applyCount; variant: "primary"; h: 34; hpad: 16; radius: 12; onClicked: cull.toApply() }
