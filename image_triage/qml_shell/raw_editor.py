@@ -544,6 +544,10 @@ class RawEditor(QObject):
         self.cancel()
 
     def _enqueue(self, action: str, sample=None) -> None:
+        if self._saving and action != "save":
+            # Nothing may start while a save is running: it would move the revision on, the save's result would be taken
+            # for a stale one, and the editor would stay "saving" (refusing open, cancel, done and every slider) for good.
+            return
         if action != "detail":
             self._revision += 1
         if action not in ("preview", "detail"):
@@ -785,11 +789,11 @@ class RawEditor(QObject):
         self._running = False
         self._native_action = ""
         self._native_job = None
+        if action == "save":
+            self._saving = False                      # whatever else happened meanwhile, the save is over
         if revision == self._revision:
             if action != "detail" or self._detail_mode:
                 self._error = error
-            if action == "save":
-                self._saving = False
             if not error and action == "load":
                 self._original, self._preview = result
                 self._baseline = self._preview
