@@ -17,15 +17,23 @@ The cloud continuation's full Linux suite passed: **2,591 passed, 49 skipped, 5 
 failures**, plus 117 passing subtests. The host-bootstrap compatibility follow-up passed
 44 focused cases (3 platform/optional-runtime skips), then 25 task/QML cases with the
 actual isolated core engine interpreter (no skips). Standard-CPython Windows handoff
-checks also passed at application commit `651279e`; the full remote jobs were still
-running when this ledger was saved. The final Windows/Linux CI run is recorded in
-[the validation handoff](../docs/audit_cloud_validation_20261112.md). These results do
+checks and both complete host suites pass at `83b4cb5`: Windows **2,622 passed,
+29 skipped, 5 xfailed**, plus 129 passing subtests; Linux **2,602 passed, 51 skipped,
+5 xfailed**, plus 117 passing subtests. Full CI and native acceptance gates are
+recorded in [the validation handoff](../docs/audit_cloud_validation_20261112.md). These results do
 not substitute for the original machine's Microsoft Store Python, managed GPU/model
 runtime or sealed native editor acceptance.
 
 ## Open failures
 
-None. The three causes listed here on 2026-11-12 were fixed the same day: the mask-capable host-job runner was
+None in the final host suite at `83b4cb5`. Windows path aliases now deduplicate
+runtime search paths and exclude existing stack edits correctly. Transient Windows
+staging-directory locks receive a bounded retry; persistent cleanup failures are
+reported rather than suppressed. All original assertions remain in force. Separate
+native-candidate gates and algorithm NaN failures are tracked in the validation
+handoff and do not count as passing native acceptance.
+
+The three causes listed here on 2026-11-12 were fixed the same day: the mask-capable host-job runner was
 restored (`test_camera_raw_host_jobs`), Edit Collection no longer opens blank (`test_qml_shell_collection_dialog`),
 and content-search hits match on case-sensitive file systems (`test_qml_photo_search`).
 

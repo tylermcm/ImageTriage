@@ -1,7 +1,7 @@
 # Audit cloud continuation — 2026-11-12
 
 Continues `docs/audit_windows_handoff_20261112.md` from checkpoint `2051d1d`.
-Implementation is on `codex/audit-cloud-continuation-20261112`, commits `5063516`, `2fefbd0`, `542f69a`, and `651279e`.
+Implementation is on `codex/audit-cloud-continuation-20261112`, commits `5063516`, `2fefbd0`, `542f69a`, `651279e`, `5bc1944`, `427a2bb`, and `83b4cb5`.
 The checkpoint is preserved. This is a source build and validation record, not an MSI release.
 
 ## Culler cleanup
@@ -80,6 +80,36 @@ assertion was removed or relaxed, and GC is enabled. The affected pointer check 
 20 consecutive diagnostic repetitions; the broader RAW/viewer group passed 121 cases.
 Disposable diagnostic tests and screenshots were not committed.
 
+## Windows path and cleanup follow-up
+
+The completed `651279e` CI run passed Linux but failed 25 Windows checks: temporary
+paths used both `RUNNER~1` and `runneradmin`. Most failures were assertions comparing
+spellings. The runtime failures also exposed duplicate equivalent Python/DLL search
+entries. Bootstrap search paths now deduplicate by canonical filesystem identity,
+while preserving the empty Python path entry's dynamic working-directory meaning.
+Runtime precedence checks recognize aliases without allowing bundled packages to
+shadow the managed runtime. Location assertions resolve their expected fixture paths;
+no test redirects the temporary directory or skips these checks.
+
+A second run at `5bc1944` passed 133 path checks and failed one: edit discovery could
+rediscover a stack member recorded through an alias. External stack paths now use
+the scanner's canonical key; candidates retain the existing normalized-parent fast
+path. An alias regression failed before this fix and passes afterward. The complete
+local path subset passed **132 tests**, with five platform/optional-runtime skips and
+15 passing subtests. Windows alias regressions use real 8.3 names; Linux uses symlinks.
+
+The next Windows run caught one intermittent cancellation cleanup failure: cancellation
+returned promptly but the staging directory remained. The task had suppressed all deletion
+errors. It now retries Windows access/sharing/lock/directory-in-use errors for at most
+one second, then reports an explicit failure with diagnostics if cleanup still fails.
+Tests cover a transient lock, a persistent lock/deadline and preservation of the active
+generation. The final local handoff subset passed **36 tests**, with three skips.
+The final host run at `83b4cb5` passed both platforms: **Windows 2,622 passed,
+29 skipped, 5 xfailed, 129 passing subtests**; **Linux 2,602 passed, 51 skipped,
+5 xfailed, 117 passing subtests**. The separate Windows gates passed 37 handoff
+tests (two skips) and 135 path tests (27 passing subtests, no skips). CI:
+https://github.com/tylermcm/ImageTriage/actions/runs/43246330088.
+
 ## Validation
 
 - Full local Python 3.13.5 / PySide6 6.12.0 suite after the selection and fixture
@@ -98,21 +128,21 @@ Disposable diagnostic tests and screenshots were not committed.
 - Related startup/grid/collection checks: 39 passed. RAW/viewer checks: 121 passed.
   The original suspect UI files passed 166 cases on Python 3.13 with GC enabled.
 
-Final Windows/Linux CI: https://github.com/tylermcm/ImageTriage/actions/runs/43190879197
+The earlier full run at `651279e` completed: Linux passed, Windows failed the path
+checks described above. Later partial runs are diagnostic evidence, not full Windows
+passes. Current Windows/Linux CI is linked in the follow-up above.
 
-The full remote jobs were still running when this record was saved. Prior source
-checkpoints passed their full Linux CI suites; superseded Windows runs were canceled
-by branch concurrency and are not reported as completed full Windows passes.
-
-The continuation branch runs both existing required test jobs. Windows additionally
-runs the handoff subset first, builds a source wheel only after passing tests, and
-retains JUnit reports and the wheel as a workflow artifact. No MSI workflow or release
-tag is triggered by this branch.
+The continuation branch runs both test jobs. Windows additionally runs the handoff
+and path subsets first, builds a source wheel only after passing tests, and retains
+JUnit reports and the wheel. Its successful Windows-built wheel has SHA256
+`bf0b1ff4230bc628f8301f86ad78fa04fd0f5734c302c9a5eeed12e59bc02cfd`
+and is retained in [the CI artifact](https://github.com/tylermcm/ImageTriage/actions/runs/43246330088/artifacts/13957967622).
 
 ## Build
 
 Built `image_triage-2.4.0-py3-none-any.whl`, SHA256:
-`37d077f60cae0ce7ecce835e71e85174f7bf304b712865fd179cedd381c0c197`.
+`b7d34be179f13d18aa82442870eb0dc9d1851bb2dc9b71a9a7c403a6fc9239a3`
+from source `83b4cb5`.
 The wheel was installed into a separate target directory; imports were checked to
 come from that installed copy. Archive integrity, worker/bootstrap files, and QML
 package contents passed. The installed app loaded four synthetic JPEGs, captured a
@@ -125,17 +155,56 @@ built PhotoCraft executable, RAW helper, managed AI runtime or Windows installer
 
 Both remotes fetched successfully. Fork integration remains
 `b5b39157c4f837aae681658036540962d4a99fc4`; upstream main is
-`74330157cb601573ae4523a95bb9132822fc3918`. Divergence is 86 host commits / 3,959
+`7ca5a9c40f8088c949007905c533b5ff9cd1b624`. Divergence is 86 host commits / 4,044
 upstream commits. The non-mutating merge assessment still reports 42 conflicted paths,
 including RAW algorithms/IO, Camera Raw UI, control, startup and translations. No
-companion merge, source edit or binary promotion was performed. The separate v0.22
-candidate remains `a826e4f066b043e9e78f1063ff4685853b91c7d7`.
+broad upstream merge or binary promotion was performed. The separate v0.22
+candidate was repaired on the isolated `codex/audit-svg-validation-20261112` branch;
+see the focused native follow-up below.
 
 Reviewed the checkpoint's combined RAW preview guard/watchdog, application startup and
 quit wiring, native editor Save/confirmation/job polling, menus, and theme/control
 changes. The Red Eye capability check still precedes the watchdog. The full source
 suite covers the merged paths; this review does not replace live native acceptance.
 Graphify was not installed in this environment.
+
+## Focused native candidate and Windows packaging
+
+The unmodified v0.22 candidate reproduces the original small-stack SVG failure on
+Linux too: the exact release test aborts with SIGABRT. Commit `590a6d811` backports
+only `svg.rs` and its tests from upstream `453ea8c9ca93c405b44f0a0dfb741a4b817706ab`.
+Parsing, lowering/rendering and recursive tree destruction stay on one fixed-size
+native worker; embedded images reuse it. XML, decoded-image and aggregate budgets
+remain unchanged. The test still supplies a 1 MiB caller stack. With the backport,
+the same exact release test and **642 I/O library tests pass**, with two existing
+ignores (a benchmark and a user-supplied PSD). The later Red Eye commit was applied
+cleanly as `bfb4a91c65cc5e2f8c4ccfe6f802664fdbbc8b85`; all five native Red Eye tests pass.
+The two automatic UI merges retain upstream context and advertise the Red Eye
+capability only with its native implementation present.
+
+Strict all-target release clippy passes for I/O and algorithms. Dependency layers
+(31 crates), panel-command routing, and WASM (24 crates plus codecs HEIF) pass. All
+pinned corpora are fetched and verified. PngSuite's original HTTP host was blocked;
+the 178 files were recovered from GitHub mirrors and each matches the unchanged
+committed SHA-256 manifest, including the original README line endings. No corpus
+pin, checksum or assertion was changed.
+
+The broader algorithm release sweep exposed **two failures**, 834 passes and 26
+existing ignores: `pixelate::tests::facet_reuse_matches_scalar_in_every_model` and
+`pixelate::tests::cell_filters_match_scalar_models_edges_and_fractional_cells`.
+Both compare NaN sign bits. A narrow scalar fallback for nonfinite pixels is under
+test; do not describe that follow-up as validated yet.
+
+Host commit `4ca3813` adds a separate immutable validation pin and a branch-only
+Windows artifact build. Tag releases continue to use the unchanged production pin
+and render-algorithm guard. The candidate workflow first runs native release I/O
+and Red Eye regressions, builds the editor and RAW helper from the same checkout,
+checks the host schema against that explicit source, freezes the app and checks
+QML startup with synthetic photos. It does not create a release or install on the
+owner's machine. Build and final host-harness CI are running:
+
+- https://github.com/tylermcm/ImageTriage/actions/runs/43249852916 (MSI candidate)
+- https://github.com/tylermcm/ImageTriage/actions/runs/43249852541 (host tests)
 
 ## Remaining release gates
 
@@ -147,11 +216,12 @@ Graphify was not installed in this environment.
    stash/restore, Save/grid propagation, reopen, hidden startup, failed-save confirmation,
    theme/resize/fullscreen, shutdown and cleanup. Windows hardware/native binaries from
    the original machine are not present here. Existing executable copies are untouched.
-4. Resolve the companion v0.22 release SVG stack overflow before promoting that candidate;
-   combine/validate its later Red Eye work deliberately.
+4. Complete Windows native validation of the SVG/Red Eye candidate, resolve the two
+   algorithm NaN comparisons, and finish corpus/hosted acceptance before promotion.
 5. Advance the packaging pin only to a validated compatible editor. It is still
    `0988078e4f9f8735bb99587a5f6e1d67a4b511e4`, render algorithm 2, while the host expects 3.
-   The MSI workflow correctly refuses this combination. Do not bypass its guard.
+   Tag release builds correctly refuse this combination. Validation artifacts use
+   the separate candidate pin and retain the same algorithm check.
 
 Main was not advanced and no older editor was installed. Remaining native/packaging
 gates are explicit so the source wheel is not mistaken for a release-ready installer.

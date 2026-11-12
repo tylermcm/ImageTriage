@@ -1,5 +1,40 @@
 # PhotoCraft handoff
 
+## 2026-11-12: audit SVG/Red Eye validation candidate
+
+Both remotes fetched successfully. Integration remains `b5b39157c4f837aae681658036540962d4a99fc4`;
+upstream main is `7ca5a9c40f8088c949007905c533b5ff9cd1b624`, with 86 host-only and
+4,044 upstream-only commits. The non-mutating upstream-main merge assessment still
+reports 42 conflicts, including `camera_raw.rs`, `local_tone.rs`, `per_pixel.rs`,
+RAW IO/lib, Camera Raw dialogs, app startup/control/jobs and 20 translation files.
+No broad merge was attempted. Existing builds and the original integration branch
+are preserved.
+
+An isolated worktree/branch `codex/audit-svg-validation-20261112` starts at the
+existing v0.22 candidate `a826e4f066b043e9e78f1063ff4685853b91c7d7`. Commit `590a6d811`
+backports the SVG-only portions of upstream `453ea8c9ca93c405b44f0a0dfb741a4b817706ab`.
+The unmodified exact release regression aborts from stack overflow on its original
+1 MiB caller stack; the backport passes it and all 642 I/O library tests (two existing
+ignores). Whole SVG operations, including recursive destruction, run on one bounded
+worker. Input/resource bounds and test stack sizes are unchanged.
+
+Commit `bfb4a91c65cc5e2f8c4ccfe6f802664fdbbc8b85` applies the later `b5b39157c` Red Eye
+work. No textual conflicts occurred; the automatic merges in clipboard validation
+and control dispatch retain the v0.22 context and add the matching host capability.
+Five native Red Eye regressions pass. I/O/algo strict all-target release clippy,
+31-crate dependency layers, panel routing and 24-crate/HEIF WASM checks pass.
+Two broader algorithm release checks fail on NaN sign bits; a narrow scalar fallback
+is being validated. All pinned corpus inputs are fetched and checksum-verified;
+corpus execution remains a gate.
+
+The candidate is pushed only to the owner's fork. No PR was created: automatic
+approval review rejected optional draft PR creation as repository communication
+outside explicit authorization. Host commit `4ca3813` starts a paired Windows
+artifact build against the separate validation pin, without advancing the release
+pin or the default editor. See [the audit validation record](audit_cloud_validation_20261112.md)
+for live run links, native gates and subsequent results. No candidate is promoted.
+
+
 ## 2026-11-06: full-resolution RAW zoom candidate
 
 Hosted Camera Raw kept browsing-sized RAW stand-ins indefinitely: its detail path
