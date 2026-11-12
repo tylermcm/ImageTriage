@@ -116,7 +116,8 @@ jobs:
           rustc --version
 
       - name: Cache the PhotoCraft build
-        uses: actions/cache@v4
+        id: photocraft-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
@@ -156,18 +157,24 @@ jobs:
           cargo build --release --locked -p photocraft
           if ($LASTEXITCODE -ne 0) { throw 'PhotoCraft build failed' }
 
+      # Preserve the expensive validated editor even if a later packaging stage fails.
+      - name: Save the validated PhotoCraft build
+        if: steps.photocraft-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            photocraft-src/target
+          key: photocraft-${{ runner.os }}-${{ steps.pin.outputs.ref }}
+
       # The RAW preview worker (native/raw_preview) is built against the same PhotoCraft source, into the same target folder so
       # the crates the editor build compiled are reused. Its manifest is made from the template, as scripts/build_raw_preview.ps1 does.
       - name: Build the RAW preview worker
         shell: pwsh
         run: |
           $pc = (Resolve-Path photocraft-src).Path.Replace('\','/')
-          $src = (Resolve-Path native/raw_preview).Path.Replace('\','/')
-          New-Item -ItemType Directory -Force -Path raw-preview-build | Out-Null
-          $manifest = (Get-Content -LiteralPath native/raw_preview/Cargo.toml.in -Raw).Replace('@PHOTOCRAFT@',$pc).Replace('@SOURCE@',$src)
-          Set-Content -LiteralPath raw-preview-build/Cargo.toml -Value $manifest -Encoding utf8
-          $env:CARGO_TARGET_DIR = "$pc/target"
-          cargo build --release --manifest-path raw-preview-build/Cargo.toml
+          & ./scripts/build_raw_preview.ps1 -PhotoCraftRoot $pc -BuildRoot "$pwd/raw-preview-build" -TargetRoot "$pc/target" -Release
           if ($LASTEXITCODE -ne 0) { throw 'RAW preview worker build failed' }
           $exe = (Resolve-Path photocraft-src/target/release/image-triage-raw-preview.exe).Path
           "IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW_EXE=$exe" >> $env:GITHUB_ENV

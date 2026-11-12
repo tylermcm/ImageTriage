@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$true)][string]$PhotoCraftRoot,
     [string]$BuildRoot = 'K:\Builds\ImageTriage\raw-preview',
-    [string]$TargetRoot = 'K:\Builds\PhotoCraft\target\merge-v0.20.1-20261103'
+    [string]$TargetRoot = 'K:\Builds\PhotoCraft\target\merge-v0.20.1-20261103',
+    [switch]$Release
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -20,7 +21,13 @@ if (Test-Path -LiteralPath "$pcRoot/Cargo.lock") {
     Copy-Item -LiteralPath "$pcRoot/Cargo.lock" -Destination "$BuildRoot/Cargo.lock"
 }
 $env:CARGO_TARGET_DIR = $TargetRoot
-& cargo build --manifest-path "$BuildRoot\Cargo.toml"
+$buildArguments = @('build', '--manifest-path', "$BuildRoot\Cargo.toml")
+$buildProfile = 'debug'
+if ($Release) {
+    $buildArguments += '--release'
+    $buildProfile = 'release'
+}
+& cargo @buildArguments
 if ($LASTEXITCODE -ne 0) { throw 'RAW preview worker build failed' }
-Copy-Item -LiteralPath "$TargetRoot\debug\image-triage-raw-preview.exe" -Destination "$BuildRoot\image-triage-raw-preview.exe"
+Copy-Item -LiteralPath "$TargetRoot\$buildProfile\image-triage-raw-preview.exe" -Destination "$BuildRoot\image-triage-raw-preview.exe"
 Write-Output "Preview worker: $BuildRoot\image-triage-raw-preview.exe"
