@@ -76,8 +76,8 @@ Backdrop {
                     Item { width: 1; height: 8 }
                     Row2 { iconPath: "M4 5h16v10H4zM9 19h6M12 15v4"; title: "Graphics card"; tone: root.c.gpuDot; state: root.c.gpuState; desc: root.c.gpuDesc }
                     Item { visible: root.c.vcShow; width: 1; height: 8 }
-                    Row2 { visible: root.c.vcShow; iconPath: "M12 8v5M12 16.5v.01M10.3 3.9L2.4 18a2 2 0 001.7 3h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"; title: "Windows needs a newer Visual C++ runtime"; tone: "bad"; state: ""
-                        desc: "Found " + root.c.vcFound + ". The AI runtime needs " + (root.c.vcNeeded || "14.40") + " or newer and fails to start without it."
+                    Row2 { visible: root.c.vcShow; iconPath: "M12 8v5M12 16.5v.01M10.3 3.9L2.4 18a2 2 0 001.7 3h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"; title: "Visual C++ update recommended"; tone: "warn"; state: ""
+                        desc: "Found " + root.c.vcFound + ". Version " + (root.c.vcNeeded || "14.40") + " or newer is recommended. This check does not prevent AI tasks from running."
                         SButton { text: "Get the update"; variant: "primary"; h: 28; hpad: 11; radius: 9; onClicked: Qt.openUrlExternally("https://aka.ms/vs/17/release/vc_redist.x64.exe") }
                         SButton { text: "Check again"; h: 28; hpad: 11; radius: 9; onClicked: cull.recheckRuntime() } }
                     Item { width: 1; height: 16 }

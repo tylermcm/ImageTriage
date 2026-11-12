@@ -146,13 +146,13 @@ def test_the_runtime_is_ready_only_when_it_has_pytorch(qapp, ops):
     until(qapp, lambda: ai.state()["rt"] == "ready")
 
 
-def test_an_old_visual_cpp_runtime_is_reported_when_the_runtime_is_installed(qapp, ops):
+def test_an_old_visual_cpp_runtime_is_advisory_when_the_runtime_is_installed(qapp, ops):
     ops.raw.update(installed=["cpu"], torch=["cpu"], vc="14.36.32532", vcOld=True)
     ai = AiCenterBackend(ops, parent=qapp)
     ai.refresh()
     until(qapp, lambda: ai.state()["checked"])
     state = ai.state()
-    assert state["rt"] == "error" and state["vcOld"] and state["vcFound"] == "14.36.32532"
+    assert state["rt"] == "ready" and state["error"] == "" and state["vcOld"] and state["vcFound"] == "14.36.32532"
     ops.raw.update(vc="14.44.35211", vcOld=False)                           # the person installed the update, and presses Check again
     ai.recheck()
     until(qapp, lambda: ai.state()["rt"] == "ready")
@@ -398,3 +398,38 @@ def test_the_window_buttons_reach_the_back_end(qapp, tmp_path, ops):
     window.close()
     engine.deleteLater()
     pump(qapp, 0.2)
+
+
+@pytest.mark.parametrize("vc,old", [("14.36.32532", True), ("14.44.35211", False), ("", False)])
+def test_registry_version_never_replaces_the_actual_runtime_failure(cull, ops, qapp, vc, old):
+    ops.raw.update(installed=["cpu"], torch=["cpu"], vc=vc, vcOld=old)
+    cull._ai._errors["runtime"] = "Download failed: connection timed out"
+    cull._ai.refresh()
+    until(qapp, lambda: not cull._ai._detecting and cull._ai.state()["vcFound"] == vc and cull._ai.state()["rt"] == "error")
+    assert cull.view["rt"]["errBody"] == "Download failed: connection timed out"
+    assert not cull.view["rt"]["errVc"]
+    assert cull.view["center"]["rtDesc"] == "Download failed: connection timed out"
+
+
+def test_dll_guidance_keeps_the_original_failure(monkeypatch):
+    from image_triage.qml_shell.ai_center import RealOps
+    from image_triage import ai_platform
+
+    monkeypatch.setattr(ai_platform, "is_windows", lambda: True)
+    monkeypatch.setattr(ai_platform, "vc_runtime_version", lambda: (14, 36, 32532))
+    message = "DLL load failed while importing onnxruntime_pybind11_state"
+    result = RealOps().friendly(message)
+    assert message in result and "14.36.32532" in result and ai_platform.VC_REDIST_URL in result
+    assert "need 14.40" not in result
+
+@pytest.mark.parametrize('old', [False, True])
+def test_dll_failures_keep_repair_action_without_claiming_registry_cause(cull, ops, qapp, old):
+    message = 'DLL load failed while importing onnxruntime_pybind11_state'
+    ops.raw.update(installed=['cpu'], torch=['cpu'], vcOld=old)
+    cull._ai._errors['runtime'] = message
+    cull._ai.refresh()
+    until(qapp, lambda: not cull._ai._detecting)
+    assert cull.view['rt']['state'] == 'error'
+    assert cull.view['rt']['errVc']
+    assert cull.view['rt']['errBody'] == message
+    assert cull.view['rt']['errTitle'] == 'A Windows library failed to load'

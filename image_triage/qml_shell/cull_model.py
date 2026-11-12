@@ -712,16 +712,16 @@ class CullModel(QObject):
         self._people_note(message)
 
     def _rt_error(self) -> dict:
-        """The runtime's failure card. On a real PC it says what this PC has (the Visual C++ complaint only when the Visual C++ runtime really is
-        too old, and the runtime's own error otherwise); the scripted sample keeps its fixed wording."""
+        """Show the actual failure; registry age alone cannot identify its cause."""
         a = self._ai_state
         if a is None:
             return {"errVc": True, "errTitle": "Windows needs a newer Visual C++ runtime",
                     "errBody": "The AI runtime could not start. This PC has Visual C++ 14.36 (2023); it needs 14.40 or newer. Install the latest x64 Redistributable, then check again."}
-        if a["vcOld"]:
-            return {"errVc": True, "errTitle": "Windows needs a newer Visual C++ runtime",
-                    "errBody": f"The AI runtime could not start. This PC has Visual C++ {a['vcFound']}; it needs 14.40 or newer. Install the latest x64 Redistributable, then check again."}
-        return {"errVc": False, "errTitle": "The AI runtime could not start",
+        from ..ai_platform import looks_like_dll_failure
+
+        dll_failure = looks_like_dll_failure(a["error"])
+        return {"errVc": dll_failure,
+                "errTitle": "A Windows library failed to load" if dll_failure else "The AI runtime could not start",
                 "errBody": a["error"] or "It was installed but does not start on this PC. Repair reinstalls it; the AI Center shows what failed."}
 
     def _center(self, s: dict, rt_ready: bool, rtp: int, rt_step: str, flagged, applied) -> dict:
@@ -746,8 +746,7 @@ class CullModel(QObject):
         rt_desc = {"ready": f"Python {python} with the packages the cull needs. It lives in Image Triage’s own folder and can be removed at any time.",
                    "missing": "The cleanup works without it. The eyes-closed check and ranking need it: a one-time download that Set up AI shows the size of first.",
                    "installing": "Setting up. If you cancel, the next setup downloads it again from the start.",
-                   "error": a["error"] or "It was installed but does not start on this PC." if not a["vcOld"] else
-                            f"It was installed but does not start: this PC has Visual C++ {a['vcFound']} and the runtime needs 14.40 or newer.",
+                   "error": a["error"] or "It was installed but does not start on this PC.",
                    "checking": "Looking at what is installed…"}[rt]
         models = []
         for key, name, desc in (

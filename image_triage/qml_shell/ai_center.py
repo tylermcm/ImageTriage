@@ -131,7 +131,8 @@ class RealOps:
         """A failure told in plain words: a Windows DLL failure gets the Visual C++ instruction."""
         from ..ai_platform import dll_failure_hint
 
-        return dll_failure_hint(message) or message
+        hint = dll_failure_hint(message)
+        return f"{message}\n\n{hint}" if hint and hint not in message else message
 
 
 class AiCenterBackend(QObject):
@@ -197,11 +198,10 @@ class AiCenterBackend(QObject):
             rt, error = "error", f"Could not look at the AI runtime: {failed}"
         elif error:
             rt = "error"
-        elif installed and torch and raw["vcOld"]:
-            rt = "error"
         elif installed and not torch:
             rt, error = "error", "The runtime is installed without PyTorch, which ranking needs. Repair adds it."
         elif installed:
+            # Registry age is advisory: it does not establish an import failure.
             rt = "ready"
         else:
             rt = "missing"

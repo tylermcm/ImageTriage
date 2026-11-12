@@ -3766,3 +3766,15 @@ mask size and rendered a synthetic 8256 x 5504 DNG to 16-bit ICC-tagged PNG,
 preserving a thin mask feature. Input integrity and cleanup passed; 132 focused
 tests passed (one skip). Full-resolution mask support remains a deferred feature
 by user choice. See E22 in the audit closeout log for scope and evidence.
+
+
+### 2026-11-12 A24 Windows runtime detection
+
+Both companion remotes fetched successfully. Upstream remains `4a059d97c`, with
+86/4078 divergence and the same 42 large conflicts, including Camera Raw. Fork
+integration still matches HEAD. No merge, companion draft edits or native binary
+changes. The host now treats the Visual C++ registry version as advisory and keeps
+actual runtime failure details. Seventy-two focused tests passed. The installed
+GPU profile passed isolated import validation, detection remained available under
+simulated old/current/unknown reports, and the QML recommendation was rendered
+and inspected. No registry or runtime-package modifications were made.

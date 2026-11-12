@@ -13,7 +13,7 @@ import re
 import shutil
 import subprocess
 
-RECOMMENDED_VC_RUNTIME = (14, 40, 0)  # PyTorch and ONNX Runtime wheels need the 14.4x C++ runtime; 14.36 failed to load both (verified)
+RECOMMENDED_VC_RUNTIME = (14, 40, 0)  # Advisory baseline from observed DLL failures, not a universal compatibility gate.
 VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 _DLL_FAILURE = re.compile(r"WinError 1114|WinError 126\b|WinError 127\b|DLL load failed|dynamic link library|DLL initialization", re.IGNORECASE)
 
@@ -50,8 +50,9 @@ def dll_failure_hint(message: str) -> str:
         shown = ".".join(str(part) for part in version)
         needed = ".".join(str(part) for part in RECOMMENDED_VC_RUNTIME[:2])
         return (
-            f"This PC has the Microsoft Visual C++ Redistributable {shown}; the AI libraries need {needed} or newer. "
-            f"Install the latest x64 package from {VC_REDIST_URL}, restart Image Triage and try again."
+            f"This PC reports Microsoft Visual C++ Redistributable {shown}, below the recommended {needed} baseline. "
+            f"Installing or repairing the latest x64 package ({needed} or newer) may resolve this DLL failure: {VC_REDIST_URL}. "
+            "Restart Image Triage after updating and try again."
         )
     return (
         "A Windows library the AI runtime needs failed to start. Installing or repairing the latest Microsoft Visual C++ Redistributable "
