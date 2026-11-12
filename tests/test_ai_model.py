@@ -59,6 +59,7 @@ def _installation(*, install_dir, repo_id="owner/repo", revision="main") -> AIMo
 
 
 class AIModelTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows Store Python redirects LOCALAPPDATA; the managed root comes from USERPROFILE only on Windows")
     def test_default_model_installation_uses_managed_root_not_local_appdata(self) -> None:
         # Model directories must resolve under the short managed root rather
         # than LOCALAPPDATA, which Store Python redirects into a very long

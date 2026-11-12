@@ -14,7 +14,7 @@ from image_triage.qml_shell.app import QML_DIR, _configure_qt_dll_search
 from image_triage.qml_shell.photos import PhotoModel
 from image_triage.qml_shell.settings_model import SettingsModel
 from image_triage.qml_shell.theme import Theme
-from qml_support import collection_models
+from qml_support import NoThumbs, collection_models
 
 
 def pump(app, seconds=0.25):
@@ -33,7 +33,8 @@ def sidebar():
     photos = PhotoModel()
     photos.setRows([{"path": f"/sample/{i}.jpg", "name": f"{i}.jpg", "ext": "JPG", "decision": "", "rating": 0} for i in range(12)], "/sample")
     objects = dict(collection_models(photos, app))
-    objects.update(theme=Theme(parent=app), photos=photos, settings=SettingsModel(memory=True, parent=app))
+    # ThumbImage.qml listens to the thumbnail service, so the face portraits need one even when nothing is cached.
+    objects.update(theme=Theme(parent=app), photos=photos, settings=SettingsModel(memory=True, parent=app), thumbs=NoThumbs(parent=app))
     for name, obj in objects.items():
         engine.rootContext().setContextProperty(name, obj)
     engine.addImportPath(str(QML_DIR))

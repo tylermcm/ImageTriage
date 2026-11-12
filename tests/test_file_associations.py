@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from tempfile import TemporaryDirectory
@@ -39,6 +40,7 @@ class FileAssociationTests(unittest.TestCase):
         self.assertIn("-m image_triage", command)
         self.assertIn("%1", command)
 
+    @unittest.skipUnless(os.name == "nt", "asserts the backslash spelling of a drive path, which only Windows pathlib produces")
     def test_current_command_uses_executable_when_frozen(self) -> None:
         with patch.object(sys, "executable", str(Path("C:/Program Files/ImageTriage/ImageTriage.exe"))):
             with patch.object(sys, "frozen", True, create=True):
@@ -64,6 +66,7 @@ class FileAssociationTests(unittest.TestCase):
         self.assertFalse(jpg_state.is_default)
         self.assertEqual(jpg_state.default_progid, "Other.App")
 
+    @unittest.skipUnless(os.name == "nt", "patches os.name to 'nt', and pathlib cannot build a WindowsPath off Windows")
     def test_open_windows_file_association_chooser_creates_probe_and_opens_dialog(self) -> None:
         with TemporaryDirectory() as temp_dir:
             with patch("image_triage.file_associations.os.name", "nt"), patch(

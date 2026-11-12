@@ -182,19 +182,21 @@ class AICullerWorkflowTests(unittest.TestCase):
             self.assertEqual(3, runtime.workers)
 
     def test_default_runtime_and_pythonpath_route_managed_gpu_profile(self) -> None:
-        root = Path("C:/app")
-        managed = Path("C:/runtime/gpu/site-packages")
+        # A drive letter holds os.pathsep everywhere but on Windows.
+        base = "C:/" if os.name == "nt" else "/"
+        root = Path(base + "app")
+        managed = Path(base + "runtime/gpu/site-packages")
 
         runtime = default_aiculler_runtime(device="cuda")
         pythonpath = _aiculler_pythonpath(
             root,
-            "C:/existing",
+            base + "existing",
             runtime_site_packages=(managed,),
         ).split(os.pathsep)
 
         self.assertEqual("cuda", runtime.device)
         self.assertEqual(str(managed), pythonpath[0])
-        self.assertIn("C:/existing", pythonpath)
+        self.assertIn(base + "existing", pythonpath)
 
     def test_default_aiculler_python_does_not_use_project_venv_with_managed_packages(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -220,6 +222,7 @@ class AICullerWorkflowTests(unittest.TestCase):
                 name: os.environ.get(name)
                 for name in (
                     "LOCALAPPDATA",
+                    "XDG_CACHE_HOME",
                     "IMAGE_TRIAGE_AICULLER_MODEL_ROOT",
                     "IMAGE_TRIAGE_AICULLER_ROOT",
                     "IMAGE_TRIAGE_AICULLER_PYTHON",
@@ -229,6 +232,7 @@ class AICullerWorkflowTests(unittest.TestCase):
                 )
             }
             os.environ["LOCALAPPDATA"] = str(local_appdata)
+            os.environ["XDG_CACHE_HOME"] = str(local_appdata)  # the user cache root off Windows
             os.environ["IMAGE_TRIAGE_AICULLER_PYTHON"] = sys.executable
             for name in (
                 "IMAGE_TRIAGE_AICULLER_MODEL_ROOT",

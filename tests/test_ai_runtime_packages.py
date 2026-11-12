@@ -286,6 +286,20 @@ class AIRuntimePackageTests(unittest.TestCase):
                         self.assertEqual(len(digests), len(set(digests)), msg=f"{pin} repeats a hash")
                     self.assertNotIn("insightface", "".join(hashes_by_pin).lower())
 
+    def _assert_compact_requirement_set(self, pip_args: list[str]) -> None:
+        # Locks are generated per platform and interpreter. Where one ships, the compact install names the "-base" lock;
+        # where none does, pip is given the requirement names and the compact set is the one without PyTorch.
+        if ai_runtime_packages.resolve_lock_file(AI_RUNTIME_CPU_VARIANT, include_torch=False) is not None:
+            self.assertTrue(
+                any("-base" in str(item) for item in pip_args),
+                msg=f"compact install did not use the base set: {pip_args}",
+            )
+        else:
+            self.assertFalse(
+                any(str(item).startswith("torch") for item in pip_args),
+                msg=f"compact install asked for PyTorch: {pip_args}",
+            )
+
     def test_runtime_install_can_skip_optional_torch_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             install_root = Path(temp_dir) / "runtime"
@@ -306,10 +320,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
             self.assertEqual(status.installed_variants, (AI_RUNTIME_CPU_VARIANT,))
             self.assertEqual(status.torch_installed_variants, ())
-            self.assertTrue(
-                any("-base" in str(item) for item in recorded_calls[0]),
-                msg=f"compact install did not use the base set: {recorded_calls[0]}",
-            )
+            self._assert_compact_requirement_set(recorded_calls[0])
 
     def test_full_runtime_install_upgrades_existing_compact_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -349,10 +360,7 @@ class AIRuntimePackageTests(unittest.TestCase):
             self.assertEqual(len(recorded_calls), 2)
             # Each install names the lock (or requirement set) for its own
             # profile shape: compact first, then the PyTorch one.
-            self.assertTrue(
-                any("-base" in str(item) for item in recorded_calls[0]),
-                msg=f"compact install did not use the base set: {recorded_calls[0]}",
-            )
+            self._assert_compact_requirement_set(recorded_calls[0])
             self.assertFalse(any("-base" in str(item) for item in recorded_calls[1]))
 
     def test_failed_reinstall_preserves_active_profile(self) -> None:
@@ -529,6 +537,9 @@ class AIRuntimePackageTests(unittest.TestCase):
                 "IMAGE_TRIAGE_AI_RUNTIME_ROOT": "",
                 "LOCALAPPDATA": str(Path(temp_dir) / "AppData/Local"),
                 "USERPROFILE": temp_dir,
+                # The same promise off Windows, where the root and the legacy cache come from the XDG variables.
+                "XDG_DATA_HOME": str(Path(temp_dir) / "share"),
+                "XDG_CACHE_HOME": str(Path(temp_dir) / "cache"),
             }
             with patch.dict(os.environ, env, clear=False):
                 with patch("image_triage.ai_runtime_packages.Path.home", side_effect=RuntimeError("no home")):

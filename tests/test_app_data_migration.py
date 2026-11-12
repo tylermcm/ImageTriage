@@ -137,6 +137,10 @@ class AppDataMigrationTests(unittest.TestCase):
             {"APPDATA": str(self._appdata_dir), "USERPROFILE": str(self._userprofile_dir)},
         )
         self._env_patch.start()
+        # The migration is a no-op off Windows (every legacy location is a Windows one), but its copying and verifying are
+        # plain file work, so the module is told it is on Windows and the same checks run everywhere.
+        self._platform_patch = mock.patch.object(app_data_migration.sys, "platform", "win32")
+        self._platform_patch.start()
 
         real_writable_location = QStandardPaths.writableLocation
 
@@ -152,6 +156,7 @@ class AppDataMigrationTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._qsp_patch.stop()
+        self._platform_patch.stop()
         self._env_patch.stop()
         self._tmp.cleanup()
 

@@ -139,12 +139,14 @@ class ProductionWorkflowTests(unittest.TestCase):
             archive_format="zip",
         )
 
-        destination_dir = workflow_destination_dir(recipe, "C:/shots")
-        archive_path = workflow_archive_path(recipe, "C:/shots")
+        # An absolute folder on whichever platform runs the test ("C:/shots" is a relative name off Windows).
+        shots = (Path(tempfile.gettempdir()).resolve() / "shots").as_posix()
+        destination_dir = workflow_destination_dir(recipe, shots)
+        archive_path = workflow_archive_path(recipe, shots)
         record_folder = workflow_record_folder_name("DSC4914 (Large).jpg")
 
-        self.assertEqual(Path(destination_dir).as_posix(), "C:/shots/Delivery")
-        self.assertEqual(Path(archive_path).as_posix(), "C:/shots/Delivery.zip")
+        self.assertEqual(Path(destination_dir).as_posix(), shots + "/Delivery")
+        self.assertEqual(Path(archive_path).as_posix(), shots + "/Delivery.zip")
         self.assertEqual(record_folder, "DSC4914 (Large)")
 
     def test_build_workflow_export_plan_applies_affixes_and_unique_targets(self) -> None:

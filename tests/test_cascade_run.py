@@ -104,10 +104,11 @@ def test_frames_in_a_burst_share_a_stack_and_far_apart_frames_do_not(folder):
 
 
 def distinct_survivors(folder: Path) -> CascadeRunSettings:
-    """Make a2 a shifted copy of a1 and stop the duplicate collapse from merging them, so the stack has two distinct survivors for the rankers."""
+    """Make a2 a shifted copy of a1 and stop the duplicate collapse and the repeat passes from merging them, so the stack has two distinct survivors for the rankers."""
     base = scene(1)
     save(folder / "a2.jpg", base.transform(base.size, Image.Transform.AFFINE, (1, 0, 14, 0, 1, 0)), 1)
-    return CascadeRunSettings(cascade=CascadeSettings(duplicate_distance=0))
+    # The folder-wide repeat passes (pHash, then SSIM) would fold the shifted copy afterwards, so they are off as well.
+    return CascadeRunSettings(cascade=CascadeSettings(duplicate_distance=0, repeat_distance=0, ssim_threshold=0))
 
 
 def test_rankers_only_see_survivors_and_order_the_stack(folder):

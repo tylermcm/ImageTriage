@@ -78,6 +78,14 @@ def test_what_a_child_process_writes_to_stderr_lands_in_the_file_after_the_paren
     assert "thread main panicked at editor.rs:1" in text and "and stdout" in text
 
 
+def _fake_user32(monkeypatch) -> None:
+    """The launch hides the editor's window through user32. ``ctypes.windll`` only exists on Windows, so elsewhere a stand-in is put there."""
+    if hasattr(bridge.ctypes, "windll"):
+        monkeypatch.setattr(bridge.ctypes.windll.user32, "ShowWindow", Mock(), raising=False)
+    else:
+        monkeypatch.setattr(bridge.ctypes, "windll", Mock(), raising=False)
+
+
 def test_the_editor_is_started_with_its_output_going_to_the_file_and_a_backtrace_on_a_panic(logs, tmp_path, monkeypatch):
     seen = {}
 
@@ -94,7 +102,7 @@ def test_the_editor_is_started_with_its_output_going_to_the_file_and_a_backtrace
     monkeypatch.setattr(bridge.subprocess, "Popen", FakeProcess)
     monkeypatch.setattr(bridge, "_connect_with_retry", lambda port, token, process: control)
     monkeypatch.setattr(bridge, "_find_window_for_pid", lambda pid: 99)
-    monkeypatch.setattr(bridge.ctypes.windll.user32, "ShowWindow", Mock(), raising=False)
+    _fake_user32(monkeypatch)
     monkeypatch.delenv("RUST_BACKTRACE", raising=False)
     proc = bridge._launch_photocraft_binary(None, read_root=str(tmp_path), write_root=str(tmp_path), executable="photocraft.exe", idle=True)
     try:
@@ -121,7 +129,7 @@ def test_a_backtrace_setting_of_the_users_is_kept(logs, tmp_path, monkeypatch):
     monkeypatch.setattr(bridge.subprocess, "Popen", FakeProcess)
     monkeypatch.setattr(bridge, "_connect_with_retry", lambda port, token, process: Mock())
     monkeypatch.setattr(bridge, "_find_window_for_pid", lambda pid: 99)
-    monkeypatch.setattr(bridge.ctypes.windll.user32, "ShowWindow", Mock(), raising=False)
+    _fake_user32(monkeypatch)
     monkeypatch.setenv("RUST_BACKTRACE", "full")
     proc = bridge._launch_photocraft_binary(None, read_root=str(tmp_path), write_root=str(tmp_path), executable="photocraft.exe", idle=True)
     proc.token_file.unlink(missing_ok=True)
@@ -157,6 +165,7 @@ def test_the_exit_note_says_where_the_output_is_and_whether_the_editor_has_gone(
     assert "its own output" not in proc.exit_note()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="asserts Windows process creation flags (CREATE_NO_WINDOW), which subprocess only defines on Windows")
 def test_the_editor_is_launched_without_a_console_window(logs, tmp_path, monkeypatch):
     # A debug or test build of the editor is a console program; without CREATE_NO_WINDOW a terminal opens beside Image Triage.
     seen = {}
@@ -173,7 +182,7 @@ def test_the_editor_is_launched_without_a_console_window(logs, tmp_path, monkeyp
     monkeypatch.setattr(bridge.subprocess, "Popen", FakeProcess)
     monkeypatch.setattr(bridge, "_connect_with_retry", lambda port, token, process: Mock())
     monkeypatch.setattr(bridge, "_find_window_for_pid", lambda pid: 99)
-    monkeypatch.setattr(bridge.ctypes.windll.user32, "ShowWindow", Mock(), raising=False)
+    _fake_user32(monkeypatch)
     proc = bridge._launch_photocraft_binary(None, read_root=str(tmp_path), write_root=str(tmp_path), executable="photocraft.exe", idle=True)
     try:
         assert seen["creationflags"] & subprocess.CREATE_NO_WINDOW
