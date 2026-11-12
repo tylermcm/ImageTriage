@@ -44,7 +44,7 @@ jobs:
       - name: Run process and QML lifetime handoff checks
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -q tests/test_cli_culler_process.py tests/test_cli_culler_task.py tests/test_qml_cli_culler.py tests/test_qml_lifetime.py --junitxml=handoff-results.xml
+        run: python -m pytest -q tests/test_cli_culler_process.py tests/test_cli_culler_task.py tests/test_qml_cli_culler.py tests/test_qml_lifetime.py tests/test_qml_launch_selection.py --junitxml=handoff-results.xml
 
       - name: Run the test suite
         if: ${{ !cancelled() }}

@@ -274,9 +274,11 @@ class PhotoModel(QAbstractListModel):
             self._matcher.forget()                                   # what was read for the last folder's photos is dropped
         self._read_for_query()
         self._rebuild(follow=same_folder)
-        self.loadingChanged.emit()
         self.subfoldersChanged.emit()
         self.folderChanged.emit()
+        # Folder bindings reset the grid cursor. Only announce completion after
+        # they have run, so LibraryNav's requested/restored photo wins that reset.
+        self.loadingChanged.emit()
 
     def setRows(self, rows: list[dict], folder: str = "") -> None:
         """Replace everything at once (benchmarks, tests)."""
