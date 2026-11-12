@@ -3726,3 +3726,16 @@ companion draft edits or native rebuild/promotion. Host control recovery passed
 check. The host now bounds authentication and interactive response waits, reports
 unconfirmed Save to the shell, and interrupts shutdown reads without replaying
 commands. See E20 in the audit closeout log for timeout choices and limits.
+
+
+### 2026-11-12 E21 RAW save publication
+
+Both companion remotes fetched successfully. Upstream remains `e660b4906`, with
+86/4073 divergence and the same 42 large conflicts, including Camera Raw. Fork
+integration still matches HEAD. No companion merges, draft edits or binary
+replacements. Host RAW saves now render before publishing the recipe, using the
+existing host crop/local-edit publication path for basic edits too. The native
+`97ceee530` candidate passed a 31-second suspended-render save, forced response
+timeout with unchanged saved state, retry, original-file integrity and cleanup.
+Validation also passed 171 related tests (three skips) and three QML-only
+architecture checks. See E21 in the audit closeout log for evidence and limits.

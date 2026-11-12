@@ -65,10 +65,12 @@ def _crop_to_file(source, destination, crop):
     reader = QImageReader(str(source))
     size = reader.size()
     if size.width() <= 0 or size.height() <= 0 or size.width() * size.height() > 120_000_000:
+        del reader  # Release the Windows file handle before callers remove a failed render.
         raise ValueError("The full-resolution crop source has invalid dimensions")
     if 0 < QImageReader.allocationLimit() < 1024:
         QImageReader.setAllocationLimit(1024)
     image = reader.read()
+    del reader
     if image.isNull():
         raise ValueError("The full-resolution crop source could not be decoded")
     if active(crop):

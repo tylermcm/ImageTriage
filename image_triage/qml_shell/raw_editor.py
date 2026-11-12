@@ -5,7 +5,6 @@ import math
 from copy import deepcopy
 import tempfile
 import threading
-import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -715,9 +714,9 @@ class RawEditor(QObject):
             bridge.require_masks_support({"recipe": _recipe(draft)}, getattr(proc.control, "camera_raw_masks_supported", False) is True)
             bridge.require_retouch_support({"recipe": _recipe(draft)}, getattr(proc.control, "camera_raw_retouch_supported", False) is True)
             bridge.require_red_eye_support({"recipe": _recipe(draft)}, getattr(proc.control, "camera_raw_red_eye_supported", False) is True)
+            if not proc.control.full_render_supported:
+                raise ValueError("This PhotoCraft build cannot render RAW recipes.")
             if not saving:
-                if not proc.control.full_render_supported:
-                    raise ValueError("This PhotoCraft build cannot render RAW recipes.")
                 # Keep non-interactive host features in the recipe for save, outside this preview job.
                 from ..full_render import _without_host_settings
 
@@ -737,57 +736,32 @@ class RawEditor(QObject):
                     return _display_preview(preview)
                 finally:
                     preview.unlink(missing_ok=True)
-            if any(key in draft or key in original for key in ("hostCrop", "masks", "retouch", "redEye")):
-                from ..full_render import _without_host_settings
-                from ..raw_crop import publish
-                signature = bridge.file_signature(path)
-                if not signature:
-                    raise ValueError("The original photo could not be read")
-                out = uuid4().hex
-                reply = proc.control.call("app.render", {"source": source, "recipe": _without_host_settings(_recipe(draft)), "out": out})
-                name = reply.get("out")
-                if name not in (out + ".png", out + ".tif", out + ".tiff"):
-                    raise ValueError("PhotoCraft returned an unexpected crop render path")
-                rendered = Path(write_root) / name
-                try:
-                    _, current, _ = bridge.recipe_state(path)
-                    if (current or {}).get("cameraRaw", {}) != original:
-                        raise ValueError("The saved recipe changed while the crop was rendering")
-                    return publish(path, rendered, draft, signature)
-                finally:
-                    rendered.unlink(missing_ok=True)
-            if not proc.control.render_manifest_supported:
-                raise ValueError("This PhotoCraft build cannot publish RAW previews to the grid.")
+            # Render every draft before publishing it. Saving through the native dialog
+            # commits the recipe first; a slow/failed render then makes the draft stale.
+            from ..full_render import _without_host_settings
+            from ..raw_crop import publish
+
             bridge.require_super_resolution_support(
                 {"recipe": _recipe(draft)}, getattr(proc.control, "camera_raw_super_resolution_supported", False),
             )
             signature = bridge.file_signature(path)
             if not signature:
-                raise ValueError("The original RAW could not be read.")
-            opened = proc.control.app_open(source, replace=True, camera_raw={
-                "recipe": _recipe(original), "signature": signature,
-                "recipePath": bridge.recipe_path(path).name,
-                "displayPath": bridge.display_render_path(path).name,
-                "manifestPath": bridge.render_manifest_path(path).name,
-            })
-            if not (opened.get("cameraRaw") or {}).get("dialog"):
-                raise ValueError("PhotoCraft could not develop this RAW.")
-            proc.control.call("ui.menu.invoke", {"id": "filter.cameraRaw",
-                "params": {"ui": {"set": {key: draft.get(key, default) for key, default in DEFAULTS.items() if key not in ("hostCrop", "masks", "retouch", "redEye")}}}})
-            previous_render = bridge.saved_render_path(path)
-            result = proc.control.call("ui.cameraRaw", {"done": True})
-            if result.get("open"):
-                raise ValueError("PhotoCraft could not finish saving the RAW recipe.")
-            changed = (result.get("result") or {}).get("changed")
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                render = bridge.saved_render_path(path)
-                if render is not None and (render != previous_render or changed is False):
-                    return str(render)
-                if not proc.is_running():
-                    break
-                time.sleep(0.05)
-            raise ValueError("The RAW recipe was saved, but PhotoCraft did not publish its preview.")
+                raise ValueError("The original photo could not be read")
+            out = uuid4().hex
+            reply = proc.control.call("app.render", {"source": source, "recipe": _without_host_settings(_recipe(draft)), "out": out})
+            name = reply.get("out")
+            if name not in (out + ".png", out + ".tif", out + ".tiff"):
+                raise ValueError("PhotoCraft returned an unexpected RAW render path")
+            rendered = Path(write_root) / name
+            try:
+                state, current, reason = bridge.recipe_state(path)
+                if state == bridge.RECIPE_INVALID:
+                    raise ValueError(reason)
+                if (current or {}).get("cameraRaw", {}) != original:
+                    raise ValueError("The saved recipe changed while the RAW was rendering")
+                return publish(path, rendered, draft, signature)
+            finally:
+                rendered.unlink(missing_ok=True)
         finally:
             proc.shutdown()
 
