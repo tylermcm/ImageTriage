@@ -8,6 +8,10 @@ from pathlib import Path
 _DLL_DIRECTORY_HANDLES: list[object] = []
 
 
+def _path_key(path: str | Path) -> str:
+    return os.path.normcase(os.path.realpath(path))
+
+
 def _candidate_runtime_roots(script_path: Path | None = None) -> list[Path]:
     candidates = [
         Path(sys.executable).resolve().parent,
@@ -28,9 +32,9 @@ def _candidate_runtime_roots(script_path: Path | None = None) -> list[Path]:
 
 
 def _prepend_path_entry(path: Path) -> None:
-    path_text = str(path)
-    if path_text in sys.path:
-        sys.path.remove(path_text)
+    path_text = os.path.realpath(path)
+    key = _path_key(path_text)
+    sys.path[:] = [entry for entry in sys.path if not entry or _path_key(entry) != key]
     sys.path.insert(0, path_text)
 
 
@@ -85,9 +89,9 @@ def _assert_runtime_precedence(managed: list[Path], bundled: list[Path]) -> None
     """Fail loudly if a bundled staging directory would shadow the managed runtime."""
     if not managed or not bundled:
         return
-    order = {value: index for index, value in enumerate(sys.path)}
-    worst_managed = max(order.get(str(path), -1) for path in managed)
-    best_bundled = min(order.get(str(path), len(sys.path)) for path in bundled)
+    order = {_path_key(value): index for index, value in enumerate(sys.path)}
+    worst_managed = max(order.get(_path_key(path), -1) for path in managed)
+    best_bundled = min(order.get(_path_key(path), len(sys.path)) for path in bundled)
     if worst_managed > best_bundled:
         _report_runtime_problem(
             "the bundled ai_site_packages directory is shadowing the managed AI runtime "
@@ -125,9 +129,9 @@ def _prepend_ai_binary_modules(script_path: Path | None = None) -> None:
 def _register_binary_search_path(path: Path) -> None:
     if not path.exists():
         return
-    path_text = str(path)
+    path_text = os.path.realpath(path)
     existing_parts = os.environ.get("PATH", "").split(os.pathsep) if os.environ.get("PATH") else []
-    if path_text not in existing_parts:
+    if _path_key(path_text) not in {_path_key(entry) for entry in existing_parts if entry}:
         os.environ["PATH"] = path_text if not existing_parts else path_text + os.pathsep + os.environ["PATH"]
     add_dll_directory = getattr(os, "add_dll_directory", None)
     if add_dll_directory is None:

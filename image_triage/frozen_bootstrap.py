@@ -8,6 +8,10 @@ from pathlib import Path
 _DLL_DIRECTORY_HANDLES: list[object] = []
 
 
+def _path_key(path: str | Path) -> str:
+    return os.path.normcase(os.path.realpath(path))
+
+
 def _frozen_app_root() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
@@ -25,8 +29,9 @@ def configure_frozen_stdlib() -> None:
         return
 
     stdlib_text = str(stdlib_dir)
-    if stdlib_text in sys.path:
-        sys.path.remove(stdlib_text)
+    stdlib_key = _path_key(stdlib_text)
+    # An empty entry follows the current working directory even after chdir.
+    sys.path[:] = [entry for entry in sys.path if not entry or _path_key(entry) != stdlib_key]
     sys.path.insert(0, stdlib_text)
 
 
@@ -45,7 +50,7 @@ def configure_frozen_dll_search() -> None:
 
     lib_text = str(lib_dir)
     path_entries = os.environ.get("PATH", "").split(os.pathsep)
-    if lib_text.casefold() not in {entry.casefold() for entry in path_entries if entry}:
+    if _path_key(lib_text) not in {_path_key(entry) for entry in path_entries if entry}:
         os.environ["PATH"] = (
             lib_text if not os.environ.get("PATH") else lib_text + os.pathsep + os.environ["PATH"]
         )

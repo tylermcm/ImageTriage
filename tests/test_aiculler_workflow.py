@@ -137,7 +137,7 @@ class AICullerWorkflowTests(unittest.TestCase):
 
     def test_default_runtime_uses_in_repo_cli_culler_source(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_models_") as temp_dir:
-            model_root = Path(temp_dir) / "models"
+            model_root = Path(temp_dir).resolve() / "models"
             clip_root = model_root / "Clip" / "TinyCLIP-ViT-8M-16-Text-3M-YFCC15M-ONNX"
             (clip_root / "onnx").mkdir(parents=True)
             (clip_root / "onnx" / "model.onnx").write_bytes(b"model")
@@ -259,7 +259,7 @@ class AICullerWorkflowTests(unittest.TestCase):
 
     def test_default_runtime_ignores_removed_clip_model_variant(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_variant_") as temp_dir:
-            model_root = Path(temp_dir) / "models"
+            model_root = Path(temp_dir).resolve() / "models"
             clip_root = model_root / "Clip" / "TinyCLIP-ViT-8M-16-Text-3M-YFCC15M-ONNX"
             (clip_root / "onnx").mkdir(parents=True)
             for filename in ("model.onnx",):
@@ -295,7 +295,7 @@ class AICullerWorkflowTests(unittest.TestCase):
 
     def test_default_runtime_keeps_precision_selection_automatic(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_fp16_") as temp_dir:
-            model_root = Path(temp_dir) / "models"
+            model_root = Path(temp_dir).resolve() / "models"
             clip_root = model_root / "Clip" / "TinyCLIP-ViT-8M-16-Text-3M-YFCC15M-ONNX"
             (clip_root / "onnx").mkdir(parents=True)
             previous_model_root = os.environ.get("IMAGE_TRIAGE_AICULLER_MODEL_ROOT")

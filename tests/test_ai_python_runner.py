@@ -30,7 +30,7 @@ class AIPythonRunnerTests(unittest.TestCase):
     def test_configure_runtime_adds_packaged_aiculler_root_for_cli_script(self) -> None:
         runner = _load_runner_module()
         with tempfile.TemporaryDirectory(prefix="image_triage_runner_aiculler_") as temp_dir:
-            root = Path(temp_dir)
+            root = Path(temp_dir).resolve()
             cli_path = root / "aiculler" / "cli.py"
             cli_path.parent.mkdir(parents=True)
             cli_path.write_text("print('cli')\n", encoding="utf-8")

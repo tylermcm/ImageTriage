@@ -19,7 +19,7 @@ class FrozenBootstrapTests(unittest.TestCase):
 
     def test_configure_frozen_dll_search_registers_shared_lib_before_native_imports(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
+            root = Path(temp_dir).resolve()
             lib_dir = root / "lib"
             lib_dir.mkdir()
             handle = object()
@@ -40,7 +40,7 @@ class FrozenBootstrapTests(unittest.TestCase):
 
     def test_configure_frozen_stdlib_prepends_helper_standard_library(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
+            root = Path(temp_dir).resolve()
             stdlib_dir = root / "ai_stdlib"
             stdlib_dir.mkdir()
             with (

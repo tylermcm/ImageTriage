@@ -22,7 +22,7 @@ def _write_image(path: Path) -> None:
 
 
 def _path_key(path: str | Path) -> str:
-    return os.path.normcase(os.path.normpath(str(path)))
+    return os.path.normcase(os.path.realpath(path))
 
 
 def _path_set(paths) -> set[str]:

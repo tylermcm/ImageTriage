@@ -154,7 +154,7 @@ class ProductionWorkflowTests(unittest.TestCase):
             recipe = WorkflowRecipe(key="k", name="Client: A/B?", destination_subfolder="Clients/Smith", archive_format="zip")
             first = Path(workflow_archive_path(recipe, temp_dir))
             self.assertEqual(first.name, "Clients_Smith.zip")
-            self.assertEqual(first.parent, Path(temp_dir))
+            self.assertEqual(first.parent, Path(temp_dir).resolve())
             first.write_bytes(b"earlier run")
 
             self.assertEqual(Path(workflow_archive_path(recipe, temp_dir)).name, "Clients_Smith_1.zip")

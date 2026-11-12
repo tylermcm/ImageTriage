@@ -69,7 +69,7 @@ class AIModelTests(unittest.TestCase):
                 "Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/Local"
             )
             store_cache.mkdir(parents=True)
-            profile = Path(temp_dir) / "profile"
+            profile = Path(temp_dir).resolve() / "profile"
             profile.mkdir()
             env = {"LOCALAPPDATA": str(store_cache), "USERPROFILE": str(profile)}
             with patch.dict(os.environ, env, clear=False):

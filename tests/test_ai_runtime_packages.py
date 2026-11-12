@@ -80,7 +80,7 @@ def _materialize_base_runtime_modules(target_dir: Path) -> None:
 class AIRuntimePackageTests(unittest.TestCase):
     def test_install_ai_runtime_can_stage_both_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            install_root = Path(temp_dir) / "runtime"
+            install_root = Path(temp_dir).resolve() / "runtime"
             recorded_calls: list[list[str]] = []
 
             def fake_pip_runner(args: list[str], cwd: Path) -> int:
@@ -201,7 +201,7 @@ class AIRuntimePackageTests(unittest.TestCase):
                 patch("image_triage.ai_runtime_packages._run_embedded_pip", return_value=7) as embedded_runner,
                 patch("image_triage.ai_runtime_packages.subprocess.run") as subprocess_run,
             ):
-                result = _default_pip_runner(["install", "example"], Path(temp_dir))
+                result = _default_pip_runner(["install", "example"], Path(temp_dir).resolve())
 
         self.assertEqual(result, 7)
         embedded_runner.assert_called_once()
@@ -302,7 +302,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_runtime_install_can_skip_optional_torch_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            install_root = Path(temp_dir) / "runtime"
+            install_root = Path(temp_dir).resolve() / "runtime"
             recorded_calls: list[list[str]] = []
 
             def fake_pip_runner(args: list[str], cwd: Path) -> int:
@@ -324,7 +324,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_full_runtime_install_upgrades_existing_compact_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            install_root = Path(temp_dir) / "runtime"
+            install_root = Path(temp_dir).resolve() / "runtime"
             recorded_calls: list[list[str]] = []
 
             def fake_pip_runner(args: list[str], cwd: Path) -> int:
@@ -365,7 +365,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_failed_reinstall_preserves_active_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            install_root = Path(temp_dir) / "runtime"
+            install_root = Path(temp_dir).resolve() / "runtime"
 
             def successful_runner(args: list[str], _cwd: Path) -> int:
                 _materialize_runtime_modules(Path(args[args.index("--target") + 1]))
@@ -402,7 +402,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_failed_two_profile_install_activates_neither_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            install_root = Path(temp_dir) / "runtime"
+            install_root = Path(temp_dir).resolve() / "runtime"
             calls = 0
 
             def partial_runner(args: list[str], _cwd: Path) -> int:
@@ -429,7 +429,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_validation_failure_does_not_activate_staged_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            install_root = Path(temp_dir) / "runtime"
+            install_root = Path(temp_dir).resolve() / "runtime"
 
             def fake_runner(args: list[str], _cwd: Path) -> int:
                 _materialize_runtime_modules(Path(args[args.index("--target") + 1]))
@@ -461,7 +461,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_runtime_metadata_activates_generated_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            install_root = Path(temp_dir) / "runtime"
+            install_root = Path(temp_dir).resolve() / "runtime"
 
             def fake_runner(args: list[str], _cwd: Path) -> int:
                 _materialize_base_runtime_modules(Path(args[args.index("--target") + 1]))
@@ -485,7 +485,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_old_gpu_torch_runtime_is_reported_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            install_root = Path(temp_dir) / "runtime"
+            install_root = Path(temp_dir).resolve() / "runtime"
             site_packages = install_root / "profiles" / AI_RUNTIME_GPU_VARIANT / "site-packages"
             _materialize_runtime_modules(site_packages)
             (site_packages / "torch" / "version.py").write_text(
@@ -500,7 +500,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_legacy_gpu_profile_remains_valid_but_reports_missing_onnx_gpu_capability(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            install_root = Path(temp_dir) / "runtime"
+            install_root = Path(temp_dir).resolve() / "runtime"
             site_packages = install_root / "profiles" / AI_RUNTIME_GPU_VARIANT / "site-packages"
             _materialize_runtime_modules(site_packages)
             for metadata_dir in site_packages.glob("onnxruntime_gpu-*.dist-info"):
@@ -535,22 +535,22 @@ class AIRuntimePackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             env = {
                 "IMAGE_TRIAGE_AI_RUNTIME_ROOT": "",
-                "LOCALAPPDATA": str(Path(temp_dir) / "AppData/Local"),
+                "LOCALAPPDATA": str(Path(temp_dir).resolve() / "AppData/Local"),
                 "USERPROFILE": temp_dir,
                 # The same promise off Windows, where the root and the legacy cache come from the XDG variables.
-                "XDG_DATA_HOME": str(Path(temp_dir) / "share"),
-                "XDG_CACHE_HOME": str(Path(temp_dir) / "cache"),
+                "XDG_DATA_HOME": str(Path(temp_dir).resolve() / "share"),
+                "XDG_CACHE_HOME": str(Path(temp_dir).resolve() / "cache"),
             }
             with patch.dict(os.environ, env, clear=False):
                 with patch("image_triage.ai_runtime_packages.Path.home", side_effect=RuntimeError("no home")):
                     status = load_ai_runtime_installation_status()
 
-        self.assertTrue(str(status.directories.root).startswith(temp_dir))
+        self.assertTrue(status.directories.root.is_relative_to(Path(temp_dir).resolve()))
 
     @unittest.skipUnless(os.name == "nt", "Windows Store path virtualization")
     def test_runtime_root_escapes_store_python_local_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            user_profile = Path(temp_dir) / "User"
+            user_profile = Path(temp_dir).resolve() / "User"
             store_cache = (
                 user_profile
                 / "AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_test/LocalCache/Local"
@@ -562,13 +562,13 @@ class AIRuntimePackageTests(unittest.TestCase):
             ):
                 root = default_ai_runtime_install_root()
 
-        self.assertTrue(str(root).startswith(str(user_profile / ".image-triage/AI/rt")))
+        self.assertTrue(root.is_relative_to(user_profile / ".image-triage/AI/rt"))
         self.assertNotIn("PythonSoftwareFoundation", str(root))
 
     @unittest.skipUnless(os.name == "nt", "Windows runtime path migration")
     def test_legacy_runtime_is_moved_to_short_user_profile_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            user_profile = Path(temp_dir) / "User"
+            user_profile = Path(temp_dir).resolve() / "User"
             local_appdata = user_profile / "AppData/Local"
             legacy_root = (
                 local_appdata
@@ -597,7 +597,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_distribution_record_validation_detects_partial_install(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            site_packages = Path(temp_dir) / "site-packages"
+            site_packages = Path(temp_dir).resolve() / "site-packages"
             package = site_packages / "transformers"
             package.mkdir(parents=True)
             (package / "__init__.py").write_text("", encoding="utf-8")
@@ -614,7 +614,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_distribution_validation_rejects_both_opencv_wheels(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            site_packages = Path(temp_dir)
+            site_packages = Path(temp_dir).resolve()
             for name in ("opencv_python", "opencv_python_headless"):
                 dist_info = site_packages / f"{name}-5.0.0.93.dist-info"
                 dist_info.mkdir()
@@ -629,7 +629,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_runtime_install_lock_rejects_a_second_installer(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            runtime_root = Path(temp_dir) / "runtime"
+            runtime_root = Path(temp_dir).resolve() / "runtime"
             with _ai_runtime_install_lock(runtime_root):
                 with self.assertRaisesRegex(RuntimeError, "already running"):
                     with _ai_runtime_install_lock(runtime_root):
@@ -637,7 +637,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_directory_size_bytes_sums_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
+            root = Path(temp_dir).resolve()
             (root / "a").write_bytes(b"123")
             nested = root / "nested"
             nested.mkdir()
@@ -647,14 +647,14 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_load_status_without_installation_reports_empty(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            status = load_ai_runtime_installation_status(install_root=Path(temp_dir) / "runtime")
+            status = load_ai_runtime_installation_status(install_root=Path(temp_dir).resolve() / "runtime")
             self.assertFalse(status.is_installed)
             self.assertEqual(status.installed_variants, ())
-            self.assertEqual(resolve_ai_runtime_site_packages(install_root=Path(temp_dir) / "runtime"), ())
+            self.assertEqual(resolve_ai_runtime_site_packages(install_root=Path(temp_dir).resolve() / "runtime"), ())
 
     def test_old_transformers_runtime_is_reported_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            install_root = Path(temp_dir) / "runtime"
+            install_root = Path(temp_dir).resolve() / "runtime"
             site_packages = install_root / "profiles" / AI_RUNTIME_CPU_VARIANT / "site-packages"
             _materialize_runtime_modules(site_packages)
             for metadata_dir in site_packages.glob("transformers-*.dist-info"):
@@ -675,7 +675,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_partial_transformers_tree_is_reported_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            install_root = Path(temp_dir) / "runtime"
+            install_root = Path(temp_dir).resolve() / "runtime"
             site_packages = install_root / "profiles" / AI_RUNTIME_CPU_VARIANT / "site-packages"
             _materialize_runtime_modules(site_packages)
             missing_path = site_packages / AI_RUNTIME_TORCH_REQUIRED_FILES[0][0]
@@ -705,7 +705,7 @@ class OnnxRuntimeExclusivityTests(unittest.TestCase):
 
     def test_both_distributions_present_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            site_packages = Path(temp_dir)
+            site_packages = Path(temp_dir).resolve()
             self._distribution(site_packages, "onnxruntime", "1.26.0")
             self._distribution(site_packages, "onnxruntime-gpu", "1.26.0")
 
@@ -715,7 +715,7 @@ class OnnxRuntimeExclusivityTests(unittest.TestCase):
     def test_a_single_distribution_is_accepted(self) -> None:
         for name in ("onnxruntime", "onnxruntime-gpu"):
             with self.subTest(distribution=name), tempfile.TemporaryDirectory() as temp_dir:
-                site_packages = Path(temp_dir)
+                site_packages = Path(temp_dir).resolve()
                 self._distribution(site_packages, name, "1.26.0")
                 ai_runtime_packages._validate_onnxruntime_exclusivity(site_packages)
 

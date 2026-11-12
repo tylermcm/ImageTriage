@@ -122,8 +122,8 @@ class CatalogRepositoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="image_triage_catalog_") as temp_dir:
             db_path = Path(temp_dir) / "catalog.sqlite3"
             repository = CatalogRepository(db_path)
-            folder_a = str(Path(temp_dir) / "folder_a")
-            folder_b = str(Path(temp_dir) / "folder_b")
+            folder_a = str(Path(temp_dir).resolve() / "folder_a")
+            folder_b = str(Path(temp_dir).resolve() / "folder_b")
             repository.save_folder_records(folder_a, [])
             repository.save_folder_records(folder_b, [])
 
