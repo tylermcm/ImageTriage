@@ -3739,3 +3739,16 @@ existing host crop/local-edit publication path for basic edits too. The native
 timeout with unchanged saved state, retry, original-file integrity and cleanup.
 Validation also passed 171 related tests (three skips) and three QML-only
 architecture checks. See E21 in the audit closeout log for evidence and limits.
+
+
+### 2026-11-12 D25 demosaiced RAW orientation
+
+Both companion remotes fetched successfully. Upstream remains `e660b4906`, with
+86/4073 divergence and the same 42 large conflicts, including Camera Raw. Fork
+integration still matches HEAD. No merge, companion draft edits or native binary
+replacement. The host removes a second rotation after rawpy's demosaicing; its
+embedded-preview rotations remain intact. Actual rawpy 0.26.1/LibRaw decoding of
+synthetic orientation-tagged Bayer DNGs reproduced nine failures before the fix.
+The focused gate passed 82 tests (one skip), including pixel-level orientation,
+public resize/export, embedded preview and QML architecture checks. See D25 in
+the audit closeout log for the fixture scope.

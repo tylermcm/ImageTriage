@@ -962,7 +962,7 @@ def _apply_exif_orientation(image: QImage, orientation: int) -> QImage:
 
 def _apply_raw_orientation(image: QImage, flip: int) -> QImage:
     """Apply the camera-recorded orientation that libraw / rawpy expose via
-    ``raw.sizes.flip``. Values follow the standard EXIF orientation scheme:
+    ``raw.sizes.flip``. These are LibRaw flip codes, not EXIF tag values:
 
       0 - no rotation (sensor was held in landscape)
       3 - 180° (camera upside-down)
@@ -970,9 +970,8 @@ def _apply_raw_orientation(image: QImage, flip: int) -> QImage:
       6 - 90° clockwise (camera held right side up, left edge down)
 
     The embedded JPEG preview in many Nikon NEFs doesn't carry its own
-    orientation EXIF tag, and the raw BITMAP / postprocessed pixel buffers
-    carry no orientation metadata at all — so this is where portrait shots
-    need to actually become portrait."""
+    orientation EXIF tag. Apply this to unrotated embedded previews only;
+    rawpy.postprocess() already applies the recorded orientation."""
 
     if image.isNull() or flip in (0, None):
         return image
@@ -1077,10 +1076,8 @@ def _postprocess_raw(raw, target_size: QSize, *, quality_mode: str) -> QImage:
     image = _qimage_from_rgb_array(rgb)
     if image.isNull():
         return image
-    # postprocess returns sensor-orientation pixels; apply the camera-recorded
-    # orientation the same way the embedded-preview path does so portrait raws
-    # actually render portrait.
-    image = _apply_raw_orientation(image, getattr(raw.sizes, "flip", 0))
+    # rawpy applies the recorded orientation by default. Unlike embedded
+    # thumbnails, these pixels are already upright; rotating again doubles it.
     return _scale_if_needed(image, target_size)
 
 
