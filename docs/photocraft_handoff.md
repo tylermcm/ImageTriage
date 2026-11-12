@@ -3778,3 +3778,15 @@ actual runtime failure details. Seventy-two focused tests passed. The installed
 GPU profile passed isolated import validation, detection remained available under
 simulated old/current/unknown reports, and the QML recommendation was rendered
 and inspected. No registry or runtime-package modifications were made.
+
+
+### 2026-11-12 P13 embedded PocketDrop verification
+
+Both companion remotes fetched successfully. Upstream remains `4a059d97c`, with
+86/4078 divergence and the same 42 large conflicts, including Camera Raw. Fork
+integration still matches HEAD. No PhotoCraft merge, draft edit or binary change.
+The separate embedded PocketDrop Windows source now pins cloudflared and verifies
+cached/installed files at discovery and under a read lock at launch. Its security
+harness and 15 QML/native/architecture tests passed against a staged DLL. The
+existing PocketDrop DLL remains preserved; native artifact promotion is pending
+and tracked under P13 in the audit log.

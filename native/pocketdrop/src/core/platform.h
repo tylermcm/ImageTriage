@@ -123,6 +123,18 @@ int process_finish(Process* p, int timeoutMs);    // waits, frees p, returns the
 std::string cloudflared_download_url();
 std::vector<std::string> cloudflared_candidates(); // existing install locations, in priority order
 std::string cloudflared_install_path();
+// Windows pins the complete executable and holds a read lock through process creation.
+#ifdef _WIN32
+Process* cloudflared_start(const std::string& exe, const std::vector<std::string>& args,
+                          const std::vector<std::pair<std::string, std::string>>& envOverrides,
+                          const std::string& cwd, std::string& err);
+#else
+inline Process* cloudflared_start(const std::string& exe, const std::vector<std::string>& args,
+                                 const std::vector<std::pair<std::string, std::string>>& envOverrides,
+                                 const std::string& cwd, std::string& err) {
+    return process_start(exe, args, envOverrides, cwd, err);
+}
+#endif
 // Verifies a downloaded release asset and installs it at cloudflared_install_path().
 bool cloudflared_install(const std::string& downloadedFile, std::string& err);
 

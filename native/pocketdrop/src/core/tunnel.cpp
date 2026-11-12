@@ -189,7 +189,7 @@ std::string Tunnel::runOnce(const std::string& exe, const std::string& home, int
                             bool& registered) {
     std::string err;
     // A private home dir so a user's ~/.cloudflared/config.yml can't interfere with quick tunnels.
-    plat::Process* proc = plat::process_start(
+    plat::Process* proc = plat::cloudflared_start(
         exe, {"tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:" + std::to_string(port)},
         {{"USERPROFILE", home}, {"HOME", home}}, home, err);
     if (!proc) {

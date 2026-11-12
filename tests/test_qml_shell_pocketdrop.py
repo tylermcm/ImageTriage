@@ -5,6 +5,7 @@ The model tests run on any machine (sample mode). The engine tests build the nat
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -193,7 +194,11 @@ def test_page_loads_without_qml_errors(qapp, tmp_path):
 @pytest.fixture(scope="session")
 def native_lib(tmp_path_factory):
     if sys.platform == "win32":
-        pytest.skip("Windows builds pocketdrop.dll with native/pocketdrop/build_windows.bat")
+        staged = os.environ.get("IMAGE_TRIAGE_POCKETDROP_LIB")
+        if staged:
+            assert Path(staged).is_file(), "staged PocketDrop DLL is missing"
+            return Path(staged)
+        pytest.skip("Build a staged DLL and set IMAGE_TRIAGE_POCKETDROP_LIB to validate it")
     gxx = shutil.which("g++") or shutil.which("clang++")
     pkg = shutil.which("pkg-config")
     if not gxx or not pkg or subprocess.run([pkg, "--exists", "libcurl", "gdk-pixbuf-2.0"]).returncode != 0:

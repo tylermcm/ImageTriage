@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "../core/platform.h"
+#include "cloudflared_pin.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -11,10 +12,7 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <wincodec.h>
-#include <wincrypt.h>
 #include <winhttp.h>
-#include <wintrust.h>
-#include <softpub.h>
 #include <wrl/client.h>
 #include <algorithm>
 #include <ctime>
@@ -138,39 +136,45 @@ std::vector<uint8_t> shellThumb(const std::wstring& path, int maxSide) {
     return out;
 }
 
-// ---- cloudflared signature: must be signed by Cloudflare (unsigned is tolerated; fetched over HTTPS)
-bool verifySigner(const std::wstring& path, std::string& err) {
-    WINTRUST_FILE_INFO fi{sizeof fi};
-    fi.pcwszFilePath = path.c_str();
-    WINTRUST_DATA wd{sizeof wd};
-    wd.dwUIChoice = WTD_UI_NONE;
-    wd.fdwRevocationChecks = WTD_REVOKE_NONE;
-    wd.dwUnionChoice = WTD_CHOICE_FILE;
-    wd.pFile = &fi;
-    wd.dwStateAction = WTD_STATEACTION_VERIFY;
-    GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-    LONG st = WinVerifyTrust((HWND)INVALID_HANDLE_VALUE, &action, &wd);
-    bool ok = false;
-    if (st == ERROR_SUCCESS) {
-        CRYPT_PROVIDER_DATA* pd = WTHelperProvDataFromStateData(wd.hWVTStateData);
-        CRYPT_PROVIDER_SGNR* sg = pd ? WTHelperGetProvSignerFromChain(pd, 0, FALSE, 0) : nullptr;
-        CRYPT_PROVIDER_CERT* pc = sg ? WTHelperGetProvCertFromChain(sg, 0) : nullptr;
-        if (pc) {
-            wchar_t name[256] = L"";
-            CertGetNameStringW(pc->pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, name, 256);
-            std::wstring n = name;
-            for (auto& ch : n) ch = (wchar_t)towlower(ch);
-            ok = n.find(L"cloudflare") != std::wstring::npos;
-            if (!ok) err = "Unexpected signer: " + utf8(name);
-        }
-    } else if (st == TRUST_E_NOSIGNATURE) {
-        ok = true;
-    } else {
-        err = "Signature check failed";
+// Keep this handle open through CreateProcess: writes, truncation and replacement
+// are denied between hashing and loading the executable. Signer display names
+// (and HTTPS alone) cannot authorize different bytes than the reviewed release.
+HANDLE openVerifiedCloudflared(const std::wstring& path, std::string& err) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                              OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        err = "Cannot open cloudflared for verification";
+        return INVALID_HANDLE_VALUE;
     }
-    wd.dwStateAction = WTD_STATEACTION_CLOSE;
-    WinVerifyTrust((HWND)INVALID_HANDLE_VALUE, &action, &wd);
-    return ok;
+    LARGE_INTEGER size{};
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    bool ok = GetFileSizeEx(file, &size) && size.QuadPart == cloudflared_pin::SIZE;
+    if (ok) ok = BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) >= 0;
+    if (ok) ok = BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) >= 0;
+    unsigned char buffer[65536], digest[32];
+    DWORD count = 0;
+    while (ok) {
+        if (!ReadFile(file, buffer, sizeof buffer, &count, nullptr)) { ok = false; break; }
+        if (count == 0) break;
+        ok = BCryptHashData(hash, buffer, count, 0) >= 0;
+    }
+    if (ok) ok = BCryptFinishHash(hash, digest, sizeof digest, 0) >= 0;
+    if (hash) BCryptDestroyHash(hash);
+    if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (ok) {
+        const char hex[] = "0123456789abcdef";
+        std::string actual;
+        for (auto byte : digest) { actual += hex[byte >> 4]; actual += hex[byte & 15]; }
+        ok = actual == cloudflared_pin::SHA256;
+    }
+    if (!ok) {
+        CloseHandle(file);
+        err = "cloudflared does not match the verified release. Download it again.";
+        return INVALID_HANDLE_VALUE;
+    }
+    err.clear();
+    return file;
 }
 
 std::wstring quoteArg(const std::wstring& a) {
@@ -650,7 +654,7 @@ int process_finish(Process* p, int timeoutMs) {
 
 // ---- cloudflared
 std::string cloudflared_download_url() {
-    return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
+    return cloudflared_pin::URL;
 }
 
 std::string cloudflared_install_path() { return app_data_dir() + "\\cloudflared.exe"; }
@@ -659,11 +663,30 @@ std::vector<std::string> cloudflared_candidates() {
     std::vector<std::string> c = {exe_dir() + "\\cloudflared.exe", cloudflared_install_path()};
     wchar_t buf[MAX_PATH];
     if (SearchPathW(nullptr, L"cloudflared.exe", nullptr, MAX_PATH, buf, nullptr)) c.push_back(utf8(buf));
-    return c;
+    std::vector<std::string> verified;
+    for (const auto& path : c) {
+        std::string err;
+        HANDLE file = openVerifiedCloudflared(wide(path), err);
+        if (file != INVALID_HANDLE_VALUE) { verified.push_back(path); CloseHandle(file); }
+    }
+    return verified;
+}
+
+Process* cloudflared_start(const std::string& exe, const std::vector<std::string>& args,
+                          const std::vector<std::pair<std::string, std::string>>& envOverrides,
+                          const std::string& cwd, std::string& err) {
+    HANDLE file = openVerifiedCloudflared(wide(exe), err);
+    if (file == INVALID_HANDLE_VALUE) return nullptr;
+    Process* process = process_start(exe, args, envOverrides, cwd, err);
+    CloseHandle(file);
+    return process;
 }
 
 bool cloudflared_install(const std::string& downloadedFile, std::string& err) {
-    if (!verifySigner(wide(downloadedFile), err)) return false;
+    HANDLE file = openVerifiedCloudflared(wide(downloadedFile), err);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    CloseHandle(file);
+    // Launch rechecks the installed bytes under a lock, including cached files.
     if (!file_rename(downloadedFile, cloudflared_install_path())) {
         err = "Cannot install cloudflared";
         return false;
