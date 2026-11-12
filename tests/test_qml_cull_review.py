@@ -52,7 +52,10 @@ def test_categories_can_be_filtered_sorted_and_applied_independently(qapp):
     model.restorePath(source[5]["path"], True)
     assert model.view["applyCount"] == 1
     model.apply()
-    pump(qapp, .2)
+    for _ in range(100):                    # the apply runs in timed steps; wait for it to finish, not for a fixed time
+        pump(qapp, .05)
+        if not model.applying:
+            break
     assert [r["path"] for r in photos.collect() if r["decision"] == "rej"] == [source[2]["path"]]
     model.undo()
     assert not [r for r in photos.collect() if r["decision"] == "rej"]
