@@ -18,7 +18,7 @@ Column {
 
     Row {
         height: 28; spacing: 7
-        Text { text: "Adjust"; color: theme.fg2; font.family: "Segoe UI"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+        Text { text: "Adjust"; color: theme.fg2; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
         Repeater {
             model: [
                 {key: "parametric", label: "Parametric curve", color: "#a3aab5"},
@@ -203,7 +203,7 @@ Column {
         visible: !curve.parametric
         width: parent.width
         text: "Click to add a point · Right-click to remove"
-        color: theme.fg3; font.family: "Segoe UI"; font.pixelSize: 10
+        color: theme.fg3; font.pixelSize: 10
     }
     Column {
         visible: curve.parametric; width: parent.width

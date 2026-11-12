@@ -14,7 +14,7 @@ Item {
     layer.enabled: true
 
     component Copy: Text {
-        font.family: "Segoe UI"; font.pixelSize: 12
+        font.pixelSize: 12
         color: theme.fg2
     }
     component Divider: Rectangle {
@@ -108,7 +108,7 @@ Item {
         onCommitted: (next) => technical.model.adjust(setting, next)
     }
 
-    Rectangle { anchors.fill: parent; color: theme.light ? theme.s1 : "#151618" }
+    Rectangle { anchors.fill: parent; color: theme.s1 }
     Loader {
         id: content
         width: parent.width

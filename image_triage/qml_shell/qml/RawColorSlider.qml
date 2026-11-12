@@ -8,7 +8,7 @@ Item {
     property real value: 0
     property real from: -100
     property real to: 100
-    property var colors: ["#373d45", "#373d45"]
+    property var colors: [theme.s3, theme.s3]
     property bool compact: false
     property real step: 1
     property int decimals: 0
@@ -22,7 +22,7 @@ Item {
     Text {
         visible: !control.compact
         text: control.label; color: theme.fg2
-        font.family: "Segoe UI"; font.pixelSize: 12
+        font.pixelSize: 12
     }
     Rectangle {
         visible: !control.compact
@@ -39,7 +39,7 @@ Item {
             verticalAlignment: TextInput.AlignVCenter
             color: activeFocus ? theme.fg : theme.fg2
             selectionColor: theme.accent; selectedTextColor: theme.onAccent
-            font.family: "Segoe UI"; font.pixelSize: 12
+            font.pixelSize: 12
             selectByMouse: true
             validator: DoubleValidator { bottom: control.from; top: control.to; decimals: control.decimals; notation: DoubleValidator.StandardNotation; locale: "en_US" }
             onEditingFinished: {

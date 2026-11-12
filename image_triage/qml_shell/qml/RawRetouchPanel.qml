@@ -12,7 +12,7 @@ Column {
         BusyIndicator { width: 24; height: 24; running: visible }
         Text { text: "Applying retouch…"; color: theme.fg2; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
     }
-    Text { text: "Remove"; color: theme.fg; font.family: "Segoe UI"; font.pixelSize: 14; font.bold: true }
+    Text { text: "Remove"; color: theme.fg; font.pixelSize: 14; font.bold: true }
     Grid {
         width: parent.width; columns: 2; spacing: 6
         Repeater {

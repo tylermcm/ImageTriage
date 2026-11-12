@@ -9,15 +9,15 @@ Column {
     spacing: 8
     readonly property var current: model.current
     onVisibleChanged: { if (visible) model.ai.openMasking(); else model.ai.closeMasking() }
-    component Copy: Text { color: theme.fg2; font.family: "Segoe UI"; font.pixelSize: 12; wrapMode: Text.WordWrap }
+    component Copy: Text { color: theme.fg2; font.pixelSize: 12; wrapMode: Text.WordWrap }
     component Action: Button {
         id: action
         property bool selected: false
         enabled: panel.editable
         hoverEnabled: true
         height: 35; implicitWidth: label.implicitWidth+22
-        contentItem: Text { id: label; text: action.text; color: action.selected ? "#a8ceff" : theme.fg; font.pixelSize: 13; font.family: "Segoe UI"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
-        background: Rectangle { radius: 8; color: action.selected ? "#20334e" : action.hovered ? (theme.light ? theme.s3 : "#22252a") : "transparent"; border.color: action.selected ? "#3a5b85" : (theme.light ? theme.line : "#2b2e33") }
+        contentItem: Text { id: label; text: action.text; color: action.selected ? theme.accentFg : theme.fg; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+        background: Rectangle { radius: 8; color: action.selected ? Qt.alpha(theme.accent, 0.22) : action.hovered ? theme.s3 : "transparent"; border.color: action.selected ? Qt.alpha(theme.accent, 0.5) : (theme.line) }
         opacity: enabled ? 1 : .4
     }
     QtObject {

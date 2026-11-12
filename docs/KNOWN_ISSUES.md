@@ -43,8 +43,9 @@ It is also not known whether it happens for photos on a local drive, or every ti
 - Make the host report the failure once per photo (not three toasts) and say what to do; the "Return to this photo to retry" advice is in the log but not in the toast.
 - Consider a retry with a short back-off for `ERROR_PATH_NOT_FOUND` on a UNC path before telling the user.
 
-**Where to look.** Host: `image_triage/preview_controller.py` (`_poll_photocraft_stashes`, the "Could not save edits for ..." message),
-`image_triage/photocraft_bridge.py`. Editor (PhotoCraft): the control server's `app.stash` / `automation write` handling and its write-root checks
+**Where to look.** Host: `image_triage/qml_shell/editor_host.py` (`_settle` sends the save, `app.stash` with `wait`; `_close_worker`,
+`_save_worker` and the switch in `_open_worker` report its failure) and `image_triage/photocraft_bridge.py`. The module this entry first
+named, `image_triage/preview_controller.py` with `_poll_photocraft_stashes`, belonged to the removed Widgets host and no longer exists. Editor (PhotoCraft): the control server's `app.stash` / `automation write` handling and its write-root checks
 (`path_within_write_root` on the host side decides what the editor is allowed to write).
 
 ---
@@ -76,6 +77,11 @@ Measured after that warm-up (12 s, in the background): first Landscape 2.0 s, fi
 (Landscape 0.5 s, Subject 0.2 s, People about 3.7 s, which is SAM per person plus BiRefNet edges). Turn the warm-up off with
 `IMAGE_TRIAGE_MASK_WARMUP=0`. Still true: a mask asked for in the first ~12 to 35 s after the editor first connects waits for the load.
 
+**Correction 2026-11-12: the warm-up is not wired in the QML shell today.** `image_triage/mask_warmup.py` is imported by nothing in the
+application (only its own test imports it); the Widgets host that started it was removed. The measurements above describe the resident
+mask-engine host with the warm-up running. In the QML shell nothing loads the models ahead of time, so the first Subject, Landscape or People
+mask after the mask engine starts pays the load described under "Where the start-up time goes". Treat this entry as open for the QML shell.
+
 **Where the start-up time goes (measured 2026-10-20, warm file cache, two runs):** numpy/PIL/cv2 0.1 s, `import torch` 1.4 s, `import transformers` 2.2 s,
 importing the transformers model classes 3.0 s, CUDA init + first GPU tensor + first matmul 0.35 s. So the cost is Python imports, not CUDA and not model
 weights. The 32 s cold case is believed to be the same imports reading thousands of small files and the large DLLs from a cold disk cache; it has not
@@ -91,7 +97,14 @@ CPU priority, restored to normal when it finishes.
 **New symptom.** In the editor, after one photo's settings fail to save, picking another photo in the filmstrip shows it for under a second and then goes
 back to the previous photo, which cannot be deselected. Cause: switching photos makes the editor first keep the open photo's settings
 (`app.open` -> write `_DSC4918.NEF.cameraraw.json`), that write fails with the same `NotFound (os error 3)`, and the switch is abandoned
-(`image_triage.preview_controller._switch_photocraft_document` raises `PhotoCraftError`).
+(at the time, `image_triage.preview_controller._switch_photocraft_document` raised `PhotoCraftError`; that module was removed with the
+Widgets host, and the switch is now `EditorHost._open_worker` in `image_triage/qml_shell/editor_host.py`, which reports "switch-failed"
+and stays on the previous photo).
+
+**State on 2026-11-12.** The editor can now be left when the save fails: `EditorHost.closeWithoutSaving` hides it and drops the unsaved
+changes, and a failed save on close is reported on its own signal (`closeFailed`) so the shell can offer that. Switching photos is still
+abandoned when the previous photo cannot be saved (going on would discard its changes without asking), nothing reports the failure once
+per photo, and nothing on the host removes `*.pcsave.tmp`.
 
 **What is established (all on `\192.168.1.200\ColossalBoi\Photography\China '26`):**
 - The editor writes the whole temp file (`._DSC4918.NEF.cameraraw.json.23160-0.pcsave.tmp`, 31,528 bytes, complete) and the failure comes at the rename that

@@ -13,12 +13,12 @@ Column {
     Row {
         height: 29; spacing: 16
         Text {
-            text: "Mixer"; color: theme.fg; font.family: "Segoe UI"; font.pixelSize: 12
+            text: "Mixer"; color: theme.fg; font.pixelSize: 12
             bottomPadding: 8
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 2; color: theme.accent }
         }
         Label {
-            text: "Point Color"; color: theme.fg3; font.family: "Segoe UI"; font.pixelSize: 12
+            text: "Point Color"; color: theme.fg3; font.pixelSize: 12
             HoverHandler { id: pointHover }
             ToolTip.text: "Point Color is not available yet."
             ToolTip.visible: pointHover.hovered
@@ -26,13 +26,13 @@ Column {
     }
     Row {
         width: parent.width; height: 28; spacing: 8
-        Text { text: "Adjust"; color: theme.fg2; font.family: "Segoe UI"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+        Text { text: "Adjust"; color: theme.fg2; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
         ComboBox {
             objectName: "rawMixerMode"
             width: parent.width - 48; height: 27
             model: ["Color", "Hue", "Saturation", "Luminance"]
             onActivated: mixer.mode = currentText
-            contentItem: Text { text: parent.displayText; color: theme.fg; font.family: "Segoe UI"; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter; leftPadding: 8 }
+            contentItem: Text { text: parent.displayText; color: theme.fg; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter; leftPadding: 8 }
             background: Rectangle { radius: 6; color: theme.s2; border.color: theme.lineSoft }
         }
     }
