@@ -75,3 +75,10 @@ Original companion has unrelated edits in these files; preserve them:
 5. Update audit evidence and failure ledger, refresh Graphify if available, review privacy and packaging gates before publishing to main. No release build is authorized by this checkpoint request.
 
 Private Windows diagnostics are retained in the local audit-20261112 validation directory; they are not committed because logs contain machine paths. This document contains the actionable findings for cloud continuation.
+
+## Cloud continuation
+
+See [audit_cloud_validation_20261112.md](audit_cloud_validation_20261112.md) for the
+implemented culler changes, native Windows CI evidence, source-wheel build, and
+remaining machine/runtime and installer gates. This checkpoint's historical failures
+above describe `2051d1d`; use the continuation record for current results.

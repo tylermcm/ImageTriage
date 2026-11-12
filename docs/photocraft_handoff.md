@@ -3635,3 +3635,17 @@ Upstream now advertises v0.23.0/v0.23.1; a non-mutating merge assessment against
 its main reports further RAW, dependency and translation conflicts. These newer
 releases remain outside this source-push task. Image Triage branch fetch succeeded
 without tags; tag fetching refused to overwrite existing differing release tags.
+
+### 2026-11-12 cloud audit continuation: companion check only
+
+Both upstream and fork fetched successfully. Integration remains `b5b39157c`; upstream
+main remains `74330157c` (86 host commits / 3,959 upstream commits). The merge dry run
+reports 42 conflicted paths spanning RAW, Camera Raw, host controls/startup and translations.
+No merge or companion edit was made. The v0.22 candidate remains `a826e4f06`; its release
+SVG stack overflow and later Red Eye integration still block promotion. The packaging
+pin remains `0988078e` with algorithm 2, incompatible with host algorithm 3.
+
+The host schema test now recognizes upstream's explicit calibration serde aliases and
+host-only crop; `raw_recipe.rs` preserves the host names on serialization. Host recipe
+validation is unchanged. Source build, Windows CI and remaining native acceptance are
+recorded in [audit_cloud_validation_20261112.md](audit_cloud_validation_20261112.md).

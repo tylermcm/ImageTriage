@@ -1,6 +1,6 @@
 # Test failure ledger
 
-Last checked 2026-11-12 on Linux (Python 3.13, PySide6 6.12, `QT_QPA_PLATFORM=offscreen`).
+Last checked 2026-11-12 on Linux (Python 3.13.5, PySide6 6.12, `QT_QPA_PLATFORM=offscreen`, Basic controls style).
 
 Rules:
 
@@ -13,14 +13,36 @@ Rules:
   skips with a reason that says what it needs. `pytest tests -rs` lists them.
 - Update this file whenever a row is added or removed.
 
-The suite is green on Linux: 2,563 passed, 51 skipped, 5 expected failures. It has not been run on Windows since
-these changes.
+The cloud continuation's full Linux suite passed: **2,591 passed, 49 skipped, 5 expected
+failures**, plus 117 passing subtests. The host-bootstrap compatibility follow-up passed
+44 focused cases (3 platform/optional-runtime skips), then 25 task/QML cases with the
+actual isolated core engine interpreter (no skips). Standard-CPython Windows handoff
+checks also passed at application commit `651279e`; the full remote jobs were still
+running when this ledger was saved. The final Windows/Linux CI run is recorded in
+[the validation handoff](../docs/audit_cloud_validation_20261112.md). These results do
+not substitute for the original machine's Microsoft Store Python, managed GPU/model
+runtime or sealed native editor acceptance.
 
 ## Open failures
 
 None. The three causes listed here on 2026-11-12 were fixed the same day: the mask-capable host-job runner was
 restored (`test_camera_raw_host_jobs`), Edit Collection no longer opens blank (`test_qml_shell_collection_dialog`),
 and content-search hits match on case-sensitive file systems (`test_qml_photo_search`).
+
+The continuation repaired one further stale schema assertion in `test_full_render`:
+PhotoCraft's explicit calibration aliases preserve the host names, and crop is a host
+field rather than a native CameraRaw field. The test still rejects schema drift.
+A subsequent installed-app check reproduced requested file selection being reset to
+the first grid photo. Folder context is now published before loading completion, and
+two visible-QML regressions cover initial and second-launch selection (39 related
+startup/grid/collection checks passed).
+One later diagnostic run exposed an intermittent retouch button failure. Demo edits
+could start a real native detail job and briefly disable controls; the detail callback
+now honors demo mode. A new demo/real routing regression reproduced the defect before
+the fix, and 29 preview/retouch checks passed afterward. Viewer fixtures also stop their
+workers and delete engines explicitly; no assertion was removed or relaxed.
+Culler shutdown and Qt lifetime regressions now run in the Windows handoff CI step;
+original-machine reproduction and native release gates remain in the linked record.
 
 ## Expected failures (strict `xfail`)
 
