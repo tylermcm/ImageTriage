@@ -111,3 +111,17 @@ def test_managed_root_accepts_an_alias_without_changing_its_location(runtime_ali
     root, alias = runtime_alias
     monkeypatch.setenv("IMAGE_TRIAGE_AI_ROOT", str(alias))
     assert managed_ai_root() == root
+
+
+def test_edit_discovery_excludes_stack_members_recorded_through_an_alias(runtime_alias):
+    from PIL import Image
+    from image_triage.models import ImageRecord
+    from image_triage.scanner import discover_edited_paths
+    root, alias = runtime_alias
+    for name in ("frame.CR3", "frame_1.jpg", "frame_2.jpg"):
+        Image.new("RGB", (16, 12), "teal").save(root / name, format="JPEG")
+    record = ImageRecord(
+        path=str(alias / "frame.CR3"), name="frame.CR3", size=0, modified_ns=0,
+        edited_paths=(str(alias / "frame_1.jpg"),),
+    )
+    assert discover_edited_paths(record) == (str(root / "frame_2.jpg"),)

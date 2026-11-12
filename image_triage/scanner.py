@@ -558,7 +558,9 @@ def discover_edited_paths(record: ImageRecord) -> tuple[str, ...]:
     primary = Path(normalize_filesystem_path(record.path))
     folder = primary.parent
     stem_key = primary.stem.casefold()
-    excluded = {_path_key_fast(path) for path in record.stack_paths}
+    # Records can arrive through a symlink or Windows 8.3 path. Candidates
+    # below use the resolved parent, so normalize these external paths too.
+    excluded = {normalized_path_key(path) for path in record.stack_paths}
     candidates: list[ScannedFile] = []
 
     def add_candidate(entry: os.DirEntry[str], parent: str) -> None:
