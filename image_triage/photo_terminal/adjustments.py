@@ -312,14 +312,45 @@ class EditRecipe:
     @classmethod
     def load(cls, path: Union[str, Path]) -> "EditRecipe":
         with Path(path).open("r", encoding="utf-8") as handle:
-            return cls.from_dict(json.load(handle))
+            data = json.load(handle)
+        cls.validate_data(data)
+        return cls.from_dict(data)
+
+    @classmethod
+    def validate_data(cls, data: Any) -> None:
+        """Raise ``ValueError`` naming the first setting in a recipe file that is not the kind of value it must be.
+
+        A recipe file is written by hand as often as by the tool; without this a wrong value was accepted and
+        failed later, deep in the render, with an error that named neither the file nor the setting.
+        """
+        if not isinstance(data, dict):
+            raise ValueError("a recipe file must hold a JSON object of settings")
+        for field in fields(cls):
+            if field.name not in data:
+                continue
+            value = data[field.name]
+            if field.name == "crop":
+                ok = value is None or (
+                    isinstance(value, (list, tuple)) and len(value) == 4
+                    and all(type(v) is int or (isinstance(v, float) and v.is_integer()) for v in value)
+                )
+                expected = "four whole numbers (left, top, right, bottom) or null"
+            elif isinstance(field.default, bool):
+                ok, expected = isinstance(value, bool), "true or false"
+            elif isinstance(field.default, (int, float)):
+                ok = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+                expected = "a number"
+            elif isinstance(field.default, str):
+                ok, expected = isinstance(value, str), "text"
+            else:
+                ok, expected = value is None or isinstance(value, list), "a list or null"
+            if not ok:
+                raise ValueError(f"recipe setting {field.name!r} must be {expected}, not {value!r}")
 
     def save(self, path: Union[str, Path]) -> None:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("w", encoding="utf-8") as handle:
-            json.dump(asdict(self), handle, indent=2)
-            handle.write("\n")
+        from .io import write_text_atomic
+
+        write_text_atomic(path, json.dumps(asdict(self), indent=2) + "\n")
 
     def merged(self, override: "EditRecipe") -> "EditRecipe":
         base = asdict(self)

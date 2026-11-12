@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 from pathlib import Path
 import sys
@@ -8,7 +9,7 @@ import sys
 from PIL import ExifTags
 
 from .adjustments import EditRecipe, heal_spot
-from .io import open_image, save_image
+from .io import open_image, save_image, source_metadata
 from .preview import ansi_preview
 from .session import (
     RelinkError,
@@ -36,58 +37,46 @@ from .session import (
 )
 
 
+# The adjustment options, as `EditRecipe` names them. Each defaults to None ("not given") so that an option given
+# with its neutral value, such as `--contrast 0`, can still replace what a loaded recipe says.
+_ADJUSTMENT_OPTIONS = (
+    "exposure", "contrast", "highlights", "shadows", "whites", "blacks", "temperature", "tint", "vibrance", "saturation",
+    "clarity", "dehaze", "sharpen", "denoise", "vignette", "vignette_midpoint", "vignette_roundness", "vignette_feather",
+    "vignette_highlights", "rotate",
+)
+
+
 def add_adjustment_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--recipe", type=Path, help="JSON recipe to load before command-line overrides.")
-    parser.add_argument("--exposure", type=float, default=0.0, help="Exposure in EV stops.")
-    parser.add_argument("--contrast", type=float, default=0.0)
-    parser.add_argument("--highlights", type=float, default=0.0)
-    parser.add_argument("--shadows", type=float, default=0.0)
-    parser.add_argument("--whites", type=float, default=0.0)
-    parser.add_argument("--blacks", type=float, default=0.0)
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--tint", type=float, default=0.0)
-    parser.add_argument("--vibrance", type=float, default=0.0)
-    parser.add_argument("--saturation", type=float, default=0.0)
-    parser.add_argument("--clarity", type=float, default=0.0)
-    parser.add_argument("--dehaze", type=float, default=0.0)
-    parser.add_argument("--sharpen", type=float, default=0.0)
-    parser.add_argument("--denoise", type=float, default=0.0)
-    parser.add_argument("--vignette", type=float, default=0.0)
-    parser.add_argument("--vignette-midpoint", type=float, default=50.0, help="Where the vignette starts, 0..100.")
-    parser.add_argument("--vignette-roundness", type=float, default=0.0, help="-100 frame-shaped .. 100 circular.")
-    parser.add_argument("--vignette-feather", type=float, default=50.0, help="Falloff softness, 0..100.")
-    parser.add_argument("--vignette-highlights", type=float, default=0.0, help="Protect bright pixels, 0..100.")
-    parser.add_argument("--rotate", type=float, default=0.0)
+    parser.add_argument("--exposure", type=float, default=None, help="Exposure in EV stops.")
+    parser.add_argument("--contrast", type=float, default=None)
+    parser.add_argument("--highlights", type=float, default=None)
+    parser.add_argument("--shadows", type=float, default=None)
+    parser.add_argument("--whites", type=float, default=None)
+    parser.add_argument("--blacks", type=float, default=None)
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--tint", type=float, default=None)
+    parser.add_argument("--vibrance", type=float, default=None)
+    parser.add_argument("--saturation", type=float, default=None)
+    parser.add_argument("--clarity", type=float, default=None)
+    parser.add_argument("--dehaze", type=float, default=None)
+    parser.add_argument("--sharpen", type=float, default=None)
+    parser.add_argument("--denoise", type=float, default=None)
+    parser.add_argument("--vignette", type=float, default=None)
+    parser.add_argument("--vignette-midpoint", type=float, default=None, help="Where the vignette starts, 0..100.")
+    parser.add_argument("--vignette-roundness", type=float, default=None, help="-100 frame-shaped .. 100 circular.")
+    parser.add_argument("--vignette-feather", type=float, default=None, help="Falloff softness, 0..100.")
+    parser.add_argument("--vignette-highlights", type=float, default=None, help="Protect bright pixels, 0..100.")
+    parser.add_argument("--rotate", type=float, default=None)
     parser.add_argument("--crop", nargs=4, type=int, metavar=("LEFT", "TOP", "RIGHT", "BOTTOM"))
 
 
 def recipe_from_args(args: argparse.Namespace) -> EditRecipe:
-    cli_recipe = EditRecipe(
-        exposure=args.exposure,
-        contrast=args.contrast,
-        highlights=args.highlights,
-        shadows=args.shadows,
-        whites=args.whites,
-        blacks=args.blacks,
-        temperature=args.temperature,
-        tint=args.tint,
-        vibrance=args.vibrance,
-        saturation=args.saturation,
-        clarity=args.clarity,
-        dehaze=args.dehaze,
-        sharpen=args.sharpen,
-        denoise=args.denoise,
-        vignette=args.vignette,
-        vignette_midpoint=args.vignette_midpoint,
-        vignette_roundness=args.vignette_roundness,
-        vignette_feather=args.vignette_feather,
-        vignette_highlights=args.vignette_highlights,
-        rotate=args.rotate,
-        crop=tuple(args.crop) if args.crop else None,
-    )
-    if args.recipe:
-        return EditRecipe.load(args.recipe).merged(cli_recipe)
-    return cli_recipe
+    given = {name: getattr(args, name) for name in _ADJUSTMENT_OPTIONS if getattr(args, name) is not None}
+    if args.crop:
+        given["crop"] = tuple(args.crop)
+    base = EditRecipe.load(args.recipe) if args.recipe else EditRecipe()
+    return replace(base, **given)
 
 
 def command_inspect(args: argparse.Namespace) -> int:
@@ -125,16 +114,18 @@ def command_recipe(args: argparse.Namespace) -> int:
 def command_render(args: argparse.Namespace) -> int:
     recipe = recipe_from_args(args)
     image = open_image(args.input)
+    metadata = source_metadata(image)
     edited = recipe.apply(image)
-    save_image(edited, args.output, quality=args.quality)
+    save_image(edited, args.output, quality=args.quality, **metadata)
     print(f"rendered: {args.output}")
     return 0
 
 
 def command_spot(args: argparse.Namespace) -> int:
     image = open_image(args.input)
+    metadata = source_metadata(image)
     edited = heal_spot(image, x=args.x, y=args.y, radius=args.radius, strength=args.strength)
-    save_image(edited, args.output, quality=args.quality)
+    save_image(edited, args.output, quality=args.quality, **metadata)
     print(f"spot edit saved: {args.output}")
     return 0
 
