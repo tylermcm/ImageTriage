@@ -17,6 +17,7 @@ from image_triage.cli_culler_runs import (
     activate_generation, cull_run_paths, load_active_generation, validate_generation,
 )
 from image_triage.cli_culler_task import CliCullerRunTask
+from image_triage import cli_culler_task
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -155,6 +156,61 @@ def test_failure_keeps_previous_active_and_retains_diagnostics(tmp_path, body):
     assert task.log_path.exists()
     if "native failure" in body:
         assert "native failure details" in task.log_path.read_text()
+
+
+def test_incomplete_run_cleanup_retries_a_windows_file_lock(tmp_path, monkeypatch):
+    root = tmp_path / "run"
+    root.mkdir()
+    (root / "request.json").write_text("{}")
+    remove = cli_culler_task.shutil.rmtree
+    attempts = []
+
+    def temporarily_locked(path):
+        attempts.append(path)
+        if len(attempts) == 1:
+            error = PermissionError("Windows has not released the directory yet")
+            error.winerror = 32
+            raise error
+        remove(path)
+
+    monkeypatch.setattr(cli_culler_task.shutil, "rmtree", temporarily_locked)
+    cli_culler_task._discard_incomplete_run(root)
+    assert len(attempts) == 2
+    assert not root.exists()
+
+
+def test_cleanup_failure_is_reported_without_changing_the_active_generation(tmp_path, monkeypatch):
+    task = task_for(tmp_path, "print('not json', flush=True)\n")
+    task.paths.active.parent.mkdir(parents=True, exist_ok=True)
+    task.paths.active.write_text("previous active generation")
+
+    def locked(path):
+        error = PermissionError("directory remains locked")
+        error.winerror = 32
+        raise error
+
+    monkeypatch.setattr(cli_culler_task, "_discard_incomplete_run", locked)
+    failures = []
+    task.signals.failed.connect(lambda *args: failures.append(args))
+    task.run()
+    assert len(failures) == 1
+    assert "Could not remove incomplete generation" in failures[0][1]
+    assert "directory remains locked" in failures[0][1]
+    assert task.paths.active.read_text() == "previous active generation"
+    assert task.run_root.exists()
+
+
+def test_incomplete_run_cleanup_has_a_deadline(tmp_path, monkeypatch):
+    def locked(path):
+        error = PermissionError("directory remains locked")
+        error.winerror = 32
+        raise error
+
+    clock = iter([0.0, 2.0])
+    monkeypatch.setattr(cli_culler_task.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(cli_culler_task.shutil, "rmtree", locked)
+    with pytest.raises(PermissionError, match="directory remains locked"):
+        cli_culler_task._discard_incomplete_run(tmp_path / "run")
 
 
 @pytest.mark.parametrize("stage", ["metadata", "inference"])

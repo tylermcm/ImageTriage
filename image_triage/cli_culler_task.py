@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import threading
+import time
 import uuid
 
 from PySide6.QtCore import QObject, QRunnable, Signal
@@ -30,6 +31,25 @@ class CliCullerSignals(QObject):
 
 class _Cancelled(Exception):
     pass
+
+
+def _discard_incomplete_run(root: Path) -> None:
+    """Allow Windows to release recently terminated processes' file handles."""
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            shutil.rmtree(root)
+            return
+        except FileNotFoundError:
+            if not root.exists():
+                return
+            raise
+        except OSError as error:
+            # Access denied, sharing/lock violation, or a directory still in
+            # use. Other errors must remain visible rather than retry forever.
+            if getattr(error, "winerror", None) not in (5, 32, 33, 145) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
 
 
 class CliCullerRunTask(QRunnable):
@@ -92,7 +112,11 @@ class CliCullerRunTask(QRunnable):
             with self._lock:
                 self._terminal = True
             if outcome != "finished":
-                shutil.rmtree(self.run_root, ignore_errors=True)
+                try:
+                    _discard_incomplete_run(self.run_root)
+                except OSError as error:
+                    outcome = "failed"
+                    message += f"\nCould not remove incomplete generation {self.run_root}: {error}\nDiagnostics: {self.log_path}"
         if outcome == "finished":
             self.signals.finished.emit(folder, message, "")
         elif outcome == "cancelled":
