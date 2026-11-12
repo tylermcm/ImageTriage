@@ -544,7 +544,7 @@ class ReferenceModel(QObject):
 
     def _key_overrides(self) -> dict[str, str]:
         if self._memory:
-            return {"compare_mode": "V"}         # the mockup's one changed key
+            return {"open_preview": "V"}         # the mockup's one changed key
         try:
             from ..shortcuts import load_shortcut_overrides
 

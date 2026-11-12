@@ -108,7 +108,15 @@ FocusScope {
         target: editor
         function onOpened() { v.opening = false }
         function onFailed(message) { v.opening = false; popout.notice(message) }
+        // The save on close failed (a share that went away): without a way to leave, the editor could not be closed at all.
+        function onCloseFailed(message) { v.opening = false; closeFailedCard.body = message; closeFailedCard.open() }
         function onClosed() { v.opening = false; popout.close() }
+    }
+    ConfirmCard {
+        id: closeFailedCard; objectName: "editorCloseFailedCard"; warn: true
+        title: "The edit could not be saved"
+        confirmText: "Close without saving"; cancelText: "Keep editing"
+        onAccepted: editor.closeWithoutSaving()
     }
     Connections {
         target: rawPanel

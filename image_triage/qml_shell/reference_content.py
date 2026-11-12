@@ -45,7 +45,7 @@ TOPICS = (
                 _tip("Nothing here moves or deletes your files unless a button says so. Decisions are notes about each photo."), _btn("See every shortcut", "keys"))},
     {"id": "review", "title": "Reviewing photos", "icon": ICON["review"], "lead": "Every photo can carry a decision and a star rating. Both are quick to change and easy to filter by.",
      "blocks": (_h("Decisions"), _p("Winner is for the shots you will use, Keep for good ones you are not sure about, and Reject for the ones you do not want. They show as small badges in the grid."),
-                _h("Looking closer"), _p("The panel on the right shows details, a quality summary and notes for the selected photo. Press I to hide or show it, and C to compare photos side by side."),
+                _h("Looking closer"), _p("The panel on the right shows details, a quality summary and notes for the selected photo. Press I to hide or show it."),
                 _h("Showing less"), _p("Use the bar at the bottom of the grid to show only Winners, Keep or Rejected, or to change the thumbnail size and the sort order."))},
     {"id": "coll", "title": "Collections and winners", "icon": ICON["coll"], "lead": "A collection gathers photos from any folder without copying or moving them. Use one for an album, a print order or a client.",
      "blocks": (_h("Make one"), _p("Open the Collections tab and press +. Give it a name, and a colour or an icon so you can spot it."),
@@ -131,9 +131,9 @@ MENU = (
 # for it (Settings > Shortcuts); the other rows are keys the shell itself handles.
 KEY_GROUPS = (
     ("Review", (("Move between photos", "", "←+→+↑+↓"), ("Mark a winner", "accept_selection", "W"), ("Keep it for now", "keep_at_cursor", "K"), ("Reject it", "reject_selection", "R"),
-                ("Clear the decision", "", "U"), ("Star rating", "", "1+–+5"), ("Open the large view", "open_preview", "Space"), ("Compare", "compare_mode", "C"), ("Winner ladder", "winner_ladder_mode", "Ctrl+Alt+W"))),
+                ("Clear the decision", "", "U"), ("Star rating", "", "1+–+5"), ("Open the large view", "open_preview", "Space"))),
     ("Collections", (("Add the photo you are on", "collect_at_cursor", "B"), ("Choose best photos", "best_of_set_auto_assembly", "Ctrl+Alt+B"), ("Deliver / Handoff Builder", "handoff_builder", "Ctrl+Alt+H"))),
-    ("File", (("Open folder", "open_folder", "Ctrl+O"), ("Refresh folder", "refresh_folder", "F5"), ("New folder", "new_folder", "Ctrl+Shift+N"), ("Settings", "workflow_settings", "Ctrl+,"), ("Open in editor", "", "E"))),
+    ("File", (("Open folder", "open_folder", "Ctrl+O"), ("Refresh folder", "refresh_folder", "F5"), ("Settings", "workflow_settings", "Ctrl+,"), ("Open in editor", "", "E"))),
     ("Edit", (("Undo", "undo", "Ctrl+Z"), ("Rename", "rename_selection", "F2"), ("Batch rename", "batch_rename_selection", "Ctrl+Shift+R"), ("Batch resize", "batch_resize_selection", "Ctrl+Shift+E"), ("Batch convert", "batch_convert_selection", "Ctrl+Shift+C"))),
     ("View", (("Grid view", "grid_view", "Ctrl+1"), ("Details view", "details_view", "Ctrl+2"), ("Zen mode", "zen_mode", "F11"), ("Show or hide the inspector", "", "I"), ("Clear filters", "clear_filters", "Ctrl+Shift+X"))),
     ("Everywhere", (("Search or run a command", "open_command_palette", "Ctrl+K"), ("Help", "", "F1"), ("Keyboard shortcuts", "", "Ctrl+/"), ("Close a window", "", "Esc"))),

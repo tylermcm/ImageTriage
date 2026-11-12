@@ -416,8 +416,8 @@ def test_the_guide_has_the_mockups_groups_and_marks_a_changed_key(ref):
     ref.open("keys")
     k = ref.view["keys"]
     assert [c["name"] for c in k["cats"]] == ["Review", "Collections", "File", "Edit", "View", "Everywhere"]
-    compare = next(r for c in k["cats"] for r in c["rows"] if r["t"] == "Compare")
-    assert compare["keys"] == ["V"] and compare["changed"] is True       # the sample override
+    changed = next(r for c in k["cats"] for r in c["rows"] if r["t"] == "Open the large view")
+    assert changed["keys"] == ["V"] and changed["changed"] is True       # the sample override
     winner = next(r for c in k["cats"] for r in c["rows"] if r["t"] == "Mark a winner")
     assert winner["keys"] == ["W"] and winner["changed"] is False
     assert k["count"] == sum(len(c["rows"]) for c in k["cats"])
