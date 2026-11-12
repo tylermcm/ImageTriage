@@ -78,7 +78,8 @@ class ThumbService(QObject):
         self.pool = QThreadPool()
         self.pool.setMaxThreadCount(workers)
         self._lock = threading.Lock()
-        self._wanted: dict[str, int] = {}      # path -> how many delegates currently want a thumbnail of it
+        self._wanted: dict[str, int] = {}      # path -> how many delegates currently want a thumbnail of it (`want` / `unwant`)
+        self._closing = False                  # the app is quitting: nothing more is decoded
         self._queued: set[ThumbnailKey] = set()
         self._stats: dict[str, tuple[int, int]] = {}      # normalised path -> (modified_ns, size), from the folder listings (see prime_folder)
         self._tones: dict[str, float] = {}      # cache file -> brightness of its bottom strip (the file name changes when the photo does)
@@ -143,14 +144,14 @@ class ThumbService(QObject):
         key = self._key(path, bucket)
         if key is None:
             return ""
-        with self._lock:
-            self._wanted[path] = self._wanted.get(path, 0) + 1
         target = self.disk._file_path(key)
         if target.exists():
             return QUrl.fromLocalFile(str(target)).toString()
         with self._lock:
-            fresh = key not in self._queued
-            self._queued.add(key)
+            fresh = key not in self._queued and not self._closing
+            if fresh:
+                self._queued.add(key)
+                self._wanted.setdefault(path, 1)       # a caller that never said `want` (not a card) still gets what it asked for
         if fresh:
             if _JOBS is not None:
                 _JOBS.queued()
@@ -203,6 +204,13 @@ class ThumbService(QObject):
         self.painted.emit()
 
     @Slot(str)
+    def want(self, path: str) -> None:
+        """A delegate started showing ``path``. It says so once, however often it then asks for the URL (a new size, a `ready`), and
+        `unwant` once when it stops: counted per `url` call instead, the count only grew and a decode nobody waited for was never skipped."""
+        with self._lock:
+            self._wanted[path] = self._wanted.get(path, 0) + 1
+
+    @Slot(str)
     def unwant(self, path: str) -> None:
         """A delegate stopped showing ``path`` (recycled or destroyed): its queued thumbnails are skipped unless another wants them."""
         with self._lock:
@@ -221,7 +229,7 @@ class ThumbService(QObject):
         made = False
         try:
             with self._lock:
-                wanted = key.path in self._wanted
+                wanted = key.path in self._wanted and not self._closing
             if wanted and not self.disk._file_path(key).exists():
                 size = QSize(key.width, key.height)
                 if key.edit_state == FIT_TAG:
@@ -257,3 +265,13 @@ class ThumbService(QObject):
                                 width=key.width, height=key.height)
         if made:
             self.ready.emit(key.path)
+
+    def shutdown(self, wait_ms: int = 1500) -> None:
+        """The app is quitting: drop what is queued and give the decodes already running a moment to end. Without this the process stayed
+        alive after the window closed until every queued thumbnail had been made."""
+        with self._lock:
+            self._closing = True
+            self._wanted.clear()
+            self._queued.clear()
+        self.pool.clear()
+        self.pool.waitForDone(max(0, int(wait_ms)))

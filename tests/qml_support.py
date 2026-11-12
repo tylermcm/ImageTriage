@@ -32,6 +32,10 @@ class NoThumbs(QObject):
         return ""
 
     @Slot(str)
+    def want(self, path):
+        pass
+
+    @Slot(str)
     def unwant(self, path):
         pass
 
