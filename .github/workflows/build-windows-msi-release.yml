@@ -5,6 +5,11 @@ on:
   push:
     tags:
       - "v*"
+    branches:
+      - 'codex/audit-cloud-continuation-*'
+    paths:
+      - 'packaging/photocraft_validation_pin.txt'
+      - '.github/workflows/build-windows-msi-release.yml'
 
 permissions:
   contents: write
@@ -13,6 +18,7 @@ jobs:
   build-windows-msi:
     name: Build Windows MSI
     runs-on: windows-latest
+    timeout-minutes: 120
 
     steps:
       - name: Check out repository
@@ -60,8 +66,13 @@ jobs:
         id: pin
         shell: pwsh
         run: |
-          $ref = (Get-Content packaging/photocraft_pin.txt -Raw).Trim()
-          if ($ref -notmatch '^[0-9a-f]{40}$') { throw "packaging/photocraft_pin.txt must hold a full 40-character commit hash." }
+          $pinFile = 'packaging/photocraft_pin.txt'
+          # Audit artifacts pair the repaired candidate without promoting the release pin.
+          if ($env:GITHUB_REF -like 'refs/heads/codex/audit-cloud-continuation-*') {
+            $pinFile = 'packaging/photocraft_validation_pin.txt'
+          }
+          $ref = (Get-Content $pinFile -Raw).Trim()
+          if ($ref -notmatch '^[0-9a-f]{40}$') { throw "$pinFile must hold a full 40-character commit hash." }
           "ref=$ref" >> $env:GITHUB_OUTPUT
 
       - name: Check out PhotoCraft
@@ -107,10 +118,30 @@ jobs:
           key: photocraft-${{ runner.os }}-${{ steps.pin.outputs.ref }}
           restore-keys: photocraft-${{ runner.os }}-
 
-      - name: Build PhotoCraft
+      - name: Validate and build PhotoCraft
+        # The audit candidate must pass its original small-stack release regression first.
+        # These are native tests; do not enlarge the test stack or suppress failures.
         shell: pwsh
         working-directory: photocraft-src
-        run: cargo build --release -p photocraft
+        env:
+          PHOTOCRAFT_NO_PRINT: "1"
+          RUST_TEST_THREADS: "2"
+        run: |
+          if ($env:GITHUB_REF -like 'refs/heads/codex/audit-cloud-continuation-*') {
+            cargo test --release --locked -p photocraft-io --lib
+            if ($LASTEXITCODE -ne 0) { throw 'PhotoCraft release I/O tests failed' }
+            cargo test --release --locked -p photocraft-algo --test camera_raw_red_eye
+            if ($LASTEXITCODE -ne 0) { throw 'PhotoCraft Red Eye tests failed' }
+          }
+          cargo build --release --locked -p photocraft
+          if ($LASTEXITCODE -ne 0) { throw 'PhotoCraft build failed' }
+
+      - name: Verify native candidate source
+        if: startsWith(github.ref, 'refs/heads/codex/audit-cloud-continuation-')
+        shell: pwsh
+        env:
+          PHOTOCRAFT_SOURCE_ROOT: ${{ github.workspace }}/photocraft-src
+        run: python -m pytest -q tests/test_full_render.py tests/test_photocraft_mask_capability.py
 
       # The RAW preview worker (native/raw_preview) is built against the same PhotoCraft source, into the same target folder so
       # the crates the editor build compiled are reused. Its manifest is made from the template, as scripts/build_raw_preview.ps1 does.
@@ -139,6 +170,59 @@ jobs:
       - name: Build MSI
         run: python setup_msi.py bdist_msi
 
+      - name: Smoke test frozen QML startup
+        if: startsWith(github.ref, 'refs/heads/codex/audit-cloud-continuation-')
+        shell: python
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PHOTOCRAFT_VALIDATION_REF: ${{ steps.pin.outputs.ref }}
+        run: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          from PIL import Image
+
+          root = Path('build/audit-smoke').resolve()
+          fixtures = root / 'photos'
+          fixtures.mkdir(parents=True, exist_ok=True)
+          for number, color in enumerate(('teal', 'coral', 'gold'), 1):
+              Image.new('RGB', (160, 120), color).save(fixtures / f'frame-{number}.jpg')
+          app, = Path('build').glob('exe.*/ImageTriage.exe')
+          app = app.resolve()
+          assert (app.parent / 'photocraft/photocraft.exe').is_file()
+          assert (app.parent / 'image-triage-raw-preview.exe').is_file()
+          capture = root / 'startup.png'
+          env = dict(os.environ, LOCALAPPDATA=str(root / 'profile/local'), APPDATA=str(root / 'profile/roaming'),
+                     IMAGE_TRIAGE_LOG_DIR=str(root / 'profile/logs'))
+          for name in ('LOCALAPPDATA', 'APPDATA', 'IMAGE_TRIAGE_LOG_DIR'):
+              Path(env[name]).mkdir(parents=True, exist_ok=True)
+          result = subprocess.run([str(app), '--folder', str(fixtures), '--size', '1200x800', '--grab', str(capture), '--grab-wait', '2'],
+                                  cwd=root, env=env, capture_output=True, text=True, timeout=60)
+          (root / 'startup.log').write_text(result.stdout + result.stderr, encoding='utf-8')
+          if result.returncode:
+              raise RuntimeError(f'Frozen QML startup failed ({result.returncode}): {result.stderr}')
+          with Image.open(capture) as screenshot:
+              assert screenshot.width >= 800 and screenshot.height >= 600
+          files = [app, app.parent / 'photocraft/photocraft.exe', app.parent / 'image-triage-raw-preview.exe',
+                   *Path('dist').resolve().glob('*.msi')]
+          manifest = {
+              'kind': 'Windows audit validation candidate; not promoted',
+              'host_commit': os.environ['GITHUB_SHA'],
+              'photocraft_commit': os.environ['PHOTOCRAFT_VALIDATION_REF'],
+              'render_algorithm': 3,
+              'checks': ['native release I/O suite', 'native Red Eye regressions', 'host schema', 'frozen QML startup'],
+              'remaining': ['live hosted lifecycle acceptance', 'managed models and Store Python acceptance',
+                            'broader native gates; Linux algorithm sweep has two NaN sign-bit failures'],
+              'sha256': {},
+          }
+          for path in files:
+              with path.open('rb') as handle:
+                  manifest['sha256'][path.name] = hashlib.file_digest(handle, 'sha256').hexdigest()
+          (root / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+          print(f'Frozen QML startup and bundled native files passed: {app.name}')
+
       - name: List build output
         shell: pwsh
         run: Get-ChildItem dist
@@ -146,8 +230,12 @@ jobs:
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v7
         with:
-          name: image-triage-msi-${{ github.sha }}
-          path: dist/*.msi
+          name: image-triage-msi-${{ startsWith(github.ref, 'refs/tags/') && 'release' || 'validation' }}-${{ github.sha }}
+          path: |
+            dist/*.msi
+            build/audit-smoke/startup.png
+            build/audit-smoke/startup.log
+            build/audit-smoke/build-manifest.json
           if-no-files-found: error
           retention-days: 14
 

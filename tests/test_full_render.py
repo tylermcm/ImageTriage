@@ -1,5 +1,6 @@
 """Full-resolution export authority, cancellation, and encoded pixel fidelity."""
 import json
+import os
 import re
 import threading
 from dataclasses import dataclass
@@ -270,8 +271,12 @@ def test_malformed_settings_cannot_be_classified_as_identity(settings):
 
 
 def test_host_recipe_schema_tracks_the_editor_schema():
-    source = Path(__file__).resolve().parents[2] / "photocraft/crates/algo/src/camera_raw.rs"
+    candidate = os.environ.get("PHOTOCRAFT_SOURCE_ROOT")
+    root = Path(candidate) if candidate else Path(__file__).resolve().parents[2] / "photocraft"
+    source = root / "crates/algo/src/camera_raw.rs"
     if not source.is_file():
+        if candidate:
+            pytest.fail("The requested PhotoCraft source checkout is missing its CameraRaw schema")
         pytest.skip("companion checkout is not available")
     body = re.search(r"pub struct CameraRaw \{(.*?)\n\}", source.read_text(), re.S).group(1)
     camel = lambda name: name.split("_")[0] + "".join(word.title() for word in name.split("_")[1:])
