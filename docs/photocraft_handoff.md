@@ -3702,3 +3702,7 @@ The host schema test now recognizes upstream's explicit calibration serde aliase
 host-only crop; `raw_recipe.rs` preserves the host names on serialization. Host recipe
 validation is unchanged. Source build, Windows CI and remaining native acceptance are
 recorded in [audit_cloud_validation_20261112.md](audit_cloud_validation_20261112.md).
+
+### 2026-11-12 local audit candidate acceptance
+
+Both remotes fetched; upstream moved from 74330157c to 134208d7f, with 86/4072 divergence and 42 large conflicted paths (including Camera Raw). No broad merge or companion draft edits. Candidate 97ceee530 (SVG repair, Red Eye and pixelate parity repair) passed paired Windows CI and local PNG/DNG native lifecycle, failed-save recovery and RAW-helper pixel checks. The packaging pin advances from 0988078e (algorithm 2) to 97ceee530 (algorithm 3). Existing installed binaries are preserved. See [Windows audit acceptance](audit_windows_acceptance_20261112.md) for decisions, evidence and remaining limits.

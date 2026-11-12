@@ -82,3 +82,7 @@ See [audit_cloud_validation_20261112.md](audit_cloud_validation_20261112.md) for
 implemented culler changes, native Windows CI evidence, source-wheel build, and
 remaining machine/runtime and installer gates. This checkpoint's historical failures
 above describe `2051d1d`; use the continuation record for current results.
+
+## Local acceptance follow-up
+
+See [audit_windows_acceptance_20261112.md](audit_windows_acceptance_20261112.md) for the actual managed runtime, native candidate and Qt-version findings. Historical checkpoint failures above are retained as evidence.

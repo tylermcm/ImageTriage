@@ -1,6 +1,6 @@
 # Test failure ledger
 
-Last checked 2026-11-12 on Linux (Python 3.13.5, PySide6 6.12, `QT_QPA_PLATFORM=offscreen`, Basic controls style).
+Last checked 2026-11-12 on Windows (Store Python 3.13.14, PySide6 6.12, managed CUDA worker, offscreen/Basic Qt): **2,634 passed, 18 skipped, 5 expected failures, 129 passing subtests**. GC enabled. Earlier platform results are retained below.
 
 Rules:
 
@@ -26,7 +26,15 @@ runtime or sealed native editor acceptance.
 
 ## Open failures
 
-None in the final host suite at `83b4cb5`. Windows path aliases now deduplicate
+Original-machine follow-up: direct Store-venv workers still fail the two
+`test_cancellation_stops_descendant_and_discards_output` cases because alias-launched
+children escape the named cleanup job. The actual managed worker passes both, and
+all 33 process/QML checks, with the Store venv running the application. No assertions
+are weakened or marked xfail. PySide6 6.11 also reproduces a QML GC access violation;
+6.12 passes the same 26-case subset and is now the minimum dependency. See
+[local acceptance](../docs/audit_windows_acceptance_20261112.md) for full-suite results.
+
+Historical cloud result: none in the final host suite at `83b4cb5`. Windows path aliases now deduplicate
 runtime search paths and exclude existing stack edits correctly. Transient Windows
 staging-directory locks receive a bounded retry; persistent cleanup failures are
 reported rather than suppressed. All original assertions remain in force. Separate

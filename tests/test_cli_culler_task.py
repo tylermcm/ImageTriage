@@ -242,7 +242,7 @@ def test_cancellation_stops_descendant_and_discards_output(tmp_path, stage):
     cancel_thread.start()
     seen = run_in_pool(task)
     cancel_thread.join()
-    assert seen["cancelled"] and not seen["finished"]
+    assert seen["cancelled"] and not seen["finished"], seen["failed"]
     assert len(pids) == 2
     assert not task.paths.active.exists()
     assert not task.run_root.exists()
@@ -302,7 +302,7 @@ def test_cancel_during_validation_preserves_previous_run(tmp_path, monkeypatch):
 
     monkeypatch.setattr("image_triage.cli_culler_task.validate_generation", cancel_while_validating)
     seen = run_in_pool(task)
-    assert seen["cancelled"] and not seen["finished"]
+    assert seen["cancelled"] and not seen["finished"], seen["failed"]
     assert task.paths.active.read_text() == "previous"
     assert not task.run_root.exists()
 
@@ -363,7 +363,7 @@ def test_cancellation_during_partial_protocol_line_does_not_wait_for_eof(tmp_pat
     started = time.monotonic()
     seen = run_in_pool(task)
     assert seen["progress"]
-    assert seen["cancelled"] and not seen["finished"]
+    assert seen["cancelled"] and not seen["finished"], seen["failed"]
     assert time.monotonic() - started < 5
     assert not task.run_root.exists()
 
