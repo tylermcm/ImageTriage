@@ -589,3 +589,84 @@ def test_the_editors_mask_and_super_resolution_requests_are_polled_while_it_is_o
     wait(qapp, lambda: False, seconds=0.15)
     assert len(jobs.polled) == seen                      # put away: nothing is asked of an editor nobody is using
     host.shutdown()
+
+
+def test_navigation_waits_for_save_before_replacing_the_document(qapp, folder):
+    import threading
+
+    host, _, _ = make(qapp, folder)
+    host.openPath(str(folder / 'a.jpg'))
+    assert wait(qapp, lambda: host.state == EDITING)
+    proc = host._proc
+    proc.control.render_manifest_supported = True
+    entered, release = threading.Event(), threading.Event()
+    original_state = proc.control.document_state
+    opened = threading.Event()
+    original_open = proc.control.app_open
+
+    def blocked_state():
+        if threading.current_thread().name == 'editor-save':
+            entered.set()
+            assert release.wait(3)
+        return original_state()
+
+    def observe_open(*args, **kwargs):
+        opened.set()
+        return original_open(*args, **kwargs)
+
+    proc.control.document_state = blocked_state
+    proc.control.app_open = observe_open
+    (folder / 'b.jpg').write_bytes(b'next photo')
+    try:
+        host.save()
+        assert entered.wait(2)
+        host.openPath(str(folder / 'b.jpg'))
+        # While save is reading the old document, navigation must not replace it.
+        assert not opened.wait(.2)
+        assert proc.source_path == str(folder / 'a.jpg')
+        release.set()
+        assert wait(qapp, lambda: host.state == EDITING and host.path.endswith('b.jpg'))
+        from image_triage import photocraft_bridge as bridge
+        stashes = [params for method, params in proc.control.calls if method == 'app.stash']
+        assert stashes and all(p['path'] == bridge.sidecar_pcraft_path(str(folder / 'a.jpg')).name for p in stashes)
+        assert proc.source_path == str(folder / 'b.jpg')
+    finally:
+        release.set()
+        wait(qapp, lambda: host.state == EDITING)
+        host.shutdown()
+
+
+def test_delayed_save_cannot_save_the_replacement_photo(qapp, folder, monkeypatch):
+    import threading
+
+    host, _, _ = make(qapp, folder)
+    host.openPath(str(folder / 'a.jpg'))
+    assert wait(qapp, lambda: host.state == EDITING)
+    proc = host._proc
+    queued, release, done = threading.Event(), threading.Event(), threading.Event()
+    original_save = host._save_worker
+
+    def delayed_save(*args):
+        queued.set()
+        try:
+            assert release.wait(3)
+            original_save(*args)
+        finally:
+            done.set()
+
+    monkeypatch.setattr(host, '_save_worker', delayed_save)
+    (folder / 'b.jpg').write_bytes(b'next photo')
+    try:
+        host.save()
+        assert queued.wait(2)
+        host.openPath(str(folder / 'b.jpg'))
+        assert wait(qapp, lambda: host.state == EDITING and proc.source_path.endswith('b.jpg'))
+        saves_after_switch = proc.control.saved
+        assert saves_after_switch == 1  # navigation saved a.jpg
+        release.set()
+        assert done.wait(2)
+        assert proc.control.saved == saves_after_switch  # delayed Save must not save b.jpg
+    finally:
+        release.set()
+        done.wait(2)
+        host.shutdown()

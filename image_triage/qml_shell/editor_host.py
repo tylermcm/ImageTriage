@@ -100,7 +100,9 @@ class EditorHost(QObject):
         self._path = ""
         self._error = ""
         self._proc = None
-        self._lock = threading.Lock()
+        # Own the complete document transaction, not just individual control calls.
+        # Workers may save, replace/bind a photo, or settle on close concurrently.
+        self._lock = threading.RLock()
         self._geometry = (0, 0, 0, 0)
         self._parent_hwnd = 0
         self._generation = 0
@@ -226,6 +228,10 @@ class EditorHost(QObject):
         threading.Thread(target=self._open_worker, args=(self._generation, path, switching, full_editor), name="editor-open", daemon=True).start()
 
     def _open_worker(self, generation: int, path: str, switching: bool = False, full_editor: bool = False) -> None:
+        with self._lock:
+            self._open_locked(generation, path, switching, full_editor)
+
+    def _open_locked(self, generation: int, path: str, switching: bool, full_editor: bool) -> None:
         proc = None
         try:
             from .. import edit_storage, photocraft_bridge
@@ -440,15 +446,19 @@ class EditorHost(QObject):
         proc = self._proc
         if proc is None or self._state != EDITING:
             return
-        threading.Thread(target=self._save_worker, args=(proc,), name="editor-save", daemon=True).start()
+        threading.Thread(target=self._save_worker, args=(proc, proc.source_path, self._generation), name="editor-save", daemon=True).start()
 
-    def _save_worker(self, proc) -> None:
-        path = proc.source_path
-        try:
-            self._settle(proc)
-            self._saved(path)
-        except Exception as error:
-            LOG.warning("PhotoCraft did not save: %s", error, exc_info=True)
+    def _save_worker(self, proc, path: str, generation: int) -> None:
+        with self._lock:
+            # A queued save belongs to the document visible when Save was pressed.
+            # Navigation settles that document itself if it wins the lock first.
+            if proc is not self._proc or generation != self._generation or proc.source_path != path:
+                return
+            try:
+                self._settle(proc)
+                self._saved(path)
+            except Exception as error:
+                LOG.warning("PhotoCraft did not save: %s", error, exc_info=True)
 
     def _saved(self, path: str) -> None:
         """The photo's edits were saved (called on the worker that saved them): clear away the pictures of its earlier saves,
@@ -500,6 +510,10 @@ class EditorHost(QObject):
         self.closed.emit(path)
 
     def _close_worker(self, proc) -> None:
+        with self._lock:
+            self._close_locked(proc)
+
+    def _close_locked(self, proc) -> None:
         message = ""
         try:
             self._settle(proc)
@@ -570,7 +584,8 @@ class EditorHost(QObject):
 
         def work() -> None:
             try:
-                self._settle(proc)
+                with self._lock:
+                    self._settle(proc)
                 outcome.append("")
             except Exception as error:
                 outcome.append(str(error) or error.__class__.__name__)

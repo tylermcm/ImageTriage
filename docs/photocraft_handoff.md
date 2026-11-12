@@ -3706,3 +3706,12 @@ recorded in [audit_cloud_validation_20261112.md](audit_cloud_validation_20261112
 ### 2026-11-12 local audit candidate acceptance
 
 Both remotes fetched; upstream moved from 74330157c to 134208d7f, with 86/4072 divergence and 42 large conflicted paths (including Camera Raw). No broad merge or companion draft edits. Candidate 97ceee530 (SVG repair, Red Eye and pixelate parity repair) passed paired Windows CI and local PNG/DNG native lifecycle, failed-save recovery and RAW-helper pixel checks. The packaging pin advances from 0988078e (algorithm 2) to 97ceee530 (algorithm 3). Existing installed binaries are preserved. See [Windows audit acceptance](audit_windows_acceptance_20261112.md) for decisions, evidence and remaining limits.
+
+### 2026-11-12 E12 host save/open serialization
+
+Both companion remotes fetched successfully; upstream remains `134208d7f`, with
+86/4072 divergence and the same 42 large conflicts. Fork integration has no new
+commits. No companion merges, draft edits or binary replacements. Host-only E12
+regressions reproduce the save/open race and verify serialization plus stale-save
+rejection. The live `97ceee530` candidate passed forced save/navigation overlap,
+original-file integrity, persistent-process and cleanup checks. See the audit closeout log.
