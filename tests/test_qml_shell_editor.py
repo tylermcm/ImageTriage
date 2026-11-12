@@ -670,3 +670,24 @@ def test_delayed_save_cannot_save_the_replacement_photo(qapp, folder, monkeypatc
         release.set()
         done.wait(2)
         host.shutdown()
+
+
+def test_explicit_save_failure_is_visible_and_preserves_the_open_editor(qapp, folder):
+    host, _, _ = make(qapp, folder)
+    host.openPath(str(folder / 'a.jpg'))
+    assert wait(qapp, lambda: host.state == EDITING)
+    proc = host._proc
+    failures = []
+    host.failed.connect(failures.append)
+
+    def unresponsive():
+        raise TimeoutError('synthetic unresponsive editor')
+
+    proc.control.app_save = unresponsive
+    host.save()
+    assert wait(qapp, lambda: bool(failures), seconds=.5)
+    assert 'save' in failures[0].lower()
+    assert host.state == EDITING and host.path == str(folder / 'a.jpg')
+    assert host._proc is proc and not proc.stopped
+    del proc.control.app_save
+    host.shutdown()

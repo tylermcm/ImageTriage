@@ -392,6 +392,13 @@ class EditorHost(QObject):
 
     @Slot(str, object, str)
     def _finish(self, what: str, result, error: str) -> None:
+        if what == "save-failed":
+            # A Save failure must reach the shell, but must not close the editor
+            # or change a newer navigation operation's state.
+            if result is self._proc:
+                self._set(self._state, error)
+                self.failed.emit(error)
+            return
         self._switching = False
         if what == "open":
             self._proc = result
@@ -459,6 +466,8 @@ class EditorHost(QObject):
                 self._saved(path)
             except Exception as error:
                 LOG.warning("PhotoCraft did not save: %s", error, exc_info=True)
+                self._done.emit("save-failed", proc,
+                    "Could not confirm the save. The editor is still open; check the photo before retrying. " + str(error))
 
     def _saved(self, path: str) -> None:
         """The photo's edits were saved (called on the worker that saved them): clear away the pictures of its earlier saves,

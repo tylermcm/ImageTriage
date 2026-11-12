@@ -3715,3 +3715,14 @@ commits. No companion merges, draft edits or binary replacements. Host-only E12
 regressions reproduce the save/open race and verify serialization plus stale-save
 rejection. The live `97ceee530` candidate passed forced save/navigation overlap,
 original-file integrity, persistent-process and cleanup checks. See the audit closeout log.
+
+### 2026-11-12 E20 host control recovery
+
+Both remotes fetched successfully. Upstream advanced from `134208d7f` to
+`e660b4906` (86/4073 divergence); the integration fork still matches HEAD and the
+dry merge still has 42 large conflicts, including Camera Raw. No broad merge,
+companion draft edits or native rebuild/promotion. Host control recovery passed
+165 related tests (one optional skip) and a suspended-native-editor Save/reconnect
+check. The host now bounds authentication and interactive response waits, reports
+unconfirmed Save to the shell, and interrupts shutdown reads without replaying
+commands. See E20 in the audit closeout log for timeout choices and limits.

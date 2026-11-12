@@ -24,6 +24,7 @@ class FakeEditor:
         self.port = self.listener.getsockname()[1]
         self.connections: list[socket.socket] = []
         self.requests: list[tuple[int, str]] = []  # (connection number, method)
+        self.silent_methods = set()
         self._stop = False
         self._thread = threading.Thread(target=self._accept, daemon=True)
         self._thread.start()
@@ -44,6 +45,8 @@ class FakeEditor:
                 request = json.loads(line)
                 method = request["method"]
                 self.requests.append((number, method))
+                if method in self.silent_methods:
+                    continue
                 if method == "auth":
                     ok = request["params"]["token"] == TOKEN
                     reply = {"id": request["id"], "ok": ok, "error": None if ok else "bad token"}
@@ -183,3 +186,76 @@ def test_a_connection_made_without_the_idle_bookkeeping_still_works():
     control._file = type("File", (), {"write": lambda self, data: None, "flush": lambda self: None,
                                        "readline": lambda self: b'{"id": 1, "ok": true, "result": {}}\n'})()
     assert control.call("jobs.list") == {}
+
+
+def test_timed_out_save_is_not_replayed_and_next_request_reconnects(editor):
+    editor.silent_methods.add("app.stash")
+    control = bridge.PhotoCraftControl(editor.port, TOKEN, timeout=.1)
+    try:
+        with pytest.raises(bridge.PhotoCraftError):
+            control.call("app.stash", {"path": "photo.pcraft"})
+        assert control.call("jobs.list") == {"connection": 2}
+        assert [m for _, m in editor.requests].count("app.stash") == 1
+    finally:
+        control.close()
+
+
+def test_startup_authentication_respects_the_connection_deadline(editor):
+    import time
+    from types import SimpleNamespace
+
+    editor.silent_methods.add("auth")
+    # A watchdog makes the pre-fix 120-second wait fail promptly too.
+    guard = threading.Timer(.8, editor.stop)
+    guard.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(bridge.PhotoCraftError):
+            bridge._connect_with_retry(editor.port, TOKEN, SimpleNamespace(poll=lambda: None), timeout=.15)
+        assert time.monotonic() - started < .6
+    finally:
+        guard.cancel()
+
+
+def test_successful_startup_restores_the_hosted_response_budget(editor):
+    from types import SimpleNamespace
+    control = bridge._connect_with_retry(editor.port, TOKEN, SimpleNamespace(poll=lambda: None), timeout=.5)
+    try:
+        assert control._timeout == bridge.HOSTED_RESPONSE_TIMEOUT_S
+        assert control._sock.gettimeout() == bridge.HOSTED_RESPONSE_TIMEOUT_S
+        assert control.call('jobs.list') == {'connection': 1}
+    finally:
+        control.close()
+
+
+def test_closing_control_interrupts_an_inflight_read(editor):
+    import time
+    editor.silent_methods.add('app.stash')
+    control = connect(editor)
+    errors = []
+
+    def save():
+        try:
+            control.call('app.stash')
+        except bridge.PhotoCraftError as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=save)
+    worker.start()
+    deadline = time.monotonic() + 2
+    while not any(m == 'app.stash' for _, m in editor.requests) and time.monotonic() < deadline:
+        time.sleep(.005)
+    assert any(m == 'app.stash' for _, m in editor.requests)
+    # The old close() waits on the buffered reader for its entire 120 s timeout.
+    guard = threading.Timer(.8, editor.stop)
+    guard.start()
+    started = time.monotonic()
+    try:
+        control.close()
+        worker.join(.3)
+        assert not worker.is_alive() and errors
+        assert time.monotonic() - started < .6
+    finally:
+        guard.cancel()
+        editor.stop()
+        worker.join(2)

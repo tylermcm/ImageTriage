@@ -694,6 +694,9 @@ def materialize_for_photocraft(path: str, cache_dir: Path) -> str:
 # client reconnects after 25 s of quiet. A request sent down a connection the editor has closed fails with "[WinError 10053] An
 # established connection was aborted", which is what the first E showed when the editor had been waiting in the background.
 IDLE_RECONNECT_S = 20.0
+# Interactive commands need a visible failure in reasonable time; full renders
+# use their separate render connection. Allow headroom over measured ~25 s saves.
+HOSTED_RESPONSE_TIMEOUT_S = 45.0
 
 
 class PhotoCraftControl:
@@ -740,8 +743,20 @@ class PhotoCraftControl:
         lock = self.__dict__.get("_exchange_lock")
         if lock is None:
             lock = self.__dict__.setdefault("_exchange_lock", threading.RLock())
-        with lock:
-            return self._exchange(method, params)
+        if not lock.acquire(timeout=getattr(self, "_timeout", 120.0)):
+            raise PhotoCraftError("PhotoCraft is still answering another request. No command was sent.")
+        try:
+            try:
+                return self._exchange(method, params)
+            except (OSError, ValueError, PhotoCraftError):
+                # A timed-out buffered socket cannot be reused. Never replay the
+                # command: a Save may have reached the editor even without a reply.
+                self._last_used = float("-inf")
+                if hasattr(self, "_sock"):
+                    self.close()
+                raise
+        finally:
+            lock.release()
 
     def _exchange(self, method: str, params: dict | None) -> dict:
         if method != "auth":
@@ -906,6 +921,9 @@ class PhotoCraftControl:
         self.execute("file.close")
 
     def quit(self) -> None:
+        if not self._exchange_lock.acquire(timeout=2.0):
+            self.close()  # interrupt the reader; process.shutdown supplies the exit fallback
+            return
         try:
             # Short timeouts: an editor that has stopped answering must not hold up closing. A connection it has dropped is replaced
             # by one with the same short limit.
@@ -914,12 +932,23 @@ class PhotoCraftControl:
             self.call("app.quit")
         except (PhotoCraftError, OSError):
             pass
+        finally:
+            self._exchange_lock.release()
 
     def close(self) -> None:
+        # Wake a blocked reader before closing its buffered file (which otherwise
+        # waits for that reader's lock, including during application shutdown).
         try:
-            self._file.close()
-        finally:
-            self._sock.close()
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        # makefile() retains a reference to the socket. Close the native socket
+        # first, otherwise Windows may keep a timed select/read alive while
+        # file.close waits for the buffered-reader lock.
+        descriptor = self._sock.detach()
+        if descriptor != -1:
+            socket.close(descriptor)
+        self._file.close()
 
 
 @dataclass(slots=True)
@@ -1118,10 +1147,14 @@ def _connect_with_retry(port: int, token: str, process: subprocess.Popen, *, tim
         if process.poll() is not None:
             raise PhotoCraftError(f"PhotoCraft exited before its control channel opened (code {process.returncode})")
         try:
-            return PhotoCraftControl(port, token)
+            remaining = max(.001, deadline - time.monotonic())
+            control = PhotoCraftControl(port, token, timeout=min(2.0, remaining))
+            control._timeout = HOSTED_RESPONSE_TIMEOUT_S
+            control._sock.settimeout(HOSTED_RESPONSE_TIMEOUT_S)
+            return control
         except OSError as exc:
             last_error = exc
-            time.sleep(0.2)
+            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
     raise PhotoCraftError(f"Timed out connecting to PhotoCraft's control channel: {last_error}")
 
 
