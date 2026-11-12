@@ -79,6 +79,12 @@ def _listing(folder: str):
         return None
 
 
+def _same_folder_spelling(photos, photo: str) -> bool:
+    """Do the open folder's photos carry the folder as `photo` spells it? (Then a photo that is not found by its path is not there.)"""
+    rows = photos.all_rows()
+    return not rows or _key(os.path.dirname(rows[0]["path"])) == _key(os.path.dirname(photo))
+
+
 class _RowsModel(QAbstractListModel):
     """A list of dicts for a QML Repeater. `set_rows` inserts, removes or updates only the rows that differ, so a listing that arrives
     does not rebuild the rows around it (which would also make the panel's scroll position jump)."""
@@ -473,7 +479,7 @@ class LibraryNavModel(QObject):
         """Read the open folder again (F5, and a change on disk), keeping the grid on the photo the person is on."""
         if not self._open or self._memory:
             return
-        if self._last_photo and _key(os.path.dirname(self._last_photo)) == _key(self._open):
+        if self._last_photo and self._in_open_folder(self._last_photo):
             self._pending_current = self._last_photo
         self._photos.loadFolder(self._open)
         self.changed.emit()
@@ -512,6 +518,25 @@ class LibraryNavModel(QObject):
         current = entry.get("current") if isinstance(entry, dict) else ""
         return current if isinstance(current, str) else ""
 
+    def _in_open_folder(self, photo: str) -> bool:
+        """Is `photo` one of the open folder's? The scanner lists a folder under the path the filesystem resolves it to, so a folder opened
+        through a link (or a mapped drive) holds photos whose folder is spelled differently from the one that was opened. That spelling is
+        taken from the photos already read: asking the filesystem here would be a check of a share on the interface thread."""
+        parent = _key(os.path.dirname(photo))
+        if parent == _key(self._open):
+            return True
+        rows = self._photos.all_rows()
+        return bool(rows) and _key(self._photos.folder_dir()) == _key(self._open) and parent == _key(os.path.dirname(rows[0]["path"]))
+
+    def open_file(self, photo: str) -> None:
+        """Open the folder `photo` is in and put the grid on it once the folder has been read (a photo opened from the file manager)."""
+        photo = os.path.normpath(photo.strip()) if photo and photo.strip() else ""
+        if not photo:
+            return
+        self.openFolder(os.path.dirname(photo))
+        if self._open and _key(self._open) == _key(os.path.dirname(photo)):
+            self._pending_current = photo                      # instead of the photo saved for the folder: this one was asked for
+
     @Slot(str)
     def savePosition(self, photo: str) -> None:
         """Remember `photo` as where the person is in the open folder. Called as they move (after a pause) and when the window closes."""
@@ -521,7 +546,7 @@ class LibraryNavModel(QObject):
         if self._memory or self._settings is None:
             self.saved = (self._open, photo)
             return
-        if not self._open or not self._persist or self._pending_current or self._photos.loading or _key(os.path.dirname(photo)) != _key(self._open):
+        if not self._open or not self._persist or self._pending_current or self._photos.loading or not self._in_open_folder(photo):
             return                                             # not before the grid has been put back, and only photos of this folder
         states = self._folder_states()
         key = _key(self._open)
@@ -538,10 +563,16 @@ class LibraryNavModel(QObject):
         if row >= 0:
             return row
         wanted = _key(photo)
+        name = os.path.basename(wanted)
+        by_name = -1
         for index in range(self._photos.rowCount()):
-            if _key(self._photos.row_at(index)["path"]) == wanted:
-                return index
-        return -1
+            item = self._photos.row_at(index)
+            if _key(item["path"]) == wanted or any(_key(other) == wanted for other in item.get("companions", ())):
+                return index                                   # the photo, or the photo whose JPEG (or RAW) partner this file is
+            if by_name < 0 and name in (os.path.basename(_key(p)) for p in (item["path"], *item.get("companions", ()))):
+                by_name = index
+        # The folder was reached through a link: its photos are listed under the resolved path, and the file asked for is known by its name.
+        return by_name if by_name >= 0 and not _same_folder_spelling(self._photos, photo) else -1
 
     @Slot(str)
     def openUrl(self, url: str) -> None:
