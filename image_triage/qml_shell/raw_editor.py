@@ -354,7 +354,7 @@ class RawEditor(QObject):
         self._detail = ""
 
     def _request_detail(self):
-        if self._detail_mode and self._loaded and not self._saving and not self._gesture:
+        if not self._memory and self._detail_mode and self._loaded and not self._saving and not self._gesture:
             self._enqueue("detail")
             self.changed.emit()
 

@@ -44,7 +44,7 @@ jobs:
       - name: Run process and QML lifetime handoff checks
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -q tests/test_cli_culler_process.py tests/test_cli_culler_task.py tests/test_qml_cli_culler.py tests/test_qml_lifetime.py tests/test_qml_launch_selection.py --junitxml=handoff-results.xml
+        run: python -m pytest -q tests/test_cli_culler_process.py tests/test_cli_culler_task.py tests/test_qml_cli_culler.py tests/test_qml_lifetime.py tests/test_qml_launch_selection.py tests/test_qml_raw_preview.py::test_detail_timer_does_not_launch_native_work_for_demo_edits tests/test_qml_raw_retouch.py::test_retouch_drag_stops_at_viewport_and_releases_controls --junitxml=handoff-results.xml
 
       - name: Run the test suite
         if: ${{ !cancelled() }}

@@ -131,6 +131,7 @@ def test_retouch_drag_stops_at_viewport_and_releases_controls(shell, qapp):
         p = overlay.mapToItem(stage, QPointF(x*overlay.width(), y*overlay.height()))
         assert 0 <= p.x() < stage.width() and 0 <= p.y() < stage.height()
     assert not overlay.property("drawing")
+    assert not window.findChild(QObject, "rawRetouchInput").property("pressed")
     click_item(window, visual_item(window, "retouchTool_heal"))
     pump(qapp, .1)
     assert raw.retouchEditor.kind == "heal"

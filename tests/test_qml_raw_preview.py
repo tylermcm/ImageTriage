@@ -83,6 +83,28 @@ def test_full_resolution_is_separate_and_invalidated_by_new_edits(qapp, tmp_path
     raw.shutdown()
 
 
+@pytest.mark.parametrize("memory", [True, False], ids=["demo", "real"])
+def test_detail_timer_does_not_launch_native_work_for_demo_edits(qapp, monkeypatch, memory):
+    raw = RawEditor(memory=memory)
+    queued = []
+    monkeypatch.setattr(raw, "_enqueue", lambda action: queued.append(action))
+    try:
+        if memory:
+            raw.open("sample.NEF")
+        else:
+            raw._loaded = True
+        raw.setDetailMode(True)
+        raw.adjust("exposure", 1)
+        # Exercise the callback that edits/proxy publication can schedule,
+        # independently of the native renderer's availability or speed.
+        queued.clear()
+        raw._request_detail()
+        assert queued == ([] if memory else ["detail"])
+        assert not raw.busy
+    finally:
+        raw.shutdown()
+
+
 @pytest.mark.parametrize("header", [b'{"ok":true,"bytes":9999999999}\n',
     b'{"ok":true,"bytes":4,"width":2,"height":2}\n',
     b'{"ok":true,"bytes":4,"width":1,"height":1}\nxx'])

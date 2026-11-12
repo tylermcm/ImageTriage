@@ -273,9 +273,16 @@ def shell(qapp, tmp_path):
     window.setHeight(900)
     window.show()
     pump(qapp, 0.4)
-    yield engine, window, model, engine.rootContext().contextProperty("popout"), warnings
-    window.close()
-    pump(qapp, 0.1)
+    popout = engine.rootContext().contextProperty("popout")
+    try:
+        yield engine, window, model, popout, warnings
+    finally:
+        popout.shutdown()
+        window.close()
+        # A synthetic unsaved RAW draft can reject close and leave its QML
+        # window alive. Explicitly end this fixture's engine and pending work.
+        engine.deleteLater()
+        pump(qapp, 0.1)
 
 
 def test_the_viewer_is_hidden_until_a_photo_is_opened_and_shows_the_controls(shell, qapp):
