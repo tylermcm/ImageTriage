@@ -46,6 +46,24 @@ class DecisionStore:
         records_by_path = {record.path: record for record in records if record.path}
         return self.load_annotations_for_paths(session_id, records_by_path, list(records_by_path))
 
+    def paths_with_rows(self, session_id: str, paths) -> set[str]:
+        """The paths this session has a row for, whether or not the row still matches the file there. A row that no longer
+        matches (the file was replaced) is deliberately not loaded; callers use this to tell that case from "never decided"."""
+        wanted = [path for path in dict.fromkeys(paths) if path]
+        found: set[str] = set()
+        if not wanted:
+            return found
+        normalized_session = self._normalize_session_id(session_id)
+        with self._connect() as connection:
+            for chunk_paths in _chunked_values(wanted, 400):
+                placeholders = ",".join("?" for _ in chunk_paths)
+                rows = connection.execute(
+                    f"SELECT path FROM decisions WHERE session_id = ? AND path IN ({placeholders})",
+                    [normalized_session, *chunk_paths],
+                ).fetchall()
+                found.update(row[0] for row in rows)
+        return found
+
     def load_annotations_for_paths(
         self,
         session_id: str,

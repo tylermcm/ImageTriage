@@ -119,3 +119,13 @@ def test_this_apps_own_record_wins_over_a_sidecar_and_nothing_is_read_twice(tmp_
     monkeypatch.setattr(xmp, "import_sidecar_annotations", lambda records: pytest.fail("everything is already saved"))
     again = made.load(records)
     assert {value["rating"] for value in again.values()} == {1, 2}
+
+
+def test_a_decision_dropped_because_the_file_was_replaced_is_not_brought_back_by_its_old_sidecar(tmp_path, bridge):
+    made, store, said, app = bridge
+    records = shoot(tmp_path, {"a.NEF": 5})
+    store.save_annotation("s", records[0], SessionAnnotation(winner=True))
+    with open(records[0].path, "wb") as handle:
+        handle.write(b"a different photo under the same name")
+    again = scan_folder(os.path.dirname(records[0].path))
+    assert made.load(again) == {}

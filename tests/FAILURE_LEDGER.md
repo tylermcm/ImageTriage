@@ -31,6 +31,13 @@ recorded in [the validation handoff](../docs/audit_cloud_validation_20261112.md)
 not substitute for the original machine's Microsoft Store Python, managed GPU/model
 runtime or sealed native editor acceptance.
 
+Linux follow-up on 2026-11-13 after the sorting, Undecided-filter and XMP-import work: **2,984 passed, 1 failed, 56 skipped,
+5 expected failures, 123 passing subtests**, run with `ulimit -v 9000000` because
+`test_qml_shell_viewer.py::test_raw_dock_meets_filmstrip_and_closes_to_full_width` otherwise gets the process killed for
+memory in a limited container (it does so at `d2995d7` too). The one failure,
+`test_qml_shell_decisions.py::test_a_photo_the_file_changed_under_has_no_saved_decision`, was a real defect in the new XMP
+import and is fixed; the complete suite has not been run again since that fix.
+
 ## Open failures
 
 None in the final combined host suite. Remaining acceptance limits and historical

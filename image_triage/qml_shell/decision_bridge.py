@@ -92,6 +92,10 @@ class DecisionBridge(QObject):
         from ..xmp import import_sidecar_annotations
 
         try:
+            # A photo with a row that was not loaded had its file replaced since the decision was made. That decision is
+            # deliberately dropped, and the sidecar written for the old file must not bring it back.
+            replaced = store.paths_with_rows(session_id(), [record.path for record in records])
+            records = [record for record in records if record.path not in replaced]
             found = import_sidecar_annotations(records)
             if found:
                 by_path = {record.path: record for record in records}
