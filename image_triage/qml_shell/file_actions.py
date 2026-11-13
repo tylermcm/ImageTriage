@@ -21,7 +21,8 @@ from pathlib import Path
 
 from PySide6.QtCore import Property, QFile, QObject, Signal, Slot
 
-from ..edit_carry import carry_edits, copy_edits, edit_files_for
+from ..edit_carry import carry_edits, copy_edits, deletable_edit_paths
+from ..edit_storage import EDIT_STORAGE_ROOT_NAME
 from ..file_ops import FileMove, bundle_destinations, copy_paths, move_paths, record_after_moves, record_paths
 from .decision_bridge import session_id
 from .file_jobs import FileJobs
@@ -31,16 +32,45 @@ RECENT_KEY = "folders/recent_destinations"
 
 
 def delete_bundle(record) -> tuple[str, ...]:
-    """Everything that goes when a photo is deleted: its files, its sidecars and its edit data (which would otherwise be left for a later file of the same name to inherit)."""
+    """Everything that goes when a photo is deleted: its files, its sidecars and its edit data (which would otherwise be left for a later file of
+    the same name to inherit). A built-in editor session goes too, unless another photo with the same stem stays in the folder."""
     paths = list(record_paths(record))
     seen = {os.path.normcase(os.path.normpath(p)) for p in paths}
-    for image in record.stack_paths:
-        for item in edit_files_for(image):
-            key = os.path.normcase(os.path.normpath(str(item)))
-            if key not in seen:
-                seen.add(key)
-                paths.append(str(item))
+    for item in deletable_edit_paths(record.stack_paths):
+        key = os.path.normcase(os.path.normpath(str(item)))
+        if key not in seen:
+            seen.add(key)
+            paths.append(str(item))
     return tuple(paths)
+
+
+def _remove(path: str) -> None:
+    """Delete a file, or a folder with what is in it (a session's assets)."""
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    else:
+        os.remove(path)
+
+
+def _unchanged(path: str, stamp) -> bool:
+    """Is the file at ``path`` still the one that was made there (``stamp`` is its size and time then; None for a folder)?"""
+    try:
+        if stamp is None:
+            return os.path.isdir(path)
+        status = os.stat(path)
+        return (status.st_size, status.st_mtime_ns) == stamp
+    except OSError:
+        return False
+
+
+def _stamp(path: str):
+    try:
+        if os.path.isdir(path):
+            return None
+        status = os.stat(path)
+        return (status.st_size, status.st_mtime_ns)
+    except OSError:
+        return (-1, -1)
 
 
 def _is_recycle_folder(folder: str) -> bool:
@@ -479,7 +509,9 @@ class FileActions(QObject):
         where = _label(destination)
         what = f"{len(done)} photos" if len(done) != 1 else done[0][0].name
         if not move:
-            self._toast("success", f"Copied {what}", f"To {where}.")
+            entry = {}
+            entry["id"] = self._photos.push_undo(f"copy of {what}", lambda: self._undo_copies(done))
+            self._toast("success", f"Copied {what}", f"To {where}.", "Undo", lambda: self._photos.undo_entry(entry["id"]))
             return
         self._rekey_decisions([(record.path, record_after_moves(record, tuple(moves)), annotation) for record, moves, annotation in done])
         self._rekey_collections([(m.source_path, m.target_path) for _record, moves, _a in done for m in moves])
@@ -487,6 +519,28 @@ class FileActions(QObject):
         entry = {}
         entry["id"] = self._photos.push_undo(f"move of {what}", lambda: self._undo_moves(done))
         self._toast("success", f"Moved {what}", f"To {where}.", "Undo", lambda: self._photos.undo_entry(entry["id"]))
+
+    def _undo_copies(self, done: list) -> bool:
+        """Remove what a copy made: the copied files and the edit data copied with them, nothing that was there before and
+        nothing changed since. ``done`` shrinks to what is still to be removed, so the step can be run again."""
+        count = len(done)
+        name = done[0][0].name if done else ""
+        result = self._run_and_wait(f"Removing the copy of {name}" if count == 1 else f"Removing {count} copies",
+                                    lambda ctx: _work_uncopy(ctx, list(done)), total=count)
+        if result is None:
+            return False
+        removed, failed, kept = result["done"], result["failed"], result["kept"]
+        gone = {id(entry) for entry in removed}
+        done[:] = [entry for entry in done if id(entry) not in gone]
+        if kept:
+            self._toast("warn", "Some copies were kept", "Changed since they were copied: " + ", ".join(kept[:3]) + (f" and {len(kept) - 3} more" if len(kept) > 3 else ""))
+        if failed:
+            self._toast("error", f"Could not remove the copy of {failed[0][0]}" if count == 1 else "Could not remove the copies", _named(failed, count == 1))
+        elif done:
+            self._toast("info", f"Stopped after removing {len(removed)} of {count}", "Undo again removes the rest.")
+        else:
+            self._toast("success", f"Removed the copy of {name}" if count == 1 else f"Removed {count} copies")
+        return not done
 
     def _undo_moves(self, done: list) -> bool:
         """Move photos back where they were. ``done`` shrinks to what is still away, so the step can be run again for the rest."""
@@ -655,8 +709,8 @@ def _work_remove(ctx, items: list) -> dict:
         ctx.step(index, record.name)
         try:
             for path in delete_bundle(record):
-                if os.path.exists(path):
-                    os.remove(path)
+                if os.path.lexists(path):
+                    _remove(path)
         except OSError as exc:
             failed.append((record.name, str(exc)))
             continue
@@ -678,9 +732,55 @@ def _work_transfer(ctx, items: list, destination: str, move: bool) -> dict:
             failed.append((record.name, str(exc) or type(exc).__name__))
             continue
         pairs = [(m.source_path, m.target_path) for m in moves]
-        edits_left.extend(carry_edits(pairs) if move else copy_edits(pairs))
-        done.append((record, moves, annotation))
+        if move:
+            edits_left.extend(carry_edits(pairs))
+            done.append((record, moves, annotation))
+            continue
+        made: list[str] = []
+        edits_left.extend(copy_edits(pairs, made))
+        # what this copy made, each with its size and time now: undoing the copy removes these, and only while they are still as made
+        created = [(path, _stamp(path)) for path in (*(m.target_path for m in moves), *made)]
+        done.append((record, moves, annotation, created))
     return _outcome(ctx, len(items), done, failed, edits_left=edits_left)
+
+
+def _work_uncopy(ctx, entries: list) -> dict:
+    """Undo a copy: remove what the copy made and nothing else. A copied photo that has been changed since is kept, with the
+    edit data copied for it, and named."""
+    done, failed, kept = [], [], []
+    roots: list[str] = []                                    # edit folders the copy made: removed at the end, when nothing else is in them
+    for index, entry in enumerate(entries):
+        if ctx.cancelled:
+            break
+        record, moves, created = entry[0], entry[1], entry[3]
+        ctx.step(index, record.name)
+        roots.extend(path for path, stamp in created if stamp is None and Path(path).name == EDIT_STORAGE_ROOT_NAME)
+        stamps = dict(created)
+        changed = [Path(m.target_path).name for m in moves if os.path.lexists(m.target_path) and not _unchanged(m.target_path, stamps.get(m.target_path))]
+        if changed:
+            kept.extend(changed)
+            done.append(entry)
+            continue
+        try:
+            for path, stamp in created:
+                if not os.path.lexists(path) or Path(path).name == EDIT_STORAGE_ROOT_NAME:
+                    continue
+                if stamp is None:
+                    shutil.rmtree(path)                      # a session's assets folder, copied whole
+                elif _unchanged(path, stamp):
+                    os.remove(path)
+                else:
+                    kept.append(Path(path).name)
+        except OSError as exc:
+            failed.append((record.name, str(exc)))
+            continue
+        done.append(entry)
+    for path in dict.fromkeys(roots):
+        try:
+            os.rmdir(path)
+        except OSError:
+            pass
+    return _outcome(ctx, len(entries), done, failed, kept=kept)
 
 
 def _work_restore(ctx, entries: list, gone: str, *, recycle=None, carry_back: bool = False) -> dict:

@@ -148,13 +148,18 @@ def test_move_goes_with_its_companion_and_its_decision(qapp, world):
     assert (w.shoot / "a.jpg").exists() and (w.shoot / "a.nef").exists() and not (dest / "a.jpg").exists()
 
 
-def test_copy_leaves_the_original_and_has_no_undo(qapp, world):
+def test_copy_leaves_the_original_and_undo_removes_only_the_copy(qapp, world):
     w = world
     dest = w.tmp / "copies"
+    dest.mkdir()
+    (dest / "mine.jpg").write_bytes(b"already here")
     w.files.copyRow(row_of(w.photos, "c"), str(dest))
     assert w.files.waitForIdle()
     assert (dest / "c.jpg").exists() and (w.shoot / "c.jpg").exists()
-    assert w.photos.canUndo is False and w.toasts.items[-1]["title"] == "Copied c.jpg"
+    assert w.toasts.items[-1]["title"] == "Copied c.jpg" and w.toasts.items[-1]["action"] == "Undo"
+    assert w.photos.undo() == "copy of c.jpg"
+    assert not (dest / "c.jpg").exists() and (w.shoot / "c.jpg").exists() and w.photos.shown == 3
+    assert (dest / "mine.jpg").read_bytes() == b"already here" and not w.photos.canUndo
 
 
 def test_a_name_taken_in_the_destination_gets_a_new_name_not_overwritten(qapp, world):
