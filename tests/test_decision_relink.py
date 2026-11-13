@@ -216,6 +216,10 @@ def test_opening_the_folder_in_the_shell_relinks_and_says_so(tmp_path, qapp, mon
     from image_triage.qml_shell import decision_bridge
     from image_triage.qml_shell.photos import PhotoModel
 
+    # Modules that bind DecisionStore by name when first imported must be imported before it is replaced, or they keep
+    # this test's store for the rest of the run and later tests' decisions are written to it.
+    import image_triage.annotation_queue  # noqa: F401
+
     store = _store(tmp_path / "decisions.sqlite3")
     monkeypatch.setattr("image_triage.decision_store.DecisionStore", lambda: store)
     monkeypatch.setattr("image_triage.library_store.LibraryStore", lambda: _library(tmp_path / "library.sqlite3"))
