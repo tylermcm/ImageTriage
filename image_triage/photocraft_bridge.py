@@ -122,34 +122,22 @@ RECIPE_NEWER_REASON = "the Camera Raw settings were saved by a newer version of 
 
 
 def load_recipe(image_path: str) -> dict | None:
-    """The photo's stored recipe, or ``None`` when it has none or the file is unusable.
+    """The photo's stored recipe for opening it in an editor, or ``None`` when it has none or the file is unusable.
 
-    A damaged file is set aside (``.bad``) rather than deleted, so a bad write can never make a photo
-    unopenable and never silently throws a user's adjustments away. A recipe from a later version of the
-    format is not damaged and is left exactly where it is: setting it aside would hide the user's edits
-    from the newer build that can read them (``recipe_is_newer`` tells a caller that this is why it got ``None``).
+    Decided by the same reading and the same validator as ``recipe_state`` (``_read_recipe``), so the two cannot disagree
+    about a file. A recipe that validator refuses (not JSON, not a recipe, or a recipe with a setting this build cannot
+    apply) is set aside, never deleted, so a bad write can never make a photo unopenable: the photo then opens from its
+    original develop, ``take_quarantine_notice`` says once what happened and where the copy is, and
+    ``recover_quarantined_recipe`` can bring back whatever of it is still good. A recipe from a later version of the
+    format is not damaged and is left exactly where it is: setting it aside would hide the user's edits from the newer
+    build that can read them (``recipe_is_newer`` tells a caller that this is why it got ``None``).
     """
-    target = recipe_path(image_path)
-    try:
-        text = target.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-    except UnicodeError:
-        quarantine_recipe(image_path)
-        return None
-    except OSError as error:
-        logging.getLogger(__name__).warning("Could not read the Camera Raw recipe %s: %s", target, error)
-        return None
-    try:
-        recipe = json.loads(text)
-    except ValueError:
-        recipe = None
-    shape = recipe_shape(recipe)
-    if shape == RECIPE_SHAPE_OK:
-        return recipe
-    if shape == RECIPE_SHAPE_DAMAGED:
-        quarantine_recipe(image_path)
-    return None
+    _state, recipe, reason, problem = _read_recipe(image_path)
+    if problem == _READ_REFUSED:
+        quarantine_recipe(image_path, reason)
+    elif problem == _READ_FAILED:
+        logging.getLogger(__name__).warning("Could not read the Camera Raw recipe %s: %s", recipe_path(image_path), reason)
+    return recipe
 
 
 def recipe_is_newer(image_path: str) -> bool:
@@ -238,6 +226,79 @@ def require_super_resolution_support(camera_raw, supported: bool) -> None:
         raise PhotoCraftCompatibilityError("This photo uses Super Resolution. Select a PhotoCraft build with Super Resolution support to preserve that setting.")
 
 
+def _setting_problem(name, value) -> str | None:
+    """Why one Camera Raw setting cannot be used, or ``None`` when it can. The only place a setting's name, type and range
+    are judged: ``classify_recipe`` (and through it ``load_recipe`` and ``recipe_state``) refuses a recipe on its answer, and
+    ``recover_quarantined_recipe`` leaves out exactly the settings it refuses."""
+    if name not in RECIPE_FIELDS:
+        return f"the recipe's {name} is not a supported setting"
+    if name == "vignetteStyle":
+        valid = value in ("highlightPriority", "colorPriority", "paintOverlay") if isinstance(value, str) else False
+    elif name in RECIPE_CALIBRATION_FIELDS:
+        values = [value] if name == "calibShadowTint" else value
+        valid = (isinstance(values, list)
+                 and len(values) == (1 if name == "calibShadowTint" else 3)
+                 and all(_recipe_value_ok(v) and -100 <= v <= 100 for v in values))
+    elif name == "hostCrop":
+        from .raw_crop import valid as crop_valid
+        valid = crop_valid(value)
+    elif name == "redEye":
+        from .raw_red_eye import valid as red_eye_valid
+        valid = red_eye_valid(value)
+    elif name == "retouch":
+        from .raw_retouch import valid as retouch_valid
+        valid = retouch_valid(value)
+    elif name == "masks":
+        valid = _masks_valid(value)
+    elif name == "superResolution":
+        valid = isinstance(value, bool)
+    elif name == "glow":
+        ranges = {"amount": (0, 100), "range": (0, 100), "spread": (0, 100), "warmth": (-100, 100)}
+        valid = isinstance(value, dict) and all(
+            (k == "style" and isinstance(v, str) and v in ("diffusion", "bloom", "halation"))
+            or (k in ranges and _recipe_value_ok(v) and ranges[k][0] <= v <= ranges[k][1])
+            for k, v in value.items())
+    elif name == "pointColors":
+        valid = isinstance(value, list) and len(value) <= 8 and all(
+            isinstance(sample, dict) and all(
+                (k == "color" and isinstance(v, list) and len(v) == 3 and all(_recipe_value_ok(c) and 0 <= c <= 1 for c in v))
+                or (k in ("hue", "saturation", "luminance", "variance") and _recipe_value_ok(v) and -100 <= v <= 100)
+                or (k == "range" and _recipe_value_ok(v) and 0 <= v <= 100)
+                for k, v in sample.items()) for sample in value)
+    elif name == "seed":
+        valid = type(value) is int and 0 <= value <= 0xFFFFFFFF
+    elif name in RECIPE_CURVES:
+        valid = (isinstance(value, list) and (len(value) == 0 or 2 <= len(value) <= 16)
+                 and all(isinstance(p, list) and len(p) == 2 and all(_recipe_value_ok(v) and 0 <= v <= 255 for v in p) for p in value)
+                 and all(b[0] - a[0] >= 1 for a, b in zip(value, value[1:])))
+    elif name in RECIPE_ARRAYS:
+        valid = isinstance(value, list) and len(value) == RECIPE_ARRAYS[name] and all(_recipe_value_ok(v) for v in value)
+    elif name in RECIPE_WHEELS:
+        valid = isinstance(value, dict) and all(k in ("hue", "sat", "lum") and isinstance(v, (int, float)) and _recipe_value_ok(v) for k, v in value.items())
+    else:
+        valid = isinstance(value, (int, float)) and _recipe_value_ok(value)
+    if not valid:
+        return f"the recipe's {name} is not a valid setting"
+    return None
+
+
+def recipe_problems(settings: dict) -> list[tuple[str, str]]:
+    """``(setting, why)`` for every setting of a recipe's ``cameraRaw`` that cannot be used, in the order they are reported."""
+    problems = []
+    for name, value in settings.items():
+        try:
+            why = _setting_problem(name, value)
+        except (TypeError, ValueError, KeyError, AttributeError, IndexError):
+            why = f"the recipe's {name} is not a valid setting"  # a shape a validator did not expect is not a valid setting
+        if why is not None:
+            problems.append((name, why))
+    refused = {name for name, _why in problems}
+    exposure = settings.get("exposure", 0.0)
+    if "exposure" not in refused and abs(exposure) > RECIPE_EXPOSURE_LIMIT:
+        problems.append(("exposure", f"the recipe's exposure ({exposure} EV) is out of range"))
+    return problems
+
+
 def classify_recipe(recipe) -> tuple[str, str]:
     """``(state, reason)`` for a recipe's content (a parsed recipe file, or the open dialog's settings in the same form)."""
     shape = recipe_shape(recipe)
@@ -248,59 +309,9 @@ def classify_recipe(recipe) -> tuple[str, str]:
             return RECIPE_INVALID, "the recipe has no settings"
         return RECIPE_INVALID, "not a Camera Raw recipe this version of Image Triage reads"
     settings = recipe["cameraRaw"]
-    for name, value in settings.items():
-        if name not in RECIPE_FIELDS:
-            return RECIPE_INVALID, f"the recipe's {name} is not a supported setting"
-        if name == "vignetteStyle":
-            valid = value in ("highlightPriority", "colorPriority", "paintOverlay") if isinstance(value, str) else False
-        elif name in RECIPE_CALIBRATION_FIELDS:
-            values = [value] if name == "calibShadowTint" else value
-            valid = (isinstance(values, list)
-                     and len(values) == (1 if name == "calibShadowTint" else 3)
-                     and all(_recipe_value_ok(v) and -100 <= v <= 100 for v in values))
-        elif name == "hostCrop":
-            from .raw_crop import valid as crop_valid
-            valid = crop_valid(value)
-        elif name == "redEye":
-            from .raw_red_eye import valid as red_eye_valid
-            valid = red_eye_valid(value)
-        elif name == "retouch":
-            from .raw_retouch import valid as retouch_valid
-            valid=retouch_valid(value)
-        elif name == "masks":
-            valid = _masks_valid(value)
-        elif name == "superResolution":
-            valid = isinstance(value, bool)
-        elif name == "glow":
-            ranges = {"amount": (0, 100), "range": (0, 100), "spread": (0, 100), "warmth": (-100, 100)}
-            valid = isinstance(value, dict) and all(
-                (k == "style" and isinstance(v, str) and v in ("diffusion", "bloom", "halation"))
-                or (k in ranges and _recipe_value_ok(v) and ranges[k][0] <= v <= ranges[k][1])
-                for k, v in value.items())
-        elif name == "pointColors":
-            valid = isinstance(value, list) and len(value) <= 8 and all(
-                isinstance(sample, dict) and all(
-                    (k == "color" and isinstance(v, list) and len(v) == 3 and all(_recipe_value_ok(c) and 0 <= c <= 1 for c in v))
-                    or (k in ("hue", "saturation", "luminance", "variance") and _recipe_value_ok(v) and -100 <= v <= 100)
-                    or (k == "range" and _recipe_value_ok(v) and 0 <= v <= 100)
-                    for k, v in sample.items()) for sample in value)
-        elif name == "seed":
-            valid = type(value) is int and 0 <= value <= 0xFFFFFFFF
-        elif name in RECIPE_CURVES:
-            valid = (isinstance(value, list) and (len(value) == 0 or 2 <= len(value) <= 16)
-                     and all(isinstance(p, list) and len(p) == 2 and all(_recipe_value_ok(v) and 0 <= v <= 255 for v in p) for p in value)
-                     and all(b[0] - a[0] >= 1 for a, b in zip(value, value[1:])))
-        elif name in RECIPE_ARRAYS:
-            valid = isinstance(value, list) and len(value) == RECIPE_ARRAYS[name] and all(_recipe_value_ok(v) for v in value)
-        elif name in RECIPE_WHEELS:
-            valid = isinstance(value, dict) and all(k in ("hue", "sat", "lum") and isinstance(v, (int, float)) and _recipe_value_ok(v) for k, v in value.items())
-        else:
-            valid = isinstance(value, (int, float)) and _recipe_value_ok(value)
-        if not valid:
-            return RECIPE_INVALID, f"the recipe's {name} is not a valid setting"
-    exposure = settings.get("exposure", 0.0)
-    if abs(exposure) > RECIPE_EXPOSURE_LIMIT:
-        return RECIPE_INVALID, f"the recipe's exposure ({exposure} EV) is out of range"
+    problems = recipe_problems(settings)
+    if problems:
+        return RECIPE_INVALID, problems[0][1]
     identity = recipe.get("identity")
     if identity is not None and not isinstance(identity, bool):
         return RECIPE_INVALID, "the recipe's identity flag is not true or false"
@@ -324,35 +335,305 @@ def classify_recipe(recipe) -> tuple[str, str]:
     return (RECIPE_IDENTITY if identity else RECIPE_EDITED), ""
 
 
-def recipe_state(image_path: str) -> tuple[str, dict | None, str]:
-    """``(state, recipe, reason)`` for the photo's stored recipe, read-only: unlike ``load_recipe`` it never sets a damaged file
-    aside (that is for opening the photo in the editor)."""
+_READ_REFUSED = "refused"  # the file is there and is not a recipe this build can use (and not a newer one): may be set aside
+_READ_FAILED = "failed"    # the file could not be read at all (an unreachable share): nothing is known about its content
+
+
+def _read_recipe(image_path: str) -> tuple[str, dict | None, str, str]:
+    """``(state, recipe, reason, problem)``: the one reading of a photo's recipe file, through the one validator
+    (``classify_recipe``). ``problem`` is ``""``, ``_READ_REFUSED`` or ``_READ_FAILED``. Never changes anything on disk."""
     target = recipe_path(image_path)
     try:
         text = target.read_text(encoding="utf-8")
     except FileNotFoundError:
-        if target.with_name(target.name + ".bad").exists():
-            return RECIPE_INVALID, None, "the saved Camera Raw settings were set aside as unreadable"
-        return RECIPE_ABSENT, None, ""
+        return RECIPE_ABSENT, None, "", ""
     except UnicodeError:
-        return RECIPE_INVALID, None, "the recipe is not valid UTF-8"
+        return RECIPE_INVALID, None, "the recipe is not valid UTF-8", _READ_REFUSED
     except OSError as error:
-        return RECIPE_INVALID, None, f"the recipe could not be read: {error}"
+        return RECIPE_INVALID, None, f"the recipe could not be read: {error}", _READ_FAILED
     try:
         recipe = json.loads(text)
-    except ValueError:
-        return RECIPE_INVALID, None, "the recipe is not valid JSON"
+    except (ValueError, RecursionError):
+        return RECIPE_INVALID, None, "the recipe is not valid JSON", _READ_REFUSED
     state, reason = classify_recipe(recipe)
-    return state, (recipe if state != RECIPE_INVALID else None), reason
+    if state != RECIPE_INVALID:
+        return state, recipe, reason, ""
+    return state, None, reason, ("" if recipe_shape(recipe) == RECIPE_SHAPE_NEWER else _READ_REFUSED)
 
 
-def quarantine_recipe(image_path: str) -> None:
+def recipe_state(image_path: str, *, set_aside: bool = False) -> tuple[str, dict | None, str]:
+    """``(state, recipe, reason)`` for the photo's stored recipe. Read-only unless ``set_aside`` is given: then, as
+    ``load_recipe`` does when a photo is opened for editing, a recipe that cannot be used is set aside and the photo reads as
+    having none (``take_quarantine_notice`` then says what happened).
+
+    A recipe that was set aside earlier stops counting once the person has been told (``take_quarantine_notice``, which
+    opening the photo for editing calls): the photo then has no recipe and starts from its original develop. Until then it
+    still reads as edit data that could not be read, so that an export made before anyone was told fails and says why
+    instead of quietly exporting the unedited original. The set-aside copy stays where it is either way
+    (``quarantined_recipes``)."""
+    state, recipe, reason, problem = _read_recipe(image_path)
+    if set_aside:
+        if problem == _READ_REFUSED and quarantine_recipe(image_path, reason) is not None:
+            return RECIPE_ABSENT, None, ""
+    elif state == RECIPE_ABSENT and _set_aside_unannounced(image_path):
+        return RECIPE_INVALID, None, RECIPE_SET_ASIDE_REASON
+    return state, recipe, reason
+
+
+RECIPE_SET_ASIDE_REASON = ("the saved Camera Raw settings could not be read and were set aside; open the photo for editing "
+                           "to start again from the original or to recover them")
+
+
+def _noted_marker(image_path: str) -> Path:
+    """An empty file beside the set-aside copies: the person has been told about them (``take_quarantine_notice``)."""
     target = recipe_path(image_path)
+    return target.with_name(target.name + ".bad.noted")
+
+
+_NOTED_THIS_RUN: set[str] = set()  # for a folder the marker cannot be written to
+
+
+def _set_aside_unannounced(image_path: str) -> bool:
+    """Whether the photo has a set-aside recipe that nobody has been told about yet."""
+    target = recipe_path(image_path)
+    if not target.with_name(target.name + ".bad").exists():  # the first copy always has this name, and is never deleted by us
+        return False
+    return _notice_key(image_path) not in _NOTED_THIS_RUN and not _noted_marker(image_path).exists()
+
+
+def _mark_noted(image_path: str) -> None:
+    _NOTED_THIS_RUN.add(_notice_key(image_path))
     try:
-        os.replace(target, target.with_name(target.name + ".bad"))
-        logging.getLogger(__name__).warning("Set aside an unusable Camera Raw recipe: %s", target)
+        _noted_marker(image_path).touch()
     except OSError:
         pass
+
+
+@dataclass(frozen=True)
+class QuarantineNotice:
+    """A recipe was set aside: which photo's, where the copy is, and why it could not be used."""
+
+    image_path: str
+    bad_path: Path
+    reason: str
+
+    @property
+    def message(self) -> str:
+        why = f" ({self.reason})" if self.reason else ""
+        return (f"The previous Camera Raw edit of {Path(self.image_path).name} could not be read{why}. "
+                f"The photo starts again from its original develop. The unreadable settings were kept as "
+                f"{self.bad_path.name} in {self.bad_path.parent}.")
+
+
+_QUARANTINE_NOTICES: dict[str, QuarantineNotice] = {}
+_QUARANTINE_LOCK = threading.Lock()
+
+
+def _notice_key(image_path: str) -> str:
+    return os.path.normcase(os.path.abspath(image_path))
+
+
+def take_quarantine_notice(image_path: str) -> QuarantineNotice | None:
+    """The notice for a set-aside recipe of this photo that nobody has been told about, once: after it the photo counts as
+    having no recipe and a second call returns ``None``. Remembered beside the copy (an empty ``.bad.noted`` file), so it is
+    once across restarts too, and a copy set aside by an earlier build, or just before a crash, is still announced."""
+    with _QUARANTINE_LOCK:
+        notice = _QUARANTINE_NOTICES.pop(_notice_key(image_path), None)
+        if notice is None and _set_aside_unannounced(image_path):
+            copies = quarantined_recipes(image_path)
+            notice = QuarantineNotice(str(image_path), copies[-1], "") if copies else None
+        if notice is not None:
+            _mark_noted(image_path)
+        return notice
+
+
+def _bad_number(target: Path, name: str) -> int:
+    """0 for ``<recipe>.bad``, N for ``<recipe>.bad.N`` (N from 2), -1 for any other file name."""
+    first = target.name + ".bad"
+    if name == first:
+        return 0
+    tail = name[len(first) + 1:] if name.startswith(first + ".") else ""
+    return int(tail) if tail.isdigit() and not tail.startswith("0") and int(tail) >= 2 else -1
+
+
+def quarantined_recipes(image_path: str) -> list[Path]:
+    """The photo's set-aside recipes, oldest first: ``<recipe>.bad``, then ``<recipe>.bad.2``, ``.bad.3`` and so on."""
+    target = recipe_path(image_path)
+    try:
+        names = os.listdir(target.parent)
+    except OSError:
+        return []
+    found = [(number, target.with_name(name)) for name in names if (number := _bad_number(target, name)) >= 0]
+    return [path for _number, path in sorted(found)]
+
+
+def _move_without_replacing(source: Path, destination: Path) -> None:
+    """A rename that fails with ``FileExistsError`` rather than replace what is at ``destination``."""
+    if os.name == "nt":
+        os.rename(source, destination)  # Windows refuses to rename onto an existing file
+        return
+    try:
+        os.link(source, destination)
+    except FileExistsError:
+        raise
+    except OSError:
+        # A file system without hard links: the check and the move are then two steps.
+        if destination.exists():
+            raise FileExistsError(str(destination)) from None
+        os.rename(source, destination)
+        return
+    os.unlink(source)
+
+
+QUARANTINE_NAME_ATTEMPTS = 1000
+
+
+def quarantine_recipe(image_path: str, reason: str = "") -> Path | None:
+    """Set the photo's recipe aside as ``<recipe>.bad`` (or ``.bad.2``, ``.bad.3``... when that name is taken: an earlier
+    set-aside copy is never replaced, and Image Triage never deletes one). Returns where it went, or ``None`` when it
+    could not be moved. Leaves a notice for ``take_quarantine_notice``."""
+    log = logging.getLogger(__name__)
+    target = recipe_path(image_path)
+    taken = [_bad_number(target, path.name) for path in quarantined_recipes(image_path)]
+    number = (max(taken) + 1) if taken else 0
+    for _attempt in range(QUARANTINE_NAME_ATTEMPTS):
+        number = 2 if number == 1 else number
+        destination = target.with_name(target.name + ".bad" + (f".{number}" if number else ""))
+        try:
+            _move_without_replacing(target, destination)
+        except FileExistsError:
+            number += 1
+            continue
+        except OSError as error:
+            log.warning("Could not set aside the unusable Camera Raw recipe %s: %s", target, error)
+            return None
+        log.warning("Set aside an unusable Camera Raw recipe: %s -> %s (%s)", target, destination.name, reason)
+        with _QUARANTINE_LOCK:
+            _QUARANTINE_NOTICES[_notice_key(image_path)] = QuarantineNotice(str(image_path), destination, reason)
+            _NOTED_THIS_RUN.discard(_notice_key(image_path))  # this copy is new: an earlier notice does not cover it
+            try:
+                _noted_marker(image_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        return destination
+    return None
+
+
+@dataclass(frozen=True)
+class RecipeRecovery:
+    """What ``recover_quarantined_recipe`` made of a set-aside recipe."""
+
+    recovered: bool                              # a usable recipe was put back as the photo's recipe
+    recipe: dict | None                          # what could be salvaged (also when it was not written)
+    dropped: tuple[tuple[str, str], ...]         # (setting, why) for every setting that was left out
+    bad_path: Path | None                        # the set-aside file it was read from; always still there
+    message: str                                 # for the person: what was recovered, or why nothing was
+
+
+# A recipe is a few kilobytes (masks and retouch strokes make it tens). Anything far beyond that is not one.
+RECOVERY_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _parse_leniently(text: str):
+    """The JSON value in ``text``; failing that, the first JSON object in it (something was written after the recipe).
+    Raises ``ValueError`` when there is none."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        start = text.find("{")
+        if start < 0:
+            raise
+        return json.JSONDecoder().raw_decode(text[start:])[0]
+
+
+def salvage_recipe(data) -> tuple[dict | None, tuple[tuple[str, str], ...], str]:
+    """``(recipe, dropped, why_not)``: the settings of a damaged recipe that the validator (``recipe_problems``) accepts,
+    as a recipe of this version. ``recipe`` is ``None`` (and ``why_not`` says why) when nothing usable is left."""
+    if not isinstance(data, dict):
+        return None, (), "the set-aside file does not hold a recipe"
+    version = data.get("version")
+    if type(version) is int and version > RECIPE_VERSION:
+        return None, (), RECIPE_NEWER_REASON
+    settings = data.get("cameraRaw")
+    if not isinstance(settings, dict):
+        return None, (), "the set-aside recipe holds no settings"
+    kept = dict(settings)
+    dropped: list[tuple[str, str]] = []
+    while problems := recipe_problems(kept):
+        for name, why in problems:
+            if name in kept:
+                del kept[name]
+                dropped.append((name, why))
+    if not kept:
+        return None, tuple(dropped), "none of its settings could be used"
+    recipe = {"version": RECIPE_VERSION, "cameraRaw": kept}
+    state, reason = classify_recipe(recipe)
+    if state == RECIPE_INVALID:  # cannot happen while classify_recipe judges settings through recipe_problems; never write one
+        return None, tuple(dropped), reason
+    return recipe, tuple(dropped), ""
+
+
+def _write_json_atomic(target: Path, data) -> None:
+    """A temporary file beside the target, flushed to disk, then moved into place: never a half-written recipe."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(data, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def recover_quarantined_recipe(image_path: str, bad_path: str | Path | None = None, *, write: bool = True) -> RecipeRecovery:
+    """Try to bring back the photo's set-aside recipe ("Try to recover the previous edit").
+
+    Reads the newest set-aside copy (or ``bad_path``, which must be one of the photo's), keeps every setting the validator
+    accepts and leaves out the rest (``dropped`` names them). With ``write`` the result becomes the photo's recipe, unless
+    the photo has meanwhile been given a recipe with edits of its own, which is never replaced (one that changes nothing
+    is). The set-aside file is left where it is whatever happens."""
+    candidates = quarantined_recipes(image_path)
+    source = Path(bad_path) if bad_path is not None else (candidates[-1] if candidates else None)
+    name = Path(image_path).name
+    if source is None or source not in candidates:
+        return RecipeRecovery(False, None, (), None, f"{name} has no set-aside Camera Raw settings to recover.")
+    try:
+        if source.stat().st_size > RECOVERY_MAX_BYTES:
+            return RecipeRecovery(False, None, (), source, f"{source.name} is too large to be a Camera Raw recipe.")
+        text = source.read_bytes().decode("utf-8-sig", errors="replace")
+    except OSError as error:
+        return RecipeRecovery(False, None, (), source, f"{source.name} could not be read: {error}")
+    try:
+        data = _parse_leniently(text)
+    except (ValueError, RecursionError):
+        return RecipeRecovery(False, None, (), source, f"Nothing could be recovered: {source.name} is not readable as settings.")
+    recipe, dropped, why_not = salvage_recipe(data)
+    if recipe is None:
+        return RecipeRecovery(False, None, dropped, source, f"Nothing could be recovered from {source.name}: {why_not}.")
+    left_out = (" Left out: " + ", ".join(setting for setting, _why in dropped) + ".") if dropped else ""
+    if not write:
+        return RecipeRecovery(False, recipe, dropped, source, f"The previous edit of {name} can be recovered.{left_out}")
+    state, _current, reason, problem = _read_recipe(image_path)
+    if state == RECIPE_EDITED or (state == RECIPE_INVALID and problem != _READ_REFUSED):
+        why = "the photo has been edited again since" if state == RECIPE_EDITED else reason
+        return RecipeRecovery(False, recipe, dropped, source,
+                              f"The previous edit of {name} was not put back: {why}. It is still in {source.name}.")
+    if state == RECIPE_INVALID and quarantine_recipe(image_path, reason) is None:
+        return RecipeRecovery(False, recipe, dropped, source, f"The previous edit of {name} was not put back: {reason}.")
+    try:
+        _write_json_atomic(recipe_path(image_path), recipe)
+    except OSError as error:
+        return RecipeRecovery(False, recipe, dropped, source, f"The recovered edit of {name} could not be saved: {error}")
+    with _QUARANTINE_LOCK:
+        _QUARANTINE_NOTICES.pop(_notice_key(image_path), None)
+        _mark_noted(image_path)
+    return RecipeRecovery(True, recipe, dropped, source, f"Recovered the previous edit of {name}.{left_out}")
 
 
 def display_render_path(image_path: str) -> Path:

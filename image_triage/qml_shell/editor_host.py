@@ -88,6 +88,10 @@ class EditorHost(QObject):
     closeFailed = Signal(str)
     toolBlocked = Signal(str)               # a mask or tool the editor asked for cannot run (its model is not installed): what to turn on
     editSaved = Signal(str)
+    # The photo's Camera Raw settings could not be read and were set aside; it opened from its original develop (the photo,
+    # what to tell the person). Sent once per set-aside file. `recoverRecipe` is the offer that goes with it.
+    recipeSetAside = Signal(str, str)
+    recipeRecovery = Signal(str, bool, str) # `recoverRecipe` finished: the photo, whether an edit was put back, what to say
     _done = Signal(str, object, str)        # worker -> main thread: (what finished, its result, an error message)
 
     def __init__(self, *, memory: bool = False, launcher=None, detector=None, mover=None, host_jobs=None, parent=None) -> None:
@@ -283,6 +287,9 @@ class EditorHost(QObject):
                     spec["manifestPath"] = photocraft_bridge.render_manifest_path(path).name
                     spec["signature"] = signature
                 recipe = photocraft_bridge.load_recipe(path)
+                notice = photocraft_bridge.take_quarantine_notice(path)
+                if notice is not None:               # unreadable settings were set aside: the photo opens without them, and says so once
+                    self.recipeSetAside.emit(path, notice.message)
                 if recipe is not None:
                     spec["recipe"] = recipe
                 elif photocraft_bridge.recipe_is_newer(path):
@@ -318,6 +325,43 @@ class EditorHost(QObject):
             LOG.warning("PhotoCraft did not open %s: %s", path, error, exc_info=True)
             what = "switch-failed" if proc is self._proc and proc is not None and proc.is_running() else "open-failed"
             self._done.emit(what, None, str(error) or error.__class__.__name__)
+
+    # -- a set-aside recipe ---------------------------------------------------------------------------------------------------
+    @Slot(str)
+    def recoverRecipe(self, path: str) -> None:
+        """"Try to recover the previous edit": put back what can still be read of the photo's set-aside Camera Raw settings
+        (`photocraft_bridge.recover_quarantined_recipe`). When the photo is the one open in the editor it is opened again
+        with the recovered settings, in place of what the editor shows; `recipeRecovery` reports the outcome either way."""
+        if not path or self._memory:
+            return
+        if self._state in (STARTING, CLOSING):
+            self.recipeRecovery.emit(path, False, "The editor is busy. Try again when it has finished.")
+            return
+        reopen = self._state == EDITING and path == self._path and self._proc is not None
+        if reopen:
+            self._generation += 1
+            self._switching = True
+            self._set(STARTING, "")
+            self.stateChanged.emit()
+        threading.Thread(target=self._recover_worker, args=(self._generation, path, reopen), name="editor-recover", daemon=True).start()
+
+    def _recover_worker(self, generation: int, path: str, reopen: bool) -> None:
+        with self._lock:
+            try:
+                from .. import photocraft_bridge
+
+                result = photocraft_bridge.recover_quarantined_recipe(path)
+                recovered, message = result.recovered, result.message
+            except Exception as error:
+                LOG.warning("Could not recover the set-aside recipe of %s: %s", path, error, exc_info=True)
+                recovered, message = False, "The previous edit could not be recovered. " + (str(error) or error.__class__.__name__)
+            self.recipeRecovery.emit(path, recovered, message)
+            if not reopen:
+                return
+            if recovered:
+                self._open_locked(generation, path, False, False)
+            else:
+                self._done.emit("switch-failed", None, "")     # back to the photo as it is open; the outcome was already reported
 
     # -- the editor is up: put its window in ours ---------------------------------------------------------------------------
     @Slot(object)
@@ -437,7 +481,8 @@ class EditorHost(QObject):
             self._path = self._proc.source_path
             self.pathChanged.emit()
             self._set(EDITING, error)
-            self.failed.emit(error)
+            if error:
+                self.failed.emit(error)
 
     def _fail(self, path: str, message: str) -> None:
         self._close_requested = False
