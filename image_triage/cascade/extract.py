@@ -37,6 +37,7 @@ import numpy as np
 from PIL import Image
 
 from ..formats import RAW_SUFFIXES, suffix_for_path
+from ..path_keys import fold_text
 from ..perceptual_hash import _dct_2d
 from ..raw_embedded_jpeg import extract_embedded_jpeg
 from .model import FrameFeatures
@@ -370,6 +371,6 @@ def _file_signature(path: str) -> tuple[int, int] | None:
 
 def _cache_key(path: str) -> str:
     try:
-        return str(Path(path).expanduser().resolve()).casefold()
+        return fold_text(str(Path(path).expanduser().resolve()))
     except OSError:
-        return str(path).casefold()
+        return fold_text(str(path))

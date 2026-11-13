@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
 from .models import ImageRecord
+from .path_keys import legacy_path_key, path_key
 from .scanner import normalized_path_key
 
 if TYPE_CHECKING:
@@ -35,7 +36,13 @@ HTML_REPORT_FILENAMES = (
 
 
 def _fast_path_key(path: str | Path) -> str:
-    return os.path.normpath(str(path)).casefold()
+    return path_key(str(path))
+
+
+def _alias_path_key(path: str | Path) -> str:
+    """A loose spelling of a path, for finding a result written on another platform (``C:\\Shoot\\IMG.JPG`` asked for as
+    ``c:/shoot/img.jpg``). Never an identity: it is tried only after the exact path has missed."""
+    return legacy_path_key(str(path).replace("\\", "/"))
 
 
 class AIConfidenceBucket(str, Enum):
@@ -276,7 +283,7 @@ class AIBundle:
             if exact is not None:
                 return exact
             if self.results_by_fast_path:
-                return self.results_by_fast_path.get(_fast_path_key(str(path).replace("\\", "/")))
+                return self.results_by_fast_path.get(_alias_path_key(path))
         if self.results_by_fast_path:
             fast = self.results_by_fast_path.get(_fast_path_key(path))
             if fast is not None:

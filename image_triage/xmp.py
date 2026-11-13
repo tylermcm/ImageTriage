@@ -8,6 +8,7 @@ from xml.etree import ElementTree as ET
 from .formats import RAW_SUFFIXES, suffix_for_path
 from .mac_media import existing_mac_sidecar_paths
 from .models import ImageRecord, SessionAnnotation
+from .path_keys import path_key
 
 X_NS = "adobe:ns:meta/"
 RDF_NS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -82,7 +83,7 @@ def existing_sidecar_paths(image_path: str) -> tuple[str, ...]:
     ordered: list[str] = []
     seen: set[str] = set()
     for candidate in _sidecar_candidates(image_path):
-        normalized = os.path.normpath(candidate).casefold()
+        normalized = path_key(candidate)
         if normalized in seen or not os.path.exists(candidate):
             continue
         seen.add(normalized)

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import ImageRecord
+from .path_keys import path_key
 
 
 _INVALID_FOLDER_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
@@ -59,7 +60,7 @@ def load_semantic_classifications(path: str | Path) -> dict[str, SemanticClassif
 
 
 def normalized_semantic_path_key(path: str | Path) -> str:
-    return os.path.normpath(str(Path(path).expanduser())).casefold()
+    return path_key(str(Path(path).expanduser()))
 
 
 def semantic_classification_for_record(

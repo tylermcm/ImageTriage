@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from .ai_results import AICullBucket, AIConfidenceBucket, ai_cull_bucket_for_result
 from .formats import FITS_SUFFIXES, JPEG_SUFFIXES, MODEL_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .models import FilterMode, ImageRecord, SessionAnnotation
+from .path_keys import path_key
 
 if TYPE_CHECKING:
     from .ai_results import AIImageResult
@@ -247,7 +248,7 @@ def _matches_quick_filter(
 
 
 def _search_path_key(path: str) -> str:
-    return os.path.normpath(os.path.abspath(path)).casefold()
+    return path_key(os.path.abspath(path))
 
 
 def _matches_search(

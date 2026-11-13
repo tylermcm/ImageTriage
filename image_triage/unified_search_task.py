@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
+from .path_keys import path_key
 from .perf import perf_logger
 from .semantic_index import ensure_semantic_onnx_runtime
 from .semantic_search import SearchFilters
@@ -15,9 +16,9 @@ from .semantic_search import SearchFilters
 
 def _search_match_path_key(path: str | Path) -> str:
     text = str(path or "").strip()
-    # The grid looks a hit up with os.path.normcase (photos._path_key): folding case here as well dropped every hit
-    # on a case-sensitive file system.
-    return os.path.normcase(os.path.normpath(os.path.abspath(text))) if text else ""
+    # The grid looks a hit up with the same shared key (photos._path_key): folding case regardless of the file system
+    # dropped every hit on a case-sensitive one.
+    return path_key(os.path.abspath(text)) if text else ""
 
 
 class UnifiedSearchSignals(QObject):

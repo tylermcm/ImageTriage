@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from ..formats import is_image_file_candidate
 from ..models import ImageRecord, ImageVariant
+from ..path_keys import path_key
 from ..perf import perf_logger
 from .db import connect_catalog_db, default_catalog_db_path
 from .migrations import apply_catalog_migrations
@@ -1616,7 +1617,7 @@ def _normalize_filesystem_path(path: str | Path) -> str:
 
 
 def _normalized_path_key(path: str | Path) -> str:
-    return _normalize_filesystem_path(path).casefold()
+    return path_key(_normalize_filesystem_path(path))
 
 
 def _normalize_session_id(session_id: str) -> str:

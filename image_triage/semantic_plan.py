@@ -14,6 +14,7 @@ from typing import Iterable, Sequence
 
 from aiculler.features import IMAGE_EXTENSIONS, _file_signature
 from .ai_model import DEFAULT_AICULLER_CLIP_REVISION
+from .path_keys import path_key
 
 
 # Bump when the cache identity or embedding contract changes so previously
@@ -88,7 +89,7 @@ def collect_indexable_sources(records: Iterable[object]) -> list[str]:
             continue
         if _is_hidden_artifact(path):
             continue
-        key = str(path).casefold()
+        key = path_key(str(path))
         if key in seen:
             continue
         seen.add(key)

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import ImageRecord, WinnerMode
+from .path_keys import path_key
 from .xmp import sidecar_bundle_paths
 
 
@@ -157,7 +158,7 @@ def record_paths(record: ImageRecord) -> tuple[str, ...]:
     ordered: list[str] = []
     seen: set[str] = set()
     for path in (*record.stack_paths, *sidecar_bundle_paths(record)):
-        normalized = os.path.normpath(path).casefold()
+        normalized = path_key(path)
         if normalized in seen:
             continue
         seen.add(normalized)

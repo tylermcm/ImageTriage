@@ -20,6 +20,8 @@ from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
+from ..path_keys import path_key
+
 SAMPLE_NAMES = ("DSC_4821.NEF", "Kutaisi picks", "Anna portrait final.jpg", "Meet at the old gate at 6")
 _AS_LABEL = "Originals"            # what a library group is sent as: the files themselves (nothing here converts them)
 _SAMPLE_THUMBS = {"sel": (1, 2, 3), "win": (4, 6, 10), "keep": (2, 7, 9)}
@@ -185,9 +187,9 @@ class PocketDropModel(QObject):
     riskPending = Property(bool, lambda self: self._risk, notify=riskChanged)
 
     def _merge_rows(self, engine_rows: list[dict]) -> list[dict]:
-        claimed = {p.lower() for g in self._groups for p in g["paths"]}
+        claimed = {path_key(p) for g in self._groups for p in g["paths"]}
         received = [r for r in engine_rows if r.get("tone") == "recv"]
-        rest = [r for r in engine_rows if r.get("tone") != "recv" and r.get("path", "").lower() not in claimed]
+        rest = [r for r in engine_rows if r.get("tone") != "recv" and path_key(r.get("path", "")) not in claimed]
         merged = [dict(r, key=f"e{r['index']}", group="", thumbs=[], asLabel="") for r in received]
         for g in self._groups:
             merged.append({"index": -1, "kind": "coll", "title": g["title"], "sub": g["sub"], "path": "", "tone": "", "key": g["key"], "group": g["key"],
@@ -262,9 +264,9 @@ class PocketDropModel(QObject):
         for g in self._groups:
             if g["key"] == key:
                 self._groups.remove(g)
-                keep = {p.lower() for other in self._groups for p in other["paths"]}
+                keep = {path_key(p) for other in self._groups for p in other["paths"]}
                 if self._host is not None:
-                    self._host.remove_paths([p for p in g["paths"] if p.lower() not in keep])
+                    self._host.remove_paths([p for p in g["paths"] if path_key(p) not in keep])
                 self._last = ""
                 self._refresh()
                 self._update_added()

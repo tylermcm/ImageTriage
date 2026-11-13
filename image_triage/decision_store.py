@@ -10,6 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import QStandardPaths
 
 from .models import ImageRecord, SessionAnnotation
+from .path_keys import path_key
 from .perf import perf_logger
 
 
@@ -336,8 +337,8 @@ class DecisionStore:
             return 0
         normalized_session = self._normalize_session_id(session_id)
         prefix = folder.rstrip("\\/") + os.sep
-        known = {os.path.normcase(path) for path in known_paths}
-        folder_key = os.path.normcase(os.path.normpath(folder))
+        known = {path_key(path) for path in known_paths}
+        folder_key = path_key(folder)
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT path FROM decisions WHERE session_id = ? AND path >= ? AND path < ?",
@@ -345,8 +346,8 @@ class DecisionStore:
             ).fetchall()
             gone = [
                 str(row[0]) for row in rows
-                if os.path.normcase(os.path.dirname(str(row[0]))) == folder_key
-                and os.path.normcase(str(row[0])) not in known
+                if path_key(os.path.dirname(str(row[0]))) == folder_key
+                and path_key(str(row[0])) not in known
                 and not exists(str(row[0]))
             ]
             if not gone:

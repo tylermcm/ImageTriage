@@ -46,7 +46,7 @@ class NativeCullResults:
 
 def native_ai_bundle(document: dict, source: str | Path):
     """Adapt native data for review without calling legacy score enrichment."""
-    from .ai_results import AIBundle, AIConfidenceBucket, AIImageResult, _fast_path_key
+    from .ai_results import AIBundle, AIConfidenceBucket, AIImageResult, _alias_path_key
     from .scanner import normalized_path_key
 
     native = NativeCullResults(document)
@@ -65,7 +65,7 @@ def native_ai_bundle(document: dict, source: str | Path):
             native_payload=copy.deepcopy(row))
         results[normalized_path_key(path)] = result
         exact[path] = result
-        fast[_fast_path_key(path.replace("\\", "/"))] = result
+        fast[_alias_path_key(path)] = result
         groups.setdefault(result.group_id, []).append(result)
     return AIBundle(
         source_path=str(source), export_csv_path=str(source),

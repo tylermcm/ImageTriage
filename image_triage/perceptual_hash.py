@@ -12,6 +12,8 @@ from typing import Callable
 import numpy as np
 from PIL import Image, ImageOps
 
+from .path_keys import fold_text
+
 
 @dataclass(slots=True, frozen=True)
 class PerceptualDuplicateGroup:
@@ -289,9 +291,9 @@ def _file_signature(path: Path) -> dict[str, object] | None:
 
 def _cache_key(path: Path) -> str:
     try:
-        return str(path.expanduser().resolve()).casefold()
+        return fold_text(str(path.expanduser().resolve()))
     except OSError:
-        return str(path.expanduser()).casefold()
+        return fold_text(str(path.expanduser()))
 
 
 def _cache_entry_matches(entry: object, signature: dict[str, object]) -> bool:

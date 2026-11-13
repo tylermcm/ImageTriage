@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .scan_cache import app_data_root
+from .path_keys import path_key
 
 
 ALLOWED_ADAPTER_LABELS = frozenset(
@@ -138,44 +139,58 @@ class GlobalAdapterLabelStore:
 
     def update_reason_tags(self, source_path: str | Path, reason_tags: tuple[str, ...] | list[str]) -> None:
         normalized_reason_tags = _normalize_reason_tags(reason_tags)
-        self.connection.execute(
-            """
-            UPDATE adapter_labels
-            SET reason_tags = ?, updated_at = ?
-            WHERE source_path = ? OR path_key = ?
-            """,
-            (
-                json.dumps(list(normalized_reason_tags), separators=(",", ":")),
-                time.strftime("%Y-%m-%dT%H:%M:%S"),
-                str(source_path),
-                _path_key(source_path),
-            ),
+        self.connection.executemany(
+            "UPDATE adapter_labels SET reason_tags = ?, updated_at = ? WHERE source_path = ?",
+            [
+                (json.dumps(list(normalized_reason_tags), separators=(",", ":")), time.strftime("%Y-%m-%dT%H:%M:%S"), saved_for)
+                for saved_for in self._saved_sources(source_path)
+            ],
         )
         self.connection.commit()
 
     def delete_label(self, source_path: str | Path) -> None:
-        self.connection.execute(
-            "DELETE FROM adapter_labels WHERE source_path = ? OR path_key = ?",
-            (str(source_path), _path_key(source_path)),
+        self.connection.executemany(
+            "DELETE FROM adapter_labels WHERE source_path = ?",
+            [(saved_for,) for saved_for in self._saved_sources(source_path)],
         )
         self.connection.commit()
+
+    def _saved_sources(self, source_path: str | Path) -> list[str]:
+        """The saved rows that are this file's: the one written for exactly this path, and any written for another spelling
+        of it. A row whose key was folded by an earlier build can equal another file's key on a case-sensitive file system;
+        such a row is this file's only when the path it was saved for is."""
+        key = _path_key(source_path)
+        rows = self.connection.execute(
+            "SELECT source_path FROM adapter_labels WHERE source_path = ? OR path_key = ?",
+            (str(source_path), key),
+        ).fetchall()
+        return [str(row[0]) for row in rows if str(row[0]) == str(source_path) or _path_key(str(row[0])) == key]
 
     def labels_for_paths(self, paths: list[str] | tuple[str, ...]) -> dict[str, GlobalAdapterLabel]:
         if not paths:
             return {}
         by_key = {_path_key(path): str(path) for path in paths}
+        # A label saved by a build that folded case on every platform sits under the old key on a case-sensitive file system. It is
+        # still found by the exact path it was saved for, which cannot be another file's; saving it again rewrites the key.
+        by_source = {str(path): str(path) for path in paths}
         placeholders = ",".join("?" for _ in by_key)
+        source_placeholders = ",".join("?" for _ in by_source)
         rows = self.connection.execute(
             f"""
             SELECT source_path, filename, folder, label, weight, is_dispute, reason_tags, path_key
             FROM adapter_labels
-            WHERE path_key IN ({placeholders})
+            WHERE path_key IN ({placeholders}) OR source_path IN ({source_placeholders})
             """,
-            tuple(by_key),
+            (*by_key, *by_source),
         ).fetchall()
         result: dict[str, GlobalAdapterLabel] = {}
         for row in rows:
-            original_path = by_key.get(str(row["path_key"]), str(row["source_path"]))
+            saved_for = str(row["source_path"])
+            original_path = by_source.get(saved_for)
+            if original_path is None and _path_key(saved_for) == str(row["path_key"]):
+                original_path = by_key.get(str(row["path_key"]))     # another spelling of the same file
+            if original_path is None:
+                continue                                             # an old folded key that only looks like this path's
             result[original_path] = GlobalAdapterLabel(
                 source_path=original_path,
                 label=str(row["label"]),
@@ -263,7 +278,7 @@ def _default_user_data_root() -> Path:
 
 
 def _path_key(path: str | Path) -> str:
-    return os.path.normpath(str(path)).casefold()
+    return path_key(str(path))
 
 
 def _normalize_reason_tags(values: tuple[str, ...] | list[str]) -> tuple[str, ...]:

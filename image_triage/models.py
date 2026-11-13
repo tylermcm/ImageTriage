@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from .formats import EDIT_PRIORITY, JPEG_SUFFIXES, RAW_SUFFIXES, suffix_for_path
+from .path_keys import path_key
 
 
 @dataclass(slots=True, frozen=True)
@@ -102,7 +103,7 @@ class ImageRecord:
             *self.edited_paths,
             *[variant.path for variant in self.display_variants],
         ):
-            normalized = path.casefold()
+            normalized = path_key(path)
             if normalized in seen:
                 continue
             seen.add(normalized)
