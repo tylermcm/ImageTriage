@@ -244,6 +244,173 @@ class UpdaterTests(unittest.TestCase):
                 )
                 popen.assert_called_once()
 
+    # ---- the installer's signer (audit R6). Nothing here runs Windows' own check: the verifier is a fake. ----
+    PIN = updater.InstallerSignerPin(subjects=("Example Publisher",), thumbprints=("AB" * 20,))
+
+    @staticmethod
+    def _signed(subject: str = "Example Publisher", sha1: str = "ab" * 20) -> updater.InstallerSignature:
+        return updater.InstallerSignature(updater.SIGNATURE_VALID, subject=subject, thumbprint_sha1=sha1, thumbprint_sha256="cd" * 32)
+
+    def test_releases_are_not_signed_today_so_no_publisher_is_pinned(self) -> None:
+        # The pin and the release build must change together: pinning a publisher while the build does not sign
+        # would refuse every update, and signing without pinning would leave the signer unchecked.
+        workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build-windows-msi-release.yml").read_text(encoding="utf-8")
+        signs = any(word in workflow.casefold() for word in ("signtool", "azuresigntool", "trusted-signing", "set-authenticodesignature"))
+        self.assertEqual(signs, updater.TRUSTED_INSTALLER_SIGNERS.configured)
+
+    def test_a_valid_signature_from_the_pinned_publisher_is_verified(self) -> None:
+        seen: list[Path] = []
+
+        def verifier(path: Path) -> updater.InstallerSignature:
+            seen.append(path)
+            return self._signed()
+
+        check = updater.check_installer_publisher("a.msi", verifier=verifier, pin=self.PIN)
+        self.assertTrue(check.verified)
+        self.assertEqual("", check.notice)
+        self.assertEqual([Path("a.msi")], seen)
+        # either kind of thumbprint may be pinned, written the way Windows shows it
+        by_sha256 = updater.InstallerSignerPin(thumbprints=("CD " * 32,))
+        self.assertTrue(updater.check_installer_publisher("a.msi", verifier=verifier, pin=by_sha256).verified)
+
+    def test_a_valid_signature_from_anyone_else_is_refused(self) -> None:
+        for signature in (
+            self._signed(subject="Somebody Else"),              # right certificate hash claimed, wrong name
+            self._signed(sha1="ef" * 20),                       # right name, another certificate
+            self._signed(subject="", sha1=""),
+        ):
+            with self.assertRaisesRegex(updater.InstallerSignerError, "not by the publisher of Image Triage"):
+                updater.check_installer_publisher("a.msi", verifier=lambda path: signature, pin=self.PIN)
+
+    def test_an_invalid_signature_is_refused_whether_or_not_a_publisher_is_pinned(self) -> None:
+        broken = updater.InstallerSignature(updater.SIGNATURE_INVALID, detail="the file was changed after it was signed")
+        for pin in (self.PIN, updater.InstallerSignerPin()):
+            with self.assertRaisesRegex(updater.InstallerSignerError, "not valid .*changed after it was signed"):
+                updater.check_installer_publisher("a.msi", verifier=lambda path: broken, pin=pin)
+        unknown = updater.InstallerSignature("something new")
+        with self.assertRaises(updater.InstallerSignerError):
+            updater.check_installer_publisher("a.msi", verifier=lambda path: unknown, pin=updater.InstallerSignerPin())
+
+    def test_an_unsigned_installer_is_refused_once_a_publisher_is_pinned(self) -> None:
+        unsigned = updater.InstallerSignature(updater.SIGNATURE_UNSIGNED)
+        with self.assertRaisesRegex(updater.InstallerSignerError, "not digitally signed"):
+            updater.check_installer_publisher("a.msi", verifier=lambda path: unsigned, pin=self.PIN)
+        # a system that cannot check signatures cannot satisfy a pin either
+        nowhere = updater.InstallerSignature(updater.SIGNATURE_NOT_APPLICABLE)
+        with self.assertRaisesRegex(updater.InstallerSignerError, "cannot be checked"):
+            updater.check_installer_publisher("a.msi", verifier=lambda path: nowhere, pin=self.PIN)
+
+    def test_an_unsigned_installer_with_no_pin_is_allowed_and_says_the_publisher_is_unverified(self) -> None:
+        unsigned = updater.InstallerSignature(updater.SIGNATURE_UNSIGNED)
+        check = updater.check_installer_publisher("a.msi", verifier=lambda path: unsigned, pin=updater.InstallerSignerPin())
+        self.assertFalse(check.verified)
+        self.assertIn("publisher could not be verified", check.notice)
+        # signed, but there is nothing to compare the signer with: still not "verified"
+        check = updater.check_installer_publisher("a.msi", verifier=lambda path: self._signed(), pin=updater.InstallerSignerPin())
+        self.assertFalse(check.verified)
+        self.assertIn("Example Publisher", check.notice)
+        self.assertIn("not verified", check.notice)
+
+    def test_the_signature_check_is_not_applicable_off_windows(self) -> None:
+        if updater.os.name == "nt":
+            self.skipTest("this is the answer every other system gives")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installer = Path(temp_dir) / "a.msi"
+            installer.write_bytes(b"msi bytes")
+            self.assertEqual(updater.SIGNATURE_NOT_APPLICABLE, updater.read_authenticode_signature(installer).status)
+            check = updater.check_installer_publisher(installer, pin=updater.InstallerSignerPin())
+            self.assertFalse(check.verified)
+            self.assertIn("only checked on Windows", check.notice)
+            with self.assertRaisesRegex(OSError, "only supported on Windows"):
+                updater.launch_update_installer(installer)
+
+    def test_only_a_missing_signature_counts_as_unsigned(self) -> None:
+        no_signature = 0x800B0100
+        self.assertEqual((updater.SIGNATURE_VALID, ""), updater._classify_trust_result(0, 0))
+        for last_error in (0x800B0100, 0x800B0003, 0x800B0001):
+            self.assertEqual(updater.SIGNATURE_UNSIGNED, updater._classify_trust_result(no_signature, last_error)[0])
+        # the same answer as a signed 32-bit number, which is how the call returns it
+        self.assertEqual(updater.SIGNATURE_UNSIGNED, updater._classify_trust_result(no_signature - (1 << 32), no_signature)[0])
+        # "no signature" with any other reason is a signature that could not be read or checked
+        self.assertEqual(updater.SIGNATURE_INVALID, updater._classify_trust_result(no_signature, 0x80096010)[0])
+        self.assertEqual(updater.SIGNATURE_INVALID, updater._classify_trust_result(no_signature, 0)[0])
+        for failure in (0x80096010, 0x800B0101, 0x800B0109, 0x800B010C, 0x800B0004, 0x80070005):
+            status, detail = updater._classify_trust_result(failure, 0)
+            self.assertEqual(updater.SIGNATURE_INVALID, status)
+            self.assertTrue(detail)
+
+    def test_the_signer_is_checked_on_the_hashed_file_and_that_file_is_what_is_started(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installer = Path(temp_dir) / "ImageTriage-1.2.0.msi"
+            installer.write_bytes(b"msi bytes")
+            expected = hashlib.sha256(b"msi bytes").hexdigest()
+            events: list[tuple[str, str]] = []
+            real_hash = updater._sha256_file
+
+            def hashing(path: Path) -> str:
+                events.append(("hash", str(path)))
+                return real_hash(path)
+
+            def verifier(path: Path) -> updater.InstallerSignature:
+                events.append(("signer", str(path)))
+                self.assertEqual(b"msi bytes", Path(path).read_bytes())
+                return self._signed()
+
+            def started(command, **kwargs):
+                events.append(("start", " ".join(command)))
+
+            with patch.object(updater.sys, "platform", "win32"), patch.object(updater, "_sha256_file", hashing), patch.object(
+                updater.subprocess, "Popen", side_effect=started
+            ), patch.object(updater.urllib.request, "urlopen", side_effect=AssertionError("nothing is downloaded again")):
+                updater.launch_update_installer(installer, expected_sha256=expected, signature_verifier=verifier, signer_pin=self.PIN)
+                updater.launch_update_installer_and_restart(
+                    installer, app_executable=installer, current_pid=1, expected_sha256=expected,
+                    signature_verifier=verifier, signer_pin=self.PIN,
+                )
+            self.assertEqual(["hash", "signer", "start"] * 2, [kind for kind, _ in events])
+            self.assertEqual({str(installer)}, {text for kind, text in events if kind != "start"})
+            for text in (text for kind, text in events if kind == "start"):
+                self.assertIn(str(installer), text)
+
+    def test_a_refused_signer_starts_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installer = Path(temp_dir) / "ImageTriage-1.2.0.msi"
+            installer.write_bytes(b"msi bytes")
+            expected = hashlib.sha256(b"msi bytes").hexdigest()
+            verdicts = {
+                "wrong signer": (self._signed(subject="Somebody Else"), self.PIN),
+                "broken": (updater.InstallerSignature(updater.SIGNATURE_INVALID), updater.InstallerSignerPin()),
+                "unsigned, pinned": (updater.InstallerSignature(updater.SIGNATURE_UNSIGNED), self.PIN),
+            }
+            with patch.object(updater.sys, "platform", "win32"), patch.object(updater.subprocess, "Popen") as popen:
+                for name, (signature, pin) in verdicts.items():
+                    with self.subTest(name), self.assertRaises(updater.InstallerSignerError):
+                        updater.launch_update_installer(
+                            installer, expected_sha256=expected, signature_verifier=lambda path, s=signature: s, signer_pin=pin
+                        )
+                    with self.subTest(name), self.assertRaises(updater.InstallerSignerError):
+                        updater.launch_update_installer_and_restart(
+                            installer, app_executable=installer, current_pid=1, expected_sha256=expected,
+                            signature_verifier=lambda path, s=signature: s, signer_pin=pin,
+                        )
+                popen.assert_not_called()
+                # the signer is not asked about a file that already failed its checksum
+                installer.write_bytes(b"swapped")
+                with self.assertRaisesRegex(RuntimeError, "changed after it was verified"):
+                    updater.launch_update_installer(
+                        installer, expected_sha256=expected,
+                        signature_verifier=lambda path: self.fail("the signer was checked on a file that failed its checksum"),
+                    )
+                popen.assert_not_called()
+                # unsigned and nothing pinned: today's releases still install
+                installer.write_bytes(b"msi bytes")
+                updater.launch_update_installer(
+                    installer, expected_sha256=expected,
+                    signature_verifier=lambda path: updater.InstallerSignature(updater.SIGNATURE_UNSIGNED),
+                    signer_pin=updater.InstallerSignerPin(),
+                )
+                popen.assert_called_once()
+
     def test_update_handoff_command_waits_installs_silently_and_restarts(self) -> None:
         command = updater._build_update_handoff_command(
             Path("C:/Users/Test User/Downloads/Image Triage 1.2.0.msi"),
