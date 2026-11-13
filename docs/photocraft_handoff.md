@@ -3859,3 +3859,60 @@ Conflicted paths in that dry run (no resolutions applied):
 - `crates/ui-egui/src/lib.rs`
 - `crates/ui-egui/src/widgets/fields.rs`
 - `docs/control-protocol.md`
+
+### 2026-11-13 MSI acceptance session: companion check
+
+Both user fork and upstream fetched successfully. The fork integration still
+matches local HEAD at `b5b39157c4f837aae681658036540962d4a99fc4`. Upstream moved
+from `e56668ee4001c9bbb1f498010040893c5fc009a5` to
+`d37da956f859222af87914e7d79ba24bda7c6411`; latest release remains v0.23.1.
+Divergence is 86 host-only / 4,495 upstream-only commits. The dry-run conflicts
+are still large: 43 paths, including ten Camera Raw paths. No merge or resolution
+was performed, and the six existing companion drafts remain untouched. Installer
+acceptance reuses the previously validated paired editor/helper; it does not
+promote a new editor or validate the unmerged release.
+
+Conflicted paths (no resolutions applied):
+- `apps/photocraft/src/main.rs`
+- `apps/photocraft/src/services.rs`
+- `crates/algo/src/camera_raw.rs`
+- `crates/algo/src/camera_raw/local_tone.rs`
+- `crates/algo/src/camera_raw/per_pixel.rs`
+- `crates/automation/src/workspace.rs`
+- `crates/io/src/lib.rs`
+- `crates/raw/src/lib.rs`
+- `crates/ui-egui/src/app.rs`
+- `crates/ui-egui/src/canvas/gpu_canvas.rs`
+- `crates/ui-egui/src/control/dispatch.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui/controls.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui/convert.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui/identity_tests.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui/menu.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui/open.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui/tests.rs`
+- `crates/ui-egui/src/i18n/cs.tsv`
+- `crates/ui-egui/src/i18n/de.tsv`
+- `crates/ui-egui/src/i18n/el.tsv`
+- `crates/ui-egui/src/i18n/es.tsv`
+- `crates/ui-egui/src/i18n/fr.tsv`
+- `crates/ui-egui/src/i18n/hu.tsv`
+- `crates/ui-egui/src/i18n/id.tsv`
+- `crates/ui-egui/src/i18n/it.tsv`
+- `crates/ui-egui/src/i18n/ja.tsv`
+- `crates/ui-egui/src/i18n/ko.tsv`
+- `crates/ui-egui/src/i18n/nl.tsv`
+- `crates/ui-egui/src/i18n/pl.tsv`
+- `crates/ui-egui/src/i18n/pt-br.tsv`
+- `crates/ui-egui/src/i18n/ru.tsv`
+- `crates/ui-egui/src/i18n/sr.tsv`
+- `crates/ui-egui/src/i18n/tr.tsv`
+- `crates/ui-egui/src/i18n/uk.tsv`
+- `crates/ui-egui/src/i18n/vi.tsv`
+- `crates/ui-egui/src/i18n/zh-hans.tsv`
+- `crates/ui-egui/src/i18n/zh-hant.tsv`
+- `crates/ui-egui/src/jobs_ui.rs`
+- `crates/ui-egui/src/lib.rs`
+- `crates/ui-egui/src/services.rs`
+- `crates/ui-egui/src/widgets/fields.rs`
+- `docs/control-protocol.md`

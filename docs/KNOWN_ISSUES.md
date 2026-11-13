@@ -71,10 +71,10 @@ started from an elevated prompt of a different account, it is that account's ent
 earlier copy in another folder, or entries that outlived an uninstall), it rewrites the command to the running program
 (`repair_stale_windows_file_associations`). It adds nothing for a user who never registered, and a run from source never does it.
 
-**Not verified.** The custom action has not been run on Windows: the tests read the table rows `setup_msi.py` gives cx_Freeze and run the
-clean-up tool against temporary folders. Still to check on a real install: that the action runs once on uninstall and not on upgrade or
-repair, that `[TARGETDIR]` is the real folder when the app was installed somewhere other than the default (if it is not, the action
-fails quietly and the uninstall carries on), and that the console window of the clean-up program is tolerable.
+**Acceptance status.** The frozen cleanup executable passed a direct run against real registry keys and test data in Windows Sandbox.
+MSI lifecycle acceptance is still open. The current package, the previous candidate, and a one-file probe each stalled before installer
+actions in this environment. Still to check on a working installer guest: action timing and count, repair and upgrade behavior,
+resolution of `[TARGETDIR]` for a custom install location, and cleanup window behavior. See [MSI acceptance](audit_msi_acceptance_20261113.md).
 
 ---
 

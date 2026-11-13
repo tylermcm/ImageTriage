@@ -49,6 +49,9 @@ def cleanup_tool():
     spec = importlib.util.spec_from_file_location("image_triage_cleanup_uninstall_test", ROOT / "packaging" / "image_triage_cleanup.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # File cleanup tests run on the developer's Windows account too. QSettings
+    # isolation does not redirect this tool's direct winreg calls.
+    module.winreg = None
     return module
 
 
@@ -164,5 +167,5 @@ def test_what_uninstall_cleans_and_cannot_clean_is_documented():
     text = (ROOT / "docs" / "KNOWN_ISSUES.md").read_text(encoding="utf-8")
     section = text[text.index("## Uninstalling leaves other Windows users"):]
     section = section[: section.index("\n---")]
-    for phrase in ("HKEY_CURRENT_USER", "other users", "decisions", "image_triage_cleanup.exe", "not been run on Windows"):
+    for phrase in ("HKEY_CURRENT_USER", "other users", "decisions", "image_triage_cleanup.exe"):
         assert phrase in section, phrase

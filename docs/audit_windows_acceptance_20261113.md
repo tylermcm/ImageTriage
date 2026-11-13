@@ -80,8 +80,8 @@ The source wheel is in `wheel/`, with SHA-256
 - R6: trusted publisher pins are empty while releases remain unsigned. The API
   works, but publisher signing and a release policy must be configured before
   claiming authenticated installer updates.
-- R7: uninstall custom-action source is implemented, preserving user databases
-  and settings. Actual MSI install/upgrade/uninstall was not exercised here.
+- R7: frozen cleanup passed a direct test with real Windows registry and files.
+  MSI lifecycle acceptance remains open. See [MSI acceptance](audit_msi_acceptance_20261113.md).
 - E23: Windows ownership checks and bounded retries mitigate the race; removing
   it requires an editor-side launch/protocol change.
 - Physical hotspot pairing and actual Linux/macOS hardware paths are not covered
