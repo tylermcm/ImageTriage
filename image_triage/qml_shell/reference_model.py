@@ -76,7 +76,7 @@ class _UpdateTask(QRunnable):
 
 class _DownloadSignals(QObject):
     progress = Signal(int, object, object)      # which download, bytes so far, bytes in all (0 = not known)
-    done = Signal(int, str, str)                # which download, the verified installer's path, the error text
+    done = Signal(int, str, str, str)           # which download, the verified installer's path, the error text, what is not verified about its publisher
 
 
 class _DownloadTask(QRunnable):
@@ -91,12 +91,21 @@ class _DownloadTask(QRunnable):
 
     def run(self) -> None:
         try:
-            from ..updater import download_update_installer
+            from ..updater import check_installer_publisher, download_update_installer
 
             path = download_update_installer(self.update, progress_callback=lambda done, total, _name: self.signals.progress.emit(self.token, done, total))
-            self.signals.done.emit(self.token, str(path), "")
+            try:
+                # the signer, now that the checksum matched: a broken signature or the wrong publisher is not offered for installing
+                publisher = check_installer_publisher(path)
+            except Exception:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                raise
+            self.signals.done.emit(self.token, str(path), "", publisher.notice)
         except Exception as exc:
-            self.signals.done.emit(self.token, "", str(exc) or exc.__class__.__name__)
+            self.signals.done.emit(self.token, "", str(exc) or exc.__class__.__name__, "")
 
 
 class _IndexSignals(QObject):
@@ -148,6 +157,7 @@ class ReferenceModel(QObject):
         self._download_serial = 0
         self._dl_progress = ""
         self._installer = ""                     # the verified installer, once downloaded
+        self._publisher_notice = ""              # what could not be verified about who signed it ("" when the pinned publisher signed it)
         self._startup_checked = False
         self._lib_store_obj = None               # one library store for the window's reads, opened the first time it is needed
         self._lib_timer = QTimer(self)
@@ -314,6 +324,13 @@ class ReferenceModel(QObject):
             return
         self._startup_checked = True
         try:
+            # "Open with" entries left by an install that is gone (another folder, a removed copy) are pointed at this one
+            from ..file_associations import repair_stale_windows_file_associations
+
+            repair_stale_windows_file_associations()
+        except Exception:                        # the registry is not worth failing a start over
+            pass
+        try:
             from ..app_identity import user_settings
 
             wanted = bool(user_settings().value("updates/check_on_startup", True, bool))
@@ -394,7 +411,7 @@ class ReferenceModel(QObject):
             self._dl_progress = text
             self._emit()
 
-    def _download_done(self, token: int, path: str, error: str) -> None:
+    def _download_done(self, token: int, path: str, error: str, notice: str = "") -> None:
         if token != self._download:              # cancelled meanwhile: do not leave the installer lying in the temporary folder
             if path:
                 try:
@@ -407,6 +424,7 @@ class ReferenceModel(QObject):
             self._upd, self._upd_error = "dlerror", error
         else:
             self._installer = path
+            self._publisher_notice = notice
             self._upd = "ready"
         self._emit()
 
@@ -522,7 +540,7 @@ class ReferenceModel(QObject):
             "avail": ("accent", f"Version {newer} is available", avail_body, "Download" if self._can_install() or info is None else "Open the release page", True),
             "downloading": ("rev", f"Downloading version {newer}…", self._dl_progress, "Cancel", False),
             "dlerror": ("rej", "Could not download the update", self._upd_error or "Check your internet connection and try again.", "Try again", False),
-            "ready": ("win", f"Version {newer} is ready to install", "Image Triage closes, installs it and starts again.", "Install and restart", True),
+            "ready": ("win", f"Version {newer} is ready to install", " ".join(filter(None, ("Image Triage closes, installs it and starts again.", self._publisher_notice))), "Install and restart", True),
             "armed": ("accent", f"Version {newer} installs when Image Triage closes", "Close the app to install it. It starts again afterwards.", "Don’t install", False),
             "checking": ("rev", "Checking for updates…", "This takes a moment.", "Cancel", False),
             "error": ("rej", "Could not check for updates", self._upd_error or "Check your internet connection and try again.", "Try again", False),

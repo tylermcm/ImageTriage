@@ -263,6 +263,63 @@ def test_download_verifies_then_installs_when_the_app_closes(qapp, photos, monke
     ref._disarm_install()
 
 
+def _downloads(monkeypatch, installer):
+    import image_triage.updater as updater
+
+    def download(update, *, destination_dir=None, progress_callback=None):
+        installer.write_bytes(b"msi")
+        return installer
+
+    monkeypatch.setattr(updater, "download_update_installer", download)
+    return updater
+
+
+def test_an_installer_whose_publisher_is_not_verified_says_so_before_it_is_installed(qapp, photos, monkeypatch, tmp_path):
+    ref, _ = _newer(photos, qapp, monkeypatch)
+    installer = tmp_path / "ImageTriage-9.9.9.msi"
+    updater = _downloads(monkeypatch, installer)
+    checked = []
+    unsigned = updater.InstallerSignature(updater.SIGNATURE_UNSIGNED)
+    monkeypatch.setattr(updater, "read_authenticode_signature", lambda path: checked.append(str(path)) or unsigned)
+    ref.checkUpdates()
+    pump(qapp, 0.6)
+    h = ref.view["help"]
+    assert checked == [str(installer)]                              # the downloaded file itself
+    assert h["upTitle"] == "Version 9.9.9 is ready to install" and h["upBtn"] == "Install and restart"
+    assert "publisher could not be verified" in h["upBody"] and "installs it and starts again" in h["upBody"]
+
+
+def test_an_installer_signed_by_the_pinned_publisher_shows_no_warning(qapp, photos, monkeypatch, tmp_path):
+    ref, _ = _newer(photos, qapp, monkeypatch)
+    updater = _downloads(monkeypatch, tmp_path / "ImageTriage-9.9.9.msi")
+    signed = updater.InstallerSignature(updater.SIGNATURE_VALID, subject="Example Publisher", thumbprint_sha1="ab" * 20)
+    monkeypatch.setattr(updater, "TRUSTED_INSTALLER_SIGNERS", updater.InstallerSignerPin(subjects=("Example Publisher",)))
+    monkeypatch.setattr(updater, "read_authenticode_signature", lambda path: signed)
+    ref.checkUpdates()
+    pump(qapp, 0.6)
+    assert ref.view["help"]["upBody"] == "Image Triage closes, installs it and starts again."
+
+
+def test_an_installer_with_a_refused_signer_is_deleted_and_never_offered(qapp, photos, monkeypatch, tmp_path):
+    ref, _ = _newer(photos, qapp, monkeypatch)
+    installer = tmp_path / "ImageTriage-9.9.9.msi"
+    updater = _downloads(monkeypatch, installer)
+    launched = []
+    monkeypatch.setattr(updater, "launch_update_installer_and_restart", lambda path, **kw: launched.append(path))
+    monkeypatch.setattr(updater, "TRUSTED_INSTALLER_SIGNERS", updater.InstallerSignerPin(subjects=("Example Publisher",)))
+    for signature in (updater.InstallerSignature(updater.SIGNATURE_VALID, subject="Somebody Else"),
+                      updater.InstallerSignature(updater.SIGNATURE_INVALID), updater.InstallerSignature(updater.SIGNATURE_UNSIGNED)):
+        monkeypatch.setattr(updater, "read_authenticode_signature", lambda path, s=signature: s)
+        ref.checkUpdates()                                          # Download, then Try again
+        pump(qapp, 0.6)
+        h = ref.view["help"]
+        assert (h["upTitle"], h["upBtn"]) == ("Could not download the update", "Try again")
+        assert "It was not started" in h["upBody"]
+        assert not installer.exists() and ref._installer == ""
+    ref._install_on_quit()
+    assert launched == []
+
+
 def test_an_armed_install_can_be_called_off(qapp, photos, monkeypatch, tmp_path):
     import image_triage.updater as updater
 
@@ -311,6 +368,27 @@ def test_other_systems_and_unverifiable_updates_open_the_release_page(qapp, phot
         ref.checkUpdates()
         assert opened[-1] == "https://example.invalid/notes" and ref.view["help"]["upTitle"] == "Version 9.9.9 is available"
     assert len(opened) == 2
+
+
+def test_startup_repairs_a_stale_file_type_registration_once_and_survives_its_failure(qapp, photos, monkeypatch):
+    import image_triage.app_identity as identity
+    import image_triage.file_associations as fa
+
+    monkeypatch.setattr(identity, "user_settings", lambda *a: SimpleNamespace(value=lambda key, default, kind: False))
+    calls = []
+
+    def repair():
+        calls.append(True)
+        raise OSError("the registry said no")
+
+    monkeypatch.setattr(fa, "repair_stale_windows_file_associations", repair)
+    ref = ReferenceModel(photos, ToastModel(parent=qapp), memory=False, parent=qapp)
+    ref.checkOnStartup()
+    ref.checkOnStartup()
+    assert calls == [True]
+    sample = ReferenceModel(photos, ToastModel(parent=qapp), memory=True, parent=qapp)
+    sample.checkOnStartup()                                         # the sample data touches nothing real
+    assert calls == [True]
 
 
 def test_the_startup_check_follows_the_setting_and_stays_quiet(qapp, photos, monkeypatch):

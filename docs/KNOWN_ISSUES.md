@@ -38,6 +38,18 @@ fails quietly and the uninstall carries on), and that the console window of the 
 
 ---
 
+## Updates are installed without a verified publisher (recorded 2026-11-13, releases are unsigned)
+
+The release build does not sign the MSI, so `TRUSTED_INSTALLER_SIGNERS` in `image_triage/updater.py` is empty. An update is held to the
+SHA-256 the release publishes (after the download and again before it is started), an installer whose signature is present but broken is
+refused, and the About page says that the publisher could not be verified. That protects against a damaged or swapped download; it does
+not protect against someone who can publish a release, because the checksum comes from the same place as the file. Once releases are
+signed, put the publisher name and/or certificate thumbprints in that constant: from then on unsigned installers and other signers are
+refused. A test ties the constant to the release workflow so one cannot change without the other. The Windows signature check itself
+(`WinVerifyTrust` through ctypes) has not been run on Windows; only the policy around it is tested, with a stand-in verifier.
+
+---
+
 ## Saving photo edits to the NAS fails with "automation write ... failed (NotFound)" (recorded 2026-10-18, not fixed)
 
 **What the user sees.** In the hosted Camera Raw workflow, after editing a photo and moving on, up to three orange toasts appear at the

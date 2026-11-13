@@ -10,7 +10,7 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Callable
@@ -26,6 +26,88 @@ DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 _SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
 
 DownloadProgressCallback = Callable[[int, int, str], None]
+
+SIGNATURE_VALID = "valid"                    # signed, and Windows trusts the certificate chain
+SIGNATURE_UNSIGNED = "unsigned"              # the file carries no Authenticode signature
+SIGNATURE_INVALID = "invalid"                # signed, but the signature or its chain did not verify
+SIGNATURE_NOT_APPLICABLE = "not_applicable"  # not Windows: there is no MSI to start and nothing that can check one
+
+
+@dataclass(frozen=True)
+class InstallerSignerPin:
+    """Who may have signed an installer this application starts.
+
+    ``subjects`` are publisher names as Windows shows them (the signing certificate's display name, compared
+    without regard to case); ``thumbprints`` are certificate hashes in hex, SHA-1 (40 digits, what Windows and
+    ``Get-AuthenticodeSignature`` show) or SHA-256 (64 digits). Every kind that is filled in must match, and
+    within a kind any one entry is enough (so a renewed certificate can be listed beside the old one).
+    """
+
+    subjects: tuple[str, ...] = ()
+    thumbprints: tuple[str, ...] = ()
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._subjects() or self._thumbprints())
+
+    def _subjects(self) -> frozenset[str]:
+        return frozenset(text.strip().casefold() for text in self.subjects if text and text.strip())
+
+    def _thumbprints(self) -> frozenset[str]:
+        return frozenset(_normalize_thumbprint(text) for text in self.thumbprints) - {""}
+
+    def matches(self, signature: "InstallerSignature") -> bool:
+        subjects, thumbprints = self._subjects(), self._thumbprints()
+        if not subjects and not thumbprints:
+            return False
+        if subjects and signature.subject.strip().casefold() not in subjects:
+            return False
+        found = {_normalize_thumbprint(signature.thumbprint_sha1), _normalize_thumbprint(signature.thumbprint_sha256)} - {""}
+        if thumbprints and not thumbprints & found:
+            return False
+        return True
+
+
+# The one place that says who signs Image Triage's installers.
+#
+# It is empty because the release build does not sign the MSI today (.github/workflows/build-windows-msi-release.yml
+# has no signing step and setup_msi.py configures none). While it is empty the publisher of an update cannot be
+# verified: the update is still held to its published SHA-256, an installer whose signature is present but broken
+# is still refused, and the About page says that the publisher was not verified. Once releases are signed, put the
+# publisher name and/or the certificate thumbprints here; from then on an unsigned installer, or one signed by
+# anyone else, is refused.
+TRUSTED_INSTALLER_SIGNERS = InstallerSignerPin(subjects=(), thumbprints=())
+
+
+@dataclass(frozen=True)
+class InstallerSignature:
+    """What the Authenticode check found on one file."""
+
+    status: str
+    subject: str = ""
+    thumbprint_sha1: str = ""
+    thumbprint_sha256: str = ""
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class PublisherCheck:
+    """The outcome of the signer policy for an installer that may be started.
+
+    ``verified`` is true only when the file is validly signed by the pinned publisher. ``notice`` is the sentence
+    the About page shows whenever it is not.
+    """
+
+    verified: bool
+    notice: str = ""
+    signature: InstallerSignature = field(default_factory=lambda: InstallerSignature(SIGNATURE_NOT_APPLICABLE))
+
+
+class InstallerSignerError(RuntimeError):
+    """The installer's signature is broken, or it is not from the pinned publisher. It must not be started."""
+
+
+SignatureVerifier = Callable[[Path], InstallerSignature]
 
 
 @dataclass(frozen=True)
@@ -179,8 +261,68 @@ def verify_installer_checksum(installer_path: str | Path, expected_sha256: str) 
         raise RuntimeError("The downloaded installer changed after it was verified. It was not started.")
 
 
+def check_installer_publisher(
+    installer_path: str | Path,
+    *,
+    verifier: SignatureVerifier | None = None,
+    pin: InstallerSignerPin | None = None,
+) -> PublisherCheck:
+    """Apply the signer policy to one installer file. Raises InstallerSignerError when it must not be started.
+
+    - A signature that is present but does not verify is always refused.
+    - With a pinned publisher (TRUSTED_INSTALLER_SIGNERS): only a valid signature from that publisher passes; an
+      unsigned file, another signer, or a system that cannot check signatures is refused.
+    - With no pinned publisher (today's unsigned releases): the file is allowed, and the result says that its
+      publisher was not verified. The caller must already have held it to the published SHA-256.
+
+    ``verifier`` reads the signature (Windows' own check by default) and exists so the policy can be tested.
+    """
+    path = Path(installer_path)
+    pin = TRUSTED_INSTALLER_SIGNERS if pin is None else pin
+    signature = (verifier or read_authenticode_signature)(path)
+    status = signature.status
+    if status == SIGNATURE_INVALID:
+        reason = f" ({signature.detail})" if signature.detail else ""
+        raise InstallerSignerError(f"The update installer's digital signature is not valid{reason}. It was not started.")
+    if status == SIGNATURE_VALID:
+        signer = signature.subject or "an unnamed publisher"
+        if not pin.configured:
+            return PublisherCheck(
+                False,
+                f"The installer is signed by {signer}, but this version of Image Triage has no publisher to compare "
+                "that with, so the publisher was not verified. Its checksum matched the published one.",
+                signature,
+            )
+        if pin.matches(signature):
+            return PublisherCheck(True, "", signature)
+        raise InstallerSignerError(
+            f"The update installer is signed by {signer}, not by the publisher of Image Triage. It was not started."
+        )
+    if status == SIGNATURE_UNSIGNED:
+        if pin.configured:
+            raise InstallerSignerError(
+                "The update installer is not digitally signed, and Image Triage's installers are. It was not started."
+            )
+        return PublisherCheck(
+            False,
+            "The installer is not digitally signed, so its publisher could not be verified. "
+            "Its checksum matched the published one.",
+            signature,
+        )
+    if status == SIGNATURE_NOT_APPLICABLE:
+        if pin.configured:
+            raise InstallerSignerError("The update installer's publisher cannot be checked on this system. It was not started.")
+        return PublisherCheck(False, "Installer signatures are only checked on Windows.", signature)
+    raise InstallerSignerError("The update installer's digital signature could not be checked. It was not started.")
+
+
 def launch_update_installer(
-    installer_path: str | Path, *, passive: bool = True, expected_sha256: str | None = None
+    installer_path: str | Path,
+    *,
+    passive: bool = True,
+    expected_sha256: str | None = None,
+    signature_verifier: SignatureVerifier | None = None,
+    signer_pin: InstallerSignerPin | None = None,
 ) -> subprocess.Popen:
     path = Path(installer_path)
     if not path.exists():
@@ -191,6 +333,8 @@ def launch_update_installer(
         raise OSError("MSI updates are only supported on Windows.")
     if expected_sha256 is not None:
         verify_installer_checksum(path, expected_sha256)
+    # the same file that was just hashed, and the one handed to msiexec below: nothing is fetched again in between
+    check_installer_publisher(path, verifier=signature_verifier, pin=signer_pin)
 
     command = ["msiexec.exe", "/i", str(path)]
     if passive:
@@ -204,6 +348,8 @@ def launch_update_installer_and_restart(
     app_executable: str | Path | None = None,
     current_pid: int | None = None,
     expected_sha256: str | None = None,
+    signature_verifier: SignatureVerifier | None = None,
+    signer_pin: InstallerSignerPin | None = None,
 ) -> subprocess.Popen:
     path = Path(installer_path)
     if not path.exists():
@@ -218,6 +364,8 @@ def launch_update_installer_and_restart(
         raise FileNotFoundError(f"Application executable not found: {executable}")
     if expected_sha256 is not None:
         verify_installer_checksum(path, expected_sha256)
+    # the same file that was just hashed, and the one the handoff installs: nothing is fetched again in between
+    check_installer_publisher(path, verifier=signature_verifier, pin=signer_pin)
 
     command = [
         "powershell.exe",
@@ -376,6 +524,12 @@ def _safe_filename(filename: str) -> str:
     return cleaned or "ImageTriage.msi"
 
 
+def _normalize_thumbprint(value: str) -> str:
+    """Hex digits only, lower case; "" for anything that is not a SHA-1 or SHA-256 hash."""
+    digits = re.sub(r"[\s:]", "", str(value or "")).casefold()
+    return digits if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", digits) else ""
+
+
 def _normalize_sha256(value: str) -> str:
     normalized = str(value or "").strip()
     if normalized.casefold().startswith("sha256:"):
@@ -410,3 +564,163 @@ def _remove_partial_download(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+# ---- reading the Authenticode signature (Windows only) ----
+_TRUST_E_NOSIGNATURE = 0x800B0100
+_TRUST_E_PROVIDER_UNKNOWN = 0x800B0001
+_TRUST_E_SUBJECT_FORM_UNKNOWN = 0x800B0003
+_TRUST_FAILURES = {
+    0x80096010: "the file was changed after it was signed",
+    0x800B0101: "the signing certificate has expired",
+    0x800B0109: "the signing certificate does not lead to a trusted root",
+    0x800B010A: "the signing certificate chain could not be built",
+    0x800B010C: "the signing certificate was revoked",
+    0x800B010E: "the revocation status of the signing certificate could not be checked",
+    0x800B0111: "the signing certificate is explicitly distrusted on this PC",
+    0x800B0004: "the signature does not belong to this file",
+}
+
+
+def _classify_trust_result(result: int, last_error: int) -> tuple[str, str]:
+    """Turn WinVerifyTrust's answer into (status, detail).
+
+    Only "there is no signature at all" counts as unsigned. WinVerifyTrust also answers TRUST_E_NOSIGNATURE for a
+    signature it could not read or verify, and says which through the last error, so anything else is invalid.
+    """
+    result &= 0xFFFFFFFF
+    last_error &= 0xFFFFFFFF
+    if result == 0:
+        return SIGNATURE_VALID, ""
+    if result == _TRUST_E_NOSIGNATURE and last_error in (
+        _TRUST_E_NOSIGNATURE,
+        _TRUST_E_SUBJECT_FORM_UNKNOWN,
+        _TRUST_E_PROVIDER_UNKNOWN,
+    ):
+        return SIGNATURE_UNSIGNED, ""
+    code = last_error if result == _TRUST_E_NOSIGNATURE and last_error else result
+    return SIGNATURE_INVALID, _TRUST_FAILURES.get(code, f"Windows error 0x{code:08X}")
+
+
+def read_authenticode_signature(installer_path: str | Path) -> InstallerSignature:
+    """The Authenticode signature of a file, as Windows judges it. Not applicable on any other system."""
+    if os.name != "nt":
+        return InstallerSignature(SIGNATURE_NOT_APPLICABLE)
+    try:
+        return _windows_authenticode_signature(Path(installer_path))
+    except Exception as exc:  # a check that could not be made is not a pass
+        return InstallerSignature(SIGNATURE_INVALID, detail=f"the signature could not be checked: {exc}")
+
+
+def _windows_authenticode_signature(path: Path) -> InstallerSignature:  # pragma: no cover - Windows only
+    """WinVerifyTrust for the signature and its chain, then the signing certificate out of the verified state."""
+    import ctypes
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    class WINTRUST_FILE_INFO(ctypes.Structure):
+        _fields_ = [
+            ("cbStruct", wintypes.DWORD),
+            ("pcwszFilePath", wintypes.LPCWSTR),
+            ("hFile", wintypes.HANDLE),
+            ("pgKnownSubject", ctypes.c_void_p),
+        ]
+
+    class WINTRUST_DATA(ctypes.Structure):
+        _fields_ = [
+            ("cbStruct", wintypes.DWORD),
+            ("pPolicyCallbackData", ctypes.c_void_p),
+            ("pSIPClientData", ctypes.c_void_p),
+            ("dwUIChoice", wintypes.DWORD),
+            ("fdwRevocationChecks", wintypes.DWORD),
+            ("dwUnionChoice", wintypes.DWORD),
+            ("pFile", ctypes.POINTER(WINTRUST_FILE_INFO)),
+            ("dwStateAction", wintypes.DWORD),
+            ("hWVTStateData", wintypes.HANDLE),
+            ("pwszURLReference", wintypes.LPCWSTR),
+            ("dwProvFlags", wintypes.DWORD),
+            ("dwUIContext", wintypes.DWORD),
+            ("pSignatureSettings", ctypes.c_void_p),
+        ]
+
+    class CERT_CONTEXT(ctypes.Structure):
+        _fields_ = [
+            ("dwCertEncodingType", wintypes.DWORD),
+            ("pbCertEncoded", ctypes.POINTER(ctypes.c_ubyte)),
+            ("cbCertEncoded", wintypes.DWORD),
+            ("pCertInfo", ctypes.c_void_p),
+            ("hCertStore", ctypes.c_void_p),
+        ]
+
+    class CRYPT_PROVIDER_CERT(ctypes.Structure):  # only the leading fields; the rest is not read
+        _fields_ = [
+            ("cbStruct", wintypes.DWORD),
+            ("pCert", ctypes.POINTER(CERT_CONTEXT)),
+        ]
+
+    WTD_UI_NONE, WTD_REVOKE_WHOLECHAIN, WTD_CHOICE_FILE = 2, 1, 1
+    WTD_STATEACTION_VERIFY, WTD_STATEACTION_CLOSE = 1, 2
+    WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT = 0x80
+    CERT_NAME_SIMPLE_DISPLAY_TYPE = 4
+
+    wintrust = ctypes.WinDLL("wintrust", use_last_error=True)
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    wintrust.WinVerifyTrust.argtypes = [wintypes.HANDLE, ctypes.POINTER(GUID), ctypes.POINTER(WINTRUST_DATA)]
+    wintrust.WinVerifyTrust.restype = wintypes.LONG
+    wintrust.WTHelperProvDataFromStateData.argtypes = [wintypes.HANDLE]
+    wintrust.WTHelperProvDataFromStateData.restype = ctypes.c_void_p
+    wintrust.WTHelperGetProvSignerFromChain.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    wintrust.WTHelperGetProvSignerFromChain.restype = ctypes.c_void_p
+    wintrust.WTHelperGetProvCertFromChain.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    wintrust.WTHelperGetProvCertFromChain.restype = ctypes.POINTER(CRYPT_PROVIDER_CERT)
+    crypt32.CertGetNameStringW.argtypes = [
+        ctypes.POINTER(CERT_CONTEXT), wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.LPWSTR, wintypes.DWORD,
+    ]
+    crypt32.CertGetNameStringW.restype = wintypes.DWORD
+
+    # WINTRUST_ACTION_GENERIC_VERIFY_V2: the Authenticode policy
+    action = GUID(0x00AAC56B, 0xCD44, 0x11D0, (ctypes.c_ubyte * 8)(0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE))
+    file_info = WINTRUST_FILE_INFO(ctypes.sizeof(WINTRUST_FILE_INFO), str(path), None, None)
+    data = WINTRUST_DATA()
+    data.cbStruct = ctypes.sizeof(WINTRUST_DATA)
+    data.dwUIChoice = WTD_UI_NONE
+    data.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN
+    data.dwUnionChoice = WTD_CHOICE_FILE
+    data.pFile = ctypes.pointer(file_info)
+    data.dwStateAction = WTD_STATEACTION_VERIFY
+    data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT
+    no_window = wintypes.HANDLE(-1)  # INVALID_HANDLE_VALUE: there is nobody to show a dialog to
+
+    ctypes.set_last_error(0)
+    result = wintrust.WinVerifyTrust(no_window, ctypes.byref(action), ctypes.byref(data))
+    last_error = ctypes.get_last_error()
+    try:
+        status, detail = _classify_trust_result(result, last_error)
+        if status != SIGNATURE_VALID:
+            return InstallerSignature(status, detail=detail)
+        provider = wintrust.WTHelperProvDataFromStateData(data.hWVTStateData)
+        signer = wintrust.WTHelperGetProvSignerFromChain(provider, 0, False, 0) if provider else None
+        provider_cert = wintrust.WTHelperGetProvCertFromChain(signer, 0) if signer else None
+        if not provider_cert or not provider_cert.contents.pCert:
+            return InstallerSignature(SIGNATURE_INVALID, detail="the signing certificate could not be read")
+        certificate = provider_cert.contents.pCert
+        encoded = ctypes.string_at(certificate.contents.pbCertEncoded, certificate.contents.cbCertEncoded)
+        length = crypt32.CertGetNameStringW(certificate, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, None, None, 0)
+        name = ctypes.create_unicode_buffer(max(1, length))
+        crypt32.CertGetNameStringW(certificate, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, None, name, max(1, length))
+        return InstallerSignature(
+            SIGNATURE_VALID,
+            subject=name.value.strip(),
+            thumbprint_sha1=hashlib.sha1(encoded).hexdigest(),  # an identifier Windows shows, not relied on for integrity
+            thumbprint_sha256=hashlib.sha256(encoded).hexdigest(),
+        )
+    finally:
+        data.dwStateAction = WTD_STATEACTION_CLOSE
+        wintrust.WinVerifyTrust(no_window, ctypes.byref(action), ctypes.byref(data))
