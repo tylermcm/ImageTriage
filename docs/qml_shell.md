@@ -25,6 +25,26 @@ remove image decoding, saved decisions, collections, AI workers, file operations
 or the native PhotoCraft integration. Application modules must not import
 `PySide6.QtWidgets` or restore an alternative desktop entry point.
 
+## File operations
+
+Delete, move and copy (`file_actions.py`), their undo and the Safe Trash window never touch
+files on the UI thread. A slot picks the photos and gives the file work to
+`file_jobs.FileJobs`, which runs one operation at a time on a worker. The grid, the saved
+decisions, the collections and the single undo step change when the worker reports back,
+with exactly the photos that went. A photo that fails is left whole where it was and named
+in a toast at the end; the others still go.
+
+Progress uses the transfer card (`TransferCards.qml`, through `TransferModel.follow`): what
+is being done, done/total, the current name and Cancel. The card appears only when an
+operation has run for 300 ms. Cancel takes effect between photos, so a bundle (RAW, JPEG,
+sidecars, edit data) is never split. A second request while one runs is refused with a toast.
+Quitting cancels the same way, waits for the photo in hand and applies what was done before
+the decisions are flushed.
+
+Undo and `trashPaths` must answer at once, so they wait for the worker while the window
+keeps processing events. An undo that was cancelled or only partly worked keeps the rest on
+the history and can be run again. Tests call `fileActions.waitForIdle()` after a slot.
+
 ## Search and culling
 
 The top-bar field searches photos; Ctrl+F focuses it. Commands have a separate

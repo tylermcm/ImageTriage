@@ -4,6 +4,9 @@ Wording follows the mockup (and the shared `ui/transfer_dialogs.py`): "Copy 12 i
 A handoff run is real: when `handoff_model` prepared a job (a recipe and real photos) the cards run it through `workflow_runner.WorkflowRunner` and follow
 its progress; a move or an archive asks first, as the backend does. Without a job (`--mock`, the cards' test hook) `start()` plays a scripted progress
 and no file is touched. See docs/qml_unwired.md.
+
+The progress card is also what a delete, a move, a copy, an undo of one or a Safe Trash restore shows while it runs (`follow`): those are
+`file_jobs.FileJobs` operations, which have no confirm or done card of their own (they ask elsewhere and report in a toast).
 """
 from __future__ import annotations
 
@@ -36,6 +39,8 @@ class TransferModel(QObject):
         self._job = None                    # what handoff_model prepared for the next run: {"recipe", "records", "root", "folder"}
         self._job_records = None            # that job's photos, kept for the cards after the run has taken the job (None: no job)
         self._real = False                  # the cards are following a real run
+        self._jobs = None                   # file_jobs.FileJobs: delete, move, copy and the Safe Trash window (see `follow`)
+        self._file_job = False              # the progress card is showing one of those
         self._started = 0.0
         self._bytes = 0
         self._now_name = ""
@@ -65,6 +70,32 @@ class TransferModel(QObject):
         if self._state and self._job_records is None:      # a job's photos are its own: the grid changing does not change them
             self._names = []
             self._rebuild()
+
+    # -- a delete, move, copy or restore in progress ------------------------------------------------------------------------------
+    def follow(self, jobs) -> None:
+        """Show the progress card for the file operations of `jobs` (which says when one has run long enough to be worth showing)."""
+        self._jobs = jobs
+        jobs.progressChanged.connect(self._file_job_changed)
+
+    def _file_job_changed(self) -> None:
+        view = self._jobs.view()
+        if view["visible"] and (self._file_job or not self._state):          # a handoff's own cards are not taken over
+            self._file_job, self._state = True, "progress"
+            self._timer.stop()
+            self._rebuild()
+        elif self._file_job and not view["visible"]:
+            self._file_job, self._state = False, ""
+            self._rebuild()
+
+    def _file_job_card(self) -> dict:
+        view = self._jobs.view()
+        total, done = max(1, int(view["total"])), int(view["done"])
+        fraction = min(1.0, done / total)
+        elapsed = max(0.001, time.monotonic() - view["started"])
+        seconds = round(elapsed * (1 - fraction) / fraction) if fraction > 0.02 else -1
+        return {"state": "progress", "headline": view["title"], "route": view["route"], "pct": round(fraction * 100), "pctText": f"{round(fraction * 100)}% complete",
+                "speed": "", "name": view["name"], "eta": "Working it out" if seconds < 0 else "Less than a second" if seconds < 2 else f"About {seconds} seconds",
+                "left": str(max(0, total - done)), "canCancel": bool(view["canCancel"]), "cancelLabel": "Cancelling\u2026" if view["cancelling"] else "Cancel"}
 
     # -- entry points -------------------------------------------------------------------------------------------------------------
     @Slot(str, int, str, str)
@@ -242,6 +273,9 @@ class TransferModel(QObject):
 
     @Slot()
     def cancel(self) -> None:
+        if self._file_job:
+            self._jobs.cancel()                 # it stops after the photo it is on; the card goes when it has
+            return
         if self._state == "progress":
             self._cancel = True
             if self._real and self._runner is not None:
@@ -283,6 +317,10 @@ class TransferModel(QObject):
 
     # -- the card -----------------------------------------------------------------------------------------------------------------------
     def _rebuild(self) -> None:
+        if self._file_job:
+            self._card = self._file_job_card()
+            self.cardChanged.emit()
+            return
         if not self._names:
             self._scan()
         verb = {"export": "Exporting", "archive": "Archiving", "move": "Moving"}.get(self._kind, "Copying")

@@ -99,6 +99,7 @@ def test_a_collection_follows_a_moved_photo_and_comes_back_on_undo(qapp, world):
     dest = w.tmp / "album"
 
     w.files.moveRows([row_of(w.photos, "a")], str(dest))
+    assert w.files.waitForIdle()
 
     assert (dest / primary).exists()
     assert collection_names(store, picks.id) == [f"album/{primary}", "shoot/b.jpg"]
@@ -147,6 +148,7 @@ def test_copying_a_photo_copies_its_edit_data_and_leaves_the_original_its_own(qa
     dest = w.tmp / "album"
 
     w.files.copyRows([row_of(w.photos, "b")], str(dest))
+    assert w.files.waitForIdle()
 
     assert (dest / "b.jpg").exists() and (w.shoot / "b.jpg").exists()
     assert (dest / EDIT_STORAGE_ROOT_NAME / "b.jpg.cameraraw.json").read_text(encoding="utf-8") == '{"version": 1}'
@@ -206,6 +208,7 @@ def test_a_system_trash_that_refuses_one_file_brings_the_rest_of_the_bundle_back
     w.files.confirmRequested.connect(lambda *a: asked.append(a))
 
     w.files.deleteRow(row_of(w.photos, "a"))
+    assert w.files.waitForIdle()
 
     assert asked and "could not be moved to the trash" in asked[0][2] and "Already in the trash" not in asked[0][2]
     assert (w.shoot / "a.jpg").exists() and (w.shoot / "a.nef").exists()               # together, where they were

@@ -91,6 +91,7 @@ def test_delete_moves_the_whole_bundle_to_the_safe_trash_and_undo_brings_it_back
     w.bridge.flush()
     pump(qapp, 0.3)
     w.files.deleteRow(row_of(w.photos, "a"))
+    assert w.files.waitForIdle()
     assert w.photos.shown == count - 1 and not (w.shoot / "a.jpg").exists() and not (w.shoot / "a.nef").exists()
     assert {p.name for p in (w.tmp / "trash").iterdir() if not p.name.startswith(".")} >= {"a.jpg", "a.nef", "a.xmp"}      # the sidecar went too
     assert w.toasts.items[-1]["title"] == "Deleted a.nef" and w.toasts.items[-1]["action"] == "Undo"
@@ -104,6 +105,7 @@ def test_delete_moves_the_whole_bundle_to_the_safe_trash_and_undo_brings_it_back
 def test_the_toasts_undo_button_takes_back_that_step(qapp, world):
     w = world
     w.files.deleteRow(row_of(w.photos, "b"))
+    assert w.files.waitForIdle()
     action = w.toasts.items[-1]
     assert action["action"] == "Undo"
     w.toasts.trigger(action["id"])
@@ -120,6 +122,7 @@ def test_a_deleted_photos_decision_is_dropped_from_the_store(qapp, world):
     pump(qapp, 0.3)
     assert len(DecisionStore().winner_paths(bridge_module.session_id())) == 1
     w.files.deleteRow(row_of(w.photos, "b"))
+    assert w.files.waitForIdle()
     assert DecisionStore().winner_paths(bridge_module.session_id()) == []
 
 
@@ -132,6 +135,7 @@ def test_move_goes_with_its_companion_and_its_decision(qapp, world):
     w.bridge.flush()
     pump(qapp, 0.3)
     w.files.moveRow(row_of(w.photos, "a"), str(dest))
+    assert w.files.waitForIdle()
     assert {p.name for p in dest.iterdir()} >= {"a.jpg", "a.nef"} and not (w.shoot / "a.jpg").exists() and not (w.shoot / "a.nef").exists()
     assert not any(n.startswith("a") for n in names(w.photos))
     other = PhotoModel(parent=qapp)
@@ -148,6 +152,7 @@ def test_copy_leaves_the_original_and_has_no_undo(qapp, world):
     w = world
     dest = w.tmp / "copies"
     w.files.copyRow(row_of(w.photos, "c"), str(dest))
+    assert w.files.waitForIdle()
     assert (dest / "c.jpg").exists() and (w.shoot / "c.jpg").exists()
     assert w.photos.canUndo is False and w.toasts.items[-1]["title"] == "Copied c.jpg"
 
@@ -158,12 +163,14 @@ def test_a_name_taken_in_the_destination_gets_a_new_name_not_overwritten(qapp, w
     dest.mkdir()
     (dest / "c.jpg").write_bytes(b"other")
     w.files.copyRow(row_of(w.photos, "c"), str(dest))
+    assert w.files.waitForIdle()
     assert (dest / "c.jpg").read_bytes() == b"other" and (dest / "c_1.jpg").exists()
 
 
 def test_moving_into_the_same_folder_is_refused(qapp, world):
     w = world
     w.files.moveRow(row_of(w.photos, "c"), str(w.shoot))
+    assert w.files.waitForIdle()
     assert w.toasts.items[-1]["kind"] == "warn" and (w.shoot / "c.jpg").exists()
 
 
@@ -171,12 +178,15 @@ def test_destinations_are_remembered_and_listed_without_the_current_folder(qapp,
     w = world
     dest = w.tmp / "delivery" / "album"
     w.files.copyRow(row_of(w.photos, "c"), str(dest))
+    assert w.files.waitForIdle()
     assert w.files.recent()[0] == str(dest)
     other = w.tmp / "else"
     other.mkdir()
     w.files.copyRow(row_of(w.photos, "c"), str(other))
+    assert w.files.waitForIdle()
     assert w.files.recent()[:2] == [str(other), str(dest)]
     w.files.copyRow(row_of(w.photos, "c"), str(w.shoot / "sub"))
+    assert w.files.waitForIdle()
     assert str(w.shoot) not in w.files.recent()
 
 
@@ -184,6 +194,7 @@ def test_a_failed_move_changes_nothing(qapp, world, monkeypatch):
     w = world
     monkeypatch.setattr(fa, "move_paths", lambda paths, dest: (_ for _ in ()).throw(OSError("disk is full")))
     w.files.moveRow(row_of(w.photos, "c"), str(w.tmp / "x"))
+    assert w.files.waitForIdle()
     assert (w.shoot / "c.jpg").exists() and "c.jpg" in names(w.photos)
     assert w.toasts.items[-1]["kind"] == "error" and "disk is full" in w.toasts.items[-1]["body"]
 
@@ -203,6 +214,7 @@ def test_deleting_inside_a_recycle_bin_asks_first_and_is_for_good(qapp, tmp_path
     assert (bin_dir / "x.jpg").exists()
     files.deleteRow(0)
     files.answer(asked[1][0], True)
+    assert files.waitForIdle()
     assert not (bin_dir / "x.jpg").exists()
 
 
@@ -214,8 +226,10 @@ def test_system_trash_that_fails_asks_before_deleting(qapp, world, monkeypatch):
     asked = []
     w.files.confirmRequested.connect(lambda *a: asked.append(a))
     w.files.deleteRow(row_of(w.photos, "c"))
+    assert w.files.waitForIdle()
     assert asked and (w.shoot / "c.jpg").exists()
     w.files.answer(asked[0][0], True)
+    assert w.files.waitForIdle()
     assert not (w.shoot / "c.jpg").exists()
 
 
@@ -238,6 +252,7 @@ def test_the_menu_asks_for_a_folder_and_lists_recent_ones(qapp, world):
     menu.uiRequest.connect(lambda what, arg: requests.append((what, arg)))
     dest = w.tmp / "delivery" / "album"
     w.files.copyRow(row_of(w.photos, "c"), str(dest))
+    assert w.files.waitForIdle()
     menu.openPhoto(row_of(w.photos, "b"))
     menu.setSub("mv")
     keys = [i.get("key") for i in menu.view["subItems"] if i.get("kind") == "row"]
@@ -248,9 +263,11 @@ def test_the_menu_asks_for_a_folder_and_lists_recent_ones(qapp, world):
     menu.openPhoto(row)
     menu.setSub("mv")
     menu.act("mv:r0")
+    assert w.files.waitForIdle()
     assert (dest / "b.jpg").exists() and not (w.shoot / "b.jpg").exists()
     menu.openPhoto(row_of(w.photos, "c"))
     menu.act("del")
+    assert w.files.waitForIdle()
     assert not (w.shoot / "c.jpg").exists()
 
 
@@ -261,6 +278,7 @@ def test_delete_takes_every_selected_photo_as_one_undoable_step(qapp, world):
     rows = w.photos.selectionRows(0)
     assert len(rows) == 3
     w.files.deleteRows(rows)
+    assert w.files.waitForIdle()
     assert w.photos.shown == 0 and not any((w.shoot / n).exists() for n in ("a.jpg", "a.nef", "b.jpg", "c.jpg"))
     assert w.toasts.items[-1]["title"] == "Moved 3 photos to the recycle bin"
     assert w.photos.undo() == "move of 3 photos to the recycle bin"
@@ -271,6 +289,7 @@ def test_delete_takes_every_selected_photo_as_one_undoable_step(qapp, world):
 def test_delete_with_one_row_is_the_single_photo_delete(qapp, world):
     w = world
     w.files.deleteRows([row_of(w.photos, "b")])
+    assert w.files.waitForIdle()
     assert w.toasts.items[-1]["title"] == "Deleted b.jpg" and w.photos.shown == 2
 
 
@@ -279,6 +298,7 @@ def test_move_takes_every_selected_photo_and_one_undo_brings_them_all_back(qapp,
     dest = w.tmp / "picked"
     w.photos.selectAll()
     w.files.moveRows(w.photos.selectionRows(0), str(dest))
+    assert w.files.waitForIdle()
     assert {p.name for p in dest.iterdir()} >= {"a.nef", "a.jpg", "b.jpg", "c.jpg"} and w.photos.shown == 0
     assert w.toasts.items[-1]["title"] == "Moved 3 photos"
     assert w.photos.undo() == "move of 3 photos"
@@ -292,6 +312,7 @@ def test_a_bundle_is_renamed_together_when_one_of_its_names_is_taken(qapp, world
     dest.mkdir()
     (dest / "a.jpg").write_bytes(b"someone else's")
     w.files.moveRow(row_of(w.photos, "a"), str(dest))
+    assert w.files.waitForIdle()
     assert (dest / "a.jpg").read_bytes() == b"someone else's"
     assert (dest / "a_1.nef").exists() and (dest / "a_1.jpg").exists()          # still a pair, not a.nef + a_1.jpg
 
@@ -300,6 +321,7 @@ def test_a_failed_undo_stays_on_the_history_and_does_not_undo_something_older(qa
     w = world
     w.photos.setRating(row_of(w.photos, "c"), 4)                # the older, unrelated change
     w.files.deleteRow(row_of(w.photos, "b"))
+    assert w.files.waitForIdle()
     (w.tmp / "trash" / "b.jpg").unlink()                       # the trashed file is gone: this undo cannot work
     failed = []
     w.photos.undoFailed.connect(failed.append)
@@ -312,6 +334,7 @@ def test_a_failed_undo_stays_on_the_history_and_does_not_undo_something_older(qa
 def test_undo_never_replaces_a_file_that_now_has_the_original_name(qapp, world):
     w = world
     w.files.deleteRow(row_of(w.photos, "b"))
+    assert w.files.waitForIdle()
     (w.shoot / "b.jpg").write_bytes(b"a new photo with the old name")
     assert w.photos.undo() == ""
     assert (w.shoot / "b.jpg").read_bytes() == b"a new photo with the old name" and (w.tmp / "trash" / "b.jpg").exists()
@@ -349,6 +372,7 @@ def test_a_deleted_photos_edits_go_with_it_and_come_back_with_it(qapp, world):
     w = world
     recipe = _recipe(w.shoot, "b.jpg")
     w.files.deleteRow(row_of(w.photos, "b"))
+    assert w.files.waitForIdle()
     assert not recipe.exists() and (w.tmp / "trash" / "b.jpg.cameraraw.json").exists()   # nothing left for a later b.jpg to inherit
     assert w.photos.undo() == "delete of b.jpg"
     pump(qapp, 0.8)
@@ -362,6 +386,7 @@ def test_a_moved_photos_edits_move_with_it_and_back_on_undo(qapp, world):
     recipe = _recipe(w.shoot, "c.jpg")
     dest = w.tmp / "delivered"
     w.files.moveRow(row_of(w.photos, "c"), str(dest))
+    assert w.files.waitForIdle()
     assert not recipe.exists() and (dest / EDIT_STORAGE_ROOT_NAME / "c.jpg.cameraraw.json").exists()
     assert w.photos.undo() == "move of c.jpg"
     pump(qapp, 0.8)
