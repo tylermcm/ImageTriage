@@ -233,8 +233,10 @@ class ProbeOps(FakeOps):
         return dict(self.answer)
 
 
-def center(qapp, ops):
-    ai = AiCenterBackend(ops, parent=qapp)
+def center(qapp, ops, auto_test=False):
+    """The AI Center for ``ops``. The tests of the button and of the untested wording switch the unasked test off; the tests at
+    the end of this file are about that unasked test."""
+    ai = AiCenterBackend(ops, parent=qapp, auto_test=auto_test)
     ai.refresh()
     until(qapp, lambda: ai.state()["checked"])
     return ai
@@ -354,7 +356,7 @@ def test_the_test_button_reaches_the_back_end(qapp, tmp_path):
     engine, window, warnings = _load_main(qapp, tmp_path)
     window.setWidth(1440)
     window.setHeight(900)
-    ai = AiCenterBackend(ops, parent=qapp)
+    ai = AiCenterBackend(ops, parent=qapp, auto_test=False)
     real = CullModel(engine.rootContext().contextProperty("photos"), memory=False, ai=ai, parent=qapp)
     engine.rootContext().setContextProperty("cull", real)
     until(qapp, lambda: real.view["center"]["rtState"] != "Checking…")
@@ -379,3 +381,125 @@ def test_the_test_button_reaches_the_back_end(qapp, tmp_path):
     window.close()
     engine.deleteLater()
     pump(qapp, 0.2)
+
+
+# -- tested without being asked ----------------------------------------------------------------------------------------------------
+
+def test_an_installed_runtime_is_tested_as_soon_as_it_is_seen(qapp):
+    ops = ProbeOps()
+    ai = center(qapp, ops, auto_test=True)
+    until(qapp, lambda: ai.state()["tested"])
+    assert ops.calls.count(("probe",)) == 1 and ai.state()["probe"]["device"] == "cuda"
+    assert threading.main_thread() not in ops.threads
+    ai.refresh()                                   # looking again does not test again
+    pump(qapp, 0.3)
+    assert ops.calls.count(("probe",)) == 1 and not ai.needs_test()
+
+
+def test_a_cancelled_unasked_test_is_not_started_over_and_over(qapp):
+    ops = ProbeOps()
+    ops.gate.clear()
+    ai = center(qapp, ops, auto_test=True)
+    until(qapp, lambda: ops.threads)
+    ai.cancel()
+    until(qapp, lambda: not ai.busy)
+    pump(qapp, 0.3)
+    assert ops.calls.count(("probe",)) == 1 and not ai.state()["tested"]
+    assert ai.needs_test()                         # but a run still tests before it starts
+
+
+def test_nothing_is_tested_when_no_runtime_is_installed(qapp):
+    ops = ProbeOps(installed=[], torch=[], gpuBuild=False)
+    ai = center(qapp, ops, auto_test=True)
+    pump(qapp, 0.3)
+    assert ("probe",) not in ops.calls and not ai.needs_test()
+    ran = []
+    ai.ensure_tested(lambda: ran.append(1))
+    assert ran == [1]
+
+
+def test_a_run_waits_for_a_test_that_is_no_longer_recent(qapp):
+    ops = ProbeOps()
+    ai = center(qapp, ops, auto_test=True)
+    until(qapp, lambda: ai.state()["tested"])
+    ran = []
+    ai.ensure_tested(lambda: ran.append("fresh"))
+    assert ran == ["fresh"] and ops.calls.count(("probe",)) == 1      # tested a moment ago: the run starts at once
+    ai._probe_at -= ai.PROBE_FRESH_S + 1                              # ... and later it is tested again first
+    ops.answer = CPU_ONLY
+    ops.gate.clear()
+    ai.ensure_tested(lambda: ran.append("first"))
+    ai.ensure_tested(lambda: ran.append("second"))
+    until(qapp, lambda: len(ops.threads) == 2)
+    assert ran == ["fresh"]                                           # both wait for the one test that is running
+    ops.gate.set()
+    until(qapp, lambda: len(ran) == 3)
+    assert ran == ["fresh", "first", "second"] and ops.calls.count(("probe",)) == 2
+    assert not ai.state()["gpuUsable"] and ai.state()["probe"]["device"] == "cpu"   # what the run is then decided from
+
+
+def test_a_run_is_not_held_up_when_the_test_cannot_be_started(qapp):
+    ops = ProbeOps()
+    ai = center(qapp, ops, auto_test=True)
+    until(qapp, lambda: ai.state()["tested"])
+    ai._probe_at -= ai.PROBE_FRESH_S + 1
+    ai._job = {"kind": "model", "key": "quality", "verb": "Installing", "pct": 0, "step": ""}   # a download is running
+    ran = []
+    ai.ensure_tested(lambda: ran.append(1))
+    assert ran == [1]
+    ai._job = None
+
+
+def test_start_tests_the_runtime_first_and_then_runs_with_what_it_found(qapp, monkeypatch):
+    from types import SimpleNamespace
+
+    ops = ProbeOps()
+    ai = center(qapp, ops, auto_test=True)
+    until(qapp, lambda: ai.state()["tested"])
+    photos = PhotoModel(parent=qapp)
+    from test_qml_cull_honesty import sample_rows
+
+    photos.setRows([{**row, "record": object()} for row in sample_rows(2)], "/p")
+    said = []
+    toasts = SimpleNamespace(push=lambda *args, **kwargs: said.append(args))
+    cull = CullModel(photos, memory=False, ai=ai, toasts=toasts, parent=qapp)
+    until(qapp, lambda: cull.view["centerText"] == "Ready")
+    cull._native = False
+    cull._run = SimpleNamespace(alive=False, running=False)
+    monkeypatch.setattr(cull, "_ranking_decision", lambda: SimpleNamespace(use_rankers=True, use_blink=False))
+    ai._probe_at -= ai.PROBE_FRESH_S + 1          # the last test is old by the time Start is pressed
+    ops.answer = CPU_ONLY
+    ops.gate.clear()
+    cull._start_real()
+    cull._start_real()                            # pressing Start again while it waits changes nothing
+    until(qapp, lambda: len(ops.threads) == 2)
+    assert cull._testing_before_run and not cull.analyzing
+    assert [args[1] for args in said] == ["Checking the AI runtime"]
+    started = []
+    monkeypatch.setattr(cull, "_start_real", lambda: started.append(cull._s["gpu"]))
+    ops.gate.set()
+    until(qapp, lambda: started)
+    assert started == [False] and not cull._testing_before_run      # the run is built knowing the card cannot be used
+    assert ops.calls.count(("probe",)) == 2
+    cull._run = None
+    cull.shutdown()
+
+
+def test_a_run_that_does_not_use_the_runtime_is_not_held_up_by_a_test(qapp, monkeypatch):
+    from types import SimpleNamespace
+
+    ops = ProbeOps()
+    ai = center(qapp, ops, auto_test=True)
+    until(qapp, lambda: ai.state()["tested"])
+    ai._probe_at -= ai.PROBE_FRESH_S + 1
+    cull = CullModel(PhotoModel(parent=qapp), memory=False, ai=ai, parent=qapp)
+    cull._native = False
+    cull._run = SimpleNamespace(alive=False, running=False)
+    monkeypatch.setattr(cull, "_ranking_decision", lambda: SimpleNamespace(use_rankers=False, use_blink=False))
+    try:
+        cull._start_real()
+    except Exception:
+        pass                                      # the stand-in run cannot really start; only the test before it matters here
+    assert not cull._testing_before_run and ops.calls.count(("probe",)) == 1
+    cull._run = None
+    cull.shutdown()

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
@@ -159,9 +160,17 @@ class AiCenterBackend(QObject):
     _detected = Signal(dict)
     _event = Signal(str, object)                     # from a worker thread: ("progress", {...}) or ("end", {...})
 
-    def __init__(self, ops=None, parent: QObject | None = None) -> None:
+    PROBE_FRESH_S = 120.0                            # a test this recent is not repeated before a run
+
+    def __init__(self, ops=None, parent: QObject | None = None, *, auto_test: bool = True) -> None:
         super().__init__(parent)
         self._ops = ops or RealOps()
+        # The runtime is tested without being asked: once when it is first seen installed, and again before a run when the last
+        # test is no longer recent. Nobody should have to press a button to learn that ranking will not work.
+        self._auto_test = auto_test
+        self._auto_identity: str | None = None       # the runtime the unasked test was already started for
+        self._probe_at = 0.0
+        self._after_probe: list = []                 # what waits for the test before a run
         self._raw: dict | None = None                # the last look at the machine
         self._job: dict | None = None                # the one install, repair or removal running now
         self._errors: dict[str, str] = {}            # "runtime" or a model key -> why it failed, until the next try
@@ -194,6 +203,37 @@ class AiCenterBackend(QObject):
         if self._probe is not None and str(raw.get("identity", "")) != str(self._probe.get("identity", "")):
             self._probe = None                       # another runtime is installed now (or none): the test was of the old one
         self.changed.emit()
+        identity = str(raw.get("identity", ""))
+        if self._auto_test and self._probe is None and self._job is None and self._runtime_installed() and self._auto_identity != identity:
+            self._auto_identity = identity           # once per runtime: a cancelled or failed test is not started over and over
+            self.testRuntime()
+
+    def _runtime_installed(self) -> bool:
+        raw = self._raw
+        return (raw is not None and "failed" not in raw and bool(raw.get("installed")) and bool(raw.get("torch"))
+                and not self._errors.get("runtime") and callable(getattr(self._ops, "probe_runtime", None)))
+
+    def needs_test(self) -> bool:
+        """Whether a run should wait for a test first: the runtime is installed and was not tested recently."""
+        if not self._auto_test or not self._runtime_installed():
+            return False
+        return self._probe is None or time.monotonic() - self._probe_at > self.PROBE_FRESH_S
+
+    def ensure_tested(self, then) -> None:
+        """Call ``then()`` once the runtime has a recent test: at once when it has, otherwise after testing it now. ``then`` is
+        called whatever the test found (and when it could not be started): the caller reads ``state()`` for the result."""
+        if not self.needs_test():
+            then()
+            return
+        self._after_probe.append(then)
+        probing = self._job is not None and self._job["kind"] == "probe"
+        if not probing and not self._start_probe():
+            self._release_waiting()                  # an install is running: nothing can be tested now, and the run reports for itself
+
+    def _release_waiting(self) -> None:
+        waiting, self._after_probe = self._after_probe, []
+        for then in waiting:
+            then()
 
     # -- what the window shows ------------------------------------------------------------------------------------------------
     @property
@@ -297,14 +337,18 @@ class AiCenterBackend(QObject):
             job["pct"], job["step"] = int(payload.get("pct", job["pct"])), str(payload.get("step", job["step"]))
         elif kind == "probe":
             self._probe = dict(payload)
+            self._probe_at = time.monotonic()
         elif kind == "end" and job is not None:
             self._job = None
             if job["kind"] == "runtime":
                 self._probe = None                   # installed or repaired (or stopped half way): what was tested is not what is there now
+                self._auto_identity = None           # and what is there now is tested again without being asked
             if payload.get("error"):
                 self._errors[job["key"]] = payload["error"]
         self.changed.emit()
         if kind == "end":
+            if job is not None and job["kind"] == "probe":
+                self._release_waiting()
             self.refresh()
 
     def _progress(self, progress, word: str = "") -> None:
@@ -316,9 +360,12 @@ class AiCenterBackend(QObject):
     @Slot()
     def testRuntime(self) -> None:
         """"Test runtime": run the managed runtime for real, on a worker thread, and keep what it reports. `cancel` stops it."""
+        self._start_probe()
+
+    def _start_probe(self) -> bool:
         probe = getattr(self._ops, "probe_runtime", None)
         if not callable(probe):
-            return
+            return False
 
         def work(job: dict) -> None:
             self._event.emit("progress", {"pct": 0, "step": "Starting the AI runtime…"})
@@ -334,7 +381,7 @@ class AiCenterBackend(QObject):
             if not self._cancel.is_set():
                 self._event.emit("probe", result)
 
-        self._start("probe", "probe", "Testing", work)
+        return self._start("probe", "probe", "Testing", work)
 
     # -- the runtime ----------------------------------------------------------------------------------------------------------
     def variant(self, repair: bool = False) -> str:

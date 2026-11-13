@@ -117,6 +117,7 @@ class CullModel(QObject):
         self._run_token = -1                      # the value of `_token` when the analysis now running (or last run) was started
         self._run_notes: list[str] = []           # what the last run skipped and why, shown above the results
         self._extra_notes: dict[str, str] = {}    # "search" / "people": why the background index did not run or could not finish
+        self._testing_before_run = False          # Start was pressed and waits for the unasked runtime test
         self._run_device = ""                     # where the rankers really ran ("the graphics card", "the CPU"), as the worker reported it
         self._face_wanted = False                 # the People pass waits for both the cull and the search index of this run
         self._extras_token = -1
@@ -1331,6 +1332,12 @@ class CullModel(QObject):
                 out.extend(r.get("companions", ()))
         return out
 
+    def _start_after_test(self) -> None:
+        self._testing_before_run = False
+        self._on_ai()                                 # what the test found decides the device before the run is built
+        if self._run is not None and not self._s["running"] and any(r.get("record") is not None for r in self._photos.all_rows()):
+            self._start_real()
+
     def _start_real(self) -> None:
         if getattr(self._run, "alive", False):
             # The analysis that was cancelled (or belongs to the folder just left) has not stopped yet. Starting over it would let its late
@@ -1354,6 +1361,15 @@ class CullModel(QObject):
                 self._run.start(folder=self._photos.folder_dir())
             except Exception as error:
                 self._fail(str(error))
+            return
+        wanted = self._ranking_decision()
+        if self._ai is not None and (wanted.use_rankers or wanted.use_blink) and self._ai.needs_test():
+            # Test the runtime first, unasked: which device ranking can really use is decided from a run of it, not from files.
+            if not self._testing_before_run:
+                self._testing_before_run = True
+                if self._toasts is not None:
+                    self._toasts.push("info", "Checking the AI runtime", "The analysis starts as soon as it answers.")
+                self._ai.ensure_tested(self._start_after_test)
             return
         s = self._s
         v = s["vals"]
