@@ -12,17 +12,19 @@ from .file_ops import FileMove, is_unc_path, unc_share_root
 
 MANIFEST_NAME = ".image-triage-restore.json"
 
-# The numbers Windows' GetDriveTypeW gives; the POSIX classification below answers in the same terms.
-DRIVE_UNKNOWN = 0
-DRIVE_REMOVABLE = 2
-DRIVE_FIXED = 3
-DRIVE_REMOTE = 4
-
-_NETWORK_FILESYSTEMS = frozenset({
-    "nfs", "nfs4", "cifs", "smb3", "smbfs", "afs", "ceph", "glusterfs", "9p", "davfs", "ncpfs",
-    "fuse.sshfs", "fuse.rclone", "fuse.gvfsd-fuse", "fuse.davfs2",
-})
-_REMOVABLE_MOUNT_PARENTS = ("/media/", "/run/media/")
+# The mount table reader and the classification of a mount as a Windows drive type live in ``path_policy`` (shared with
+# the GUI-thread existence policy and the file-name rules); they are used here under the names they always had.
+from .path_policy import (  # noqa: E402,F401
+    DRIVE_FIXED,
+    DRIVE_REMOTE,
+    DRIVE_REMOVABLE,
+    DRIVE_UNKNOWN,
+    _block_device_is_removable,
+    _read_mounts,
+    classify_mount,
+    mount_for_path,
+    parse_mountinfo,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -41,76 +43,6 @@ class SafeTrashOutcome:
 
     done: tuple[str, ...]
     left: tuple[tuple[str, str], ...]
-
-
-def _unescape_mount_field(text: str) -> str:
-    # mountinfo writes a space, tab, newline and backslash in a path as a backslash and three octal digits
-    out, index = [], 0
-    while index < len(text):
-        if text[index] == "\\" and text[index + 1:index + 4].isdigit():
-            out.append(chr(int(text[index + 1:index + 4], 8)))
-            index += 4
-        else:
-            out.append(text[index])
-            index += 1
-    return "".join(out)
-
-
-def parse_mountinfo(text: str) -> list[tuple[str, str, str]]:
-    """``(mount point, filesystem type, source)`` for each line of ``/proc/self/mountinfo``."""
-    mounts: list[tuple[str, str, str]] = []
-    for line in text.splitlines():
-        left, separator, right = line.partition(" - ")
-        fields, tail = left.split(), right.split()
-        if not separator or len(fields) < 5 or len(tail) < 2:
-            continue
-        mounts.append((_unescape_mount_field(fields[4]), tail[0], _unescape_mount_field(tail[1])))
-    return mounts
-
-
-def mount_for_path(path: str, mounts: list[tuple[str, str, str]]) -> tuple[str, str, str] | None:
-    """The mount ``path`` is on: the longest mount point that is the path or one of its parents (the last one mounted there)."""
-    target = posixpath.normpath(path)
-    best: tuple[str, str, str] | None = None
-    for mount in mounts:
-        point = posixpath.normpath(mount[0])
-        if target == point or target.startswith(point.rstrip("/") + "/"):
-            if best is None or len(point) >= len(posixpath.normpath(best[0])):
-                best = mount
-    return best
-
-
-def _block_device_is_removable(source: str) -> bool:
-    """Does the kernel call the disk under this partition removable (a card reader, a USB stick)?"""
-    name = os.path.basename(os.path.realpath(source))
-    if not source.startswith("/dev/") or not name:
-        return False
-    for candidate in (name, name.rstrip("0123456789").rstrip("p") if name.startswith(("mmcblk", "nvme")) else name.rstrip("0123456789")):
-        try:
-            return Path(f"/sys/block/{candidate}/removable").read_text(encoding="ascii").strip() == "1"
-        except OSError:
-            continue
-    return False
-
-
-def classify_mount(mount: tuple[str, str, str] | None, *, removable=None) -> int:
-    """A mount as a Windows drive type: remote for a network filesystem, removable for a removable disk or anything the desktop
-    mounted under ``/media`` or ``/run/media``, otherwise fixed."""
-    if mount is None:
-        return DRIVE_UNKNOWN
-    point, filesystem, source = mount
-    if filesystem.casefold() in _NETWORK_FILESYSTEMS:
-        return DRIVE_REMOTE
-    if (point.rstrip("/") + "/").startswith(_REMOVABLE_MOUNT_PARENTS) or (removable or _block_device_is_removable)(source):
-        return DRIVE_REMOVABLE
-    return DRIVE_FIXED
-
-
-def _read_mounts() -> list[tuple[str, str, str]]:
-    try:
-        return parse_mountinfo(Path("/proc/self/mountinfo").read_text(encoding="utf-8", errors="replace"))
-    except OSError:
-        return []
 
 
 class SafeTrash:
@@ -151,7 +83,7 @@ class SafeTrash:
         if cached is not None:
             return cached
         if os.name != "nt":
-            drive_type = classify_mount(self._posix_mount(root))
+            drive_type = classify_mount(self._posix_mount(root), removable=_block_device_is_removable)
         else:
             try:
                 drive_type = int(ctypes.windll.kernel32.GetDriveTypeW(str(root)))
