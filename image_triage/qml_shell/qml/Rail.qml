@@ -244,7 +244,7 @@ Rectangle {
                 id: sortMenu; name: "sort"; placement: 1; parent: rail.over("sort") ? moreBtn : sortBtn
                 PopHeader { caption: "Sort photos by" }
                 Repeater {
-                    model: [["name", "Name"], ["ai", "AI score"], ["rating", "Rating"], ["decision", "Decision"]]
+                    model: photos.sortOptions
                     delegate: PopItem {
                         required property var modelData
                         label: modelData[1]; mode: "tick"; checked: UiState.sort === modelData[0]

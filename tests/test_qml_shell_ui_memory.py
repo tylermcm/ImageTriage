@@ -134,3 +134,31 @@ def test_inspector_tab_is_saved_and_restored_including_narrow_windows(qapp, tmp_
     window.close()
     engine.deleteLater()
     pump(qapp, .2)
+
+
+def test_filters_and_the_new_orders_are_remembered_and_come_back(qapp, tmp_path):
+    engine, window, warnings, memory = window_with(qapp, tmp_path)
+    run(window, "view.filter.undecided")
+    run(window, "view.fmt.raw")
+    run(window, "sort.captured")
+    assert (memory.get("filter", ""), memory.get("format", ""), memory.get("sort", "")) == ("undecided", "raw", "captured")
+    window.close()
+    engine.deleteLater()
+    pump(qapp, 0.2)
+
+    engine, window, warnings, memory = window_with(qapp, tmp_path)
+    for name, value in (("filter", "undecided"), ("format", "raw"), ("sort", "captured"), ("minRating", 3)):   # as a later start finds them
+        memory.set(name, value)
+    QMetaObject.invokeMethod(window, "restoreInterface")
+    pump(qapp, 0.2)
+    photos = engine.rootContext().contextProperty("photos")
+    assert (photos._filter, photos._fmt, photos._min_rate, photos._sort) == ("undecided", "raw", 3, "captured")
+    for name, value in (("filter", "everything"), ("minRating", 9), ("format", "tiff")):   # nonsense leaves what is set alone
+        memory.set(name, value)
+    QMetaObject.invokeMethod(window, "restoreInterface")
+    pump(qapp, 0.2)
+    assert (photos._filter, photos._fmt, photos._min_rate) == ("undecided", "raw", 3)
+    assert not [w for w in warnings if "ReferenceError" in w or "TypeError" in w], warnings
+    window.close()
+    engine.deleteLater()
+    pump(qapp, 0.2)

@@ -556,7 +556,14 @@ Window {
         var columns = uiMemory.get("columns", UiState.cols)
         if (typeof columns === "number" && columns >= 0 && columns <= 9) UiState.cols = Math.floor(columns)
         var sort = uiMemory.get("sort", UiState.sort)
-        if (["name", "ai", "rating", "decision"].indexOf(sort) >= 0) { UiState.sort = sort; photos.setSort(sort) }
+        if (photos.sortKeys.indexOf(sort) >= 0) { UiState.sort = sort; photos.setSort(sort) }
+        // The filters the grid was left with come back too: what is shown, the minimum rating and the file type.
+        var shown = uiMemory.get("filter", UiState.filter)
+        if (["all", "undecided", "win", "keep", "rej"].indexOf(shown) >= 0) { UiState.filter = shown; photos.setFilter(shown) }
+        var minRate = uiMemory.get("minRating", UiState.minRate)
+        if (typeof minRate === "number" && minRate >= 0 && minRate <= 5) { UiState.minRate = Math.floor(minRate); photos.setMinRating(UiState.minRate) }
+        var fmt = uiMemory.get("format", UiState.fmt)
+        if (["all", "raw", "jpg"].indexOf(fmt) >= 0) { UiState.fmt = fmt; photos.setFormat(fmt) }
         var names = uiMemory.get("names", UiState.showNames)
         if (typeof names === "boolean") UiState.showNames = names
         var badges = uiMemory.get("badges", UiState.showBadges)
@@ -578,6 +585,9 @@ Window {
         function onDensChanged() { win.remember("density", UiState.dens) }
         function onColsChanged() { win.remember("columns", UiState.cols) }
         function onSortChanged() { win.remember("sort", UiState.sort) }
+        function onFilterChanged() { win.remember("filter", UiState.filter) }
+        function onMinRateChanged() { win.remember("minRating", UiState.minRate) }
+        function onFmtChanged() { win.remember("format", UiState.fmt) }
         function onShowNamesChanged() { win.remember("names", UiState.showNames) }
         function onShowBadgesChanged() { win.remember("badges", UiState.showBadges) }
         function onPinsChanged() { win.remember("pins", UiState.pins) }

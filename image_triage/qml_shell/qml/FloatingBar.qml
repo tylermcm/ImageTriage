@@ -12,7 +12,7 @@ Item {
     // what is currently shown.
     readonly property real need: review.implicitWidth + view.implicitWidth + sortBtn.implicitWidth + filters.implicitWidth + sizes.implicitWidth + ai.implicitWidth + 3 + 8 * 4 + 12
     readonly property bool sizeSwitch: avail >= 640 && avail - 24 >= need
-    readonly property var filterKeys: ["all", "win", "keep", "rej"]
+    readonly property var filterKeys: ["all", "undecided", "win", "keep", "rej"]
 
     // width max-content, max-width 100% - 24px
     width: Math.min(content.implicitWidth + 12, avail - 24)
@@ -55,7 +55,7 @@ Item {
             Popover {
                 id: sortMenu; name: "fSort"
                 Repeater {
-                    model: [["name", "Name"], ["ai", "AI score"], ["rating", "Rating"], ["decision", "Decision"]]
+                    model: photos.sortOptions
                     delegate: PopItem {
                         required property var modelData
                         label: modelData[1]; mode: "tick"; checked: UiState.sort === modelData[0]
@@ -67,8 +67,8 @@ Item {
         Rectangle { width: 1; height: 22; y: 7; color: theme.line; anchors.verticalCenter: undefined }
         Seg {
             id: filters
-            labels: ["All", "Winners", "Keep", "Rejected"]
-            extras: [photos.total, photos.winCount, photos.keepCount, photos.rejCount]
+            labels: ["All", "Undecided", "Winners", "Keep", "Rejected"]
+            extras: [photos.total, photos.undecidedCount, photos.winCount, photos.keepCount, photos.rejCount]
             showExtras: bar.avail >= 860
             current: Math.max(0, bar.filterKeys.indexOf(UiState.filter))
             onActivated: (i) => { UiState.filter = bar.filterKeys[i]; photos.setFilter(bar.filterKeys[i] === "all" ? "all" : bar.filterKeys[i]) }

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Property, QAbstractListModel, QObject, QByteArray, QModelIndex, Qt, Signal, Slot
 
+from ..capture_times import natural_key
 from ..formats import RAW_SUFFIXES
 from ..formats import is_image_file_candidate
 from ..path_keys import name_key, path_key
@@ -33,6 +34,22 @@ def _title(row: dict) -> str:
 
 def _path_key(path: str) -> str:
     return path_key(path)
+
+
+# The orders the grid can be put in: (key, what the Sort menus call it).
+SORTS = (("name", "Name"), ("captured", "Capture time"), ("modified", "Date modified"), ("size", "File size"),
+         ("ai", "AI score"), ("rating", "Rating"), ("decision", "Decision"))
+SORT_KEYS = tuple(key for key, _label in SORTS)
+
+
+def _modified(row: dict) -> int:
+    record = row.get("record")
+    return int(record.identity_modified_ns) if record is not None else 0
+
+
+def _size(row: dict) -> int:
+    record = row.get("record")
+    return int(record.identity_size) if record is not None else 0
 
 
 _FOLDER_KEYS: dict[str, str] = {}
@@ -92,6 +109,7 @@ class PhotoModel(QAbstractListModel):
     searchChanged = Signal()
     searchRequested = Signal(str)
     _loaded = Signal(object, str, int)      # `object`, not `list`: a list is copied row by row on its way through the signal
+    _captureTimesRead = Signal(int, object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -112,6 +130,10 @@ class PhotoModel(QAbstractListModel):
         self._min_rate = 0
         self._fmt = "all"
         self._sort = "name"
+        self._capture_times: dict[str, float] = {}     # path -> when it was taken, read on a worker the first time it is sorted by
+        self._capture_times_for = None                 # the folder load those were read for
+        self._folder_token = 0
+        self._captureTimesRead.connect(self._capture_times_arrived)
         self._adv: dict | None = None      # the advanced-filters dialog's part of the query: {"decisions", "min_rating", "file", "rest"} (rest: filter_match.rest_of(query))
         self._matcher = None               # decides the rest of a query for the photos read from a folder (filter_match.FilterMatcher)
         self._search_text = ""
@@ -253,6 +275,7 @@ class PhotoModel(QAbstractListModel):
             self._load_error = error
             self.loadErrorChanged.emit()
         self._all = rows
+        self._folder_token += 1                        # capture times read for the rows before these are not for these
         same_folder = folder == self._folder
         if folder != self._folder and self._selected:
             self._selected = set()
@@ -311,6 +334,8 @@ class PhotoModel(QAbstractListModel):
             return True
         if self._filter == "keep":
             return decision != "rej"
+        if self._filter == "undecided":
+            return decision == ""
         return decision == self._filter
 
     def _rebuild(self, follow: bool = False) -> None:
@@ -326,7 +351,16 @@ class PhotoModel(QAbstractListModel):
             and self._search_ok(r)
         ]
         if self._sort == "name":
-            rows.sort(key=lambda r: r["name"].casefold())
+            rows.sort(key=lambda r: natural_key(r["name"]))
+        elif self._sort == "captured":
+            # Until the capture times have been read (on a worker) the order is by when the files were changed.
+            self._want_capture_times()
+            times = self._capture_times
+            rows.sort(key=lambda r: (times.get(r["path"]) if r["path"] in times else _modified(r) / 1e9, natural_key(r["name"])))
+        elif self._sort == "modified":
+            rows.sort(key=lambda r: (_modified(r), natural_key(r["name"])))
+        elif self._sort == "size":
+            rows.sort(key=lambda r: (-_size(r), natural_key(r["name"])))
         elif self._sort == "ai":
             rows.sort(key=lambda r: -r["ai"])
         elif self._sort == "rating":
@@ -446,8 +480,44 @@ class PhotoModel(QAbstractListModel):
 
     @Slot(str)
     def setSort(self, key: str) -> None:
-        if key != self._sort:
+        if key != self._sort and key in SORT_KEYS:
             self._sort = key
+            self._rebuild(follow=True)
+
+    # What the Sort menus list, in one place: [key, label].
+    sortOptions = Property("QVariantList", lambda self: [list(option) for option in SORTS], constant=True)
+    sortKeys = Property("QStringList", lambda self: list(SORT_KEYS), constant=True)
+
+    def _want_capture_times(self) -> None:
+        """Read the capture times of the open folder's photos once, on a worker; the grid is sorted again when they arrive."""
+        if self._capture_times_for == self._folder_token or not self._all:
+            return
+        self._capture_times_for = token = self._folder_token
+        self._capture_times = {}
+        wanted = [(r["path"], _modified(r)) for r in self._all if r.get("record") is not None]
+        if not wanted:
+            return
+
+        def work() -> None:
+            from ..capture_times import capture_or_modified
+
+            found = {}
+            for path, modified in wanted:
+                if self._folder_token != token:
+                    return                              # another folder was opened meanwhile
+                found[path] = capture_or_modified(path, modified)
+            try:
+                self._captureTimesRead.emit(token, found)
+            except RuntimeError:
+                pass                                    # the model was destroyed meanwhile
+
+        threading.Thread(target=work, name="qml-capture-times", daemon=True).start()
+
+    def _capture_times_arrived(self, token: int, found: dict) -> None:
+        if token != self._folder_token:
+            return
+        self._capture_times = found
+        if self._sort == "captured":
             self._rebuild(follow=True)
 
     @Slot()
@@ -821,6 +891,7 @@ class PhotoModel(QAbstractListModel):
     winCount = Property(int, lambda self: self._count("win"), notify=countsChanged)
     keepCount = Property(int, lambda self: sum(1 for r in self._scoped() if r["decision"] != "rej"), notify=countsChanged)   # what the Keep filter shows: everything not rejected
     rejCount = Property(int, lambda self: self._count("rej"), notify=countsChanged)
+    undecidedCount = Property(int, lambda self: self._count(""), notify=countsChanged)      # nothing decided yet: what is left to go through
     loading = Property(bool, lambda self: self._loading, notify=loadingChanged)
     subfolders = Property(list, lambda self: [] if self._scope_kind else list(self._subfolders), notify=subfoldersChanged)   # photo filters must not remove navigation into child folders
     folderName = Property(str, lambda self: os.path.basename(self._folder.rstrip("/\\")) or self._folder, notify=folderChanged)

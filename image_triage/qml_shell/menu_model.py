@@ -10,7 +10,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
+
 from PySide6.QtGui import QDesktopServices, QGuiApplication
+
+from .photos import SORTS
 
 DECISIONS = (("win", "Winner", "win", "#3ccf8e"), ("keep", "Keep", "keep", "#6aa6ff"), ("rej", "Reject", "rej", "#ef6856"))
 LABEL = {"win": "Winner", "keep": "Keep", "rej": "Reject"}
@@ -197,7 +200,7 @@ class MenuModel(QObject):
                 sub = [{"kind": "row", "key": "view:names", "label": "Show file names", "tick": bool(st.get("names"))}, {"kind": "row", "key": "view:badges", "label": "Show badges", "tick": bool(st.get("badges"))}, SEP]
                 sub += [{"kind": "row", "key": "dens:" + k, "label": lab, "tick": st.get("dens") == k} for k, lab in (("s", "Small thumbnails"), ("m", "Medium thumbnails"), ("l", "Large thumbnails"))]
             elif self._sub == "sort":
-                sub = [{"kind": "row", "key": "sort:" + k, "label": lab, "tick": st.get("sort") == k} for k, lab in (("name", "Name"), ("ai", "AI score"), ("rating", "Rating"), ("decision", "Decision"))]
+                sub = [{"kind": "row", "key": "sort:" + k, "label": lab, "tick": st.get("sort") == k} for k, lab in SORTS]
         self._view = {"open": bool(self._kind), "kind": self._kind, "sub": self._sub, "items": items, "subItems": sub}
         self.changed.emit()
 

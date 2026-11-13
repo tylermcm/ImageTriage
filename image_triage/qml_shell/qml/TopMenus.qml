@@ -60,8 +60,8 @@ Item {
                 ms(), mr("Show in File Explorer", "review.reveal", "", "library"), mr("Open in Editor", "review.open_editor", "", "editor")]
         }
         if (name === "view") {
-            var themes = [], sizes = [["Small", "s"], ["Medium", "m"], ["Large", "l"]], sorts = [["Name", "name"], ["AI score", "ai"], ["Rating", "rating"], ["Decision", "decision"]]
-            var shows = [["All photos", "all"], ["Winners", "win"], ["Keep", "keep"], ["Rejects", "rej"]], fmts = [["RAW and JPG", "all"], ["RAW only", "raw"], ["JPG only", "jpg"]]
+            var themes = [], sizes = [["Small", "s"], ["Medium", "m"], ["Large", "l"]], sorts = photos.sortOptions.map(function (o) { return [o[1], o[0]] })
+            var shows = [["All photos", "all"], ["Undecided", "undecided"], ["Winners", "win"], ["Keep", "keep"], ["Rejects", "rej"]], fmts = [["RAW and JPG", "all"], ["RAW only", "raw"], ["JPG only", "jpg"]]
             return [
                 mf("Appearance", "sun", modes.map(function (m) { return mt(m[0], "appearance." + m[1], function () { return settings.themeMode === m[1] }) })),
                 mf("Thumbnail Size", "view", sizes.map(function (m) { return mt(m[0], "view.dens." + m[1], function () { return UiState.cols === 0 && UiState.dens === m[1] }) })),
