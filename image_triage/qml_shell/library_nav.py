@@ -65,6 +65,9 @@ _SAMPLE_FAVORITES = (("Wedding 2026", "1,284"), ("Client selects", "212"))
 _SAMPLE_DRIVES = (("Photos (D:)", "612 GB free of 2 TB", 0.70), ("Cards (E:)", "41 GB free of 256 GB", 0.84))
 
 
+from ..scanner import APP_RECYCLE_DIRECTORY_NAME
+
+
 def _listing(folder: str):
     """What a refresh of `folder` could change: the names in it, without the files the app writes there itself.
 
@@ -74,7 +77,8 @@ def _listing(folder: str):
     """
     try:
         with os.scandir(folder) as entries:
-            return frozenset(e.name for e in entries if not e.name.startswith(".") and not e.name.lower().endswith((".xmp", ".tmp")))
+            return frozenset(e.name for e in entries if not e.name.startswith(".") and not e.name.lower().endswith((".xmp", ".tmp"))
+                             and e.name.casefold() != APP_RECYCLE_DIRECTORY_NAME)       # the app's own recycle folder filling or emptying is not a change to the photos
     except OSError:
         return None
 

@@ -23,9 +23,14 @@ from PySide6.QtCore import Property, QFile, QObject, Signal, Slot
 
 from ..edit_carry import carry_edits, copy_edits, deletable_edit_paths
 from ..edit_storage import EDIT_STORAGE_ROOT_NAME
+from .. import safe_trash_store
 from ..file_ops import FileMove, bundle_destinations, copy_paths, move_paths, record_after_moves, record_paths
 from .decision_bridge import session_id
 from .file_jobs import FileJobs
+
+_restore = safe_trash_store.restore_moves          # one photo's files back to where they were, all or none, never replacing
+LIMIT_KEY = "workflow/safe_trash_limit_gb"         # 0: no limit
+TRASH_ROOTS_KEY = "workflow/safe_trash_roots"       # the recycle folders the app has made on drives
 
 SAFE_TRASH = "Safe Trash (Undoable)"
 RECENT_KEY = "folders/recent_destinations"
@@ -384,27 +389,49 @@ class FileActions(QObject):
                 pass
         self._photos.remove_paths([record.path for record in records])
 
+    def trash_limit_bytes(self) -> int:
+        """The size the safe trash on this computer is kept under (0: no limit)."""
+        if self._memory:
+            return 0
+        try:
+            return max(0, int(self._settings().value(LIMIT_KEY, 0, int) or 0)) * 1024 ** 3
+        except (TypeError, ValueError):
+            return 0
+
+    def _remember_trash_root(self, root: str) -> None:
+        """A recycle folder on a drive: remembered so the Safe Trash window lists it whenever that drive is connected."""
+        known = self._settings().value(TRASH_ROOTS_KEY, [], list) or []
+        known = [known] if isinstance(known, str) else [str(item) for item in known]
+        key = os.path.normcase(os.path.normpath(root))
+        if all(os.path.normcase(os.path.normpath(item)) != key for item in known):
+            self._settings().setValue(TRASH_ROOTS_KEY, [root, *known][:40])
+
     def _safe_trash(self, items: list, recycle, single: bool) -> bool:
         root = recycle.recycle_root_for_folder()
         count = len(items)
         self._last_trash_id = 0
+        session = session_id()
+        # the limit is for the trash in the app's own data, not for a recycle folder on a card
+        limit = 0 if recycle.is_temporary_storage_folder() or _is_recycle_folder(str(root)) else self.trash_limit_bytes()
         return self._start(f"Deleting {items[0][0].name}" if single else f"Moving {_plural(count)} to the recycle bin",
-                           lambda ctx: _work_safe_trash(ctx, items, recycle, root),
+                           lambda ctx: _work_safe_trash(ctx, items, recycle, root, session, limit),
                            lambda result: self._safe_trashed(result, recycle, root, single, count),
                            route=f"{self._photos.folder_dir()} \u2192 Safe trash", total=count)
 
     def _safe_trashed(self, result: dict, recycle, root, single: bool, count: int) -> None:
         moved, failed = result["done"], result["failed"]         # moved: [(record, moves, annotation)], the photos that are in the trash now
+        if moved and _is_recycle_folder(str(root)) and not self._memory:
+            self._remember_trash_root(str(root))
         if moved:
             self._finish_delete([record for record, _moves, _annotation in moved])
             entry = {}
             if single:
                 name = moved[0][0].name
                 entry["id"] = self._photos.push_undo(f"delete of {name}", lambda: self._undo_trash(moved, recycle, True))
-                self._toast("success", f"Deleted {name}", "It is in the safe trash.", "Undo", lambda: self._photos.undo_entry(entry["id"]))
+                self._toast("success", f"Deleted {name}", "It is in the safe trash (File menu, Safe Trash).", "Undo", lambda: self._photos.undo_entry(entry["id"]))
             else:
                 entry["id"] = self._photos.push_undo(f"move of {len(moved)} photos to the recycle bin", lambda: self._undo_trash(moved, recycle, False))
-                self._toast("success", f"Moved {_plural(len(moved))} to the recycle bin", "Undo brings them back.", "Undo", lambda: self._photos.undo_entry(entry["id"]))
+                self._toast("success", f"Moved {_plural(len(moved))} to the recycle bin", "Undo brings them back; later, use Safe Trash in the File menu.", "Undo", lambda: self._photos.undo_entry(entry["id"]))
             self._last_trash_id = entry["id"]
         if failed:
             left = [name for _name, _why, names in failed for name in names]
@@ -412,6 +439,8 @@ class FileActions(QObject):
             self._toast("error", title, _with_leftovers(_named(failed, single), left, str(root)))
         if result["cancelled"]:
             self._toast("info", f"Stopped after {len(moved)} of {count}", "The ones already moved are in the recycle bin; Undo brings them back.")
+        if result.get("evicted"):
+            self._toast("info", f"{_plural(result['evicted'], 'older photo')} left the safe trash for good", "It was over its size limit (Safe Trash, in the File menu).")
 
     @Slot("QVariantList", str, result=int)
     def trashPaths(self, paths, why: str = "") -> int:
@@ -616,34 +645,6 @@ def _with_leftovers(message: str, left: list[str], where: str) -> str:
     return f"{message} These could not be put back and are in {where}: {shown}."
 
 
-def _restore(moves, gone: str = "is no longer there") -> None:
-    """Take one photo's files back to their original places, all of them or none. Never replaces a file that is there now, and
-    can be run again after a partial failure (a file that is already back is passed over)."""
-    todo = []
-    for move in moves:
-        if not os.path.exists(move.target_path):
-            if os.path.exists(move.source_path):
-                continue                                  # already back from an earlier attempt
-            raise OSError(f"{Path(move.target_path).name} {gone}")
-        if os.path.lexists(move.source_path):
-            raise OSError(f"A file named {Path(move.source_path).name} is already in the original folder")
-        todo.append(move)
-    back = []
-    try:
-        for move in todo:
-            Path(move.source_path).parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(move.target_path, move.source_path)
-            back.append(move)
-    except OSError:
-        for move in reversed(back):                       # the bundle stays together: what went back returns to where it was taken from
-            try:
-                if not os.path.lexists(move.target_path):
-                    shutil.move(move.source_path, move.target_path)
-            except OSError:
-                pass
-        raise
-
-
 # ---------------- the file work itself: these run on the worker thread and touch nothing but files ----------------
 # Each takes the job's context (`ctx.cancelled`, `ctx.step`) and returns plain data. Cancel is looked at between photos only, so a
 # photo's bundle is either wholly handled or wholly where it was.
@@ -653,16 +654,20 @@ def _outcome(ctx, total: int, done: list, failed: list, **more) -> dict:
     return dict(done=done, failed=failed, cancelled=bool(ctx.cancelled and len(done) + len(failed) < total), **more)
 
 
-def _work_safe_trash(ctx, items: list, recycle, root) -> dict:
+def _work_safe_trash(ctx, items: list, recycle, root, session: str = "", limit: int = 0) -> dict:
     """Move each photo's bundle into the safe trash. A photo that fails is put back whole and named; the rest still go."""
     done: list[tuple] = []                                 # (record, moves, annotation)
     failed: list[tuple] = []                               # (name, why, the names that could not be put back)
     unrecorded: list[FileMove] = []
+    photos: list[tuple] = []                               # what the Safe Trash window needs to show each photo and give it back whole
 
     def record_origins() -> None:
         if unrecorded:
             recycle.remember_recycle_origins(tuple(unrecorded))
             unrecorded.clear()
+        if photos:
+            safe_trash_store.remember_photos(root, photos)
+            photos.clear()
 
     try:
         try:
@@ -681,11 +686,18 @@ def _work_safe_trash(ctx, items: list, recycle, root) -> dict:
                 continue
             done.append((record, tuple(moves), annotation))
             unrecorded.extend(moves)
+            photos.append((record.name, [m.target_path for m in moves], annotation, session))
             if len(unrecorded) >= 200:                      # where the files came from is written as it goes: a crash must not leave a trash nobody can restore from
                 record_origins()
     finally:
         record_origins()
-    return _outcome(ctx, len(items), done, failed)
+    evicted = 0
+    if limit > 0 and done:
+        try:                                                # the photos just deleted are never the ones the limit removes
+            evicted = len(safe_trash_store.enforce_limit(root, limit, [m.target_path for _record, moves, _a in done for m in moves])["done"])
+        except OSError:
+            pass
+    return _outcome(ctx, len(items), done, failed, evicted=evicted)
 
 
 def _work_system_trash(ctx, items: list) -> dict:
@@ -803,5 +815,5 @@ def _work_restore(ctx, entries: list, gone: str, *, recycle=None, carry_back: bo
             done.append(entry)
     finally:
         if recycle is not None and done:
-            recycle.forget_recycle_origins(tuple(m.target_path for _record, moves, *_rest in done for m in moves))
+            safe_trash_store.forget_files(recycle.recycle_root_for_folder(), [m.target_path for _record, moves, *_rest in done for m in moves])
     return _outcome(ctx, len(entries), done, failed, edits_left=edits_left)

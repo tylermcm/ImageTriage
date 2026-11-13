@@ -12,6 +12,7 @@ _COMMANDS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     ("file.open_folder", "File", "Open Folder", "open_folder", ("open directory", "browse folder")),
     ("file.refresh_folder", "File", "Refresh Folder", "refresh_folder", ("reload folder", "rescan")),
     ("file.workflow_settings", "File", "Settings", "workflow_settings", ("preferences", "settings")),
+    ("file.safe_trash", "File", "Safe Trash", "", ("deleted photos", "restore", "recycle bin", "undelete", "empty trash")),
     ("edit.undo", "Edit", "Undo", "undo", ("revert", "undo last action")),
     ("edit.rename_selection", "Edit", "Rename Image", "rename_selection", ("rename image", "rename file")),
     ("tools.batch_rename", "Tools", "Batch Rename", "batch_rename_selection", ("batch rename tool", "rename many")),

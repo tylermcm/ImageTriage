@@ -351,6 +351,7 @@ Window {
     ShortcutsWindow { id: shortcutsWindow; sourceItem: appContent }
     LibraryWindow { id: libraryWindow; sourceItem: appContent }
     FileAssocWindow { id: fileAssocWindow; sourceItem: appContent }
+    SafeTrashWindow { id: safeTrashWindow; sourceItem: appContent }
     Viewer { id: viewer; enabled: !win.modalInputBlocked; onMoveRequested: (r) => win.chooseDestination("move", r) }
     EditorStage { id: editorStage }
     ContextMenu { id: ctxHost }
@@ -484,6 +485,7 @@ Window {
         else if (id === "file.refresh_folder") { win.savePositionNow(); libraryNav.refreshFolder() }
         else if (id === "file.reveal_folder") libraryNav.reveal(libraryNav.openPath)
         else if (id === "file.browse_library") reference.open("lib")
+        else if (id === "file.safe_trash") safeTrash.show()
         else if (id === "review.delete_selection") fileActions.deleteRows(win.commandRows())
         else if (id === "review.move_selection") chooseDestination("move", win.commandRow, win.commandRows())
         else if (id === "edit.undo") { win.undoFailed = false; var what = photos.undo(); if (what !== "") toasts.show("success", "Undid the " + what, ""); else if (!win.undoFailed) toasts.show("info", "Nothing to undo", "") }

@@ -14,8 +14,8 @@ in Git history.
 - `image_triage/qml_shell/editor_host.py`: hosting the native PhotoCraft editor.
 - `image_triage/palette_commands.py`, `shortcuts.py`, `theme_tokens.py` and
   `face_groups.py`: reusable data, query and appearance logic without screen classes.
-- `image_triage/file_ops.py` and `safe_trash.py`: file bundles, moved records,
-  safe-trash location and restore manifests.
+- `image_triage/file_ops.py`, `safe_trash.py` and `safe_trash_store.py`: file bundles,
+  moved records, safe-trash location, restore manifests and the per-photo trash listing.
 - `image_triage/unified_search_task.py` and `semantic_runtime.py`: background
   photo/people search and installed TinyCLIP model resolution.
 - `image_triage/assets/`: application icons; QML assets stay beside the QML files.
@@ -44,6 +44,29 @@ the decisions are flushed.
 Undo and `trashPaths` must answer at once, so they wait for the worker while the window
 keeps processing events. An undo that was cancelled or only partly worked keeps the rest on
 the history and can be run again. Tests call `fileActions.waitForIdle()` after a slot.
+
+## Safe Trash
+
+File > Safe Trash (also in the command palette) opens `SafeTrashWindow.qml`, backed by
+`safe_trash_model.py` and the UI-independent `safe_trash_store.py`. It lists the photos in
+the app's safe trash and in the app's recycle folders on connected removable drives, one
+row per photo with its original folder, when it was deleted, its size and a thumbnail when
+one of its files is a JPEG or PNG.
+
+Restore puts a photo back where it was, all of its files or none, and never over a file
+that now has its name. The sidecar and edit data are part of the photo; the decision it
+had when deleted is written back; collections hold it by path, so it is in them again. A
+photo whose folder is gone is reported and stays in the trash; Restore to folder puts the
+chosen photos into a folder you pick, renamed together if a name is taken. Delete for good
+and Empty trash ask first. All of this runs on the file-operation worker.
+
+The size limit (`workflow/safe_trash_limit_gb`, also under Settings > General; 0 is no
+limit, the default) applies to the safe trash on this computer. When it is exceeded, the
+photos deleted longest ago are deleted for good, whole photos at a time, after each delete
+and when the limit is lowered. The photos of the delete just made are never removed by it.
+
+The app's `recycle bin` folders are not listed among a folder's sub-folders, not watched
+and not indexed; they can still be opened by path.
 
 ## Search and culling
 

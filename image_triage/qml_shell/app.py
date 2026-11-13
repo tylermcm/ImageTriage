@@ -269,6 +269,9 @@ def _run(args, state: dict) -> int:
     # Before the decisions are flushed below: an operation that is stopped here still hands over the photos it had moved, so their
     # decisions and collections follow them. It stops between photos, so no bundle is left half moved.
     app.aboutToQuit.connect(files.shutdown)
+    from .safe_trash_model import SafeTrashModel
+
+    safe_trash = SafeTrashModel(photos, toasts, file_jobs, memory=bool(args.mock), parent=app)
     cull = CullModel(photos, memory=bool(args.mock), parent=app, toasts=toasts, files=files)
     cull.runFinished.connect(people.reload)            # an analysis has just written the face index: the People page reads it again
     app.aboutToQuit.connect(cull.shutdown)
@@ -327,6 +330,7 @@ def _run(args, state: dict) -> int:
     context.setContextProperty("toasts", toasts)
     context.setContextProperty("ctxMenu", menu)
     context.setContextProperty("fileActions", files)
+    context.setContextProperty("safeTrash", safe_trash)
     context.setContextProperty("reference", reference)
     context.setContextProperty("handoff", handoff)
     context.setContextProperty("transfers", transfers)
