@@ -11,7 +11,7 @@ How the shell's three decisions map onto a `SessionAnnotation`:
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Slot
+from PySide6.QtCore import QObject, Signal, Slot
 
 from ..models import SessionAnnotation
 
@@ -46,6 +46,8 @@ def session_id() -> str:
 
 
 class DecisionBridge(QObject):
+    relinked = Signal(int, int)          # decisions, collection entries that followed photos moved outside the app
+
     def __init__(self, photos, toasts=None, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._photos = photos
@@ -57,6 +59,8 @@ class DecisionBridge(QObject):
         self._queue.warning.connect(self._sidecar_warning)
         self.failures: list[tuple[str, str]] = []
         self._sidecar_warned: set[str] = set()         # folders already told that their sidecars cannot be written
+        self.relinks: list = []                        # a RelinkReport per folder whose moved photos got their decisions back
+        self.relinked.connect(self._say_relinked)      # emitted on the scan thread, said on this one
         photos.set_annotation_loader(self.load)
         photos.annotationChanged.connect(self.save)
 
@@ -69,11 +73,37 @@ class DecisionBridge(QObject):
         stored = store.load_annotations(session_id(), records)
         # Rows for photos that are no longer in the folder are kept: a photo moved out and back, or renamed outside the app, must not
         # lose its decision for it (`DecisionStore.prune_missing` exists for an explicit clean-up).
+        if len(stored) < len(records) and self._relink(store, records):
+            stored = store.load_annotations(session_id(), records)
         out = {}
         for path, annotation in stored.items():
             decision, rating = annotation_to_view(annotation)
             out[path] = {"decision": decision, "rating": rating, "annotation": annotation}
         return out
+
+    def _relink(self, store, records) -> bool:
+        """Decisions (and collection entries) saved for photos that were moved or renamed outside the app follow them to
+        this folder (`decision_relink`). On the scan thread, like `load`: it asks the file system about the old paths."""
+        from ..decision_relink import relink_folder
+
+        try:
+            from ..library_store import LibraryStore
+
+            report = relink_folder(store, session_id(), records, library=LibraryStore())
+        except Exception:                              # relinking is a convenience: the folder still opens without it
+            return False
+        if report.relinked or report.collections_changed:
+            self.relinks.append(report)
+            self.relinked.emit(len(report.relinked), report.collections_changed)
+        return bool(report.relinked)
+
+    @Slot(int, int)
+    def _say_relinked(self, decisions: int, collection_entries: int) -> None:
+        if self._toasts is None:
+            return
+        parts = ([f"{decisions} saved decision{'s' if decisions != 1 else ''}"] if decisions else []) + (
+            [f"{collection_entries} collection entr{'ies' if collection_entries != 1 else 'y'}"] if collection_entries else [])
+        self._toasts.push("info", "Followed photos that were moved", " and ".join(parts) + " now point at the photos' new location.")
 
     @Slot(object)
     def save(self, row: dict) -> None:

@@ -468,6 +468,21 @@ class LibraryStore:
             connection.commit()
         return changed
 
+    def collection_item_identities(self) -> list[tuple[str, int, int]]:
+        """``(stored path, modified_ns, file_size)`` of the collection members the library index knows the file identity
+        of. A collection stores only paths; this is what lets a member be recognised again after it was moved outside
+        the app (``decision_relink``). Members outside the indexed roots are not listed."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT i.item_path, r.modified_ns, r.file_size
+                FROM collection_items AS i
+                JOIN catalog_records AS r ON r.path = i.item_path
+                WHERE r.modified_ns > 0
+                """
+            ).fetchall()
+        return [(str(path), int(modified_ns), int(file_size)) for path, modified_ns, file_size in rows]
+
     def delete_collection(self, collection_id: str) -> bool:
         """Delete a virtual collection and all of its stored item references."""
         normalized_id = (collection_id or "").strip()
