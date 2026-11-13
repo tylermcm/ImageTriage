@@ -10,6 +10,7 @@ from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QGuiApplication
 
 from image_triage.models import ImageRecord
+from image_triage.path_keys import folds_case
 from image_triage.qml_shell import photos as photos_module
 from image_triage.qml_shell.collections_model import CollectionsModel
 from image_triage.qml_shell.photos import DecisionRole, PhotoModel, SelectedRole, member_key
@@ -112,7 +113,9 @@ def test_a_member_saved_through_a_link_to_the_folder_is_still_a_member(qapp, sto
         link.symlink_to(folder, target_is_directory=True)
     except OSError:
         pytest.skip("links cannot be made here")
-    assert member_key(str(link / "IMG_00001.JPG")) == member_key(str(folder / "img_00001.jpg"))
+    assert member_key(str(link / "IMG_00001.JPG")) == member_key(str(folder / "IMG_00001.JPG"))
+    # A name's case counts exactly where the file system makes it count (audit D21): it used to be ignored everywhere.
+    assert (member_key(str(link / "IMG_00001.JPG")) == member_key(str(folder / "img_00001.jpg"))) is folds_case()
     photos = PhotoModel(parent=qapp)
     photos.setRows(synthetic_rows(link, 4), str(link))
     collections = CollectionsModel(photos, memory=False, parent=qapp)

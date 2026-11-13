@@ -25,6 +25,7 @@ from PySide6.QtCore import Property, QAbstractListModel, QByteArray, QFileSystem
 
 from .. import path_policy
 from ..app_identity import user_settings
+from ..path_keys import legacy_path_key, path_key
 
 FAVORITES_KEY = "folders/favorites"
 RECENT_KEY = "folders/recent_opened"
@@ -41,7 +42,7 @@ INDENT = 18
 
 
 def _key(path: str) -> str:
-    return os.path.normpath(path).casefold()                 # what the Widgets controllers use to compare folders in memory
+    return path_key(path)                 # the shared identity key: case folds only where the file system folds it
 
 
 def _count_text(count: int | None) -> str:
@@ -514,7 +515,15 @@ class LibraryNavModel(QObject):
         """The photo to put the grid on when `folder` opens: the one saved for it, when "Reopen folders where I left off" is on (the default)."""
         if not self._persist or self._settings is None or not self._settings.value(RESTORE_POSITION_KEY, True, bool):
             return ""
-        entry = self._folder_states().get(_key(folder))
+        states = self._folder_states()
+        entry = states.get(_key(folder))
+        if entry is None:
+            # Written by a build that folded case on every platform. Used only when the photo it names is in this very folder, since
+            # on a case-sensitive file system the old key could be another folder's.
+            old = states.get(legacy_path_key(folder))
+            named = old.get("current") if isinstance(old, dict) else ""
+            if isinstance(named, str) and named and _key(os.path.dirname(named)) == _key(folder):
+                entry = old
         current = entry.get("current") if isinstance(entry, dict) else ""
         return current if isinstance(current, str) else ""
 

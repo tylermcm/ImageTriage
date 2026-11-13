@@ -10,6 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import QStandardPaths
 
 from .models import ImageRecord, SessionAnnotation
+from .path_keys import path_key
 from .perf import perf_logger
 
 
@@ -336,8 +337,8 @@ class DecisionStore:
             return 0
         normalized_session = self._normalize_session_id(session_id)
         prefix = folder.rstrip("\\/") + os.sep
-        known = {os.path.normcase(path) for path in known_paths}
-        folder_key = os.path.normcase(os.path.normpath(folder))
+        known = {path_key(path) for path in known_paths}
+        folder_key = path_key(folder)
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT path FROM decisions WHERE session_id = ? AND path >= ? AND path < ?",
@@ -345,8 +346,8 @@ class DecisionStore:
             ).fetchall()
             gone = [
                 str(row[0]) for row in rows
-                if os.path.normcase(os.path.dirname(str(row[0]))) == folder_key
-                and os.path.normcase(str(row[0])) not in known
+                if path_key(os.path.dirname(str(row[0]))) == folder_key
+                and path_key(str(row[0])) not in known
                 and not exists(str(row[0]))
             ]
             if not gone:
@@ -357,6 +358,140 @@ class DecisionStore:
             )
             connection.commit()
         return len(gone)
+
+    # ------------------------------------------------------------------ relinking after a move outside the app (audit D16)
+    def relink_candidates(self, session_id: str, records: list[ImageRecord]) -> tuple[list[ImageRecord], list[tuple[str, int, int]]]:
+        """What relinking has to work with for one folder's photos: the photos that have no saved decision, and the saved
+        rows elsewhere, as ``(path, modified_ns, file_size)``, whose file identity equals one of theirs.
+
+        The rows are found through the identity index (``idx_decisions_file_identity``); no file is touched here. Whether
+        such a row is really orphaned, and which photo it belongs to, is decided by ``decision_relink``.
+        """
+        wanted = [record for record in records if record.path and record.identity_modified_ns > 0]
+        if not wanted:
+            return [], []
+        normalized_session = self._normalize_session_id(session_id)
+        with self._connect() as connection:
+            have: set[str] = set()
+            for chunk in _chunked_values([record.path for record in wanted], 400):
+                placeholders = ",".join("?" for _ in chunk)
+                have.update(
+                    str(row[0])
+                    for row in connection.execute(
+                        f"SELECT path FROM decisions WHERE session_id = ? AND path IN ({placeholders})",
+                        [normalized_session, *chunk],
+                    )
+                )
+            lacking = [record for record in wanted if record.path not in have]
+            identities: set[tuple[int, int]] = set()
+            for record in lacking:
+                identities.add((int(record.identity_modified_ns), int(record.identity_size)))
+                identities.add((int(record.modified_ns), int(record.size)))        # what earlier builds saved (bundle totals)
+            rows: dict[str, tuple[str, int, int]] = {}
+            ordered = sorted(identities)
+            for start in range(0, len(ordered), 400):
+                chunk = ordered[start:start + 400]
+                values = ",".join("(?, ?)" for _ in chunk)
+                parameters: list[object] = [value for pair in chunk for value in pair]
+                found = connection.execute(
+                    f"""
+                    WITH wanted(modified_ns, file_size) AS (VALUES {values})
+                    SELECT d.path, d.modified_ns, d.file_size
+                    FROM wanted
+                    JOIN decisions AS d
+                      ON d.session_id = ? AND d.modified_ns = wanted.modified_ns AND d.file_size = wanted.file_size
+                    """,
+                    [*parameters, normalized_session],
+                ).fetchall()
+                for path, modified_ns, file_size in found:
+                    rows[str(path)] = (str(path), int(modified_ns), int(file_size))
+        return lacking, list(rows.values())
+
+    def apply_relinks(self, session_id: str, pairs: list[tuple[str, ImageRecord]], *, reason: str = "") -> list[tuple[str, str]]:
+        """Re-key saved decisions from the path they were saved under to the photo that file now is: ``pairs`` is
+        ``(old path, the photo's record)``. One transaction, however many rows. Returns ``(old path, new path)`` for the
+        rows that moved; a pair whose new path has a decision of its own, or whose old row is gone, is skipped.
+
+        The comparison events recorded for the photo follow it, and each move is written to ``decision_relinks`` so it can
+        be reported (``relink_log``). Nothing is deleted.
+        """
+        if not pairs:
+            return []
+        normalized_session = self._normalize_session_id(session_id)
+        moved: list[tuple[str, str]] = []
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._create_relink_log(connection)
+            for old_path, record in pairs:
+                new_path = record.path
+                if not old_path or not new_path or old_path == new_path:
+                    continue
+                cursor = connection.execute(
+                    """
+                    UPDATE decisions
+                    SET path = ?, modified_ns = ?, file_size = ?
+                    WHERE session_id = ? AND path = ?
+                      AND NOT EXISTS (SELECT 1 FROM decisions AS taken WHERE taken.session_id = ? AND taken.path = ?)
+                    """,
+                    (new_path, int(record.identity_modified_ns), int(record.identity_size),
+                     normalized_session, old_path, normalized_session, new_path),
+                )
+                if cursor.rowcount != 1:
+                    continue
+                old_folder, new_folder = os.path.dirname(old_path), os.path.dirname(new_path)
+                connection.execute(
+                    "UPDATE correction_events SET folder_path = ? WHERE session_id = ? AND folder_path = ? AND record_path = ?",
+                    (new_folder, normalized_session, old_folder, old_path),
+                )
+                connection.execute(
+                    "UPDATE correction_events SET record_path = ? WHERE session_id = ? AND record_path = ?",
+                    (new_path, normalized_session, old_path),
+                )
+                connection.execute(
+                    "UPDATE correction_events SET other_path = ? WHERE session_id = ? AND other_path = ?",
+                    (new_path, normalized_session, old_path),
+                )
+                connection.execute(
+                    "INSERT INTO decision_relinks(session_id, old_path, new_path, reason) VALUES (?, ?, ?, ?)",
+                    (normalized_session, old_path, new_path, reason),
+                )
+                moved.append((old_path, new_path))
+            connection.commit()
+        return moved
+
+    def relink_log(self, session_id: str | None = None, *, limit: int = 500) -> list[dict[str, str]]:
+        """The decisions that were re-keyed after a move outside the app, newest first."""
+        with self._connect() as connection:
+            exists = connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'decision_relinks'").fetchone()
+            if exists is None:
+                return []
+            query = "SELECT session_id, old_path, new_path, reason, relinked_at FROM decision_relinks"
+            parameters: list[object] = []
+            if session_id is not None:
+                query += " WHERE session_id = ?"
+                parameters.append(self._normalize_session_id(session_id))
+            rows = connection.execute(query + " ORDER BY id DESC LIMIT ?", [*parameters, int(limit)]).fetchall()
+        return [
+            {"session_id": str(row[0]), "old_path": str(row[1]), "new_path": str(row[2]), "reason": str(row[3]), "relinked_at": str(row[4])}
+            for row in rows
+        ]
+
+    @staticmethod
+    def _create_relink_log(connection: sqlite3.Connection) -> None:
+        # Made when it is first needed and not part of the versioned schema: it is a log beside the decisions, an earlier
+        # build simply does not look at it, and adding it must not make that build refuse the database as "too new".
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS decision_relinks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                old_path TEXT NOT NULL,
+                new_path TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                relinked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
 
     def winner_paths(self, session_id: str) -> list[str]:
         """Every photo marked winner in this session, in any folder (the Winners view)."""

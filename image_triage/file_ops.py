@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import ImageRecord, WinnerMode
+from .path_keys import path_key
 from .xmp import sidecar_bundle_paths
 
 
@@ -157,7 +158,7 @@ def record_paths(record: ImageRecord) -> tuple[str, ...]:
     ordered: list[str] = []
     seen: set[str] = set()
     for path in (*record.stack_paths, *sidecar_bundle_paths(record)):
-        normalized = os.path.normpath(path).casefold()
+        normalized = path_key(path)
         if normalized in seen:
             continue
         seen.add(normalized)
@@ -257,7 +258,7 @@ def sync_winner_copy_for_paths(
 
 
 def create_folder(parent_dir: str, name: str) -> str:
-    folder_name = _validated_leaf_name(name)
+    folder_name = _validated_leaf_name(name, parent_dir)
     destination = Path(parent_dir) / folder_name
     if destination.exists():
         raise FileExistsError(f"A folder named '{folder_name}' already exists.")
@@ -269,7 +270,7 @@ def rename_folder(folder: str, new_name: str) -> str:
     source = Path(folder)
     if not source.exists():
         raise FileNotFoundError(f"Folder not found: {folder}")
-    validated_name = _validated_leaf_name(new_name)
+    validated_name = _validated_leaf_name(new_name, source.parent)
     destination = source.with_name(validated_name)
     source_key = os.path.normcase(os.path.normpath(str(source)))
     destination_key = os.path.normcase(os.path.normpath(str(destination)))
@@ -335,7 +336,7 @@ def resolve_primary_rename_name(source_path: str, requested_name: str) -> str:
     elif candidate_suffix.casefold() != source_suffix.casefold():
         raise ValueError(f"Keep the existing {source_suffix} extension when renaming.")
 
-    return _validated_leaf_name(candidate)
+    return _validated_leaf_name(candidate, source.parent)
 
 
 def rename_bundle_paths(
@@ -465,26 +466,36 @@ def _temporary_rename_path(source_path: str) -> str:
         counter += 1
 
 
-def _validated_leaf_name(value: str) -> str:
+def _validated_leaf_name(value: str, directory: str | os.PathLike[str] | None = None) -> str:
+    """``value`` as a name the file system holding ``directory`` accepts, or ``ValueError`` saying why not.
+
+    The rules are the destination's own (``path_policy.check_name``): the Windows ones on Windows and on a FAT or exFAT
+    volume, and off Windows otherwise only what POSIX forbids. ``name_warning`` says when an accepted name would still
+    be a problem for Windows."""
+    from . import path_policy                     # imports this module, so not at the top
+
     name = (value or "").strip()
     if not name:
         raise ValueError("Enter a name.")
     if _has_path_components(name):
         raise ValueError("Enter only a name, not a full path.")
-    if any(char in _INVALID_NAME_CHARS for char in name):
-        raise ValueError("Names cannot contain < > : \" / \\ | ? *")
-    if name in {".", ".."}:
-        raise ValueError("That name is not allowed.")
-    if name[-1] in {" ", "."}:
-        raise ValueError("Names cannot end with a space or period on Windows.")
-    stem = Path(name).stem or Path(name).name
-    if stem.casefold().upper() in _WINDOWS_RESERVED_NAMES:
-        raise ValueError(f"'{stem}' is reserved on Windows.")
+    error = path_policy.check_name(name, str(directory) if directory else None).error
+    if error:
+        raise ValueError(error)
     return name
 
 
+def name_warning(value: str, directory: str | os.PathLike[str] | None = None) -> str:
+    """Why a name the destination accepts would still be unreadable on Windows, when the destination is a volume Windows
+    is likely to read (a removable disk, an NTFS or SMB volume mounted off Windows); ``""`` otherwise."""
+    from . import path_policy
+
+    return path_policy.check_name((value or "").strip(), str(directory) if directory else None).warning
+
+
 def _has_path_components(value: str) -> bool:
-    normalized = value.replace("/", os.sep).replace("\\", os.sep)
+    # Off Windows a backslash is an ordinary character of a name; only the platform's own separators make a path.
+    normalized = value.replace("/", os.sep).replace("\\", os.sep) if os.name == "nt" else value
     return Path(normalized).name != normalized
 
 

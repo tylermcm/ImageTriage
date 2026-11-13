@@ -15,6 +15,7 @@ from PySide6.QtCore import Property, QAbstractListModel, QObject, QByteArray, QM
 
 from ..formats import RAW_SUFFIXES
 from ..formats import is_image_file_candidate
+from ..path_keys import name_key, path_key
 from ..scanner import format_scan_error, normalized_path_key, scan_child_folders, scan_folder
 from .inspector_sample import sample_ai, sample_measured
 
@@ -31,7 +32,7 @@ def _title(row: dict) -> str:
 
 
 def _path_key(path: str) -> str:
-    return os.path.normcase(os.path.normpath(path))
+    return path_key(path)
 
 
 _FOLDER_KEYS: dict[str, str] = {}
@@ -49,7 +50,7 @@ def member_key(path: str) -> str:
         if len(_FOLDER_KEYS) > 4096:
             _FOLDER_KEYS.clear()
         folder = _FOLDER_KEYS[head] = normalized_path_key(head) if head else ""
-    return os.path.join(folder, tail.casefold())
+    return os.path.join(folder, name_key(tail))
 
 
 def _sample(name: str) -> tuple[str, int, int]:

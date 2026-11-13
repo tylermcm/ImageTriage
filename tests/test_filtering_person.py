@@ -8,10 +8,12 @@ import unittest
 
 from image_triage.filtering import RecordFilterQuery, active_filter_labels, matches_record_query
 from image_triage.models import ImageRecord
+from image_triage.path_keys import path_key
 
 
 def _key(path: str) -> str:
-    return os.path.normpath(os.path.abspath(path)).casefold()
+    # the shared identity key: case folds only where the file system folds it (was an unconditional casefold)
+    return path_key(os.path.abspath(path))
 
 
 def _record(path: str) -> ImageRecord:

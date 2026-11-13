@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-CATALOG_MIGRATIONS: tuple[tuple[int, str], ...] = (
+import sqlite3
+from typing import Callable
+
+from .repair import DERIVED_FOLDER_SOURCE, repair_derived_caches
+
+__all__ = ["CATALOG_MIGRATIONS", "DERIVED_FOLDER_SOURCE", "LATEST_CATALOG_SCHEMA_VERSION"]
+
+CATALOG_MIGRATIONS: tuple[tuple[int, str | Callable[[sqlite3.Connection], None]], ...] = (
     (
         1,
         """
@@ -263,5 +270,9 @@ CATALOG_MIGRATIONS: tuple[tuple[int, str], ...] = (
 CATALOG_MIGRATIONS += ((10, """
     ALTER TABLE catalog_ai_bundle_cache ADD COLUMN native_document_json TEXT;
 """),)
+
+# A migration is a script, or a function given the connection inside the migration's own transaction.
+# 11: the derived caches get the parent rows their foreign keys need, and an existing database is repaired (repair.py).
+CATALOG_MIGRATIONS += ((11, repair_derived_caches),)
 
 LATEST_CATALOG_SCHEMA_VERSION = CATALOG_MIGRATIONS[-1][0]

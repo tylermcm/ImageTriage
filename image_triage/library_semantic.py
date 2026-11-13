@@ -34,6 +34,7 @@ from typing import Iterable, Sequence
 import numpy as np
 
 from . import memtrace
+from .path_keys import path_key
 from .scanner import normalize_filesystem_path, normalized_path_key
 from .semantic_plan import (
     SEMANTIC_EMBEDDING_DIM,
@@ -417,7 +418,7 @@ def search_key(path: str) -> str:
     (``normalized_path_key`` resolves through the filesystem - a stat per path, a
     network round trip on a share - which is fine while reconciling in the
     background but not 50,000 times per query.)"""
-    return os.path.normpath(str(path)).casefold()
+    return path_key(str(path))
 
 
 class RankedResult:

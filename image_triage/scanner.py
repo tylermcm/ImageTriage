@@ -24,6 +24,7 @@ from .formats import (
     suffix_for_path,
 )
 from .models import ImageRecord, ImageVariant, SortMode, sort_records
+from .path_keys import fold_text, name_key, path_key
 from .perf import perf_logger
 
 
@@ -136,11 +137,12 @@ def normalize_filesystem_path(path: str | Path) -> str:
 
 
 def normalized_path_key(path: str | Path) -> str:
-    return normalize_filesystem_path(path).casefold()
+    """The identity key of a path after resolving it (``path_keys``: case folds only where the file system folds it)."""
+    return fold_text(normalize_filesystem_path(path))
 
 
 def _path_key_fast(path: str) -> str:
-    return os.path.normpath(path).casefold()
+    return path_key(path)
 
 
 @dataclass(slots=True, frozen=True)
@@ -154,7 +156,9 @@ class ScannedFile:
 
     @property
     def stem_key(self) -> str:
-        return os.path.splitext(self.name)[0].lower()
+        # Two stems are one photo's only where the file system would call the names equal: ``IMG_1`` and ``img_1`` are
+        # different photos on a case-sensitive volume.
+        return name_key(os.path.splitext(self.name)[0])
 
 
 def scan_folder(folder: str) -> list[ImageRecord]:
@@ -534,7 +538,7 @@ def _cached_records_need_raw_pair_refresh(folder: str, records: list[ImageRecord
     if not records:
         return False
     jpeg_stems = {
-        Path(record.path).stem.casefold()
+        name_key(Path(record.path).stem)
         for record in records
         if not record.is_folder and suffix_for_path(record.path) in JPEG_SUFFIXES
     }
@@ -545,7 +549,7 @@ def _cached_records_need_raw_pair_refresh(folder: str, records: list[ImageRecord
             with os.scandir(raw_folder) as entries:
                 if any(
                     suffix_for_path(entry.name) in RAW_SUFFIXES
-                    and Path(entry.name).stem.casefold() in jpeg_stems
+                    and name_key(Path(entry.name).stem) in jpeg_stems
                     for entry in entries
                 ):
                     return True
@@ -557,7 +561,7 @@ def _cached_records_need_raw_pair_refresh(folder: str, records: list[ImageRecord
 def discover_edited_paths(record: ImageRecord) -> tuple[str, ...]:
     primary = Path(normalize_filesystem_path(record.path))
     folder = primary.parent
-    stem_key = primary.stem.casefold()
+    stem_key = name_key(primary.stem)
     # Records can arrive through a symlink or Windows 8.3 path. Candidates
     # below use the resolved parent, so normalize these external paths too.
     excluded = {normalized_path_key(path) for path in record.stack_paths}

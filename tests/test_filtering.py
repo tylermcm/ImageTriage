@@ -11,6 +11,7 @@ from image_triage.filtering import (
     serialize_filter_query,
 )
 from image_triage.models import FilterMode, ImageRecord, SessionAnnotation
+from image_triage.path_keys import path_key
 from image_triage.prefilter_common import PrefilterDecision
 
 
@@ -59,7 +60,8 @@ class FilteringTests(unittest.TestCase):
             matches_record_query(
                 record,
                 query,
-                search_match_paths={os.path.normpath(os.path.abspath(record.path)).casefold()},
+                # the shared identity key: case folds only where the file system folds it (was an unconditional casefold)
+                search_match_paths={path_key(os.path.abspath(record.path))},
             )
         )
 
