@@ -195,14 +195,14 @@ def test_saving_writes_the_settings_beside_the_recipe_and_loading_reads_them(tmp
     placed = light_depth.normalized({"amount": 55, "depth": 0.3})
     masks = light_depth.apply([], placed, encode_raster(np.full((4, 6), 200, dtype=np.uint8)))
     recipe.write_text('{"version": %d, "cameraRaw": %s}' % (bridge.RECIPE_VERSION, __import__("json").dumps({"masks": masks})))
-    settings, _ = RawEditor._work("load", str(photo), {}, {}, "")
+    settings = RawEditor._work("load", str(photo), {}, {}, "")[0]
     assert "lightDepth" not in settings  # nothing saved beside the recipe yet
     light_depth.write_sidecar(recipe, placed)
-    settings, _ = RawEditor._work("load", str(photo), {}, {}, "")
+    settings = RawEditor._work("load", str(photo), {}, {}, "")[0]
     assert settings["lightDepth"] == placed
     # The mask was deleted in another editor: stale settings are not attached to a photo without the light.
     recipe.write_text('{"version": %d, "cameraRaw": {}}' % bridge.RECIPE_VERSION)
-    settings, _ = RawEditor._work("load", str(photo), {}, {}, "")
+    settings = RawEditor._work("load", str(photo), {}, {}, "")[0]
     assert "lightDepth" not in settings
 
 

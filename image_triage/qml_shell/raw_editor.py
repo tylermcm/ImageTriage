@@ -87,9 +87,13 @@ class RawEditor(QObject):
     saved = Signal(str, str)
     _finished = Signal(int, str, object, str)
 
-    def __init__(self, *, memory=False, parent=None):
+    def __init__(self, *, memory=False, parent=None, drafts=None):
         super().__init__(parent)
         self._memory = memory
+        # Unsaved drafts are also kept on disk so a crash or a restart does not lose them (never for the demo editor).
+        from ..raw_drafts import DraftStore
+        self._drafts = None if memory else drafts if drafts is not None else DraftStore()
+        self._notice = ""
         self._path = ""
         self._original = {}
         self._draft = {}
@@ -214,6 +218,17 @@ class RawEditor(QObject):
     canUndo = Property(bool, lambda self: bool(self._undo) and not self._saving, notify=changed)
     canRedo = Property(bool, lambda self: bool(self._redo) and not self._saving, notify=changed)
     error = Property(str, lambda self: self._error, notify=changed)
+    # Something the person should know that is not a failure, such as unsaved edits brought back from an earlier session.
+    notice = Property(str, lambda self: self._notice, notify=changed)
+
+    def _keep_draft(self):
+        """Put the open photo's draft on disk, or remove it once there is nothing unsaved."""
+        if self._drafts is None or not self._path or not self._loaded:
+            return
+        if self._draft == self._original:
+            self._drafts.discard(self._path)
+        else:
+            self._drafts.put(self._path, deepcopy(self._original), deepcopy(self._draft))
 
     @Slot(str)
     def open(self, path: str) -> None:
@@ -235,7 +250,7 @@ class RawEditor(QObject):
         self._revision += 1
         self._timer.stop()
         self._queued = None
-        self._error = ""
+        self._error = self._notice = ""
         self._path = path
         self._original = {}
         self._draft = {}
@@ -258,7 +273,7 @@ class RawEditor(QObject):
             self._loaded = False
             self._error = "Choose a RAW photo to use these adjustments."
         elif not self._memory:
-            self._enqueue("load")
+            self._enqueue("load", self._drafts)
         self.changed.emit()
 
     @Slot(str, float)
@@ -293,6 +308,7 @@ class RawEditor(QObject):
         if render:
             self._draft_changed()
         else:
+            self._keep_draft()
             self.changed.emit()
 
     @Slot(bool)
@@ -496,6 +512,7 @@ class RawEditor(QObject):
 
     def _draft_changed(self):
         self._error = ""
+        self._keep_draft()
         self._stop_detail()
         if not self._memory:
             self._enqueue("preview")
@@ -505,8 +522,15 @@ class RawEditor(QObject):
 
     @Slot()
     def cancel(self) -> None:
+        """Leave the photo and drop what was not saved, including its stored draft."""
+        self._close(True)
+
+    def _close(self, forget: bool) -> None:
         if self._saving:
             return
+        if forget and self._drafts is not None and self._path:
+            self._drafts.discard(self._path)
+        self._notice = ""
         self._stop_detail()
         if self._native_job:
             self._native_job.cancel()
@@ -555,8 +579,11 @@ class RawEditor(QObject):
             self._files = None
 
     def shutdown(self):
+        """The application is closing. Unsaved drafts stay on disk and come back when their photos are edited again."""
         self._sessions.clear()
-        self.cancel()
+        self._close(False)
+        if self._drafts is not None:
+            self._drafts.close()
 
     def _enqueue(self, action: str, sample=None) -> None:
         if self._saving and action != "save":
@@ -707,7 +734,7 @@ class RawEditor(QObject):
             placed = light_depth.read_sidecar(bridge.recipe_path(path))
             if placed and light_depth.find_mask(settings.get("masks")) >= 0:
                 settings["lightDepth"] = placed
-            return settings, str(bridge.saved_render_path(path) or "")
+            return settings, str(bridge.saved_render_path(path) or ""), *(sample.read(path, settings) if sample else (None, ""))
         placed = draft.get("lightDepth") if light_depth.find_mask(draft.get("masks")) >= 0 else None
         original, draft = _without_light_depth(original), _without_light_depth(draft)
         if settings != original:
@@ -796,10 +823,15 @@ class RawEditor(QObject):
             if action != "detail" or self._detail_mode:
                 self._error = error
             if not error and action == "load":
-                self._original, self._preview = result
+                self._original, self._preview, recovered, self._notice = (*result, None, "")[:4]
                 self._baseline = self._preview
                 self._draft = dict(self._original)
                 self._loaded = True
+                if recovered is not None:
+                    # One undo step back to the saved edit, so bringing a draft back is never a trap.
+                    self._undo.append(("Recovered unsaved edits", dict(self._original)))
+                    self._draft = recovered
+                    self._notice = "Unsaved edits from an earlier session were restored. Undo returns to the saved edit."
                 # A saved display is already cropped; redevelop from the RAW before editing.
                 self._preview = self._baseline = ""
                 self._enqueue("preview")

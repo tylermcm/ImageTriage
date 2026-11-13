@@ -436,15 +436,15 @@ Window {
     Timer { id: positionTimer; interval: 700; onTriggered: win.savePositionNow() }
     Connections { target: grid.view; function onCurrentIndexChanged() { positionTimer.restart() } }
     Connections { target: libraryNav; function onPositionRestored(row) { grid.row = row; grid.view.positionViewAtIndex(row + grid.nf, GridView.Center) } }
-    // Closing the window must not silently drop edits: RAW adjustments never saved with Done live only in memory, and the hosted editor is shut
+    // Closing the window must not silently drop edits: RAW adjustments never saved with Done are kept only as drafts, and the hosted editor is shut
     // down without saving what is open in it. Ask once; "Quit anyway" closes for real.
     property bool quitConfirmed: false
     onClosing: (close) => {
         var drafts = typeof rawEditor !== "undefined" ? rawEditor.unsavedCount : 0, hosted = typeof editor !== "undefined" && editor.active
         if (!win.quitConfirmed && (drafts > 0 || hosted)) {
             close.accepted = false
-            quitCard.title = drafts > 0 ? "Quit without saving " + drafts + " RAW edit" + (drafts === 1 ? "" : "s") + "?" : "Quit while the editor is open?"
-            quitCard.body = (drafts > 0 ? "Not saved with Done: " + rawEditor.unsavedSummary() + ". " : "")
+            quitCard.title = drafts > 0 ? "Quit with " + drafts + " unsaved RAW edit" + (drafts === 1 ? "" : "s") + "?" : "Quit while the editor is open?"
+            quitCard.body = (drafts > 0 ? "Not saved with Done: " + rawEditor.unsavedSummary() + ". These are kept as drafts and come back when you edit the photos again. " : "")
                           + (hosted ? "Changes in the editor that were not saved will be lost. " : "") + "Cancel to go back and save them."
             quitCard.open()
             return

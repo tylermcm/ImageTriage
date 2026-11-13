@@ -447,7 +447,7 @@ Rectangle {
             x: 10; width: Math.max(0, actions.x - 17)
             anchors.verticalCenter: parent.verticalCenter
             font.pixelSize: 11; color: panel.model && panel.model.error ? theme.rej : panel.subtle
-            text: !panel.model ? "" : panel.model.error || (panel.model.saving ? "Saving edits\u2026" : panel.model.detailPending ? "Refining full-resolution detail\u2026" : panel.model.busy ? "Rendering preview\u2026" : panel.model.dirty ? "Unsaved edits" : "Original RAW")
+            text: !panel.model ? "" : panel.model.error || panel.model.notice || (panel.model.saving ? "Saving edits\u2026" : panel.model.detailPending ? "Refining full-resolution detail\u2026" : panel.model.busy ? "Rendering preview\u2026" : panel.model.dirty ? "Unsaved edits" : "Original RAW")
             elide: Text.ElideRight
             HoverHandler { id: statusHover }
             ToolTip.text: text; ToolTip.visible: statusHover.hovered
