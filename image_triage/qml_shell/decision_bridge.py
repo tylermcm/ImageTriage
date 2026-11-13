@@ -47,6 +47,7 @@ def session_id() -> str:
 
 class DecisionBridge(QObject):
     relinked = Signal(int, int)          # decisions, collection entries that followed photos moved outside the app
+    imported = Signal(int)               # photos whose stars or keywords were read from another program's XMP sidecar
 
     def __init__(self, photos, toasts=None, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -61,6 +62,7 @@ class DecisionBridge(QObject):
         self._sidecar_warned: set[str] = set()         # folders already told that their sidecars cannot be written
         self.relinks: list = []                        # a RelinkReport per folder whose moved photos got their decisions back
         self.relinked.connect(self._say_relinked)      # emitted on the scan thread, said on this one
+        self.imported.connect(self._say_imported)
         photos.set_annotation_loader(self.load)
         photos.annotationChanged.connect(self.save)
 
@@ -75,11 +77,36 @@ class DecisionBridge(QObject):
         # lose its decision for it (`DecisionStore.prune_missing` exists for an explicit clean-up).
         if len(stored) < len(records) and self._relink(store, records):
             stored = store.load_annotations(session_id(), records)
+        if len(stored) < len(records):
+            stored.update(self._import_sidecars(store, [record for record in records if record.path not in stored]))
         out = {}
         for path, annotation in stored.items():
             decision, rating = annotation_to_view(annotation)
             out[path] = {"decision": decision, "rating": rating, "annotation": annotation}
         return out
+
+    def _import_sidecars(self, store, records) -> dict:
+        """Stars, keywords and rejected marks other programs wrote in XMP sidecars, for photos nothing is saved for here.
+        They are saved like any decision, so they are read once; after that this app's own record is the one that counts.
+        On the scan thread, like `load`."""
+        from ..xmp import import_sidecar_annotations
+
+        try:
+            found = import_sidecar_annotations(records)
+            if found:
+                by_path = {record.path: record for record in records}
+                store.save_annotations(session_id(), [(by_path[path], annotation) for path, annotation in found.items()])
+        except Exception:                              # reading other programs' sidecars is a convenience: the folder still opens
+            return {}
+        if found:
+            self.imported.emit(len(found))
+        return found
+
+    @Slot(int)
+    def _say_imported(self, count: int) -> None:
+        if self._toasts is not None:
+            self._toasts.push("info", "Read ratings from XMP sidecars",
+                              f"{count} photo{'s' if count != 1 else ''} had stars, keywords or a rejected mark written by another program.")
 
     def _relink(self, store, records) -> bool:
         """Decisions (and collection entries) saved for photos that were moved or renamed outside the app follow them to

@@ -79,6 +79,33 @@ def sync_sidecar_annotation(record: ImageRecord, annotation: SessionAnnotation |
         _write_single_sidecar(path, effective, before)
 
 
+def import_sidecar_annotations(records: list[ImageRecord]) -> dict[str, SessionAnnotation]:
+    """What other programs wrote beside these photos (stars, keywords, a rejected or accepted mark), for photos this app
+    holds nothing for yet. Each folder is listed once and only sidecars that exist are opened, so a folder without any
+    costs one listing."""
+    listed: dict[str, set[str]] = {}
+    found: dict[str, SessionAnnotation] = {}
+    for record in records:
+        folder = os.path.dirname(record.path)
+        names = listed.get(folder)
+        if names is None:
+            try:
+                names = {entry.name.casefold() for entry in os.scandir(folder) if entry.name.casefold().endswith(".xmp")}
+            except OSError:
+                names = set()
+            listed[folder] = names
+        if not names:
+            continue
+        for candidate in _sidecar_candidates(record.path):
+            if os.path.basename(candidate).casefold() not in names:
+                continue
+            annotation = _read_single_sidecar(candidate)
+            if not annotation.is_empty:
+                found[record.path] = annotation
+                break
+    return found
+
+
 def existing_sidecar_paths(image_path: str) -> tuple[str, ...]:
     ordered: list[str] = []
     seen: set[str] = set()
@@ -153,11 +180,18 @@ def _write_single_sidecar(sidecar_path: str, annotation: SessionAnnotation, befo
     _set_field(description, PHOTOSHOP, "true" if annotation.photoshop else "")
     _set_field(description, REVIEW_ROUND, annotation.review_round.strip())
     if before is None:
-        _set_rating(description, annotation.rating)
+        _set_rating(description, _shared_rating(annotation))
         _set_tags(description, annotation.tags)
     else:
-        if annotation.rating != before.rating:
-            _set_rating(description, annotation.rating)
+        now_rating, then_rating = _shared_rating(annotation), _shared_rating(before)
+        if now_rating != then_rating:
+            held = _parse_rating(_field_text(description, RATING))
+            if now_rating == -1 and held > 0:
+                pass        # stars another program wrote stay; the label says the photo is rejected
+            elif then_rating == -1 and now_rating == 0 and held != -1:
+                pass        # the rejected mark was never written here, so there is nothing to take back
+            else:
+                _set_rating(description, now_rating)
         now = {tag.casefold() for tag in _normalize_tags(annotation.tags)}
         then = {tag.casefold() for tag in _normalize_tags(before.tags)}
         if now != then:
@@ -308,11 +342,20 @@ def _review_state_value(annotation: SessionAnnotation) -> str:
     return ""
 
 
+def _shared_rating(annotation: SessionAnnotation) -> int:
+    """The ``xmp:Rating`` other programs read. A rejected photo with no stars is written as -1, the value Adobe Bridge,
+    Camera Raw and darktable show as rejected; a rejected photo that has stars keeps them (its label still says Rejected).
+    There is no such shared value for a winner: picks are kept in each program's own catalog, so that stays a label."""
+    if annotation.reject and annotation.rating <= 0:
+        return -1
+    return max(0, int(annotation.rating))
+
+
 def _set_rating(description: ET.Element, rating: int) -> None:
     if rating > 0:
         _set_field(description, RATING, str(max(0, min(5, int(rating)))))
         return
-    _set_field(description, RATING, "")
+    _set_field(description, RATING, "-1" if rating < 0 else "")
 
 
 def _read_bag(description: ET.Element, field_name: str) -> tuple[str, ...]:
