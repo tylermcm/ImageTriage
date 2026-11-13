@@ -119,6 +119,16 @@ def pytest_configure(config: pytest.Config) -> None:
 HANG_LOG_PATH = Path(tempfile.gettempdir()) / "image_triage_test_hang.txt"
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _shared_qt_application():
+    # Some legacy test helpers still construct QWidget. A preceding QML test
+    # must not create the weaker QGuiApplication singleton and crash those tests.
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
 @pytest.fixture(autouse=True)
 def _per_test_hard_timeout(request):
     # A hung test would otherwise stall the whole run forever. faulthandler

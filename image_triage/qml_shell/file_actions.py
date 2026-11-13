@@ -523,6 +523,8 @@ class FileActions(QObject):
         done, failed = result["done"], result["failed"]            # done: [(record, moves, annotation)], the photos that went
         many = len(picked) > 1
         verb = "move" if move else "copy"
+        if result.get("name_warnings"):
+            self._toast("warn", "Some names may not work on Windows", "\n".join(result["name_warnings"][:3]))
         if result["edits_left"]:
             left = result["edits_left"]
             self._toast("warn", "Some edits did not move with the photo" if move else "Some edits were not copied with the photo",
@@ -732,7 +734,7 @@ def _work_remove(ctx, items: list) -> dict:
 
 def _work_transfer(ctx, items: list, destination: str, move: bool) -> dict:
     """Move or copy each photo's bundle, then its edit data. `move_paths` and `copy_paths` undo their own half-done bundle."""
-    done, failed, edits_left = [], [], []
+    done, failed, edits_left, name_warnings = [], [], [], []
     for index, (record, annotation) in enumerate(items):
         if ctx.cancelled:
             break
@@ -744,6 +746,11 @@ def _work_transfer(ctx, items: list, destination: str, move: bool) -> dict:
             failed.append((record.name, str(exc) or type(exc).__name__))
             continue
         pairs = [(m.source_path, m.target_path) for m in moves]
+        from ..file_ops import name_warning
+        for _source, target in pairs:
+            warning = name_warning(Path(target).name, destination)
+            if warning:
+                name_warnings.append(f"{Path(target).name}: {warning}")
         if move:
             edits_left.extend(carry_edits(pairs))
             done.append((record, moves, annotation))
@@ -753,7 +760,7 @@ def _work_transfer(ctx, items: list, destination: str, move: bool) -> dict:
         # what this copy made, each with its size and time now: undoing the copy removes these, and only while they are still as made
         created = [(path, _stamp(path)) for path in (*(m.target_path for m in moves), *made)]
         done.append((record, moves, annotation, created))
-    return _outcome(ctx, len(items), done, failed, edits_left=edits_left)
+    return _outcome(ctx, len(items), done, failed, edits_left=edits_left, name_warnings=name_warnings)
 
 
 def _work_uncopy(ctx, entries: list) -> dict:

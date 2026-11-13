@@ -343,6 +343,22 @@ def test_cancel_before_start_does_not_launch_or_publish(tmp_path):
 MUST_NOT_START = "pathlib.Path(sys.argv[-2]).with_name('engine-started').write_text('x')\n"
 
 
+def test_explicit_cuda_is_checked_in_native_interpreter_before_run(tmp_path, monkeypatch):
+    task = task_for(tmp_path, MUST_NOT_START)
+    task.runtime_manifest = {"python": str(task.python)}
+    task.device = "cuda"
+    monkeypatch.setattr("image_triage.cli_culler_runtime.verify_native_runtime", lambda manifest: None)
+    seen, failures = [], []
+    def unavailable(python):
+        seen.append(python)
+        raise ValueError("Native CUDA unavailable")
+    monkeypatch.setattr("image_triage.cli_culler_runtime.verify_native_cuda", unavailable)
+    task.signals.failed.connect(lambda *args: failures.append(args))
+    task.run()
+    assert seen == [str(task.python)] and failures and "Native CUDA unavailable" in failures[0][1]
+    assert not task.paths.active.exists()
+
+
 @pytest.mark.parametrize("blocked", [".image_triage_ai", "cache", "active"])
 def test_a_destination_that_cannot_be_written_fails_before_the_engine_starts(tmp_path, monkeypatch, blocked):
     """A read-only card: found out at the start, with a plain reason, as the cascade does. A file is really created to find out.

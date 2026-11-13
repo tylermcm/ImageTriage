@@ -85,8 +85,9 @@ SHA-256 the release publishes (after the download and again before it is started
 refused, and the About page says that the publisher could not be verified. That protects against a damaged or swapped download; it does
 not protect against someone who can publish a release, because the checksum comes from the same place as the file. Once releases are
 signed, put the publisher name and/or certificate thumbprints in that constant: from then on unsigned installers and other signers are
-refused. A test ties the constant to the release workflow so one cannot change without the other. The Windows signature check itself
-(`WinVerifyTrust` through ctypes) has not been run on Windows; only the policy around it is tested, with a stand-in verifier.
+refused. A test ties the constant to the release workflow so one cannot change without the other. The Windows signature check (`WinVerifyTrust` through ctypes) was exercised on 2026-11-13 with a valid signed
+Cloudflare executable, an unsigned DLL and a tampered signed executable. Classification, publisher extraction and tamper rejection
+passed. This does not configure a trusted Image Triage publisher or validate an MSI install.
 
 ---
 

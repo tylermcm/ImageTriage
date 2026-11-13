@@ -86,3 +86,20 @@ print(json.dumps({name: {'url': json.loads(distribution(name).read_text('direct_
             raise ValueError(f"Installed {name} is not the validated wheel")
     if installed["ai-culler"]["version"] != "0.3.0.dev1":
         raise ValueError("Unsupported native engine version")
+
+
+def verify_native_cuda(python: str) -> None:
+    """Exercise CUDA in the native engine's own interpreter, not the cascade runtime."""
+    code = """
+import torch
+if not torch.cuda.is_available():
+    raise RuntimeError('CUDA is unavailable in the native culler runtime')
+value = torch.ones((2, 2), device='cuda')
+assert (value @ value).sum().item() == 8
+torch.cuda.synchronize()
+"""
+    result = subprocess.run([python, "-I", "-c", code], capture_output=True, text=True,
+                            timeout=30, creationflags=_no_window())
+    if result.returncode:
+        raise ValueError("The native culler could not use the requested graphics card. "
+                         "Repair its GPU runtime or explicitly select CPU. " + result.stderr.strip())

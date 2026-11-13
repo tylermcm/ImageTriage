@@ -6,6 +6,7 @@ The listeners here are stand-ins on the loopback interface; the real editor is n
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 from types import SimpleNamespace
@@ -80,7 +81,10 @@ class Listener:
 
 
 @pytest.fixture
-def listeners():
+def listeners(monkeypatch):
+    # Protocol fixtures have synthetic process IDs; exercise the portable fallback.
+    # Ownership-specific tests override this, and the Windows test below uses the OS.
+    monkeypatch.setattr(bridge, "_listener_pids", lambda port: None)
     made: list[Listener] = []
 
     def make(kind: str) -> Listener:
@@ -94,6 +98,18 @@ def listeners():
 
 def running(pid=4242):
     return SimpleNamespace(pid=pid, poll=lambda: None)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows TCP owner enumeration")
+def test_windows_reports_real_listener_owner_and_rejects_foreign_pid():
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        assert bridge._listener_pids(port) == {os.getpid()}
+        bridge.editor_port_guard(port, running(os.getpid()))()
+        with pytest.raises(bridge.PhotoCraftPortTaken):
+            bridge.editor_port_guard(port, running(os.getpid() + 1))()
 
 
 # --- one connection attempt ----------------------------------------------------------------------------------------------

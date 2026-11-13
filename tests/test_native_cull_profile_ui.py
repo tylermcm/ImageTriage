@@ -39,10 +39,21 @@ def test_edit_save_reload_and_invalid_advanced_profile(tmp_path, monkeypatch):
     assert model._native_controls.value("gates.clip_region_reject") == .5
     model.setNativeValue("bursts_keep", 0)
     model.setNativeValue("scene_keep", 3)
-    assert model.saveNativeDraft()
+    from PySide6.QtTest import QTest
+    def saved_profile():
+        for _ in range(3000):
+            if model._native_save is None:
+                return
+            QTest.qWait(10)
+        pytest.fail("native settings validation did not finish")
+    assert not model.saveNativeDraft()
+    saved_profile()
+    assert not model._native_error
     saved = model._settings.value("ai/cli_culler_settings_json")
     assert json.loads(saved)["bursts_keep"] == 0
     assert not model.saveNativeSettings('{"gates":{"clip_region_reject":0.01}}')
+    saved_profile()
+    assert model._native_error
     assert model._settings.value("ai/cli_culler_settings_json") == saved
     model._native_controls = None
     loaded()
@@ -51,6 +62,7 @@ def test_edit_save_reload_and_invalid_advanced_profile(tmp_path, monkeypatch):
     assert model._native_controls.value("gates.quality_reject") == 0
     model.setNativePreset("strict")
     model.close()
+    saved_profile()
     assert json.loads(model._settings.value("ai/cli_culler_settings_json"))["gates"]["clip_region_reject"] == .25
 
 

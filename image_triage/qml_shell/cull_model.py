@@ -102,6 +102,8 @@ class CullModel(QObject):
     _timesLoaded = Signal(int, object)
     _dataDeleted = Signal(int, str)
     _nativeLoaded = Signal(int, object, str)    # token, (saved profile, engine defaults) or None, error: sent from the loading thread
+    _nativeValidated = Signal(int, object, str)
+    nativeSettingsSaved = Signal()
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None, ai: AiCenterBackend | None = None, toasts=None, files=None) -> None:
         super().__init__(parent)
@@ -125,6 +127,11 @@ class CullModel(QObject):
         self._native_load = None                  # the read of the native defaults now running on its own thread (it starts the engine's Python)
         self._native_load_token = 0               # a result carrying an older token was overtaken or abandoned, and is dropped
         self._nativeLoaded.connect(self._native_arrived, Qt.ConnectionType.QueuedConnection)
+        self._native_save = None
+        self._native_save_token = 0
+        self._native_validated_text = None
+        self._native_after_save = ""
+        self._nativeValidated.connect(self._native_saved, Qt.ConnectionType.QueuedConnection)
         self._flag_map: dict[str, str] = {}
         self._flags_rev = 0
         self._grid_sig = None
@@ -478,10 +485,10 @@ class CullModel(QObject):
         applied = s["applied"]
         done_title = "Nothing was changed" if not applied else (f"{len(applied['ids'])} frames moved to the recycle bin" if applied["act"] == "bin" and self._real and self._files is not None else f"{len(applied['ids'])} frames marked as Rejects")
         binned = bool(applied) and applied["act"] == "bin" and self._real and self._files is not None
-        done_body = ("They are in the program’s recycle bin; Undo brings them back. Your winners were not touched." if binned else "They are marked red in the grid and listed under Rejected. Your winners were not touched."
+        done_body = ("They are in Safe Trash; Undo brings them back, or open File › Safe Trash later. Your winners were not touched." if binned else "They are marked red in the grid and listed under Rejected. Your winners were not touched."
                      + (" Moving files to the recycle bin is not connected yet, so they were rejected instead." if applied and applied["act"] == "bin" and not (self._real and self._files is not None) else ""))
         opts = [{"key": "reject", "label": "Mark them as Rejects", "desc": "Sets their decision to Reject. The files stay where they are, and Ctrl+Z undoes it.", "rec": True},
-                {"key": "bin", "label": "Move them to the recycle bin", "desc": "Moves each file, with its paired RAW or JPG and sidecars, to the program’s recycle bin. Undo brings them back during this session." + ("" if self._real and self._files is not None else " (Not connected yet: they are marked as Rejects.)"), "rec": False},
+                {"key": "bin", "label": "Move them to the recycle bin", "desc": "Moves each file, with its paired RAW or JPG and sidecars, to Safe Trash. Undo brings them back during this session; File › Safe Trash restores them later." + ("" if self._real and self._files is not None else " (Not connected yet: they are marked as Rejects.)"), "rec": False},
                 {"key": "none", "label": "Keep them as flags only", "desc": "Nothing changes on disk or in your decisions. They stay dimmed in the grid.", "rec": False}]
         for o in opts:
             o["on"] = s["act"] == o["key"]
@@ -545,6 +552,7 @@ class CullModel(QObject):
             self._view["nativeGroups"] = self._native_controls.groups() if self._native_controls else []
             self._view["nativeReady"] = self._native_controls is not None
             self._view["nativeLoading"] = self._native_load is not None       # the engine is being asked for its defaults (off the UI thread)
+            self._view["nativeSaving"] = self._native_save is not None
             self._view["nativeDirty"] = bool(self._native_controls and self._native_controls.dirty)
             self._view["nativeDevice"] = str(self._settings.value("ai/cli_culler_device", "auto")) if self._settings else "auto"
             if self._native_controls:
@@ -935,26 +943,82 @@ class CullModel(QObject):
 
     @Slot(str, result=bool)
     def saveNativeSettings(self, text: str) -> bool:
-        from ..cli_culler_runtime import load_native_runtime, validate_native_settings
         try:
             value = json.loads(text)
             if not isinstance(value, dict):
                 raise ValueError("Culling settings must be a JSON object")
-            validate_native_settings(load_native_runtime()["python"], value)
-            self._settings.setValue("ai/cli_culler_settings_json", json.dumps(value))
-            if self._native_controls is not None:
-                self._native_controls.draft = value
-                self._native_controls.dirty = False
-            else:
-                self._cancel_native_load()          # a read still running holds the profile as it was before this save
-                self._native_load_failed = False
         except Exception as error:
             self._native_error = str(error)
             self._rebuild()
             return False
+        canonical = json.dumps(value, sort_keys=True)
+        if self._native_save is not None:
+            return False
+        if canonical == self._native_validated_text:
+            if self._native_controls is not None:
+                self._native_controls.draft = value
+                self._native_controls.dirty = False
+            self._native_error = ""
+            self._rebuild()
+            return True
+        from .native_cull_controls import NativeDefaultsRead
+        self._native_save_token += 1
+        token, job = self._native_save_token, NativeDefaultsRead()
+        self._native_save = job
+        self._native_save_folder = self._photos.folder_dir()
+        draft_before = json.dumps(self._native_controls.draft, sort_keys=True) if self._native_controls else None
+        self._cancel_native_load()
+        self._native_load_failed = True
         self._native_error = ""
+
+        def work():
+            from ..cli_culler_runtime import load_native_runtime
+            try:
+                job.validate(load_native_runtime()["python"], value)
+                error = ""
+            except Exception as exc:
+                error = str(exc) or type(exc).__name__
+            if not job.cancelled:
+                try:
+                    self._nativeValidated.emit(token, (value, draft_before), error)
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=work, name="qml-cull-save-settings", daemon=True).start()
         self._rebuild()
-        return True
+        return False                              # not saved yet: Start/Close resume only after validation
+
+    def _native_saved(self, token, payload, error):
+        if token != self._native_save_token or self._native_save is None:
+            return
+        self._native_save = None
+        value, draft_before = payload
+        if self._native_controls is not None:
+            self._native_load_failed = False
+        action, self._native_after_save = self._native_after_save, ""
+        if not error:
+            try:
+                self._settings.setValue("ai/cli_culler_settings_json", json.dumps(value))
+                self._native_validated_text = json.dumps(value, sort_keys=True)
+                self._native_load_failed = False
+                if self._native_controls is not None:
+                    if json.dumps(self._native_controls.draft, sort_keys=True) == draft_before:
+                        self._native_controls.draft = value
+                        self._native_controls.dirty = False
+                    else:
+                        action = ""               # edits made during validation remain unsaved
+                else:
+                    self._native_load_failed = False
+            except Exception as exc:
+                error = str(exc)
+        self._native_error = error
+        self._rebuild()
+        if not error:
+            self.nativeSettingsSaved.emit()
+            if action == "start" and self._photos.folder_dir() == self._native_save_folder:
+                self._start_real()
+            elif action == "close":
+                self.close()
 
     @Slot(str, "QVariant")
     def setNativeValue(self, key, value):
@@ -1015,6 +1079,11 @@ class CullModel(QObject):
         while self._apply_job is not None:
             self._apply_next(schedule=False)
         self._cancel_native_load()                  # never waited for: the thread is a daemon and its Python process is ended here
+        self._native_save_token += 1
+        if self._native_save is not None:
+            self._native_save.cancel()
+            self._native_save = None
+        self._native_after_save = ""
         self._native_load_failed = True             # and a late redraw does not start another
         if self._run is not None:
             self._run.cancel()
@@ -1049,6 +1118,8 @@ class CullModel(QObject):
             return
         if self._native and self._native_controls and self._native_controls.dirty:
             if not self.saveNativeDraft():
+                if self._native_save is not None:
+                    self._native_after_save = "close"
                 return
         self._install.stop()
         if self._s["window"] == "center" and self._s["back"]:
@@ -1347,6 +1418,8 @@ class CullModel(QObject):
             return
         if self._native:
             if not self.saveNativeDraft():
+                if self._native_save is not None:
+                    self._native_after_save = "start"
                 return
             self._real, self._outcomes, self._picks, self._flags, self._stacks = True, {}, set(), {}, []
             self._token += 1

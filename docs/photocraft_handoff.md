@@ -3790,3 +3790,72 @@ cached/installed files at discovery and under a read lock at launch. Its securit
 harness and 15 QML/native/architecture tests passed against a staged DLL. The
 existing PocketDrop DLL remains preserved; native artifact promotion is pending
 and tracked under P13 in the audit log.
+
+### 2026-11-13 combined audit branch acceptance
+
+Both companion remotes fetched successfully. Fork integration and local HEAD remain
+`b5b39157c4f837aae681658036540962d4a99fc4`. Upstream advanced from the previous
+record's `4a059d97c` to `e56668ee4001c9bbb1f498010040893c5fc009a5`; latest release
+is v0.23.1. Divergence is 86 host-only / 4,426 upstream-only commits.
+The dry-run merge reports 41 conflicted paths, including ten Camera Raw paths,
+plus startup, control, jobs, I/O and translation changes. These are large conflicts.
+No merge or resolution was attempted; the six existing companion drafts and the
+known-good executable remain preserved. Release integration needs a separate
+review and validation pass.
+
+The received Image Triage audit branch was exercised against the preserved native
+editor candidate: hidden startup, blocked presentation hide/restore, persistent
+filmstrip navigation, stash/restore, native Save/grid notification, closed-tab
+reopen, five themes, resize/fullscreen and process cleanup passed. Real Windows
+TCP-owner and process-liveness checks passed. A real depth-model map was converted
+to Light Depth coverage and accepted by the paired RAW preview helper, changing
+rendered pixels. These checks do not validate the unmerged v0.23.1 release or
+remove E23's residual bind/close race.
+
+The previous P13 paragraph's pending PocketDrop DLL promotion was superseded by
+`d2995d7`, already contained in the received audit branch. See the audit log for
+that combined P13/P14 promotion and the remaining local-encryption feature.
+
+Conflicted paths in that dry run (no resolutions applied):
+
+- `apps/photocraft/src/main.rs`
+- `crates/algo/src/camera_raw.rs`
+- `crates/algo/src/camera_raw/local_tone.rs`
+- `crates/algo/src/camera_raw/per_pixel.rs`
+- `crates/automation/src/workspace.rs`
+- `crates/io/src/lib.rs`
+- `crates/raw/src/lib.rs`
+- `crates/ui-egui/src/app.rs`
+- `crates/ui-egui/src/canvas/gpu_canvas.rs`
+- `crates/ui-egui/src/control/dispatch.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui/controls.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui/convert.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui/identity_tests.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui/menu.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui/open.rs`
+- `crates/ui-egui/src/dialogs/camera_raw_ui/tests.rs`
+- `crates/ui-egui/src/i18n/cs.tsv`
+- `crates/ui-egui/src/i18n/de.tsv`
+- `crates/ui-egui/src/i18n/el.tsv`
+- `crates/ui-egui/src/i18n/es.tsv`
+- `crates/ui-egui/src/i18n/fr.tsv`
+- `crates/ui-egui/src/i18n/hu.tsv`
+- `crates/ui-egui/src/i18n/id.tsv`
+- `crates/ui-egui/src/i18n/it.tsv`
+- `crates/ui-egui/src/i18n/ja.tsv`
+- `crates/ui-egui/src/i18n/ko.tsv`
+- `crates/ui-egui/src/i18n/nl.tsv`
+- `crates/ui-egui/src/i18n/pl.tsv`
+- `crates/ui-egui/src/i18n/pt-br.tsv`
+- `crates/ui-egui/src/i18n/ru.tsv`
+- `crates/ui-egui/src/i18n/sr.tsv`
+- `crates/ui-egui/src/i18n/tr.tsv`
+- `crates/ui-egui/src/i18n/uk.tsv`
+- `crates/ui-egui/src/i18n/vi.tsv`
+- `crates/ui-egui/src/i18n/zh-hans.tsv`
+- `crates/ui-egui/src/i18n/zh-hant.tsv`
+- `crates/ui-egui/src/jobs_ui.rs`
+- `crates/ui-egui/src/lib.rs`
+- `crates/ui-egui/src/widgets/fields.rs`
+- `docs/control-protocol.md`

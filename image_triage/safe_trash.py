@@ -3,7 +3,6 @@ from __future__ import annotations
 import ctypes
 import json
 import os
-import posixpath
 import shutil
 from dataclasses import dataclass
 from pathlib import Path

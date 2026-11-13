@@ -82,6 +82,22 @@ def titles(toasts):
     return [item["title"] for item in toasts.items]
 
 
+def test_copy_surfaces_destination_name_warning_off_thread(world, qapp, monkeypatch):
+    from image_triage import file_ops
+    threads = []
+    def warning(name, directory):
+        threads.append(threading.current_thread())
+        return "This name cannot be opened on Windows."
+    monkeypatch.setattr(file_ops, "name_warning", warning)
+    target = world.tmp / "delivery"
+    target.mkdir()
+    world.files.copyRows(rows(world.photos, "a"), str(target))
+    assert wait_for(qapp, lambda: not world.files.busy)
+    assert threads and all(t is not threading.main_thread() for t in threads)
+    assert "Some names may not work on Windows" in titles(world.toasts)
+    assert (target / "a.nef").exists()
+
+
 class Gate:
     """Stands in for `move_paths`: says which thread it ran on and holds each photo until the test lets it through."""
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -203,7 +204,7 @@ def test_a_deleted_photo_is_one_row_with_where_it_was_and_what_it_had(qapp, worl
     assert sorted(row["name"] for row in rows) == ["a.nef", "b.jpg"] and w.trash.count == 2
     a = next(row for row in rows if row["name"] == "a.nef")
     assert a["folder"] == str(w.shoot) and not a["folderMissing"] and a["files"] >= 3 and a["decision"] == "Winner, 4 stars"
-    assert a["deleted"].startswith("Today") and QUrl(a["thumb"]).toLocalFile() == str(w.root / "a.jpg")
+    assert a["deleted"].startswith("Today") and Path(QUrl(a["thumb"]).toLocalFile()) == w.root / "a.jpg"
     assert w.trash.totalText.endswith("bytes") or w.trash.totalText.endswith("KB")
     assert w.trash.rows.rowCount() == 2
 

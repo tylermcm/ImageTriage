@@ -248,6 +248,9 @@ def test_download_verifies_then_installs_when_the_app_closes(qapp, photos, monke
 
     launched, quits = [], []
     monkeypatch.setattr(updater, "download_update_installer", download)
+    # The three-byte fixture is not an MSI that WinVerifyTrust can inspect.
+    # Publisher-policy rejection is exercised separately below.
+    monkeypatch.setattr(updater, "read_authenticode_signature", lambda path: updater.InstallerSignature(updater.SIGNATURE_UNSIGNED))
     monkeypatch.setattr(updater, "launch_update_installer_and_restart", lambda path, **kw: launched.append((str(path), kw)))
     monkeypatch.setattr(ReferenceModel, "_quit_app", staticmethod(lambda: quits.append(True)))
     ref.checkUpdates()

@@ -7,10 +7,17 @@ Column {
     readonly property var v: cull.view
     property bool advanced: false
     property bool customizing: false
+    property bool hideAfterSave: false
     spacing: 8
     Connections { target: cull; function onChanged() {
         if (root.v.window !== "cull" || root.v.page !== "prep") { root.customizing = false; root.advanced = false }
-    } }
+    }
+        function onNativeSettingsSaved() {
+            if (root.hideAfterSave && !root.v.nativeDirty) { root.customizing = false; root.advanced = false }
+            root.hideAfterSave = false
+        }
+    }
+    Text { visible: !!root.v.nativeSaving; text: "Checking and saving settings…"; color: theme.fg3; font.pixelSize: 12 }
     Text { text: "WHAT WILL RUN"; color: theme.fg3; font.pixelSize: 11; font.weight: Font.DemiBold; font.letterSpacing: 0.8 }
     // The engine's settings are read on a worker thread (it starts the engine's Python): until they arrive, or when they cannot be
     // read, the controls say so instead of showing switches that are bound to nothing.
@@ -39,7 +46,7 @@ Column {
         Text { text: "HOW STRICT"; color: theme.fg3; font.pixelSize: 11; font.weight: Font.DemiBold; font.letterSpacing: 0.8 }
         Text { objectName: "nativeFineTune"; anchors.right: parent.right; opacity: root.v.nativeReady ? 1 : 0.45; text: root.customizing ? "Hide fine-tuning" : "Fine-tune"; color: theme.fg3; font.pixelSize: 12
             HoverHandler { cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: { if (!root.v.nativeReady) return; if (!root.customizing) root.customizing = true; else if (cull.saveNativeDraft()) { root.customizing = false; root.advanced = false } } }
+            TapHandler { onTapped: { if (!root.v.nativeReady || root.v.nativeSaving) return; if (!root.customizing) root.customizing = true; else { root.hideAfterSave = true; if (cull.saveNativeDraft()) { root.customizing = false; root.advanced = false; root.hideAfterSave = false } } } }
         }
     }
     Seg { width: parent.width; height: 38; fill: true; enabled: !!root.v.nativeReady; opacity: enabled ? 1 : 0.45; showExtras: false; labels: ["Careful", "Balanced", "Strict"]; current: root.v.nativePreset === undefined ? -1 : root.v.nativePreset
@@ -90,7 +97,7 @@ Column {
     Text { width: parent.width; text: "Zero quality-floor levels leave the floor off. Quality levels require the corresponding model. Advanced preserves every native setting, including baselines and scoring weights."; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 12 }
     Text { visible: !!root.v.nativeError; width: parent.width; text: root.v.nativeError || ""; wrapMode: Text.WordWrap; color: theme.rej; font.pixelSize: 12 }
     Row { spacing: 8
-        SButton { text: root.v.nativeDirty ? "Save changes" : "Settings saved"; h: 32; hpad: 14; onClicked: cull.saveNativeDraft() }
+        SButton { text: root.v.nativeSaving ? "Saving…" : root.v.nativeDirty ? "Save changes" : "Settings saved"; enabled: !root.v.nativeSaving; h: 32; hpad: 14; onClicked: cull.saveNativeDraft() }
         SButton { text: root.advanced ? "Hide Advanced" : "Advanced…"; h: 32; hpad: 14; onClicked: root.advanced = !root.advanced }
     }
     Column { visible: root.advanced; width: parent.width; spacing: 8
@@ -99,7 +106,7 @@ Column {
                 background: Rectangle { color: theme.s2; radius: 8; border.color: theme.lineSoft }
             }
         }
-        SButton { text: "Save Advanced settings"; h: 30; hpad: 12; onClicked: cull.saveNativeSettings(jsonProfile.text) }
+        SButton { text: "Save Advanced settings"; enabled: !root.v.nativeSaving; h: 30; hpad: 12; onClicked: cull.saveNativeSettings(jsonProfile.text) }
     }
     }
 }

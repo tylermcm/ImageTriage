@@ -106,6 +106,10 @@ class CliCullerRunTask(QRunnable):
                 from .cli_culler_runtime import verify_native_runtime
                 verify_native_runtime(self.runtime_manifest)
                 self._check_cancelled()
+                if self.device == "cuda":
+                    from .cli_culler_runtime import verify_native_cuda
+                    verify_native_cuda(str(self.python))
+                    self._check_cancelled()
             descriptor = self._execute(folder)
             with self._lock:
                 self._check_cancelled()

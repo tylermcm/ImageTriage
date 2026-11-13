@@ -35,5 +35,6 @@ Renaming the mask hands it over as an ordinary mask; Light Depth then starts a n
 
 - Coverage is authored at 640 pixels on the long edge and scaled by the renderer. Light is smooth, so this is not
   visible as softness in the picture, but the light cannot follow edges finer than the depth map itself.
-- Verified with a stand-in depth map and offscreen rendering of the section. Not yet run with the real depth
-  model, the native RAW preview helper or on Windows.
+- Windows follow-up on 2026-11-13 ran the installed depth model, generated Light Depth coverage, and rendered it
+  through the paired native RAW preview helper with changed output pixels. The QML section was rendered and
+  visually inspected. Full-resolution edge fidelity and cross-photo synchronization remain separate work.

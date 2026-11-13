@@ -240,7 +240,8 @@ class UpdaterTests(unittest.TestCase):
                 popen.assert_not_called()
                 installer.write_bytes(b"msi bytes")
                 updater.launch_update_installer_and_restart(
-                    installer, app_executable=installer, current_pid=1, expected_sha256=expected
+                    installer, app_executable=installer, current_pid=1, expected_sha256=expected,
+                    signature_verifier=lambda path: updater.InstallerSignature(updater.SIGNATURE_UNSIGNED),
                 )
                 popen.assert_called_once()
 

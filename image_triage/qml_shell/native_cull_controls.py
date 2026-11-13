@@ -70,11 +70,18 @@ class NativeDefaultsRead:
                 pass                                # it had already ended
 
     def read(self, python, timeout=30):
+        return json.loads(self.run(python, DEFAULTS_CODE, timeout=timeout))
+
+    def validate(self, python, value, timeout=30):
+        self.run(python, "import json,sys; from aiculler import CullSettings; CullSettings.from_dict(json.loads(sys.argv[1]))",
+                 [json.dumps(value)], timeout=timeout)
+
+    def run(self, python, code, arguments=(), timeout=30):
         with self._lock:
             if self.cancelled:
                 raise ValueError("Reading the native setting defaults was cancelled")
             process = self._process = subprocess.Popen(
-                [python, "-I", "-c", DEFAULTS_CODE], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                [python, "-I", "-c", code, *arguments], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0))   # no console window flashing up on Windows
         try:
             out, err = process.communicate(timeout=timeout)
@@ -86,7 +93,7 @@ class NativeDefaultsRead:
             raise ValueError("Reading the native setting defaults was cancelled")
         if process.returncode:
             raise ValueError(err.strip() or "Could not read native setting defaults")
-        return json.loads(out)
+        return out
 
 
 class NativeCullControls:

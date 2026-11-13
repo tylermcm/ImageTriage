@@ -1,6 +1,13 @@
 # Test failure ledger
 
-Last checked 2026-11-12 on Windows (Store Python 3.13.14, PySide6 6.12, managed CUDA worker, offscreen/Basic Qt): **2,634 passed, 18 skipped, 5 expected failures, 129 passing subtests**. GC enabled. Earlier platform results are retained below.
+Last checked 2026-11-13 on the combined audit branch: **2,964 passed, 60 skipped,
+5 expected failures, 135 passing subtests**, exit code 0, GC enabled. Windows
+Store Python 3.13.14, PySide6 6.12, managed native CUDA interpreter, offscreen/Basic
+Qt. See [the Windows acceptance record](../docs/audit_windows_acceptance_20261113.md)
+for native checks, skipped-case limits and the diagnostic failures fixed before
+this complete run.
+
+Previous check, 2026-11-12 on Windows (Store Python 3.13.14, PySide6 6.12, managed CUDA worker, offscreen/Basic Qt): **2,634 passed, 18 skipped, 5 expected failures, 129 passing subtests**. GC enabled. Earlier platform results are retained below.
 
 Rules:
 
@@ -25,6 +32,26 @@ not substitute for the original machine's Microsoft Store Python, managed GPU/mo
 runtime or sealed native editor acceptance.
 
 ## Open failures
+
+None in the final combined host suite. Remaining acceptance limits and historical
+environment-specific failures are retained below.
+
+The first combined-tree run exposed a test-application lifetime defect: an early
+QML helper created QGuiApplication, then a later QWidget helper crashed. A shared
+session QApplication fixes the ordering problem without introducing Widgets into
+application modules. Six protocol tests also used fake editor PIDs against real
+Windows sockets; their fixture now explicitly exercises the ownership-unavailable
+fallback. Ownership assertions remain intact, with an additional real Windows
+TCP-owner check. The twelve control-port tests pass. Neither issue was skipped or
+marked as an expected failure.
+
+Three more Windows fixture failures were corrected: two synthetic installer
+files now have explicit fake signature results instead of reaching WinVerifyTrust,
+and a Safe Trash thumbnail URL is compared as a Path rather than a slash-style
+dependent string. Real signature rejection and port ownership remain separately
+covered. The complete diagnostic result was 2,954 passed, nine failed, 60 skipped,
+five expected failures and 135 passing subtests; all nine failures are accounted
+for by these fixture fixes. Final combined-tree results are recorded above.
 
 Original-machine follow-up: direct Store-venv workers still fail the two
 `test_cancellation_stops_descendant_and_discards_output` cases because alias-launched
