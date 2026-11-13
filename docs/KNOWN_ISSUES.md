@@ -147,6 +147,19 @@ changes, and a failed save on close is reported on its own signal (`closeFailed`
 abandoned when the previous photo cannot be saved (going on would discard its changes without asking), nothing reports the failure once
 per photo, and nothing on the host removes `*.pcsave.tmp`.
 
+**State on 2026-11-13 (host side; checked with a stand-in editor only, not with PhotoCraft or on the share).**
+- A switch is still not made when the photo being left cannot be saved (going on would drop its changes unasked). What changed is how a
+  switch ends: always with the editor, the host and the selection on one photo. A failure after the editor may have replaced its
+  document but before the new photo was bound puts the previous photo back, or, if that fails too, stops the editor; a failure after
+  the binding ends on the new photo; a photo asked for while a switch is running is opened afterwards.
+- The failure is announced once per photo and cause (`EditorHost._report`; numbers in the message are ignored, since every attempt
+  names a new temporary file). It is announced again after a new cause, after something succeeded for that photo, after the editor
+  was closed, and always for an explicit Save or Close. A repeated navigation attempt that fails the same way raises no new toast;
+  the message stays in `editor.error`.
+- `photocraft_bridge.sweep_stale_save_temps` removes `*.pcsave.tmp` files older than an hour from the edit folder when an editor starts
+  on it and after each completed save. It keeps any whose name carries the process number of the running editor, and for a day any
+  whose number belongs to a process running on this machine. The editor's own cleanup after a failed rename is still an editor-side fix.
+
 **What is established (all on `\192.168.1.200\ColossalBoi\Photography\China '26`):**
 - The editor writes the whole temp file (`._DSC4918.NEF.cameraraw.json.23160-0.pcsave.tmp`, 31,528 bytes, complete) and the failure comes at the rename that
   would put it in place; no final file appears. Failed temps are left behind: 89 `*.pcsave.tmp` files (about 2.2 GB) in `China '26/.image_triage_edits`

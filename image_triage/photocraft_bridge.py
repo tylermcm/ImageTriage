@@ -1435,6 +1435,89 @@ def sweep_stale_token_files(*, now: float | None = None, directory: str | Path |
     return removed
 
 
+# The editor writes every file through ``.<name>.<pid>-<n>.pcsave.tmp`` beside the target and renames it into place. When
+# the rename fails (docs/KNOWN_ISSUES.md, the NAS entries) the temporary file stays, at the size of the file it was to
+# become. A save is over within minutes at the very most (the control channel gives one 45 s), so a temporary file this old
+# belongs to no save that is still running.
+STALE_SAVE_TEMP_S = 60 * 60.0
+# One whose name carries the number of a process that is running on this machine is kept this much longer: it is probably
+# a coincidence of process numbers (or a file from another computer on a share), but it costs nothing to wait.
+STALE_SAVE_TEMP_LIVE_PID_S = 24 * 60 * 60.0
+SAVE_TEMP_SUFFIX = ".pcsave.tmp"
+
+
+def _save_temp_pid(name: str) -> int | None:
+    """The process number in ``.<file>.<pid>-<n>.pcsave.tmp``, or ``None`` when the name is not of that form."""
+    stem = name[: -len(SAVE_TEMP_SUFFIX)]
+    pid, dash, counter = stem.rpartition(".")[2].partition("-")
+    return int(pid) if dash and pid.isdigit() and counter.isdigit() else None
+
+
+def _process_exists(pid: int) -> bool:
+    """Whether a process with this number is running on this machine. ``True`` when it cannot be told."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            kernel32 = ctypes.windll.kernel32
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                return kernel32.GetLastError() == 5  # access denied: it exists
+            try:
+                code = wintypes.DWORD()
+                return not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == 259  # STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(handle)
+        except (OSError, AttributeError, ValueError, TypeError):
+            return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def sweep_stale_save_temps(folder: str | Path, *, live_pids=(), now: float | None = None) -> int:
+    """Deletes the editor's leftover ``*.pcsave.tmp`` files in an edit folder. Returns how many.
+
+    Never one that a running save could own: a file is only deleted when it is older than ``STALE_SAVE_TEMP_S``, its name
+    does not carry the process number of an editor this app is running (``live_pids``), and, if a process with that
+    number exists on this machine at all, it is older than ``STALE_SAVE_TEMP_LIVE_PID_S`` as well. Only regular files
+    directly in ``folder`` whose names end in ``.pcsave.tmp`` are touched."""
+    now = time.time() if now is None else now
+    ours = {pid for pid in live_pids if isinstance(pid, int)}
+    removed = 0
+    try:
+        entries = list(os.scandir(folder))
+    except OSError:
+        return 0
+    for entry in entries:
+        if not entry.name.endswith(SAVE_TEMP_SUFFIX):
+            continue
+        try:
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            age = now - entry.stat(follow_symlinks=False).st_mtime
+            if age < STALE_SAVE_TEMP_S:
+                continue
+            pid = _save_temp_pid(entry.name)
+            if pid is not None and (pid in ours or (age < STALE_SAVE_TEMP_LIVE_PID_S and _process_exists(pid))):
+                continue
+            os.remove(entry.path)
+            removed += 1
+        except OSError:
+            continue
+    if removed:
+        logging.getLogger(__name__).info("Removed %s stale save temporary file(s) from %s", removed, folder)
+    return removed
+
+
 # --- the control port ---------------------------------------------------------------------------------------------------
 #
 # The editor is told which port to listen on (``--control <port>``); it has no way to pick one itself and report it. The
