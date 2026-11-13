@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -31,6 +32,10 @@ class CliCullerSignals(QObject):
 
 class _Cancelled(Exception):
     pass
+
+
+class _NotWritable(RuntimeError):
+    """The results cannot be saved where this run keeps them. Found before the engine starts; there is no log to point at."""
 
 
 def _discard_incomplete_run(root: Path) -> None:
@@ -91,9 +96,12 @@ class CliCullerRunTask(QRunnable):
     def run(self):
         folder = str(self.folders[0])
         outcome, message = "failed", "Native culler did not complete"
+        staged = True                               # a generation may have been started on disk, and is discarded unless it finished
         try:
             self._check_cancelled()
             self.signals.started.emit(folder)
+            self._check_writable()
+            self._check_cancelled()
             if self.runtime_manifest is not None:
                 from .cli_culler_runtime import verify_native_runtime
                 verify_native_runtime(self.runtime_manifest)
@@ -106,12 +114,14 @@ class CliCullerRunTask(QRunnable):
             outcome, message = "finished", str(self.paths.active)
         except _Cancelled:
             outcome, message = "cancelled", "Analysis stopped"
+        except _NotWritable as error:
+            outcome, message, staged = "failed", str(error), False
         except Exception as error:
             outcome, message = "failed", f"{error}\nDiagnostics: {self.log_path}"
         finally:
             with self._lock:
                 self._terminal = True
-            if outcome != "finished":
+            if outcome != "finished" and staged:
                 try:
                     _discard_incomplete_run(self.run_root)
                 except OSError as error:
@@ -123,6 +133,28 @@ class CliCullerRunTask(QRunnable):
             self.signals.cancelled.emit(folder, message)
         else:
             self.signals.failed.emit(folder, message)
+
+    def _check_writable(self) -> None:
+        """Everything this run writes is kept beside the photos: the staged generation, the engine's score cache, the log and the
+        pointer to the finished results. A folder that cannot be written to (a locked card, a read-only share) is found out now,
+        as the cascade does (`cascade.task.CascadeRunTask._check_writable`), not after the engine has analysed the whole shoot.
+
+        A file is really created and removed in each directory: permission bits do not tell what a card's lock switch or a
+        share's access list will allow."""
+        hidden_root = self.folder / ".image_triage_ai"
+        # The cache is the engine's to create (under the root tested here); one left by an earlier run is tested as it stands.
+        directories = [self.paths.root, self.paths.runs, self.log_path.parent, *([self.paths.cache] if self.paths.cache.exists() else [])]
+        for directory in directories:
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(dir=directory, prefix=".write-test-"):
+                    pass
+            except OSError as error:
+                reason = error.strerror or str(error)
+                raise _NotWritable(
+                    f"The results cannot be saved in {hidden_root} ({reason}). The analysis keeps its results in a folder beside the photos, "
+                    "so a read-only card or folder cannot be analysed. Copy the photos to a folder you can write to and analyse them there."
+                ) from error
 
     def _execute(self, folder: str) -> dict:
         self.run_root.mkdir(parents=True)
