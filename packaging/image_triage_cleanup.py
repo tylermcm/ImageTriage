@@ -80,7 +80,10 @@ def _home_path() -> Path | None:
         return None
 
 
-def _cleanup_paths(*, include_ai_cache: bool = True) -> list[Path]:
+def _cleanup_paths(*, include_ai_cache: bool = True, registrations_only: bool = False) -> list[Path]:
+    """The folders to remove. ``registrations_only`` (what the uninstaller asks for) leaves everything the user
+    made or chose: the application data folders hold the decisions database, the catalog, the restore records of
+    deleted photos and the settings, and none of that is a cache."""
     paths: list[Path] = []
     appdata = _env_path("APPDATA")
     local_appdata = _env_path("LOCALAPPDATA")
@@ -90,6 +93,10 @@ def _cleanup_paths(*, include_ai_cache: bool = True) -> list[Path]:
         if local_appdata is not None:
             paths.append(local_appdata / "image_triage_ai_cache")
         paths.append(temp_root / "image_triage_ai_cache")
+
+    if registrations_only:
+        paths.append(temp_root / "image-triage-association-probes")
+        return _dedupe_paths(paths)
 
     if appdata is not None:
         paths.extend(
@@ -199,30 +206,49 @@ def _delete_registry_value(root, key_path: str, value_name: str, *, dry_run: boo
         return
 
 
-def _cleanup_registry(*, dry_run: bool, output: list[str]) -> None:
+_CLASSES_ROOT = r"Software\Classes"
+
+
+def _registry_targets(*, registrations_only: bool = False) -> tuple[list[str], list[tuple[str, str]]]:
+    """What is removed under HKEY_CURRENT_USER: (key trees, (key, value name) pairs).
+
+    The file-type registrations always go. The settings trees go only when the user asked for a full clean-up
+    (``registrations_only`` false): an uninstall keeps the user's settings.
+    """
+    trees = [rf"{_CLASSES_ROOT}\Applications\{APP_EXE_NAME}", rf"{_CLASSES_ROOT}\{APP_PROG_ID}"]
+    if not registrations_only:
+        trees += [rf"Software\{APP_NAME}", rf"Software\Codex\{APP_NAME}", r"Software\ImageTriage"]
+    values = [(rf"{_CLASSES_ROOT}\{suffix}\OpenWithProgids", APP_PROG_ID) for suffix in SUPPORTED_SUFFIXES]
+    return trees, values
+
+
+def _cleanup_registry(*, dry_run: bool, output: list[str], registrations_only: bool = False) -> None:
     if os.name != "nt" or winreg is None:
         return
-    classes_root = r"Software\Classes"
-    _delete_registry_tree(winreg.HKEY_CURRENT_USER, rf"{classes_root}\Applications\{APP_EXE_NAME}", dry_run=dry_run, output=output)
-    _delete_registry_tree(winreg.HKEY_CURRENT_USER, rf"{classes_root}\{APP_PROG_ID}", dry_run=dry_run, output=output)
-    _delete_registry_tree(winreg.HKEY_CURRENT_USER, rf"Software\{APP_NAME}", dry_run=dry_run, output=output)
-    _delete_registry_tree(winreg.HKEY_CURRENT_USER, rf"Software\Codex\{APP_NAME}", dry_run=dry_run, output=output)
-    _delete_registry_tree(winreg.HKEY_CURRENT_USER, r"Software\ImageTriage", dry_run=dry_run, output=output)
-    for suffix in SUPPORTED_SUFFIXES:
-        _delete_registry_value(
-            winreg.HKEY_CURRENT_USER,
-            rf"{classes_root}\{suffix}\OpenWithProgids",
-            APP_PROG_ID,
-            dry_run=dry_run,
-            output=output,
-        )
+    trees, values = _registry_targets(registrations_only=registrations_only)
+    for key_path in trees:
+        _delete_registry_tree(winreg.HKEY_CURRENT_USER, key_path, dry_run=dry_run, output=output)
+    for key_path, value_name in values:
+        _delete_registry_value(winreg.HKEY_CURRENT_USER, key_path, value_name, dry_run=dry_run, output=output)
+    if not dry_run:
+        _notify_shell()
 
 
-def cleanup(*, dry_run: bool, include_ai_cache: bool) -> list[str]:
+def _notify_shell() -> None:
+    """Tell Explorer the associations changed, so "Open with" stops offering the removed program straight away."""
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)  # SHCNE_ASSOCCHANGED
+    except Exception:
+        return
+
+
+def cleanup(*, dry_run: bool, include_ai_cache: bool, registrations_only: bool = False) -> list[str]:
     output: list[str] = []
-    for path in _cleanup_paths(include_ai_cache=include_ai_cache):
+    for path in _cleanup_paths(include_ai_cache=include_ai_cache, registrations_only=registrations_only):
         _remove_path(path, dry_run=dry_run, output=output)
-    _cleanup_registry(dry_run=dry_run, output=output)
+    _cleanup_registry(dry_run=dry_run, output=output, registrations_only=registrations_only)
     return output
 
 
@@ -232,7 +258,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=("previous-install", "uninstall", "manual"),
         default="manual",
-        help="Cleanup context for logs; all modes remove the same app-owned data by default.",
+        help=(
+            "uninstall (what the installer runs when the program is removed) takes away only this user's file-type "
+            "registrations and the downloaded AI caches, and keeps settings, decisions and everything else the user "
+            "made. previous-install and manual remove all app-owned data, settings and decisions included."
+        ),
     )
     parser.add_argument("--yes", action="store_true", help="Actually delete data. Without this, only prints a dry run.")
     parser.add_argument("--dry-run", action="store_true", help="Print what would be removed without deleting anything.")
@@ -244,7 +274,11 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     dry_run = bool(args.dry_run or not args.yes)
-    messages = cleanup(dry_run=dry_run, include_ai_cache=not args.keep_ai_cache)
+    messages = cleanup(
+        dry_run=dry_run,
+        include_ai_cache=not args.keep_ai_cache,
+        registrations_only=args.mode == "uninstall",
+    )
     if not args.quiet:
         action = "Would clean" if dry_run else "Cleaned"
         print(f"{action} Image Triage data ({args.mode}).")

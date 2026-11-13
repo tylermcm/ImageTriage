@@ -75,9 +75,33 @@ build_exe_options = {
     ],
 }
 
+CLEANUP_EXE_NAME = "image_triage_cleanup.exe"
+UNINSTALL_CLEANUP_ACTION = "A_IMAGE_TRIAGE_CLEANUP"
+# Type 34 starts a program by command line with a Directory entry as its working folder; 64 waits for it and
+# carries on whatever it returns, so a clean-up that fails never blocks the uninstall. The deferred (1024) and
+# no-impersonation (2048) bits are deliberately absent: an immediate action runs as the user who started the
+# uninstall, not as SYSTEM, and the file associations it removes live in that user's HKEY_CURRENT_USER. Another
+# user's registry cannot be reached from here (docs/KNOWN_ISSUES.md).
+UNINSTALL_CLEANUP_TYPE = 34 + 64
+UNINSTALL_CLEANUP_COMMAND = f'"[TARGETDIR]{CLEANUP_EXE_NAME}" --mode uninstall --yes --quiet'
+# Only when the product is really being removed: not on a repair, and not while a newer version replaces this one
+# (an upgrade removes the old version first, and the registrations must survive it).
+UNINSTALL_CLEANUP_CONDITION = 'REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE'
+# After CostFinalize (1000), when [TARGETDIR] is known, and before RemoveFiles (3500), which is what takes the
+# clean-up program away. 1450 is where cx_Freeze puts RemoveExistingProducts.
+UNINSTALL_CLEANUP_SEQUENCE = 3490
+
 msi_data = {
     "Directory": [
         ("ProgramMenuFolder", "TARGETDIR", "."),
+    ],
+    # Action, Type, Source, Target
+    "CustomAction": [
+        (UNINSTALL_CLEANUP_ACTION, UNINSTALL_CLEANUP_TYPE, "TARGETDIR", UNINSTALL_CLEANUP_COMMAND),
+    ],
+    # Action, Condition, Sequence
+    "InstallExecuteSequence": [
+        (UNINSTALL_CLEANUP_ACTION, UNINSTALL_CLEANUP_CONDITION, UNINSTALL_CLEANUP_SEQUENCE),
     ],
 }
 
@@ -116,7 +140,7 @@ executables = [
     Executable(
         script="packaging/image_triage_cleanup.py",
         base=None,
-        target_name="image_triage_cleanup.exe",
+        target_name=CLEANUP_EXE_NAME,
         icon=str(APP_ICON_WINDOWS_PATH),
     ),
 ]

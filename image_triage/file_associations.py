@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import shlex
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ APP_PROG_ID = "ImageTriage.SupportedImage"
 _CLASSES_ROOT = r"Software\Classes"
 _APPLICATIONS_KEY = rf"{_CLASSES_ROOT}\Applications\{APP_EXE_NAME}"
 _PROG_ID_KEY = rf"{_CLASSES_ROOT}\{APP_PROG_ID}"
+_OPEN_COMMAND_KEYS = (rf"{_APPLICATIONS_KEY}\shell\open\command", rf"{_PROG_ID_KEY}\shell\open\command")
 _FILE_EXTS_ROOT = r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts"
 _ASSOCIATION_CHANGED = 0x08000000
 _OUR_PROGIDS = {APP_PROG_ID.casefold(), rf"Applications\{APP_EXE_NAME}".casefold()}
@@ -73,6 +75,8 @@ class FileAssociationStatus:
     registered_suffixes: tuple[str, ...]
     app_registered: bool
     windows_supported: bool
+    # True when the registered "open" command names a program that is no longer there (an uninstalled or moved copy).
+    stale_command: bool = False
 
 
 @dataclass(slots=True)
@@ -113,7 +117,69 @@ def query_windows_file_association_status() -> FileAssociationStatus:
         registered_suffixes=registered,
         app_registered=app_registered,
         windows_supported=True,
+        stale_command=any(command_is_stale(text) for text in registered_open_commands().values()),
     )
+
+
+def registered_open_commands() -> dict[str, str]:
+    """The "open" commands this user's registry holds for the application, by the key that holds them."""
+    if os.name != "nt" or winreg is None:
+        return {}
+    commands: dict[str, str] = {}
+    for key_path in _OPEN_COMMAND_KEYS:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                value, _ = winreg.QueryValueEx(key, None)
+        except OSError:
+            continue
+        if isinstance(value, str) and value.strip():
+            commands[key_path] = value.strip()
+    return commands
+
+
+def command_executable(command: str) -> str:
+    """The program a registered command line starts ("" when it cannot be told)."""
+    text = str(command or "").strip()
+    if not text:
+        return ""
+    if text.startswith('"'):
+        end = text.find('"', 1)
+        return text[1:end] if end > 0 else ""
+    try:
+        parts = shlex.split(text, posix=False)
+    except ValueError:
+        return ""
+    return parts[0] if parts else ""
+
+
+def command_is_stale(command: str) -> bool:
+    """True when the command names a program file that does not exist. A command that cannot be read is left alone."""
+    executable = command_executable(command)
+    return bool(executable) and not os.path.isfile(executable)
+
+
+def repair_stale_windows_file_associations() -> bool:
+    """Point this user's existing registration at the running program when the program it names is gone.
+
+    The installer is per machine and the registration is per user, so removing or moving the application leaves
+    the other users' entries (and, after an uninstall that could not run the cleanup, this user's) naming a file
+    that no longer exists; Windows then offers "Image Triage" and fails to start it. Nothing is added: only an
+    existing registration whose program is missing is rewritten, for the types it already listed. Only the
+    installed application does this: a run from source (or a test) never takes a registration over. Returns
+    whether anything was changed.
+    """
+    if os.name != "nt" or winreg is None or not getattr(sys, "frozen", False):
+        return False
+    if not any(command_is_stale(text) for text in registered_open_commands().values()):
+        return False
+    command = current_file_association_command()
+    for key_path in _OPEN_COMMAND_KEYS:
+        if _registry_key_exists(winreg.HKEY_CURRENT_USER, key_path):
+            _set_default_value(winreg.HKEY_CURRENT_USER, key_path, command)
+    if _registry_key_exists(winreg.HKEY_CURRENT_USER, rf"{_PROG_ID_KEY}\DefaultIcon"):
+        _set_default_value(winreg.HKEY_CURRENT_USER, rf"{_PROG_ID_KEY}\DefaultIcon", command_executable(command))
+    _notify_windows_shell_of_association_change()
+    return True
 
 
 def query_windows_file_association_states() -> tuple[ExtensionAssociationState, ...]:

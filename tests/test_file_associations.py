@@ -5,6 +5,7 @@ import sys
 import unittest
 from tempfile import TemporaryDirectory
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from image_triage.file_associations import (
@@ -82,6 +83,70 @@ class FileAssociationTests(unittest.TestCase):
         register_associations.assert_called_once_with([".fits"])
         open_dialog.assert_called_once_with(probe_path)
         self.assertTrue(probe_path.endswith(".fits"))
+
+    def test_a_registered_command_is_stale_only_when_its_program_is_gone(self) -> None:
+        from image_triage import file_associations as fa
+
+        with TemporaryDirectory() as temp_dir:
+            present = Path(temp_dir) / "Image Triage" / "ImageTriage.exe"
+            present.parent.mkdir()
+            present.write_bytes(b"")
+            gone = Path(temp_dir) / "Old Place" / "ImageTriage.exe"
+            self.assertEqual(str(present), fa.command_executable(f'"{present}" "%1"'))
+            self.assertFalse(fa.command_is_stale(f'"{present}" "%1"'))
+            self.assertTrue(fa.command_is_stale(f'"{gone}" "%1"'))
+            self.assertTrue(fa.command_is_stale(f'"{gone}" -m image_triage "%1"'))
+            self.assertEqual("python.exe", fa.command_executable('python.exe -m image_triage "%1"'))
+        for unreadable in ("", "   ", '"unterminated'):
+            self.assertFalse(fa.command_is_stale(unreadable), unreadable)      # nothing to judge: left alone
+
+    def _repair(self, registered: dict[str, str], *, frozen: bool = True, existing_keys: tuple[str, ...] = ()):
+        """Run the start-up repair against a fake registry; returns (changed, the values it wrote)."""
+        from image_triage import file_associations as fa
+
+        written: dict[str, str] = {}
+        keys = set(registered) | set(existing_keys)
+        with patch.object(fa.os, "name", "nt"), patch.object(fa, "winreg", SimpleNamespace(HKEY_CURRENT_USER=1)), patch.object(
+            fa.sys, "frozen", frozen, create=True
+        ), patch.object(fa, "registered_open_commands", lambda: dict(registered)), patch.object(
+            fa, "_registry_key_exists", lambda root, key: key in keys
+        ), patch.object(fa, "_set_default_value", lambda root, key, value: written.__setitem__(key, value)), patch.object(
+            fa, "_notify_windows_shell_of_association_change", lambda: None
+        ), patch.object(fa, "current_file_association_command", lambda: '"X:\\New\\ImageTriage.exe" "%1"'):
+            changed = fa.repair_stale_windows_file_associations()
+        return changed, written
+
+    def test_startup_points_a_registration_at_the_running_program_when_the_registered_one_is_gone(self) -> None:
+        from image_triage import file_associations as fa
+
+        with TemporaryDirectory() as temp_dir:
+            gone = f'"{Path(temp_dir) / "gone" / "ImageTriage.exe"}" "%1"'
+            present_file = Path(temp_dir) / "ImageTriage.exe"
+            present_file.write_bytes(b"")
+            present = f'"{present_file}" "%1"'
+            app_key, prog_key = fa._OPEN_COMMAND_KEYS
+            icon_key = rf"{fa._PROG_ID_KEY}\DefaultIcon"
+
+            changed, written = self._repair({app_key: gone, prog_key: gone}, existing_keys=(icon_key,))
+            self.assertTrue(changed)
+            self.assertEqual({app_key, prog_key, icon_key}, set(written))
+            self.assertEqual('"X:\\New\\ImageTriage.exe" "%1"', written[app_key])
+            self.assertEqual("X:\\New\\ImageTriage.exe", written[icon_key])
+
+            self.assertEqual((False, {}), self._repair({app_key: present, prog_key: present}))   # a working registration is not touched
+            self.assertEqual((False, {}), self._repair({}))                                        # nothing registered: nothing is added
+            self.assertEqual((False, {}), self._repair({app_key: gone}, frozen=False))             # a run from source takes nothing over
+            changed, written = self._repair({app_key: gone})                                       # only the keys that exist are rewritten
+            self.assertEqual((True, {app_key}), (changed, set(written)))
+
+    def test_repair_does_nothing_off_windows(self) -> None:
+        from image_triage import file_associations as fa
+
+        if os.name == "nt":
+            self.skipTest("this is the answer every other system gives")
+        self.assertFalse(fa.repair_stale_windows_file_associations())
+        self.assertEqual({}, fa.registered_open_commands())
+        self.assertFalse(fa.query_windows_file_association_status().stale_command)
 
     def test_describe_windows_default_handler_prefers_friendly_names(self) -> None:
         self.assertEqual(

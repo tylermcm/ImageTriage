@@ -2,6 +2,42 @@
 
 Open problems that are recorded but not fixed. Newest first. Each entry says what is known and what is only a guess.
 
+## Uninstalling leaves other Windows users' file-type entries behind (recorded 2026-11-13, by design)
+
+**The mismatch.** The installer is per machine (`all_users` in `setup_msi.py`), but the "Open with" registrations are per user: the app
+writes them to the `HKEY_CURRENT_USER` of whoever pressed the button in the File associations window (`image_triage/file_associations.py`).
+
+**What uninstalling cleans.** On a full removal (`REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE`: not a repair, not the old version leaving
+during an upgrade) the installer runs the bundled `image_triage_cleanup.exe --mode uninstall --yes --quiet` just before it removes the
+files. The action is immediate and impersonated, so it runs as **the user who started the uninstall**, and removes for that user only:
+
+- `HKCU\Software\Classes\Applications\ImageTriage.exe` and `HKCU\Software\Classes\ImageTriage.SupportedImage`;
+- the `ImageTriage.SupportedImage` value under `HKCU\Software\Classes\<type>\OpenWithProgids` for every type in the one shared list
+  (`supported_file_association_suffixes()`);
+- the downloaded-model caches named `image_triage_ai_cache` (in `%LOCALAPPDATA%` and the temporary folder) and the temporary
+  `image-triage-association-probes` folder. Both can be downloaded or made again.
+
+**What uninstalling never removes.** Photos, the edit folders beside them, the decisions database, the catalog, the restore records of
+deleted photos, the settings (`HKCU\Software\Image Triage`), the logs and the managed AI folder (`%USERPROFILE%\.image-triage`). Running
+`image_triage_cleanup.exe --mode manual --yes` by hand is the only thing that removes the application's own data, decisions included.
+
+**What it cannot clean.** The entries of **other users** of the same PC. Their `HKEY_CURRENT_USER` is not loaded while someone else
+uninstalls, and an installer running as SYSTEM would see none of them either. Those users keep an "Image Triage" entry in "Open with"
+that starts nothing; it is harmless and goes away when they pick another program, or delete the two keys above. If the uninstall was
+started from an elevated prompt of a different account, it is that account's entries that are removed. A Windows "default app" choice
+(`UserChoice`) is Windows' own record and is not touched; Windows falls back when the program is gone.
+
+**The other direction.** When the installed app starts and finds its own registration naming a program file that no longer exists (an
+earlier copy in another folder, or entries that outlived an uninstall), it rewrites the command to the running program
+(`repair_stale_windows_file_associations`). It adds nothing for a user who never registered, and a run from source never does it.
+
+**Not verified.** The custom action has not been run on Windows: the tests read the table rows `setup_msi.py` gives cx_Freeze and run the
+clean-up tool against temporary folders. Still to check on a real install: that the action runs once on uninstall and not on upgrade or
+repair, that `[TARGETDIR]` is the real folder when the app was installed somewhere other than the default (if it is not, the action
+fails quietly and the uninstall carries on), and that the console window of the clean-up program is tolerable.
+
+---
+
 ## Saving photo edits to the NAS fails with "automation write ... failed (NotFound)" (recorded 2026-10-18, not fixed)
 
 **What the user sees.** In the hosted Camera Raw workflow, after editing a photo and moving on, up to three orange toasts appear at the
