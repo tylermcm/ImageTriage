@@ -12,20 +12,22 @@ ADJUST = tuple(LOCAL_SCALARS)
 
 
 def encode_raster(array):
+    """Run-length recipe encoding: a coverage byte, then its run as a little-endian base-128 number."""
     import numpy as np
-    values = np.asarray(array, dtype=np.uint8).ravel()
+    array = np.asarray(array, dtype=np.uint8)
+    values = array.ravel()
     starts = np.r_[0, np.flatnonzero(values[1:] != values[:-1])+1]
-    ends = np.r_[starts[1:], len(values)]
-    out = bytearray()
-    for start, end in zip(starts, ends):
-        out.append(int(values[start]))
-        run = int(end-start)
-        while run >= 128:
-            out.append((run & 127) | 128)
-            run >>= 7
-        out.append(run)
+    runs = np.diff(np.r_[starts, len(values)]).astype(np.int64)
+    # Bytes each run number needs (a raster holds at most 1536 x 1536 pixels, so four is enough).
+    digits = 1 + (runs >= 1 << 7) + (runs >= 1 << 14) + (runs >= 1 << 21)
+    offsets = np.r_[0, np.cumsum(digits+1)[:-1]]
+    out = np.zeros(int((digits+1).sum()), dtype=np.uint8)
+    out[offsets] = values[starts]
+    for place in range(4):
+        used = digits > place
+        out[offsets[used]+1+place] = ((runs[used] >> (7*place)) & 127) | ((digits[used] > place+1) << 7)
     h, w = array.shape
-    return {"type": "raster", "w": w, "h": h, "data": base64.b64encode(out).decode("ascii")}
+    return {"type": "raster", "w": w, "h": h, "data": base64.b64encode(out.tobytes()).decode("ascii")}
 
 
 def decode_raster(shape):

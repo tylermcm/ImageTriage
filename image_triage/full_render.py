@@ -105,12 +105,16 @@ def _described(path: Path, reply: dict, *, temporary: bool) -> RenderResult:
     )
 
 
+HOST_SETTINGS = ("superResolution", "hostCrop", "lightDepth")
+
+
 def _without_host_settings(recipe: dict) -> dict:
-    """Only native development settings; the host applies crop and Super Resolution."""
+    """Only native development settings; the host applies crop and Super Resolution, and keeps Light Depth's own
+    settings (the editor only ever sees the mask they produce)."""
     settings = recipe.get("cameraRaw") if isinstance(recipe, dict) else None
-    if not isinstance(settings, dict) or not ({"superResolution", "hostCrop"} & settings.keys()):
+    if not isinstance(settings, dict) or not (set(HOST_SETTINGS) & settings.keys()):
         return recipe
-    return {**recipe, "cameraRaw": {k: v for k, v in settings.items() if k not in ("superResolution", "hostCrop")}}
+    return {**recipe, "cameraRaw": {k: v for k, v in settings.items() if k not in HOST_SETTINGS}}
 
 
 class FullRenderService:

@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 
-from .. import edit_storage, photocraft_bridge as bridge
+from .. import edit_storage, light_depth, photocraft_bridge as bridge
 from .histograms import HistogramService
 from . import raw_preview
 from ..raw_crop import DEFAULT_CROP, RATIOS, bounds as crop_bounds, valid as crop_valid
@@ -57,6 +57,7 @@ DEFAULTS = {
     "retouch": [],
     "redEye": [],
     "hostCrop": DEFAULT_CROP,
+    "lightDepth": dict(light_depth.DEFAULTS),
     **dict.fromkeys(FIELDS, 0),
     "gradeBlending": 50,
     "curveSplits": [25, 50, 75],
@@ -69,6 +70,12 @@ DEFAULTS = {
     **{key: [0] * 8 for key in MIXER},
     **{key: {"hue": 0, "sat": 0, "lum": 0} for key in WHEELS},
 }
+
+
+def _without_light_depth(settings: dict) -> dict:
+    """The settings a recipe file and the native renderer hold. Light Depth's own settings stay with the host (in a
+    small file beside the recipe); the recipe carries only the mask they produce."""
+    return {key: value for key, value in settings.items() if key != "lightDepth"}
 
 
 def _recipe(settings: dict) -> dict:
@@ -125,6 +132,10 @@ class RawEditor(QObject):
         self._retouch_editor=RawRetouch(self)
         from .raw_red_eye import RawRedEye
         self._red_eye_editor = RawRedEye(self)
+        from .raw_light_depth import RawLightDepth
+        self._light_depth_editor = RawLightDepth(self)
+
+    lightDepthEditor = Property(QObject, lambda self: self._light_depth_editor, constant=True)
 
     redEyeEditor = Property(QObject, lambda self: self._red_eye_editor, constant=True)
 
@@ -462,7 +473,7 @@ class RawEditor(QObject):
         draft = dict(self._draft)
         for key, default in DEFAULTS.items():
             # Global Reset keeps authored masks, as it did before the Mask tab.
-            if key in ("masks","retouch","redEye"):
+            if key in ("masks","retouch","redEye","lightDepth"):
                 continue
             if key in self._original:
                 draft[key] = deepcopy(default)
@@ -693,7 +704,12 @@ class RawEditor(QObject):
             raise ValueError(reason)
         settings = dict(recipe["cameraRaw"]) if recipe else {}
         if action == "load":
+            placed = light_depth.read_sidecar(bridge.recipe_path(path))
+            if placed and light_depth.find_mask(settings.get("masks")) >= 0:
+                settings["lightDepth"] = placed
             return settings, str(bridge.saved_render_path(path) or "")
+        placed = draft.get("lightDepth") if light_depth.find_mask(draft.get("masks")) >= 0 else None
+        original, draft = _without_light_depth(original), _without_light_depth(draft)
         if settings != original:
             raise ValueError("The saved recipe changed. Reopen Edit RAW before applying more edits.")
         folder = str(Path(path).parent)
@@ -759,7 +775,12 @@ class RawEditor(QObject):
                     raise ValueError(reason)
                 if (current or {}).get("cameraRaw", {}) != original:
                     raise ValueError("The saved recipe changed while the RAW was rendering")
-                return publish(path, rendered, draft, signature)
+                published = publish(path, rendered, draft, signature)
+                try:
+                    light_depth.write_sidecar(bridge.recipe_path(path), placed)
+                except OSError:
+                    pass  # the saved mask still renders; only the Light Depth sliders start from their defaults next time
+                return published
             finally:
                 rendered.unlink(missing_ok=True)
         finally:

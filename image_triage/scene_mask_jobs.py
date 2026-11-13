@@ -247,3 +247,32 @@ def run_subject_mask(
             from .subject_mask_service import run_subject_mask as fallback  # noqa: PLC0415
         _check(cancel)
         fallback(source, output, on_progress, cancel)
+
+
+def run_depth_map(
+    source: Path,
+    output: Path,
+    on_progress: ProgressCallback | None = None,
+    cancel: threading.Event | None = None,
+    *,
+    engine=None,
+) -> None:
+    """A relative-depth map of ``source`` (8-bit PNG, 255 = nearest) on the warm mask-engine host. There is no one-shot
+    fallback: the depth model only runs inside the host."""
+    _check(cancel)
+    if engine is None:
+        from .ai_model import resolve_depth_model_installation
+        from .mask_engine_service import default_mask_engine_service
+
+        installation = resolve_depth_model_installation()
+        if not installation.is_installed:
+            raise RuntimeError("The depth model is not installed.")
+        service = default_mask_engine_service()
+        engine = lambda src, out, progress: service.infer_depth(  # noqa: E731
+            model_dir=installation.install_dir,
+            input_path=src,
+            output_path=out,
+            progress_callback=progress,
+        )
+    engine(source, output, on_progress)
+    _check(cancel)
