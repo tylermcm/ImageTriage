@@ -24,6 +24,7 @@ from ..path_keys import path_key
 from ..perf import perf_logger
 from .db import connect_catalog_db, default_catalog_db_path
 from .migrations import apply_catalog_migrations
+from .schema import DERIVED_FOLDER_SOURCE
 
 if TYPE_CHECKING:
     from ..ai_results import AIBundle
@@ -124,8 +125,10 @@ class CatalogRepository:
                     """
                     SELECT folder_path
                     FROM catalog_folders
+                    WHERE source != ?
                     ORDER BY last_indexed_at DESC, folder_path
-                    """
+                    """,
+                    (DERIVED_FOLDER_SOURCE,),
                 ).fetchall()
         except sqlite3.DatabaseError:
             return ()
@@ -141,7 +144,7 @@ class CatalogRepository:
                 row = connection.execute(
                     """
                     SELECT
-                        (SELECT COUNT(*) FROM catalog_folders),
+                        (SELECT COUNT(*) FROM catalog_folders WHERE source != 'derived'),
                         (SELECT COALESCE(SUM(record_count), 0) FROM catalog_folders),
                         (SELECT COUNT(*) FROM catalog_review_feature_cache),
                         (SELECT COUNT(*) FROM catalog_ai_bundle_cache),
@@ -184,8 +187,8 @@ class CatalogRepository:
             with closing(connect_catalog_db(self.db_path)) as connection:
                 apply_catalog_migrations(connection)
                 folder_row = connection.execute(
-                    "SELECT folder_path FROM catalog_folders WHERE folder_key = ?",
-                    (folder_key,),
+                    "SELECT folder_path FROM catalog_folders WHERE folder_key = ? AND source != ?",
+                    (folder_key, DERIVED_FOLDER_SOURCE),
                 ).fetchone()
                 if folder_row is None:
                     if logger.enabled:
@@ -510,6 +513,7 @@ class CatalogRepository:
             with closing(connect_catalog_db(self.db_path)) as connection:
                 apply_catalog_migrations(connection)
                 with connection:
+                    _ensure_folder_row(connection, folder_key, folder_path)
                     connection.execute(
                         """
                         INSERT INTO catalog_review_scoring_cache(
@@ -756,6 +760,7 @@ class CatalogRepository:
             with closing(connect_catalog_db(self.db_path)) as connection:
                 apply_catalog_migrations(connection)
                 with connection:
+                    _ensure_folder_row(connection, folder_key, folder_path)
                     for fingerprint in fingerprints:
                         record_path = fingerprint.record.path
                         cache_key = cache_keys.get(record_path)
@@ -1094,6 +1099,7 @@ class CatalogRepository:
             with closing(connect_catalog_db(self.db_path)) as connection:
                 apply_catalog_migrations(connection)
                 with connection:
+                    _ensure_folder_row(connection, folder_key, folder_path)
                     connection.execute(
                         """
                         INSERT INTO catalog_ai_workflow_cache(
@@ -1182,6 +1188,7 @@ class CatalogRepository:
             with closing(connect_catalog_db(self.db_path)) as connection:
                 apply_catalog_migrations(connection)
                 with connection:
+                    _ensure_folder_row(connection, folder_key, folder_path)
                     connection.execute(
                         """
                         INSERT INTO catalog_ai_bundle_cache(
@@ -1446,6 +1453,7 @@ class CatalogRepository:
             with closing(connect_catalog_db(self.db_path)) as connection:
                 apply_catalog_migrations(connection)
                 with connection:
+                    _ensure_folder_row(connection, folder_key, folder_path)
                     connection.execute(
                         """
                         INSERT INTO catalog_review_grouping_cache(
@@ -1602,6 +1610,23 @@ class CatalogRepository:
                     position,
                 ),
             )
+
+
+def _ensure_folder_row(connection: sqlite3.Connection, folder_key: str, folder_path: str) -> None:
+    """Make sure the folder a derived cache is being written for has its row in ``catalog_folders``.
+
+    Every cache table refers to that row, and only saving a folder listing used to create it. The shell never saves
+    listings, so its cache writes failed the foreign key (audit D19). A row made here is marked ``derived``: it says the
+    folder is known to the catalog, not that a listing of it was saved, and a later listing simply takes it over.
+    Called inside the transaction that writes the cache, so the two are saved or dropped together."""
+    connection.execute(
+        """
+        INSERT INTO catalog_folders(folder_key, folder_path, record_count, source, last_indexed_at)
+        VALUES (?, ?, 0, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(folder_key) DO NOTHING
+        """,
+        (folder_key, folder_path, DERIVED_FOLDER_SOURCE),
+    )
 
 
 def _normalize_filesystem_path(path: str | Path) -> str:
