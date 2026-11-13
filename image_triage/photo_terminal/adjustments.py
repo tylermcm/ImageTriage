@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, fields
 from functools import lru_cache
 import json
+import logging
 import math
 from pathlib import Path
 from typing import Any, Optional, Tuple, Union
@@ -161,6 +162,68 @@ def apply_contrast(image: Image.Image, amount: float) -> Image.Image:
     return apply_tone_control(image, "contrast", amount)
 
 
+_LOG = logging.getLogger(__name__)
+
+# How much a recipe may hold. A recipe is settings, not pixels: anything beyond these is a damaged or hostile file.
+RECIPE_LIST_LIMIT = 256
+RECIPE_LIST_LIMITS = {"retouch": 5000, "point_colors": 64}
+RECIPE_TEXT_LIMIT = 256
+_PLAIN_DEPTH = 4
+
+
+def _plain_data(value: Any, depth: int = 0) -> bool:
+    """Lists, objects, text, booleans, null and finite numbers only, a few levels deep and bounded in size."""
+    if value is None or isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return math.isfinite(value)
+    if isinstance(value, str):
+        return len(value) <= RECIPE_TEXT_LIMIT
+    if depth >= _PLAIN_DEPTH:
+        return False
+    if isinstance(value, (list, tuple)):
+        return len(value) <= max(RECIPE_LIST_LIMITS.values()) and all(_plain_data(item, depth + 1) for item in value)
+    if isinstance(value, dict):
+        return len(value) <= 64 and all(isinstance(key, str) and _plain_data(item, depth + 1) for key, item in value.items())
+    return False
+
+
+_RANGE_PERCENT = (-100.0, 100.0)
+_RANGE_AMOUNT = (0.0, 100.0)
+_FIELD_RANGES: dict[str, tuple[float, float]] = {
+    "exposure": (-5.0, 5.0),
+    "rotate": (-360.0, 360.0),
+    "crop_angle": (-180.0, 180.0),
+    "lensblur_focus": (0.0, 1.0),
+    "lensblur_amount": (0.0, 1000.0),
+    "curve_shadows": _RANGE_PERCENT, "curve_mids": _RANGE_PERCENT, "curve_highlights": _RANGE_PERCENT,
+    "vignette_roundness": _RANGE_PERCENT,
+    "grading_balance": _RANGE_PERCENT,
+}
+_AMOUNT_FIELDS = (
+    "vignette_midpoint", "vignette_feather", "vignette_highlights", "grading_blending", "grain_size", "grain_roughness",
+    "defringe_purple_amount", "defringe_purple_hue_low", "defringe_purple_hue_high", "defringe_green_amount",
+    "defringe_green_hue_low", "defringe_green_hue_high", "background_amount",
+)
+
+
+def recipe_field_range(name: str) -> Optional[Tuple[float, float]]:
+    """The range of a numeric recipe setting: what its control offers and what the render clamps to. ``None`` for
+    settings that are not plain numbers."""
+    if name in _FIELD_RANGES:
+        return _FIELD_RANGES[name]
+    if name in _AMOUNT_FIELDS:
+        return _RANGE_AMOUNT
+    if name.startswith("grading_") and name.endswith("_hue"):
+        return (-360.0, 360.0)      # an angle: the render wraps it
+    if name.startswith("grading_") and name.endswith("_sat"):
+        return _RANGE_AMOUNT
+    default = _RECIPE_DEFAULTS.get(name)
+    if isinstance(default, bool) or not isinstance(default, (int, float)):
+        return None
+    return _RANGE_PERCENT
+
+
 @dataclass
 class EditRecipe:
     exposure: float = 0.0
@@ -300,8 +363,28 @@ class EditRecipe:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EditRecipe":
+        """A recipe from stored settings (a recipe file, or what a session's operations amount to).
+
+        The data is checked first (``validate_data``): a value of the wrong kind, a number that is not finite or a list
+        too large to be a recipe's raises ``ValueError`` naming the setting, instead of failing somewhere in the render.
+        A setting this version does not know is left out with a warning in the log, and a number outside its control's
+        range is brought to the nearest end of it, also with a warning: both happen with files written by other versions
+        and must not make a photo's edits unreadable.
+        """
+        cls.validate_data(data)
         valid = {field.name for field in fields(cls)}
+        unknown = sorted(str(key) for key in data if key not in valid)
+        if unknown:
+            _LOG.warning("Ignoring recipe settings this version does not know: %s", ", ".join(unknown[:20]))
         kwargs = {key: value for key, value in data.items() if key in valid}
+        for key, value in list(kwargs.items()):
+            limits = recipe_field_range(key)
+            if limits is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            low, high = limits
+            if not low <= value <= high:
+                kwargs[key] = min(high, max(low, value))
+                _LOG.warning("Recipe setting %s=%r is outside %g..%g; using %g", key, value, low, high, kwargs[key])
         if kwargs.get("crop") is not None:
             kwargs["crop"] = tuple(int(v) for v in kwargs["crop"])
         for curve_key in ("curve_rgb", "curve_red", "curve_green", "curve_blue"):
@@ -313,7 +396,6 @@ class EditRecipe:
     def load(cls, path: Union[str, Path]) -> "EditRecipe":
         with Path(path).open("r", encoding="utf-8") as handle:
             data = json.load(handle)
-        cls.validate_data(data)
         return cls.from_dict(data)
 
     @classmethod
@@ -344,18 +426,42 @@ class EditRecipe:
                 ok, expected = isinstance(value, str), "text"
             else:
                 ok, expected = value is None or isinstance(value, list), "a list or null"
+                if ok and value is not None:
+                    limit = RECIPE_LIST_LIMITS.get(field.name, RECIPE_LIST_LIMIT)
+                    if len(value) > limit or not _plain_data(value):
+                        raise ValueError(
+                            f"recipe setting {field.name!r} must be a list of at most {limit} plain entries with finite numbers"
+                        )
+            if isinstance(value, str) and len(value) > RECIPE_TEXT_LIMIT:
+                raise ValueError(f"recipe setting {field.name!r} must be at most {RECIPE_TEXT_LIMIT} characters")
             if not ok:
-                raise ValueError(f"recipe setting {field.name!r} must be {expected}, not {value!r}")
+                shown = repr(value)
+                raise ValueError(f"recipe setting {field.name!r} must be {expected}, not {shown[:80]}")
 
     def save(self, path: Union[str, Path]) -> None:
         from .io import write_text_atomic
 
         write_text_atomic(path, json.dumps(asdict(self), indent=2) + "\n")
 
-    def merged(self, override: "EditRecipe") -> "EditRecipe":
+    def merged(self, override: "EditRecipe", given: Optional[Any] = None) -> "EditRecipe":
+        """This recipe with ``override``'s settings on top.
+
+        ``given`` names the settings that were actually given in ``override``: exactly those replace this recipe's, also
+        when the given value is the neutral one (an explicit contrast of 0 turns a stored contrast off). Without it
+        there is no telling "not given" from "given as the default", so only settings that differ from their default
+        count, as before.
+        """
         base = asdict(self)
+        values = asdict(override)
+        if given is not None:
+            names = set(given)
+            unknown = names - set(values)
+            if unknown:
+                raise ValueError(f"not recipe settings: {', '.join(sorted(unknown))}")
+            base.update({name: values[name] for name in names})
+            return EditRecipe.from_dict(base)
         defaults = {field.name: field.default for field in fields(self)}
-        for key, value in asdict(override).items():
+        for key, value in values.items():
             # An override counts only when it differs from the field default.
             # Plain zero-checking breaks fields whose neutral value is not zero
             # (the vignette shape controls sit at 50).
@@ -478,6 +584,9 @@ class EditRecipe:
             )
 
         return working
+
+
+_RECIPE_DEFAULTS: dict[str, Any] = {field.name: field.default for field in fields(EditRecipe)}
 
 
 def apply_white_balance(image: Image.Image, temperature: float, tint: float) -> Image.Image:

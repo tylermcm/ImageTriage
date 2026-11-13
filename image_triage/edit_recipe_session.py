@@ -7,6 +7,7 @@ session<->recipe translation even though the editor UI itself is gone.
 """
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 from dataclasses import asdict
 from typing import Any
@@ -163,13 +164,33 @@ def _next_id(existing: set[str], prefix: str) -> str:
         index += 1
 
 
+def _number(op: dict[str, Any], params: dict[str, Any], key: str, default: float) -> float:
+    """A numeric operation parameter. A session is read from disk: a value that is not a finite number is refused by name
+    (``ValueError``), never passed on to fail inside the render."""
+    value = params.get(key, default)
+    if value is None:
+        value = default
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"session operation {op.get('id') or op.get('type')!r}: {key} must be a number, not {repr(value)[:60]}")
+    return float(value)
+
+
 def recipe_from_session(session: dict[str, Any]) -> EditRecipe:
+    """The global recipe a session's enabled, unmasked operations amount to. Raises ``ValueError`` naming the operation
+    or setting when a stored value is not the kind it must be (``EditRecipe.from_dict`` checks the rest)."""
     values: dict[str, Any] = {}
     spots: list[dict[str, Any]] = []
-    for op in session.get("operations", []):
+    operations = session.get("operations", []) if isinstance(session, dict) else None
+    if not isinstance(operations, list):
+        raise ValueError("a session's operations must be a list")
+    for op in operations:
+        if not isinstance(op, dict):
+            raise ValueError("a session operation must be an object")
         if not op.get("enabled", True) or op.get("maskId") is not None:
             continue
         params = op.get("params") or {}
+        if not isinstance(params, dict):
+            raise ValueError(f"session operation {op.get('id') or op.get('type')!r}: params must be an object")
         if op.get("type") == CURVE_OP_TYPE and params.get("points"):
             channel = str(params.get("channel") or "rgb")
             if channel in CURVE_RECIPE_KEYS:
@@ -177,13 +198,13 @@ def recipe_from_session(session: dict[str, Any]) -> EditRecipe:
             continue
         op_type = op.get("type")
         if op_type == CROP_OP_TYPE:
-            left = params.get("left", 0)
-            right = params.get("right", 0)
-            top = params.get("top", 0)
-            bottom = params.get("bottom", 0)
+            left = _number(op, params, "left", 0)
+            right = _number(op, params, "right", 0)
+            top = _number(op, params, "top", 0)
+            bottom = _number(op, params, "bottom", 0)
             if right > left and bottom > top:
                 values["crop"] = (int(left), int(top), int(right), int(bottom))
-            values["crop_angle"] = float(params.get("angle", 0.0) or 0.0)
+            values["crop_angle"] = _number(op, params, "angle", 0.0)
             values["flip_h"] = bool(params.get("flipH", False))
             values["flip_v"] = bool(params.get("flipV", False))
             values["crop_aspect"] = str(params.get("aspect", "") or "")
@@ -192,16 +213,16 @@ def recipe_from_session(session: dict[str, Any]) -> EditRecipe:
             spot = {
                 "id": str(op.get("id") or ""),
                 "kind": RETOUCH_TYPE_TO_KIND[op_type],
-                "x": float(params.get("x", 0.0)),
-                "y": float(params.get("y", 0.0)),
-                "r": float(params.get("radius", 0.0)),
-                "feather": float(params.get("feather", 50.0)),
-                "strength": float(params.get("strength", 0.8)),
-                "seq": int(params.get("seq", len(spots))),
+                "x": _number(op, params, "x", 0.0),
+                "y": _number(op, params, "y", 0.0),
+                "r": _number(op, params, "radius", 0.0),
+                "feather": _number(op, params, "feather", 50.0),
+                "strength": _number(op, params, "strength", 0.8),
+                "seq": int(_number(op, params, "seq", len(spots))),
             }
             if op_type == "retouch.clone":
-                spot["sx"] = float(params.get("sourceX", 0.0))
-                spot["sy"] = float(params.get("sourceY", 0.0))
+                spot["sx"] = _number(op, params, "sourceX", 0.0)
+                spot["sy"] = _number(op, params, "sourceY", 0.0)
             spots.append(spot)
             continue
         if op_type == POINT_COLOR_OP_TYPE:
