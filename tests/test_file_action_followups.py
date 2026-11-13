@@ -99,6 +99,7 @@ def test_a_collection_follows_a_moved_photo_and_comes_back_on_undo(qapp, world):
     dest = w.tmp / "album"
 
     w.files.moveRows([row_of(w.photos, "a")], str(dest))
+    assert w.files.waitForIdle()
 
     assert (dest / primary).exists()
     assert collection_names(store, picks.id) == [f"album/{primary}", "shoot/b.jpg"]
@@ -147,6 +148,7 @@ def test_copying_a_photo_copies_its_edit_data_and_leaves_the_original_its_own(qa
     dest = w.tmp / "album"
 
     w.files.copyRows([row_of(w.photos, "b")], str(dest))
+    assert w.files.waitForIdle()
 
     assert (dest / "b.jpg").exists() and (w.shoot / "b.jpg").exists()
     assert (dest / EDIT_STORAGE_ROOT_NAME / "b.jpg.cameraraw.json").read_text(encoding="utf-8") == '{"version": 1}'
@@ -206,6 +208,7 @@ def test_a_system_trash_that_refuses_one_file_brings_the_rest_of_the_bundle_back
     w.files.confirmRequested.connect(lambda *a: asked.append(a))
 
     w.files.deleteRow(row_of(w.photos, "a"))
+    assert w.files.waitForIdle()
 
     assert asked and "could not be moved to the trash" in asked[0][2] and "Already in the trash" not in asked[0][2]
     assert (w.shoot / "a.jpg").exists() and (w.shoot / "a.nef").exists()               # together, where they were
@@ -265,3 +268,72 @@ def test_recent_destinations_on_a_share_are_listed_without_asking_the_disk(qapp,
 
     assert w.files.recent() == [share, str(here)]
     assert share not in asked
+
+
+# ---- undoing a copy removes what the copy made and nothing else ----------------------------------------------------------------
+
+def test_undoing_a_copy_removes_the_copied_edits_and_leaves_what_was_there(qapp, world):
+    w = world
+    root = w.shoot / EDIT_STORAGE_ROOT_NAME
+    root.mkdir()
+    (root / "b.jpg.cameraraw.json").write_text('{"version": 1}', encoding="utf-8")
+    (root / "b.edit.json").write_text('{"operations": [1], "assets": {"dir": "b.edit-assets"}}', encoding="utf-8")
+    (root / "b.edit-assets").mkdir()
+    (root / "b.edit-assets" / "mask.png").write_bytes(b"mask")
+    dest = w.tmp / "album"
+    there = dest / EDIT_STORAGE_ROOT_NAME
+    there.mkdir(parents=True)
+    (there / "other.jpg.cameraraw.json").write_text("someone else's", encoding="utf-8")
+
+    w.files.copyRows([row_of(w.photos, "b")], str(dest))
+    assert w.files.waitForIdle()
+    assert sorted(p.name for p in there.iterdir()) == ["b.edit-assets", "b.edit.json", "b.jpg.cameraraw.json", "other.jpg.cameraraw.json"]
+
+    assert w.photos.undo() == "copy of b.jpg"
+    assert not (dest / "b.jpg").exists()
+    assert sorted(p.name for p in there.iterdir()) == ["other.jpg.cameraraw.json"]              # theirs, and the folder it is in, stay
+    assert sorted(p.name for p in root.iterdir()) == ["b.edit-assets", "b.edit.json", "b.jpg.cameraraw.json"] and (w.shoot / "b.jpg").exists()
+
+
+def test_undoing_a_copy_removes_the_edit_folder_it_made_and_keeps_a_copy_changed_since(qapp, world):
+    w = world
+    root = w.shoot / EDIT_STORAGE_ROOT_NAME
+    root.mkdir()
+    for stem in ("b", "c"):
+        (root / f"{stem}.jpg.cameraraw.json").write_text('{"version": 1}', encoding="utf-8")
+    dest = w.tmp / "album"
+    w.files.copyRows([row_of(w.photos, "b"), row_of(w.photos, "c")], str(dest))
+    assert w.files.waitForIdle()
+    (dest / "c.jpg").write_bytes(b"worked on since the copy, and longer than it was")
+
+    assert w.photos.undo() == "copy of 2 photos"
+    assert not (dest / "b.jpg").exists() and (dest / "c.jpg").exists()                         # the changed copy is not thrown away
+    assert sorted(p.name for p in (dest / EDIT_STORAGE_ROOT_NAME).iterdir()) == ["c.jpg.cameraraw.json"]      # nor are its edits
+    assert any(t["title"] == "Some copies were kept" and "c.jpg" in t["body"] for t in w.toasts.items)
+
+
+def test_undoing_a_copy_removes_the_edit_folder_the_copy_made(qapp, world):
+    w = world
+    root = w.shoot / EDIT_STORAGE_ROOT_NAME
+    root.mkdir()
+    (root / "b.jpg.cameraraw.json").write_text('{"version": 1}', encoding="utf-8")
+    dest = w.tmp / "album"
+    w.files.copyRows([row_of(w.photos, "b"), row_of(w.photos, "c")], str(dest))
+    assert w.files.waitForIdle()
+    assert (dest / EDIT_STORAGE_ROOT_NAME / "b.jpg.cameraraw.json").exists()
+    assert w.photos.undo() == "copy of 2 photos"
+    assert list(dest.iterdir()) == []
+
+
+def test_a_deleted_photos_session_goes_to_the_trash_and_comes_back(qapp, world):
+    w = world
+    root = w.shoot / EDIT_STORAGE_ROOT_NAME
+    root.mkdir()
+    (root / "b.edit.json").write_text('{"operations": [1], "assets": {"dir": "b.edit-assets"}}', encoding="utf-8")
+    (root / "b.edit-assets").mkdir()
+    (root / "b.edit-assets" / "mask.png").write_bytes(b"mask")
+    w.files.deleteRow(row_of(w.photos, "b"))
+    assert w.files.waitForIdle()
+    assert not (root / "b.edit.json").exists() and not (root / "b.edit-assets").exists()       # nothing left for a later b.* to inherit
+    assert w.photos.undo() == "delete of b.jpg"
+    assert (root / "b.edit.json").exists() and (root / "b.edit-assets" / "mask.png").read_bytes() == b"mask"

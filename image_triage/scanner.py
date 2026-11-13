@@ -87,8 +87,9 @@ APP_RECYCLE_DIRECTORY_NAME = "recycle bin"
 
 
 def is_app_recycle_directory(path: str | Path) -> bool:
-    """Whether a directory is the app's own recycle folder. It can still be opened like any folder (that is how a deleted
-    photo is looked at or removed for good), but its contents are not part of the library: the catalog does not index it."""
+    """Whether a directory is the app's own recycle folder. Its contents are not part of the library: it is not listed among
+    a folder's sub-folders, not watched and not indexed. Deleted photos are listed, restored and removed in the Safe Trash
+    window; the folder can still be opened by its path."""
     name = str(path).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].casefold()
     return name == APP_RECYCLE_DIRECTORY_NAME
 
@@ -194,8 +195,8 @@ def scan_child_folders(folder: str, *, include_hidden: bool = False) -> list[Ima
     except OSError:
         return records
     for entry in entries:
-        if entry.name.casefold().endswith(EDITOR_ASSET_DIR_SUFFIX) or is_ignored_system_directory(entry.name):
-            continue
+        if entry.name.casefold().endswith(EDITOR_ASSET_DIR_SUFFIX) or is_ignored_system_directory(entry.name) or is_app_recycle_directory(entry.name):
+            continue                                        # deleted photos are reached through the Safe Trash window, not by browsing
         try:
             if not entry.is_dir(follow_symlinks=False):
                 continue

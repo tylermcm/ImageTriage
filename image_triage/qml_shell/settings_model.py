@@ -107,6 +107,9 @@ def build_schema(shortcut_registry=()) -> tuple:
               key="workflow/session", kind="str", default="Default"),
             F("deleteMode", "select", "Delete behavior", "Where rejected or deleted images go when you delete from Image Triage.",
               key="workflow/delete_mode", kind="str", default=DELETE_MODES[0][1], options=DELETE_MODES),
+            F("trashLimit", "step", "Safe Trash size limit (GB)", "When the safe trash on this computer is larger than this, the photos deleted longest ago are deleted for good "
+              "until it fits. Applied after each delete, never to the photos of that delete. Restore or empty it from File, Safe Trash.",
+              key="workflow/safe_trash_limit_gb", kind="int", default=0, lo=0, hi=500, step=5, zero="No limit"),
         )),
         Group("App updates", "Keep Image Triage current automatically", (
             _t("updates", "Check for app updates on startup", "Looks for a newer installer when Image Triage starts. If one is available, the download button in the top right lights up.",

@@ -41,6 +41,7 @@ Item {
                 ms(), mr("Refresh Folder", "file.refresh_folder", "F5", "convert"),
                 mr("Show in File Explorer", "file.reveal_folder", "", "library"),
                 ms(), mr("Browse Library…", "file.browse_library", "", "collections"),
+                mr("Safe Trash…", "file.safe_trash", "", "trash"),
                 mr("Batch Rename…", "tools.batch_rename", "Ctrl Shift R", "tag"), mr("Batch Resize…", "tools.batch_resize", "Ctrl Shift E", "convert"),
                 mr("Batch Convert…", "tools.batch_convert", "Ctrl Shift C", "convert"),
                 ms(), mr("Deliver / Handoff Builder…", "workflow.handoff_builder", "Ctrl Alt H", "pocketdrop"), mr("Share to Phone", "workflow.share_to_phone", "", "pocketdrop"),

@@ -261,7 +261,17 @@ def _run(args, state: dict) -> int:
     people = PeopleModel(photos, memory=bool(args.mock), parent=app)
     best_of = BestOfModel(photos, parent=app)
     batch = BatchModel(photos, memory=bool(args.mock), parent=app, toasts=toasts)
-    files = FileActions(photos, toasts, memory=bool(args.mock), parent=app)
+    from .file_jobs import FileJobs
+
+    file_jobs = FileJobs(parent=app)                   # delete, move, copy and the Safe Trash window: one at a time, off the UI thread
+    files = FileActions(photos, toasts, memory=bool(args.mock), parent=app, jobs=file_jobs)
+    transfers.follow(file_jobs)                        # their progress shows in the transfer card
+    # Before the decisions are flushed below: an operation that is stopped here still hands over the photos it had moved, so their
+    # decisions and collections follow them. It stops between photos, so no bundle is left half moved.
+    app.aboutToQuit.connect(files.shutdown)
+    from .safe_trash_model import SafeTrashModel
+
+    safe_trash = SafeTrashModel(photos, toasts, file_jobs, memory=bool(args.mock), parent=app)
     cull = CullModel(photos, memory=bool(args.mock), parent=app, toasts=toasts, files=files)
     cull.runFinished.connect(people.reload)            # an analysis has just written the face index: the People page reads it again
     app.aboutToQuit.connect(cull.shutdown)
@@ -320,6 +330,7 @@ def _run(args, state: dict) -> int:
     context.setContextProperty("toasts", toasts)
     context.setContextProperty("ctxMenu", menu)
     context.setContextProperty("fileActions", files)
+    context.setContextProperty("safeTrash", safe_trash)
     context.setContextProperty("reference", reference)
     context.setContextProperty("handoff", handoff)
     context.setContextProperty("transfers", transfers)
