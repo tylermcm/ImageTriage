@@ -108,11 +108,101 @@ def _apply_luma_transform(
     return result
 
 
-def apply_exposure(image: Image.Image, exposure: float) -> Image.Image:
-    """Apply the measured Camera Raw exposure response over a +/-5 EV range."""
+# How an exposure value is turned into pixels. Stored with the value (``EditRecipe.exposure_model``, ``model`` on a
+# session's adjust.exposure operation), because the two differ a great deal and a saved edit must keep its look:
+#
+# 1  the first model, a curve measured from screenshots. Its +1 is well over a stop (a mid-grey patch lands near +1.5
+#    stops, darker tones further up; the audit put it at about +2.5 EV). Every recipe and session
+#    saved before the marker existed has no marker and is read as this, so it renders as it always did.
+# 2  photometric: +1 is one stop, twice the light. What edits made with ``photoedit`` get from now on.
+EXPOSURE_MODEL_LEGACY = 1
+EXPOSURE_MODEL_STOPS = 2
+EXPOSURE_MODELS = (EXPOSURE_MODEL_LEGACY, EXPOSURE_MODEL_STOPS)
+# Raising the exposure does not clip abruptly: above this linear level the result bends towards white (the first model
+# also approached white gradually). Below it the result is exact: mid-grey and everything up to about 90% of the
+# encoded range lands where the stops put it.
+EXPOSURE_SHOULDER_KNEE = 0.8
+
+
+def srgb_to_linear(encoded: np.ndarray) -> np.ndarray:
+    """sRGB-encoded values (0..1) as linear light. The picture is assumed to use the sRGB transfer curve, whatever colour
+    profile it carries: profiles are passed through to the output, not applied, and the common wide-gamut ones
+    (Display P3, and Adobe RGB closely enough) share or nearly share this curve."""
+    encoded = np.clip(np.asarray(encoded, dtype=np.float32), 0.0, 1.0)
+    return np.where(encoded <= 0.04045, encoded / 12.92, ((encoded + 0.055) / 1.055) ** 2.4).astype(np.float32)
+
+
+def linear_to_srgb(linear: np.ndarray) -> np.ndarray:
+    linear = np.clip(np.asarray(linear, dtype=np.float32), 0.0, 1.0)
+    return np.where(linear <= 0.0031308, linear * 12.92, 1.055 * linear ** (1.0 / 2.4) - 0.055).astype(np.float32)
+
+
+def exposure_stops_array(rgb: np.ndarray, exposure: float) -> np.ndarray:
+    """Photometric exposure on sRGB-encoded float RGB (0..1): each stop doubles or halves the light, in linear light,
+    the same factor on all three channels."""
+    exposure = max(-5.0, min(5.0, float(exposure)))
+    linear = srgb_to_linear(rgb) * np.float32(2.0 ** exposure)
+    if exposure > 0.0:
+        knee = EXPOSURE_SHOULDER_KNEE
+        span = 1.0 - knee
+        over = np.maximum(linear - knee, 0.0)
+        linear = np.where(linear > knee, knee + span * (1.0 - np.exp(-over / span)), linear)
+    return linear_to_srgb(linear)
+
+
+def _legacy_exposure_mapper(exposure: float):
+    """``(mapper, scale_chroma)`` for the first exposure model."""
+    direction = -1 if exposure < 0.0 else 1
+    reference = _EXPOSURE_TWO_STOP_CURVES[direction]
+
+    def map_exposure(luma: np.ndarray) -> np.ndarray:
+        measured_stops = min(2.0, abs(exposure))
+        endpoint = np.interp(luma, _TONE_CURVE_INPUT, reference).astype(np.float32)
+        mapped = luma + (measured_stops / 2.0) * (endpoint - luma)
+        extra_stops = max(0.0, abs(exposure) - 2.0)
+        if extra_stops > 0.0:
+            factor = 2.0**extra_stops
+            mapped = mapped / factor if direction < 0 else np.clip(mapped * factor, 0.0, 1.0)
+        return mapped
+
+    return map_exposure, direction < 0
+
+
+def _luma_transform_array(rgb: np.ndarray, mapper: Any, *, scale_chroma: bool) -> np.ndarray:
+    """``_apply_luma_transform`` on float RGB (0..1), without the 8-bit rounding."""
+    weights = np.asarray((0.2126, 0.7152, 0.0722), dtype=np.float32)
+    result = np.empty_like(rgb, dtype=np.float32)
+    for top in range(0, rgb.shape[0], 256):
+        strip = np.clip(rgb[top : top + 256].astype(np.float32, copy=False), 0.0, 1.0)
+        luma = strip @ weights
+        mapped = np.asarray(mapper(luma), dtype=np.float32)
+        if scale_chroma:
+            scale = np.divide(mapped, luma, out=np.ones_like(mapped), where=luma > 1e-6)
+            adjusted = strip * scale[..., None]
+        else:
+            adjusted = strip + (mapped - luma)[..., None]
+        result[top : top + 256] = np.clip(adjusted, 0.0, 1.0)
+    return result
+
+
+def apply_exposure(image: Image.Image, exposure: float, model: int = EXPOSURE_MODEL_LEGACY) -> Image.Image:
+    """Apply an exposure change of +/-5 on an 8-bit picture.
+
+    ``model`` says what the number means (see ``EXPOSURE_MODEL_STOPS``). It defaults to the first model so that callers
+    written for it keep their result; ``EditRecipe`` passes the model stored with the value.
+    """
     exposure = max(-5.0, min(5.0, float(exposure)))
     if abs(exposure) < 1e-9:
         return image.convert("RGB")
+    if model == EXPOSURE_MODEL_STOPS:
+        source = image.convert("RGB")
+        result = Image.new("RGB", source.size)
+        for top in range(0, source.height, 128):
+            bottom = min(source.height, top + 128)
+            rgb = np.asarray(source.crop((0, top, source.width, bottom)), dtype=np.float32) / 255.0
+            tile = np.rint(exposure_stops_array(rgb, exposure) * 255.0).astype(np.uint8)
+            result.paste(Image.fromarray(tile, mode="RGB"), (0, top))
+        return result
     direction = -1 if exposure < 0.0 else 1
     reference = _EXPOSURE_TWO_STOP_CURVES[direction]
 
@@ -133,6 +223,18 @@ def apply_exposure(image: Image.Image, exposure: float) -> Image.Image:
         map_exposure,
         scale_chroma=direction < 0,
     )
+
+
+def _tone_mapper(control: str, amount: float):
+    """``(mapper, scale_chroma)`` for one tone control at a non-zero amount, as ``apply_tone_control`` uses them."""
+    negative, positive = _TONE_CURVE_ENDPOINTS[control]
+    endpoint = negative if amount < 0.0 else positive
+    output_curve = _TONE_CURVE_INPUT + (abs(amount) / 100.0) * (endpoint - _TONE_CURVE_INPUT)
+
+    def map_tones(luma: np.ndarray) -> np.ndarray:
+        return np.interp(luma, _TONE_CURVE_INPUT, output_curve).astype(np.float32)
+
+    return map_tones, amount > 0.0 and control in {"shadows", "whites", "blacks"}
 
 
 def apply_tone_control(image: Image.Image, control: str, amount: float) -> Image.Image:
@@ -218,6 +320,8 @@ def recipe_field_range(name: str) -> Optional[Tuple[float, float]]:
         return (-360.0, 360.0)      # an angle: the render wraps it
     if name.startswith("grading_") and name.endswith("_sat"):
         return _RANGE_AMOUNT
+    if name == "exposure_model":
+        return None
     default = _RECIPE_DEFAULTS.get(name)
     if isinstance(default, bool) or not isinstance(default, (int, float)):
         return None
@@ -227,6 +331,10 @@ def recipe_field_range(name: str) -> Optional[Tuple[float, float]]:
 @dataclass
 class EditRecipe:
     exposure: float = 0.0
+    # What ``exposure`` means: ``EXPOSURE_MODEL_STOPS`` (one stop per unit) or the first curve. The default is the first
+    # curve, because that is what every recipe and session without the marker was saved and looked at with; whatever
+    # makes a new edit (the ``photoedit`` options, ``op-add adjust.exposure``) sets the stop-accurate model explicitly.
+    exposure_model: int = EXPOSURE_MODEL_LEGACY
     contrast: float = 0.0
     highlights: float = 0.0
     shadows: float = 0.0
@@ -411,7 +519,10 @@ class EditRecipe:
             if field.name not in data:
                 continue
             value = data[field.name]
-            if field.name == "crop":
+            if field.name == "exposure_model":
+                ok = type(value) is int and value in EXPOSURE_MODELS
+                expected = "1 (the first exposure curve) or 2 (stops)"
+            elif field.name == "crop":
                 ok = value is None or (
                     isinstance(value, (list, tuple)) and len(value) == 4
                     and all(type(v) is int or (isinstance(v, float) and v.is_integer()) for v in value)
@@ -470,10 +581,21 @@ class EditRecipe:
         return EditRecipe.from_dict(base)
 
     def apply(self, image: Image.Image) -> Image.Image:
+        """The edit on an 8-bit picture (the picture's EXIF orientation is applied first)."""
         working = _exif_rgb(image)
         # Retouch runs first, in source space: RENDERER_ORDER puts it ahead of
         # every transform, and a heal must sample ungraded pixels.
         working = apply_retouch(working, self.retouch)
+        working = self._apply_geometry(working)
+        # Calibration sits at the head of the colour pipeline: it redefines the
+        # primaries, so everything downstream should see the corrected colours.
+        working = apply_color_calibration(working, self)
+        working = self._apply_tone(working)
+        return self._apply_finishing(working)
+
+    def _apply_geometry(self, working: Image.Image) -> Image.Image:
+        """Crop, flip, straighten, rotate and perspective. Works on any Pillow mode (the high-depth path sends one
+        floating-point channel at a time)."""
         # Flip, straighten and crop are one transform: two resamples in a row
         # cost quality for nothing, and the composed affine is the same matrix
         # the overlays map through (see image_triage/editor_geometry.py).
@@ -482,13 +604,12 @@ class EditRecipe:
             working = working.rotate(self.rotate, expand=True, resample=Image.Resampling.BICUBIC)
         if self.perspective_x or self.perspective_y:
             working = apply_perspective(working, self.perspective_x, self.perspective_y)
+        return working
 
-        # Calibration sits at the head of the colour pipeline: it redefines the
-        # primaries, so everything downstream should see the corrected colours.
-        working = apply_color_calibration(working, self)
-
+    def _apply_tone(self, working: Image.Image) -> Image.Image:
+        """Exposure, white balance, the tone controls, vibrance and saturation (8-bit)."""
         if self.exposure:
-            working = apply_exposure(working, self.exposure)
+            working = apply_exposure(working, self.exposure, self.exposure_model)
 
         if self.temperature or self.tint:
             working = apply_white_balance(working, self.temperature, self.tint)
@@ -512,7 +633,57 @@ class EditRecipe:
             working = ImageEnhance.Color(working).enhance(1.0 + _clamp_percent(self.vibrance) / 135.0)
         if self.saturation:
             working = ImageEnhance.Color(working).enhance(1.0 + _clamp_percent(self.saturation) / 100.0)
+        return working
 
+    def _apply_tone_array(self, rgb: np.ndarray) -> np.ndarray:
+        """``_apply_tone`` on float RGB (0..1), every step at full precision."""
+        if self.exposure:
+            exposure = max(-5.0, min(5.0, float(self.exposure)))
+            if self.exposure_model == EXPOSURE_MODEL_STOPS:
+                rgb = exposure_stops_array(rgb, exposure)
+            elif abs(exposure) >= 1e-9:
+                mapper, scale_chroma = _legacy_exposure_mapper(exposure)
+                rgb = _luma_transform_array(rgb, mapper, scale_chroma=scale_chroma)
+        if self.temperature or self.tint:
+            temp = _clamp_percent(self.temperature) / 100.0
+            tint = _clamp_percent(self.tint) / 100.0
+            factors = np.asarray((1.0 + temp * 0.18 - tint * 0.05, 1.0 + tint * 0.13, 1.0 - temp * 0.18 - tint * 0.05), dtype=np.float32)
+            rgb = np.clip(rgb * factors, 0.0, 1.0)
+        for control in ("contrast", "highlights", "shadows", "whites", "blacks"):
+            amount = _clamp_percent(getattr(self, control))
+            if abs(amount) >= 1e-9:
+                mapper, scale_chroma = _tone_mapper(control, amount)
+                rgb = _luma_transform_array(rgb, mapper, scale_chroma=scale_chroma)
+        grey_weights = np.asarray((0.299, 0.587, 0.114), dtype=np.float32)     # what ImageEnhance.Color blends towards
+        for amount, divisor in ((self.vibrance, 135.0), (self.saturation, 100.0)):
+            if amount:
+                grey = (rgb @ grey_weights)[..., None]
+                rgb = np.clip(grey + (1.0 + _clamp_percent(amount) / divisor) * (rgb - grey), 0.0, 1.0)
+        return rgb.astype(np.float32, copy=False)
+
+    def apply_float(self, rgb: np.ndarray) -> np.ndarray:
+        """The edit on a high-depth picture: float RGB, sRGB-encoded 0..1, already upright. Returns the same kind.
+
+        Geometry, exposure, white balance, the tone controls, vibrance and saturation are computed at full precision.
+        The remaining steps (retouch, calibration, noise reduction, clarity, texture, dehaze, sharpening, the colour
+        mixer and grading, curves, vignette, defringe, grain) exist only as 8-bit operations: each group is run on an
+        8-bit copy and the change it makes is added to the float picture, so the picture keeps its own fine gradations
+        and only the adjustment itself has 8-bit precision.
+        """
+        work = np.clip(np.asarray(rgb, dtype=np.float32), 0.0, 1.0)
+        if work.ndim != 3 or work.shape[2] != 3:
+            raise ValueError("apply_float takes an RGB array of shape (height, width, 3)")
+        if self.retouch:
+            work = carry_8bit_change(work, lambda picture: apply_retouch(picture, self.retouch))
+        if view_geometry_active(self) or self.rotate or self.perspective_x or self.perspective_y:
+            work = np.clip(_per_channel(work, self._apply_geometry), 0.0, 1.0)
+        if color_calibration_active(self):
+            work = carry_8bit_change(work, lambda picture: apply_color_calibration(picture, self))
+        work = self._apply_tone_array(work)
+        return carry_8bit_change(work, self._apply_finishing)
+
+    def _apply_finishing(self, working: Image.Image) -> Image.Image:
+        """Everything after the tone stage (8-bit)."""
         if self.denoise:
             amount = abs(_clamp_percent(self.denoise)) / 100.0
             blurred = working.filter(ImageFilter.GaussianBlur(radius=0.4 + amount * 1.8))
@@ -587,6 +758,31 @@ class EditRecipe:
 
 
 _RECIPE_DEFAULTS: dict[str, Any] = {field.name: field.default for field in fields(EditRecipe)}
+
+
+def _to_8bit(rgb: np.ndarray) -> Image.Image:
+    return Image.fromarray(np.rint(np.clip(rgb, 0.0, 1.0) * 255.0).astype(np.uint8), mode="RGB")
+
+
+def carry_8bit_change(rgb: np.ndarray, operation: Any) -> np.ndarray:
+    """Run an 8-bit operation (picture in, picture of the same size out) and add the change it made to float ``rgb``."""
+    before = _to_8bit(rgb)
+    after = operation(before).convert("RGB")
+    if after.size != before.size:
+        raise ValueError("an 8-bit step changed the picture's size")
+    change = np.asarray(after, dtype=np.int16) - np.asarray(before, dtype=np.int16)
+    if not change.any():
+        return rgb
+    return np.clip(rgb + change.astype(np.float32) / 255.0, 0.0, 1.0)
+
+
+def _per_channel(rgb: np.ndarray, operation: Any) -> np.ndarray:
+    """Run a resampling operation on each channel as a floating-point picture (Pillow has no high-depth RGB mode)."""
+    channels = [
+        np.asarray(operation(Image.fromarray(np.ascontiguousarray(rgb[..., index]), mode="F")), dtype=np.float32)
+        for index in range(3)
+    ]
+    return np.stack(channels, axis=-1)
 
 
 def apply_white_balance(image: Image.Image, temperature: float, tint: float) -> Image.Image:

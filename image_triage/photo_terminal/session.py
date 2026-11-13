@@ -517,7 +517,11 @@ def validate_session(session: Dict[str, Any], strict: bool = False, session_path
 
 def validate_operation_params(op_id: str, op_type: str, params: Dict[str, Any]) -> List[str]:
     errors: List[str] = []
-    if op_type == "adjust.white_balance_kelvin":
+    if op_type == "adjust.exposure":
+        model = params.get("model", 1)
+        if type(model) is not int or model not in (1, 2):
+            errors.append(f"{op_id} adjust.exposure model must be 1 (the first exposure curve) or 2 (stops)")
+    elif op_type == "adjust.white_balance_kelvin":
         kelvin = params.get("kelvin")
         if not isinstance(kelvin, (int, float)) or not 1500 <= kelvin <= 50000:
             errors.append(f"{op_id} adjust.white_balance_kelvin requires kelvin 1500..50000")

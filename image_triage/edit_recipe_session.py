@@ -86,6 +86,9 @@ VIGNETTE_OPTION_KEYS: frozenset[str] = frozenset((
 
 SESSION_OPS: dict[str, tuple[str, str]] = {
     "exposure": ("adjust.exposure", "exposure"),
+    # Which exposure model the value is in (EditRecipe.exposure_model). Written alongside a non-zero exposure only; an
+    # operation without it predates the marker and is read as the first model, so it keeps its look.
+    "exposure_model": ("adjust.exposure", "model"),
     "contrast": ("adjust.contrast", "contrast"),
     "highlights": ("adjust.highlights", "highlights"),
     "shadows": ("adjust.shadows", "shadows"),
@@ -145,6 +148,7 @@ SESSION_OPS.update(
 # amount they shape is non-zero, but they are always read back so a saved shape
 # survives a reload.
 SHAPE_KEY_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("adjust.exposure", frozenset(("exposure_model",))),
     ("adjust.vignette", VIGNETTE_OPTION_KEYS),
     ("adjust.grain", GRAIN_SHAPE_KEYS),
     ("adjust.defringe", DEFRINGE_SHAPE_KEYS),

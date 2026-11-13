@@ -26,7 +26,8 @@ def test_an_option_given_with_its_neutral_value_overrides_the_recipe(tmp_path):
 
 def test_without_a_recipe_the_options_are_the_recipe(tmp_path):
     made = cli.recipe_from_args(_args("recipe", str(tmp_path / "out.json"), "--exposure", "1", "--crop", "1", "2", "3", "4"))
-    assert made == EditRecipe(exposure=1.0, crop=(1, 2, 3, 4))
+    # An exposure given on the command line is in stops, and the recipe says so (exposure_model 2).
+    assert made == EditRecipe(exposure=1.0, exposure_model=2, crop=(1, 2, 3, 4))
 
 
 @pytest.mark.parametrize("content, named", [
