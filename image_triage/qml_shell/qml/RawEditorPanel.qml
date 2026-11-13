@@ -396,27 +396,62 @@ Rectangle {
                 model: panel.model.redEyeEditor; raw: panel.model
             }
             Column {
-                visible: panel.tool === "Presets"; x: 13; width: parent.width - 26; topPadding: 12
+                id: presetsPage
+                objectName: "rawPresetsPage"
+                visible: panel.tool === "Presets"; x: 13; width: parent.width - 26; topPadding: 12; spacing: 6
                 PageTitle { text: "Presets" }
-                Field { label: "Amount"; low: 0; high: 200 }
-                Repeater {
-                    model: [
-                        {name: "Adaptive", items: ["Portrait", "Sky", "Subject", "Landscape", "Blur Background"]},
-                        {name: "Portraits", items: ["Soft portrait", "High contrast B&W"]},
-                        {name: "Seasons", items: ["Spring", "Summer", "Warm woodland", "Winter"]},
-                        {name: "Style", items: ["Soft matte", "Cinematic", "Film-inspired", "Vintage"]},
-                        {name: "Subject", items: ["Food", "Landscape", "Travel", "Urban Architecture"]},
-                        {name: "Defaults", items: ["Natural"]}, {name: "Curve", items: ["Soft matte"]},
-                        {name: "Grain", items: ["Fine grain"]}, {name: "Optics", items: ["Lens correction"]}
-                    ]
-                    delegate: Section {
-                    inset: 0; topPadding: 8
-                        required property var modelData
-                        title: modelData.name; expanded: title === "Seasons"
-                        Repeater { model: modelData.items; delegate: Copy { required property string modelData; text: modelData; width: parent.width; height: 36.84; verticalAlignment: Text.AlignVCenter } }
+                Copy { width: parent.width; text: "Move a look between photos. Masks, retouching, red eye, crop and Light Depth stay with each photo."; wrapMode: Text.WordWrap; color: panel.muted; font.pixelSize: 12; bottomPadding: 6 }
+                Row {
+                    width: parent.width; spacing: 6
+                    Action { objectName: "rawCopySettings"; text: "Copy settings"; quiet: false; width: (parent.width - 6) / 2; enabled: panel.editable; onClicked: panel.model.copySettings() }
+                    Action { objectName: "rawPasteSettings"; text: "Paste settings"; quiet: false; width: (parent.width - 6) / 2; enabled: !!panel.model && panel.model.canPaste; onClicked: { panel.before = false; panel.model.pasteSettings() } }
+                }
+                Copy { text: "SAVED PRESETS"; topPadding: 12; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; color: panel.muted }
+                Row {
+                    width: parent.width; spacing: 6
+                    FInput {
+                        id: presetName
+                        objectName: "rawPresetName"
+                        width: parent.width - savePreset.width - 6
+                        placeholder: "Name for the current settings"
+                        onEdited: (value) => text = value
+                        input.maximumLength: 64
+                        input.onAccepted: savePreset.clicked()
+                    }
+                    Action {
+                        id: savePreset
+                        objectName: "rawSavePreset"; text: "Save"; quiet: false; height: 34
+                        enabled: panel.editable && presetName.text.trim() !== ""
+                        onClicked: { panel.model.savePreset(presetName.text); if (!panel.model.error) presetName.text = "" }
                     }
                 }
-                Pending {}
+                Copy {
+                    visible: !!panel.model && panel.model.presets.length === 0
+                    width: parent.width; wrapMode: Text.WordWrap; topPadding: 6
+                    text: "No presets yet. Adjust a photo, name the look above and save it."
+                    color: panel.subtle; font.pixelSize: 11
+                }
+                Repeater {
+                    model: panel.model ? panel.model.presets : []
+                    delegate: Row {
+                        id: presetRow
+                        required property string modelData
+                        width: presetsPage.width; spacing: 6
+                        Action {
+                            objectName: "rawPreset_" + presetRow.modelData
+                            text: presetRow.modelData; width: parent.width - 38; quiet: false
+                            enabled: panel.editable
+                            onClicked: { panel.before = false; panel.model.applyPreset(presetRow.modelData) }
+                            ToolTip.text: "Apply \u201c" + presetRow.modelData + "\u201d"; ToolTip.visible: hovered; ToolTip.delay: 600
+                        }
+                        Action {
+                            text: "Delete preset " + presetRow.modelData; width: 32
+                            glyph: "M5 7h14M10 7V5h4v2m-7 0 1 12h8l1-12"
+                            onClicked: panel.model.deletePreset(presetRow.modelData)
+                            ToolTip.text: "Delete this preset"; ToolTip.visible: hovered; ToolTip.delay: 600
+                        }
+                    }
+                }
             }
             Column {
                 visible: panel.tool === "History"; x: 13; width: parent.width - 16; topPadding: 12

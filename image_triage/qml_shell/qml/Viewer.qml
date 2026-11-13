@@ -155,6 +155,10 @@ FocusScope {
                 e.accepted = true
             } else if (rawEditing && e.key === Qt.Key_Y && (e.modifiers & Qt.ControlModifier)) {
                 rawPanel.before = false; rawEditor.redo(); e.accepted = true
+            } else if (rawEditing && (e.modifiers & Qt.ControlModifier) && (e.modifiers & Qt.ShiftModifier) && e.key === Qt.Key_C) {
+                rawEditor.copySettings(); e.accepted = true      // Ctrl+Shift+C / Ctrl+Shift+V: the look, not the picture
+            } else if (rawEditing && (e.modifiers & Qt.ControlModifier) && (e.modifiers & Qt.ShiftModifier) && e.key === Qt.Key_V) {
+                rawPanel.before = false; rawEditor.pasteSettings(); e.accepted = true
             }
             return
         }

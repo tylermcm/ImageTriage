@@ -84,6 +84,7 @@ def _recipe(settings: dict) -> dict:
 
 class RawEditor(QObject):
     changed = Signal()
+    _copied = None  # the look copied with Copy Settings, shared by every editor in the process
     saved = Signal(str, str)
     _finished = Signal(int, str, object, str)
 
@@ -94,6 +95,8 @@ class RawEditor(QObject):
         from ..raw_drafts import DraftStore
         self._drafts = None if memory else drafts if drafts is not None else DraftStore()
         self._notice = ""
+        from ..raw_presets import PresetStore
+        self._presets = PresetStore()
         self._path = ""
         self._original = {}
         self._draft = {}
@@ -463,6 +466,72 @@ class RawEditor(QObject):
             return
         value = {"hue": hue % 360, "sat": max(0, min(100, saturation)), "lum": max(-100, min(100, luminance))}
         self._set_value(wheel, value, "Color grading")
+
+    # --- moving a look between photos: copy/paste and saved presets -------------------------------------------------
+
+    canPaste = Property(bool, lambda self: RawEditor._copied is not None and self._loaded and not self._saving, notify=changed)
+    presets = Property("QStringList", lambda self: [preset["name"] for preset in self._presets.presets()], notify=changed)
+
+    def _look(self):
+        from ..raw_presets import transferable
+        return deepcopy(transferable(self._draft))
+
+    def _apply_look(self, look, label):
+        """Replace this photo's look with ``look`` as one undo step. Masks, retouching, red eye, crop, Light Depth and
+        Super Resolution are this photo's own and stay as they are."""
+        from ..raw_presets import PHOTO_SPECIFIC, usable
+        if not self._loaded or self._saving or not usable(look):
+            return False
+        draft = {key: value for key, value in self._draft.items() if key in PHOTO_SPECIFIC}
+        for key, value in look.items():
+            # Settings this panel has no control for (written by the hosted editor) travel too.
+            if key not in DEFAULTS or value != DEFAULTS[key]:
+                draft[key] = deepcopy(value)
+        for key in self._original:
+            # A setting the saved edit has must be stated in the draft, or saving would not change it back.
+            if key not in draft and key in DEFAULTS and key not in PHOTO_SPECIFIC:
+                draft[key] = deepcopy(DEFAULTS[key])
+        if draft == self._draft:
+            return True
+        self._undo.append((label, dict(self._draft)))
+        self._redo.clear()
+        self._draft = draft
+        self._draft_changed()
+        return True
+
+    @Slot()
+    def copySettings(self) -> None:
+        if self._loaded:
+            RawEditor._copied = self._look()
+            self._notice = "Settings copied. Paste them on another photo."
+            self.changed.emit()
+
+    @Slot()
+    def pasteSettings(self) -> None:
+        if RawEditor._copied is not None and self._apply_look(RawEditor._copied, "Paste settings"):
+            self._notice = "Settings pasted. Masks, retouching and crop were left as they were."
+            self.changed.emit()
+
+    @Slot(str)
+    def savePreset(self, name: str) -> None:
+        if not self._loaded:
+            return
+        self._error = self._presets.save(name, self._look())
+        if not self._error:
+            self._notice = "Preset saved."
+        self.changed.emit()
+
+    @Slot(str)
+    def applyPreset(self, name: str) -> None:
+        look = self._presets.get(name)
+        if look is not None and self._apply_look(look, "Preset: " + name[:40]):
+            self._notice = ""
+            self.changed.emit()
+
+    @Slot(str)
+    def deletePreset(self, name: str) -> None:
+        self._error = self._presets.delete(name)
+        self.changed.emit()
 
     @Slot()
     def undo(self) -> None:
