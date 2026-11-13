@@ -835,6 +835,9 @@ class CullModel(QObject):
                 text = m["problem"] + " Repair downloads it again."
             elif key == "face" and rt != "ready" and ready:
                 text += " It runs once the AI runtime is set up."
+            if m.get("kept") and not ready and not m["busy"]:
+                # Only said when the bytes are really on disk (`ai_model_store.bundle_partial_bytes`).
+                text += f" An interrupted download is kept ({format_mb(max(1, round(m['kept'] / 1e6)))} so far): the next try continues from there."
             models.append({"key": key, "name": name, "on": ready, "desc": text, "state": state, "tone": tone, "size": size,
                            "btn": "Cancel" if m["busy"] else ("Try again" if m["error"] else ("Install" if m["state"] == "missing" else ("Repair" if (not ready or key == "face") else "Remove"))),
                            "primary": not m["busy"] and (m["state"] == "missing" or bool(m["error"])), "busy": m["busy"], "pct": m["pct"], "step": m["step"],

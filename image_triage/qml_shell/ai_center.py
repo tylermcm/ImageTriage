@@ -5,8 +5,9 @@ are on disk. It installs, repairs and removes them with the shared code:
 * detection: `ai_runtime_packages.load_ai_runtime_installation_status`, `ai_platform.nvidia_gpu_name` and `vc_runtime_version`, and
   `ai_model_store.bundle_status` (size, pinned revision and file digests, not just "the folder exists");
 * the runtime: the same installer process the Widgets "Set Up AI" runs (`tasks.ai_tasks.AIRuntimeInstallTask`, `packaging/ai_runtime_installer.py`);
-* the models: `ai_model_store.install_bundle`, `repair_bundle` and `uninstall_bundle` (hash checked, atomic), with cancel. A download that is
-  cancelled or fails is thrown away: the next try starts again from the beginning;
+* the models: `ai_model_store.install_bundle`, `repair_bundle` and `uninstall_bundle` (hash checked, atomic), with cancel. A model download
+  that is cancelled or interrupted is kept and the next try continues from it (`ai_model_store`: `Range` with `If-Range`, verified before use);
+  the runtime's own packages are fetched by the installer process, which starts them again;
 * progress: `ai_setup_progress.SetupProgress`, one honest percent for the whole run;
 * does it work: `ai_health.probe_runtime` ("Test runtime"). Detection above reads files, so until that has run in this session the
   runtime is "installed, not tested". The test starts the runtime's interpreter, imports its libraries and runs a small tensor
@@ -42,7 +43,7 @@ class RealOps:
     def detect(self) -> dict:
         from .. import ai_platform
         from ..ai_manifest import MODEL_BUNDLES
-        from ..ai_model_store import bundle_status
+        from ..ai_model_store import bundle_partial_bytes, bundle_status
         from ..ai_runtime_packages import AI_RUNTIME_GPU_VARIANT, load_ai_runtime_installation_status
         from ..cascade.rankers import register_bundles
 
@@ -52,7 +53,8 @@ class RealOps:
         models = {}
         for key, bundle in MODELS.items():
             found = bundle_status(bundle)
-            models[key] = {"state": found.state, "mb": MODEL_BUNDLES[bundle].approx_mb, "problem": "" if found.is_ready else found.describe()}
+            models[key] = {"state": found.state, "mb": MODEL_BUNDLES[bundle].approx_mb, "problem": "" if found.is_ready else found.describe(),
+                           "kept": 0 if found.is_ready else bundle_partial_bytes(bundle)}     # bytes of an interrupted download, continued by the next try
         try:
             from ..ai_health import runtime_identity
 
@@ -233,7 +235,7 @@ class AiCenterBackend(QObject):
         models = {}
         for key, found in raw["models"].items():
             working = job is not None and job["kind"] == "model" and job["key"] == key
-            models[key] = {"state": found["state"], "mb": found["mb"], "problem": found.get("problem", ""), "busy": working,
+            models[key] = {"state": found["state"], "mb": found["mb"], "problem": found.get("problem", ""), "kept": int(found.get("kept", 0) or 0), "busy": working,
                            "pct": job["pct"] if working else 0, "step": job["step"] if working else "", "verb": job["verb"] if working else "",
                            "error": self._errors.get(key, "")}
         return {
@@ -248,7 +250,8 @@ class AiCenterBackend(QObject):
     # -- doing things ---------------------------------------------------------------------------------------------------------
     @Slot()
     def cancel(self) -> None:
-        """Stop what is running: the installer process is ended and a download stops at its next chunk. Nothing half-downloaded is kept."""
+        """Stop what is running: the installer process is ended and a download stops at its next chunk. The part of a model that has
+        arrived is kept for the next try; the runtime's packages are not."""
         if self._job is not None:
             self._cancel.set()
             cancel_runtime = getattr(self._ops, "cancel_runtime", None)
