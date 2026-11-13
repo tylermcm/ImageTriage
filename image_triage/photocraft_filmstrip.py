@@ -156,7 +156,7 @@ class NativeFilmstrip(QObject):
     def _exchange(self, proc, packet):
         # Connections are short-lived so stopping this adapter never leaves a socket
         # competing with the host's shutdown/save connections.
-        control = PhotoCraftControl(proc.port, proc.token, timeout=2.0)
+        control = proc.connect(timeout=2.0) if hasattr(proc, "connect") else PhotoCraftControl(proc.port, proc.token, timeout=2.0)
         try:
             return control.call("ui.filmstrip", packet)
         finally:

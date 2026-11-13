@@ -2,6 +2,46 @@
 
 Open problems that are recorded but not fixed. Newest first. Each entry says what is known and what is only a guess.
 
+## Control port is chosen before the editor binds it (audit E23; recorded 2026-11-13, mitigated on the host, not removed)
+
+**What.** Image Triage picks the editor's control port itself: it binds port 0 on `127.0.0.1`, reads the number, closes the socket and
+starts the editor with `--control <port> --control-token-file <file>`. Between that close and the editor's own bind, any other local
+program can take the port. Nothing in `photocraft_bridge.py` or `docs/photocraft_handoff.md` shows a way for the editor to choose its
+own port and report it (no ready file, no port file, no line on stdout that the host reads), so the host cannot remove the window. The
+editor's source was not readable in the session that wrote this entry (the companion checkout had no working tree), so "the editor has
+no such option" is taken from the host side only and should be confirmed in `apps/photocraft/src/main.rs` (`parse_launch_args`).
+
+**What the host does now** (`photocraft_bridge.py`, "the control port"; `tests/test_photocraft_control_port.py`, stand-in listeners only):
+- Before any connection, the first one and every later or replacement one, it refuses to connect once the editor process has exited,
+  and on Windows it asks the system which process listens on the port (`GetExtendedTcpTable`) and sends nothing when that is not the
+  editor. That lookup was written without a Windows machine and has **not been run**; where it fails or is unavailable the host
+  carries on as if it did not know.
+- A reply to the sign-in that is not the editor's (unreadable, refused, connection closed, or no answer twice) ends that attempt after
+  the one sign-in: no command follows.
+- A sign-in that is accepted after the editor has exited is not trusted.
+- The launch then ends that editor and starts again with a new port and a new token, three attempts in all.
+
+**What is left.**
+1. The sign-in is one-way. The host proves it knows the token by sending it; the editor proves nothing back. Where the port's owner
+   cannot be asked, a program that took the port receives the token in that one sign-in request. The token is useless against an
+   editor that failed to bind and exited, and it is never reused, but the disclosure itself cannot be prevented from the host.
+2. A program that takes the port, answers the sign-in with a well-formed "ok" and keeps answering like the editor, while the real
+   editor is still running (it did not exit on a failed bind, or both managed to bind), is not detected where the owner lookup is
+   unavailable. It would then be sent the host's commands (paths relative to the read root, recipes). Whether the editor exits when
+   its bind fails is assumed, not verified.
+3. The same applies to a port taken over after a running editor dies, for connections made where the owner lookup is unavailable
+   and before the host has noticed the exit.
+
+**Editor-side change that removes it (for the PhotoCraft fork).** Either: accept `--control 0`, bind an ephemeral port and report the
+bound port to the host through something only the host's child can write (a `--control-ready-file <path>` inside the token file's
+folder, written after `listen`, or a first line on stdout); the host then never chooses a port. Or: let the host bind and listen itself
+and hand the listening socket to the editor (an inherited handle named on the command line). Independently, make the sign-in mutual: the
+reply to `auth` carries a proof of the token (for example an HMAC of a host-supplied nonce), so a listener that does not know the
+token cannot pass as the editor and the token itself never crosses the socket. All three are wire or launch-contract changes and were
+deliberately not made here.
+
+---
+
 ## Saving photo edits to the NAS fails with "automation write ... failed (NotFound)" (recorded 2026-10-18, not fixed)
 
 **What the user sees.** In the hosted Camera Raw workflow, after editing a photo and moving on, up to three orange toasts appear at the

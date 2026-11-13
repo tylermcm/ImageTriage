@@ -61,6 +61,15 @@ class PhotoCraftSuperseded(PhotoCraftError):
     """An open was abandoned because the selection moved on before it started."""
 
 
+class PhotoCraftPortTaken(PhotoCraftError):
+    """Something other than the editor we started is answering on (or holds) the control port chosen for it. Nothing more
+    is sent to that port; the launch starts again on another one."""
+
+
+class PhotoCraftExitedEarly(PhotoCraftError):
+    """The editor process ended before its control channel could be used (one cause: it could not bind its port)."""
+
+
 def path_needs_conversion(path: str) -> bool:
     return Path(path).suffix.lower() not in NATIVE_SUFFIXES | RAW_SUFFIXES
 
@@ -984,15 +993,21 @@ class PhotoCraftControl:
     """Blocking JSON-lines client for PhotoCraft's control channel. A connection that has been quiet for ``IDLE_RECONNECT_S`` is
     replaced by a fresh one (same token, same editor) before the next request, so a wait of any length is harmless."""
 
-    def __init__(self, port: int, token: str, *, host: str = "127.0.0.1", timeout: float = 120.0) -> None:
+    def __init__(self, port: int, token: str, *, host: str = "127.0.0.1", timeout: float = 120.0, guard=None) -> None:
         self._address = (host, port)
         self._token = token
         self._timeout = timeout
         self._next_id = 1
         self._exchange_lock = threading.RLock()
+        # Called before every connection is made, the reconnections included, and so before the token is sent: it raises
+        # when the port is known not to be the editor's any more (``editor_port_guard``).
+        self._guard = guard
         self._open(timeout)
 
     def _open(self, timeout: float) -> None:
+        guard = self.__dict__.get("_guard")
+        if guard is not None:
+            guard()
         self._sock = socket.create_connection(self._address, timeout=min(timeout, 2.0))
         self._sock.settimeout(timeout)
         self._file = self._sock.makefile("rwb")
@@ -1306,16 +1321,21 @@ class PhotoCraftProcess:
     def is_running(self) -> bool:
         return self.process.poll() is None
 
+    def connect(self, **options) -> PhotoCraftControl:
+        """Another control connection to this editor. Like the first one it refuses to send the token once the editor
+        has exited or the port is known to belong to another process."""
+        return PhotoCraftControl(self.port, self.token, guard=editor_port_guard(self.port, self.process), **options)
+
     def fast_lane(self) -> PhotoCraftControl:
         if self.fast is None:
-            fast = PhotoCraftControl(self.port, self.token)
+            fast = self.connect()
             fast.read_root = self.read_root
             self.fast = fast
         return self.fast
 
     def render_lane(self) -> PhotoCraftControl:
         if self.render is None:
-            lane = PhotoCraftControl(self.port, self.token)
+            lane = self.connect()
             lane.read_root = self.read_root
             self.render = lane
         return self.render
@@ -1415,27 +1435,115 @@ def sweep_stale_token_files(*, now: float | None = None, directory: str | Path |
     return removed
 
 
+# --- the control port ---------------------------------------------------------------------------------------------------
+#
+# The editor is told which port to listen on (``--control <port>``); it has no way to pick one itself and report it. The
+# host therefore finds a free port by binding port 0 and closing the socket again, and between that and the editor's own
+# bind another process can take the port. That window cannot be closed from the host. What the host does about it:
+#
+# * the token is never sent to a port that is known to belong to another process, or after the editor has exited
+#   (``editor_port_guard``; who owns a listening port can be asked on Windows, see ``_listener_pids``);
+# * an answer to the sign-in that is not the editor's (unreadable, refused, the connection closed, or twice no answer)
+#   ends the attempt after that one sign-in: no command follows it;
+# * an editor that exits before its channel opens (it could not bind) or a port that turned out to be taken makes the
+#   launch start again with a new port and a new token, ``CONTROL_PORT_ATTEMPTS`` times in all.
+#
+# What is left is recorded in docs/KNOWN_ISSUES.md ("Control port is chosen before the editor binds it").
+
+CONTROL_PORT_ATTEMPTS = 3
+# A listener that accepts the connection and then says nothing is given the sign-in this many times, not for the whole
+# connection deadline: each one carries the token.
+SILENT_SIGN_INS_ALLOWED = 2
+
+
 def _free_tcp_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
 
 
+def _listener_pids(port: int) -> set[int] | None:
+    """The processes listening on TCP ``port`` over IPv4 (any local address), or ``None`` where that cannot be asked
+    (anywhere but Windows, or when the system call fails). An empty set means nothing is listening yet."""
+    if os.name != "nt":
+        return None
+    try:
+        iphlpapi = ctypes.windll.iphlpapi
+        size = wintypes.DWORD(0)
+        table_class, af_inet, insufficient = 3, 2, 122  # TCP_TABLE_OWNER_PID_LISTENER, AF_INET, ERROR_INSUFFICIENT_BUFFER
+        for _attempt in range(4):  # the table can grow between the size query and the read
+            buffer = ctypes.create_string_buffer(max(size.value, 4))
+            status = iphlpapi.GetExtendedTcpTable(buffer, ctypes.byref(size), False, af_inet, table_class, 0)
+            if status == 0:
+                break
+            if status != insufficient:
+                return None
+        else:
+            return None
+        # MIB_TCPTABLE_OWNER_PID: a DWORD count, then rows of six DWORDs (state, local address, local port, remote
+        # address, remote port, owning process). The port is in network byte order in the low 16 bits.
+        count = ctypes.cast(buffer, ctypes.POINTER(wintypes.DWORD))[0]
+        rows = ctypes.cast(ctypes.byref(buffer, ctypes.sizeof(wintypes.DWORD)), ctypes.POINTER(wintypes.DWORD * 6))
+        owners = set()
+        for index in range(count):
+            row = rows[index]
+            if socket.ntohs(row[2] & 0xFFFF) == port:
+                owners.add(int(row[5]))
+        return owners
+    except (OSError, AttributeError, ValueError, TypeError):
+        return None
+
+
+def editor_port_guard(port: int, process):
+    """A check to run before a connection to the editor's control port is made (and so before the token is sent): raises
+    ``PhotoCraftExitedEarly`` when the editor process has ended, and ``PhotoCraftPortTaken`` when the port is known to be
+    listened on by a process other than the editor."""
+    def guard() -> None:
+        code = process.poll()
+        if code is not None:
+            raise PhotoCraftExitedEarly(f"PhotoCraft exited before its control channel opened (code {code})")
+        pid = getattr(process, "pid", None)
+        owners = _listener_pids(port) if isinstance(pid, int) else None
+        if owners and owners != {pid}:
+            raise PhotoCraftPortTaken(f"Control port {port} is held by another process ({sorted(owners - {pid})}); the token was not sent")
+    return guard
+
+
 def _connect_with_retry(port: int, token: str, process: subprocess.Popen, *, timeout: float = 20.0) -> PhotoCraftControl:
+    """Connect to the editor just started on ``port`` and sign in. Waits while nothing is listening yet. Raises
+    ``PhotoCraftPortTaken`` as soon as whatever answers is not the editor (see the notes above), ``PhotoCraftExitedEarly``
+    when the editor has ended, and ``PhotoCraftError`` when the deadline passes."""
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
+    guard = editor_port_guard(port, process)
+    silent = 0
     while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise PhotoCraftError(f"PhotoCraft exited before its control channel opened (code {process.returncode})")
         try:
             remaining = max(.001, deadline - time.monotonic())
-            control = PhotoCraftControl(port, token, timeout=min(2.0, remaining))
+            control = PhotoCraftControl(port, token, timeout=min(2.0, remaining), guard=guard)
+        except (PhotoCraftPortTaken, PhotoCraftExitedEarly):
+            raise
+        except PhotoCraftError as error:
+            # Connected, and the reply to the sign-in was not the editor's. The editor is the only thing that should be
+            # there: stop after this one sign-in.
+            raise PhotoCraftPortTaken(f"Control port {port} was answered by something other than the editor: {error}") from error
+        except TimeoutError as error:
+            # Either nothing accepted the connection in time, or something did and did not answer the sign-in.
+            last_error = error
+            silent += 1
+            if silent >= SILENT_SIGN_INS_ALLOWED:
+                raise PhotoCraftPortTaken(f"Control port {port} did not answer the sign-in ({silent} tries)") from error
+        except OSError as error:  # refused: the editor is not listening yet
+            last_error = error
+            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+        else:
+            if process.poll() is not None:
+                # The sign-in was accepted, but not by the editor: it has exited. Fail closed, before any command.
+                control.close()
+                raise PhotoCraftPortTaken(f"Control port {port} answered after the editor had exited (code {process.poll()})")
             control._timeout = HOSTED_RESPONSE_TIMEOUT_S
             control._sock.settimeout(HOSTED_RESPONSE_TIMEOUT_S)
             return control
-        except OSError as exc:
-            last_error = exc
-            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
     raise PhotoCraftError(f"Timed out connecting to PhotoCraft's control channel: {last_error}")
 
 
@@ -1535,47 +1643,64 @@ def _launch_photocraft_binary(
     timings = {}
 
     sweep_stale_token_files()
-    port = _free_tcp_port()
-    token = secrets.token_hex(32)
-    fd, token_path_str = tempfile.mkstemp(prefix="photocraft_token_", suffix=".txt")
-    token_file = Path(token_path_str)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(token)
-
-    args = [
-        exe,
-        "--hosted",
-        "--control", str(port),
-        "--control-token-file", str(token_file),
-        "--automation-read-root", read_root,
-        "--automation-write-root", write_root,
-        *extra_args,
-    ]
     process = None
     control = None
+    token_file = None
     env = dict(os.environ)
     if os.name == "nt":
         # PhotoCraft's automatic backend can pick Vulkan, where game-overlay layers
         # (Epic, Galaxy, ReShade) leave the embedded canvas blank; DX12 renders correctly.
         env.setdefault("WGPU_BACKEND", "dx12")
     env.setdefault("RUST_BACKTRACE", "1")  # only a panic prints it
-    log_file, log_path = _open_editor_log()
     try:
-        try:
-            # CREATE_NO_WINDOW: a debug or test build of the editor is a console program and would otherwise open a terminal window.
-            process = subprocess.Popen(
-                args,
-                stdout=log_file,
-                stderr=subprocess.STDOUT if log_path is not None else subprocess.DEVNULL,
-                env=env,
-                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW | (_BELOW_NORMAL_PRIORITY_CLASS if idle else 0)) if os.name == "nt" else 0,
-            )
-        finally:
-            if log_path is not None:
-                log_file.close()  # the editor has its own copy of the handle
-        timings["spawn_ms"] = (time.perf_counter() - started) * 1000
-        tie_to_this_process(process)
-        control = _connect_with_retry(port, token, process)
+        for attempt in range(1, CONTROL_PORT_ATTEMPTS + 1):
+            # A new port and a new token for every attempt: a token that may have been shown to whatever held the
+            # last port is never used again.
+            port = _free_tcp_port()
+            token = secrets.token_hex(32)
+            fd, token_path_str = tempfile.mkstemp(prefix="photocraft_token_", suffix=".txt")
+            token_file = Path(token_path_str)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(token)
+            args = [
+                exe,
+                "--hosted",
+                "--control", str(port),
+                "--control-token-file", str(token_file),
+                "--automation-read-root", read_root,
+                "--automation-write-root", write_root,
+                *extra_args,
+            ]
+            log_file, log_path = _open_editor_log()
+            try:
+                # CREATE_NO_WINDOW: a debug or test build of the editor is a console program and would otherwise open a terminal window.
+                process = subprocess.Popen(
+                    args,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT if log_path is not None else subprocess.DEVNULL,
+                    env=env,
+                    creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW | (_BELOW_NORMAL_PRIORITY_CLASS if idle else 0)) if os.name == "nt" else 0,
+                )
+            finally:
+                if log_path is not None:
+                    log_file.close()  # the editor has its own copy of the handle
+            timings["spawn_ms"] = (time.perf_counter() - started) * 1000
+            tie_to_this_process(process)
+            try:
+                control = _connect_with_retry(port, token, process)
+                break
+            except (PhotoCraftPortTaken, PhotoCraftExitedEarly) as error:
+                # The port was taken between choosing it and the editor binding it (or the editor could not start on
+                # it): end this editor and start again on another port.
+                _end_process(process)
+                process = None
+                token_file.unlink(missing_ok=True)
+                if attempt == CONTROL_PORT_ATTEMPTS:
+                    raise
+                logging.getLogger(__name__).warning(
+                    "PhotoCraft's control channel did not open on port %s (attempt %s of %s): %s; its own output is in %s",
+                    port, attempt, CONTROL_PORT_ATTEMPTS, error, log_path)
+        timings["control_port_attempts"] = float(attempt)
         timings["control_ready_ms"] = (time.perf_counter() - started) * 1000
         control.require_hosted_handoff()
         timings["capabilities_ready_ms"] = (time.perf_counter() - started) * 1000
@@ -1608,17 +1733,25 @@ def _launch_photocraft_binary(
     except BaseException:
         if control is not None:
             control.close()
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=3.0)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=3.0)
-        token_file.unlink(missing_ok=True)
+        if process is not None:
+            _end_process(process)
+        if token_file is not None:
+            token_file.unlink(missing_ok=True)
         raise
 
     return proc
+
+
+def _end_process(process) -> None:
+    """Stop an editor whose launch is being abandoned."""
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=3.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=3.0)
 
 
 _BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
