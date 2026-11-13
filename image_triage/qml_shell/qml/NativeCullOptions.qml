@@ -12,6 +12,12 @@ Column {
         if (root.v.window !== "cull" || root.v.page !== "prep") { root.customizing = false; root.advanced = false }
     } }
     Text { text: "WHAT WILL RUN"; color: theme.fg3; font.pixelSize: 11; font.weight: Font.DemiBold; font.letterSpacing: 0.8 }
+    // The engine's settings are read on a worker thread (it starts the engine's Python): until they arrive, or when they cannot be
+    // read, the controls say so instead of showing switches that are bound to nothing.
+    Rectangle { objectName: "nativeSettingsState"; visible: !root.v.nativeReady; width: root.width; height: stateText.implicitHeight + 28; radius: 14; color: theme.s1; border.color: theme.lineSoft
+        Text { id: stateText; x: 14; y: 14; width: parent.width - 28; wrapMode: Text.WordWrap; color: theme.fg2; font.pixelSize: 12; lineHeight: 1.4
+            text: root.v.nativeLoading ? "Loading the culling settings…" : "The culling settings are unavailable. The reason is shown below; open this window again to retry." }
+    }
     Repeater { model: root.v.nativeFeatures || []
         delegate: Rectangle {
             id: feature
@@ -31,12 +37,12 @@ Column {
     }
     Item { width: parent.width; height: 18
         Text { text: "HOW STRICT"; color: theme.fg3; font.pixelSize: 11; font.weight: Font.DemiBold; font.letterSpacing: 0.8 }
-        Text { objectName: "nativeFineTune"; anchors.right: parent.right; text: root.customizing ? "Hide fine-tuning" : "Fine-tune"; color: theme.fg3; font.pixelSize: 12
+        Text { objectName: "nativeFineTune"; anchors.right: parent.right; opacity: root.v.nativeReady ? 1 : 0.45; text: root.customizing ? "Hide fine-tuning" : "Fine-tune"; color: theme.fg3; font.pixelSize: 12
             HoverHandler { cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: { if (!root.customizing) root.customizing = true; else if (cull.saveNativeDraft()) { root.customizing = false; root.advanced = false } } }
+            TapHandler { onTapped: { if (!root.v.nativeReady) return; if (!root.customizing) root.customizing = true; else if (cull.saveNativeDraft()) { root.customizing = false; root.advanced = false } } }
         }
     }
-    Seg { width: parent.width; height: 38; fill: true; showExtras: false; labels: ["Careful", "Balanced", "Strict"]; current: root.v.nativePreset === undefined ? -1 : root.v.nativePreset
+    Seg { width: parent.width; height: 38; fill: true; enabled: !!root.v.nativeReady; opacity: enabled ? 1 : 0.45; showExtras: false; labels: ["Careful", "Balanced", "Strict"]; current: root.v.nativePreset === undefined ? -1 : root.v.nativePreset
         onActivated: (i) => cull.setNativePreset(["careful", "balanced", "strict"][i])
     }
     Text { width: parent.width; text: root.v.nativePreset < 0 ? "Custom sensitivity. Your saved thresholds are shown in Fine-tune." : "Adjusts clipping, relative blur and closed-eye thresholds. Quality-floor levels and keeper counts stay as configured."; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 12 }

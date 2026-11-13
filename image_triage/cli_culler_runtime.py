@@ -32,7 +32,11 @@ def load_native_runtime() -> dict:
 
 
 def native_settings(settings, manifest: dict) -> dict:
-    text = settings.value("ai/cli_culler_settings_json", "", type=str)
+    return native_settings_from_text(settings.value("ai/cli_culler_settings_json", "", type=str), manifest)
+
+
+def native_settings_from_text(text: str, manifest: dict) -> dict:
+    """The profile to run with, from the saved JSON text (read from the settings on the UI thread; this part needs no settings object)."""
     selected = json.loads(text) if text else copy.deepcopy(manifest["default_settings"])
     if not isinstance(selected, dict):
         raise ValueError("Native culler settings must be a JSON object")

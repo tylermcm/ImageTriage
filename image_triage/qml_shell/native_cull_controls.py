@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import subprocess
+import threading
 
 FIELDS = (
     ("brackets", "Exposure brackets", "keepers", "choice", "keep_set", 0, 0, 0),
@@ -46,6 +47,48 @@ GROUPS = (("models", "What will run"), ("keepers", "Keepers and review"),
           ("floor", "Quality floor · disabled at zero"), ("scenes", "Scene grouping"))
 
 
+DEFAULTS_CODE = "import json; from dataclasses import asdict; from aiculler import CullSettings; print(json.dumps(asdict(CullSettings())))"
+
+
+class NativeDefaultsRead:
+    """One read of the engine's default settings, which starts the engine's Python. It is slow (seconds, 30 at worst), so the
+    window runs it on a worker thread; `cancel` may be called from any thread and ends the child process at once."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._process = None
+        self.cancelled = False
+
+    def cancel(self):
+        with self._lock:
+            self.cancelled = True
+            process = self._process
+        if process is not None:
+            try:
+                process.kill()
+            except OSError:
+                pass                                # it had already ended
+
+    def read(self, python, timeout=30):
+        with self._lock:
+            if self.cancelled:
+                raise ValueError("Reading the native setting defaults was cancelled")
+            process = self._process = subprocess.Popen(
+                [python, "-I", "-c", DEFAULTS_CODE], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0))   # no console window flashing up on Windows
+        try:
+            out, err = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise ValueError(f"The native engine did not report its setting defaults within {timeout:g} seconds") from None
+        if self.cancelled:
+            raise ValueError("Reading the native setting defaults was cancelled")
+        if process.returncode:
+            raise ValueError(err.strip() or "Could not read native setting defaults")
+        return json.loads(out)
+
+
 class NativeCullControls:
     def __init__(self, selected, defaults):
         self.draft = copy.deepcopy(selected)
@@ -54,12 +97,7 @@ class NativeCullControls:
 
     @classmethod
     def load(cls, runtime, selected):
-        code = "import json; from dataclasses import asdict; from aiculler import CullSettings; print(json.dumps(asdict(CullSettings())))"
-        result = subprocess.run([runtime["python"], "-I", "-c", code], capture_output=True, text=True, timeout=30,
-                                creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0))   # no console window flashing up on Windows
-        if result.returncode:
-            raise ValueError(result.stderr.strip() or "Could not read native setting defaults")
-        return cls(selected, json.loads(result.stdout))
+        return cls(selected, NativeDefaultsRead().read(runtime["python"]))
 
     def value(self, key, fallback=None):
         if key.startswith("models."):

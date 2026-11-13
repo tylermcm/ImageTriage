@@ -15,7 +15,7 @@ import json
 import time
 import zlib
 
-from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
+from PySide6.QtCore import Property, QObject, Qt, QTimer, Signal, Slot
 
 from ..ai_setup_plan import format_mb
 from ..app_identity import user_settings
@@ -101,6 +101,7 @@ class CullModel(QObject):
     _savedLoaded = Signal(int, object, str)
     _timesLoaded = Signal(int, object)
     _dataDeleted = Signal(int, str)
+    _nativeLoaded = Signal(int, object, str)    # token, (saved profile, engine defaults) or None, error: sent from the loading thread
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None, ai: AiCenterBackend | None = None, toasts=None, files=None) -> None:
         super().__init__(parent)
@@ -120,6 +121,9 @@ class CullModel(QObject):
         self._face_wanted = False                 # the People pass waits for both the cull and the search index of this run
         self._extras_token = -1
         self._native_load_failed = False          # the native defaults could not be read: not asked again on every redraw
+        self._native_load = None                  # the read of the native defaults now running on its own thread (it starts the engine's Python)
+        self._native_load_token = 0               # a result carrying an older token was overtaken or abandoned, and is dropped
+        self._nativeLoaded.connect(self._native_arrived, Qt.ConnectionType.QueuedConnection)
         self._flag_map: dict[str, str] = {}
         self._flags_rev = 0
         self._grid_sig = None
@@ -538,6 +542,8 @@ class CullModel(QObject):
                               nativeSettings=self._native_settings_text())
             self._view["nativeError"] = self._native_error
             self._view["nativeGroups"] = self._native_controls.groups() if self._native_controls else []
+            self._view["nativeReady"] = self._native_controls is not None
+            self._view["nativeLoading"] = self._native_load is not None       # the engine is being asked for its defaults (off the UI thread)
             self._view["nativeDirty"] = bool(self._native_controls and self._native_controls.dirty)
             self._view["nativeDevice"] = str(self._settings.value("ai/cli_culler_device", "auto")) if self._settings else "auto"
             if self._native_controls:
@@ -805,19 +811,66 @@ class CullModel(QObject):
     reviewRows = Property("QVariantList", lambda self: self._review_rows, notify=reviewRowsChanged)
 
     def _native_settings_text(self) -> str:
-        from ..cli_culler_runtime import load_native_runtime, native_settings
-        try:
-            if self._native_controls is None:
-                if self._native_load_failed:
-                    return "{}"                     # reading the defaults starts the engine's Python: not again on every redraw after it failed
-                from .native_cull_controls import NativeCullControls
-                runtime = load_native_runtime()
-                self._native_controls = NativeCullControls.load(runtime, native_settings(self._settings, runtime))
+        if self._native_controls is not None:
             return json.dumps(self._native_controls.draft, indent=2)
+        if not self._native_load_failed and self._native_load is None:
+            self._start_native_load()               # after a failure it is not started again on every redraw (see `_native_arrived`)
+        return "{}"
+
+    def _start_native_load(self) -> None:
+        """Read the native defaults away from the UI thread: it starts the engine's Python, which takes seconds (30 at worst).
+
+        The thread touches no QObject: the saved profile is read from the settings here, and the result comes back through a queued
+        signal with the token it was started under."""
+        from .native_cull_controls import NativeDefaultsRead
+
+        try:
+            saved = self._settings.value("ai/cli_culler_settings_json", "", type=str) if self._settings is not None else ""
         except Exception as error:
-            self._native_load_failed = True
-            self._native_error = str(error)
-            return "{}"
+            self._native_load_failed, self._native_error = True, str(error)
+            return
+        self._native_load_token += 1
+        token, job = self._native_load_token, NativeDefaultsRead()
+        self._native_load = job
+
+        def work() -> None:
+            from .. import cli_culler_runtime
+
+            try:
+                runtime = cli_culler_runtime.load_native_runtime()
+                selected = cli_culler_runtime.native_settings_from_text(saved, runtime)
+                payload, error = (selected, job.read(runtime["python"])), ""
+            except Exception as exc:
+                payload, error = None, str(exc) or type(exc).__name__
+            if job.cancelled:
+                return
+            try:
+                self._nativeLoaded.emit(token, payload, error)
+            except RuntimeError:
+                pass                                # the model was destroyed while the engine was starting
+
+        threading.Thread(target=work, name="qml-cull-native-settings", daemon=True).start()
+
+    def _native_arrived(self, token: int, payload, error: str) -> None:
+        if token != self._native_load_token or self._native_load is None:
+            return                                  # overtaken by a newer request, or abandoned (shutdown, a profile saved meanwhile)
+        self._native_load = None
+        if payload is None:
+            self._native_load_failed = True         # kept until the person asks again (opening the window, Start, Save)
+            self._native_error = error
+        else:
+            from .native_cull_controls import NativeCullControls
+
+            self._native_controls = NativeCullControls(*payload)
+            self._native_error = ""
+        self._rebuild()
+
+    def _cancel_native_load(self) -> None:
+        """Abandon the read now running: its result is dropped and its Python process is ended."""
+        self._native_load_token += 1
+        job, self._native_load = self._native_load, None
+        if job is not None:
+            job.cancel()
 
     @Slot(str, result=bool)
     def saveNativeSettings(self, text: str) -> bool:
@@ -831,6 +884,9 @@ class CullModel(QObject):
             if self._native_controls is not None:
                 self._native_controls.draft = value
                 self._native_controls.dirty = False
+            else:
+                self._cancel_native_load()          # a read still running holds the profile as it was before this save
+                self._native_load_failed = False
         except Exception as error:
             self._native_error = str(error)
             self._rebuild()
@@ -869,12 +925,15 @@ class CullModel(QObject):
 
     @Slot(result=bool)
     def saveNativeDraft(self):
-        self._native_load_failed = False            # asked for by the person (Start, Close): try the engine again
-        text = self._native_settings_text()
-        if self._native_controls is None:           # still unreadable: an empty profile must not replace the saved one
+        if self._native_controls is None:           # not read yet, or unreadable: an empty profile must not replace the saved one
+            if self._native_load is None:
+                self._native_load_failed = False    # asked for by the person (Start, Close, Save): try the engine again
+                self._native_error = "Reading the culling settings again. Try again in a moment."
+            else:
+                self._native_error = "The culling settings are still loading. Try again in a moment."
             self._rebuild()
             return False
-        return self.saveNativeSettings(text)
+        return self.saveNativeSettings(json.dumps(self._native_controls.draft, indent=2))
 
     @Slot(str)
     def setNativeDevice(self, device):
@@ -894,6 +953,8 @@ class CullModel(QObject):
         self._apply_timer.stop()
         while self._apply_job is not None:
             self._apply_next(schedule=False)
+        self._cancel_native_load()                  # never waited for: the thread is a daemon and its Python process is ended here
+        self._native_load_failed = True             # and a late redraw does not start another
         if self._run is not None:
             self._run.cancel()
             if self._native:
