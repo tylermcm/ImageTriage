@@ -29,7 +29,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .ai_env import AIRuntimeUnavailable, RuntimeSelection, build_worker_env, resolve_device, select_runtime
+from .ai_env import AIRuntimeUnavailable, RuntimeSelection, build_worker_env, device_family, resolve_device, select_runtime
 from .ai_manifest import (
     CAPABILITIES,
     DEFAULT_CAPABILITY_ORDER,
@@ -59,6 +59,7 @@ from .ai_paths import (
 )
 
 PROBE_TIMEOUT_SECONDS = 240
+PROBE_POLL_SECONDS = 0.1  # how often a cancellable probe looks at its cancel check
 PROBE_CACHE_TTL_SECONDS = 900
 
 # Validation stages, most-fundamental first. The first one that fails is the
@@ -621,19 +622,24 @@ class AIHealthService:
         requested_device: str,
         *,
         level: str = "quick",
+        cancel: Callable[[], bool] | None = None,
     ) -> dict[str, object]:
+        """``cancel`` is polled while the probe runs; when it returns True the probe process is ended and ``ProbeCancelled`` is raised."""
         command = _probe_command(capability, selection, requested_device, level=level)
         env = build_worker_env(selection, metrics_enabled=False)
         try:
-            process = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=PROBE_TIMEOUT_SECONDS,
-                env=env,
-                cwd=str(selection.root),
-                **_no_window_kwargs(),
-            )
+            if cancel is None:
+                process = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=PROBE_TIMEOUT_SECONDS,
+                    env=env,
+                    cwd=str(selection.root),
+                    **_no_window_kwargs(),
+                )
+            else:
+                process = _run_cancellable(command, env=env, cwd=str(selection.root), cancel=cancel)
         except subprocess.TimeoutExpired:
             return {
                 "ok": False,
@@ -875,6 +881,107 @@ def _probe_identity_problem(
     if bool(payload.get("ok")) and returncode != 0:
         return f"the helper reported success but exited with code {returncode}"
     return None
+
+
+class ProbeCancelled(Exception):
+    """The person stopped a probe that was running; its process has been ended."""
+
+
+def _run_cancellable(
+    command: list[str], *, env: dict[str, str], cwd: str, cancel: Callable[[], bool]
+) -> "subprocess.CompletedProcess[str]":
+    """``subprocess.run`` for a probe that can be stopped: the same timeout and output, polling ``cancel`` a few times a second."""
+    if cancel():
+        raise ProbeCancelled()
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        cwd=cwd,
+        **_no_window_kwargs(),
+    )
+    deadline = time.monotonic() + PROBE_TIMEOUT_SECONDS
+    while True:
+        try:
+            stdout, stderr = process.communicate(timeout=PROBE_POLL_SECONDS)
+            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            stopped = cancel()
+            if not stopped and time.monotonic() < deadline:
+                continue
+            process.kill()
+            process.communicate()
+            if stopped:
+                raise ProbeCancelled() from None
+            raise
+
+
+RUNTIME_CHECK_CAPABILITY = "runtime_check"
+
+
+def runtime_identity(device: str = "auto") -> str:
+    """Which managed runtime a request for ``device`` would start: its folder, build and install generation. "" when there is none.
+    A probe result is only about the runtime it ran in, so it is kept and shown under this."""
+    try:
+        selection = select_runtime(resolve_device(device), require_torch=True)
+    except AIRuntimeUnavailable:
+        return ""
+    return _selection_identity(selection)
+
+
+def _selection_identity(selection: RuntimeSelection) -> str:
+    return f"{selection.root}|{selection.variant}|{selection.profile_id}"
+
+
+def probe_runtime(device: str = "auto", *, cancel: Callable[[], bool] | None = None) -> dict[str, object]:
+    """Whether the managed runtime really works, found by running it: this starts the runtime's interpreter, imports the libraries
+    ranking needs and performs a small tensor operation on the device ranking would be pinned to (the graphics card when the
+    graphics card build is the one selected).
+
+    Never from files alone, and never a silent downgrade: when the requested graphics card cannot be used, the CPU is tried
+    separately and the result says so (``ok`` with ``honoured`` False), with the real error of the device that failed.
+
+    Blocking (seconds; torch is imported), so call it away from the UI thread. Raises ``ProbeCancelled`` when ``cancel`` says stop.
+    Keys: ``ok`` (the runtime computes on some device), ``honoured`` (on the requested one), ``requested``, ``device`` (the one
+    really used, "" when none works), ``deviceName``, ``torch``, ``identity``, ``category``, ``message``, ``detail``.
+    """
+    capability = CAPABILITIES[RUNTIME_CHECK_CAPABILITY]
+    requested = resolve_device(device)
+    result: dict[str, object] = {"ok": False, "honoured": False, "requested": requested, "device": "", "deviceName": "", "torch": "",
+                                 "identity": "", "category": "", "message": "", "detail": ""}
+    try:
+        selection = select_runtime(requested, require_torch=True)
+    except AIRuntimeUnavailable as exc:
+        result.update(category=exc.category, message=str(exc), detail=exc.remediation)
+        return result
+    result.update(requested=selection.device, identity=_selection_identity(selection))
+    service = ai_health()
+    check = cancel or (lambda: False)
+    payload = service._run_probe_subprocess(capability, selection, selection.device, cancel=check)
+
+    def worked(found: dict[str, object]) -> None:
+        used = str(found.get("selected_device") or "")
+        modules = found.get("modules")
+        result.update(ok=True, device=used, torch=str(modules.get("torch") or "") if isinstance(modules, dict) else "",
+                      deviceName=str(found.get("torch_device_name") or "") if device_family(used) == "cuda" else "")
+
+    if payload.get("ok"):
+        worked(payload)
+        result["honoured"] = device_family(str(result["device"])) == device_family(selection.device)
+        if not result["honoured"]:                  # the probe is pinned, so this is not expected; it is still never reported as a pass
+            result.update(category="provider_fallback", message=f"{selection.device} was requested but the runtime used {result['device']}.")
+        return result
+    result.update(category=str(payload.get("category") or "probe_error"),
+                  message=str(payload.get("message") or "The AI runtime failed its check."), detail=str(payload.get("detail") or ""))
+    if device_family(selection.device) == "cuda":
+        # The graphics card could not be used. Whether the CPU works in the same build is a separate, real run: not an assumption.
+        fallback = service._run_probe_subprocess(capability, selection, "cpu", cancel=check)
+        if fallback.get("ok"):
+            worked(fallback)
+    return result
 
 
 def _no_window_kwargs() -> dict[str, object]:

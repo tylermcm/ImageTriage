@@ -72,7 +72,10 @@ Backdrop {
                     H3 { text: "ENGINE"; width: parent.width }
                     Item { width: 1; height: 9 }
                     Row2 { iconPath: "M7 7h10v10H7zM4 9h3M4 15h3M17 9h3M17 15h3M9 4v3M15 4v3M9 17v3M15 17v3"; title: "AI runtime"; tone: root.c.rtDot; state: root.c.rtState; desc: root.c.rtDesc; busy: root.c.rtInstalling; pct: root.c.rtPct; step: root.c.rtStep
-                        SButton { objectName: "aiRuntimeButton"; visible: root.c.rtBtnShow !== false; text: root.c.rtBtn; variant: root.c.rtPrimary ? "primary" : "normal"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: root.runtimePressed() } }
+                        SButton { objectName: "aiRuntimeButton"; visible: root.c.rtBtnShow !== false; text: root.c.rtBtn; variant: root.c.rtPrimary ? "primary" : "normal"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: root.runtimePressed() }
+                        // Files on disk only say "installed". This starts the runtime for real and reports the device it used.
+                        SButton { objectName: "aiRuntimeTest"; visible: !!root.c.rtTestShow; text: root.c.rtTestBtn || "Test runtime"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter
+                                  onClicked: root.c.rtTesting ? cull.cancelSetup() : cull.testRuntime() } }
                     Item { width: 1; height: 8 }
                     Row2 { iconPath: "M4 5h16v10H4zM9 19h6M12 15v4"; title: "Graphics card"; tone: root.c.gpuDot; state: root.c.gpuState; desc: root.c.gpuDesc }
                     Item { visible: root.c.vcShow; width: 1; height: 8 }

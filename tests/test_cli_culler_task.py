@@ -340,6 +340,53 @@ def test_cancel_before_start_does_not_launch_or_publish(tmp_path):
     assert not task.log_path.exists()
 
 
+MUST_NOT_START = "pathlib.Path(sys.argv[-2]).with_name('engine-started').write_text('x')\n"
+
+
+@pytest.mark.parametrize("blocked", [".image_triage_ai", "cache", "active"])
+def test_a_destination_that_cannot_be_written_fails_before_the_engine_starts(tmp_path, monkeypatch, blocked):
+    """A read-only card: found out at the start, with a plain reason, as the cascade does. A file is really created to find out.
+
+    The tests run as an administrator, for whom a read-only directory is writable, so the refusal is made the way a locked card
+    makes it: the write itself fails."""
+    task = task_for(tmp_path, MUST_NOT_START)
+    verified = []
+    task.runtime_manifest = {"python": sys.executable}
+    monkeypatch.setattr("image_triage.cli_culler_runtime.verify_native_runtime", verified.append)
+    hidden = task.folder / ".image_triage_ai"
+    if blocked == ".image_triage_ai":
+        hidden.write_text("not a folder")                           # nothing can be created under it
+    elif blocked == "cache":
+        task.paths.cache.parent.mkdir(parents=True)
+        task.paths.cache.write_text("not a folder")                 # the staging folder is fine; the engine's cache is not
+    else:
+        real = cli_culler_task.tempfile.NamedTemporaryFile
+
+        def locked(*args, **kwargs):                                # the folders exist (an earlier run), but no file can be made in them
+            raise PermissionError(30, "Read-only file system")
+
+        task.paths.root.mkdir(parents=True)
+        monkeypatch.setattr(cli_culler_task.tempfile, "NamedTemporaryFile", locked)
+        assert real is not locked
+    seen = run_in_pool(task)
+    assert seen["failed"] and not seen["finished"]
+    message = seen["failed"][0][1]
+    assert message.startswith(f"The results cannot be saved in {hidden}") and "read-only card or folder cannot be analysed" in message
+    assert "Diagnostics" not in message                             # there is no log to send the person to
+    assert not verified and not (tmp_path / "engine-started").exists()      # neither the runtime check nor the engine was started
+    assert not task.run_root.exists() and not task.paths.active.exists()
+    if blocked == "active":
+        assert "Read-only file system" in message
+
+
+def test_the_write_check_leaves_no_test_files_behind(tmp_path):
+    task = task_for(tmp_path, "raise SystemExit(3)\n")
+    task._check_writable()
+    assert all(directory.is_dir() for directory in (task.paths.root, task.paths.runs, task.log_path.parent))
+    assert not task.paths.cache.exists()                            # the engine's own to create
+    assert not [path for path in task.paths.root.rglob("*") if path.is_file()]
+
+
 def test_successful_generation_drains_progress_before_publication(tmp_path):
     task = task_for(tmp_path,
         "generation = root / 'generation'\ngeneration.mkdir()\n"

@@ -37,12 +37,21 @@ class WorkerFatal(RuntimeError):
 
 
 def pick_device(torch, requested: str) -> str:
-    """The same rule as ``birefnet_worker._device_name``: honour an explicit CUDA request only when CUDA exists."""
+    """``auto`` takes the graphics card when PyTorch can use it and the CPU otherwise. An explicit request is never changed quietly:
+    ``cuda`` that cannot be honoured stops the worker with the reason, because ranking on the CPU instead is tens of times slower
+    and is something the person is asked about first (``cascade.launch.decide_ranking``)."""
     value = (requested or "auto").strip().lower() or "auto"
     if value == "auto":
         return "cuda" if torch.cuda.is_available() else "cpu"
-    if value.startswith("cuda") and torch.cuda.is_available():
-        return value
+    if value.startswith("cuda"):
+        if torch.cuda.is_available():
+            return value
+        raise WorkerFatal(
+            "gpu_unavailable",
+            f"the graphics card was requested, but PyTorch {getattr(torch, '__version__', '')} in the AI runtime cannot use one "
+            "(the NVIDIA driver is missing or too old for this build, or the CPU build is installed). "
+            "Test runtime in the AI Center shows what works; ranking on the CPU can be turned on there.",
+        )
     return "cpu"
 
 

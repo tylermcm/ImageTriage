@@ -21,7 +21,16 @@ def test_edit_save_reload_and_invalid_advanced_profile(tmp_path, monkeypatch):
     model = CullModel(PhotoModel(parent=app), memory=True, parent=app)
     model._native = True
     model._settings = QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat)
-    model._rebuild()
+    def loaded():                                   # the engine's defaults are read on a worker thread
+        from PySide6.QtTest import QTest
+        model._rebuild()
+        for _ in range(3000):
+            if model._native_controls is not None or model._native_load is None:
+                break
+            QTest.qWait(10)
+        assert model._native_controls is not None, model._native_error
+
+    loaded()
     assert model._native_controls.value("models.search") is True
     for feature in ("faces", "search", "ranking"):
         model.toggleNativeFeature(feature)
@@ -36,7 +45,7 @@ def test_edit_save_reload_and_invalid_advanced_profile(tmp_path, monkeypatch):
     assert not model.saveNativeSettings('{"gates":{"clip_region_reject":0.01}}')
     assert model._settings.value("ai/cli_culler_settings_json") == saved
     model._native_controls = None
-    model._rebuild()
+    loaded()
     assert model._native_controls.value("bursts_keep") == 0
     assert model._native_controls.value("scene_keep") == 3
     assert model._native_controls.value("gates.quality_reject") == 0

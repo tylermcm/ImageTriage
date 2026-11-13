@@ -15,12 +15,23 @@ This module replaces that with a generation model:
   revision and per-file size/hash, so later readiness checks are cheap and a
   mixed-revision directory is impossible to mistake for a good one.
 
+An interrupted download is resumed rather than repeated. The unfinished bytes of
+each file are kept in ``<managed root>/staging/.partial/<key>/<file>.part`` (outside
+the per-attempt generation, so they survive a cancel, a failure or a restart of
+the app), beside a small sidecar recording the URL, the expected size and hash
+and the validator the server gave (ETag or Last-Modified). The next attempt asks
+for the rest with ``Range`` and ``If-Range``; a file whose validator no longer
+matches is started again, and nothing is moved into a generation until its size
+and SHA-256 match the manifest.
+
 See ``docs/ai_runtime_failure_map.md`` (root cause B).
 """
 
 from __future__ import annotations
 
 import hashlib
+import http.client
+import inspect
 import json
 import os
 import shutil
@@ -31,7 +42,7 @@ import urllib.error
 import urllib.request
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator
 from urllib.parse import urlparse
@@ -58,6 +69,9 @@ DOWNLOAD_USER_AGENT = "ImageTriage/0.1"
 DOWNLOAD_TIMEOUT_SECONDS = 120
 DOWNLOAD_ATTEMPTS = 4
 DOWNLOAD_BACKOFF_SECONDS = 1.5
+PARTIAL_DIRNAME = ".partial"  # under the staging root; never a generation (those are "<key>-<id>")
+PARTIAL_SUFFIX = ".part"
+PARTIAL_SIDECAR_VERSION = 1
 # Leave room for the staged copy plus the outgoing generation during activation.
 FREE_SPACE_HEADROOM = 1.6
 
@@ -492,9 +506,12 @@ def install_bundle(
         except BaseException:
             # Once activation has written its journal, staging may be one of
             # the only recoverable generations. Recovery owns its cleanup.
+            # The unfinished downloads under ``.partial`` are deliberately left:
+            # the next attempt continues from them.
             if not activation_journal_path(staging_root, bundle_key).exists():
                 _remove_tree(staged)
             raise
+        _remove_tree(bundle_partial_dir(bundle_key))
 
     status = bundle_status(bundle_key, deep=False)
     if not status.is_ready:  # pragma: no cover - defensive
@@ -526,10 +543,29 @@ def repair_bundle(
 def uninstall_bundle(bundle_key: str) -> bool:
     install_dir = bundle_install_dir(bundle_key)
     if not install_dir.exists():
+        _remove_tree(bundle_partial_dir(bundle_key))
         return False
     with bundle_lock(bundle_key):
         _remove_tree(install_dir)
+        _remove_tree(bundle_partial_dir(bundle_key))
     return not install_dir.exists()
+
+
+def bundle_partial_dir(bundle_key: str) -> Path:
+    """Where the unfinished downloads of one bundle are kept between attempts."""
+    return managed_staging_root() / PARTIAL_DIRNAME / bundle_key
+
+
+def bundle_partial_bytes(bundle_key: str) -> int:
+    """How much of an interrupted download of this bundle is on disk, to be continued by the next install. 0 when none."""
+    total = 0
+    try:
+        for path in bundle_partial_dir(bundle_key).rglob("*" + PARTIAL_SUFFIX):
+            if path.is_file() and path.with_name(path.name + ".json").is_file():
+                total += path.stat().st_size
+    except OSError:
+        return 0
+    return total
 
 
 def _download_bundle_files(
@@ -544,17 +580,30 @@ def _download_bundle_files(
     repo_id = bundle_repo_id(bundle_key)
     revision = bundle_revision(bundle_key)
     fetch = downloader or _download_file
+    # A substitute downloader (the tests', or a caller's own) has the plain five arguments and is called as before.
+    resumable = downloader is None and "resume" in inspect.signature(fetch).parameters
+    digests = bundle_digests(bundle_key) if _uses_default_source(bundle_key) else {}
+    partial_dir = bundle_partial_dir(bundle_key)
     for filename in bundle.filenames:
         _raise_if_cancelled(cancel_check)
         destination = staged / filename
         destination.parent.mkdir(parents=True, exist_ok=True)
         url = f"https://huggingface.co/{repo_id}/resolve/{revision}/{filename}?download=true"
+        extra: dict[str, object] = {}
+        if resumable:
+            digest = digests.get(filename)
+            extra["resume"] = _ResumePlan(
+                partial=partial_dir / (filename + PARTIAL_SUFFIX),
+                size=int(digest.size) if digest is not None else 0,
+                sha256=str(digest.sha256) if digest is not None else "",
+            )
         fetch(
             url=url,
             destination=destination,
             label=filename,
             progress_callback=progress_callback,
             cancel_check=cancel_check,
+            **extra,
         )
 
 
@@ -872,6 +921,34 @@ def _raise_if_cancelled(cancel_check: CancelCheck | None) -> None:
 # --------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _ResumePlan:
+    """Where one file's unfinished bytes are kept, and what the finished file must be (0 / "" when the manifest does not say)."""
+
+    partial: Path
+    size: int = 0
+    sha256: str = ""
+
+    @property
+    def sidecar(self) -> Path:
+        return self.partial.with_name(self.partial.name + ".json")
+
+
+@dataclass
+class _FetchReport:
+    """What one request did, for the caller that decides whether a failed verification is worth another try."""
+
+    appended: bool = False  # the bytes were added to an earlier partial (a 206, or a 416 that said it was already whole)
+    notes: list[str] = field(default_factory=list)
+
+
+class _ResumeMismatch(ModelInstallError):
+    """The kept partial cannot be continued (the server's file changed, or its answer did not line up): start again from nothing."""
+
+    def __init__(self, message: str, *, detail: str = "") -> None:
+        super().__init__(message, category="resume_mismatch", detail=detail)
+
+
 def _download_file(
     *,
     url: str,
@@ -879,50 +956,153 @@ def _download_file(
     label: str,
     progress_callback: ProgressCallback | None,
     cancel_check: CancelCheck | None,
+    resume: _ResumePlan | None = None,
 ) -> int:
-    """Fetch one file with bounded retries, backoff and range resume."""
+    """Fetch one file with bounded retries, backoff and range resume.
+
+    The unfinished bytes stay in ``resume.partial`` (by default beside the destination) when an attempt is cancelled or fails,
+    with a sidecar that says what they are a part of; the next call continues from them. They are thrown away when they cannot
+    be continued safely (another URL or expected hash, a changed validator, a range that does not line up) or when the finished
+    file does not verify. The file only reaches ``destination`` after its size and SHA-256 match the plan's.
+    """
     if urlparse(url).scheme != "https":
         raise ModelInstallError("Model downloads must use https.", category="manifest")
 
-    partial = destination.with_name(destination.name + ".part")
+    plan = resume or _ResumePlan(destination.with_name(destination.name + PARTIAL_SUFFIX))
+    partial = plan.partial
     last_error: ModelInstallError | None = None
     for attempt in range(DOWNLOAD_ATTEMPTS):
         _raise_if_cancelled(cancel_check)
-        resume_from = 0
+        resume_from, validator = _resumable_state(plan, url)
+        report = _FetchReport(appended=resume_from > 0)
+        wait = True
         try:
-            resume_from = partial.stat().st_size if partial.exists() else 0
-        except OSError:
-            resume_from = 0
-        try:
-            written = _fetch(
-                url=url,
-                partial=partial,
-                label=label,
-                resume_from=resume_from,
-                progress_callback=progress_callback,
-                cancel_check=cancel_check,
-            )
-            os.replace(partial, destination)
-            return written
+            if not (plan.size and resume_from == plan.size):  # otherwise every byte is here already: only the check is left
+                _fetch(
+                    url=url,
+                    partial=partial,
+                    label=label,
+                    resume_from=resume_from,
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
+                    validator=validator,
+                    plan=plan,
+                    report=report,
+                )
+            problem = _verification_problem(plan, label)
+            if problem is None:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(partial, destination)
+                _unlink(plan.sidecar)
+                return destination.stat().st_size
+            _discard_partial(plan)
+            last_error, wait = problem, False
+            if not report.appended:
+                break  # every byte came in this one request and it is still not the published file: not retried
+            # Otherwise a kept partial was at fault (or stale): once more, from nothing.
         except ModelInstallCancelled:
             raise
+        except _ResumeMismatch as exc:
+            last_error, wait = exc, False
+            _discard_partial(plan)
         except ModelInstallError as exc:
             last_error = exc
             if exc.category in {"not_found", "auth", "certificate", "manifest"}:
+                if exc.category == "not_found":
+                    _discard_partial(plan)
                 break
-            if exc.category == "truncated":
-                # A resumed range that does not line up is unrecoverable; start over.
-                try:
-                    partial.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            if attempt + 1 < DOWNLOAD_ATTEMPTS:
-                time.sleep(DOWNLOAD_BACKOFF_SECONDS * (2**attempt))
+        if wait and attempt + 1 < DOWNLOAD_ATTEMPTS:
+            time.sleep(DOWNLOAD_BACKOFF_SECONDS * (2**attempt))
+    raise last_error or ModelInstallError(f"Could not download {label}.", category="network")
+
+
+def _resumable_state(plan: _ResumePlan, url: str) -> tuple[int, str]:
+    """(bytes already here, the validator to send with ``If-Range``), or (0, "") after discarding a partial that cannot be continued."""
     try:
-        partial.unlink(missing_ok=True)
+        have = plan.partial.stat().st_size if plan.partial.is_file() else 0
+    except OSError:
+        have = 0
+    if have <= 0:
+        return 0, ""
+    meta = _read_sidecar(plan.sidecar)
+    usable = (
+        meta is not None
+        and meta.get("version") == PARTIAL_SIDECAR_VERSION
+        and meta.get("url") == url
+        and int(meta.get("size") or 0) == plan.size
+        and str(meta.get("sha256") or "").casefold() == plan.sha256.casefold()
+        and not (plan.size and have > plan.size)
+    )
+    validator = _validator(str(meta.get("etag") or ""), str(meta.get("last_modified") or "")) if usable and meta is not None else ""
+    complete = bool(plan.size) and have == plan.size
+    if not usable or not (validator or complete):
+        # Without the server's validator there is no way to ask "only if it is still the same file".
+        _discard_partial(plan)
+        return 0, ""
+    return have, validator
+
+
+def _validator(etag: str, last_modified: str) -> str:
+    """What ``If-Range`` may carry: a strong ETag, else the Last-Modified date. A weak ETag cannot be used for a range."""
+    etag = etag.strip()
+    if etag and not etag.startswith("W/"):
+        return etag
+    return last_modified.strip()
+
+
+def _read_sidecar(path: Path) -> dict[str, object] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
     except OSError:
         pass
-    raise last_error or ModelInstallError(f"Could not download {label}.", category="network")
+
+
+def _discard_partial(plan: _ResumePlan) -> None:
+    _unlink(plan.partial)
+    _unlink(plan.sidecar)
+
+
+def _verification_problem(plan: _ResumePlan, label: str) -> ModelInstallError | None:
+    """The finished partial against the manifest's size and SHA-256 (the same check ``_verify_staged_bundle`` repeats on the
+    whole generation). None when it is the published file, or when the manifest gives nothing to check it against."""
+    try:
+        size = plan.partial.stat().st_size
+    except OSError as exc:
+        return ModelInstallError(f"{label} did not download.", category="incomplete", detail=str(exc))
+    if plan.size and size != plan.size:
+        return ModelInstallError(
+            f"{label} is {size} bytes but should be {plan.size}. The download was truncated or intercepted.",
+            category="truncated",
+        )
+    if plan.sha256:
+        actual = sha256_file(plan.partial)
+        if actual.casefold() != plan.sha256.casefold():
+            return ModelInstallError(
+                f"{label} failed integrity verification. The file that arrived is not the published model file.",
+                category="hash_mismatch",
+                detail=f"expected {plan.sha256}, got {actual}",
+            )
+    return None
+
+
+def _content_range(value: str) -> tuple[int | None, int | None]:
+    """(first byte, total) from ``bytes 100-999/1000`` or ``bytes */1000``; None for a part that is absent or ``*``."""
+    text = (value or "").strip()
+    if not text.lower().startswith("bytes"):
+        return None, None
+    span, _, total_text = text[5:].strip().partition("/")
+    first_text = span.partition("-")[0].strip()
+    first = int(first_text) if first_text.isdigit() else None
+    total = int(total_text.strip()) if total_text.strip().isdigit() else None
+    return first, total
 
 
 def _fetch(
@@ -933,10 +1113,23 @@ def _fetch(
     resume_from: int,
     progress_callback: ProgressCallback | None,
     cancel_check: CancelCheck | None,
+    validator: str = "",
+    plan: _ResumePlan | None = None,
+    report: _FetchReport | None = None,
 ) -> int:
+    """One request. With ``resume_from`` it asks for the rest (``Range``), on condition that the file is still the one the
+    partial came from (``If-Range`` with ``validator``):
+
+    * 206: the rest is appended, after checking that it starts where the partial ends;
+    * 200: the server sent the whole file (it ignores ranges, or the file changed): the partial is replaced from the first byte;
+    * 416: nothing lies beyond the partial. It is whole if the server's length says so, and stale otherwise.
+    """
+    report = report if report is not None else _FetchReport()
     headers = {"User-Agent": DOWNLOAD_USER_AGENT}
     if resume_from > 0:
         headers["Range"] = f"bytes={resume_from}-"
+        if validator:
+            headers["If-Range"] = validator
     request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
@@ -945,6 +1138,7 @@ def _fetch(
             if resume_from > 0 and status == 200:
                 # The server ignored the range request; restart cleanly.
                 append = False
+            report.appended = append
             content_type = str(response.headers.get("Content-Type") or "").lower()
             if content_type.startswith("text/html"):
                 raise ModelInstallError(
@@ -953,7 +1147,23 @@ def _fetch(
                     category="intercepted",
                 )
             declared = int(response.headers.get("Content-Length") or 0)
+            etag = str(response.headers.get("ETag") or "")
+            last_modified = str(response.headers.get("Last-Modified") or "")
             total = declared + (resume_from if append else 0)
+            if append:
+                first, whole = _content_range(str(response.headers.get("Content-Range") or ""))
+                if first is not None and first != resume_from:
+                    raise _ResumeMismatch(
+                        f"The resumed download of {label} did not line up with the server.",
+                        detail=f"asked from byte {resume_from}, got from byte {first}",
+                    )
+                if validator.startswith('"') and etag and etag != validator:  # an ETag was sent (a date is never quoted)
+                    raise _ResumeMismatch(
+                        f"{label} changed on the server while its download was interrupted.",
+                        detail=f"had {validator}, server now has {etag}",
+                    )
+                if whole:
+                    total = whole
             downloaded = resume_from if append else 0
             partial.parent.mkdir(parents=True, exist_ok=True)
             available = free_bytes(partial.parent)
@@ -963,18 +1173,28 @@ def _fetch(
                     f"({(total - downloaded) / 1e9:.1f} GB needed).",
                     category="disk",
                 )
+            if not append and plan is not None:
+                # Before the first byte: an interruption at any point then leaves a partial that says what it is a part of.
+                _unlink(partial)
+                _write_json_atomic(plan.sidecar, {
+                    "version": PARTIAL_SIDECAR_VERSION, "url": url, "size": plan.size, "sha256": plan.sha256,
+                    "etag": etag, "last_modified": last_modified, "length": declared,
+                })
             with partial.open("ab" if append else "wb") as handle:
-                while True:
-                    _raise_if_cancelled(cancel_check)
-                    chunk = response.read(DOWNLOAD_CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    handle.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_callback is not None:
-                        progress_callback(label, downloaded, total)
-                handle.flush()
-                os.fsync(handle.fileno())
+                try:
+                    while True:
+                        _raise_if_cancelled(cancel_check)
+                        chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        downloaded += len(chunk)
+                        if progress_callback is not None:
+                            progress_callback(label, downloaded, total)
+                finally:
+                    # Whatever arrived is on disk before the error (or the cancel) leaves: it is what the next attempt continues.
+                    handle.flush()
+                    os.fsync(handle.fileno())
             if total and downloaded != total:
                 raise ModelInstallError(
                     f"The download of {label} ended early ({downloaded} of {total} bytes).",
@@ -982,10 +1202,20 @@ def _fetch(
                 )
             return downloaded
     except urllib.error.HTTPError as exc:
+        if int(exc.code) == 416 and resume_from > 0:
+            _first, whole = _content_range(str((exc.headers or {}).get("Content-Range") or ""))
+            expected = plan.size if plan is not None and plan.size else whole
+            if expected and expected == resume_from and (whole is None or whole == resume_from):
+                report.appended = True  # nothing was missing: the partial is the whole file, and is verified like any other
+                return resume_from
+            raise _ResumeMismatch(
+                f"The resumed download of {label} did not line up with the server.",
+                detail=f"have {resume_from} bytes, server has {whole if whole is not None else 'an unknown number'}",
+            ) from exc
         raise _http_error(label, exc) from exc
     except urllib.error.URLError as exc:
         raise _url_error(label, exc) from exc
-    except (TimeoutError, ConnectionError) as exc:
+    except (TimeoutError, ConnectionError, http.client.HTTPException) as exc:
         raise ModelInstallError(
             f"The connection dropped while downloading {label}.",
             category="network",
@@ -1064,6 +1294,8 @@ __all__ = [
     "all_bundle_statuses",
     "bundle_install_dir",
     "bundle_lock",
+    "bundle_partial_bytes",
+    "bundle_partial_dir",
     "bundle_repo_id",
     "bundle_revision",
     "bundle_status",

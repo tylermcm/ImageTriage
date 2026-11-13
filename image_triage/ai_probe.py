@@ -632,6 +632,9 @@ def run_probe(
             if model_dir is None or aux_model_dir is None:
                 raise ProbeFailure(STAGE_MODEL, "manifest", "The face landmarker and recognizer directories were not both supplied to the probe.")
             probe_face_stack(result, Path(model_dir), Path(aux_model_dir), requested_device)
+        elif probe_kind == "torch":
+            # A real tensor operation on the requested device: an import alone says nothing about whether CUDA can be used.
+            probe_torch(result, requested_device)
         else:
             result.selected_device = "cpu" if requested_device == "cpu" else requested_device
 

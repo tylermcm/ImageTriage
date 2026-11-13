@@ -373,12 +373,25 @@ def test_native_settings_that_cannot_be_read_are_not_read_again_on_every_redraw(
     model = CullModel(PhotoModel(parent=qapp), memory=True, parent=qapp)
     model._native = True
     model._settings = QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat)
+    def load_ended():                                  # the settings are read on a worker thread: wait for its answer to arrive
+        for _ in range(400):
+            if model._native_load is None:
+                return
+            QTest.qWait(5)
+        raise AssertionError("the native settings load never ended")
+
+    model._rebuild()
+    load_ended()
     for _ in range(5):
         model._rebuild()
-    assert len(asked) == 1 and "missing python" in model.view["nativeError"]
+    load_ended()
+    assert len(asked) == 1 and "missing python" in model.view["nativeError"] and not model.view["nativeLoading"]
     model.openCull()  # opening the window is a reason to look again
+    load_ended()
     assert len(asked) == 2
     assert not model.saveNativeDraft() and model._settings.value("ai/cli_culler_settings_json") is None  # an empty profile is never saved over the real one
+    load_ended()
+    model.shutdown()
 
 
 def test_a_native_run_reports_its_warnings_and_its_device(qapp, tmp_path, monkeypatch):
