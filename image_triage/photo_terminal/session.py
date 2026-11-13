@@ -4,8 +4,12 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
+import math
+import os
 from pathlib import Path
 import shutil
+import tempfile
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from xml.sax.saxutils import escape
 
@@ -189,11 +193,114 @@ def new_session(image_path: Path, out_path: Optional[Path] = None) -> Tuple[Path
     return out_path, session
 
 
+_LOG = logging.getLogger(__name__)
+
+# A session is a list of settings, a few kilobytes; painted masks live in PNG files beside it. Past these sizes the file
+# is damaged or not a session, and is refused before it is parsed or walked.
+SESSION_MAX_BYTES = 32 * 1024 * 1024
+SESSION_MAX_OPERATIONS = 10_000
+SESSION_MAX_MASKS = 2_000
+SESSION_MAX_SPACES = 2_000
+SESSION_MAX_DEPTH = 12
+SESSION_MAX_TEXT = 4096
+SESSION_KNOWN_KEYS = frozenset((
+    "version", "schema", "createdAt", "updatedAt", "source", "pipeline", "coordinateSpaces", "masks", "operations", "assets",
+))
+_SESSION_OBJECTS = ("source", "pipeline", "assets")
+_SESSION_LISTS = (("operations", SESSION_MAX_OPERATIONS), ("masks", SESSION_MAX_MASKS), ("coordinateSpaces", SESSION_MAX_SPACES))
+
+
+def _refuse_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not a number a session may hold")
+
+
+def _check_values(value: Any, where: str, depth: int = 0) -> None:
+    """Finite numbers, bounded text and bounded nesting all the way down."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValidationError(f"{where} must be a finite number")
+    if isinstance(value, str) and len(value) > SESSION_MAX_TEXT and where.rsplit(".", 1)[-1] not in ("lastKnownPath", "path"):
+        raise ValidationError(f"{where} is too long ({len(value)} characters)")
+    if isinstance(value, (dict, list)):
+        if depth >= SESSION_MAX_DEPTH:
+            raise ValidationError(f"{where} is nested too deeply")
+        items = value.items() if isinstance(value, dict) else enumerate(value)
+        for key, item in items:
+            _check_values(item, f"{where}.{key}" if isinstance(value, dict) else f"{where}[{key}]", depth + 1)
+
+
+def check_session_structure(session: Any) -> Dict[str, Any]:
+    """Raise ``ValidationError`` unless ``session`` has the shape every reader of a session relies on: an object whose
+    operations, masks and coordinate spaces are bounded lists of objects, whose operations each carry an object of
+    parameters, and which holds only finite numbers. Says what is wrong and where. Entries this version does not know
+    are kept (another version wrote them) and logged."""
+    if not isinstance(session, dict):
+        raise ValidationError("a session file must hold a JSON object")
+    for key in _SESSION_OBJECTS:
+        if key in session and not isinstance(session[key], dict):
+            raise ValidationError(f"session {key} must be an object")
+    for key, limit in _SESSION_LISTS:
+        entries = session.get(key, [])
+        if not isinstance(entries, list):
+            raise ValidationError(f"session {key} must be a list")
+        if len(entries) > limit:
+            raise ValidationError(f"session {key} has {len(entries)} entries; at most {limit} are read")
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise ValidationError(f"session {key}[{index}] must be an object")
+    for index, op in enumerate(session.get("operations", [])):
+        if "params" in op and not isinstance(op["params"], dict):
+            raise ValidationError(f"session operations[{index}].params must be an object")
+        if "type" in op and not isinstance(op["type"], str):
+            raise ValidationError(f"session operations[{index}].type must be text")
+        if "enabled" in op and not isinstance(op["enabled"], bool):
+            raise ValidationError(f"session operations[{index}].enabled must be true or false")
+        if op.get("id") is not None and not isinstance(op["id"], str):
+            raise ValidationError(f"session operations[{index}].id must be text")
+        if op.get("maskId") is not None and not isinstance(op["maskId"], str):
+            raise ValidationError(f"session operations[{index}].maskId must be text or null")
+    content_hash = session.get("source", {}).get("contentHash")
+    if content_hash is not None and not isinstance(content_hash, dict):
+        raise ValidationError("session source.contentHash must be an object")
+    bitmap_masks = session.get("assets", {}).get("bitmapMasks", [])
+    if not isinstance(bitmap_masks, list) or not all(isinstance(item, dict) for item in bitmap_masks):
+        raise ValidationError("session assets.bitmapMasks must be a list of objects")
+    _check_values(session, "session")
+    unknown = tuple(sorted(str(key) for key in session if key not in SESSION_KNOWN_KEYS))
+    if unknown and unknown not in _WARNED_UNKNOWN:      # once per set of names: sessions are read on every scan
+        _WARNED_UNKNOWN.add(unknown)
+        _LOG.warning("Session holds entries this version does not use (kept as they are): %s", ", ".join(unknown[:20]))
+    return session
+
+
+_WARNED_UNKNOWN: set = set()
+
+
+def read_session_file(path: Path) -> Dict[str, Any]:
+    """The session file parsed and structurally checked, whatever its version."""
+    path = Path(path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0                     # let the open below report what is wrong with the file
+    if size > SESSION_MAX_BYTES:
+        raise ValidationError(f"{path.name} is {size} bytes; a session file is at most {SESSION_MAX_BYTES}")
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            session = json.load(handle, parse_constant=_refuse_constant)
+    except RecursionError as exc:
+        raise ValidationError(f"{path.name} is nested too deeply to be a session") from exc
+    except ValueError as exc:        # not JSON, not UTF-8, or NaN/Infinity
+        raise ValidationError(f"{path.name} is not a readable session: {exc}") from exc
+    return check_session_structure(session)
+
+
 def load_session(path: Path) -> Dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        session = json.load(handle)
+    """Read a session for use. Raises ``ValidationError`` for a file that is not a session of the expected shape (see
+    ``check_session_structure``) and ``UnsupportedVersionError`` for one of another version; whether its operations make
+    sense for the renderer is ``validate_session``'s question."""
+    session = read_session_file(path)
     version = session.get("version")
-    if version != SCHEMA_VERSION:
+    if type(version) is not int or version != SCHEMA_VERSION:
         raise UnsupportedVersionError(f"unsupported session version: {version}")
     return session
 
@@ -202,10 +309,39 @@ def save_session(path: Path, session: Dict[str, Any]) -> None:
     session = deepcopy(session)
     session["updatedAt"] = utc_now()
     try:
+        # NaN and Infinity are not JSON, and a session holding one could not be loaded again.
+        text = json.dumps(session, indent=2, allow_nan=False) + "\n"
+    except ValueError as exc:
+        raise ValidationError(f"the session holds a number that cannot be saved: {exc}") from exc
+    try:
         # Never opened for writing in place: a failure part way must leave the session that was there readable.
-        write_text_atomic(path, json.dumps(session, indent=2) + "\n")
+        write_text_atomic(path, text)
     except OSError as exc:
         raise WriteError(str(exc)) from exc
+
+
+def copy_file_atomic(source: Path, target: Path) -> None:
+    """Copy ``source`` to ``target`` through a temporary file beside the target, flushed and then moved into place: a
+    copy that fails part way leaves what was at ``target`` as it was."""
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(handle, "wb") as out, Path(source).open("rb") as stream:
+            shutil.copyfileobj(stream, out)
+            out.flush()
+            os.fsync(out.fileno())
+        try:
+            shutil.copystat(source, temporary)
+        except OSError:
+            pass
+        os.replace(temporary, target)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def print_json(data: Any) -> None:
@@ -381,7 +517,11 @@ def validate_session(session: Dict[str, Any], strict: bool = False, session_path
 
 def validate_operation_params(op_id: str, op_type: str, params: Dict[str, Any]) -> List[str]:
     errors: List[str] = []
-    if op_type == "adjust.white_balance_kelvin":
+    if op_type == "adjust.exposure":
+        model = params.get("model", 1)
+        if type(model) is not int or model not in (1, 2):
+            errors.append(f"{op_id} adjust.exposure model must be 1 (the first exposure curve) or 2 (stops)")
+    elif op_type == "adjust.white_balance_kelvin":
         kelvin = params.get("kelvin")
         if not isinstance(kelvin, (int, float)) or not 1500 <= kelvin <= 50000:
             errors.append(f"{op_id} adjust.white_balance_kelvin requires kelvin 1500..50000")
@@ -556,7 +696,7 @@ def copy_bitmap_asset(session_path: Path, session: Dict[str, Any], mask_id: str,
     asset_dir.mkdir(parents=True, exist_ok=True)
     target = asset_dir / f"{mask_id}.png"
     try:
-        shutil.copy2(png_path, target)
+        copy_file_atomic(png_path, target)
     except OSError as exc:
         raise WriteError(str(exc)) from exc
     asset = {
@@ -626,8 +766,7 @@ def relink(root: Path, glob_pattern: str = "*.edit.json") -> Dict[str, Any]:
 
 
 def migrate_session_file(session_path: Path, out_path: Optional[Path] = None, target_version: int = SCHEMA_VERSION) -> Path:
-    with session_path.open("r", encoding="utf-8") as handle:
-        session = json.load(handle)
+    session = read_session_file(session_path)
     version = session.get("version")
     if target_version != SCHEMA_VERSION:
         raise UnsupportedVersionError(f"unsupported target version: {target_version}")
@@ -683,7 +822,7 @@ def export_xmp(session_path: Path, out_path: Optional[Path] = None) -> Path:
         ]
     )
     try:
-        out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        write_text_atomic(out_path, "\n".join(lines) + "\n")
     except OSError as exc:
         raise WriteError(str(exc)) from exc
     return out_path

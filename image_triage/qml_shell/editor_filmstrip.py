@@ -140,7 +140,7 @@ class EditorFilmstrip(QObject):
 
     @staticmethod
     def _exchange(proc, packet):
-        control = PhotoCraftControl(proc.port, proc.token, timeout=2.0)
+        control = proc.connect(timeout=2.0) if hasattr(proc, "connect") else PhotoCraftControl(proc.port, proc.token, timeout=2.0)
         try:
             return control.call("ui.filmstrip", packet)
         finally:

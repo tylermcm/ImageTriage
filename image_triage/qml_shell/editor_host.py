@@ -8,6 +8,7 @@ docs/qml_unwired.md under "Editor". The launcher and the window mover are parame
 from __future__ import annotations
 
 import logging
+import re
 import sys
 import threading
 from pathlib import Path
@@ -22,6 +23,30 @@ IDLE, STARTING, EDITING, CLOSING, FAILED = "idle", "starting", "editing", "closi
 # answered: a save that hangs (an unreachable share) must not keep the app from closing.
 SHUTDOWN_SETTLE_S = 5.0
 HOST_JOB_POLL_S = 1.5        # how often the editor is asked for a mask or Super Resolution request while it is open
+
+
+_DIGITS = re.compile(r"\d+")
+
+
+class _DocumentUncertain(Exception):
+    """A switch failed at a point where the editor's document may already be the new photo while saves are still bound to
+    the previous one (`error` is what went wrong)."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
+def _document_kept(error: Exception) -> bool:
+    """Whether a failed `app.open` is known to have left the editor's document alone: the request never went out (the
+    photo was refused by the host, or superseded), or the editor answered that it could not open the photo. A broken or
+    timed-out exchange says nothing about what the editor did."""
+    from .. import photocraft_bridge
+
+    if isinstance(error, (photocraft_bridge.PhotoCraftCompatibilityError, photocraft_bridge.PhotoCraftSuperseded)):
+        return True
+    return (isinstance(error, photocraft_bridge.PhotoCraftError) and error.__cause__ is None
+            and str(error).startswith("PhotoCraft control 'app.open' failed:"))
 
 
 class WindowMover:
@@ -88,6 +113,10 @@ class EditorHost(QObject):
     closeFailed = Signal(str)
     toolBlocked = Signal(str)               # a mask or tool the editor asked for cannot run (its model is not installed): what to turn on
     editSaved = Signal(str)
+    # The photo's Camera Raw settings could not be read and were set aside; it opened from its original develop (the photo,
+    # what to tell the person). Sent once per set-aside file. `recoverRecipe` is the offer that goes with it.
+    recipeSetAside = Signal(str, str)
+    recipeRecovery = Signal(str, bool, str) # `recoverRecipe` finished: the photo, whether an edit was put back, what to say
     _done = Signal(str, object, str)        # worker -> main thread: (what finished, its result, an error message)
 
     def __init__(self, *, memory: bool = False, launcher=None, detector=None, mover=None, host_jobs=None, parent=None) -> None:
@@ -108,6 +137,9 @@ class EditorHost(QObject):
         self._generation = 0
         self._close_requested = False
         self._switching = False
+        self._wanted: tuple[str, bool] | None = None      # asked for while another open was running (`_open_path`)
+        self._shown_path = ""                             # the photo the editor was last confirmed to show
+        self._told: set[tuple[str, str]] = set()          # (photo, cause) of failures already reported (`_report`)
         self._presentation_blocked = False
         self._space_shortcut = None
         self._filmstrip = None
@@ -206,8 +238,15 @@ class EditorHost(QObject):
         self._open_path(path, full_editor=True)
 
     def _open_path(self, path: str, *, full_editor: bool) -> None:
-        if not path or self._state in (STARTING, CLOSING):
+        if not path or self._state == CLOSING:
             return
+        if self._state == STARTING:
+            # One open at a time. The newest request made meanwhile is kept and started when this one is over, so the
+            # editor ends on the photo that was asked for last and never on one the selection has already left.
+            if not self._memory:
+                self._wanted = (path, full_editor)
+            return
+        self._wanted = None
         if self._memory:                    # the sample page has no editor: it only plays the opening screen
             self._path = path
             self.pathChanged.emit()
@@ -233,6 +272,7 @@ class EditorHost(QObject):
 
     def _open_locked(self, generation: int, path: str, switching: bool, full_editor: bool) -> None:
         proc = None
+        leaving = False                         # the step in hand is saving the photo being left
         try:
             from .. import edit_storage, photocraft_bridge
 
@@ -252,8 +292,10 @@ class EditorHost(QObject):
                 except Exception:
                     in_place = False
             if proc is not None and switching and proc.is_running() and not in_place:
+                leaving = True
                 self._settle(proc)
                 self._saved(getattr(proc, "source_path", ""))
+                leaving = False
             if proc is not None and (not proc.is_running() or proc.path_within_root(path) is None
                                      or getattr(proc, "camera_raw_first", True) != raw_workspace):
                 self._stop(proc)               # the editor can only read the folder it was started on
@@ -264,6 +306,7 @@ class EditorHost(QObject):
                 write_root = edit_storage.ensure_edit_root(directory)
                 extra_args = ("--raw-workspace",) if raw_workspace else ()
                 proc = launch(None, read_root=directory, write_root=str(write_root), idle=True, extra_args=extra_args)
+                self._sweep_save_temps(write_root, proc)
             sidecar = photocraft_bridge.sidecar_pcraft_path(path)
             open_path = str(sidecar) if sidecar.exists() and not is_raw else path
             relative = proc.path_within_root(open_path)
@@ -283,6 +326,9 @@ class EditorHost(QObject):
                     spec["manifestPath"] = photocraft_bridge.render_manifest_path(path).name
                     spec["signature"] = signature
                 recipe = photocraft_bridge.load_recipe(path)
+                notice = photocraft_bridge.take_quarantine_notice(path)
+                if notice is not None:               # unreadable settings were set aside: the photo opens without them, and says so once
+                    self.recipeSetAside.emit(path, notice.message)
                 if recipe is not None:
                     spec["recipe"] = recipe
                 elif photocraft_bridge.recipe_is_newer(path):
@@ -291,14 +337,26 @@ class EditorHost(QObject):
                 if sidecar.exists():
                     spec["continueFrom"] = sidecar.name
             previous = getattr(proc, "source_path", "")
-            opened = proc.control.app_open(relative, replace=True, **({"camera_raw": spec} if spec is not None else {}))
-            if previous:
-                self.editSaved.emit(previous)
             binding = {"path": sidecar.name, "preview": photocraft_bridge.rendered_preview_path(path).name,
                        "display": photocraft_bridge.display_render_path(path).name}
             if signature:
                 binding.update(manifest=photocraft_bridge.render_manifest_path(path).name, source=signature)
-            proc.control.call("app.bind", binding)
+            # From the replacement until the binding the editor's document and the files a save would write belong to
+            # different photos. A failure in between must not be left like that (`_abandon_switch`).
+            try:
+                opened = proc.control.app_open(relative, replace=True, **({"camera_raw": spec} if spec is not None else {}))
+            except Exception as error:
+                if _document_kept(error):
+                    raise                            # the editor refused the photo and still shows the previous one
+                raise _DocumentUncertain(error) from error
+            if previous:
+                self.editSaved.emit(previous)
+            try:
+                proc.control.call("app.bind", binding)
+            except Exception as error:
+                raise _DocumentUncertain(error) from error
+            # Bound: a save now goes to this photo's files, so this is the photo the host has open whatever follows.
+            proc.source_path = path
             dialog = in_place and isinstance(opened, dict) and bool((opened.get("cameraRaw") or {}).get("dialog"))
             if full_editor:
                 # The RAW workspace develops the saved recipe while the host window is hidden.
@@ -310,14 +368,107 @@ class EditorHost(QObject):
                 raw_state = proc.control.call("ui.cameraRaw", {"open": True})
                 if raw_state.get("open") is not True:
                     raise RuntimeError("PhotoCraft did not open Camera Raw for this photo.")
-            proc.source_path = path
             self._done.emit("open", proc, "")
         except Exception as error:               # a failed launch or open is shown to the person, never raised into the event loop
+            uncertain = isinstance(error, _DocumentUncertain)
+            if uncertain:
+                error = error.error
+            message = str(error) or error.__class__.__name__
+            LOG.warning("PhotoCraft did not open %s: %s", path, error, exc_info=True)
             if proc is not None and proc is not self._proc:
                 self._stop(proc)
-            LOG.warning("PhotoCraft did not open %s: %s", path, error, exc_info=True)
+            elif uncertain and proc is not None:
+                message = self._abandon_switch(proc, message)
             what = "switch-failed" if proc is self._proc and proc is not None and proc.is_running() else "open-failed"
-            self._done.emit(what, None, str(error) or error.__class__.__name__)
+            # Which photo the failure is about: the one that could not be opened, or (a save before the switch) the one left.
+            about = (getattr(proc, "source_path", "") if leaving else "") or path
+            self._done.emit(what, about if what == "switch-failed" else None, message)
+
+    def _abandon_switch(self, proc, message: str) -> str:
+        """A switch failed after the editor may have replaced its document and before the new photo was bound: put the
+        previous photo back (it was saved before the switch), so the editor again shows what the host says it shows. If
+        that fails too the editor is stopped: better no editor than one that would save one photo under another's name.
+        Returns what to tell the person."""
+        previous = getattr(proc, "source_path", "")
+        try:
+            if not previous or not proc.is_running():
+                raise RuntimeError("the editor is not running")
+            self._reopen(proc, previous)
+            return message
+        except Exception as error:
+            LOG.warning("The editor could not be put back on %s after a failed switch: %s", previous, error, exc_info=True)
+            self._stop(proc)
+            return message + " The editor was closed because it could not be returned to the previous photo; its saved edits are intact."
+
+    @staticmethod
+    def _reopen(proc, path: str) -> None:
+        """Open and bind `path` again in the running editor, from what is saved for it."""
+        from .. import photocraft_bridge
+
+        is_raw = Path(path).suffix.lower() in photocraft_bridge.RAW_SUFFIXES
+        sidecar = photocraft_bridge.sidecar_pcraft_path(path)
+        open_path = str(sidecar) if sidecar.exists() and not is_raw else path
+        relative = proc.path_within_root(open_path)
+        if relative is None:
+            raise RuntimeError("the previous photo is outside the folder PhotoCraft can read")
+        signature = photocraft_bridge.file_signature(path) if getattr(proc.control, "render_manifest_supported", False) is True else None
+        spec = None
+        if is_raw:
+            spec = {"recipePath": photocraft_bridge.recipe_path(path).name, "displayPath": photocraft_bridge.display_render_path(path).name}
+            if signature:
+                spec.update(manifestPath=photocraft_bridge.render_manifest_path(path).name, signature=signature)
+            state, recipe, _reason = photocraft_bridge.recipe_state(path)
+            if state == photocraft_bridge.RECIPE_INVALID:
+                raise RuntimeError("the previous photo's Camera Raw settings cannot be read")
+            if recipe is not None:
+                spec["recipe"] = recipe
+            if sidecar.exists():
+                spec["continueFrom"] = sidecar.name
+        opened = proc.control.app_open(relative, replace=True, **({"camera_raw": spec} if spec is not None else {}))
+        binding = {"path": sidecar.name, "preview": photocraft_bridge.rendered_preview_path(path).name,
+                   "display": photocraft_bridge.display_render_path(path).name}
+        if signature:
+            binding.update(manifest=photocraft_bridge.render_manifest_path(path).name, source=signature)
+        proc.control.call("app.bind", binding)
+        if getattr(proc, "camera_raw_first", False) and not (isinstance(opened, dict) and (opened.get("cameraRaw") or {}).get("dialog")):
+            proc.control.call("ui.cameraRaw", {"open": True})
+
+    # -- a set-aside recipe ---------------------------------------------------------------------------------------------------
+    @Slot(str)
+    def recoverRecipe(self, path: str) -> None:
+        """"Try to recover the previous edit": put back what can still be read of the photo's set-aside Camera Raw settings
+        (`photocraft_bridge.recover_quarantined_recipe`). When the photo is the one open in the editor it is opened again
+        with the recovered settings, in place of what the editor shows; `recipeRecovery` reports the outcome either way."""
+        if not path or self._memory:
+            return
+        if self._state in (STARTING, CLOSING):
+            self.recipeRecovery.emit(path, False, "The editor is busy. Try again when it has finished.")
+            return
+        reopen = self._state == EDITING and path == self._path and self._proc is not None
+        if reopen:
+            self._generation += 1
+            self._switching = True
+            self._set(STARTING, "")
+            self.stateChanged.emit()
+        threading.Thread(target=self._recover_worker, args=(self._generation, path, reopen), name="editor-recover", daemon=True).start()
+
+    def _recover_worker(self, generation: int, path: str, reopen: bool) -> None:
+        with self._lock:
+            try:
+                from .. import photocraft_bridge
+
+                result = photocraft_bridge.recover_quarantined_recipe(path)
+                recovered, message = result.recovered, result.message
+            except Exception as error:
+                LOG.warning("Could not recover the set-aside recipe of %s: %s", path, error, exc_info=True)
+                recovered, message = False, "The previous edit could not be recovered. " + (str(error) or error.__class__.__name__)
+            self.recipeRecovery.emit(path, recovered, message)
+            if not reopen:
+                return
+            if recovered:
+                self._open_locked(generation, path, False, False)
+            else:
+                self._done.emit("switch-failed", None, "")     # back to the photo as it is open; the outcome was already reported
 
     # -- the editor is up: put its window in ours ---------------------------------------------------------------------------
     @Slot(object)
@@ -355,6 +506,9 @@ class EditorHost(QObject):
             LOG.info("The hosted editor exited on its own")
             path, self._path = self._path, ""
             self._proc = None
+            self._wanted = None
+            self._shown_path = ""
+            self._told = set()
             self.pathChanged.emit()
             self._set(IDLE)
             self.closed.emit(path)
@@ -397,32 +551,44 @@ class EditorHost(QObject):
             # or change a newer navigation operation's state.
             if result is self._proc:
                 self._set(self._state, error)
-                self.failed.emit(error)
+                self._told = self._told - {self._cause(self._proc.source_path, error)}   # Save was asked for: always say how it went
+                self._report(self._proc.source_path, error)
             return
         self._switching = False
         if what == "open":
             self._proc = result
             if self._close_requested:
                 self._close_requested = False
+                self._wanted = None
+                self._shown_path = self._path
                 self._set(EDITING, "")
                 self.close()
                 return
-            try:
-                if self._parent_hwnd and result.attached_parent != self._parent_hwnd:
-                    self._mover.attach(result.hwnd, self._parent_hwnd)
-                    result.attached_parent = self._parent_hwnd
-                self._place(result)
-                self._mover.show(result.hwnd, True)
-                self._focus(result.hwnd)
-            except Exception:
-                LOG.warning("could not put the editor window in the shell", exc_info=True)
+            self._show(result)
+            self._shown_path = self._path
+            self._forget(self._path)
             self._set(EDITING, "")
             self.opened.emit(self._path)
+            self._open_wanted()
         elif what == "open-failed":
+            self._wanted = None
+            if self._proc is not None and not self._running(self._proc):
+                # The editor that was up is gone (it was stopped to keep one photo from being saved as another).
+                left, self._proc, self._shown_path = self._shown_path, None, ""
+                self._fail(self._path, error)
+                if self._path:
+                    self._path = ""
+                    self.pathChanged.emit()
+                if left:
+                    self.closed.emit(left)
+                return
             self._fail(self._path, error)
         elif what == "closed":
+            self._wanted = None
+            self._told = set()
             self._hide()
             path, self._path = self._path, ""
+            self._shown_path = ""
             self.pathChanged.emit()
             self._set(IDLE, error)
             self.closed.emit(path)
@@ -433,18 +599,70 @@ class EditorHost(QObject):
             else:
                 self.failed.emit(error)
         elif what == "switch-failed":
+            # The switch is over and the editor shows one definite photo: the previous one, or (when the failure came
+            # after the new photo was bound) the new one. The host's path and the selection follow the editor.
             self._close_requested = False
-            self._path = self._proc.source_path
+            landed = self._proc.source_path
+            self._path = landed
             self.pathChanged.emit()
             self._set(EDITING, error)
-            self.failed.emit(error)
+            if landed != self._shown_path:
+                self._show(self._proc)
+                self._shown_path = landed
+                self.opened.emit(landed)
+            if error:
+                self._report(result if isinstance(result, str) and result else landed, error)
+            self._open_wanted(failed_for=result if isinstance(result, str) else "")
+
+    def _show(self, proc) -> None:
+        try:
+            if self._parent_hwnd and proc.attached_parent != self._parent_hwnd:
+                self._mover.attach(proc.hwnd, self._parent_hwnd)
+                proc.attached_parent = self._parent_hwnd
+            self._place(proc)
+            self._mover.show(proc.hwnd, True)
+            self._focus(proc.hwnd)
+        except Exception:
+            LOG.warning("could not put the editor window in the shell", exc_info=True)
+
+    def _open_wanted(self, failed_for: str = "") -> None:
+        """Start the open that was asked for while the last one ran, unless it is where the editor already is, or the
+        last one failed because the photo being left could not be saved (the next would fail the same way)."""
+        wanted, self._wanted = self._wanted, None
+        if wanted is None or self._state != EDITING or wanted[0] == self._path:
+            return
+        if failed_for and failed_for == self._path:
+            return
+        self._open_path(wanted[0], full_editor=wanted[1])
 
     def _fail(self, path: str, message: str) -> None:
         self._close_requested = False
         self._switching = False
+        self._wanted = None
         self._set(FAILED, message)
         self.failed.emit(message)
         self._set(IDLE)
+
+    # -- telling the person about a failure, once -------------------------------------------------------------------------------
+    @staticmethod
+    def _cause(path: str, message: str) -> tuple[str, str]:
+        # Without the numbers: the same failure names a new temporary file or generation every time.
+        return path, _DIGITS.sub("#", message)
+
+    def _report(self, path: str, message: str) -> None:
+        """Send `failed` unless this photo already failed for this cause and nothing has succeeded for it since. The
+        message stays readable as `error` either way. A new cause, or the same one after a success, is reported."""
+        key = self._cause(path, message)
+        if key in self._told:
+            LOG.info("Not repeating the failure notice for %s: %s", path, message)
+            return
+        self._told = self._told | {key}
+        self.failed.emit(message)
+
+    def _forget(self, path: str) -> None:
+        """Something worked for this photo: a later failure is news again. (Also called from the save workers: the set
+        is replaced, never changed in place.)"""
+        self._told = {key for key in self._told if key[0] != path}
 
     # -- putting the editor away ---------------------------------------------------------------------------------------------
     @Slot()
@@ -479,7 +697,24 @@ class EditorHost(QObject):
                 photocraft_bridge.prune_render_generations(path)
             except Exception:
                 LOG.debug("could not clear old renders of %s", path, exc_info=True)
+            self._sweep_save_temps(None, self._proc, beside=path)
+            self._forget(path)
         self.editSaved.emit(path)
+
+    @staticmethod
+    def _sweep_save_temps(folder, proc, beside: str = "") -> None:
+        """Clear away `*.pcsave.tmp` files that failed saves left in the edit folder (as stale token files are cleared):
+        when an editor starts on the folder and after each completed save. Only old ones, never one a running editor
+        could still be writing (`photocraft_bridge.sweep_stale_save_temps`)."""
+        try:
+            from .. import edit_storage, photocraft_bridge
+
+            if folder is None:
+                folder = edit_storage.edit_root_for(Path(beside).parent)
+            pid = getattr(getattr(proc, "process", None), "pid", None)
+            photocraft_bridge.sweep_stale_save_temps(folder, live_pids=(pid,) if isinstance(pid, int) else ())
+        except Exception:
+            LOG.debug("could not clear stale save temporaries", exc_info=True)
 
     @Slot()
     def close(self) -> None:
@@ -512,6 +747,9 @@ class EditorHost(QObject):
             return
         self._close_requested = False
         self._switching = False
+        self._wanted = None
+        self._shown_path = ""
+        self._told = set()
         self._hide()
         path, self._path = self._path, ""
         self.pathChanged.emit()

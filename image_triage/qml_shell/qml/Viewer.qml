@@ -112,6 +112,28 @@ FocusScope {
         function onToolBlocked(message) { popout.notice(message) }
         function onCloseFailed(message) { v.opening = false; closeFailedCard.body = message; closeFailedCard.open() }
         function onClosed() { v.opening = false; popout.close() }
+        function onRecipeSetAside(path, message) { v.offerRecipeRecovery(path, message) }
+        function onRecipeRecovery(path, recovered, message) {
+            popout.notice(recovered && v.rawEditing ? message + " Reopen Edit RAW to continue from it." : message)
+        }
+    }
+    Connections {
+        target: v.rawEditor
+        ignoreUnknownSignals: true
+        function onRecipeSetAside(path, message) { v.offerRecipeRecovery(path, message) }
+    }
+    // A photo's saved Camera Raw settings could not be read and were set aside: say so once, and offer to salvage them.
+    function offerRecipeRecovery(path, message) {
+        recipeSetAsideCard.path = path; recipeSetAsideCard.body = message; recipeSetAsideCard.open()
+    }
+    ConfirmCard {
+        id: recipeSetAsideCard; objectName: "recipeSetAsideCard"; warn: true
+        property string path: ""
+        title: "The previous edit could not be read"
+        confirmText: "Try to recover the previous edit"; cancelText: "Start from the original"
+        onAboutToShow: editor.setPresentationBlocked(true)
+        onClosed: editor.setPresentationBlocked(false)
+        onAccepted: editor.recoverRecipe(path)
     }
     ConfirmCard {
         id: closeFailedCard; objectName: "editorCloseFailedCard"; warn: true

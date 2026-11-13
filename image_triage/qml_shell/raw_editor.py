@@ -86,6 +86,7 @@ class RawEditor(QObject):
     changed = Signal()
     _copied = None  # the look copied with Copy Settings, shared by every editor in the process
     saved = Signal(str, str)
+    recipeSetAside = Signal(str, str)          # unreadable saved settings were set aside on load (the photo, what to say); once
     _finished = Signal(int, str, object, str)
 
     def __init__(self, *, memory=False, parent=None, drafts=None):
@@ -795,7 +796,7 @@ class RawEditor(QObject):
     def _work(action, path, original, draft, directory, sample=None):
         if bridge.sidecar_pcraft_path(path).exists():
             raise ValueError("This photo already has a PhotoCraft project. Open it in PhotoCraft to edit it.")
-        state, recipe, reason = bridge.recipe_state(path)
+        state, recipe, reason = bridge.recipe_state(path, set_aside=action == "load")
         if state == bridge.RECIPE_INVALID:
             raise ValueError(reason)
         settings = dict(recipe["cameraRaw"]) if recipe else {}
@@ -892,6 +893,9 @@ class RawEditor(QObject):
             if action != "detail" or self._detail_mode:
                 self._error = error
             if not error and action == "load":
+                notice = bridge.take_quarantine_notice(self._path)
+                if notice is not None:
+                    self.recipeSetAside.emit(self._path, notice.message)
                 self._original, self._preview, recovered, self._notice = (*result, None, "")[:4]
                 self._baseline = self._preview
                 self._draft = dict(self._original)

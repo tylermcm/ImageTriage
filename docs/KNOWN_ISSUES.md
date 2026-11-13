@@ -2,6 +2,46 @@
 
 Open problems that are recorded but not fixed. Newest first. Each entry says what is known and what is only a guess.
 
+## Control port is chosen before the editor binds it (audit E23; recorded 2026-11-13, mitigated on the host, not removed)
+
+**What.** Image Triage picks the editor's control port itself: it binds port 0 on `127.0.0.1`, reads the number, closes the socket and
+starts the editor with `--control <port> --control-token-file <file>`. Between that close and the editor's own bind, any other local
+program can take the port. Nothing in `photocraft_bridge.py` or `docs/photocraft_handoff.md` shows a way for the editor to choose its
+own port and report it (no ready file, no port file, no line on stdout that the host reads), so the host cannot remove the window. The
+editor's source was not readable in the session that wrote this entry (the companion checkout had no working tree), so "the editor has
+no such option" is taken from the host side only and should be confirmed in `apps/photocraft/src/main.rs` (`parse_launch_args`).
+
+**What the host does now** (`photocraft_bridge.py`, "the control port"; `tests/test_photocraft_control_port.py`, stand-in listeners only):
+- Before any connection, the first one and every later or replacement one, it refuses to connect once the editor process has exited,
+  and on Windows it asks the system which process listens on the port (`GetExtendedTcpTable`) and sends nothing when that is not the
+  editor. That lookup was written without a Windows machine and has **not been run**; where it fails or is unavailable the host
+  carries on as if it did not know.
+- A reply to the sign-in that is not the editor's (unreadable, refused, connection closed, or no answer twice) ends that attempt after
+  the one sign-in: no command follows.
+- A sign-in that is accepted after the editor has exited is not trusted.
+- The launch then ends that editor and starts again with a new port and a new token, three attempts in all.
+
+**What is left.**
+1. The sign-in is one-way. The host proves it knows the token by sending it; the editor proves nothing back. Where the port's owner
+   cannot be asked, a program that took the port receives the token in that one sign-in request. The token is useless against an
+   editor that failed to bind and exited, and it is never reused, but the disclosure itself cannot be prevented from the host.
+2. A program that takes the port, answers the sign-in with a well-formed "ok" and keeps answering like the editor, while the real
+   editor is still running (it did not exit on a failed bind, or both managed to bind), is not detected where the owner lookup is
+   unavailable. It would then be sent the host's commands (paths relative to the read root, recipes). Whether the editor exits when
+   its bind fails is assumed, not verified.
+3. The same applies to a port taken over after a running editor dies, for connections made where the owner lookup is unavailable
+   and before the host has noticed the exit.
+
+**Editor-side change that removes it (for the PhotoCraft fork).** Either: accept `--control 0`, bind an ephemeral port and report the
+bound port to the host through something only the host's child can write (a `--control-ready-file <path>` inside the token file's
+folder, written after `listen`, or a first line on stdout); the host then never chooses a port. Or: let the host bind and listen itself
+and hand the listening socket to the editor (an inherited handle named on the command line). Independently, make the sign-in mutual: the
+reply to `auth` carries a proof of the token (for example an HMAC of a host-supplied nonce), so a listener that does not know the
+token cannot pass as the editor and the token itself never crosses the socket. All three are wire or launch-contract changes and were
+deliberately not made here.
+
+---
+
 ## Uninstalling leaves other Windows users' file-type entries behind (recorded 2026-11-13, by design)
 
 **The mismatch.** The installer is per machine (`all_users` in `setup_msi.py`), but the "Open with" registrations are per user: the app
@@ -154,6 +194,19 @@ and stays on the previous photo).
 changes, and a failed save on close is reported on its own signal (`closeFailed`) so the shell can offer that. Switching photos is still
 abandoned when the previous photo cannot be saved (going on would discard its changes without asking), nothing reports the failure once
 per photo, and nothing on the host removes `*.pcsave.tmp`.
+
+**State on 2026-11-13 (host side; checked with a stand-in editor only, not with PhotoCraft or on the share).**
+- A switch is still not made when the photo being left cannot be saved (going on would drop its changes unasked). What changed is how a
+  switch ends: always with the editor, the host and the selection on one photo. A failure after the editor may have replaced its
+  document but before the new photo was bound puts the previous photo back, or, if that fails too, stops the editor; a failure after
+  the binding ends on the new photo; a photo asked for while a switch is running is opened afterwards.
+- The failure is announced once per photo and cause (`EditorHost._report`; numbers in the message are ignored, since every attempt
+  names a new temporary file). It is announced again after a new cause, after something succeeded for that photo, after the editor
+  was closed, and always for an explicit Save or Close. A repeated navigation attempt that fails the same way raises no new toast;
+  the message stays in `editor.error`.
+- `photocraft_bridge.sweep_stale_save_temps` removes `*.pcsave.tmp` files older than an hour from the edit folder when an editor starts
+  on it and after each completed save. It keeps any whose name carries the process number of the running editor, and for a day any
+  whose number belongs to a process running on this machine. The editor's own cleanup after a failed rename is still an editor-side fix.
 
 **What is established (all on `\192.168.1.200\ColossalBoi\Photography\China '26`):**
 - The editor writes the whole temp file (`._DSC4918.NEF.cameraraw.json.23160-0.pcsave.tmp`, 31,528 bytes, complete) and the failure comes at the rename that

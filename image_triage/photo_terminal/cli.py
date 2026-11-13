@@ -8,8 +8,8 @@ import sys
 
 from PIL import ExifTags
 
-from .adjustments import EditRecipe, heal_spot
-from .io import open_image, save_image, source_metadata
+from .adjustments import EXPOSURE_MODEL_STOPS, EditRecipe, carry_8bit_change, heal_spot
+from .io import HIGH_DEPTH_SUFFIXES, open_high_depth, open_image, save_high_depth, save_image, source_metadata
 from .preview import ansi_preview
 from .session import (
     RelinkError,
@@ -76,7 +76,24 @@ def recipe_from_args(args: argparse.Namespace) -> EditRecipe:
     if args.crop:
         given["crop"] = tuple(args.crop)
     base = EditRecipe.load(args.recipe) if args.recipe else EditRecipe()
+    if "exposure" in given or not base.exposure:
+        # An exposure given here is in stops (+1 is twice the light). One that comes from a loaded recipe keeps the
+        # model it was saved with, so an existing look does not change.
+        given["exposure_model"] = EXPOSURE_MODEL_STOPS
     return replace(base, **given)
+
+
+def _exposure_in_stops(params: dict) -> None:
+    """An exposure value given on the command line is in stops unless the model is given too."""
+    if "exposure" in params and "model" not in params:
+        params["model"] = EXPOSURE_MODEL_STOPS
+
+
+def _high_depth_source(source, output):
+    """The source as a high-depth picture when it has 16 bits per channel and the output format can hold them."""
+    if Path(output).suffix.lower() not in HIGH_DEPTH_SUFFIXES:
+        return None
+    return open_high_depth(source)
 
 
 def command_inspect(args: argparse.Namespace) -> int:
@@ -113,6 +130,13 @@ def command_recipe(args: argparse.Namespace) -> int:
 
 def command_render(args: argparse.Namespace) -> int:
     recipe = recipe_from_args(args)
+    high = _high_depth_source(args.input, args.output)
+    if high is not None:
+        # A 16-bit source into a format that holds 16 bits: edited in floating point and written as 16-bit RGB.
+        pixels, metadata = high
+        save_high_depth(recipe.apply_float(pixels), args.output, **metadata)
+        print(f"rendered: {args.output}")
+        return 0
     image = open_image(args.input)
     metadata = source_metadata(image)
     edited = recipe.apply(image)
@@ -122,6 +146,13 @@ def command_render(args: argparse.Namespace) -> int:
 
 
 def command_spot(args: argparse.Namespace) -> int:
+    high = _high_depth_source(args.input, args.output)
+    if high is not None:
+        pixels, metadata = high
+        healed = carry_8bit_change(pixels, lambda picture: heal_spot(picture, x=args.x, y=args.y, radius=args.radius, strength=args.strength))
+        save_high_depth(healed, args.output, **metadata)
+        print(f"spot edit saved: {args.output}")
+        return 0
     image = open_image(args.input)
     metadata = source_metadata(image)
     edited = heal_spot(image, x=args.x, y=args.y, radius=args.radius, strength=args.strength)
@@ -196,6 +227,8 @@ def command_op_add(args: argparse.Namespace) -> int:
     params = parse_param_pairs(args.param)
     if args.type not in SUPPORTED_OPERATION_TYPES:
         raise ValidationError(f"unsupported operation type: {args.type}")
+    if args.type == "adjust.exposure":
+        _exposure_in_stops(params)
     op = {
         "id": args.id or next_operation_id(session),
         "type": args.type,
@@ -222,7 +255,10 @@ def command_op_set(args: argparse.Namespace) -> int:
     session = load_session(args.session)
     index = find_operation_index(session, args.op_id)
     op = session["operations"][index]
-    op.setdefault("params", {}).update(parse_param_pairs(args.param))
+    changed = parse_param_pairs(args.param)
+    if op.get("type") == "adjust.exposure":
+        _exposure_in_stops(changed)
+    op.setdefault("params", {}).update(changed)
     if args.enabled is not None:
         op["enabled"] = args.enabled.lower() == "true"
     if args.mask:
