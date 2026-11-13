@@ -442,6 +442,17 @@ CAPABILITIES: dict[str, Capability] = {
         requires_torch=True,
         optional=True,
     ),
+    # The managed runtime itself, with no model: the AI Center's "Test runtime" starts the interpreter, imports these and runs a small
+    # tensor operation on the device the rankers would be pinned to (``ai_health.probe_runtime``). Not in BASE_CAPABILITIES or
+    # DEFAULT_CAPABILITY_ORDER: it installs nothing and is only ever run when the person asks for it.
+    "runtime_check": Capability(
+        key="runtime_check",
+        name="AI runtime",
+        summary="Starts the AI runtime and runs a small computation on the device ranking would use.",
+        modules=("numpy", "PIL", "torch"),
+        requires_torch=True,
+        probe_kind="torch",
+    ),
     # One capability per optional model, so Set Up AI can install and verify any subset of them. "cascade_rankers" above stays as the pair.
     "rank_quality": Capability(
         key="rank_quality",

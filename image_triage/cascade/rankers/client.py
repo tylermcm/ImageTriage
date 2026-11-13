@@ -44,7 +44,7 @@ Launcher = Callable[[WorkerLaunch], "subprocess.Popen[str]"]
 
 def default_launcher(launch: WorkerLaunch) -> "subprocess.Popen[str]":
     """Start the worker in the managed AI runtime that matches the requested device."""
-    from ...ai_env import AIRuntimeUnavailable, build_worker_env, select_runtime
+    from ...ai_env import AIRuntimeUnavailable, build_worker_env, resolve_device, select_runtime
 
     try:
         selection = select_runtime(launch.device, require_torch=launch.spec.needs_torch)
@@ -56,9 +56,12 @@ def default_launcher(launch: WorkerLaunch) -> "subprocess.Popen[str]":
     # plain-file tree installed beside the executable (the package itself sits in library.zip, which the managed runtime cannot read).
     parts = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]
     env["PYTHONPATH"] = os.pathsep.join([*parts, package_root])
+    # The worker refuses an explicit graphics card request it cannot honour, so "auto" stays "auto": only a caller that named a
+    # device gets the pinned one.
+    device = "auto" if resolve_device(launch.device) == "auto" else selection.device
     command = [
         _python_executable(), "-m", WORKER_MODULE,
-        "--kind", launch.spec.kind, "--model-dir", str(launch.model_dir), "--device", selection.device,
+        "--kind", launch.spec.kind, "--model-dir", str(launch.model_dir), "--device", device,
     ]
     if launch.aux_dir is not None:
         command += ["--aux-dir", str(launch.aux_dir)]
@@ -322,6 +325,8 @@ def _worker_failure(spec: RankerSpec, event: dict[str, object]) -> RankerError:
     category = str(event.get("category", ""))
     if category in {"runtime_unavailable", "missing_module"}:
         return RankerUnavailable(f"{spec.name} cannot run: {message}", remediation="Open Settings, run Set Up AI, then Repair AI.")
+    if category == "gpu_unavailable":
+        return RankerUnavailable(f"{spec.name} did not run: {message}", remediation="Open the AI Center and use Test runtime.")
     if category == "weights_missing":
         return RankerWeightsMissing(f"{spec.name}: {message}", remediation="Re-download the model.")
     from ...ai_platform import dll_failure_hint

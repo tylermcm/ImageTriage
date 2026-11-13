@@ -1,4 +1,4 @@
-"""What the AI Center knows and does: is the AI runtime installed and does it start, is there a graphics card, is the Visual C++ runtime new enough,
+"""What the AI Center knows and does: is the AI runtime installed, is there a graphics card, is the Visual C++ runtime new enough,
 and which of the three models the cull uses (the face landmarker for the eyes-closed check, the MANIQA quality ranker and the Q-ReAlign appeal ranker)
 are on disk. It installs, repairs and removes them with the shared code:
 
@@ -7,7 +7,11 @@ are on disk. It installs, repairs and removes them with the shared code:
 * the runtime: the same installer process the Widgets "Set Up AI" runs (`tasks.ai_tasks.AIRuntimeInstallTask`, `packaging/ai_runtime_installer.py`);
 * the models: `ai_model_store.install_bundle`, `repair_bundle` and `uninstall_bundle` (hash checked, atomic), with cancel. A download that is
   cancelled or fails is thrown away: the next try starts again from the beginning;
-* progress: `ai_setup_progress.SetupProgress`, one honest percent for the whole run.
+* progress: `ai_setup_progress.SetupProgress`, one honest percent for the whole run;
+* does it work: `ai_health.probe_runtime` ("Test runtime"). Detection above reads files, so until that has run in this session the
+  runtime is "installed, not tested". The test starts the runtime's interpreter, imports its libraries and runs a small tensor
+  operation on the device ranking would use, and says which device really ran it. Its result is kept for the session under the
+  identity of the runtime it ran in, and dropped when that runtime is installed, repaired or replaced.
 
 Everything slow runs on a worker thread; the GUI only ever reads `state()`. `ops` is what touches the machine, so the tests hand in a fake and
 nothing is downloaded. See docs/qml_unwired.md, section "Cull window and AI Center".
@@ -49,7 +53,14 @@ class RealOps:
         for key, bundle in MODELS.items():
             found = bundle_status(bundle)
             models[key] = {"state": found.state, "mb": MODEL_BUNDLES[bundle].approx_mb, "problem": "" if found.is_ready else found.describe()}
+        try:
+            from ..ai_health import runtime_identity
+
+            identity = runtime_identity()
+        except Exception:                           # which runtime would start cannot be told: a kept test result is then not shown
+            identity = ""
         return {
+            "identity": identity,
             "installed": list(status.installed_variants), "torch": list(status.torch_installed_variants), "gpuBuild": AI_RUNTIME_GPU_VARIANT in status.installed_variants,
             "gpu": ai_platform.nvidia_gpu_name() or "", "vc": ".".join(str(part) for part in version) if version else "",
             "vcOld": bool(version and version < ai_platform.RECOMMENDED_VC_RUNTIME), "models": models, "python": f"{sys.version_info.major}.{sys.version_info.minor}",
@@ -94,6 +105,12 @@ class RealOps:
         task = self._task
         if task is not None:
             task.cancel()
+
+    def probe_runtime(self, cancelled) -> dict:
+        """Start the managed runtime and make it compute (seconds). `cancelled` is polled; the probe process is ended when it says so."""
+        from ..ai_health import probe_runtime
+
+        return probe_runtime("auto", cancel=cancelled)
 
     def install_bundle(self, key: str, progress, cancelled) -> None:
         from ..ai_model_store import install_bundle
@@ -146,6 +163,7 @@ class AiCenterBackend(QObject):
         self._raw: dict | None = None                # the last look at the machine
         self._job: dict | None = None                # the one install, repair or removal running now
         self._errors: dict[str, str] = {}            # "runtime" or a model key -> why it failed, until the next try
+        self._probe: dict | None = None              # what the last "Test runtime" of this session found, for the runtime it ran in
         self._cancel = threading.Event()
         self._detecting = False
         self._detected.connect(self._apply_detected)
@@ -171,6 +189,8 @@ class AiCenterBackend(QObject):
     def _apply_detected(self, raw: dict) -> None:
         self._detecting = False
         self._raw = raw
+        if self._probe is not None and str(raw.get("identity", "")) != str(self._probe.get("identity", "")):
+            self._probe = None                       # another runtime is installed now (or none): the test was of the old one
         self.changed.emit()
 
     # -- what the window shows ------------------------------------------------------------------------------------------------
@@ -205,6 +225,11 @@ class AiCenterBackend(QObject):
             rt = "ready"
         else:
             rt = "missing"
+        probing = job is not None and job["kind"] == "probe"
+        probe = self._probe if rt in ("ready", "error") and not runtime_job and not failed else None
+        # Only what a test really showed changes what is offered: a graphics card that PyTorch could not use is not offered for
+        # ranking. A test that failed outright is shown, and the workers still report their own failures when they are run.
+        gpu_refused = probe is not None and bool(probe.get("ok")) and not probe.get("honoured")
         models = {}
         for key, found in raw["models"].items():
             working = job is not None and job["kind"] == "model" and job["key"] == key
@@ -214,7 +239,9 @@ class AiCenterBackend(QObject):
         return {
             "checked": checked, "rt": rt, "pct": job["pct"] if runtime_job else 0, "step": job["step"] if runtime_job else "", "error": error,
             "variant": "gpu" if raw["gpuBuild"] else ("cpu" if installed else ""), "python": raw["python"],
-            "gpuName": raw["gpu"], "gpuFound": bool(raw["gpu"]), "gpuUsable": bool(raw["gpu"]) and raw["gpuBuild"],
+            "gpuName": raw["gpu"], "gpuFound": bool(raw["gpu"]), "gpuUsable": bool(raw["gpu"]) and raw["gpuBuild"] and not gpu_refused,
+            "gpuBuild": bool(raw["gpuBuild"]), "tested": probe is not None, "probe": dict(probe) if probe is not None else None,
+            "probing": probing, "probeStep": job["step"] if probing else "", "canTest": callable(getattr(self._ops, "probe_runtime", None)),
             "vcOld": bool(raw["vcOld"]), "vcFound": raw["vc"], "models": models, "busy": job is not None,
         }
 
@@ -265,8 +292,12 @@ class AiCenterBackend(QObject):
         job = self._job
         if kind == "progress" and job is not None:
             job["pct"], job["step"] = int(payload.get("pct", job["pct"])), str(payload.get("step", job["step"]))
+        elif kind == "probe":
+            self._probe = dict(payload)
         elif kind == "end" and job is not None:
             self._job = None
+            if job["kind"] == "runtime":
+                self._probe = None                   # installed or repaired (or stopped half way): what was tested is not what is there now
             if payload.get("error"):
                 self._errors[job["key"]] = payload["error"]
         self.changed.emit()
@@ -277,6 +308,30 @@ class AiCenterBackend(QObject):
         text = f"{word or progress.step_label()} · {progress.percent()}%"
         eta = progress.eta_text()
         self._event.emit("progress", {"pct": progress.percent(), "step": text + (f" · {eta}" if eta else "")})
+
+    # -- does it work -----------------------------------------------------------------------------------------------------------
+    @Slot()
+    def testRuntime(self) -> None:
+        """"Test runtime": run the managed runtime for real, on a worker thread, and keep what it reports. `cancel` stops it."""
+        probe = getattr(self._ops, "probe_runtime", None)
+        if not callable(probe):
+            return
+
+        def work(job: dict) -> None:
+            self._event.emit("progress", {"pct": 0, "step": "Starting the AI runtime…"})
+            try:
+                result = probe(self._cancel.is_set)
+            except Exception as exc:
+                if self._cancel.is_set() or type(exc).__name__ == "ProbeCancelled":
+                    raise
+                # The test itself could not be run. That is a result too, and is shown as one rather than lost.
+                result = {"ok": False, "honoured": False, "requested": "", "device": "", "deviceName": "", "torch": "",
+                          "identity": str((self._raw or {}).get("identity", "")), "category": "probe_error",
+                          "message": f"The test could not be run: {exc}", "detail": ""}
+            if not self._cancel.is_set():
+                self._event.emit("probe", result)
+
+        self._start("probe", "probe", "Testing", work)
 
     # -- the runtime ----------------------------------------------------------------------------------------------------------
     def variant(self, repair: bool = False) -> str:

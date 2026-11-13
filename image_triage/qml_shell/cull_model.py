@@ -490,7 +490,7 @@ class CullModel(QObject):
             "window": s["window"], "page": page, "title": titles[page][0], "sub": titles[page][1], "folder": folder,
             "steps": [{"n": i + 1, "label": lab, "sub": sub, "state": "done" if (page == "done" and i == 3) or i < idx else ("cur" if i == idx else "")} for i, (lab, sub) in enumerate(steps)],
             "centerDot": "ok" if rt_ready else ("bad" if s["rt"] == "error" else "warn"),
-            "centerText": {"ready": "Ready", "missing": "Not set up", "installing": "Installing…", "error": "Needs attention", "checking": "Checking…"}[s["rt"]],
+            "centerText": self._center_text(s["rt"]),
             "eyes": {"on": eyes_on, "desc": rt_desc},
             "semantic": {"on": s["semantic"] and rt_ready and s["searchOk"], "desc": (
                 "Needs the AI runtime, a one-time download." if not rt_ready else
@@ -730,14 +730,49 @@ class CullModel(QObject):
                 "errTitle": "A Windows library failed to load" if dll_failure else "The AI runtime could not start",
                 "errBody": a["error"] or "It was installed but does not start on this PC. Repair reinstalls it; the AI Center shows what failed."}
 
+    def _center_text(self, rt: str) -> str:
+        """The Cull window's word for the AI runtime. "Ready" is only said of a runtime that was run: files on disk are "installed"."""
+        a = self._ai_state
+        if a is not None and rt == "ready":
+            probe = a.get("probe")
+            if a.get("probing"):
+                return "Testing…"
+            if probe is None:
+                return "Installed, not tested" if a.get("canTest") else "Ready"     # nothing here can run it: the earlier wording
+            if not probe.get("ok"):
+                return "Needs attention"
+            return "Ready" if probe.get("honoured") else "Ready on the CPU only"
+        return {"ready": "Ready", "missing": "Not set up", "installing": "Installing…", "error": "Needs attention", "checking": "Checking…"}[rt]
+
+    @staticmethod
+    def _probe_reason(probe: dict) -> str:
+        """Why a test failed, in the runtime's own words (its message, then the detail it gave)."""
+        parts = [str(probe.get("message") or "").strip(), str(probe.get("detail") or "").strip()]
+        return " ".join(part for part in parts if part) or "It gave no reason."
+
     def _center(self, s: dict, rt_ready: bool, rtp: int, rt_step: str, flagged, applied) -> dict:
         """The AI Center for this PC: every state, size and sentence comes from `ai_center.AiCenterBackend.state()`."""
         a = self._ai_state
         rt = a["rt"]
         gpu_s = round(MANIQA.seconds_per_frame_gpu + QREALIGN.seconds_per_frame_gpu)
-        if a["gpuUsable"]:
+        probe, probing, can_test = a.get("probe"), bool(a.get("probing")), bool(a.get("canTest"))
+        cpu_line = (f"Ranking would run on the CPU: {CPU_SECONDS_PER_FRAME_FAST} seconds to over a minute per frame. "
+                    "The cleanup and the eyes check do not need a graphics card.")
+        gpu_state = "Found" if a["gpuFound"] else "Not found"
+        if probe is not None and probe.get("ok") and not probe.get("honoured"):
+            # Asked for, and really tried: never shown as usable, and never quietly swapped for the CPU.
+            gpu_desc = (f"{a['gpuName'] or 'The graphics card'} cannot be used by the AI runtime: {self._probe_reason(probe)} "
+                        f"The test then ran on the CPU. {cpu_line}")
+            gpu_tone, gpu_state = "warn", "Not usable"
+        elif a["gpuUsable"]:
             gpu_desc = f"{a['gpuName']}. Ranking takes about {gpu_s} second{'s' if gpu_s != 1 else ''} per frame."
             gpu_tone = "ok"
+            if probe is not None and probe.get("ok") and str(probe.get("device", "")).startswith("cuda"):
+                gpu_desc += f" Tested: the AI runtime ran a computation on {probe.get('deviceName') or 'it'}."
+                gpu_state = "Working"
+            elif rt == "ready" and can_test:
+                gpu_desc += " The graphics card build is installed but has not been tested: Test runtime checks that it can really use this card."
+                gpu_state = "Found, not tested"
         elif a["gpuFound"] and a["variant"] == "cpu":
             gpu_desc = f"{a['gpuName']} was found, but the installed AI runtime is the CPU build, so ranking runs on the CPU. Repair the runtime to add the graphics card build."
             gpu_tone = "warn"
@@ -745,8 +780,7 @@ class CullModel(QObject):
             gpu_desc = f"{a['gpuName']}. Set up AI installs the build that uses it, and ranking takes about {gpu_s} second{'s' if gpu_s != 1 else ''} per frame."
             gpu_tone = "ok"
         else:
-            gpu_desc = (f"Ranking would run on the CPU: {CPU_SECONDS_PER_FRAME_FAST} seconds to over a minute per frame. "
-                        "The cleanup and the eyes check do not need a graphics card.")
+            gpu_desc = cpu_line
             gpu_tone = "warn"
         python = a["python"]
         rt_desc = {"ready": f"Python {python} with the packages the cull needs. It lives in Image Triage’s own folder and can be removed at any time.",
@@ -754,6 +788,28 @@ class CullModel(QObject):
                    "installing": "Setting up. If you cancel, the next setup downloads it again from the start.",
                    "error": a["error"] or "It was installed but does not start on this PC.",
                    "checking": "Looking at what is installed…"}[rt]
+        rt_state = {"ready": "Installed", "missing": "Not set up", "installing": "Installing…", "error": "Needs attention", "checking": "Checking…"}[rt]
+        rt_dot = {"ready": "ok", "error": "bad"}.get(rt, "warn")
+        if rt == "ready" and probing:
+            rt_state, rt_dot = "Testing…", "warn"
+            rt_desc = "Starting the AI runtime and running a small computation on the device ranking would use. This can take a minute the first time."
+        elif rt == "ready" and probe is not None:
+            torch = f"PyTorch {probe['torch']}" if probe.get("torch") else "PyTorch"
+            if not probe.get("ok"):
+                rt_state, rt_dot = "Test failed", "bad"
+                rt_desc = f"Tested: the AI runtime did not work. {self._probe_reason(probe)}"
+            elif probe.get("honoured"):
+                on_card = str(probe.get("device", "")).startswith("cuda")
+                where = f"the graphics card ({probe['deviceName']})" if on_card and probe.get("deviceName") else ("the graphics card" if on_card else "the CPU")
+                rt_state = "Working"
+                rt_desc = f"Tested: it started, and {torch} ran a computation on {where}. " + rt_desc
+            else:
+                rt_state, rt_dot = "Working on the CPU only", "warn"
+                rt_desc = (f"Tested: the graphics card was requested but could not be used, so {torch} ran on the CPU instead. "
+                           f"{self._probe_reason(probe)}")
+        elif rt == "ready" and can_test:
+            rt_state = "Installed, not tested"
+            rt_desc += " Its files are in place, but it has not been run in this session: Test runtime starts it and reports the device it really uses."
         models = []
         for key, name, desc in (
                 ("face", "Face model (eyes-closed check)", "MediaPipe face landmarks. Runs on the CPU."),
@@ -783,11 +839,12 @@ class CullModel(QObject):
                            "btn": "Cancel" if m["busy"] else ("Try again" if m["error"] else ("Install" if m["state"] == "missing" else ("Repair" if (not ready or key == "face") else "Remove"))),
                            "primary": not m["busy"] and (m["state"] == "missing" or bool(m["error"])), "busy": m["busy"], "pct": m["pct"], "step": m["step"],
                            "confirm": ready and key != "face" and not m["busy"], "locked": a["busy"] and not m["busy"]})
-        return {"rtDot": {"ready": "ok", "error": "bad"}.get(rt, "warn"),
-                "rtState": {"ready": "Installed", "missing": "Not set up", "installing": "Installing…", "error": "Needs attention", "checking": "Checking…"}[rt],
+        return {"rtDot": rt_dot, "rtState": rt_state,
+                "rtTestShow": rt == "ready" and can_test and (probing or not a["busy"]), "rtTesting": probing,
+                "rtTestBtn": "Cancel test" if probing else ("Test again" if probe is not None else "Test runtime"),
                 "rtInstalling": rt == "installing", "rtPct": a["pct"], "rtStep": a["step"], "rtDesc": rt_desc,
                 "rtBtn": "Cancel" if rt == "installing" else ("Set up AI" if rt == "missing" else "Repair"), "rtPrimary": rt == "missing", "rtBtnShow": rt != "checking" and not (a["busy"] and rt != "installing"),
-                "gpuDot": "ok" if gpu_tone == "ok" else "warn", "gpuState": "Found" if a["gpuFound"] else "Not found", "gpuDesc": gpu_desc,
+                "gpuDot": "ok" if gpu_tone == "ok" else "warn", "gpuState": gpu_state, "gpuDesc": gpu_desc,
                 "vcShow": a["vcOld"], "vcFound": f"Visual C++ {a['vcFound']}", "vcNeeded": "14.40",
                 "models": models, "cpu": s["cpuDefault"], "defSens": s["sens"] if self._settings is None else str(self._settings.value(SENS_KEY, "balanced", str)),
                 "dataFolder": self._photos.folderName if self._photos.folder_dir() else "",
@@ -1120,6 +1177,12 @@ class CullModel(QObject):
             return
         self._install.stop()
         self._set(rt="missing", rtp=0.0)
+
+    @Slot()
+    def testRuntime(self) -> None:
+        """The AI Center's "Test runtime": really start the runtime (off the UI thread) instead of trusting the files on disk."""
+        if self._ai is not None:
+            self._ai.testRuntime()
 
     @Slot()
     def recheckRuntime(self) -> None:
