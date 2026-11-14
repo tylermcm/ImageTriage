@@ -142,15 +142,18 @@ def test_values_that_are_not_numbers_are_never_shown():
 # -- the native engine's document ----------------------------------------------------------------------------------------------------
 
 NATIVE_ITEM = {"decision": "reject", "capture": "c1", "comparison_set": "burst-3", "rank_in_set": 2, "set_size": 3, "score": 0.412,
-               "scores": {"maniqa": 0.38, "appeal": None, "novel_model": 12.5, "label": "text"}, "reasons": ["Rejected: a better frame of this burst was kept"]}
+               "scores": {"maniqa": 0.38, "maniqa_rel": 0.1, "appeal": None, "sharpness": 812.4, "qra_iqa": 0.55, "novel_model": 12.5, "label": "text"},
+               "reasons": ["Rejected: a better frame of this burst was kept"]}
 
 
 def test_native_scores_are_shown_under_the_engines_names_and_scale():
     found = details_native(NATIVE_ITEM, {"device": "cuda", "gpu": "RTX 4080 SUPER"})
     rows = by_label(found)
-    assert rows["Quality (MANIQA)"]["v"] == "0.380" and rows["Quality (MANIQA)"]["unit"] == "engine scale"
-    assert rows["Appeal (Q-ReAlign)"]["v"] == NOT_RECORDED and rows["Eyes closed"]["v"] == NOT_RECORDED and rows["Sharpness"]["v"] == NOT_RECORDED
-    assert rows["novel_model"]["v"] == "12.500" and "label" not in rows          # an unknown model's score is shown as given; text is not a score
+    assert rows["Quality (MANIQA)"]["v"] == "0.380" and rows["Quality (MANIQA)"]["unit"] == "0 to 1"
+    assert rows["Appeal (Q-ReAlign)"]["v"] == NOT_RECORDED and rows["Eyes closed"]["v"] == NOT_RECORDED
+    assert rows["Sharpness"]["v"] == "812" and rows["Sharpness"]["unit"] == "no fixed scale" and rows["Image quality (Q-ReAlign)"]["v"] == "0.550"
+    assert rows["novel_model"]["v"] == "12.500" and rows["novel_model"]["unit"] == "engine scale" and "label" not in rows      # an unknown score is shown as given; text is not a score
+    assert "maniqa_rel" not in rows                                              # the engine's working value within the set is not listed as a score
     assert rows["Engine score"]["v"] == "0.412" and "engine's own scale" in rows["Engine score"]["scale"]
     assert found["stage"] == "Rejected: a better frame of this burst was kept" and found["device"] == "Graphics card (RTX 4080 SUPER)"
     bare = details_native({"decision": "keep", "score": None})

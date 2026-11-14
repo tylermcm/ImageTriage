@@ -6,9 +6,12 @@ not kept is "not recorded", with the reason when it is known; nothing is derived
 * The cascade (report version 2, `cascade.export`) keeps, per frame: the MANIQA and Q-ReAlign scores for the frames those rankers were
   asked about, the eyes-closed score when the check ran, and the preview's sharpness and clipping. Its summary names the device a
   ranker's worker said it ran on. Reports written before version 2 kept none of these.
-* The native engine's decisions document keeps, per file, a nullable `score`, its individual `scores`, `reasons` and `gates`
-  (docs/cli_culler_integration_plan.md). They are shown under the engine's own names and on the engine's own scales: this module does
-  not know those scales and does not claim to. The device is the one the engine's worker reported for the run, when it was kept.
+* The native engine's decisions document keeps, per file, a nullable combined `score`, its individual `scores`, `reasons` and `gates`
+  (`FileDecision` in the pinned engine, packaging/cli_culler_wheels). The score names and scales below are the engine's own
+  (`aiculler.decide`, `aiculler.scorers.models`): `maniqa` and `appeal` and `qra_iqa` on 0..1, `eyes_closed` on 0..1, `sharpness` and
+  `face_sharpness` as a Laplacian variance. Each also has a `<name>_rel` (its standing within the comparison set), which is the
+  engine's working value and is not listed. Any other number is shown under the engine's name, without a claim about its scale.
+  The device is the one the engine's worker reported for the run, when it was kept.
 
 `details_*` return {"rows": [{"k", "v", "unit", "scale", "recorded"}], "stage": str, "device": str}: `unit` is the scale in a
 word or two (for a narrow card), `scale` the sentence that explains it.
@@ -33,11 +36,21 @@ _STAGES = {
     "appeal_ranker": "Appeal ranker (Q-ReAlign)",
     "unranked": "Cleanup passes only (no ranker compared it)",
 }
-# what the native engine calls a model's score, and what the person knows it as; anything else is shown under the engine's own name
-_NATIVE_NAMES = {"maniqa": "Quality (MANIQA)", "appeal": "Appeal (Q-ReAlign)", "q_realign": "Appeal (Q-ReAlign)", "qrealign": "Appeal (Q-ReAlign)",
-                 "sharpness": "Sharpness", "focus": "Focus", "blink": "Eyes closed", "eyes_closed": "Eyes closed", "eyes": "Eyes"}
-_NATIVE_EXPECTED = (("Quality (MANIQA)", ("maniqa",)), ("Appeal (Q-ReAlign)", ("appeal", "q_realign", "qrealign")),
-                    ("Eyes closed", ("blink", "eyes_closed", "eyes")), ("Sharpness", ("sharpness", "focus")))
+# The native engine's score names (aiculler.decide / aiculler.scorers.models): label, unit, scale. The first four are always listed
+# (recorded or not); the others only when the engine recorded them. Anything else is shown under the engine's own name.
+_VARIANCE = "Variance of the Laplacian. No fixed scale: higher is sharper, and it is only compared within its comparison set."
+_NATIVE_ALWAYS = (
+    ("maniqa", "Quality (MANIQA)", "0 to 1", "0 to 1, higher is better. Scored for contested frames and for frames about to be kept."),
+    ("appeal", "Appeal (Q-ReAlign)", "0 to 1", "0 to 1, higher is better. Scored only for the shortlist of a comparison set."),
+    ("eyes_closed", "Eyes closed", "0 open, 1 closed", "0 is open, 1 is closed, for the most closed prominent face."),
+    ("sharpness", "Sharpness", "no fixed scale", _VARIANCE),
+)
+_NATIVE_OPTIONAL = {
+    "face_sharpness": ("Face sharpness", "no fixed scale", "For the largest face. " + _VARIANCE),
+    "qra_iqa": ("Image quality (Q-ReAlign)", "0 to 1", "0 to 1, higher is better. The signal a Q-ReAlign quality floor reads."),
+    "face_count": ("Prominent faces", "count", "Faces that cover at least 1% of the frame."),
+    "exposure": ("Exposure", "engine scale", "The engine's exposure score, on the engine's own scale; higher is better."),
+}
 
 
 def _number(value: object) -> float | None:
@@ -122,18 +135,21 @@ def details_native(item: Mapping[str, object], runtime: Mapping[str, object] | N
     scores = item.get("scores")
     scores = scores if isinstance(scores, Mapping) else {}
     engine_scale = "As the culling engine recorded it, on the engine's own scale."
-    shown: set[str] = set()
-    for label, names in _NATIVE_EXPECTED:
-        found = next(((name, value) for name in names if (value := _number(scores.get(name))) is not None), None)
-        if found is not None:
-            shown.add(found[0])
-            rows.append(_row(label, f"{found[1]:.3f}", engine_scale, unit="engine scale"))
+    show = lambda value, unit: f"{value:,.0f}" if unit in ("no fixed scale", "count") else f"{value:.3f}"
+    for name, label, unit, scale in _NATIVE_ALWAYS:
+        value = _number(scores.get(name))
+        if value is not None:
+            rows.append(_row(label, show(value, unit), scale, unit=unit))
         else:
-            rows.append(_row(label, NOT_RECORDED, "The engine's results hold no such score for this photo.", False))
+            rows.append(_row(label, NOT_RECORDED, "The engine recorded no such score for this photo (its model did not run, or did not read this frame).", False))
+    always = {name for name, *_rest in _NATIVE_ALWAYS}
     for name, raw in scores.items():
         value = _number(raw)
-        if value is not None and name not in shown and str(name) not in {n for _label, names in _NATIVE_EXPECTED for n in names}:
-            rows.append(_row(_NATIVE_NAMES.get(str(name), str(name)), f"{value:.3f}", engine_scale, unit="engine scale"))
+        name = str(name)
+        if value is None or name in always or name.endswith("_rel"):
+            continue
+        label, unit, scale = _NATIVE_OPTIONAL.get(name, (name, "engine scale", engine_scale))
+        rows.append(_row(label, show(value, unit), scale, unit=unit))
     overall = _number(item.get("score"))
     rows.append(_row("Engine score", f"{overall:.3f}", "The engine's overall score for ranking inside its comparison set, on the engine's own scale.", unit="engine scale")
                 if overall is not None else _row("Engine score", NOT_RECORDED, "The engine gave this photo no overall score.", False))
