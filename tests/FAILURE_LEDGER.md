@@ -31,6 +31,10 @@ recorded in [the validation handoff](../docs/audit_cloud_validation_20261112.md)
 not substitute for the original machine's Microsoft Store Python, managed GPU/model
 runtime or sealed native editor acceptance.
 
+Linux, 2026-11-14, combined tree at `8e6719a` after Point Color, the crop turn, a person across folders and next-photo
+prefetch: **3,218 passed, 56 skipped, 5 expected failures, 123 passing subtests**, no failures, memory-capped as below.
+Not run on Windows.
+
 Linux, 2026-11-14, combined tree at `385119b` after the viewer, grid and AI feature work: **3,161 passed, 56 skipped,
 5 expected failures, 123 passing subtests**, no failures, run with `ulimit -v 9000000` (see the next paragraph for why).
 Not run on Windows.
