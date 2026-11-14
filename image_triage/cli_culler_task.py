@@ -174,6 +174,7 @@ class CliCullerRunTask(QRunnable):
             self.signals.progress.emit(folder, "Preparing CLI comparison", 0, 0, "")
             snapshot_start_cache(self.paths.cache, self.run_root / "comparison-start", self._check_cancelled)
         complete = None
+        runtime: dict = {}
         process = tree = None
         try:
             with self.log_path.open("w", encoding="utf-8") as diagnostics:
@@ -216,6 +217,7 @@ class CliCullerRunTask(QRunnable):
                         raise ValueError("Native worker sent an event after completion")
                     kind = event.get("event")
                     if kind == "runtime":
+                        runtime = event
                         self.signals.runtime.emit(event)
                     elif kind == "progress":
                         stage, done, total = event["stage"], event["done"], event["total"]
@@ -238,6 +240,11 @@ class CliCullerRunTask(QRunnable):
                     raise ValueError("Native worker exited without a completed generation")
                 self._check_cancelled()
                 descriptor = validate_generation(complete, self.run_root)
+                # Where the ranking models ran, as the worker reported it. Kept with the generation so a reopened folder can still
+                # say it; absent when no ranking model ran (the worker then reports no device).
+                kept = {key: runtime[key] for key in ("device", "gpu", "torch_version", "engine_version") if isinstance(runtime.get(key), str) and runtime.get(key)}
+                if kept:
+                    descriptor["runtime"] = kept
                 self.signals.detail.emit(folder, json.dumps(
                     {"warnings": complete.get("warnings", []), "models": complete.get("models", {})}))
                 return descriptor

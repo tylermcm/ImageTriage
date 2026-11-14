@@ -342,7 +342,9 @@ Backdrop {
                                                         Accessible.role: Accessible.Button; Accessible.name: fr.modelData.name + (fr.modelData.flagged ? ", flagged " + fr.modelData.badge : "") } } } }
                                     Text { visible: root.v.noRows; width: parent.width; topPadding: 26; horizontalAlignment: Text.AlignHCenter; text: "Nothing here. Every frame with this flag has been restored."; color: theme.fg3; font.pointSize: UiState.pt(12.5) } }
                                 MiddleScroll { id: reviewScroll; objectName: "cullReviewScroll"; anchors.fill: stk; view: stk }
-                                Card { id: detail; x: parent.width - 262; width: 262; height: dcol.implicitHeight + 24
+                                Card { id: detail; x: parent.width - 262; width: 262; height: Math.min(dcol.implicitHeight + 24, split.height)
+                                    // the card never grows past the review area: with the recorded scores it can be taller than a small window, and then it scrolls
+                                    Flickable { id: dflick; objectName: "cullDetailScroll"; anchors.fill: parent; contentWidth: width; contentHeight: dcol.implicitHeight + 24; clip: true; boundsBehavior: Flickable.StopAtBounds
                                     Column { id: dcol; x: 12; y: 12; width: parent.width - 24; spacing: 0
                                         Text { visible: !root.v.det.has; width: parent.width; topPadding: 26; bottomPadding: 26; horizontalAlignment: Text.AlignHCenter; text: "Pick a frame to see why it was flagged."; color: theme.fg3; font.pointSize: UiState.pt(12.5) }
                                         RoundClip { visible: root.v.det.has; width: parent.width; height: width * 2 / 3; radius: 9
@@ -361,7 +363,20 @@ Backdrop {
                                                     Text { anchors.right: parent.right; text: modelData.v; color: theme.fg; font.pixelSize: 12 } } } }
                                         Row { visible: root.v.det.has; topPadding: 12; spacing: 6
                                             SButton { visible: root.v.det.canRestore; text: root.v.det.restoreLabel; h: 28; hpad: 11; radius: 9; onClicked: cull.toggleRestore() }
-                                            SButton { text: "Show in grid"; h: 28; hpad: 11; radius: 9; onClicked: root.showInGrid() } } } }
+                                            SButton { text: "Show in grid"; h: 28; hpad: 11; radius: 9; onClicked: root.showInGrid() } }
+                                        // what was really measured for this frame, each with its scale; "not recorded" where the report holds no value
+                                        Column { objectName: "cullScoreDetails"; visible: root.v.det.has && root.v.det.scores.length > 0; width: parent.width; topPadding: 10; spacing: 4
+                                            Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
+                                            Text { topPadding: 8; bottomPadding: 2; text: "RECORDED SCORES"; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
+                                            Repeater { model: root.v.det.has ? root.v.det.scores : []
+                                                delegate: Item { id: sc; required property var modelData; width: dcol.width; height: 17
+                                                    Text { width: parent.width - scv.implicitWidth - 8; elide: Text.ElideRight; textFormat: Text.PlainText; color: theme.fg3; font.pixelSize: 12
+                                                           text: sc.modelData.k + (sc.modelData.unit ? " (" + sc.modelData.unit + ")" : "") }
+                                                    Text { id: scv; anchors.right: parent.right; text: sc.modelData.v; color: sc.modelData.recorded ? theme.fg : theme.fg3; font.pixelSize: 12 }
+                                                    HoverHandler { id: sch }
+                                                    Tip { show: sch.hovered && sc.modelData.scale !== ""; leftSide: true; text: sc.modelData.scale } } }
+                                            Text { width: parent.width; topPadding: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; color: theme.fg3; font.pixelSize: 12; lineHeight: 17; lineHeightMode: Text.FixedHeight
+                                                   text: "Decided by: " + root.v.det.stage + "\nRanking ran on: " + root.v.det.device } } } } }
                             }
                         }
                         // -------- apply --------

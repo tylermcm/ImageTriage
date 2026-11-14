@@ -148,6 +148,10 @@ class AIImageResult:
     cascade_role: str = ""
     cascade_summary: str = ""
     native_payload: dict | None = None
+    # Cascade reports from version 2 on: the values really measured for this frame, (name, value) pairs as they were measured (see
+    # cascade.export.MEASURES), and the pass that settled it. Empty for older reports and for values that were never produced.
+    measures: tuple[tuple[str, float], ...] = ()
+    decided_by: str = ""
 
     @property
     def is_rank_leader(self) -> bool:
@@ -371,7 +375,12 @@ def load_ai_bundle(path: str | Path) -> AIBundle:
         from .cli_culler_results import NativeCullResults, native_ai_bundle
         from .cli_culler_runs import load_active_generation
         native = load_active_generation(candidate) if candidate.name == "active.json" else NativeCullResults.load(candidate)
-        return native_ai_bundle(native.to_document(), candidate)
+        bundle = native_ai_bundle(native.to_document(), candidate)
+        if candidate.name == "active.json":
+            runtime = json.loads(candidate.read_text(encoding="utf-8")).get("runtime")
+            if isinstance(runtime, dict):
+                bundle.summary["host_runtime"] = runtime      # what the run's worker reported (device, graphics card); see ai_score_details
+        return bundle
     source = inspect_ai_bundle_source(path)
     results: list[AIImageResult] = []
     with Path(source.export_csv_path).open("r", encoding="utf-8", newline="") as handle:
@@ -682,7 +691,12 @@ def _row_to_result(row: dict[str, str]) -> AIImageResult | None:
         capture_timestamp=(row.get("capture_timestamp") or row.get("timestamp") or "").strip(),
         cascade_role=(row.get("cascade_role") or "").strip(),
         cascade_summary=(row.get("cascade_summary") or "").strip(),
+        measures=tuple((name, value) for name in _MEASURE_COLUMNS if (value := _optional_float(row.get(name))) is not None),
+        decided_by=(row.get("decided_by") or "").strip(),
     )
+
+
+_MEASURE_COLUMNS = ("maniqa_score", "aesthetic_score", "blink_score", "centre_sharpness", "clipped_fraction", "extremes_fraction")
 
 
 def _optional_float(value: object) -> float | None:

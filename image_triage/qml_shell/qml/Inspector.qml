@@ -335,6 +335,43 @@ Item {
                         }
                     }
                 }
+                // What the saved report really holds for this photo, each value with the scale it is on. A value the report does not
+                // hold reads "not recorded" with the reason; nothing here is derived or rescaled (ai_score_details.py).
+                Item {
+                    objectName: "aiScoreDetails"
+                    readonly property var rows: insp.aiInfo.has && insp.aiInfo.details !== undefined ? insp.aiInfo.details : []
+                    visible: rows.length > 0
+                    width: parent.width; height: visible ? 14 + 13 + 10 + scoreCol.implicitHeight + 14 : 0
+                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
+                    Text { x: 16; y: 15; height: 13; verticalAlignment: Text.AlignVCenter; text: "RECORDED SCORES"; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
+                    Column { id: scoreCol; x: 16; y: 38; width: parent.width - 32; spacing: 8
+                        Repeater {
+                            model: parent.parent.rows
+                            delegate: Column {
+                                id: sd
+                                required property var modelData
+                                required property int index
+                                objectName: "aiScoreRow-" + index
+                                width: scoreCol.width; spacing: 1
+                                Item { width: parent.width; height: 18
+                                    Text { width: parent.width - sdv.implicitWidth - 8; elide: Text.ElideRight; textFormat: Text.PlainText; text: sd.modelData.k; color: theme.fg2; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
+                                    Text { id: sdv; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: sd.modelData.v
+                                           color: sd.modelData.recorded ? theme.fg : theme.fg3; font.pixelSize: 13; font.weight: sd.modelData.recorded ? Font.DemiBold : Font.Normal } }
+                                Text { visible: sd.modelData.scale !== ""; width: parent.width; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: sd.modelData.scale
+                                       color: theme.fg3; font.pixelSize: 12; lineHeight: 16; lineHeightMode: Text.FixedHeight }
+                            }
+                        }
+                        Column { width: parent.width; spacing: 1; topPadding: 2
+                            Item { width: parent.width; height: 18
+                                Text { text: "Decided by"; color: theme.fg2; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter } }
+                            Text { objectName: "aiScoreStage"; width: parent.width; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: insp.aiInfo.has && insp.aiInfo.stage !== undefined ? insp.aiInfo.stage : ""
+                                   color: theme.fg; font.pixelSize: 12; lineHeight: 16; lineHeightMode: Text.FixedHeight } }
+                        Item { width: parent.width; height: 18
+                            Text { text: "Ranking ran on"; color: theme.fg2; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
+                            Text { objectName: "aiScoreDevice"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText
+                                   text: insp.aiInfo.has && insp.aiInfo.device !== undefined ? insp.aiInfo.device : ""; color: theme.fg; font.pixelSize: 13 } }
+                    }
+                }
             }
         }
     }

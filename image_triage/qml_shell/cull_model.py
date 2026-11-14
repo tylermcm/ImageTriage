@@ -372,6 +372,15 @@ class CullModel(QObject):
                 "duplicate": [("Hash distance", "6 of 64"), ("Suggested from", str(v["dup"]))]}[reason]
         return {"why": why, "rows": [{"k": k, "v": x} for k, x in rows]}
 
+    def _score_view(self, path: str) -> dict:
+        """The selected frame's recorded scores for the detail card: what the report (or the run that just ended) really holds, each with
+        its scale; a value that was not kept reads "not recorded". The scripted sample has no recorded scores and shows none."""
+        outcome = self._outcomes.get(path) if self._real else None
+        details = getattr(outcome, "details", None)
+        if not details:
+            return {"scores": [], "stage": "", "device": ""}
+        return {"scores": details["rows"], "stage": details["stage"], "device": details["device"]}
+
     # -- the view the QML draws --------------------------------------------------------------------------------------------------
     def _rebuild(self) -> None:
         s = self._s
@@ -467,7 +476,8 @@ class CullModel(QObject):
             self.reviewRowsAboutToChange.emit()
             self._review_rows = stacks_out
             self.reviewRowsChanged.emit()
-        det = {"has": False, "path": "", "flagged": False, "color": "", "name": "", "title": "", "why": "", "rows": [], "canRestore": False, "restoreLabel": ""}
+        det = {"has": False, "path": "", "flagged": False, "color": "", "name": "", "title": "", "why": "", "rows": [], "canRestore": False, "restoreLabel": "",
+               "scores": [], "stage": "", "device": ""}
         sel = next((r for r in rows if r["path"] == s["sel"]), None)
         if sel is not None:
             reason = self._flags.get(sel["path"])
@@ -481,6 +491,7 @@ class CullModel(QObject):
                                                   (self._outcomes[sel["path"]].summary if self._real and sel["path"] in self._outcomes else "No rule flagged this frame.")
                                                   + (" It is the suggested first choice of its stack. Nothing is selected for you." if (sel["path"] in self._picks if self._real else s["ranked"]) else "")),
                    "rows": info["rows"] + [{"k": "Stack", "v": f"{si + 1} of {len(self._stacks)}"}, {"k": "Taken", "v": self._frame_time(sel["path"])}],
+                   **self._score_view(sel["path"]),
                    "reason": reason or "", "canRestore": bool(reason), "restoreLabel": "Flag again" if s["restored"].get(sel["path"]) else ("Keep both" if reason == "duplicate" else "Restore")}
         groups = [{"key": r, "label": REASONS[r][0], "color": REASONS[r][1], "n": cnt(r), "why": GROUP_WHY[r], "on": bool(s["inc"].get(r)),
                    "thumbs": [row["path"] for row, x in flagged if x == r][:4]} for r in APPLIABLE if cnt(r)]
@@ -1580,7 +1591,8 @@ class CullModel(QObject):
         s = self._s
         self._run_notes = [str(note) for note in getattr(self._run, "notes", ()) if note]
         self._run_device = str(getattr(self._run, "device_text", "") or "")
-        self._apply_outcomes(outcomes_from_bundle(result, self._rows()) if self._native else outcomes_from_result(result))
+        self._apply_outcomes(outcomes_from_bundle(result, self._rows()) if self._native
+                             else outcomes_from_result(result, getattr(self._run, "measures", None), getattr(self._run, "summary", None)))
         first = next((r for r, _x in self._active_flags()), None)
         self._set(running=False, done=True, stage=4, p=1.0, page=s["page"] if s["hidden"] else "rev", sel=first["path"] if first else "", ranked=ranked, eyesRan=eyes)
         self.runFinished.emit()
