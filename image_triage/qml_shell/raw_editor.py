@@ -142,6 +142,10 @@ class RawEditor(QObject):
         self._red_eye_editor = RawRedEye(self)
         from .raw_light_depth import RawLightDepth
         self._light_depth_editor = RawLightDepth(self)
+        from .raw_sync import RawSync
+        self._sync = RawSync(self)
+
+    sync = Property(QObject, lambda self: self._sync, constant=True)
 
     lightDepthEditor = Property(QObject, lambda self: self._light_depth_editor, constant=True)
 
@@ -480,18 +484,10 @@ class RawEditor(QObject):
     def _apply_look(self, look, label):
         """Replace this photo's look with ``look`` as one undo step. Masks, retouching, red eye, crop, Light Depth and
         Super Resolution are this photo's own and stay as they are."""
-        from ..raw_presets import PHOTO_SPECIFIC, usable
+        from ..raw_presets import usable, with_look
         if not self._loaded or self._saving or not usable(look):
             return False
-        draft = {key: value for key, value in self._draft.items() if key in PHOTO_SPECIFIC}
-        for key, value in look.items():
-            # Settings this panel has no control for (written by the hosted editor) travel too.
-            if key not in DEFAULTS or value != DEFAULTS[key]:
-                draft[key] = deepcopy(value)
-        for key in self._original:
-            # A setting the saved edit has must be stated in the draft, or saving would not change it back.
-            if key not in draft and key in DEFAULTS and key not in PHOTO_SPECIFIC:
-                draft[key] = deepcopy(DEFAULTS[key])
+        draft = with_look(self._draft, look, self._original, DEFAULTS)
         if draft == self._draft:
             return True
         self._undo.append((label, dict(self._draft)))
@@ -648,8 +644,18 @@ class RawEditor(QObject):
             self._files.cleanup()
             self._files = None
 
+    def has_unsaved(self, path: str) -> bool:
+        """Whether ``path`` has edits never saved with Done: open now, stepped away from, or kept from an earlier session."""
+        if path == self._path and self._loaded:
+            return self._draft != self._original
+        session = self._sessions.get(path)
+        if session is not None and session[1] != session[0]:
+            return True
+        return self._drafts is not None and self._drafts.file_for(path).exists()
+
     def shutdown(self):
         """The application is closing. Unsaved drafts stay on disk and come back when their photos are edited again."""
+        self._sync.cancel()
         self._sessions.clear()
         self._close(False)
         if self._drafts is not None:

@@ -30,6 +30,22 @@ def usable(settings) -> bool:
     return bridge.classify_recipe({"version": bridge.RECIPE_VERSION, "cameraRaw": settings})[0] != bridge.RECIPE_INVALID
 
 
+def with_look(settings: dict, look: dict, saved: dict, defaults: dict) -> dict:
+    """``settings`` with its look replaced by ``look``. What belongs to the photo is kept. ``saved`` is the edit on disk:
+    a setting it has must be stated in the result even at its default, or saving would not change it back."""
+    from copy import deepcopy
+
+    result = {key: value for key, value in settings.items() if key in PHOTO_SPECIFIC}
+    for key, value in look.items():
+        # Settings the panel has no control for (written by the hosted editor) travel too.
+        if key not in defaults or value != defaults[key]:
+            result[key] = deepcopy(value)
+    for key in saved:
+        if key not in result and key in defaults and key not in PHOTO_SPECIFIC:
+            result[key] = deepcopy(defaults[key])
+    return result
+
+
 def clean_name(name) -> str:
     return " ".join(str(name).split())[:MAX_NAME] if isinstance(name, str) else ""
 

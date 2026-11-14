@@ -406,6 +406,31 @@ Rectangle {
                     Action { objectName: "rawCopySettings"; text: "Copy settings"; quiet: false; width: (parent.width - 6) / 2; enabled: panel.editable; onClicked: panel.model.copySettings() }
                     Action { objectName: "rawPasteSettings"; text: "Paste settings"; quiet: false; width: (parent.width - 6) / 2; enabled: !!panel.model && panel.model.canPaste; onClicked: { panel.before = false; panel.model.pasteSettings() } }
                 }
+                Column {
+                    id: syncBox
+                    objectName: "rawSyncBox"
+                    width: parent.width; spacing: 6; topPadding: 8
+                    // The photos picked in the grid, other than the one open here.
+                    readonly property var picked: {
+                        photos.picked; photos.revision      // follows the selection and the list
+                        var rows = photos.selectionRows(-1), out = []
+                        for (var i = 0; i < rows.length; ++i) { var d = photos.get(rows[i]); if (d && d.path) out.push(d.path) }
+                        return out
+                    }
+                    readonly property int count: { panel.photoPath; return panel.model ? panel.model.sync.eligible(picked) : 0 }
+                    Action {
+                        objectName: "rawSyncSettings"; quiet: false; width: parent.width
+                        text: panel.model && panel.model.sync.running ? "Stop" : syncBox.count > 0 ? "Apply to " + syncBox.count + " selected RAW photo" + (syncBox.count === 1 ? "" : "s") : "Apply to selected photos"
+                        enabled: !!panel.model && (panel.model.sync.running || (panel.editable && syncBox.count > 0))
+                        onClicked: panel.model.sync.running ? panel.model.sync.cancel() : panel.model.sync.start(syncBox.picked)
+                    }
+                    Copy {
+                        objectName: "rawSyncStatus"
+                        width: parent.width; wrapMode: Text.WordWrap; color: panel.subtle; font.pixelSize: 11
+                        text: !panel.model ? "" : panel.model.sync.running ? (panel.model.sync.done + 1) + " of " + panel.model.sync.total + (panel.model.sync.current ? " \u00b7 " + panel.model.sync.current : "")
+                            : panel.model.sync.summary || (syncBox.count > 0 ? "Each photo is developed and saved with this look and keeps its own masks, retouching and crop." : "Select other RAW photos in the grid to give them this look.")
+                    }
+                }
                 Copy { text: "SAVED PRESETS"; topPadding: 12; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; color: panel.muted }
                 Row {
                     width: parent.width; spacing: 6
