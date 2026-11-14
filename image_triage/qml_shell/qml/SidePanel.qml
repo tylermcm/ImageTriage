@@ -650,6 +650,7 @@ Item {
                 MItem { label: "New collection\u2026"; onClicked: { UiState.collDlgId = ""; UiState.collDlg = "new" } }
                 Item { width: parent.width; height: 13; Rectangle { x: 4; y: 6; width: parent.width - 8; height: 1; color: theme.lineSoft } }
                 MItem { label: "Open collection"; off: cmenu.inside; onClicked: collections.open(cmenu.cid) }
+                MItem { label: "Show every photo in the grid"; off: !(cmenu.c.count > 0); onClicked: collections.showAll(cmenu.cid) }
                 MItem { label: "Edit\u2026"; onClicked: { UiState.collDlgId = cmenu.cid; UiState.collDlg = "edit" } }
                 MItem { label: "Add selection here"; off: cmenu.inside; onClicked: { collections.addRows(cmenu.cid, photos.selectionRows(UiState.selRow)) } }
                 MItem { label: "Add all " + photos.shown + " visible here"; off: cmenu.inside; onClicked: collections.addVisible(cmenu.cid) }

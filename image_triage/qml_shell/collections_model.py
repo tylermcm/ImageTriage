@@ -450,6 +450,21 @@ class CollectionsModel(QObject):
             return
         self._photos.set_scope("collection", cid, lambda r, k=keys, key_of=self._row_key: key_of(r) in k)
 
+    @Slot(str)
+    def showAll(self, cid: str) -> None:
+        """Show every photo of the collection in the grid, whatever folder it is in (`PhotoModel.loadPaths`), not only the open folder's."""
+        header = next((h for h in self._headers if h["id"] == cid), None)
+        if header is None:
+            return
+        if self._memory:
+            if not self._matched():
+                self._match_folder()
+            paths = [r["path"] for r in self._here.get(cid, ())]         # the sample collections hold names: the photos shown that carry them
+        else:
+            full = self._db().load_collection(cid)
+            paths = list(full.item_paths) if full is not None else []
+        self._photos.loadPaths(paths, header["name"], "collection")
+
     @Slot()
     def openWinners(self) -> None:
         self._photos.set_scope("winners", "", lambda r: r["decision"] == "win")

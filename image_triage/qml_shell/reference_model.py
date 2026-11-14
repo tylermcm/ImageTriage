@@ -7,7 +7,7 @@ Real: the version (`_version`), the update check (`updater.check_for_update`, in
 a problem (the default browser), the keys (`ui/shortcuts.SHORTCUT_REGISTRY` and the user's overrides), the library (`LibraryStore`: roots,
 search, add, remove, re-index), the Windows file associations (`file_associations.py`; on any other system the window says they are managed by
 the system) and installing an update on Windows (`updater.py`: download, verify, then install when the app closes; on any other system the
-button opens the release page). Not connected: "Show in the grid" for library results (the button is off).
+button opens the release page). "Show in grid" puts the library results into the main grid together (`PhotoModel.loadPaths`).
 `memory=True` (--mock, tests) uses the mockup's sample library, sample file-association states and a scripted update check.
 See docs/qml_unwired.md, section "Help, shortcuts, library, file types and splash".
 """
@@ -616,6 +616,16 @@ class ReferenceModel(QObject):
         self._lscope = scope
         self._lib_refresh()
         self._emit()
+
+    @Slot()
+    def showLibInGrid(self) -> None:
+        """Show the library search's results in the main grid, together, whatever folders they are in, and close the window."""
+        paths = [r["path"] for r in self._lib_results]
+        if not paths or self._photos is None:
+            return
+        query = self._lq.strip()
+        self._photos.loadPaths(paths, f"\u201c{query}\u201d" if query else "Library", "search")      # short: the header has little room, and its chip says "Library search"
+        self.close()
 
     def _store(self):
         # Opening a store sets its database up again each time, so the window keeps one instead of opening two per search.

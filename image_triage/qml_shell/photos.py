@@ -24,6 +24,7 @@ from .inspector_sample import sample_ai, sample_measured
 PathRole, NameRole, ExtRole, RawRole, DecisionRole, RatingRole, AiRole, TitleRole, SelectedRole, FolderRole = (Qt.ItemDataRole.UserRole + n for n in range(1, 11))
 # What the grid adds to a cell: what kind it is, the photo row it shows, and a section header's words.
 KindRole, PhotoRowRole, SectionDetailRole, SectionCountRole, SectionStartRole = (Qt.ItemDataRole.UserRole + n for n in range(11, 16))
+FolderNameRole = Qt.ItemDataRole.UserRole + 16      # the name of the folder a photo is in (shown on its card when photos of several folders are together)
 CELL_PHOTO, CELL_FOLDER, CELL_HEADER, CELL_FILLER = range(4)
 
 _DECISIONS = ("", "keep", "win", "rej", "rev", "", "keep", "")  # weights by position
@@ -126,6 +127,7 @@ class PhotoModel(QAbstractListModel):
     _loaded = Signal(object, str, int)      # `object`, not `list`: a list is copied row by row on its way through the signal
     _captureTimesRead = Signal(int, object)
     _folderProbed = Signal(str, bool)
+    virtualChanged = Signal()               # photos of several folders are shown together (`loadPaths`), or no longer
 
     # How often a folder that could not be read is asked whether it is back (on a worker, one question at a time).
     RECHECK_MS = 5000
@@ -160,6 +162,10 @@ class PhotoModel(QAbstractListModel):
         self._search_matches: set[str] = set()
         self._search_status = ""
         self._folder = ""
+        # Photos of several folders shown together (library search results, every photo of a collection): {"title", "kind", "paths",
+        # "return" (the folder that was open), "folders", "unread"}. None while a folder is open.
+        self._virtual: dict | None = None
+        self._pending_virtual: dict[int, dict] = {}
         self._loading = False
         self._load_token = 0                # the newest loadFolder request: an older scan that finishes later is dropped
         self._load_cancel: threading.Event | None = None    # set when a newer loadFolder replaces the read that holds it
@@ -184,6 +190,7 @@ class PhotoModel(QAbstractListModel):
         return {
             PathRole: QByteArray(b"path"), NameRole: QByteArray(b"name"), ExtRole: QByteArray(b"ext"), RawRole: QByteArray(b"isRaw"),
             DecisionRole: QByteArray(b"decision"), RatingRole: QByteArray(b"rating"), AiRole: QByteArray(b"ai"), TitleRole: QByteArray(b"title"), SelectedRole: QByteArray(b"selected"),
+            FolderNameRole: QByteArray(b"folderName"),
         }
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -211,6 +218,8 @@ class PhotoModel(QAbstractListModel):
             return row["ai"]
         if role == SelectedRole:
             return _path_key(row["path"]) in self._selected
+        if role == FolderNameRole:
+            return os.path.basename(os.path.dirname(row["path"]))
         return None
 
     # -- loading -----------------------------------------------------------------------------------------------------------
@@ -254,31 +263,113 @@ class PhotoModel(QAbstractListModel):
                 primer.join()
             if dropped():
                 return
-            saved: dict = {}
-            if self._annotation_loader is not None and records:
-                try:
-                    saved = self._annotation_loader(records)
-                except Exception:                      # an unreadable store: the folder opens with nothing decided
-                    saved = {}
-            if dropped():
-                return
-            rows = []
-            for record in records:
-                suffix = Path(record.path).suffix.lower()
-                # What the decision store holds for the photo (nothing is rated or decided until the user does it), and no AI score (-1)
-                # until the folder's saved AI report is read
-                mine = saved.get(record.path) or {}
-                decision, rating, ai = mine.get("decision", ""), mine.get("rating", 0), -1
-                rows.append({
-                    "path": record.path, "name": record.name, "ext": suffix.lstrip(".").upper() or "FILE",
-                    "raw": suffix in RAW_SUFFIXES, "decision": decision, "rating": rating, "ai": ai,
-                    "companions": tuple(record.companion_paths), "record": record, "annotation": mine.get("annotation"),
-                    "key": member_key(record.path),
-                })
+            rows = self._rows_of(records)
             if not dropped():
                 self._loaded.emit(rows, folder, token)
 
         threading.Thread(target=work, name="qml-scan", daemon=True).start()
+
+    def _rows_of(self, records: list) -> list[dict]:
+        """The grid's rows for scanner records, with what the decision store holds for them. Runs on a scan thread."""
+        saved: dict = {}
+        if self._annotation_loader is not None and records:
+            try:
+                saved = self._annotation_loader(records)
+            except Exception:                      # an unreadable store: the photos open with nothing decided
+                saved = {}
+        rows = []
+        for record in records:
+            suffix = Path(record.path).suffix.lower()
+            # What the decision store holds for the photo (nothing is rated or decided until the user does it), and no AI score (-1)
+            # until the folder's saved AI report is read
+            mine = saved.get(record.path) or {}
+            decision, rating, ai = mine.get("decision", ""), mine.get("rating", 0), -1
+            rows.append({
+                "path": record.path, "name": record.name, "ext": suffix.lstrip(".").upper() or "FILE",
+                "raw": suffix in RAW_SUFFIXES, "decision": decision, "rating": rating, "ai": ai,
+                "companions": tuple(record.companion_paths), "record": record, "annotation": mine.get("annotation"),
+                "key": member_key(record.path),
+            })
+        return rows
+
+    # -- photos of several folders together --------------------------------------------------------------------------------------
+    @Slot("QVariantList", str, str)
+    def loadPaths(self, paths, title: str, kind: str = "search") -> None:
+        """Show the photos at `paths`, wherever they are, together in the grid: library search results ("search"), every photo of a
+        collection ("collection"), a person's photos ("person").
+
+        Each folder that holds one of them is read by the scanner on a worker, so a row is the same bundle (RAW, JPEG, sidecars) with the
+        same saved decision as when its folder is open, and decisions, ratings, file actions and the viewer work on it by its path. There
+        is no open folder meanwhile: `folder_dir()` and `folderPath` are empty, which is how everything that works on one folder (the AI
+        analysis, the folder's search index, its watcher, folder cards) is told there is none. `virtualReturn` is the folder to go back to."""
+        paths = [str(p) for p in paths if p]
+        self._load_token += 1
+        token = self._load_token
+        if self._load_cancel is not None:
+            self._load_cancel.set()
+        cancel = self._load_cancel = threading.Event()
+        came_from = self._virtual["return"] if self._virtual is not None else self._folder
+        info = {"title": str(title), "kind": str(kind), "paths": paths, "return": came_from, "folders": 0, "unread": 0}
+        self._pending_virtual[token] = info
+        wanted: dict[str, set[str]] = {}
+        for path in paths:
+            wanted.setdefault(os.path.dirname(path), set()).add(_path_key(path))
+        # Photos that are not files (the sample page's, a test's) cannot be scanned: they are taken from the rows that are shown now.
+        every = set().union(*wanted.values()) if wanted else set()
+        carried = [dict(r) for r in self._all if r.get("record") is None and _path_key(r["path"]) in every]
+        if not self._loading:
+            self._loading = True
+            self.loadingChanged.emit()
+
+        def work() -> None:
+            records = []
+            for folder, keys in wanted.items():
+                if cancel.is_set():
+                    self._pending_virtual.pop(token, None)
+                    return
+                try:
+                    found = [r for r in scan_folder(folder) if not r.is_folder]
+                except Exception:
+                    info["unread"] += 1                 # that folder is away: its photos are left out, and the header says so
+                    continue
+                mine = [r for r in found if _path_key(r.path) in keys or any(_path_key(c) in keys for c in r.companion_paths)]
+                if mine:
+                    info["folders"] += 1
+                    records.extend(mine)
+            rows = self._rows_of(records)
+            have = {_path_key(r["path"]) for r in rows}
+            rows.extend(r for r in carried if _path_key(r["path"]) not in have)
+            if carried:
+                info["folders"] = len({os.path.dirname(r["path"]) for r in rows})
+                info["unread"] = 0
+            if cancel.is_set():
+                self._pending_virtual.pop(token, None)
+                return
+            self._loaded.emit(rows, f"virtual:{kind}:{title}", token)
+
+        threading.Thread(target=work, name="qml-scan-paths", daemon=True).start()
+
+    def virtual_return(self) -> str:
+        """The folder that was open before photos of several folders were shown ("" when none was, or a folder is open now)."""
+        return self._virtual["return"] if self._virtual is not None else ""
+
+    def _virtual_detail(self) -> str:
+        v = self._virtual
+        if v is None:
+            return ""
+        count, folders = len(self._all), v["folders"]
+        text = f"{count:,} photo{'s' if count != 1 else ''} from {folders:,} folder{'s' if folders != 1 else ''}"
+        if v["unread"]:
+            text += f" \u00b7 {v['unread']:,} folder{'s' if v['unread'] != 1 else ''} could not be read"
+        return text
+
+    isVirtual = Property(bool, lambda self: self._virtual is not None, notify=virtualChanged)
+    virtualTitle = Property(str, lambda self: self._virtual["title"] if self._virtual else "", notify=virtualChanged)
+    virtualKind = Property(str, lambda self: self._virtual["kind"] if self._virtual else "", notify=virtualChanged)
+    virtualChip = Property(str, lambda self: {"search": "Library search", "collection": "Collection \u00b7 every folder", "person": "Person \u00b7 every folder"}.get(
+        self._virtual["kind"], "Several folders") if self._virtual else "", notify=virtualChanged)
+    virtualDetail = Property(str, lambda self: self._virtual_detail(), notify=virtualChanged)
+    virtualReturn = Property(str, lambda self: self.virtual_return(), notify=virtualChanged)
 
     # -- a folder that could not be read ------------------------------------------------------------------------------------------
     def _watch_unavailable(self) -> None:
@@ -324,7 +415,10 @@ class PhotoModel(QAbstractListModel):
         if token != -1 and token != self._load_token:
             self._found_folders.pop(token, None)
             self._scan_errors.pop(token, None)
+            self._pending_virtual.pop(token, None)
             return                          # superseded by a newer loadFolder: that one reports when it is done
+        was_virtual = self._virtual is not None
+        self._virtual = self._pending_virtual.pop(token, None) if token != -1 else None
         error = self._scan_errors.pop(token, "") if token != -1 else ""
         if error != self._load_error:
             self._load_error = error
@@ -354,6 +448,8 @@ class PhotoModel(QAbstractListModel):
         self._read_for_query()
         self._rebuild(follow=same_folder)
         self.subfoldersChanged.emit()
+        if was_virtual or self._virtual is not None:
+            self.virtualChanged.emit()
         self.folderChanged.emit()
         # Folder bindings reset the grid cursor. Only announce completion after
         # they have run, so LibraryNav's requested/restored photo wins that reset.
@@ -894,7 +990,9 @@ class PhotoModel(QAbstractListModel):
     @Slot()
     def reload(self) -> None:
         """Read the open folder again (after files came back or went away)."""
-        if self._folder and not self._mock:
+        if self._virtual is not None:
+            self.loadPaths(self._virtual["paths"], self._virtual["title"], self._virtual["kind"])      # the same photos, wherever they are now
+        elif self._folder and not self._mock:
             self.loadFolder(self._folder)
 
     def _bump(self) -> None:
@@ -927,7 +1025,7 @@ class PhotoModel(QAbstractListModel):
 
     def folder_dir(self) -> str:
         """The folder on the disk the shown photos were read from ("" for the mockup's sample page)."""
-        return "" if self._mock else self._folder
+        return "" if self._mock or self._virtual is not None else self._folder
 
     def rescore(self, score_of) -> None:
         """Give every photo its AI score: `score_of(row)` is 0..100, or None for a photo the AI has not scored (it gets -1)."""
@@ -974,9 +1072,10 @@ class PhotoModel(QAbstractListModel):
     undecidedCount = Property(int, lambda self: self._count(""), notify=countsChanged)      # nothing decided yet: what is left to go through
     loading = Property(bool, lambda self: self._loading, notify=loadingChanged)
     subfolders = Property(list, lambda self: [] if self._scope_kind else list(self._subfolders), notify=subfoldersChanged)   # photo filters must not remove navigation into child folders
-    folderName = Property(str, lambda self: os.path.basename(self._folder.rstrip("/\\")) or self._folder, notify=folderChanged)
-    leafName = Property(str, lambda self: "Kutaisi" if self._mock else os.path.basename(self._folder.rstrip("/\\")), notify=folderChanged)
-    folderPath = Property(str, lambda self: self._mock_path or self._folder, notify=folderChanged)
+    # Photos of several folders shown together are not a folder: its name and path are empty then (`virtualTitle` names what is shown).
+    folderName = Property(str, lambda self: "" if self._virtual is not None else os.path.basename(self._folder.rstrip("/\\")) or self._folder, notify=folderChanged)
+    leafName = Property(str, lambda self: "Kutaisi" if self._mock else "" if self._virtual is not None else os.path.basename(self._folder.rstrip("/\\")), notify=folderChanged)
+    folderPath = Property(str, lambda self: "" if self._virtual is not None else self._mock_path or self._folder, notify=folderChanged)
 
 
 class GridModel(QAbstractListModel):
@@ -1072,7 +1171,7 @@ class GridModel(QAbstractListModel):
         return self._cells[row - self._n] if row - self._n < len(self._cells) else FILLER
 
     _BLANK = {PathRole: "", NameRole: "", TitleRole: "", ExtRole: "", RawRole: False, DecisionRole: "", RatingRole: 0, AiRole: -1, SelectedRole: False,
-              FolderRole: False, PhotoRowRole: -1, SectionDetailRole: "", SectionCountRole: 0, SectionStartRole: -1}
+              FolderRole: False, FolderNameRole: "", PhotoRowRole: -1, SectionDetailRole: "", SectionCountRole: 0, SectionStartRole: -1}
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
@@ -1087,7 +1186,7 @@ class GridModel(QAbstractListModel):
                     return CELL_PHOTO
                 if role == PhotoRowRole:
                     return cell
-                if role >= SectionDetailRole:
+                if role in (SectionDetailRole, SectionCountRole, SectionStartRole):
                     return self._BLANK.get(role)
                 return self._photos.data(self._photos.index(cell), role)
             if cell == FILLER:

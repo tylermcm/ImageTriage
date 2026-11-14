@@ -411,6 +411,7 @@ Item {
             required property int ai
             required property bool selected
             required property bool isFolder
+            required property string folderName
             required property int cellKind              // 0 a photo, 1 a folder card, 2 a section's header, 3 an empty cell that fills out a section's last row
             required property int photoRow
             required property string sectionDetail
@@ -534,6 +535,16 @@ Item {
                     Row { x: 6; anchors.verticalCenter: parent.verticalCenter; spacing: 5
                         Rectangle { width: 7; height: 7; radius: 3.5; color: cell.flag.color || "transparent"; anchors.verticalCenter: parent.verticalCenter }
                         Text { id: fgl; text: cell.flag.label || ""; color: "white"; font.pointSize: UiState.pt(11); font.weight: Font.Medium; anchors.verticalCenter: parent.verticalCenter } }
+                }
+                Rectangle {   // photos of several folders together: which folder this one is in
+                    objectName: "gridFolderChip"
+                    visible: photos.isVirtual && cell.isPhoto && cell.folderName !== ""
+                    x: 8; y: cell.flag.label !== undefined ? 34 : 8; height: 20; radius: 10; color: Qt.rgba(10 / 255, 12 / 255, 16 / 255, 0.72)
+                    width: Math.min(parent.width - 46, chipRow.implicitWidth + 16)
+                    Row { id: chipRow; x: 7; anchors.verticalCenter: parent.verticalCenter; spacing: 5
+                        Icon { anchors.verticalCenter: parent.verticalCenter; name: "library"; size: 12; strokeWidth: 1.8; color: "white" }
+                        Text { anchors.verticalCenter: parent.verticalCenter; width: Math.min(implicitWidth, cell.width - 46 - 34); elide: Text.ElideMiddle
+                               text: cell.folderName; color: "white"; font.pointSize: UiState.pt(11); font.weight: Font.Medium } }
                 }
                 Item {   // the collection that collects new winners: a small dark disc with its mark, on photos that are in it
                     id: collMark
@@ -728,11 +739,13 @@ Item {
         Icon { anchors.horizontalCenter: parent.horizontalCenter; name: photos.folderPath === "" ? "library" : (photos.total > 0 ? "funnel" : "view"); size: 52; strokeWidth: 1.2; color: theme.fg3 }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg2; font.pointSize: UiState.pt(14); font.weight: Font.Medium
-            text: photos.folderPath === "" ? "Choose a folder to start triaging images" : photos.loadError !== "" ? "This folder could not be read" : (photos.total > 0 ? "No photos match the filters" : "No photos in this folder")
+            text: photos.isVirtual ? (photos.total > 0 ? "No photos match the filters" : "None of these photos could be found")
+                : photos.folderPath === "" ? "Choose a folder to start triaging images" : photos.loadError !== "" ? "This folder could not be read" : (photos.total > 0 ? "No photos match the filters" : "No photos in this folder")
         }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg3; font.pointSize: UiState.pt(11.5)
-            text: photos.folderPath === "" ? "Pick a drive or folder in the Library on the left." : photos.loadError !== "" ? photos.loadError + " Press F5 to try again." : (photos.total > 0 ? "Clear the filters from the bar below to see them." : "It has no supported images and no folders. Pick another from the Library.")
+            text: photos.isVirtual ? (photos.total > 0 ? "Clear the filters from the bar below to see them." : "They may have been moved or deleted, or their drive is not connected. Back to folder returns to where you were.")
+                : photos.folderPath === "" ? "Pick a drive or folder in the Library on the left." : photos.loadError !== "" ? photos.loadError + " Press F5 to try again." : (photos.total > 0 ? "Clear the filters from the bar below to see them." : "It has no supported images and no folders. Pick another from the Library.")
         }
     }
     Item {   // the open folder cannot be read (an offline share, an unplugged drive, no permission): what happened, where, and what can be done

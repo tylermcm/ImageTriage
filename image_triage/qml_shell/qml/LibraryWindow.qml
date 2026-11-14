@@ -153,6 +153,7 @@ Backdrop {
                 Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
                 Text { x: 26; anchors.verticalCenter: parent.verticalCenter; text: root.l.foot; color: theme.fg3; font.pointSize: UiState.pt(12.5) }
                 Row { anchors.right: parent.right; anchors.rightMargin: 20; anchors.verticalCenter: parent.verticalCenter; spacing: 8
+                    SButton { objectName: "libShowInGrid"; visible: !root.l.empty && root.l.cards.length > 0; text: "Show " + root.l.cards.length + " in grid"; variant: "primary"; h: 34; hpad: 16; radius: 12; onClicked: reference.showLibInGrid() }
                     SButton { text: "Close"; h: 34; hpad: 16; radius: 12; onClicked: reference.close() } }
             }
         }

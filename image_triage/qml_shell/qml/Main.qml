@@ -129,7 +129,7 @@ Window {
 
                 Rectangle {
                     id: head
-                    readonly property string kind: { void photos.scopeKind; return photos.scopeKind }
+                    readonly property string kind: { void photos.scopeKind; return photos.scopeKind === "" && photos.isVirtual ? "virtual" : photos.scopeKind }      // "virtual": photos of several folders together
                     readonly property var col: { void collections.revision; void photos.scopeId; return kind === "collection" ? collections.get(photos.scopeId) : ({}) }
                     readonly property var person: { void people.revision; void photos.scopeId; return kind === "person" ? people.card(photos.scopeId) : ({}) }
                     width: parent.width; height: 44; color: theme.base; z: 5      // above the grid, so the tips under its buttons are not hidden by it
@@ -177,20 +177,21 @@ Window {
                         CollMark { visible: head.kind === "collection"; anchors.verticalCenter: parent.verticalCenter; color: head.col.color || ""; iconPath: head.col.iconPath || ""; ring: 16; iconSize: 18 }
                         Icon { visible: head.kind === "winners"; anchors.verticalCenter: parent.verticalCenter; name: "heart"; size: 18; strokeWidth: 1.8; color: theme.fg2 }
                         Icon { visible: head.kind === "best"; anchors.verticalCenter: parent.verticalCenter; name: "star"; size: 18; strokeWidth: 1.8; color: theme.fg2 }
+                        Icon { visible: head.kind === "virtual"; anchors.verticalCenter: parent.verticalCenter; name: photos.virtualKind === "collection" ? "collections" : photos.virtualKind === "person" ? "people" : "search"; size: 18; strokeWidth: 1.8; color: theme.fg2 }
                         FaceDisc { visible: head.kind === "person"; anchors.verticalCenter: parent.verticalCenter; width: 22; height: 22; hue: head.person.hue || 0; initial: head.person.init || "?"; fontSize: 10.5 }
                         Text { anchors.verticalCenter: parent.verticalCenter; color: theme.fg; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: -0.14
                                width: Math.min(implicitWidth, Math.max(60, main.width - 560))
                                elide: Text.ElideRight
-                               text: head.kind === "collection" ? (head.col.name || "") : head.kind === "winners" ? "Winners" : head.kind === "best" ? "Best of set" : people.labelOf(photos.scopeId) }
-                        Chip { anchors.verticalCenter: parent.verticalCenter; label: head.kind === "collection" ? "Collection" : head.kind === "winners" ? "Every shoot" : head.kind === "best" ? "Shortlist" : "Person" }
+                               text: head.kind === "virtual" ? photos.virtualTitle : head.kind === "collection" ? (head.col.name || "") : head.kind === "winners" ? "Winners" : head.kind === "best" ? "Best of set" : people.labelOf(photos.scopeId) }
+                        Chip { anchors.verticalCenter: parent.verticalCenter; label: head.kind === "virtual" ? photos.virtualChip : head.kind === "collection" ? "Collection" : head.kind === "winners" ? "Every shoot" : head.kind === "best" ? "Shortlist" : "Person" }
                         Text { visible: !win.compact; anchors.verticalCenter: parent.verticalCenter; color: theme.fg3; font.pixelSize: 13
                                width: Math.min(implicitWidth, Math.max(0, main.width - (head.kind === "collection" ? 380 : 270) - x))
                                elide: Text.ElideRight
-                               text: head.kind === "collection" ? "References only" : head.kind === "winners" ? "Grouped by folder" : head.kind === "best" ? bestOf.summary : "Photos with this face in this folder" }
+                               text: head.kind === "virtual" ? photos.virtualDetail : head.kind === "collection" ? "References only" : head.kind === "winners" ? "Grouped by folder" : head.kind === "best" ? bestOf.summary : "Photos with this face in this folder" }
                     }
                     Row {
                         anchors.verticalCenter: parent.verticalCenter; anchors.right: parent.right; anchors.rightMargin: 14; spacing: 10
-                        HBtn { visible: head.kind !== ""; text: "Back to folder"; onClicked: collections.closeScope() }
+                        HBtn { objectName: "backToFolder"; visible: head.kind !== ""; text: "Back to folder"; onClicked: { if (head.kind === "virtual") libraryNav.leaveVirtual(); else collections.closeScope() } }
                         HBtn { visible: head.kind === "collection"; text: "Remove selection"; onClicked: collections.removeSelection(photos.scopeId, grid.row) }
                         Rectangle {
                             height: 24; width: shown.implicitWidth + 31; radius: 12; color: theme.s2; border.color: theme.lineSoft
@@ -466,6 +467,8 @@ Window {
     // Rename: one photo is renamed on its card in the grid; several open the batch rename window (and so does the viewer, which covers the grid).
     function renameSelection(rows) { if (viewer.shown || rows.length !== 1 || !grid.beginRename(rows[0])) UiState.batchMode = "rename" }
     function runCommand(id) {
+        // Photos of several folders are shown together: what works on one folder has no folder to work on.
+        if (photos.isVirtual && (id === "ai.analyze" || id === "ai.run_pipeline" || id === "file.reveal_folder")) { toasts.show("info", "Open a folder first", "Photos from several folders are shown; this works on one folder."); return }
         if (id === "file.workflow_settings") UiState.settingsOpen = true
         else if (id.indexOf("appearance.") === 0) { settings.set("theme", id.slice(11)); settings.save() }
         else if (id.indexOf("sort.") === 0) { UiState.sort = id.slice(5); photos.setSort(UiState.sort) }

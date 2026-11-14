@@ -476,6 +476,8 @@ class LibraryNavModel(QObject):
     def _watched_change(self) -> None:
         if not self._open or not self._watching():
             return
+        if self._photos.isVirtual:
+            return                                              # the folder behind a cross-folder view changed: it is read when the person goes back to it
         if self._photos.loading:
             self._watch_timer.start(450)                        # a read is still going: look again once it is done
         elif path_policy.confirmed_missing(self._open):
@@ -492,8 +494,28 @@ class LibraryNavModel(QObject):
             self.refreshFolder()
 
     @Slot()
+    def leaveVirtual(self) -> None:
+        """Back from photos of several folders shown together (search results, a whole collection) to the folder that was open."""
+        if not self._photos.isVirtual:
+            return
+        target = self._photos.virtual_return() or self._open
+        if target:
+            self._stepping = True                               # going back is not a new step in the Back and Forward history
+            try:
+                self.openFolder(target)
+            finally:
+                self._stepping = False
+            if not self._photos.loading:                        # nothing was started (the folder is provably gone): show nothing rather than stay
+                self._photos.setRows([], "")
+        else:
+            self._photos.setRows([], "")
+
+    @Slot()
     def refreshFolder(self) -> None:
         """Read the open folder again (F5, and a change on disk), keeping the grid on the photo the person is on."""
+        if self._photos.isVirtual:
+            self._photos.reload()                               # photos of several folders are shown: read those again, not the folder behind them
+            return
         if not self._open or self._memory:
             return
         if self._last_photo and self._in_open_folder(self._last_photo):
@@ -565,7 +587,7 @@ class LibraryNavModel(QObject):
     @Slot(str)
     def savePosition(self, photo: str) -> None:
         """Remember `photo` as where the person is in the open folder. Called as they move (after a pause) and when the window closes."""
-        if not photo:
+        if not photo or self._photos.isVirtual:                 # a photo among several folders' is not a place in the open folder
             return
         self._last_photo = photo
         if self._memory or self._settings is None:
