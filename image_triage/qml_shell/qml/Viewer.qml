@@ -77,21 +77,31 @@ FocusScope {
     signal moveRequested(int row)
     function refocus() { if (shown) keyboardTarget.forceActiveFocus() }
     function close() { popout.close() }
-    // Stepping keeps the zoom and the part of the photo being looked at, so focus can be compared across a burst. The RAW editor's detail view
-    // still starts each photo fitted. The next photo's size may arrive later (a RAW is read on a worker), so the place is put back when it is known.
+    // Stepping keeps the zoom and the part of the photo being looked at (as a fraction of the photo, so a photo of another size shows the
+    // matching place), so focus can be compared across a burst. The place is taken when the host changes row, not in go(): a decision that
+    // moves on, a photo that is deleted and the filmstrip all change row without go(). The RAW editor's detail view still starts each photo
+    // fitted. The next photo's size may arrive later (a RAW is read on a worker), so the place is put back when it is known.
     property var keepCentre: null
     function holdCentre() {
-        keepCentre = zoomed ? Qt.point((pan.contentX + pan.width / 2 - pan.imageLeft) / pan.drawWidth, (pan.contentY + pan.height / 2 - pan.imageTop) / pan.drawHeight) : null
+        if (!zoomed) { keepCentre = null; return }
+        if (keepCentre || popout.pixelWidth <= 0) return        // a place still waiting for its photo outlives the photos stepped past meanwhile
+        keepCentre = Qt.point((pan.contentX + pan.width / 2 - pan.imageLeft) / pan.drawWidth, (pan.contentY + pan.height / 2 - pan.imageTop) / pan.drawHeight)
     }
     function restoreCentre() {
         if (!keepCentre || !zoomed) { keepCentre = null; return }
         if (popout.pixelWidth <= 0) return
+        pan.cancelFlick()
         pan.contentX = Math.max(0, Math.min(pan.contentWidth - pan.width, pan.imageLeft + keepCentre.x * pan.drawWidth - pan.width / 2))
         pan.contentY = Math.max(0, Math.min(pan.contentHeight - pan.height, pan.imageTop + keepCentre.y * pan.drawHeight - pan.height / 2))
         keepCentre = null
     }
-    Connections { target: popout; function onImageChanged() { if (v.keepCentre) Qt.callLater(v.restoreCentre) } }
-    function go(r) { rawPanel.whiteBalancePicking = false; if (rawEditing) zoomed = false; else holdCentre(); popout.go(r); restoreCentre(); refocus() }
+    Connections {
+        target: popout
+        // rowChanged comes before imageChanged, so the view still has the photo being left
+        function onRowChanged() { if (!v.rawEditing) { v.holdCentre(); Qt.callLater(v.restoreCentre) } }
+        function onImageChanged() { if (v.keepCentre) Qt.callLater(v.restoreCentre) }
+    }
+    function go(r) { rawPanel.whiteBalancePicking = false; if (rawEditing) zoomed = false; popout.go(r); refocus() }
     function step(n) { go(popout.row + n) }
     function decide(d) { popout.decide(row, d) }
     function openEditor() {
