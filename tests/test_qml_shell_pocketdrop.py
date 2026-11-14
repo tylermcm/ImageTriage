@@ -205,8 +205,8 @@ def native_lib(tmp_path_factory):
         pytest.skip("needs g++, libcurl and gdk-pixbuf headers to build the native module")
     out = tmp_path_factory.mktemp("pd") / "libpocketdrop.so"
     base = ROOT / "native" / "pocketdrop"
-    sources = [f"src/core/{n}.cpp" for n in ("qr", "deflate", "bundle", "http", "tunnel", "hotspot_stub")] + [
-        "src/ui/ui.cpp", "src/ui/icons.cpp", "src/linux/platform_linux.cpp", "capi/pocketdrop_capi.cpp"]
+    sources = [f"src/core/{n}.cpp" for n in ("qr", "deflate", "bundle", "http", "tunnel", "nearby", "pc_transfer", "hotspot_stub")] + [
+        "src/ui/ui.cpp", "src/ui/icons.cpp", "src/linux/platform_linux.cpp", "src/linux/hotspot_linux.cpp", "capi/pocketdrop_capi.cpp"]
     flags = subprocess.run([pkg, "--cflags", "--libs", "libcurl", "gdk-pixbuf-2.0"], capture_output=True, text=True, check=True).stdout.split()
     result = subprocess.run([gxx, "-std=c++20", "-O1", "-fPIC", "-shared", "-fvisibility=hidden", "-pthread", *sources, "-o", str(out), *flags],
                             cwd=base, capture_output=True, text=True)
@@ -414,3 +414,48 @@ def test_engine_selected_address_rebinds(qapp, engine_model):
     with pytest.raises(OSError):
         with socket.create_connection((old.hostname, old.port), timeout=1):
             pass
+
+
+# ---- phone uploads into the open folder -------------------------------------------------------------------------------------
+
+def test_receive_into_open_folder_switches_the_inbox_and_puts_it_back(qapp, photos, engine_model, tmp_path):
+    original = engine_model.st["menu"]["inbox"]
+    assert not engine_model.receiveIntoFolder
+    engine_model.setReceiveIntoFolder(True)
+    pump(qapp, 0.2)
+    assert os.path.normcase(engine_model.st["menu"]["inbox"]) == os.path.normcase(os.path.normpath(str(tmp_path)))
+    other = tmp_path / "second"
+    other.mkdir()
+    photos.setRows([], str(other))
+    photos.folderChanged.emit()
+    pump(qapp, 0.2)
+    assert os.path.normcase(engine_model.st["menu"]["inbox"]) == os.path.normcase(os.path.normpath(str(other)))   # follows the open folder
+    engine_model.setReceiveIntoFolder(False)
+    pump(qapp, 0.2)
+    assert engine_model.st["menu"]["inbox"] == original                                                              # the person's own folder returns
+
+
+def test_a_file_that_lands_in_the_open_folder_refreshes_the_grid(qapp, photos, engine_model, tmp_path):
+    reloads = []
+    engine_model._reload_timer.timeout.disconnect()
+    engine_model._reload_timer.timeout.connect(lambda: reloads.append(1))
+    engine_model._seen_received.clear()
+    elsewhere = tmp_path.parent / "elsewhere" / "x.jpg"
+    engine_model._notice_received([{"tone": "recv", "path": str(elsewhere)}])
+    pump(qapp, 0.7)
+    assert not reloads                                                      # a file saved somewhere else changes nothing
+    engine_model._notice_received([{"tone": "recv", "path": str(tmp_path / "from-phone.jpg")}])
+    pump(qapp, 0.7)
+    assert reloads == [1]
+    engine_model._notice_received([{"tone": "recv", "path": str(tmp_path / "from-phone.jpg")}])
+    pump(qapp, 0.7)
+    assert reloads == [1]                                                   # the same file is not announced twice
+
+
+def test_menu_state_carries_history_phones_and_notes(qapp, photos, engine_model):
+    menu = engine_model.st["menu"]
+    assert menu["history"] == [] and menu["phones"] == 0 and menu["noteClip"] is False
+    engine_model.command("menu", "note_clip")
+    assert engine_model.st["menu"]["noteClip"] is True
+    engine_model.command("menu", "note_clip")
+    assert engine_model.st["menu"]["noteClip"] is False

@@ -16,7 +16,7 @@ struct TransferInfo {
     std::string name, device;
     uint64_t total = 0, sent = 0;
     bool done = false, ok = false, viaTunnel = false;
-    bool incoming = false;       // phone -> computer
+    bool incoming = false, pc = false;
     uint64_t start = 0, end = 0; // plat::tick_ms()
 };
 
@@ -38,14 +38,24 @@ struct LinkPolicy {
     uint64_t activeWindowMs = 60 * 1000;     // a session counts as connected this long after its last request
 };
 
+// A phone the person chose to remember: it skips the receive code until forgotten or unused for
+// DEVICE_TTL_S. The secret never travels after enrolment; the phone proves it holds it by
+// answering a fresh challenge with HMAC-SHA-256.
+struct TrustedDevice {
+    std::string id, secret, name;
+    int64_t created = 0, lastUsed = 0; // unix seconds
+};
+constexpr int64_t DEVICE_TTL_S = 30 * 24 * 3600;
+
 struct Req;
 
 class HttpServer {
 public:
-    enum class Event { Visit, TransferStart, TransferEnd, Received };
+    enum class Event { Visit, TransferStart, TransferEnd, Received, PcComplete, DevicesChanged, PcPair };
     std::function<void(Event)> onEvent; // invoked on worker threads
 
     ~HttpServer() { stop(); }
+    // bindAddress empty listens on loopback only; a LAN address must be chosen explicitly.
     bool start(int preferredPort, bool loopbackOnly = false, const std::string& bindAddress = {});
     void stop();
     int port() const { return port_; }
@@ -64,6 +74,20 @@ public:
 
     void setInbox(const std::string& dir); // where received files are saved
     void setReceiveCode(const std::string& code); // empty disables phone -> computer transfers
+    void setTrustedDevices(std::vector<TrustedDevice> devices); // loaded from settings at start
+    std::vector<TrustedDevice> trustedDevices() const;          // to save when Event::DevicesChanged fires
+    void forgetDevices();
+    // A PC asked to receive the offer; the person at this PC accepts only if the codes match on both screens.
+    struct PcPairing {
+        bool pending = false;
+        std::string name, code;
+    };
+    PcPairing pcPairing() const;
+    void pcAnswer(bool accept);
+    std::string startPcShare(std::shared_ptr<Bundle> bundle);
+    void stopPcShare();
+    bool pcShareComplete() const;
+    bool pcAwaitingReceipt() const;
     std::vector<ReceivedItem> takeReceived(); // items that arrived since the last call
 
     std::vector<TransferInfo> transfers() const;
@@ -76,6 +100,7 @@ public:
     struct Transfer;
     struct Session;
     struct Upload;
+    struct PcOffer;
 
 private:
     void acceptLoop();
@@ -83,8 +108,10 @@ private:
     bool handle(plat::Sock s, const Req& r, std::string& buf, bool viaTunnel);
     bool handleSession(plat::Sock s, const Req& r, std::string& buf, bool viaTunnel, Session& session,
                        const std::string& rest, uint64_t bodyLen);
+    bool handleDeviceAuth(plat::Sock s, Session& session, const std::string& id, const std::string& proof, bool keep);
+    bool handlePc(plat::Sock s, const Req& r, std::string& buf, bool viaTunnel, uint64_t bodyLen);
     std::shared_ptr<Transfer> begin(const std::string& name, const std::string& device, uint64_t total, bool tunnel,
-                                    bool incoming);
+                                    bool incoming, bool pc = false);
     void end(const std::shared_ptr<Transfer>& t, bool ok);
     std::shared_ptr<Upload> findUpload(const std::string& id, const std::string& sid);
     void abortUpload(const std::shared_ptr<Upload>& u);        // caller holds u->io
@@ -107,6 +134,8 @@ private:
     std::map<std::string, std::shared_ptr<Upload>> uploads_;
     std::string inbox_;
     std::string receiveCode_;
+    std::vector<TrustedDevice> trusted_;
+    std::shared_ptr<PcOffer> pcOffer_;
     std::vector<ReceivedItem> received_;
     uint64_t nextReceivedId_ = 1;
     std::set<plat::Sock> clients_;

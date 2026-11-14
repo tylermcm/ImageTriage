@@ -34,12 +34,18 @@ struct CurlCtx {
     std::string* body;
     const std::function<bool(uint64_t, uint64_t)>* progress;
     bool writeErr = false;
+    const plat::BodySink* sink = nullptr;
 };
 
 size_t curlWrite(char* p, size_t sz, size_t n, void* ud) {
     auto* c = (CurlCtx*)ud;
     size_t len = sz * n;
-    if (c->out != plat::BAD_FILE) {
+    if (c->sink && *c->sink) {
+        if (!(*c->sink)((const uint8_t*)p, len)) {
+            c->writeErr = true;
+            return 0;
+        }
+    } else if (c->out != plat::BAD_FILE) {
         if (!plat::file_write(c->out, p, len)) {
             c->writeErr = true;
             return 0;
@@ -216,6 +222,11 @@ void file_close(File f) {
     if (f != BAD_FILE) close((int)f);
 }
 bool file_rename(const std::string& from, const std::string& to) { return rename(from.c_str(), to.c_str()) == 0; }
+bool file_rename_new(const std::string& from, const std::string& to) {
+    if (link(from.c_str(), to.c_str()) != 0) return false;
+    unlink(from.c_str());
+    return true;
+}
 void file_remove(const std::string& path) { unlink(path.c_str()); }
 void make_dir(const std::string& path) {
     std::error_code ec;
@@ -366,7 +377,7 @@ std::vector<uint8_t> thumbnail_jpeg(const std::string& path, int maxSide) {
 
 // ---- HTTP client
 HttpResult http_get(const std::string& url, const std::vector<std::string>& headers, File out,
-                    const std::function<bool(uint64_t, uint64_t)>& progress, int timeoutMs) {
+                    const std::function<bool(uint64_t, uint64_t)>& progress, int timeoutMs, const BodySink& sink) {
     static std::once_flag once;
     std::call_once(once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
     HttpResult res;
@@ -376,16 +387,19 @@ HttpResult http_get(const std::string& url, const std::vector<std::string>& head
         return res;
     }
     CurlCtx ctx{out, &res.body, &progress};
+    ctx.sink = &sink;
     curl_slist* hl = nullptr;
     for (const auto& x : headers) hl = curl_slist_append(hl, x.c_str());
     curl_easy_setopt(h, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
+    bool pcRequest = std::any_of(headers.begin(), headers.end(), [](const auto& value) { return value.rfind("X-PocketDrop-Receiver:", 0) == 0; });
+    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, pcRequest ? 0L : 1L);
+    if (pcRequest) curl_easy_setopt(h, CURLOPT_NOPROXY, "*");
     curl_easy_setopt(h, CURLOPT_MAXREDIRS, 10L);
     curl_easy_setopt(h, CURLOPT_USERAGENT, "PocketDrop/1.0");
     curl_easy_setopt(h, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(h, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT_MS, (long)timeoutMs);
-    if (out == BAD_FILE) curl_easy_setopt(h, CURLOPT_TIMEOUT_MS, (long)timeoutMs);
+    if (out == BAD_FILE && !sink) curl_easy_setopt(h, CURLOPT_TIMEOUT_MS, (long)timeoutMs);
     else {
         curl_easy_setopt(h, CURLOPT_LOW_SPEED_LIMIT, 1L);
         curl_easy_setopt(h, CURLOPT_LOW_SPEED_TIME, (long)std::max(1, timeoutMs / 1000));

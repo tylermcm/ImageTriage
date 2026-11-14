@@ -1,5 +1,8 @@
 #include "http.h"
 #include "webpage.h"
+#include "crypto.h"
+#include "deflate.h"
+#include "pc_secure.h"
 #include <algorithm>
 #include <cctype>
 #include <condition_variable>
@@ -13,7 +16,7 @@ struct HttpServer::Transfer {
     uint64_t total = 0;
     std::atomic<uint64_t> sent{0};
     std::atomic<bool> done{false};
-    bool ok = false, viaTunnel = false, incoming = false;
+    bool ok = false, viaTunnel = false, incoming = false, pc = false;
     uint64_t start = 0, end = 0;
 };
 
@@ -23,6 +26,8 @@ struct HttpServer::Session {
     int inflight = 0;      // requests in progress
     bool receiveAuthorized = false;
     int authFailures = 0;
+    std::string nonce; // one outstanding remembered-phone challenge
+    uint64_t nonceAt = 0;
 };
 
 struct HttpServer::Upload {
@@ -34,6 +39,21 @@ struct HttpServer::Upload {
     std::shared_ptr<Transfer> transfer;
     std::mutex io; // one writer at a time
     bool closed = false;
+};
+
+struct HttpServer::PcOffer {
+    enum class Pair { None, Pending, Accepted, Declined };
+    Pair pair = Pair::None;
+    uint8_t sk[32] = {}, pk[32] = {}; // this offer's key pair; one pairing per offer
+    pcsecure::Keys keys;              // valid once pair != None
+    std::string peerName;
+    std::string token, receiver; // receiver is the pairing's claim once the sender accepts
+    std::shared_ptr<Bundle> bundle;
+    std::atomic<bool> active{true};
+    bool streamed = false, complete = false;
+    uint32_t crc = 0;
+    uint64_t claimAt = 0;
+    plat::Sock socket = plat::BAD_SOCK; // guarded by mu_
 };
 
 struct Req {
@@ -163,13 +183,17 @@ const char* reason(int code) {
     case 206: return "Partial Content";
     case 301: return "Moved Permanently";
     case 302: return "Found";
+    case 303: return "See Other";
     case 400: return "Bad Request";
+    case 401: return "Unauthorized";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
     case 409: return "Conflict";
     case 411: return "Length Required";
     case 413: return "Payload Too Large";
     case 416: return "Range Not Satisfiable";
+    case 422: return "Unprocessable Content";
+    case 429: return "Too Many Requests";
     case 503: return "Service Unavailable";
     case 507: return "Insufficient Storage";
     default: return "Error";
@@ -250,6 +274,37 @@ std::string queryParam(const std::string& q, const char* key) {
         pos = amp + 1;
     }
     return {};
+}
+
+// Exactly eight hex digits, as the phone page writes a CRC-32.
+bool parseHexCrc(const std::string& text, uint32_t& out) {
+    if (text.size() != 8) return false;
+    uint32_t v = 0;
+    for (char c : text) {
+        int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (d < 0) return false;
+        v = v << 4 | (uint32_t)d;
+    }
+    out = v;
+    return true;
+}
+
+// CRC-32 of a whole saved file; false when it cannot be read.
+bool fileCrc(const std::string& path, uint32_t& out) {
+    plat::File f = plat::file_open_read(path);
+    if (f == plat::BAD_FILE) return false;
+    std::vector<uint8_t> block(1 << 20);
+    uint32_t crc = 0;
+    bool ok = true;
+    for (;;) {
+        int64_t n = plat::file_read(f, block.data(), block.size());
+        if (n < 0) { ok = false; break; }
+        if (n == 0) break;
+        crc = crc32_update(crc, block.data(), (size_t)n);
+    }
+    plat::file_close(f);
+    out = crc;
+    return ok;
 }
 
 bool isDigits(const std::string& s) {
@@ -433,6 +488,7 @@ bool HttpServer::start(int preferredPort, bool loopbackOnly, const std::string& 
 }
 
 void HttpServer::stop() {
+    stopPcShare();
     if (!running_.exchange(false)) return;
     if (acceptThread_.joinable()) acceptThread_.join();
     plat::tcp_close(listen_);
@@ -460,6 +516,79 @@ void HttpServer::publish(std::shared_ptr<Bundle> bundle) {
     rev_++;
 }
 
+constexpr size_t MAX_TRUSTED = 32;
+
+void HttpServer::setTrustedDevices(std::vector<TrustedDevice> devices) {
+    int64_t now = plat::unix_time();
+    std::erase_if(devices, [&](const TrustedDevice& d) {
+        return d.id.empty() || d.secret.size() < 32 || now - d.lastUsed > DEVICE_TTL_S;
+    });
+    if (devices.size() > MAX_TRUSTED) devices.erase(devices.begin(), devices.end() - (long)MAX_TRUSTED);
+    std::lock_guard<std::mutex> l(mu_);
+    trusted_ = std::move(devices);
+}
+
+std::vector<TrustedDevice> HttpServer::trustedDevices() const {
+    std::lock_guard<std::mutex> l(mu_);
+    return trusted_;
+}
+
+void HttpServer::forgetDevices() {
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        trusted_.clear();
+    }
+    if (onEvent) onEvent(Event::DevicesChanged);
+}
+
+// A remembered phone answers a fresh challenge instead of typing the code. The first call
+// (no proof) returns the challenge; the second proves HMAC-SHA-256(secret, challenge). Wrong or
+// unknown answers count against the same attempt limit as wrong codes.
+bool HttpServer::handleDeviceAuth(plat::Sock s, Session& session, const std::string& id, const std::string& proof,
+                                  bool keep) {
+    int status = 401;
+    std::string reply = "{\"error\":\"device\"}";
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        uint64_t now = plat::tick_ms();
+        int64_t unix = plat::unix_time();
+        auto it = std::find_if(trusted_.begin(), trusted_.end(), [&](const TrustedDevice& d) { return d.id == id; });
+        bool known = it != trusted_.end() && unix - it->lastUsed <= DEVICE_TTL_S;
+        if (receiveCode_.empty()) {
+            status = 403;
+        } else if (session.authFailures >= 8) {
+            status = 429;
+            reply = "{\"error\":\"locked\"}";
+        } else if (!known) {
+            if (it != trusted_.end()) { trusted_.erase(it); changed = true; }
+            if (++session.authFailures >= 8) { status = 429; reply = "{\"error\":\"locked\"}"; }
+        } else if (proof.empty()) {
+            session.nonce = util::random_token(16);
+            session.nonceAt = now;
+            status = 200;
+            reply = "{\"nonce\":\"" + session.nonce + "\"}";
+        } else {
+            std::string nonce = std::move(session.nonce);
+            session.nonce.clear();
+            bool fresh = !nonce.empty() && now - session.nonceAt <= 60 * 1000;
+            std::string want = crypto::to_hex(crypto::hmac_sha256(it->secret, nonce));
+            if (fresh && crypto::equal_constant_time(want, util::lower(proof))) {
+                session.receiveAuthorized = true;
+                session.authFailures = 0;
+                it->lastUsed = unix;
+                changed = true;
+                status = 204;
+            } else if (++session.authFailures >= 8) {
+                status = 429;
+                reply = "{\"error\":\"locked\"}";
+            }
+        }
+    }
+    if (changed && onEvent) onEvent(Event::DevicesChanged);
+    return status == 204 ? simple(s, 204, false, keep) : json(s, status, reply, keep);
+}
+
 void HttpServer::setReceiveCode(const std::string& code) {
     std::lock_guard<std::mutex> l(mu_);
     receiveCode_ = code;
@@ -467,6 +596,39 @@ void HttpServer::setReceiveCode(const std::string& code) {
         session->receiveAuthorized = false;
         session->authFailures = 0;
     }
+}
+
+std::string HttpServer::startPcShare(std::shared_ptr<Bundle> bundle) {
+    stopPcShare();
+    if (!bundle || !bundle->ready || (bundle->files.empty() && bundle->dirs.empty()) ||
+        std::any_of(bundle->files.begin(), bundle->files.end(), [](const auto& f) { return f.missing; })) return {};
+    auto offer = std::make_shared<PcOffer>();
+    offer->bundle = std::move(bundle);
+    offer->token = util::random_token(24);
+    pcsecure::make_keypair(offer->sk, offer->pk);
+    std::lock_guard<std::mutex> l(mu_);
+    pcOffer_ = offer;
+    return offer->token;
+}
+
+void HttpServer::stopPcShare() {
+    std::lock_guard<std::mutex> l(mu_);
+    if (pcOffer_) {
+        pcOffer_->active = false;
+        if (pcOffer_->socket != plat::BAD_SOCK) plat::tcp_shutdown(pcOffer_->socket);
+    }
+    pcOffer_.reset();
+}
+
+bool HttpServer::pcShareComplete() const {
+    std::lock_guard<std::mutex> l(mu_);
+    return pcOffer_ && pcOffer_->complete;
+}
+
+bool HttpServer::pcAwaitingReceipt() const {
+    std::lock_guard<std::mutex> l(mu_);
+    return pcOffer_ && pcOffer_->active && pcOffer_->streamed && !pcOffer_->receiver.empty() &&
+        plat::tick_ms() - pcOffer_->claimAt < 30000;
 }
 
 std::string HttpServer::token() const {
@@ -589,6 +751,7 @@ std::vector<TransferInfo> HttpServer::transfers() const {
         i.ok = t->ok;
         i.viaTunnel = t->viaTunnel;
         i.incoming = t->incoming;
+        i.pc = t->pc;
         i.start = t->start;
         i.end = t->end;
         v.push_back(std::move(i));
@@ -602,13 +765,14 @@ std::string HttpServer::lastDevice() const {
 }
 
 std::shared_ptr<HttpServer::Transfer> HttpServer::begin(const std::string& name, const std::string& device,
-                                                        uint64_t total, bool tunnel, bool incoming) {
+                                                        uint64_t total, bool tunnel, bool incoming, bool pc) {
     auto t = std::make_shared<Transfer>();
     t->name = name;
     t->device = device;
     t->total = total;
     t->viaTunnel = tunnel;
     t->incoming = incoming;
+    t->pc = pc;
     t->start = plat::tick_ms();
     {
         std::lock_guard<std::mutex> l(mu_);
@@ -734,6 +898,8 @@ bool HttpServer::handle(plat::Sock s, const Req& r, std::string& buf, bool viaTu
         return simple(s, 204, head, keep, "Access-Control-Allow-Origin: *\r\n");
     }
 
+    if (r.path.rfind("/pc/", 0) == 0) return handlePc(s, r, buf, viaTunnel, bodyLen);
+
     // Phone session: /s/<id>/...
     if (r.path.rfind("/s/", 0) == 0) {
         size_t slash = r.path.find('/', 3);
@@ -788,6 +954,235 @@ bool HttpServer::handle(plat::Sock s, const Req& r, std::string& buf, bool viaTu
     return simple(s, 404, head, keep);
 }
 
+namespace {
+bool parseKey(const std::string& hex, uint8_t out[32]) {
+    if (hex.size() != 64) return false;
+    for (size_t i = 0; i < 32; i++) {
+        int hi = hex[2 * i], lo = hex[2 * i + 1];
+        auto d = [](int c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; };
+        if (d(hi) < 0 || d(lo) < 0) return false;
+        out[i] = (uint8_t)(d(hi) << 4 | d(lo));
+    }
+    return true;
+}
+
+bool tokenChars(const std::string& v) {
+    return v.size() == 32 && v.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") == std::string::npos;
+}
+} // namespace
+
+// Forgets whoever was paired (or pairing) with this offer so the next receiver starts from the key exchange.
+static void resetPairing(const std::shared_ptr<HttpServer::PcOffer>& offer) {
+    offer->pair = HttpServer::PcOffer::Pair::None;
+    offer->receiver.clear();
+    offer->keys = {};
+    offer->peerName.clear();
+    offer->streamed = false;
+}
+
+HttpServer::PcPairing HttpServer::pcPairing() const {
+    std::lock_guard<std::mutex> l(mu_);
+    PcPairing p;
+    if (pcOffer_ && pcOffer_->active && pcOffer_->pair == PcOffer::Pair::Pending) {
+        p.pending = true;
+        p.name = pcOffer_->peerName;
+        p.code = pcOffer_->keys.code;
+    }
+    return p;
+}
+
+void HttpServer::pcAnswer(bool accept) {
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        if (!pcOffer_ || !pcOffer_->active || pcOffer_->pair != PcOffer::Pair::Pending) return;
+        pcOffer_->claimAt = plat::tick_ms();
+        if (accept) {
+            pcOffer_->pair = PcOffer::Pair::Accepted;
+            pcOffer_->receiver = pcOffer_->keys.claim;
+        } else {
+            pcOffer_->pair = PcOffer::Pair::Declined;
+        }
+    }
+    if (onEvent) onEvent(Event::PcPair);
+}
+
+// PC Share v2. hello: the receiver sends its public key and gets the sender's; both derive the same key
+// and six-digit code, and the person at the sender accepts only if the codes match. After that every
+// body is sealed with that key, so a PC that merely saw the multicast offer can neither receive nor read.
+bool HttpServer::handlePc(plat::Sock s, const Req& r, std::string& buf, bool viaTunnel, uint64_t bodyLen) {
+    // The tunnel connects over loopback. PC offers are LAN-only and independent
+    // of the rotating phone token and the phone's published bundle.
+    if (viaTunnel || r.method != "GET" || bodyLen) return simple(s, 404, false, false);
+    if (!drain(s, buf, bodyLen)) return false;
+    size_t slash = r.path.find('/', 4);
+    if (slash == std::string::npos) return simple(s, 404, false, false);
+    auto token = r.path.substr(4, slash - 4), action = r.path.substr(slash + 1);
+    auto receiver = r.h("x-pocketdrop-receiver");
+    std::shared_ptr<PcOffer> offer;
+    bool pairingEnded = false;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        if (pcOffer_ && tokenMatch(pcOffer_->token, token.data(), token.size())) offer = pcOffer_;
+        if (offer && offer->active && offer->socket == plat::BAD_SOCK && offer->pair != PcOffer::Pair::None &&
+            plat::tick_ms() - offer->claimAt >= 30000) {
+            resetPairing(offer);
+            pairingEnded = true;
+        }
+    }
+    if (pairingEnded && onEvent) onEvent(Event::PcPair);
+    if (!offer) return simple(s, 404, false, false);
+    const auto& b = offer->bundle;
+    bool zipped = b->zipPreferred || b->files.size() != 1;
+    std::string name = safeName(zipped ? b->zipName : b->files[0].name);
+    uint64_t size = zipped ? b->zipBytes : b->files[0].size;
+
+    if (action == "hello") {
+        uint8_t peer[32];
+        if (!parseKey(r.h("x-pocketdrop-key"), peer)) return simple(s, 400, false, false);
+        std::string device = r.h("x-pocketdrop-name");
+        device.erase(std::remove_if(device.begin(), device.end(), [](unsigned char c) { return c < 32 || c == 127; }), device.end());
+        if (device.empty()) device = "PC";
+        if (device.size() > 96) device.resize(96);
+        int status = 200;
+        {
+            std::lock_guard<std::mutex> l(mu_);
+            if (!offer->active) status = 404;
+            else if (offer->pair != PcOffer::Pair::None) status = 409; // one receiver at a time
+            else if (!pcsecure::derive(offer->sk, peer, offer->pk, peer, offer->keys)) status = 400;
+            else {
+                offer->pair = PcOffer::Pair::Pending;
+                offer->peerName = device;
+                offer->claimAt = plat::tick_ms();
+                offer->receiver.clear();
+                offer->streamed = false;
+            }
+        }
+        if (status != 200) return simple(s, status, false, false);
+        std::string reply = crypto::to_hex(offer->pk, 32);
+        sendAll(s, header(200, "text/plain", reply.size(), false, "Cache-Control: no-store\r\n") + reply);
+        if (onEvent) onEvent(Event::PcPair);
+        return false;
+    }
+    if (!tokenChars(receiver)) return simple(s, 400, false, false);
+
+    // Everything after hello names the pairing by its claim, which only the two PCs can compute.
+    PcOffer::Pair pair;
+    bool mine;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        mine = offer->pair != PcOffer::Pair::None && crypto::equal_constant_time(offer->keys.claim, receiver);
+        pair = offer->pair;
+        if (mine) offer->claimAt = plat::tick_ms();
+    }
+    if (!mine) return simple(s, 404, false, false);
+
+    if (action == "status") {
+        const char* state = pair == PcOffer::Pair::Accepted ? "accepted" : pair == PcOffer::Pair::Declined ? "declined" : "pending";
+        std::string reply = state;
+        sendAll(s, header(200, "text/plain", reply.size(), false, "Cache-Control: no-store\r\n") + reply);
+        return false;
+    }
+    if (action == "cancel") {
+        bool streaming = false;
+        {
+            std::lock_guard<std::mutex> l(mu_);
+            if (offer->socket != plat::BAD_SOCK) {
+                plat::tcp_shutdown(offer->socket);
+                streaming = true;
+            } else {
+                resetPairing(offer);
+            }
+        }
+        if (!streaming && onEvent) onEvent(Event::PcPair);
+        return simple(s, 204, false, false);
+    }
+    if (pair != PcOffer::Pair::Accepted) return simple(s, 403, false, false);
+
+    if (action == "info") {
+        if (!offer->active) return simple(s, 404, false, false);
+        std::string sealed = pcsecure::seal_message(offer->keys, "PDPC1\n" + std::to_string(size) + "\n" + name);
+        sendAll(s, header(200, "application/octet-stream", sealed.size(), false, "Cache-Control: no-store\r\n") + sealed);
+        return false;
+    }
+    if (action == "verify" || action == "complete" || action == "keepalive") {
+        int status = 404;
+        bool completed = false;
+        {
+            std::lock_guard<std::mutex> l(mu_);
+            offer->claimAt = plat::tick_ms();
+            if (action == "keepalive" && offer->active) {
+                status = 204;
+            } else if (action != "keepalive" && (offer->active || offer->complete)) {
+                auto crc = queryParam(r.query, "crc");
+                bool valid = !crc.empty() && crc.size() <= 10 && crc.find_first_not_of("0123456789") == std::string::npos;
+                uint64_t value = valid ? std::strtoull(crc.c_str(), nullptr, 10) : UINT64_MAX;
+                status = !offer->streamed ? 409 : value != offer->crc ? 422 : 204;
+                if (status == 204 && action == "complete" && !offer->complete) {
+                    offer->complete = true;
+                    offer->active = false;
+                    completed = true;
+                }
+            }
+        }
+        if (completed && onEvent) onEvent(Event::PcComplete);
+        return simple(s, status, false, false);
+    }
+    if (action != "file") return simple(s, 404, false, false);
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        if (!offer->active) return simple(s, 404, false, false);
+        if (offer->socket != plat::BAD_SOCK || offer->streamed) return simple(s, 409, false, false);
+        offer->socket = s;
+        offer->claimAt = plat::tick_ms();
+    }
+    pcsecure::Keys keys = offer->keys;
+    std::string device = offer->peerName;
+    auto transfer = begin(name, device, size, false, false, true);
+    uint32_t crc = 0;
+    bool ok = sendAll(s, header(200, "application/octet-stream", pcsecure::sealed_size(size), false, "Cache-Control: no-store\r\n"));
+    pcsecure::Encoder encoder(keys);
+    auto emit = [&](const uint8_t* data, size_t n) { return running_ && offer->active && sendAll(s, (const char*)data, n); };
+    auto transmit = [&](const uint8_t* data, size_t n) {
+        while (n) {
+            size_t count = std::min(n, IO_CHUNK);
+            if (!encoder.push(data, count, emit)) return false;
+            transfer->sent += count;
+            crc = crc32_update(crc, data, count);
+            data += count; n -= count;
+        }
+        return true;
+    };
+    std::vector<uint8_t> io(IO_CHUNK);
+    auto file = [&](const BundleFile& f, uint64_t offset, uint64_t count) {
+        auto input = plat::file_open_read(f.path);
+        bool good = input != plat::BAD_FILE && plat::file_size(input) == (int64_t)f.size && plat::file_seek(input, offset);
+        while (good && count) {
+            auto got = plat::file_read(input, io.data(), (size_t)std::min<uint64_t>(count, io.size()));
+            if (got <= 0) { good = false; break; }
+            good = transmit(io.data(), (size_t)got);
+            count -= (uint64_t)got;
+        }
+        if (input != plat::BAD_FILE) plat::file_close(input);
+        return good;
+    };
+    if (ok && zipped) {
+        for (const auto& seg : b->plan().segs) {
+            ok = seg.mem ? transmit(seg.mem, (size_t)seg.len) : file(b->files[(size_t)seg.file], 0, seg.len);
+            if (!ok) break;
+        }
+    } else if (ok) ok = file(b->files[0], 0, size);
+    if (ok) ok = encoder.finish(emit);
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        offer->socket = plat::BAD_SOCK;
+        offer->streamed = ok;
+        offer->crc = crc;
+        offer->claimAt = plat::tick_ms();
+    }
+    end(transfer, ok);
+    return false;
+}
+
 bool HttpServer::handleSession(plat::Sock s, const Req& r, std::string& buf, bool viaTunnel, Session& session,
                                const std::string& rest, uint64_t bodyLen) {
     bool head = r.method == "HEAD";
@@ -805,10 +1200,14 @@ bool HttpServer::handleSession(plat::Sock s, const Req& r, std::string& buf, boo
         if (bodyLen > 32) return json(s, 413, "{\"error\":\"code\"}", false);
         std::string code;
         if (!readBody(s, buf, bodyLen, [&](const char* p, size_t n) { code.append(p, n); })) return false;
+        std::string deviceId = queryParam(r.query, "device"), proof = queryParam(r.query, "proof");
+        if (!deviceId.empty()) return handleDeviceAuth(s, session, deviceId, proof, keep);
         code.erase(std::remove_if(code.begin(), code.end(), [](unsigned char c) { return c == '-' || std::isspace(c); }),
                    code.end());
         std::transform(code.begin(), code.end(), code.begin(), [](unsigned char c) { return (char)std::toupper(c); });
         int status = 401;
+        std::string enrolled;
+        bool remember = queryParam(r.query, "remember") == "1";
         {
             std::lock_guard<std::mutex> l(mu_);
             if (receiveCode_.empty()) {
@@ -820,10 +1219,23 @@ bool HttpServer::handleSession(plat::Sock s, const Req& r, std::string& buf, boo
                 session.receiveAuthorized = true;
                 session.authFailures = 0;
                 status = 204;
+                if (remember) {
+                    TrustedDevice d;
+                    d.id = util::random_token(8);
+                    d.secret = util::random_token(24);
+                    d.name = device.empty() ? session.device : device;
+                    d.created = d.lastUsed = plat::unix_time();
+                    enrolled = "{\"device\":\"" + d.id + "\",\"secret\":\"" + d.secret + "\"}";
+                    if (trusted_.size() >= MAX_TRUSTED) trusted_.erase(trusted_.begin());
+                    trusted_.push_back(std::move(d));
+                    status = 200;
+                }
             } else if (++session.authFailures >= 8) {
                 status = 429;
             }
         }
+        if (status == 200 && onEvent) onEvent(Event::DevicesChanged);
+        if (status == 200) return json(s, 200, enrolled, keep);
         return status == 204 ? simple(s, 204, false, keep)
                              : json(s, status, status == 429 ? "{\"error\":\"locked\"}" : "{\"error\":\"code\"}", keep);
     }
@@ -913,6 +1325,11 @@ bool HttpServer::handleSession(plat::Sock s, const Req& r, std::string& buf, boo
             if (!drain(s, buf, bodyLen)) return false;
             return json(s, code, reply, keep);
         }
+        // The page sends a CRC-32 of each chunk (and of the whole file with the last one) so a
+        // chunk damaged in transit is sent again instead of being saved.
+        uint32_t wantChunkCrc = 0, wantFileCrc = 0, gotChunkCrc = 0;
+        bool hasChunkCrc = parseHexCrc(queryParam(r.query, "crc"), wantChunkCrc);
+        bool hasFileCrc = parseHexCrc(queryParam(r.query, "fcrc"), wantFileCrc);
         bool writeErr = debugDiskFull_ || !plat::file_seek(u->file, offset);
         uint64_t pos = offset;
         bool alive = readBody(s, buf, bodyLen, [&](const char* p, size_t n) {
@@ -921,6 +1338,7 @@ bool HttpServer::handleSession(plat::Sock s, const Req& r, std::string& buf, boo
                 writeErr = true;
                 return;
             }
+            if (hasChunkCrc) gotChunkCrc = crc32_update(gotChunkCrc, (const uint8_t*)p, n);
             pos += n;
             if (pos > u->transfer->sent) u->transfer->sent = pos;
             u->lastSeen = plat::tick_ms();
@@ -932,7 +1350,14 @@ bool HttpServer::handleSession(plat::Sock s, const Req& r, std::string& buf, boo
             abortUpload(u);
             return json(s, full ? 507 : 500, full ? "{\"error\":\"disk\"}" : "{\"error\":\"save\"}", keep);
         }
+        if (hasChunkCrc && gotChunkCrc != wantChunkCrc)
+            return json(s, 422, "{\"error\":\"checksum\",\"received\":" + std::to_string(u->received) + "}", keep);
         u->received = std::max(u->received, offset + bodyLen);
+        uint32_t savedCrc = 0;
+        if (u->received >= u->size && hasFileCrc && (!fileCrc(u->partPath, savedCrc) || savedCrc != wantFileCrc)) {
+            abortUpload(u); // nothing damaged is kept; the phone starts this file again
+            return json(s, 422, "{\"error\":\"file_checksum\"}", keep);
+        }
         if (u->received < u->size) return json(s, 200, "{\"received\":" + std::to_string(u->received) + "}", keep);
         std::string saved = finishUpload(u);
         if (saved.empty()) return json(s, 500, "{\"error\":\"save\"}", keep);

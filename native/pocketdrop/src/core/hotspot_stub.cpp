@@ -1,6 +1,7 @@
 #include "platform.h"
 
-#ifndef _WIN32
+// Linux has its own (src/linux/hotspot_linux.cpp); Windows has WinRT.
+#if !defined(_WIN32) && !defined(__linux__)
 namespace plat {
 
 struct Hotspot::Impl {

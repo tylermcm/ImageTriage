@@ -18,7 +18,7 @@ import os
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 
 from ..path_keys import path_key
 
@@ -26,6 +26,10 @@ SAMPLE_NAMES = ("DSC_4821.NEF", "Kutaisi picks", "Anna portrait final.jpg", "Mee
 _AS_LABEL = "Originals"            # what a library group is sent as: the files themselves (nothing here converts them)
 _SAMPLE_THUMBS = {"sel": (1, 2, 3), "win": (4, 6, 10), "keep": (2, 7, 9)}
 _SAMPLE_COUNTS = {"sel": ("4 photos", "96 MB"), "win": ("96 photos", "1.4 GB"), "keep": ("412 photos", "5.9 GB")}
+
+
+RECEIVE_KEY = "pocketdrop/receive_into_folder"      # phone uploads go to the folder open in the grid
+HOME_KEY = "pocketdrop/inbox_home"                  # the person's own received-files folder, while a grid folder stands in for it
 
 
 def _size(n: float) -> str:
@@ -94,6 +98,7 @@ class PocketDropModel(QObject):
     rowsChanged = Signal()
     libraryChanged = Signal()
     riskChanged = Signal()
+    receiveFolderChanged = Signal()
     alertRequested = Signal(str, str)
     notice = Signal(str)
     _sized = Signal(int, object)            # the Library entries' files were measured off the interface thread: (token, {key: bytes})
@@ -120,6 +125,11 @@ class PocketDropModel(QObject):
         self._sample = self._fresh_sample()
         self._started = False
         self._window = 0
+        self._seen_received: set[str] = set()      # received files already noticed, so the grid is refreshed once per file
+        self._reload_timer = QTimer(self)
+        self._reload_timer.setSingleShot(True)
+        self._reload_timer.setInterval(500)
+        self._reload_timer.timeout.connect(self._photos.reload)
         if not memory:
             self._load()
 
@@ -142,7 +152,11 @@ class PocketDropModel(QObject):
 
     def _fresh_sample(self) -> dict:
         return {"mode": 0, "st": ["ready", "ready", "ready"], "act": "none", "items": [], "recv": [], "burn": False, "auto": True, "warn": True,
-                "topmost": False, "addr": 0, "link": 0, "copied": False, "pct": 46, "nid": 100, "drag": False}
+                "topmost": False, "addr": 0, "link": 0, "copied": False, "pct": 46, "nid": 100, "drag": False,
+                "noteClip": False, "phones": 2,
+                "history": [{"i": 0, "kind": "f", "title": "IMG_4821.HEIC", "device": "iPhone", "when": "3 min ago", "size": 3400000},
+                            {"i": 1, "kind": "n", "title": "Note: Wi-Fi at the flat is gz-guest", "device": "iPhone", "when": "1 h ago", "size": 28},
+                            {"i": 2, "kind": "s", "title": "Georgia trip.zip", "device": "Pixel 9", "when": "2 d ago", "size": 3100000000}]}
 
     available = Property(bool, lambda self: self._host is not None or self._memory, constant=True)
     reason = Property(str, lambda self: self._reason, constant=True)
@@ -157,10 +171,14 @@ class PocketDropModel(QObject):
         if self._host is not None:
             self._host.start()
         self._refresh()
+        if self._host is not None:
+            self._photos.folderChanged.connect(self._apply_receive_folder)
+            self._apply_receive_folder()
 
     @Slot()
     def shutdown(self) -> None:
         if self._host is not None:
+            self._restore_inbox()          # the person's own received-files folder comes back, not the last folder that was open
             self._host.shutdown()
 
     def setWindowHandle(self, handle: int) -> None:
@@ -178,6 +196,7 @@ class PocketDropModel(QObject):
         self._last = key
         self._st = state
         self._rows = self._merge_rows(state.get("rows", []))
+        self._notice_received(state.get("rows", []))
         self.stateChanged.emit()
         self.rowsChanged.emit()
 
@@ -257,7 +276,80 @@ class PocketDropModel(QObject):
 
     @Slot(QUrl)
     def changeInbox(self, url: QUrl) -> None:
-        self.command("set_inbox", os.path.normpath(url.toLocalFile()))
+        folder = os.path.normpath(url.toLocalFile())
+        if self._pref(HOME_KEY, ""):
+            self._set_pref(HOME_KEY, folder)       # choosing a folder by hand replaces the one that comes back later
+            if self.receiveIntoFolder:
+                return
+        self.command("set_inbox", folder)
+
+    # -- phone uploads into the open folder ----------------------------------------------------------------------------------
+    def _pref(self, key: str, default):
+        from ..app_identity import user_settings
+        settings = self._settings if self._settings is not None else user_settings()
+        return settings.value(key, default)
+
+    def _set_pref(self, key: str, value) -> None:
+        from ..app_identity import user_settings
+        settings = self._settings if self._settings is not None else user_settings()
+        if value in ("", None):
+            settings.remove(key)
+        else:
+            settings.setValue(key, value)
+
+    def _receive_folder_on(self) -> bool:
+        return str(self._pref(RECEIVE_KEY, "false")).lower() in ("1", "true")
+
+    receiveIntoFolder = Property(bool, _receive_folder_on, notify=receiveFolderChanged)
+
+    @Slot(bool)
+    def setReceiveIntoFolder(self, on: bool) -> None:
+        """Save what phones send in the folder open in the grid (it then shows up there), instead of the received-files folder."""
+        self._set_pref(RECEIVE_KEY, "true" if on else "false")
+        self.receiveFolderChanged.emit()
+        self._apply_receive_folder()
+
+    def _open_folder(self) -> str:
+        folder = self._photos.folderPath if self._photos is not None else ""
+        return os.path.normpath(folder) if folder and os.path.isdir(folder) else ""
+
+    def _apply_receive_folder(self) -> None:
+        if self._host is None:
+            return
+        folder = self._open_folder() if self._receive_folder_on() else ""
+        current = self._st.get("menu", {}).get("inbox", "")
+        if folder:
+            if current and os.path.normcase(folder) == os.path.normcase(os.path.normpath(current)):
+                return
+            if not self._pref(HOME_KEY, "") and current:
+                self._set_pref(HOME_KEY, current)  # remember the person's own folder to put back
+            self.command("set_inbox", folder)
+        else:
+            self._restore_inbox()
+
+    def _restore_inbox(self) -> None:
+        home = str(self._pref(HOME_KEY, "") or "")
+        if home:
+            self._set_pref(HOME_KEY, "")
+            try:
+                os.makedirs(home, exist_ok=True)       # the engine only accepts a folder that exists, and it is created on first use
+            except OSError:
+                pass
+            self.command("set_inbox", home)
+
+    def _notice_received(self, engine_rows: list[dict]) -> None:
+        """A file that just arrived in the open folder: read the folder again so it appears in the grid."""
+        folder = os.path.normcase(self._open_folder())
+        fresh = False
+        for row in engine_rows:
+            path = row.get("path", "")
+            if row.get("tone") != "recv" or not path or path in self._seen_received:
+                continue
+            self._seen_received.add(path)
+            if folder and os.path.normcase(os.path.dirname(path)) == folder:
+                fresh = True
+        if fresh and self._started:
+            self._reload_timer.start()
 
     @Slot(str)
     def removeRow(self, key: str) -> None:
@@ -451,9 +543,13 @@ class PocketDropModel(QObject):
             s["nid"] += 1
         elif name == "add_folder":
             s["items"].insert(0, {"kind": "folder", "title": "Georgia trip", "sub": "212 files \u00b7 3.1 GB"})
-        elif name == "menu" and arg in ("burn", "auto_any", "warn_any", "topmost"):
-            key = {"burn": "burn", "auto_any": "auto", "warn_any": "warn", "topmost": "topmost"}[arg]
+        elif name == "menu" and arg in ("burn", "auto_any", "warn_any", "topmost", "note_clip"):
+            key = {"burn": "burn", "auto_any": "auto", "warn_any": "warn", "topmost": "topmost", "note_clip": "noteClip"}[arg]
             s[key] = not s[key]
+        elif name == "menu" and arg == "forget_phones":
+            s["phones"] = 0
+        elif name == "menu" and arg == "history_clear":
+            s["history"] = []
         elif name == "addr":
             s["addr"] = int(arg)
         self._last = ""
@@ -492,7 +588,7 @@ class PocketDropModel(QObject):
         if act in ("sending", "receiving"):
             info.update(kind="active", left="62%  \u00b7  DSC_4821.NEF  \u2192  Pixel 8" if act == "sending" else "38%  \u00b7  IMG_2290.HEIC  \u2190  Pixel 8",
                         right="18.3 MB/s" if act == "sending" else "9.6 MB/s", frac=0.62 if act == "sending" else 0.38, incoming=act == "receiving")
-        elif mode == 1 and qr_card:
+        elif qr_card and has_link:                  # every mode asks for the receive code now, not only Anywhere
             info.update(kind="code", code="K7QM-4XD2")
         elif act == "done":
             info.update(kind="done", left="Sent 3 files to Pixel 8")
@@ -515,9 +611,12 @@ class PocketDropModel(QObject):
             "pct": s["pct"], "btHotspot": False, "badges": [badge(0), badge(1), badge(2)], "qrSize": size, "qrPath": path,
             "hasLink": has_link, "canOpen": has_link, "linkText": url.replace("https://", "").replace("http://", "") if has_link else "", "linkEmpty": "" if has_link else "Link appears when ready",
             "copied": copied, "copyLabel": copy_label, "info": info, "rows": rows, "sharing": bool(s["items"] or self._groups),
+            "pc": {"mode": 0, "sent": False, "phase": 0, "code": "", "pair": {"pending": False, "name": "", "code": ""}, "name": "", "error": "",
+                   "received": 0, "total": 0},
             "menu": {"burn": s["burn"], "auto": s["auto"], "warn": s["warn"], "topmost": s["topmost"], "tunnelOpen": mode == 1 and st == "ready",
                      "inbox": r"C:\Users\You\Downloads\PocketDrop",
-                     "addrs": [{"ip": ip, "adapter": name, "selected": i == s["addr"]} for i, (ip, name) in enumerate(ips)]},
+                     "addrs": [{"ip": ip, "adapter": name, "selected": i == s["addr"]} for i, (ip, name) in enumerate(ips)],
+                     "noteClip": s["noteClip"], "phones": s["phones"], "history": list(s["history"])},
             "busy": st in ("busy", "downloading"), "recent": False,
         }
 

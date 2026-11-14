@@ -6,6 +6,10 @@ builds against and records the commit they came from:
 
     python scripts/sync_pocketdrop.py [path-to-PocketDrop]
 
+PocketDrop itself carries what the QML shell needs (Ui::stateJson, Ui::command, Ui::removePaths, Ui::menuCommand) and the
+audited security changes (explicit bind address, receive code in every mode, pinned cloudflared on Windows), so the
+vendored copy is exactly PocketDrop's source: change PocketDrop first and sync, never edit native/pocketdrop/src by hand.
+
 The PocketDrop checkout defaults to a sibling folder named PocketDrop. Its own
 window hosts (main_*.cpp/.mm, gfx_*) are not copied: Image Triage replaces
 them with native/pocketdrop/capi and image_triage/pocketdrop.
@@ -26,21 +30,14 @@ SOURCES = (
     "ui",
     "win/platform_win.cpp",
     "win/hotspot_win.cpp",
+    "win/cloudflared_pin.h",
     "mac/platform_mac.mm",
     "linux/platform_linux.cpp",
+    "linux/hotspot_linux.cpp",
 )
 
 
 def main() -> int:
-    if "--force" not in sys.argv:
-        print(
-            "native/pocketdrop/src/ui now carries Image Triage's own changes (Ui::stateJson, Ui::command, Ui::removePaths,\n"
-            "Ui::menuCommand, used by the QML shell) and is the working copy of PocketDrop's UI. Syncing would delete them.\n"
-            "Port those four functions into the upstream checkout first, then run this with --force.",
-            file=sys.stderr,
-        )
-        return 2
-    sys.argv.remove("--force")
     upstream = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT.parent / "PocketDrop"
     src = upstream / "src"
     if not (src / "ui" / "ui.cpp").is_file():

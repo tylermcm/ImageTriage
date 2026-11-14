@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "../core/version.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -25,7 +26,13 @@ enum MenuId {
     ID_ABOUT,
     ID_OPEN_INBOX,
     ID_CHANGE_INBOX,
+    ID_NEARBY,
+    ID_HISTORY,
+    ID_HIST_CLEAR,
+    ID_NOTE_CLIP,
+    ID_FORGET_PHONES,
     ID_ADDR_BASE = 500,
+    ID_HIST_BASE = 700,
 };
 
 #ifdef __APPLE__
@@ -156,6 +163,9 @@ void Ui::start() {
     topmost_ = shell_.loadSetting("Topmost", 0) != 0;
     burnAfter_ = shell_.loadSetting("BurnAfter", 0) != 0;
     autoAnywhere_ = shell_.loadSetting("AutoAnywhere", 0) != 0;
+    noteClipboard_ = shell_.loadSetting("NoteClipboard", 0) != 0;
+    history_ = persist::parse_history(shell_.loadString("History", ""));
+    server_.setTrustedDevices(persist::parse_devices(shell_.loadString("TrustedPhones", "")));
     inbox_ = shell_.loadString("InboxDir", util::path_join(plat::downloads_dir(), "PocketDrop"));
 
     tunnel_ = std::make_unique<Tunnel>([this] { post([this] { refreshQr(); updateAnimation(); }); });
@@ -194,6 +204,7 @@ void Ui::shutdown() {
     shell_.setAnimating(false);
     if (hotspot_) hotspot_->stop();
     if (tunnel_) tunnel_->stop();
+    stopPc();
     server_.stop();
     bundle_.reset();
 }
@@ -203,6 +214,7 @@ void Ui::saveSettings() {
     shell_.saveSetting("Topmost", topmost_);
     shell_.saveSetting("BurnAfter", burnAfter_);
     shell_.saveSetting("AutoAnywhere", autoAnywhere_);
+    shell_.saveSetting("NoteClipboard", noteClipboard_);
 }
 
 // ---------------------------------------------------------------- content
@@ -254,6 +266,12 @@ void Ui::clearAll() {
 }
 
 void Ui::rebuild() {
+    if (pcMode_ == PcMode::Send) {
+        server_.stopPcShare();
+        nearby_.setOffer({});
+        pcOffer_.clear();
+        pcSent_ = false;
+    }
     uint64_t seq = ++buildSeq_;
     building_ = true;
     std::weak_ptr<bool> alive = alive_;
@@ -272,7 +290,7 @@ void Ui::onBuilt(uint64_t seq, std::shared_ptr<Bundle> b) {
     if (seq != buildSeq_) return;
     building_ = false;
     bundle_ = std::move(b);
-    bundle_->startPrepare([this] { post([this] { updateAnimation(); invalidate(); }); });
+    bundle_->startPrepare([this] { post([this] { publishPc(); updateAnimation(); invalidate(); }); });
     server_.publish(bundle_);
     refreshQr();
     updateAnimation();
@@ -301,6 +319,7 @@ void Ui::setDragOver(bool on) {
 // ---------------------------------------------------------------- sharing
 
 void Ui::setMode(int m) {
+    if (pcMode_ != PcMode::Phone) stopPc();
     if (m == 2 && (!hotspot_ || !hotspot_->supported())) return;
     if (m == 1 && mode_ != 1 && !shell_.loadSetting("AnywhereRiskDismissed", 0)) {
         bool dismiss = false;
@@ -311,6 +330,8 @@ void Ui::setMode(int m) {
     bool changed = mode_ != m;
     if (mode_ == 2 && m != 2) hotspot_->stop();
     mode_ = m;
+    // A new mode listens on its own address with a new link and receive code: nothing
+    // carries over from the previous network.
     refreshBinding(changed);
     if (m == 1 && !changed && server_.port()) {
         auto st = tunnel_->state();
@@ -329,6 +350,155 @@ void Ui::newLink() {
     server_.newLink();
     rotateReceiveCode();
     refreshQr();
+}
+
+std::vector<NearbyPeer> Ui::pcSenders() const {
+    auto peers = nearby_.peers();
+    std::erase_if(peers, [](const auto& p) { return p.offer.empty(); });
+    return peers;
+}
+
+void Ui::stopPc() {
+    pcReceiver_.stop();
+    nearby_.stop();
+    server_.stopPcShare();
+    pcMode_ = PcMode::Phone;
+    pcOffer_.clear();
+    pcSent_ = pcStarted_ = pcReceived_ = false;
+    pcDownload_ = {};
+    pcSpeed_ = {};
+    invalidate();
+}
+
+void Ui::startPcSend() {
+    stopPc();
+    if (mode_ == 1) setMode(0); // Anywhere listens on loopback only; a PC on the LAN needs the LAN address
+    if (!nearby_.start(server_.port())) {
+        shell_.alert("PC Share", "Couldn't start PC discovery. Check that UDP port 47292 is available.");
+        return;
+    }
+    pcMode_ = PcMode::Send;
+    publishPc();
+    if (paths_.empty()) browse(false);
+    updateAnimation();
+    invalidate();
+}
+
+void Ui::startPcReceive() {
+    stopPc();
+    if (!nearby_.start(server_.port())) {
+        shell_.alert("PC Share", "Couldn't start PC discovery. Check that UDP port 47292 is available.");
+        return;
+    }
+    pcMode_ = PcMode::Receive;
+    nearby_.setOffer({}); // one discovery query; waiting Send instances answer immediately
+    invalidate();
+}
+
+void Ui::publishPc() {
+    if (pcMode_ != PcMode::Send || pcSent_ || !pcOffer_.empty() || building_ || !bundle_ || !bundle_->ready || paths_.empty()) return;
+    pcOffer_ = server_.startPcShare(bundle_);
+    nearby_.setOffer(pcOffer_);
+}
+
+void Ui::receiveFrom(const NearbyPeer& peer) {
+    if (pcMode_ != PcMode::Receive || peer.offer.empty()) return;
+    pcStarted_ = true;
+    pcReceived_ = false;
+    pcSpeed_ = {};
+    pcReceiver_.start(peer, inbox_);
+    pcDownload_ = pcReceiver_.snapshot();
+    invalidate();
+}
+
+void Ui::pollPc() {
+    if (pcMode_ == PcMode::Send) {
+        publishPc();
+        if (!pcSent_ && server_.pcShareComplete()) {
+            pcSent_ = true;
+            nearby_.setOffer({});
+            pcOffer_.clear();
+            doneText_ = "PC transfer complete";
+            doneAt_ = plat::tick_ms();
+            shell_.attention();
+        }
+    } else if (pcMode_ == PcMode::Receive) {
+        if (!pcStarted_) {
+            auto senders = pcSenders();
+            if (senders.size() == 1) receiveFrom(senders[0]);
+        } else {
+            pcDownload_ = pcReceiver_.snapshot();
+            auto now = plat::tick_ms();
+            if (!pcSpeed_.tick) { pcSpeed_.tick = now; pcSpeed_.sent = pcDownload_.received; }
+            else if (now - pcSpeed_.tick >= 400) {
+                uint64_t bytes = pcDownload_.received >= pcSpeed_.sent ? pcDownload_.received - pcSpeed_.sent : 0;
+                double inst = (double)bytes * 1000.0 / (double)(now - pcSpeed_.tick);
+                pcSpeed_.bps = pcSpeed_.bps > 0 ? pcSpeed_.bps * 0.6 + inst * 0.4 : inst;
+                pcSpeed_.tick = now; pcSpeed_.sent = pcDownload_.received;
+            }
+            if (pcDownload_.phase == PcDownload::Phase::Done && !pcReceived_) {
+                pcReceived_ = true;
+                ReceivedItem item;
+                item.id = nextPcReceived_++;
+                item.path = pcDownload_.path; item.name = pcDownload_.name;
+                item.size = pcDownload_.total; item.device = pcDownload_.device; item.time = plat::unix_time();
+                {
+                    persist::HistoryEntry entry;
+                    entry.kind = persist::HistoryEntry::PcIn;
+                    entry.time = item.time;
+                    entry.size = item.size;
+                    entry.name = item.name;
+                    entry.device = item.device;
+                    entry.path = item.path;
+                    addHistory(std::move(entry));
+                }
+                received_.push_back(std::move(item));
+                scroll_ = 0;
+                shell_.attention();
+            }
+        }
+    }
+}
+
+void Ui::showNearby() {
+    std::vector<MenuItem> items = {{1, "Send"}, {2, "Receive"}};
+    if (pcMode_ != PcMode::Phone) items.push_back({3, "Back to phone sharing"});
+    auto L = layout();
+    int cmd = shell_.popupMenu(items, L.nearby.right, L.nearby.bottom);
+    if (cmd == 1) startPcSend();
+    else if (cmd == 2) startPcReceive();
+    else if (cmd == 3) stopPc();
+}
+
+void Ui::pcAction() {
+    if (pcMode_ == PcMode::Send) {
+        auto pairing = server_.pcPairing();
+        if (pairing.pending) {
+            // The codes on both screens must match before anything is sent; a mismatch means someone else is in between.
+            std::vector<MenuItem> items = {{1, "Allow " + pairing.name + " (code " + pairing.code + ")"}, {2, "Decline"}};
+            auto L = layout();
+            int cmd = shell_.popupMenu(items, L.cardButton.right, L.cardButton.bottom);
+            if (cmd == 1) server_.pcAnswer(true);
+            else if (cmd == 2) server_.pcAnswer(false);
+            invalidate();
+            return;
+        }
+        if (paths_.empty()) browse(false);
+        else if (pcSent_) startPcSend();
+        else stopPc();
+    } else if (pcMode_ == PcMode::Receive) {
+        using Phase = PcDownload::Phase;
+        if (pcStarted_ && pcDownload_.phase == Phase::Done) shell_.revealPath(pcDownload_.path);
+        else if (pcStarted_ && (pcDownload_.phase == Phase::Failed || pcDownload_.phase == Phase::Cancelled)) startPcReceive();
+        else if (!pcStarted_ && pcSenders().size() > 1) {
+            auto senders = pcSenders();
+            std::vector<MenuItem> items;
+            for (size_t i = 0; i < senders.size(); ++i) items.push_back({100 + (int)i, senders[i].name + " (" + senders[i].ip + ")"});
+            auto L = layout();
+            int cmd = shell_.popupMenu(items, L.cardButton.right, L.cardButton.bottom);
+            if (cmd >= 100 && cmd < 100 + (int)senders.size()) receiveFrom(senders[(size_t)(cmd - 100)]);
+        } else stopPc();
+    }
 }
 
 void Ui::rotateReceiveCode() {
@@ -371,6 +541,9 @@ void Ui::refreshQr() {
     invalidate();
 }
 
+// The server listens on exactly one address: loopback for Anywhere (the tunnel connects from this
+// computer), the chosen LAN address for Same Wi-Fi, the hotspot's own address for Offline.
+// Until a LAN address exists it listens on loopback only, never on every interface.
 void Ui::refreshBinding(bool force) {
     std::string address = "127.0.0.1";
     if (mode_ == 0 && !addrs_.empty()) address = addrs_[(size_t)addrIndex_].ip;
@@ -380,7 +553,8 @@ void Ui::refreshBinding(bool force) {
 
     // End the old exposure before opening the newly selected interface. Sessions
     // and receive codes must not carry across networks or sharing modes.
-    tunnel_->stop();
+    if (pcMode_ != PcMode::Phone) stopPc();
+    if (tunnel_) tunnel_->stop();
     server_.stop();
     server_.newLink();
     rotateReceiveCode();
@@ -434,8 +608,17 @@ void Ui::onServer(HttpServer::Event ev) {
         for (const auto& t : transfers_) {
             if (!t.done || ended_.count(t.id)) continue;
             ended_.insert(t.id);
-            if (!t.ok || t.incoming) continue; // arrivals are announced by Event::Received
+            if (!t.ok || t.incoming || t.pc) continue; // native PC completion requires the receiver's receipt
             doneText_ = "Sent " + t.name + " to " + t.device;
+            {
+                persist::HistoryEntry entry;
+                entry.kind = persist::HistoryEntry::SentToPhone;
+                entry.time = plat::unix_time();
+                entry.size = t.total;
+                entry.name = t.name;
+                entry.device = t.device;
+                addHistory(std::move(entry));
+            }
             doneAt_ = now;
             burn = burnAfter_;
         }
@@ -443,9 +626,69 @@ void Ui::onServer(HttpServer::Event ev) {
         break;
     }
     case HttpServer::Event::Received: onReceived(); break;
+    case HttpServer::Event::PcComplete: pollPc(); break;
+    case HttpServer::Event::PcPair:
+        if (server_.pcPairing().pending) shell_.attention();
+        break;
+    case HttpServer::Event::DevicesChanged:
+        shell_.saveString("TrustedPhones", persist::serialize(server_.trustedDevices()));
+        break;
     }
     updateAnimation();
     invalidate();
+}
+
+void Ui::addHistory(persist::HistoryEntry entry) {
+    history_.push_back(std::move(entry));
+    if (history_.size() > persist::MAX_HISTORY) history_.erase(history_.begin());
+    saveHistory();
+}
+
+void Ui::saveHistory() { shell_.saveString("History", persist::serialize(history_)); }
+
+namespace {
+const char* historyArrow(char kind) {
+    return kind == persist::HistoryEntry::SentToPhone ? "\xE2\x86\x92 " : kind == persist::HistoryEntry::NoteIn ? "\xE2\x9C\x8E " : "\xE2\x86\x93 ";
+}
+std::string historyTitle(const persist::HistoryEntry& e) {
+    if (e.kind == persist::HistoryEntry::NoteIn) {
+        std::string line = e.text.substr(0, e.text.find_first_of("\r\n"));
+        if (line.size() > 40) line = line.substr(0, 40) + "\xE2\x80\xA6";
+        return "Note: " + line;
+    }
+    return e.name;
+}
+} // namespace
+
+// Newest first; choosing a received file shows it in its folder, a note copies it.
+void Ui::showHistory() {
+    std::vector<MenuItem> items;
+    int64_t now = plat::unix_time();
+    for (size_t i = 0; i < history_.size() && i < 30; i++) {
+        const auto& e = history_[history_.size() - 1 - i];
+        bool actionable = e.kind != persist::HistoryEntry::SentToPhone;
+        items.push_back({ID_HIST_BASE + (int)i,
+                         std::string(historyArrow(e.kind)) + historyTitle(e) + "  \xC2\xB7  " + e.device + "  \xC2\xB7  " +
+                             persist::ago(now - e.time),
+                         false, actionable, false, {}});
+    }
+    items.push_back({0, "", false, true, true, {}});
+    items.push_back({ID_HIST_CLEAR, "Clear history", false, !history_.empty(), false, {}});
+    Layout L = layout();
+    menuCommand(shell_.popupMenu(items, L.menu.right, L.menu.bottom + 4));
+}
+
+void Ui::openHistory(int newestFirst) {
+    if (newestFirst < 0 || newestFirst >= (int)history_.size()) return;
+    const auto& e = history_[history_.size() - 1 - (size_t)newestFirst];
+    if (e.kind == persist::HistoryEntry::NoteIn) {
+        shell_.copyText(e.text);
+        doneText_ = "Copied the note";
+        doneAt_ = plat::tick_ms();
+    } else if (e.kind != persist::HistoryEntry::SentToPhone) {
+        if (!e.path.empty() && plat::file_stat(e.path).exists) shell_.revealPath(e.path);
+        else shell_.alert("Transfer history", e.name + " is no longer where it was saved.");
+    }
 }
 
 void Ui::onReceived() {
@@ -453,6 +696,19 @@ void Ui::onReceived() {
     if (items.empty()) return;
     for (auto& it : items) {
         doneText_ = it.isText ? "Received a note from " + it.device : "Received " + it.name + " from " + it.device;
+        persist::HistoryEntry entry;
+        entry.kind = it.isText ? persist::HistoryEntry::NoteIn : persist::HistoryEntry::FileIn;
+        entry.time = it.time ? it.time : plat::unix_time();
+        entry.size = it.size;
+        entry.name = it.isText ? std::string() : it.name;
+        entry.device = it.device;
+        entry.path = it.path;
+        entry.text = it.text;
+        addHistory(std::move(entry));
+        if (it.isText && noteClipboard_) {
+            shell_.copyText(it.text);
+            doneText_ = "Copied a note from " + it.device + " to the clipboard";
+        }
         received_.push_back(std::move(it));
     }
     doneAt_ = plat::tick_ms();
@@ -462,6 +718,7 @@ void Ui::onReceived() {
 
 void Ui::tick() {
     uint64_t now = plat::tick_ms();
+    pollPc();
     if (mode_ == 2 && hotspot_) hotspot_->poll();
     if (server_.maintain(sharing())) refreshQr();
     spin_ += 0.2f;
@@ -486,13 +743,15 @@ void Ui::tick() {
     bool recent = (copiedAt_ && now - copiedAt_ < 2500) || (doneAt_ && now - doneAt_ < 7000) ||
                   (visitAt_ && now - visitAt_ < 125000) || (copiedRowAt_ && now - copiedRowAt_ < 2500);
     updateAnimation();
-    if (animating_ || recent) invalidate();
+    if (animating_ || recent || pcMode_ != PcMode::Phone) invalidate();
 }
 
 void Ui::updateAnimation() {
     auto st = tunnel_ ? tunnel_->state() : Tunnel::State::Off;
     auto hotspotState = hotspot_ ? hotspot_->state() : plat::HotspotState::Off;
-    bool busy = building_ || (bundle_ && !bundle_->ready) || st == Tunnel::State::Starting ||
+    bool pcBusy = pcMode_ == PcMode::Receive && pcStarted_ &&
+        (pcDownload_.phase == PcDownload::Phase::Connecting || pcDownload_.phase == PcDownload::Phase::Pairing || pcDownload_.phase == PcDownload::Phase::Receiving || pcDownload_.phase == PcDownload::Phase::Verifying);
+    bool busy = pcBusy || building_ || (bundle_ && !bundle_->ready) || st == Tunnel::State::Starting ||
                 st == Tunnel::State::Downloading || hotspotState == plat::HotspotState::Starting ||
                 std::any_of(transfers_.begin(), transfers_.end(), [](const TransferInfo& t) { return !t.done; });
     if (busy != animating_) {
@@ -532,16 +791,32 @@ void Ui::wheel(float lines) {
 }
 
 void Ui::click(const HitTarget& t) {
+    if (pcMode_ == PcMode::Receive) {
+        if (t.hit == Hit::AddFiles) { startPcReceive(); return; }
+        if (t.hit == Hit::AddFolder) { plat::make_dir(inbox_); shell_.openUrl(fileUrl(inbox_)); return; }
+        if (t.hit == Hit::Third) { stopPc(); return; }
+    }
     switch (t.hit) {
     case Hit::Menu: showMenu(); break;
-    case Hit::ModeLocal: setMode(0); break;
-    case Hit::ModeOffline: setMode(2); break;
-    case Hit::ModeAnywhere: setMode(1); break;
+    case Hit::Nearby: showNearby(); break;
+    case Hit::ModeLocal:
+        if (pcMode_ == PcMode::Receive) startPcSend();
+        else if (pcMode_ == PcMode::Phone) setMode(0);
+        break;
+    case Hit::ModeOffline:
+        if (pcMode_ != PcMode::Phone) stopPc();
+        else setMode(2);
+        break;
+    case Hit::ModeAnywhere:
+        if (pcMode_ == PcMode::Send) startPcReceive();
+        else if (pcMode_ == PcMode::Phone) setMode(1);
+        break;
     case Hit::CardButton:
-        if (cardState() == CardState::NoNetwork) setMode(2);
+        if (pcMode_ != PcMode::Phone) pcAction();
+        else if (cardState() == CardState::NoNetwork) setMode(2);
         else if (cardState() == CardState::BluetoothSetup) shell_.openBluetoothSetup();
         else if (mode_ == 2) hotspot_->start();
-        else if (mode_ == 1 && server_.port()) tunnel_->start(server_.port(), cardState() == CardState::TunnelMissing);
+        else tunnel_->start(server_.port(), cardState() == CardState::TunnelMissing);
         updateAnimation();
         break;
     case Hit::Url:
@@ -603,12 +878,16 @@ void Ui::showMenu() {
     for (size_t i = 0; i < addrs_.size() && i < 32; i++)
         net.submenu.push_back(item(ID_ADDR_BASE + (int)i, addrs_[i].ip + "   " + addrs_[i].adapter, (int)i == addrIndex_));
     items.push_back(net);
+    items.push_back(item(ID_NEARBY, "PC Share..."));
+    items.push_back(item(ID_HISTORY, "Transfer history\xE2\x80\xA6", false, !history_.empty()));
     items.push_back(sep);
     items.push_back(item(ID_OPEN_INBOX, "Open received files folder"));
     items.push_back(item(ID_CHANGE_INBOX, "Change received files folder\xE2\x80\xA6"));
     items.push_back(sep);
     items.push_back(item(ID_BURN, "Stop sharing after a download", burnAfter_));
-    items.push_back(item(ID_AUTO_ANY, "Keep Anywhere tunnel ready", autoAnywhere_));
+    items.push_back(item(ID_NOTE_CLIP, "Copy phone notes to the clipboard", noteClipboard_));
+    size_t phones = server_.trustedDevices().size();
+    if (phones) items.push_back(item(ID_FORGET_PHONES, "Forget remembered phones (" + std::to_string(phones) + ")"));
     items.push_back(item(ID_WARN_ANY, "Warn before using Anywhere", !shell_.loadSetting("AnywhereRiskDismissed", 0)));
     items.push_back(item(ID_TOPMOST, "Always on top", topmost_));
     for (auto& extra : shell_.extraMenuItems()) items.push_back(extra);
@@ -629,6 +908,17 @@ void Ui::menuCommand(int cmd) {
     case ID_ADD_FILES: browse(false); break;
     case ID_ADD_FOLDER: browse(true); break;
     case ID_PASTE: paste(); break;
+    case ID_NEARBY: showNearby(); break;
+    case ID_HISTORY: showHistory(); break;
+    case ID_HIST_CLEAR:
+        history_.clear();
+        saveHistory();
+        break;
+    case ID_NOTE_CLIP:
+        noteClipboard_ = !noteClipboard_;
+        saveSettings();
+        break;
+    case ID_FORGET_PHONES: server_.forgetDevices(); break;
     case ID_COPY: copyLink(); break;
     case ID_OPEN_BROWSER:
         if (hasLink) shell_.openUrl(shareUrl());
@@ -666,7 +956,7 @@ void Ui::menuCommand(int cmd) {
         break;
     case ID_ABOUT:
         shell_.alert("About PocketDrop",
-                     "PocketDrop 2.0\n\nScan the QR code to move files and text between this computer and your phone, "
+                     "PocketDrop " PD_VERSION "\n\nScan the QR code to move files and text between this computer and your phone, "
                      "in either direction. No app or account needed on the phone.\n\nSame Wi-Fi: direct transfer over "
                      "your local network (port " +
                          std::to_string(server_.port()) +
@@ -679,7 +969,9 @@ void Ui::menuCommand(int cmd) {
                          "when PocketDrop closes.");
         break;
     default:
-        if (cmd >= ID_ADDR_BASE && cmd < ID_ADDR_BASE + (int)addrs_.size()) {
+        if (cmd >= ID_HIST_BASE && cmd < ID_HIST_BASE + 40) {
+            openHistory(cmd - ID_HIST_BASE);
+        } else if (cmd >= ID_ADDR_BASE && cmd < ID_ADDR_BASE + (int)addrs_.size()) {
             addrIndex_ = cmd - ID_ADDR_BASE;
             refreshBinding();
             refreshQr();
@@ -703,7 +995,7 @@ Layout Ui::layout() const {
     L.title = rc(M + 36, 12, w - M - 40, 46);
     L.menu = rc(w - M - 32, 13, w - M, 45);
     L.seg = rc(M, 56, w - M, 92);
-    if (hotspot_ && hotspot_->supported()) {
+    if (pcMode_ != PcMode::Phone || (hotspot_ && hotspot_->supported())) {
         float third = std::floor((L.seg.right - L.seg.left) / 3);
         L.segLocal = rc(L.seg.left, L.seg.top, L.seg.left + third, L.seg.bottom);
         L.segAny = rc(L.segLocal.right, L.seg.top, L.segLocal.right + third, L.seg.bottom);
@@ -714,18 +1006,24 @@ Layout Ui::layout() const {
         L.segAny = rc(mid, L.seg.top, L.seg.right, L.seg.bottom);
     }
 
-    const float cardTop = 104;
+    bool shortWindow = L.h < 420, sideQr = shortWindow && cardState() == CardState::Qr;
+    L.nearby = rc(M, 100, w - M, shortWindow ? 122.0f : 130.0f);
+    const float cardTop = shortWindow ? 128.0f : 140.0f;
     float size = w - 2 * M;
     float reserved = 12 + 36 + 8 + 22 + 8 + ROW * 2 + 10 + 36 + 12;
-    size = std::min(size, std::max(180.0f, L.h - cardTop - reserved));
-    float cardLeft = std::floor((w - size) / 2);
-    L.card = rc(cardLeft, cardTop, cardLeft + size, cardTop + size);
+    size = std::min(size, std::max(100.0f, L.h - cardTop - reserved));
+    if (shortWindow) size = sideQr ? std::clamp(L.h - cardTop - 112, 64.0f, 120.0f) : 92.0f;
+    bool compactCard = size < 240 && cardState() != CardState::Qr;
+    float cardWidth = compactCard || pcMode_ != PcMode::Phone ? w - 2 * M : size;
+    float cardLeft = sideQr ? M : std::floor((w - cardWidth) / 2);
+    L.card = rc(cardLeft, cardTop, cardLeft + cardWidth, cardTop + size);
     float cx = (L.card.left + L.card.right) / 2, by = L.card.top + size * 0.72f;
-    float half = std::min(108.0f, std::floor((size - 28) / 2));
+    float half = std::min(108.0f, std::floor((cardWidth - 28) / 2));
     L.cardButton = rc(cx - half, by, cx + half, by + 38);
+    if (compactCard) L.cardButton = rc(cx - half, L.card.bottom - 42, cx + half, L.card.bottom - 8);
 
-    float y = L.card.bottom + 12;
-    L.link = rc(M, y, w - M, y + 36);
+    float y = sideQr ? cardTop : L.card.bottom + 12;
+    L.link = rc(sideQr ? L.card.right + 12 : M, y, w - M, y + 36);
     // Labelled Copy/Share while the address keeps LINK_ROOM to itself, icons after that.
     const float LINK_ROOM = 140;
     float actions = mode_ == 1 ? 156.0f : 76.0f;
@@ -735,10 +1033,12 @@ Layout Ui::layout() const {
     if (mode_ == 1) L.share = rc(L.copy.left - agap - aw, y + 4, L.copy.left - agap, y + 32);
     L.url = rc(L.link.left + 12, y, (mode_ == 1 ? L.share.left : L.copy.left) - 8, y + 36);
     y += 44;
-    L.info = rc(M + 2, y, w - M - 2, y + 22);
+    L.info = rc(sideQr ? L.link.left : M + 2, y, w - M - 2, y + 22);
     y += 30;
+    if (sideQr) y = std::max(y, L.card.bottom + 10);
+    else if (shortWindow) { L.info = {}; y = L.link.bottom + 8; }
     float bottomTop = L.h - 48;
-    L.list = rc(M, y, w - M, bottomTop - 10);
+    L.list = rc(M, std::min(y, bottomTop - 10), w - M, bottomTop - 10);
     float bw = w - 2 * M, gap = 8, addW = std::floor(bw * 0.40f), other = std::floor((bw - addW - 2 * gap) / 2);
     L.add = rc(M, bottomTop, M + addW, bottomTop + 36);
     L.folder = rc(L.add.right + gap, bottomTop, L.add.right + gap + other, bottomTop + 36);
@@ -747,6 +1047,7 @@ Layout Ui::layout() const {
 }
 
 CardState Ui::cardState() const {
+    if (pcMode_ != PcMode::Phone) return CardState::Pc;
     if (dragOver_) return CardState::DragOver;
     if (mode_ == 1) {
         switch (tunnel_->state()) {
@@ -779,21 +1080,22 @@ float Ui::maxScroll() const {
 HitTarget Ui::hitTest(float x, float y) const {
     Layout L = layout();
     if (inside(L.menu, x, y)) return {Hit::Menu};
+    if (inside(L.nearby, x, y)) return {Hit::Nearby};
     if (inside(L.segLocal, x, y)) return {Hit::ModeLocal};
-    if (hotspot_ && hotspot_->supported() && inside(L.segOffline, x, y)) return {Hit::ModeOffline};
+    if ((pcMode_ != PcMode::Phone || (hotspot_ && hotspot_->supported())) && inside(L.segOffline, x, y)) return {Hit::ModeOffline};
     if (inside(L.segAny, x, y)) return {Hit::ModeAnywhere};
     if (inside(L.card, x, y)) {
         CardState cs = cardState();
-        if ((cs == CardState::TunnelMissing || cs == CardState::TunnelFailed || cs == CardState::BluetoothSetup ||
+        if ((cs == CardState::Pc || cs == CardState::TunnelMissing || cs == CardState::TunnelFailed || cs == CardState::BluetoothSetup ||
              cs == CardState::HotspotFailed ||
              (cs == CardState::NoNetwork && hotspot_ && hotspot_->supported())) &&
             inside(L.cardButton, x, y))
             return {Hit::CardButton};
         return {};
     }
-    if (!qrText_.empty() && inside(L.copy, x, y)) return {Hit::Copy};
-    if (mode_ == 1 && !qrText_.empty() && inside(L.share, x, y)) return {Hit::Share};
-    if (!shareUrl().empty() && inside(L.url, x, y)) return {Hit::Url};
+    if (pcMode_ == PcMode::Phone && !qrText_.empty() && inside(L.copy, x, y)) return {Hit::Copy};
+    if (pcMode_ == PcMode::Phone && mode_ == 1 && !qrText_.empty() && inside(L.share, x, y)) return {Hit::Share};
+    if (pcMode_ == PcMode::Phone && !shareUrl().empty() && inside(L.url, x, y)) return {Hit::Url};
     if (inside(L.list, x, y)) {
         int i = (int)std::floor((y - L.list.top + scroll_) / ROW);
         if (i < 0 || i >= rowCount()) return {};
@@ -805,6 +1107,108 @@ HitTarget Ui::hitTest(float x, float y) const {
     if (inside(L.folder, x, y)) return {Hit::AddFolder};
     if (inside(L.third, x, y)) return {Hit::Third};
     return {};
+}
+
+void Ui::paintPc(Gfx& g, const Layout& L) {
+    const auto& card = L.card;
+    float height = card.bottom - card.top, cx = (card.left + card.right) / 2;
+    std::string title, detail, sub, action;
+    double progress = -1;
+    bool error = false;
+    if (pcMode_ == PcMode::Send) {
+        const TransferInfo* transfer = nullptr;
+        for (const auto& t : transfers_) if (t.pc) transfer = &t;
+        auto pairing = server_.pcPairing();
+        action = pcSent_ ? "Send again" : pairing.pending ? "Allow or decline" : paths_.empty() ? "Choose files" : "Stop sharing";
+        if (pcSent_) {
+            title = "Sent successfully";
+            detail = transfer ? transfer->name : "Your transfer is complete";
+            sub = "The PC transfer is now closed";
+        } else if (pairing.pending) {
+            title = "Code " + pairing.code;
+            detail = pairing.name + " wants to receive";
+            sub = "Allow only if the other PC shows the same code";
+        } else if (transfer && !transfer->done) {
+            title = "Sending to " + transfer->device;
+            detail = transfer->name;
+            progress = transfer->total ? (double)transfer->sent / transfer->total : 0;
+            auto speed = speeds_.find(transfer->id);
+            sub = std::to_string((int)(progress * 100)) + "%";
+            if (speed != speeds_.end() && speed->second.bps > 0) sub += DOT + sizeStr((uint64_t)speed->second.bps) + "/s";
+        } else if (server_.pcAwaitingReceipt()) {
+            title = "Waiting for confirmation";
+            detail = "The receiving PC is checking its file";
+        } else if (paths_.empty()) {
+            title = "Choose files to send";
+            detail = "Drop files below, or choose Add files";
+        } else if (building_ || (bundle_ && !bundle_->ready)) {
+            title = "Preparing files...";
+            detail = "Getting your transfer ready";
+        } else if (pcOffer_.empty()) {
+            title = "No files available to send";
+            detail = "Check your selected files and folders";
+            error = true;
+        } else {
+            title = "Waiting for receiver";
+            detail = bundle_ ? plural(bundle_->files.size(), "file") + DOT + sizeStr(bundle_->totalBytes) : "Ready to send";
+            sub = "Other PC: PC Share > Receive";
+        }
+    } else {
+        using Phase = PcDownload::Phase;
+        action = "Cancel";
+        if (!pcStarted_) {
+            auto count = pcSenders().size();
+            title = count > 1 ? "Choose a sending PC" : "Looking for sender...";
+            detail = "Other PC: PC Share > Send";
+            if (count > 1) action = "Choose sender";
+            sub = "Connect both PCs to the same network";
+        } else {
+            detail = pcDownload_.name.empty() ? pcDownload_.device : pcDownload_.name;
+            switch (pcDownload_.phase) {
+            case Phase::Connecting: title = "Connecting to " + pcDownload_.device; break;
+            case Phase::Pairing:
+                title = "Code " + pcDownload_.code;
+                detail = "Confirm it matches on " + pcDownload_.device;
+                sub = "Waiting for the sender to accept";
+                break;
+            case Phase::Receiving:
+                title = "Receiving from " + pcDownload_.device;
+                progress = pcDownload_.total ? (double)pcDownload_.received / pcDownload_.total : 0;
+                sub = std::to_string((int)(progress * 100)) + "%" + DOT + sizeStr(pcDownload_.received) + " / " + sizeStr(pcDownload_.total);
+                if (pcSpeed_.bps > 0) sub += DOT + sizeStr((uint64_t)pcSpeed_.bps) + "/s";
+                break;
+            case Phase::Verifying: title = "Checking received file..."; break;
+            case Phase::Done:
+                title = "Received successfully"; sub = pcDownload_.error.empty() ? "Saved in your received-files folder" : pcDownload_.error;
+                action = "Show in folder"; break;
+            case Phase::Failed:
+            case Phase::Cancelled:
+                title = pcDownload_.phase == Phase::Failed ? "Transfer interrupted" : "Transfer cancelled";
+                detail = pcDownload_.error; action = "Try again"; error = true; break;
+            default: break;
+            }
+        }
+    }
+    g.fillRound(card, 16, rgb(SURF));
+    if (progress >= 0 && height < 160) detail = std::to_string((int)(std::clamp(progress, 0.0, 1.0) * 100)) + "%" + DOT + detail;
+    if (height >= 240) g.icon(Icon::Wifi, rc(cx - 22, card.top + 28, cx + 22, card.top + 72), rgb(ACC2), 2.0f);
+    float y = card.top + (height >= 240 ? 85 : height >= 160 ? 20 : 3);
+    auto line = [&](const std::string& text, float top, Font font, uint32_t color) {
+        g.text(text, rc(card.left + 10, top, card.right - 10, top + 23), font, rgb(color), Align::Center);
+    };
+    line(title, y, Font::BodyBold, error ? RED : TEXT);
+    line(detail, y + 25, Font::Small, MUTE);
+    if (y + 78 < L.cardButton.top) line(sub, y + 51, Font::Small, pcSent_ || pcReceived_ ? GREEN : ACCTXT);
+    if (progress >= 0 && height >= 160) {
+        float by = L.cardButton.top - 15;
+        RectF bar = rc(card.left + 20, by, card.right - 20, by + 4);
+        g.fillRound(bar, 2, rgb(SURF3));
+        bar.right = bar.left + (bar.right - bar.left) * (float)std::clamp(progress, 0.0, 1.0);
+        g.fillRound(bar, 2, rgb(ACC2));
+    }
+    bool hover = hover_.hit == Hit::CardButton;
+    g.fillRound(L.cardButton, 9, rgb(hover ? ACCHI : ACC));
+    g.text(action, L.cardButton, Font::BodyBold, rgb(WHITE), Align::Center);
 }
 
 // ---------------------------------------------------------------- painting
@@ -825,7 +1229,15 @@ void Ui::paint(Gfx& g) {
         if (!t.done) active = &t;
     std::string status;
     uint32_t dot;
-    if ((mode_ == 1 && tunnel_->state() == Tunnel::State::Failed) ||
+    if (pcMode_ != PcMode::Phone) {
+        bool sending = std::any_of(transfers_.begin(), transfers_.end(), [](const auto& t) { return t.pc && !t.done; });
+        status = pcMode_ == PcMode::Send ? (pcSent_ ? "Sent" : sending ? "Sending" : server_.pcPairing().pending ? "Confirm code" : "PC Send") :
+            pcReceived_ ? "Received" : !pcStarted_ ? "PC Receive" : pcDownload_.phase == PcDownload::Phase::Failed ? "Interrupted" :
+            pcDownload_.phase == PcDownload::Phase::Cancelled ? "Cancelled" : pcDownload_.phase == PcDownload::Phase::Verifying ? "Checking" :
+            pcDownload_.phase == PcDownload::Phase::Connecting ? "Connecting" : pcDownload_.phase == PcDownload::Phase::Pairing ? "Confirm code" : "Receiving";
+        dot = pcReceived_ || pcSent_ ? GREEN : ACC2;
+        if (pcMode_ == PcMode::Receive && pcDownload_.phase == PcDownload::Phase::Failed) dot = RED;
+    } else if ((mode_ == 1 && tunnel_->state() == Tunnel::State::Failed) ||
         (mode_ == 2 && hotspot_->state() == plat::HotspotState::Failed)) {
         status = "Offline";
         dot = RED;
@@ -865,11 +1277,12 @@ void Ui::paint(Gfx& g) {
 
     // ---- Mode switch
     g.fillRound(L.seg, 11, rgb(SURF));
-    const RectF& selectedSegment = mode_ == 0 ? L.segLocal : mode_ == 2 ? L.segOffline : L.segAny;
+    const RectF& selectedSegment = pcMode_ != PcMode::Phone ? (pcMode_ == PcMode::Send ? L.segLocal : L.segAny) :
+        mode_ == 0 ? L.segLocal : mode_ == 2 ? L.segOffline : L.segAny;
     g.fillRound(inset(selectedSegment, 3), 8, rgb(SURF3));
-    bool offlineShown = hotspot_ && hotspot_->supported();
+    bool offlineShown = pcMode_ != PcMode::Phone || (hotspot_ && hotspot_->supported());
     const Fit segFit = fitContent(g, L.segLocal.right - L.segLocal.left - 8,
-                                  offlineShown ? std::vector<const char*>{"Same Wi-Fi", "Anywhere", "Offline"}
+                                  pcMode_ != PcMode::Phone ? std::vector<const char*>{"Send", "Receive", "Phone"} : offlineShown ? std::vector<const char*>{"Same Wi-Fi", "Anywhere", "Offline"}
                                                : std::vector<const char*>{"Same Wi-Fi", "Anywhere"},
                                   16, 7);
     auto segment = [&](const RectF& r, Icon ic, const char* label, bool selected, bool hovered, uint32_t badge) {
@@ -885,6 +1298,11 @@ void Ui::paint(Gfx& g) {
     case Tunnel::State::Failed: anyBadge = RED; break;
     default: break;
     }
+    if (pcMode_ != PcMode::Phone) {
+        segment(L.segLocal, Icon::Share, "Send", pcMode_ == PcMode::Send, hov(Hit::ModeLocal), 0);
+        segment(L.segAny, Icon::Drop, "Receive", pcMode_ == PcMode::Receive, hov(Hit::ModeAnywhere), 0);
+        segment(L.segOffline, Icon::Phone, "Phone", false, hov(Hit::ModeOffline), 0);
+    } else {
     segment(L.segLocal, Icon::Wifi, "Same Wi-Fi", mode_ == 0, hov(Hit::ModeLocal), 0);
     segment(L.segAny, Icon::Globe, "Anywhere", mode_ == 1, hov(Hit::ModeAnywhere), anyBadge);
     if (offlineShown)
@@ -892,6 +1310,13 @@ void Ui::paint(Gfx& g) {
                 mode_ == 2 && hotspot_->state() == plat::HotspotState::Failed
                     ? RED
                     : mode_ == 2 && hotspot_->state() == plat::HotspotState::Waiting ? AMBER : 0);
+    }
+
+    // ---- PC Share
+    if (hov(Hit::Nearby)) g.fillRound(L.nearby, 8, rgb(SURF2));
+    std::string nearbyLabel = pcMode_ == PcMode::Phone ? "PC Share  \xC2\xB7  Send / Receive" :
+        pcMode_ == PcMode::Send ? "PC Share  \xC2\xB7  Send" : "PC Share  \xC2\xB7  Receive";
+    g.text(nearbyLabel, inset(L.nearby, 4), Font::SmallBold, rgb(pcMode_ != PcMode::Phone ? ACCTXT : MUTE), Align::Center);
 
     // ---- Card
     const RectF& c = L.card;
@@ -904,7 +1329,32 @@ void Ui::paint(Gfx& g) {
         g.fillRound(L.cardButton, 10, rgb(primary ? (h ? ACCHI : ACC) : (h ? SURF3 : SURF2)));
         g.text(label, L.cardButton, Font::BodyBold, rgb(primary ? WHITE : TEXT), Align::Center);
     };
-    switch (cardState()) {
+    if (pcMode_ != PcMode::Phone) {
+        paintPc(g, L);
+    } else if (c.bottom - c.top < 240 && cardState() != CardState::Qr) {
+        g.fillRound(c, 12, rgb(SURF));
+        std::string title, detail, action;
+        switch (cardState()) {
+        case CardState::DragOver: title = "Drop to share"; detail = "Release to add files or text."; break;
+        case CardState::TunnelBusy: title = "Opening secure tunnel..."; detail = "Usually takes a few seconds"; break;
+        case CardState::TunnelMissing: title = "Share beyond your Wi-Fi"; detail = "Free Cloudflare tunnel, no account needed"; action = "Enable (one-time 40 MB)"; break;
+        case CardState::TunnelDownloading: title = "Downloading cloudflared..."; detail = std::to_string(tunnel_->progress()) + "%"; break;
+        case CardState::TunnelFailed: title = "Couldn't open the tunnel"; detail = tunnel_->message(); action = "Try again"; break;
+        case CardState::HotspotBusy: title = "Starting offline hotspot..."; detail = "No router or internet needed"; break;
+        case CardState::BluetoothSetup: title = "Connect over Bluetooth"; detail = "Enable tethering on your phone first"; action = "Open Bluetooth setup"; break;
+        case CardState::HotspotFailed: title = "Couldn't start the hotspot"; detail = hotspot_->message(); action = "Try again"; break;
+        case CardState::NoNetwork:
+            title = "Not connected to a network";
+            detail = "Join Wi-Fi, or switch sharing mode";
+            if (hotspot_ && hotspot_->supported()) action = "Start offline hotspot";
+            break;
+        default: break;
+        }
+        g.text(title, rc(c.left + 8, c.top + 5, c.right - 8, c.top + 27), Font::BodyBold, rgb(TEXT), Align::Center);
+        g.text(detail, rc(c.left + 8, c.top + 28, c.right - 8, c.top + 47), Font::Small, rgb(MUTE), Align::Center);
+        if (!action.empty()) cardButton(action, true);
+    } else switch (cardState()) {
+    case CardState::Pc: break; // drawn by paintPc
     case CardState::DragOver:
         g.fillRound(c, 20, rgb(ACC, 0.10f));
         g.strokeRound(c, 20, rgb(ACC), 2.0f, true);
@@ -1004,7 +1454,10 @@ void Ui::paint(Gfx& g) {
 
     // ---- Link row
     g.fillRound(L.link, 10, rgb(SURF));
-    if (!qrText_.empty()) {
+    if (pcMode_ != PcMode::Phone) {
+        g.text(pcMode_ == PcMode::Send ? "Other PC: PC Share > Receive" : "Files save automatically to this PC",
+            inset(L.link, 8), Font::Small, rgb(MUTE), Align::Center);
+    } else if (!qrText_.empty()) {
         std::string u = hotspotJoin ? hotspot_->ssid() + DOT + "Password " + hotspot_->passphrase() : shareUrl();
         for (const char* scheme : {"https://", "http://"})
             if (u.rfind(scheme, 0) == 0) u.erase(0, strlen(scheme));
@@ -1031,7 +1484,12 @@ void Ui::paint(Gfx& g) {
 
     // ---- Info line
     const RectF& in = L.info;
-    if (active) {
+    if (in.bottom > in.top) {
+    if (pcMode_ != PcMode::Phone) {
+        std::string text = pcMode_ == PcMode::Send ? "Stop sharing or return to phone from PC Share" :
+            pcReceived_ ? "Click the received file to show it in its folder" : "Received files: " + inbox_;
+        g.text(text, in, Font::Small, rgb(FAINT), Align::Center);
+    } else if (active) {
         double frac = active->total ? (double)active->sent / (double)active->total : 0.0;
         auto sp = speeds_.find(active->id);
         std::string right = sp != speeds_.end() && sp->second.bps > 0 ? sizeStr((uint64_t)sp->second.bps) + "/s" : "";
@@ -1086,14 +1544,16 @@ void Ui::paint(Gfx& g) {
         g.text(message, in, Font::Small, rgb(FAINT), Align::Center);
     }
 
+    }
+
     // ---- Item list: received (newest first), then shared files, then shared notes
     g.pushClip(L.list);
     int n = rowCount(), nr = (int)received_.size(), np = (int)paths_.size();
     if (n == 0) {
         float ty = L.list.top + 18;
-        g.text("Drop files here to share them with your phone.", rc(L.list.left, ty, L.list.right, ty + 20),
+        g.text(pcMode_ == PcMode::Receive ? "Files from the sending PC appear here." : "Drop files here to share them.", rc(L.list.left, ty, L.list.right, ty + 20),
                Font::Small, rgb(FAINT), Align::Center);
-        g.text("Anything your phone sends shows up here too.", rc(L.list.left, ty + 20, L.list.right, ty + 40),
+        g.text(pcMode_ == PcMode::Receive ? "Keep both computers awake during the transfer." : "Received files and notes appear here too.", rc(L.list.left, ty + 20, L.list.right, ty + 40),
                Font::Small, rgb(FAINT), Align::Center);
     }
     for (int i = 0; i < n; i++) {
@@ -1153,7 +1613,7 @@ void Ui::paint(Gfx& g) {
         }
     }
     float listH = L.list.bottom - L.list.top;
-    if (n * ROW > listH) {
+    if (listH > 0 && n * ROW > listH) {
         float content = n * ROW, th = std::max(24.0f, listH * listH / content);
         float ty = L.list.top + (listH - th) * (scroll_ / (content - listH));
         g.fillRound(rc(L.list.right - 3, ty, L.list.right, ty + th), 1.5f, rgb(SURF3));
@@ -1171,9 +1631,15 @@ void Ui::paint(Gfx& g) {
         g.fillRound(r, 10, rgb(primary ? (hv ? ACCHI : ACC) : (hv ? SURF3 : SURF2)));
         drawFitted(g, buttonFit, r, ic, label, 15, 7, 2.2f, rgb(primary ? WHITE : TEXT));
     };
-    button(L.add, Hit::AddFiles, Icon::Plus, "Add files", true);
-    button(L.folder, Hit::AddFolder, Icon::Folder, "Folder", false);
-    button(L.third, Hit::Third, rowCount() ? Icon::Close : Icon::Clipboard, thirdLabel, false);
+    if (pcMode_ == PcMode::Receive) {
+        button(L.add, Hit::AddFiles, Icon::Retry, "Receive", true);
+        button(L.folder, Hit::AddFolder, Icon::Folder, "Inbox", false);
+        button(L.third, Hit::Third, Icon::Phone, "Phone", false);
+    } else {
+        button(L.add, Hit::AddFiles, Icon::Plus, "Add files", true);
+        button(L.folder, Hit::AddFolder, Icon::Folder, "Folder", false);
+        button(L.third, Hit::Third, rowCount() ? Icon::Close : Icon::Clipboard, thirdLabel, false);
+    }
 }
 
 // ---------------------------------------------------------------- host-drawn interface
@@ -1250,13 +1716,19 @@ void Ui::command(const std::string& name, const std::string& arg) {
     auto number = [&] { return atoi(arg.c_str()); };
     if (name == "mode") setMode(number());
     else if (name == "card") {
+        if (pcMode_ != PcMode::Phone) { pcAction(); return; }
         CardState cs = cardState();
         if (cs == CardState::NoNetwork) setMode(2);
         else if (cs == CardState::BluetoothSetup) shell_.openBluetoothSetup();
         else if (mode_ == 2) hotspot_->start();
-        else if (mode_ == 1 && server_.port()) tunnel_->start(server_.port(), cs == CardState::TunnelMissing);
+        else tunnel_->start(server_.port(), cs == CardState::TunnelMissing);
         updateAnimation();
     } else if (name == "copy") copyLink();
+    else if (name == "pc_send") startPcSend();
+    else if (name == "pc_receive") startPcReceive();
+    else if (name == "pc_stop") stopPc();
+    else if (name == "pc_action") pcAction();
+    else if (name == "nearby") showNearby();
     else if (name == "share") shareLink();
     else if (name == "open_link") {
         if (std::string url = shareUrl(); !url.empty()) shell_.openUrl(url);
@@ -1293,15 +1765,35 @@ void Ui::command(const std::string& name, const std::string& arg) {
             refreshBinding();
             refreshQr();
         }
+    } else if (name == "pc_allow") {
+        server_.pcAnswer(true);
+    } else if (name == "pc_decline") {
+        server_.pcAnswer(false);
+    } else if (name == "history_open") {
+        openHistory(std::atoi(arg.c_str()));
     } else if (name == "menu") {
         static const std::map<std::string, int> ids = {
             {"open_inbox", ID_OPEN_INBOX},   {"change_inbox", ID_CHANGE_INBOX}, {"burn", ID_BURN},
             {"auto_any", ID_AUTO_ANY},       {"warn_any", ID_WARN_ANY},         {"topmost", ID_TOPMOST},
-            {"stop_tunnel", ID_STOP_TUNNEL}, {"about", ID_ABOUT}};
+            {"stop_tunnel", ID_STOP_TUNNEL}, {"about", ID_ABOUT},          {"note_clip", ID_NOTE_CLIP},
+            {"forget_phones", ID_FORGET_PHONES}, {"history_clear", ID_HIST_CLEAR}};
         auto it = ids.find(arg);
         if (it != ids.end()) menuCommand(it->second);
     }
     invalidate();
+}
+
+std::string Ui::historyJson() const {
+    std::string out = "[";
+    int64_t now = plat::unix_time();
+    for (size_t i = 0; i < history_.size() && i < 30; i++) {
+        const auto& e = history_[history_.size() - 1 - i];
+        if (i) out += ",";
+        out += "{\"i\":" + std::to_string(i) + ",\"kind\":" + jstr(std::string(1, e.kind)) + ",\"title\":" + jstr(historyTitle(e)) +
+               ",\"device\":" + jstr(e.device) + ",\"when\":" + jstr(persist::ago(now - e.time)) +
+               ",\"size\":" + std::to_string(e.size) + "}";
+    }
+    return out + "]";
 }
 
 std::string Ui::stateJson() {
@@ -1338,6 +1830,7 @@ std::string Ui::stateJson() {
     // Card.
     const char* card = "busy";
     switch (cardState()) {
+    case CardState::Pc: card = "pc"; break;
     case CardState::DragOver: card = "drag"; break;
     case CardState::TunnelBusy:
     case CardState::HotspotBusy: card = "busy"; break;
@@ -1484,6 +1977,12 @@ std::string Ui::stateJson() {
     std::string copyLabel = hotspotJoin ? "Copy hotspot password" : mode_ == 1 ? "Copy QR code" : "Copy link";
 
     std::string j = "{";
+    j += "\"pc\":{\"mode\":" + std::to_string((int)pcMode_) + ",\"sent\":" + jbool(pcSent_) +
+         ",\"phase\":" + std::to_string((int)pcDownload_.phase) + ",\"code\":" + jstr(pcDownload_.code) +
+         ",\"pair\":{\"pending\":" + jbool(server_.pcPairing().pending) + ",\"name\":" + jstr(server_.pcPairing().name) +
+         ",\"code\":" + jstr(server_.pcPairing().code) + "},\"name\":" + jstr(pcDownload_.name) +
+         ",\"error\":" + jstr(pcDownload_.error) + ",\"received\":" + std::to_string(pcDownload_.received) +
+         ",\"total\":" + std::to_string(pcDownload_.total) + "},";
     j += "\"mode\":" + std::to_string(mode_) + ",\"offline\":" + jbool(offlineShown);
     j += ",\"status\":" + jstr(status) + ",\"tone\":" + jstr(tone);
     j += ",\"card\":" + jstr(card) + ",\"cardMsg\":" + jstr(cardMsg) + ",\"pct\":" + std::to_string(pct);
@@ -1497,7 +1996,9 @@ std::string Ui::stateJson() {
     j += ",\"rows\":" + rows + ",\"sharing\":" + jbool(sharing());
     j += ",\"menu\":{\"burn\":" + jbool(burnAfter_) + ",\"auto\":" + jbool(autoAnywhere_) + ",\"warn\":" +
          jbool(!shell_.loadSetting("AnywhereRiskDismissed", 0)) + ",\"topmost\":" + jbool(topmost_) +
-         ",\"tunnelOpen\":" + jbool(tunnelOpen) + ",\"inbox\":" + jstr(inbox_) + ",\"addrs\":" + addrs + "}";
+         ",\"tunnelOpen\":" + jbool(tunnelOpen) + ",\"inbox\":" + jstr(inbox_) + ",\"addrs\":" + addrs +
+         ",\"noteClip\":" + jbool(noteClipboard_) + ",\"phones\":" + std::to_string(server_.trustedDevices().size()) +
+         ",\"history\":" + historyJson() + "}";
     j += ",\"busy\":" + jbool(animating_);
     j += ",\"recent\":" + jbool((copiedAt_ && now - copiedAt_ < 2500) || (doneAt_ && now - doneAt_ < 7000) ||
                                 (visitAt_ && now - visitAt_ < 125000) || (copiedRowAt_ && now - copiedRowAt_ < 2500));

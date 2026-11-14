@@ -51,6 +51,8 @@ h1{font-size:18px;margin:0;letter-spacing:-.01em}
 #pick{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;font-size:0}
 textarea{display:block;width:100%;min-height:104px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:12px;margin:12px 0 8px;resize:vertical}
 .code{display:block;width:100%;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:600 21px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.08em;text-align:center;text-transform:uppercase;padding:14px;margin:12px 0 8px}
+.remember{display:flex;align-items:center;gap:9px;margin:12px 2px 0;color:var(--mute);font-size:14px}
+.remember input{width:18px;height:18px;accent-color:var(--acc)}
 .auth-error{min-height:18px;color:var(--bad);font-size:12.5px;text-align:center;margin-top:8px}
 .q{display:flex;align-items:center;gap:12px;padding:12px 2px 0}
 .q .th{width:40px;height:40px;border-radius:10px}.q .th svg{width:19px;height:19px}
@@ -89,7 +91,8 @@ body.dragging #send{outline:2px dashed var(--acc);outline-offset:-2px}
 <div class="send-top"><b>Send to <span id="pc">your computer</span></b><span class="sub">Photos, videos, files or text</span></div>
 <div id="receive-auth" hidden><div class="sub">Enter the receive code shown in PocketDrop before sending anything to this computer.</div>
 <input class="code" id="authcode" type="text" inputmode="text" autocapitalize="characters" autocomplete="off" maxlength="9" placeholder="ABCD-EFGH" aria-label="Receive code">
-<button class="btn" id="authbtn" type="button">Unlock sending</button><div class="auth-error" id="autherr"></div></div>
+<label class="remember" id="rememberrow"><input type="checkbox" id="remember"> Remember this phone</label>
+<button class="btn" id="authbtn" type="button" style="margin-top:12px">Unlock sending</button><div class="auth-error" id="autherr"></div></div>
 <div id="send-actions">
 <div class="two">
 <label class="btn"><svg><use href="#i-up"/></svg><span>Choose files</span><input type="file" id="pick" multiple aria-label="Choose files to send"></label>
@@ -258,9 +261,64 @@ function addFiles(list){
   pump();
 }
 
+// Plain-HTTP pages have no crypto.subtle, so the proof for a remembered phone is computed here.
+function sha256(msg){
+  const K=[],H=[];
+  for(let p=2,n=0;n<64;p++){let prime=true;for(let d=2;d*d<=p;d++)if(p%d===0){prime=false;break}
+    if(prime){if(n<8)H[n]=Math.floor((Math.sqrt(p)%1)*4294967296)|0;K[n]=Math.floor((Math.cbrt(p)%1)*4294967296)|0;n++}}
+  const len=msg.length,total=((len+9+63)>>6)<<6,buf=new Uint8Array(total);buf.set(msg);buf[len]=0x80;
+  const dv=new DataView(buf.buffer);dv.setUint32(total-8,Math.floor(len/536870912));dv.setUint32(total-4,(len<<3)>>>0);
+  const w=new Int32Array(64),h=H.slice();
+  for(let o=0;o<total;o+=64){
+    for(let i=0;i<16;i++)w[i]=dv.getInt32(o+i*4);
+    for(let i=16;i<64;i++){
+      const a=w[i-15],b=w[i-2];
+      w[i]=(w[i-16]+(((a>>>7)|(a<<25))^((a>>>18)|(a<<14))^(a>>>3))+w[i-7]+(((b>>>17)|(b<<15))^((b>>>19)|(b<<13))^(b>>>10)))|0;
+    }
+    let [a,b,c,d,e,f,g,k]=h;
+    for(let i=0;i<64;i++){
+      const t1=(k+(((e>>>6)|(e<<26))^((e>>>11)|(e<<21))^((e>>>25)|(e<<7)))+((e&f)^(~e&g))+K[i]+w[i])|0;
+      const t2=((((a>>>2)|(a<<30))^((a>>>13)|(a<<19))^((a>>>22)|(a<<10)))+((a&b)^(a&c)^(b&c)))|0;
+      k=g;g=f;f=e;e=(d+t1)|0;d=c;c=b;b=a;a=(t1+t2)|0;
+    }
+    h[0]=(h[0]+a)|0;h[1]=(h[1]+b)|0;h[2]=(h[2]+c)|0;h[3]=(h[3]+d)|0;h[4]=(h[4]+e)|0;h[5]=(h[5]+f)|0;h[6]=(h[6]+g)|0;h[7]=(h[7]+k)|0;
+  }
+  const out=new Uint8Array(32),ov=new DataView(out.buffer);
+  for(let i=0;i<8;i++)ov.setInt32(i*4,h[i]);
+  return out;
+}
+function hmacHex(key,msg){
+  const te=new TextEncoder();let k=te.encode(key);if(k.length>64)k=sha256(k);
+  const ip=new Uint8Array(64),op=new Uint8Array(64);
+  for(let i=0;i<64;i++){const v=k[i]||0;ip[i]=v^0x36;op[i]=v^0x5c}
+  const m=te.encode(msg),inner=new Uint8Array(64+m.length);inner.set(ip);inner.set(m,64);
+  const ih=sha256(inner),outer=new Uint8Array(96);outer.set(op);outer.set(ih,64);
+  return Array.from(sha256(outer),x=>x.toString(16).padStart(2,"0")).join("");
+}
+const deviceKey="pocketdrop.device";
+function savedDevice(){try{const d=JSON.parse(localStorage.getItem(deviceKey)||"null");return d&&d.device&&d.secret?d:null}catch(e){return null}}
+function saveDevice(d){try{d?localStorage.setItem(deviceKey,JSON.stringify(d)):localStorage.removeItem(deviceKey)}catch(e){}}
+let triedDevice=false;
+// A phone remembered on this computer unlocks sending without the code.
+async function unlockRemembered(){
+  const d=savedDevice();
+  if(!d||triedDevice)return;
+  triedDevice=true;
+  try{
+    let r=await fetch(`auth?device=${enc(d.device)}`,{method:"POST"});
+    if(r.status===401){saveDevice(null);return}
+    if(r.status!==200)return;
+    const {nonce}=await r.json();
+    r=await fetch(`auth?device=${enc(d.device)}&proof=${hmacHex(d.secret,nonce)}`,{method:"POST"});
+    if(r.status===204){data.receiveOk=true;updateSendAuth()}
+    else if(r.status===401)saveDevice(null);
+  }catch(e){triedDevice=false}
+}
+
 function updateSendAuth(){
   const locked=!!(data&&data.receiveAuth&&!data.receiveOk);
   $("#receive-auth").hidden=!locked;
+  if(locked)unlockRemembered();
   $("#send-actions").hidden=locked;
   if(locked)setTimeout(()=>$("#authcode").focus(),0);
 }
@@ -271,7 +329,9 @@ async function unlockSending(){
   if(code.length!==8){error.textContent="Enter the full eight-character code.";return}
   button.setAttribute("aria-disabled","true");error.textContent="";
   try{
-    const r=await fetch("auth",{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:code});
+    const remember=$("#remember").checked;
+    const r=await fetch(remember?"auth?remember=1":"auth",{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:code});
+    if(r.status===200){try{saveDevice(await r.json())}catch(e){}data.receiveOk=true;input.value="";updateSendAuth();return}
     if(r.status===204){data.receiveOk=true;input.value="";updateSendAuth();return}
     error.textContent=r.status===429?"Too many attempts. Scan the PocketDrop QR code again.":"That code didn't match.";
     input.select();
@@ -333,20 +393,45 @@ function fail(status){
   return new Error("Couldn't save on your computer");
 }
 
+const crcTab=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xedb88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+async function crcOf(blob){
+  const b=new Uint8Array(await blob.arrayBuffer());let c=0xffffffff;
+  for(let i=0;i<b.length;i++)c=crcTab[(c^b[i])&255]^(c>>>8);
+  return (c^0xffffffff)>>>0;
+}
+function gf2(mat,vec){let sum=0,i=0;while(vec){if(vec&1)sum^=mat[i];vec>>>=1;i++}return sum>>>0}
+function gf2sq(sq,mat){for(let n=0;n<32;n++)sq[n]=gf2(mat,mat[n])}
+function crcJoin(a,b,len){
+  if(len<=0)return a;
+  const odd=new Array(32),even=new Array(32);odd[0]=0xedb88320;let row=1;
+  for(let n=1;n<32;n++){odd[n]=row;row<<=1}
+  gf2sq(even,odd);gf2sq(odd,even);
+  do{
+    gf2sq(even,odd);if(len&1)a=gf2(even,a);len=Math.floor(len/2);if(!len)break;
+    gf2sq(odd,even);if(len&1)a=gf2(odd,a);len=Math.floor(len/2);
+  }while(len);
+  return (a^b)>>>0;
+}
+const hex8=n=>n.toString(16).padStart(8,"0");
+
 async function upload(it){
   if(data&&data.receiveAuth&&!data.receiveOk)throw fail(401);
   if(!it.id){
     const r=await fetch(`up?name=${enc(it.name)}&size=${it.size}`,{method:"POST"});
     if(!r.ok)throw fail(r.status);
     const j=await r.json();
-    it.id=j.id;it.sent=j.received||0;
+    it.id=j.id;it.sent=j.received||0;it.acc=0;it.accAt=0;it.bad=0;
     if(j.done){it.state="done";it.saved=j.name;return}
   }
   const chunk=(data&&data.chunk)||8388608;
   while(it.sent<it.size){
     if(it.state==="cancel")return;
     let res;
-    try{res=await put(it,it.f.slice(it.sent,Math.min(it.size,it.sent+chunk)))}
+    const slice=it.f.slice(it.sent,Math.min(it.size,it.sent+chunk)),base=it.sent,crc=await crcOf(slice);
+    if(it.state==="cancel")return;
+    // The whole-file CRC is only known while chunks go out in order from the start.
+    const whole=it.accAt===base?crcJoin(it.acc,crc,slice.size):null;
+    try{res=await put(it,slice,crc,base+slice.size>=it.size&&whole!==null?whole:null)}
     catch(e){
       if(it.state==="cancel")return;
       if(++it.tries>8)throw new Error("Connection lost. Tap retry.");
@@ -361,17 +446,24 @@ async function upload(it){
     }
     it.tries=0;
     if(res.status===409){it.sent=res.body.received;continue}
+    if(res.status===422){
+      if(res.body.error==="file_checksum"){it.id=null;it.sent=0;throw new Error("The file was damaged on the way. Tap retry.")}
+      if(++it.bad>8)throw new Error("Chunks keep arriving damaged. Check your connection and tap retry.");
+      it.sent=res.body.received;continue;
+    }
+    it.bad=0;
     if(res.status!==200){if(res.status===404){it.id=null;it.sent=0}throw fail(res.status)}
     it.sent=res.body.received;
+    if(it.accAt===base&&it.sent===base+slice.size){it.acc=whole;it.accAt=it.sent}else it.accAt=-1;
     if(res.body.done){it.state="done";it.saved=res.body.name;return}
   }
 }
 
-function put(it,blob){
+function put(it,blob,crc,fcrc){
   return new Promise((ok,no)=>{
     const x=new XMLHttpRequest(),base=it.sent;
     it.xhr=x;
-    x.open("PUT",`up/${it.id}?offset=${base}`);
+    x.open("PUT",`up/${it.id}?offset=${base}&crc=${hex8(crc)}${fcrc===null?"":"&fcrc="+hex8(fcrc)}`);
     x.upload.onprogress=e=>{
       it.live=base+e.loaded;
       const now=performance.now();

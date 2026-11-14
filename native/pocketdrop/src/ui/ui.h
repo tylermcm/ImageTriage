@@ -4,6 +4,9 @@
 #include "../core/http.h"
 #include "../core/qr.h"
 #include "../core/tunnel.h"
+#include "../core/nearby.h"
+#include "../core/persist.h"
+#include "../core/pc_transfer.h"
 #include "gfx.h"
 #include "shell.h"
 #include <map>
@@ -18,6 +21,7 @@ enum class Hit {
     ModeLocal,
     ModeOffline,
     ModeAnywhere,
+    Nearby,
     CardButton,
     Url,
     Copy,
@@ -36,6 +40,7 @@ struct HitTarget {
 };
 
 enum class CardState {
+    Pc,
     DragOver,
     TunnelBusy,
     TunnelMissing,
@@ -50,7 +55,7 @@ enum class CardState {
 
 struct Layout {
     float w = 0, h = 0;
-    RectF logo, title, menu, seg, segLocal, segOffline, segAny, card, cardButton, link, url, copy, share, info, list, add,
+    RectF logo, title, menu, seg, segLocal, segOffline, segAny, nearby, card, cardButton, link, url, copy, share, info, list, add,
         folder, third;
     bool compactLink = false; // Copy/Share shown as icons, leaving the address room on a narrow window
 };
@@ -91,7 +96,25 @@ public:
     void removePaths(const std::vector<std::string>& list);
 
 private:
+#ifdef POCKETDROP_RENDER_TEST
+    friend struct UiRenderTest;
+#endif
     void menuCommand(int cmd);
+    void showHistory();
+    void openHistory(int newestFirst);
+    void addHistory(persist::HistoryEntry entry);
+    void saveHistory();
+    std::string historyJson() const;
+    void showNearby();
+    void startPcSend();
+    void startPcReceive();
+    void stopPc();
+    void publishPc();
+    void pollPc();
+    void receiveFrom(const NearbyPeer& peer);
+    void pcAction();
+    void paintPc(Gfx& g, const Layout& L);
+    std::vector<NearbyPeer> pcSenders() const;
     struct Speed {
         uint64_t sent = 0, tick = 0;
         double bps = 0;
@@ -121,7 +144,7 @@ private:
     Layout layout() const;
     CardState cardState() const;
     HitTarget hitTest(float x, float y) const;
-    int rowCount() const { return (int)(received_.size() + paths_.size() + texts_.size()); }
+    int rowCount() const { return pcMode_ == PcMode::Receive ? (int)received_.size() : (int)(received_.size() + paths_.size() + texts_.size()); }
     float maxScroll() const;
 
     Shell& shell_;
@@ -136,6 +159,15 @@ private:
     std::string inbox_;
 
     HttpServer server_;
+    NearbyDiscovery nearby_;
+    enum class PcMode { Phone, Send, Receive };
+    PcMode pcMode_ = PcMode::Phone;
+    PcReceiver pcReceiver_;
+    PcDownload pcDownload_;
+    std::string pcOffer_;
+    bool pcSent_ = false, pcStarted_ = false, pcReceived_ = false;
+    uint64_t nextPcReceived_ = 1ull << 63;
+    Speed pcSpeed_;
     std::unique_ptr<Tunnel> tunnel_;
     std::unique_ptr<plat::Hotspot> hotspot_;
     std::vector<plat::LanAddr> addrs_;
@@ -143,10 +175,11 @@ private:
     int mode_ = 0; // 0 = same Wi-Fi, 1 = anywhere, 2 = offline hotspot
     std::string qrText_;
     std::string receiveCode_;
-    std::string listenAddress_;
+    std::string listenAddress_; // the one address the server listens on
     qr::Code qr_;
 
-    bool topmost_ = false, burnAfter_ = false, autoAnywhere_ = false;
+    bool topmost_ = false, burnAfter_ = false, autoAnywhere_ = false, noteClipboard_ = false;
+    std::vector<persist::HistoryEntry> history_; // oldest first
 
     HitTarget hover_, pressed_;
     float scroll_ = 0, spin_ = 0;

@@ -15,7 +15,7 @@ cd /d "%~dp0"
 set "OUT=..\..\image_triage\pocketdrop"
 if not exist build\obj mkdir build\obj
 
-set SRC=src\core\qr.cpp src\core\deflate.cpp src\core\bundle.cpp src\core\http.cpp src\core\tunnel.cpp ^
+set SRC=src\core\qr.cpp src\core\deflate.cpp src\core\bundle.cpp src\core\http.cpp src\core\tunnel.cpp src\core\nearby.cpp src\core\pc_transfer.cpp ^
  src\ui\ui.cpp src\ui\icons.cpp src\win\platform_win.cpp src\win\hotspot_win.cpp capi\pocketdrop_capi.cpp
 set LIBS=user32.lib gdi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib ws2_32.lib iphlpapi.lib winhttp.lib ^
  wintrust.lib crypt32.lib bcrypt.lib advapi32.lib windowscodecs.lib runtimeobject.lib

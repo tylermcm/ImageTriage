@@ -29,6 +29,9 @@ public:
     static std::string findBinary();
 
 private:
+#ifdef POCKETDROP_RENDER_TEST
+    friend struct UiRenderTest;
+#endif
     void run(int port, bool allowDownload);
     // One cloudflared process lifetime. Returns a user-facing failure message.
     std::string runOnce(const std::string& exe, const std::string& home, int port, plat::File log, bool& registered);
