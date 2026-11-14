@@ -303,3 +303,16 @@ def test_the_viewer_names_what_is_shown_and_the_photos_own_folder(qapp, world):
     viewer._row = w.row("e")
     assert viewer.crumb == "Search: sunset › other"
     viewer.shutdown()
+
+
+def test_an_analysis_cannot_be_started_without_an_open_folder(qapp, world):
+    from image_triage.qml_shell.ai_center import AiCenterBackend
+    from image_triage.qml_shell.cull_model import CullModel
+    from test_qml_shell_ai_center import FakeOps
+
+    w = world
+    w.show([w.b, w.e])
+    cull = CullModel(w.photos, memory=False, ai=AiCenterBackend(FakeOps(), parent=qapp), toasts=w.toasts, parent=qapp)
+    cull.start()
+    assert not cull.analyzing and w.toasts.items[-1]["title"] == "Open a folder first"
+    cull.shutdown()

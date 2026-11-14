@@ -1691,6 +1691,11 @@ class CullModel(QObject):
     # -- the run (scripted) ------------------------------------------------------------------------------------------------------
     @Slot()
     def start(self) -> None:
+        if getattr(self._photos, "isVirtual", False):
+            # Photos of several folders are shown together: an analysis reads and writes one folder, and there is none open.
+            if self._toasts is not None:
+                self._toasts.push("info", "Open a folder first", "Photos from several folders are shown; the analysis works on one folder.")
+            return
         s = self._s
         if self._run is not None and any(r.get("record") is not None for r in self._photos.all_rows()):
             self._start_real()
