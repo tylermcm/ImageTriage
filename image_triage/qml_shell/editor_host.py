@@ -229,6 +229,58 @@ class EditorHost(QObject):
             self._filmstrip.stop()
         self._filmstrip = EditorFilmstrip(self, photos, thumbs, preview)
 
+    # How many photos after the one open are looked at for the next raw to get ready.
+    PREFETCH_LOOKAHEAD = 3
+
+    def _next_raw(self, path: str) -> str:
+        """The next raw after ``path`` in the order the photos are browsed in, or "" (none near, or nothing is being browsed)."""
+        from .. import photocraft_bridge
+
+        photos = getattr(self._filmstrip, "photos", None)
+        if photos is None:
+            return ""
+        row = photos.row_for_path(path)
+        if row < 0:
+            return ""
+        for index in range(row + 1, row + 1 + self.PREFETCH_LOOKAHEAD):
+            item = photos.row_at(index)
+            if item is None:
+                break
+            if Path(item["path"]).suffix.lower() in photocraft_bridge.RAW_SUFFIXES:
+                return str(item["path"])
+        return ""
+
+    def _prefetch_next(self) -> None:
+        """A photo has just opened in Camera Raw: ask the editor to develop the next raw meanwhile, so stepping to it costs next to
+        nothing. Nothing depends on it: an editor that cannot, a photo that changed or a request that fails only means the next
+        open takes its usual time. The file is looked at and the request sent on a thread."""
+        proc, path = self._proc, self._path
+        if (self._memory or proc is None or not self._running(proc) or not getattr(proc, "camera_raw_first", False)
+                or getattr(proc.control, "camera_raw_prefetch_supported", False) is not True):
+            return
+        following = self._next_raw(path)
+        if not following or self._wanted:
+            return                               # nothing to get ready, or another photo is already asked for
+
+        def work() -> None:
+            from .. import photocraft_bridge
+            from ..scanner import normalized_path_key
+
+            try:
+                relative = proc.path_within_root(following)
+                if relative is None or photocraft_bridge.sidecar_pcraft_path(following).exists():
+                    return                       # outside what the editor may read, or it opens as a project, not in Camera Raw
+                signature = photocraft_bridge.file_signature(following)
+                key = normalized_path_key(following)
+                if not signature or getattr(proc, "prefetch_sent", None) == (relative, key) or self._path != path or not self._running(proc):
+                    return
+                proc.prefetch_sent = (relative, key)
+                proc.control.app_prefetch(relative, signature)
+            except Exception as error:           # a convenience: never a failure the person is told about
+                LOG.info("Could not ask the editor to get %s ready: %s", Path(following).name, error)
+
+        threading.Thread(target=work, name="editor-prefetch", daemon=True).start()
+
     @Slot(str)
     def openPath(self, path: str) -> None:
         self._open_path(path, full_editor=False)
@@ -570,6 +622,7 @@ class EditorHost(QObject):
             self._set(EDITING, "")
             self.opened.emit(self._path)
             self._open_wanted()
+            self._prefetch_next()
         elif what == "open-failed":
             self._wanted = None
             if self._proc is not None and not self._running(self._proc):
