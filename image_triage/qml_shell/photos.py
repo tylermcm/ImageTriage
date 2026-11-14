@@ -11,7 +11,7 @@ import threading
 import zlib
 from pathlib import Path
 
-from PySide6.QtCore import Property, QAbstractListModel, QObject, QByteArray, QModelIndex, Qt, Signal, Slot
+from PySide6.QtCore import Property, QAbstractListModel, QObject, QByteArray, QModelIndex, Qt, QTimer, Signal, Slot
 
 from ..capture_times import natural_key
 from ..formats import RAW_SUFFIXES
@@ -74,6 +74,16 @@ def member_key(path: str) -> str:
     return os.path.join(folder, name_key(tail))
 
 
+def _readable(folder: str) -> bool:
+    """Can the folder be listed right now? Asked on a worker only: a share that is asleep holds the answer for many seconds."""
+    try:
+        with os.scandir(folder) as entries:
+            next(entries, None)
+    except OSError:
+        return False
+    return True
+
+
 def _sample(name: str) -> tuple[str, int, int]:
     h = zlib.crc32(name.encode("utf-8", "replace"))
     return _DECISIONS[h % len(_DECISIONS)], (h >> 3) % 6, 40 + (h >> 7) % 60
@@ -115,6 +125,10 @@ class PhotoModel(QAbstractListModel):
     renameFinished = Signal(str, str, str)  # one photo was renamed from the grid (rename_one.py): old path, new path ("" when it failed), why it failed
     _loaded = Signal(object, str, int)      # `object`, not `list`: a list is copied row by row on its way through the signal
     _captureTimesRead = Signal(int, object)
+    _folderProbed = Signal(str, bool)
+
+    # How often a folder that could not be read is asked whether it is back (on a worker, one question at a time).
+    RECHECK_MS = 5000
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -158,6 +172,12 @@ class PhotoModel(QAbstractListModel):
         self._scope_pred = None
         self._row_of_path: dict[str, int] | None = None     # path -> shown row; made when first asked for, dropped on every rebuild
         self._row_of_key: dict[str, int] | None = None      # the same by normalised path (case and slashes), for paths another program wrote
+        # A folder that could not be read (an offline share, an unplugged drive) is looked at again every few seconds and opened when it is back.
+        self._recheck = QTimer(self)
+        self._recheck.timeout.connect(self._probe_folder)
+        self._probing = False
+        self._folderProbed.connect(self._folder_probed)
+        self.loadErrorChanged.connect(self._watch_unavailable)
 
     # -- model ------------------------------------------------------------------------------------------------------------
     def roleNames(self) -> dict:
@@ -259,6 +279,35 @@ class PhotoModel(QAbstractListModel):
                 self._loaded.emit(rows, folder, token)
 
         threading.Thread(target=work, name="qml-scan", daemon=True).start()
+
+    # -- a folder that could not be read ------------------------------------------------------------------------------------------
+    def _watch_unavailable(self) -> None:
+        if self._load_error and not self._mock:             # (the folder's own path is set a moment after the error is announced)
+            self._recheck.start(self.RECHECK_MS)
+        else:
+            self._recheck.stop()
+
+    def _probe_folder(self) -> None:
+        """Ask, off the UI thread, whether the folder that could not be read can be listed now. One question at a time: the one
+        before may still be waiting on a share that does not answer."""
+        if self._probing or self._loading or not self._load_error or not self._folder:
+            return
+        self._probing = True
+        folder = self._folder
+
+        def work() -> None:
+            back = _readable(folder)
+            try:
+                self._folderProbed.emit(folder, back)
+            except RuntimeError:
+                pass                                    # the model was destroyed meanwhile
+
+        threading.Thread(target=work, name="qml-folder-probe", daemon=True).start()
+
+    def _folder_probed(self, folder: str, back: bool) -> None:
+        self._probing = False
+        if back and folder == self._folder and self._load_error and not self._loading:
+            self.reload()
 
     def loadMock(self, directory: str) -> None:
         """Open p01..p12.jpg from `directory` with the mockup's exact names, decisions, ratings and capture data."""

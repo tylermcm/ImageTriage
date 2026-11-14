@@ -200,6 +200,7 @@ class LibraryNavModel(QObject):
         self._dir_rows = _RowsModel({"folder": "path", "title": "name", "photos": "count", "depth": "depth", "glyph": "icon", "here": "current", "canOpen": "expandable"}, self)
         self.changed.connect(self._publish)
         photos.loadingChanged.connect(self._note_count)
+        photos.loadErrorChanged.connect(self._folder_came_back)
         if memory:                                              # the sample page names the open folder and its count: keep them current
             photos.countsChanged.connect(self.changed.emit)
             photos.folderChanged.connect(self.changed.emit)
@@ -467,12 +468,23 @@ class LibraryNavModel(QObject):
             self._watcher.addPath(folder)
             self._watch_seen = _listing(folder)
 
+    def _folder_came_back(self) -> None:
+        """The open folder could not be read when it was opened, so it was not watched; it has been read now: watch it."""
+        if self._open and not self._photos.loadError and _key(self._photos.folderPath) == _key(self._open):
+            self._watch(self._open)
+
     def _watched_change(self) -> None:
         if not self._open or not self._watching():
             return
         if self._photos.loading:
             self._watch_timer.start(450)                        # a read is still going: look again once it is done
-        elif not path_policy.confirmed_missing(self._open):
+        elif path_policy.confirmed_missing(self._open):
+            # The folder itself is gone (deleted, renamed, its disk taken out). Read it once more so the grid says so, with a way to
+            # try again or pick another folder, rather than keep showing photos that are not there. Saved decisions are not touched.
+            if not self._photos.loadError:
+                self._watch_seen = None
+                self.refreshFolder()
+        else:
             seen = _listing(self._open)
             if seen is not None and seen == self._watch_seen:
                 return                                          # only the app's own files changed (a sidecar, its hidden AI and edit folders): nothing to read again

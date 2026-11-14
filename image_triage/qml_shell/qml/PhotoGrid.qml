@@ -363,6 +363,7 @@ Item {
                 if (k === Qt.Key_Escape) { e.accepted = true; return }
             }
             if (root.dragging) { if (k === Qt.Key_Escape) { root.dragCancelled = true; root.endDrag(false) } e.accepted = true; return }
+            if (unavailable.visible && (k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_Space)) { if (!e.isAutoRepeat && !photos.loading) photos.reload(); e.accepted = true; return }
             var shift = (e.modifiers & Qt.ShiftModifier) !== 0, ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
             if (settings.keyIs("accept_selection", k, e.modifiers)) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") { var won = rows.filter(function (r) { return photos.get(r).decision === "win" }); if (won.length) collections.addRows(collections.activeId, won) } advance(rows, "win") }
             else if (settings.keyIs("collect_at_cursor", k, e.modifiers)) root.addToCollection();
@@ -723,7 +724,7 @@ Item {
         anchors.centerIn: parent
         anchors.verticalCenterOffset: -root.bottomSpace / 3
         spacing: 10
-        visible: photos.shown === 0 && !photos.loading && photos.subfolders.length === 0
+        visible: photos.shown === 0 && !photos.loading && photos.subfolders.length === 0 && !unavailable.visible
         Icon { anchors.horizontalCenter: parent.horizontalCenter; name: photos.folderPath === "" ? "library" : (photos.total > 0 ? "funnel" : "view"); size: 52; strokeWidth: 1.2; color: theme.fg3 }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg2; font.pointSize: UiState.pt(14); font.weight: Font.Medium
@@ -732,6 +733,45 @@ Item {
         Text {
             anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg3; font.pointSize: UiState.pt(11.5)
             text: photos.folderPath === "" ? "Pick a drive or folder in the Library on the left." : photos.loadError !== "" ? photos.loadError + " Press F5 to try again." : (photos.total > 0 ? "Clear the filters from the bar below to see them." : "It has no supported images and no folders. Pick another from the Library.")
+        }
+    }
+    Item {   // the open folder cannot be read (an offline share, an unplugged drive, no permission): what happened, where, and what can be done
+        id: unavailable
+        objectName: "folderUnavailable"
+        visible: photos.loadError !== "" && photos.folderPath !== "" && photos.shown === 0
+        anchors.fill: parent
+        Accessible.role: Accessible.AlertMessage
+        Accessible.name: "This folder is not available. " + photos.loadError + " " + photos.folderPath
+        Column {
+            anchors.centerIn: parent
+            anchors.verticalCenterOffset: -root.bottomSpace / 3
+            width: Math.min(parent.width - 48, 520)
+            spacing: 12
+            Icon { anchors.horizontalCenter: parent.horizontalCenter; path: Icons.folder + "M4 3.5l16 17"; size: 52; strokeWidth: 1.2; color: theme.fg3 }
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg; font.pointSize: UiState.pt(14); font.weight: Font.Medium
+                text: "This folder is not available"
+            }
+            Text {
+                objectName: "folderUnavailableReason"
+                width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; color: theme.fg2; font.pointSize: UiState.pt(12)
+                text: photos.loadError
+            }
+            Rectangle {   // where it is
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: Math.min(parent.width, wherePath.implicitWidth + 24); height: 28; radius: 9; color: theme.s2; border.color: theme.lineSoft
+                Text { id: wherePath; objectName: "folderUnavailablePath"; anchors.centerIn: parent; width: Math.min(implicitWidth, parent.parent.width - 24); elide: Text.ElideMiddle
+                       text: photos.folderPath; color: theme.fg2; font.pointSize: UiState.pt(11.5) }
+            }
+            Row {
+                anchors.horizontalCenter: parent.horizontalCenter; spacing: 10; topPadding: 4
+                SButton { objectName: "folderRetry"; variant: "primary"; text: photos.loading ? "Checking\u2026" : "Try again"; enabled: !photos.loading; onClicked: photos.reload() }
+                SButton { objectName: "folderChooseOther"; text: "Choose another folder\u2026"; onClicked: UiState.openFolderRequested() }
+            }
+            Text {
+                width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; color: theme.fg3; font.pointSize: UiState.pt(11.5)
+                text: "It opens by itself when the folder is back. Your decisions and collections are kept."
+            }
         }
     }
     MouseArea {   // right click: the photo's menu, or the folder's menu on empty space (left clicks pass through to the cells)
