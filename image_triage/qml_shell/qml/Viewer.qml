@@ -352,6 +352,23 @@ FocusScope {
                     smooth: true; mipmap: pan.effectiveScale < 1
                     opacity: !v.loading && (status === Image.Ready || (v.rawEditing && readyPath === v.curPath)) ? 1 : 0
                 }
+                Item {
+                    // A levelling grid over the finished picture while the straighten slider is dragged.
+                    objectName: "rawStraightenGrid"
+                    visible: rawPanel.visible && rawPanel.straightening && photoImg.status === Image.Ready
+                    x: photoImg.x + (photoImg.width - photoImg.paintedWidth) / 2
+                    y: photoImg.y + (photoImg.height - photoImg.paintedHeight) / 2
+                    width: photoImg.paintedWidth; height: photoImg.paintedHeight
+                    Repeater {
+                        model: 5
+                        Item {
+                            required property int index
+                            anchors.fill: parent
+                            Rectangle { x: parent.width * (index + 1) / 6; width: 1; height: parent.height; color: "#66ffffff" }
+                            Rectangle { y: parent.height * (index + 1) / 6; height: 1; width: parent.width; color: "#66ffffff" }
+                        }
+                    }
+                }
                 MouseArea {
                     objectName: "rawWhiteBalanceSample"
                     visible: rawPanel.visible && (rawPanel.whiteBalancePicking || rawPanel.pointColorPicking) && photoImg.status === Image.Ready

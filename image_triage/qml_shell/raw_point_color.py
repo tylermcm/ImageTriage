@@ -80,9 +80,7 @@ class RawPointColor(QObject):
         """A click on the photo while picking: ``x``, ``y`` are fractions of the picture as shown (inside the crop)."""
         if not self._picking or not all(math.isfinite(v) and 0 <= v <= 1 for v in (x, y)):
             return
-        crop = self.raw.values["hostCrop"]
-        if not self.raw.cropEditing:
-            x, y = crop["x"] + x * crop["w"], crop["y"] + y * crop["h"]
+        x, y = (min(1.0, max(0.0, value)) for value in self.raw.source_point(x, y))
         self._picking = False
         self.raw._enqueue("maskSample", {"area": [x, y, x, y], "kind": "pointColor", "add": False, "target": -1})
         self.raw.changed.emit()

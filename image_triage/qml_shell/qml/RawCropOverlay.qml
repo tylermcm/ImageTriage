@@ -17,7 +17,7 @@ Item {
     readonly property real ratio: preset === "Free" ? 0 : preset === "Original" ? width / Math.max(1, height) : Number(preset.split(":")[0]) / Number(preset.split(":")[1])
     function sync() {
         if (dragging) return
-        var r = model.values.hostCrop
+        var r = model.cropView       // the rectangle over the frame as it is shown (after quarter-turns and mirrors)
         cx = r.x; cy = r.y; cw = r.w; ch = r.h
     }
     Component.onCompleted: sync()
@@ -105,7 +105,7 @@ Item {
         onReleased: {
             if (!crop.dragging) return
             crop.dragging = false
-            if (crop.cw*crop.width >= 4 && crop.ch*crop.height >= 4) crop.model.setCrop(crop.cx,crop.cy,crop.cw,crop.ch)
+            if (crop.cw*crop.width >= 4 && crop.ch*crop.height >= 4) crop.model.setCropView(crop.cx,crop.cy,crop.cw,crop.ch)
             crop.sync()
         }
         onCanceled: { crop.dragging = false; crop.sync() }

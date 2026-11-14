@@ -124,6 +124,7 @@ class RawEditor(QObject):
         self._baseline_size = [0, 0]
         self._detail_size = [0, 0]
         self._crop_editing = False
+        self._source_view = False
         self._gesture = False
         self._gesture_recorded = False
         self._detail_mode = False
@@ -185,30 +186,102 @@ class RawEditor(QObject):
     def values(self):
         values = deepcopy(DEFAULTS)
         values.update(deepcopy(self._draft))
-        for key in ("glow", *WHEELS):
+        for key in ("glow", "hostCrop", *WHEELS):      # a crop saved before it could be turned has no turn in it
             values[key] = {**DEFAULTS[key], **self._draft.get(key, {})}
         return values
 
     def _cropped_url(self, path, clip):
+        """The picture's address with how it is framed for display. The crop tool shows the whole frame, turned by quarter-turns
+        and mirrors so the rectangle can be drawn over it; the tools that draw on the picture as the camera recorded it (masks,
+        retouching, red eye) show it cropped and not turned; everywhere else it is the finished picture."""
         url = _image_url(path)
-        from ..raw_crop import active as crop_active
-        if url.startswith("image://") and clip["w"] > 0 and crop_active(self.values["hostCrop"]):
-            return url + "?crop=" + ",".join(str(clip[key]) for key in ("x", "y", "w", "h"))
-        return url
+        if not url.startswith("image://"):
+            return url                       # a file preview (no preview helper): QML clips it; a turn is only in what is saved
+        from ..raw_crop import framed
+        crop = self.values["hostCrop"]
+        parts = []
+        if not self._crop_editing and clip["w"] > 0 and framed(crop):
+            parts.append("crop=" + ",".join(str(clip[key]) for key in ("x", "y", "w", "h")))
+        if not self._source_view or self._crop_editing:
+            turn = raw_preview.turn_query(crop, quarter_only=self._crop_editing)
+            if turn:
+                parts.append(turn)
+        return url + ("?" + "&".join(parts) if parts else "")
 
     preview = Property(str, lambda self: self._cropped_url(self._detail if self._detail_mode and self._detail else self._preview, self.previewClip), notify=changed)
     baseline = Property(str, lambda self: self._cropped_url(self._baseline, self.baselineClip), notify=changed)
     detailPending = Property(bool, lambda self: self._detail_mode and not self._detail, notify=changed)
     def _display_size(self):
-        if self._crop_editing or min(self._full_size) <= 0:
+        from ..raw_crop import turned_size
+        crop = self.values["hostCrop"]
+        if min(self._full_size) <= 0:
             return self._full_size
-        return crop_bounds(self.values["hostCrop"], *self._full_size)[2:]
+        if self._crop_editing:
+            return list(turned_size(crop, *self._full_size, quarter_only=True))
+        size = crop_bounds(crop, *self._full_size)[2:]
+        return list(size) if self._source_view else list(turned_size(crop, *size))
 
     fullWidth = Property(int, lambda self: self._display_size()[0], notify=changed)
     fullHeight = Property(int, lambda self: self._display_size()[1], notify=changed)
     originalWidth = Property(int, lambda self: self._full_size[0], notify=changed)
     originalHeight = Property(int, lambda self: self._full_size[1], notify=changed)
     cropEditing = Property(bool, lambda self: self._crop_editing, notify=changed)
+    sourceView = Property(bool, lambda self: self._source_view, notify=changed)
+
+    @Slot(bool)
+    def setSourceView(self, enabled):
+        """Show the picture as the camera recorded it (cropped, not turned): the masks, retouching and red eye are drawn on that."""
+        if self._source_view != enabled:
+            self._source_view = enabled
+            self.changed.emit()
+
+    def source_point(self, x, y):
+        """Where a point of the picture as shown (0..1) is in the developed picture as recorded."""
+        from ..raw_crop import view_to_frame, view_to_source
+        crop = self.values["hostCrop"]
+        if self._crop_editing:
+            return view_to_frame(x, y, crop, quarter_only=True)
+        if self._source_view:
+            return crop["x"] + x * crop["w"], crop["y"] + y * crop["h"]
+        return view_to_source(x, y, crop, shape=tuple(self._full_size) if min(self._full_size) > 0 else (1.0, 1.0))
+
+    # -- the crop as the crop tool shows it: over the whole frame after quarter-turns and mirrors ---------------------------------
+    @Property("QVariantMap", notify=changed)
+    def cropView(self):
+        from ..raw_crop import rect_to_view
+        x, y, w, h = rect_to_view(self.values["hostCrop"])
+        return {"x": x, "y": y, "w": w, "h": h}
+
+    cropAngle = Property(float, lambda self: __import__("image_triage.raw_crop", fromlist=["shown_angle"]).shown_angle(self.values["hostCrop"]), notify=changed)
+    cropTurned = Property(bool, lambda self: __import__("image_triage.raw_crop", fromlist=["turned"]).turned(self.values["hostCrop"]), notify=changed)
+
+    @Slot(float, float, float, float)
+    def setCropView(self, x, y, width, height):
+        from ..raw_crop import rect_from_view
+        if all(math.isfinite(v) for v in (x, y, width, height)):
+            self.setCrop(*(min(1.0, max(0.0, v)) for v in rect_from_view(x, y, width, height, self.values["hostCrop"])))
+
+    @Slot(int)
+    def rotateCrop(self, quarter_turns):
+        """Turn what is shown by quarter-turns, clockwise for a positive number."""
+        from ..raw_crop import rotated
+        self._set_values({"hostCrop": rotated(self.values["hostCrop"], int(quarter_turns))}, "Rotate", render=False)
+
+    @Slot(bool)
+    def flipCrop(self, horizontal):
+        from ..raw_crop import flipped
+        self._set_values({"hostCrop": flipped(self.values["hostCrop"], bool(horizontal))}, "Flip horizontal" if horizontal else "Flip vertical", render=False)
+
+    @Slot(float)
+    def setCropAngle(self, angle):
+        """Straighten: ``angle`` is in degrees as the person sees the picture turn (clockwise positive)."""
+        from ..raw_crop import MAX_ANGLE
+        if not math.isfinite(angle):
+            return
+        crop = self.values["hostCrop"]
+        angle = max(-MAX_ANGLE, min(MAX_ANGLE, round(angle, 2)))
+        crop["angle"] = -angle if crop["flipH"] != crop["flipV"] else angle
+        self._set_values({"hostCrop": crop}, "Straighten", render=False)
 
     @Property("QVariantMap", notify=changed)
     def previewClip(self):
@@ -342,15 +415,21 @@ class RawEditor(QObject):
             return
         crop = {**self.values["hostCrop"], "ratio": ratio}
         if ratio != "Free":
-            aspect = self._full_size[0] / max(1, self._full_size[1]) if self._full_size[0] else 1
+            # The ratio is of the picture as shown, so it is worked out there (a quarter-turn swaps width and height) and put back.
+            from ..raw_crop import rect_from_view, rect_to_view, turned_size
+            shown = turned_size(crop, *self._full_size, quarter_only=True) if self._full_size[0] else (1, 1)
+            aspect = shown[0] / max(1, shown[1])
             desired = aspect if ratio == "Original" else float(ratio.split(":")[0]) / float(ratio.split(":")[1])
             normalized = desired / aspect
-            width, height = crop["w"], crop["h"]
+            x, y, width, height = rect_to_view(crop)
             if width / height > normalized:
-                width = height * normalized
+                narrower = height * normalized
+                x, width = x + (width - narrower) / 2, narrower
             else:
-                height = width / normalized
-            crop.update(x=crop["x"]+(crop["w"]-width)/2, y=crop["y"]+(crop["h"]-height)/2, w=width, h=height)
+                shorter = width / normalized
+                y, height = y + (height - shorter) / 2, shorter
+            left, top, wide, high = rect_from_view(x, y, width, height, crop)
+            crop.update(x=left, y=top, w=wide, h=high)
         self._set_values({"hostCrop": crop}, "Crop ratio", render=False)
 
     @Slot()
@@ -405,9 +484,7 @@ class RawEditor(QObject):
     def pickWhiteBalance(self, x, y):
         if not self._loaded or self._saving or not all(math.isfinite(v) and 0 <= v <= 1 for v in (x, y)):
             return
-        crop = self.values["hostCrop"]
-        if not self._crop_editing:
-            x, y = crop["x"] + x*crop["w"], crop["y"] + y*crop["h"]
+        x, y = (min(1.0, max(0.0, value)) for value in self.source_point(x, y))
         self._enqueue("whiteBalance", (x, y))
         self.changed.emit()
 

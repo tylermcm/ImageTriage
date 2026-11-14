@@ -15,6 +15,7 @@ Item {
     property real controlHeight: 45
     property bool expandable: false
     property bool expanded: false
+    readonly property bool pressed: slider.pressed       // the handle is being dragged
     signal committed(real next)
     signal toggleDetails()
     implicitHeight: compact ? 26 : controlHeight

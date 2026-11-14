@@ -11,8 +11,12 @@ from uuid import uuid4
 from PySide6.QtCore import QIODevice, QSaveFile, Qt
 from PySide6.QtGui import QColorSpace, QImage, QImageReader
 
-DEFAULT_CROP = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "ratio": "Original"}
+# The rectangle is in the developed picture as the camera recorded it (0..1). The turn comes after it, in this order: straighten
+# by ``angle`` degrees (clockwise, keeping the largest upright rectangle of the same shape), a quarter-turn ``rotate`` (clockwise
+# degrees), then the two mirrors as the person sees the picture. A recipe written before these existed has none of them.
+DEFAULT_CROP = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "ratio": "Original", "rotate": 0, "flipH": False, "flipV": False, "angle": 0.0}
 RATIOS = ("Original", "Free", "1:1", "4:5", "3:2", "16:9")
+MAX_ANGLE = 45.0
 
 
 def valid(crop):
@@ -21,14 +25,138 @@ def valid(crop):
     c = {**DEFAULT_CROP, **crop}
     if c["ratio"] not in RATIOS:
         return False
-    if any(type(c[k]) not in (int, float) or not math.isfinite(c[k]) for k in ("x", "y", "w", "h")):
+    if any(type(c[k]) not in (int, float) or not math.isfinite(c[k]) for k in ("x", "y", "w", "h", "angle")):
+        return False
+    if type(c["rotate"]) is not int or c["rotate"] not in (0, 90, 180, 270):
+        return False
+    if type(c["flipH"]) is not bool or type(c["flipV"]) is not bool or abs(c["angle"]) > MAX_ANGLE:
         return False
     return (0 <= c["x"] < 1 and 0 <= c["y"] < 1 and 0 < c["w"] <= 1 and 0 < c["h"] <= 1
             and c["x"] + c["w"] <= 1.000001 and c["y"] + c["h"] <= 1.000001)
 
 
+def framed(crop):
+    """Whether the rectangle itself takes anything away."""
+    return valid(crop) and any(abs(crop.get(k, DEFAULT_CROP[k]) - DEFAULT_CROP[k]) > 1e-7 for k in ("x", "y", "w", "h"))
+
+
+def turned(crop):
+    """Whether the picture is straightened, rotated or mirrored."""
+    if not valid(crop):
+        return False
+    c = {**DEFAULT_CROP, **crop}
+    return bool(c["rotate"] or c["flipH"] or c["flipV"] or abs(c["angle"]) > 1e-7)
+
+
 def active(crop):
-    return valid(crop) and any(abs(crop.get(k, v) - v) > 1e-7 for k, v in DEFAULT_CROP.items() if k != "ratio")
+    return framed(crop) or turned(crop)
+
+
+def _straightened(width: float, height: float, angle: float) -> float:
+    """The scale of the largest upright rectangle of the same shape inside a ``width`` x ``height`` picture turned by ``angle``."""
+    c, s = abs(math.cos(math.radians(angle))), abs(math.sin(math.radians(angle)))
+    return min(width / (width * c + height * s), height / (width * s + height * c))
+
+
+def turned_size(crop, width: int, height: int, quarter_only: bool = False) -> tuple[int, int]:
+    """The size of a ``width`` x ``height`` picture after the turn (the rectangle is not applied here)."""
+    c = {**DEFAULT_CROP, **crop}
+    if not quarter_only and abs(c["angle"]) > 1e-7:
+        scale = _straightened(width, height, c["angle"])
+        # One pixel in from each edge: the turned picture's own edge is blended with nothing, and must not show as a seam.
+        width, height = max(1, math.floor(width * scale) - 2), max(1, math.floor(height * scale) - 2)
+    return (height, width) if c["rotate"] in (90, 270) else (width, height)
+
+
+def turn(image, crop, quarter_only: bool = False):
+    """``image`` straightened, rotated and mirrored as ``crop`` says. ``quarter_only`` leaves the straightening out (the crop
+    tool shows the whole frame upright that way, with the rectangle drawn over it)."""
+    from PySide6.QtGui import QTransform
+
+    c = {**DEFAULT_CROP, **crop}
+    if not quarter_only and abs(c["angle"]) > 1e-7:
+        width, height = turned_size({"angle": c["angle"]}, image.width(), image.height())
+        kind = image.format()
+        spun = image.transformed(QTransform().rotate(c["angle"]), Qt.TransformationMode.SmoothTransformation)
+        image = spun.copy((spun.width() - width) // 2, (spun.height() - height) // 2, width, height)
+        if image.format() != kind:
+            image = image.convertToFormat(kind)        # turning adds an alpha channel for the empty corners; none are kept
+    if c["rotate"]:
+        image = image.transformed(QTransform().rotate(c["rotate"]))
+    if c["flipH"] or c["flipV"]:
+        image = image.flipped((Qt.Orientation.Horizontal if c["flipH"] else Qt.Orientation(0)) | (Qt.Orientation.Vertical if c["flipV"] else Qt.Orientation(0)))
+    return image
+
+
+def view_to_frame(u: float, v: float, crop, quarter_only: bool = False, shape: tuple[float, float] = (1.0, 1.0)) -> tuple[float, float]:
+    """Where a point of the turned picture (0..1 across what is shown) is in the picture before the turn (0..1). ``shape`` is the
+    width and height of the picture before the turn; only their proportion matters, and only when it is straightened."""
+    c = {**DEFAULT_CROP, **crop}
+    if c["flipH"]:
+        u = 1 - u
+    if c["flipV"]:
+        v = 1 - v
+    u, v = {0: (u, v), 90: (v, 1 - u), 180: (1 - u, 1 - v), 270: (1 - v, u)}[c["rotate"]]
+    if not quarter_only and abs(c["angle"]) > 1e-7:
+        width, height = shape
+        scale = _straightened(width, height, c["angle"])
+        x, y = (u - 0.5) * width * scale, (v - 0.5) * height * scale       # from the centre, in the kept rectangle
+        cos, sin = math.cos(math.radians(-c["angle"])), math.sin(math.radians(-c["angle"]))
+        u, v = 0.5 + (x * cos - y * sin) / width, 0.5 + (x * sin + y * cos) / height
+    return u, v
+
+
+def view_to_source(u: float, v: float, crop, shape: tuple[float, float] = (1.0, 1.0)) -> tuple[float, float]:
+    """Where a point of the finished picture (cropped and turned, 0..1) is in the developed picture as recorded (0..1).
+    ``shape`` is the developed picture's width and height."""
+    c = {**DEFAULT_CROP, **crop}
+    u, v = view_to_frame(u, v, c, shape=(shape[0] * c["w"], shape[1] * c["h"]))
+    return c["x"] + u * c["w"], c["y"] + v * c["h"]
+
+
+def rect_to_view(crop):
+    """The crop rectangle as the crop tool shows it: over the whole frame after the quarter-turn and mirrors. (x, y, w, h)."""
+    c = {**DEFAULT_CROP, **crop}
+    x0, y0, x1, y1 = c["x"], c["y"], c["x"] + c["w"], c["y"] + c["h"]
+    corners = [_frame_to_view(x, y, c) for x, y in ((x0, y0), (x1, y1))]
+    left, top = min(p[0] for p in corners), min(p[1] for p in corners)
+    return left, top, abs(corners[1][0] - corners[0][0]), abs(corners[1][1] - corners[0][1])
+
+
+def rect_from_view(x: float, y: float, w: float, h: float, crop):
+    """The inverse of ``rect_to_view``: a rectangle drawn in the crop tool, as (x, y, w, h) in the picture as recorded."""
+    c = {**DEFAULT_CROP, **crop}
+    corners = [view_to_frame(px, py, c, quarter_only=True) for px, py in ((x, y), (x + w, y + h))]
+    left, top = min(p[0] for p in corners), min(p[1] for p in corners)
+    return left, top, abs(corners[1][0] - corners[0][0]), abs(corners[1][1] - corners[0][1])
+
+
+def _frame_to_view(x: float, y: float, c) -> tuple[float, float]:
+    u, v = {0: (x, y), 90: (1 - y, x), 180: (1 - x, 1 - y), 270: (y, 1 - x)}[c["rotate"]]
+    return (1 - u if c["flipH"] else u), (1 - v if c["flipV"] else v)
+
+
+def rotated(crop, quarter_turns: int):
+    """``crop`` after turning what is shown by quarter turns clockwise. The mirrors are kept as the person sees them."""
+    c = {**DEFAULT_CROP, **crop}
+    for _ in range(quarter_turns % 4):
+        c["rotate"] = (c["rotate"] + 90) % 360
+        c["flipH"], c["flipV"] = c["flipV"], c["flipH"]        # a mirror across one axis is across the other after a quarter-turn
+    return c
+
+
+def flipped(crop, horizontal: bool):
+    """``crop`` after mirroring what is shown left-to-right (or top-to-bottom)."""
+    c = {**DEFAULT_CROP, **crop}
+    key = "flipH" if horizontal else "flipV"
+    c[key] = not c[key]
+    return c
+
+
+def shown_angle(crop) -> float:
+    """The straighten angle as the person sees it turn: a single mirror reverses the direction."""
+    c = {**DEFAULT_CROP, **crop}
+    return -c["angle"] if c["flipH"] != c["flipV"] else c["angle"]
 
 
 def bounds(crop, width, height):
@@ -73,8 +201,10 @@ def _crop_to_file(source, destination, crop):
     del reader
     if image.isNull():
         raise ValueError("The full-resolution crop source could not be decoded")
-    if active(crop):
+    if framed(crop):
         image = image.copy(*bounds(crop, image.width(), image.height()))
+    if turned(crop):
+        image = turn(image, crop)
     output = QSaveFile(str(destination))
     if not output.open(QIODevice.WriteOnly) or not image.save(output, "PNG") or not output.commit():
         raise OSError("The cropped image could not be saved")

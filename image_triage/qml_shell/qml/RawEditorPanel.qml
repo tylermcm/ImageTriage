@@ -48,10 +48,17 @@ Rectangle {
     onVisibleChanged: {
         if (!visible) { before = false; whiteBalancePicking = false; tool = "Adjust"; if (model) model.pointColor.setPicking(false) }
         else refreshCapture()
-        if (model) model.setCropEditing(visible && tool === "Crop")
+        if (model) { model.setCropEditing(visible && tool === "Crop"); model.setSourceView(visible && sourceTool) }
     }
     Connections { target: captureData; function onReady(path) { if (path === panel.photoPath) panel.refreshCapture() } }
+    // The straighten slider is being dragged: the finished picture is shown instead of the frame with the rectangle, to level it by eye.
+    property bool straightening: false
+    // The masks, retouching and red eye are drawn on the picture as the camera recorded it, so those tools show it not turned.
+    readonly property bool sourceTool: ["Mask", "Remove", "Red Eye"].indexOf(tool) >= 0
+    onStraighteningChanged: if (model) model.setCropEditing(visible && tool === "Crop" && !straightening)
+    onSourceToolChanged: if (model) model.setSourceView(visible && sourceTool)
     onToolChanged: {
+        straightening = false
         if (model) model.setCropEditing(visible && tool === "Crop")
         whiteBalancePicking = false
         if (scroll.contentItem) scroll.contentItem.contentY = 0
@@ -361,14 +368,25 @@ Rectangle {
                 Copy { width: parent.width; text: "Drag on the photo to draw a crop. Hold Ctrl for a free crop. Drag inside to move it, or drag a corner to resize."; wrapMode: Text.WordWrap; color: panel.muted; font.pixelSize: 12; bottomPadding: 12 }
                 SSelect { objectName: "rawCropRatio"; width: parent.width; options: ["Original", "Free", "1:1", "4:5", "3:2", "16:9"].map(function (v) { return {label: v, value: v} }); current: panel.model.values.hostCrop.ratio; enabled: panel.editable; onPicked: (value) => panel.model.setCropRatio(value) }
                 Action { text: "Reset crop"; enabled: panel.editable; onClicked: panel.model.resetCrop() }
-                Field { label: "Angle"; low: -45; high: 45; step: 0.1 }
+                RawColorSlider {
+                    objectName: "rawCropAngle"
+                    width: parent.width; controlHeight: 34
+                    label: "Straighten"; from: -45; to: 45; step: 0.1; decimals: 1
+                    enabled: panel.editable
+                    value: panel.model.cropAngle
+                    onCommitted: (next) => panel.model.setCropAngle(next)
+                    // While it is dragged the finished picture is shown, with a grid, instead of the frame and its rectangle.
+                    editModel: panel.model
+                    onPressedChanged: panel.straightening = pressed
+                }
                 Grid {
                     width: parent.width; columns: 2; spacing: 6
-                    Repeater {
-                        model: ["\u21b6 Rotate left", "\u21b7 Rotate right", "Flip horizontal", "Flip vertical"]
-                        delegate: Action { required property string modelData; text: modelData; width: (parent.width - 6) / 2; pending: true; enabled: false }
-                    }
+                    Action { objectName: "rawCropRotateLeft"; text: "\u21b6 Rotate left"; quiet: false; width: (parent.width - 6) / 2; enabled: panel.editable; onClicked: panel.model.rotateCrop(-1) }
+                    Action { objectName: "rawCropRotateRight"; text: "\u21b7 Rotate right"; quiet: false; width: (parent.width - 6) / 2; enabled: panel.editable; onClicked: panel.model.rotateCrop(1) }
+                    Action { objectName: "rawCropFlipH"; text: "Flip horizontal"; quiet: false; width: (parent.width - 6) / 2; enabled: panel.editable; onClicked: panel.model.flipCrop(true) }
+                    Action { objectName: "rawCropFlipV"; text: "Flip vertical"; quiet: false; width: (parent.width - 6) / 2; enabled: panel.editable; onClicked: panel.model.flipCrop(false) }
                 }
+                Copy { width: parent.width; topPadding: 6; text: "Straightening keeps the largest upright picture of the same shape inside the crop. Masks, retouching and red eye are placed on the picture before it is turned."; wrapMode: Text.WordWrap; color: panel.subtle; font.pixelSize: 11 }
                 Section {
                     inset: 0; topPadding: 8
                     title: "Geometry"; expanded: true
@@ -380,7 +398,14 @@ Rectangle {
                     inset: 0; topPadding: 8; title: "Generative Expand"; Pending {} }
                 Section {
                     inset: 0; topPadding: 8; title: "Trim"; Pending {} }
-                Copy { width: parent.width; text: "Crop is ready. Rotation, geometry and expansion are not available yet."; wrapMode: Text.WordWrap; color: panel.subtle; font.pixelSize: 11; topPadding: 12 }
+                Copy { width: parent.width; text: "Crop, straighten, rotate and flip are ready. Geometry and expansion are not available yet."; wrapMode: Text.WordWrap; color: panel.subtle; font.pixelSize: 11; topPadding: 12 }
+            }
+            Copy {
+                objectName: "rawSourceViewNote"
+                visible: panel.sourceTool && !!panel.model && panel.model.cropTurned
+                x: 13; width: parent.width - 26; topPadding: 10
+                text: "Shown before rotation, flip and straightening while this tool is open."
+                wrapMode: Text.WordWrap; color: panel.subtle; font.pixelSize: 11
             }
             RawMaskPanel {
                 objectName: "rawMaskPanel"

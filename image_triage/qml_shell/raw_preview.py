@@ -29,9 +29,11 @@ class _Images(QQuickImageProvider):
         super().__init__(QQuickImageProvider.Image)
 
     def requestImage(self, key, size, requested):
-        key, _, clip = key.partition("?crop=")
+        key, _, query = key.partition("?")
+        options = dict(part.split("=", 1) for part in query.split("&") if "=" in part)
         with _frame_lock:
             image = (_thumbnails if key.startswith("thumb/") else _frames).get(key, QImage())
+        clip = options.get("crop", "")
         if clip and not image.isNull():
             try:
                 x, y, w, h = [int(v) for v in clip.split(",")]
@@ -39,9 +41,34 @@ class _Images(QQuickImageProvider):
                     image = image.copy(x, y, w, h)
             except ValueError:
                 pass
+        if options.get("turn") and not image.isNull():
+            image = _turned(image, options["turn"])
         size.setWidth(image.width())
         size.setHeight(image.height())
         return image
+
+
+def turn_query(crop, quarter_only=False):
+    """The part of a frame's address that says how it is straightened, rotated and mirrored for display ("" when it is not)."""
+    from ..raw_crop import DEFAULT_CROP, turned
+
+    c = {**DEFAULT_CROP, **crop}
+    if quarter_only:
+        c["angle"] = 0.0
+    if not turned(c):
+        return ""
+    return f"turn={c['rotate']},{int(c['flipH'])},{int(c['flipV'])},{c['angle']!r}"
+
+
+def _turned(image, text):
+    from ..raw_crop import turn, valid
+
+    try:
+        rotate, flip_h, flip_v, angle = text.split(",")
+        crop = {"rotate": int(rotate), "flipH": flip_h == "1", "flipV": flip_v == "1", "angle": float(angle)}
+    except ValueError:
+        return image
+    return turn(image, crop) if valid(crop) else image
 
 
 def install_images(engine):
