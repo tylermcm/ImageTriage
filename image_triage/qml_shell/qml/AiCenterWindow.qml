@@ -23,6 +23,9 @@ Backdrop {
     }
     ConfirmCard { id: removeCard; objectName: "aiRemoveCard"; property string key; confirmText: "Remove"; cancelText: "Cancel"; onAccepted: cull.modelAction(removeCard.key) }
     ConfirmCard { id: setupCard; objectName: "aiSetupCard"; cancelText: "Cancel"; onAccepted: cull.setupRuntime() }
+    // removing the runtime deletes gigabytes that a later setup downloads again, so it says what goes and what stays first
+    ConfirmCard { id: runtimeRemoveCard; objectName: "aiRuntimeRemoveCard"; warn: true; cancelText: "Cancel"; onAccepted: cull.removeRuntime() }
+    function removeRuntimePressed() { var t = cull.removeRuntimeText(); runtimeRemoveCard.title = t.title; runtimeRemoveCard.body = t.body; runtimeRemoveCard.confirmText = t.confirm; runtimeRemoveCard.open() }
     // neither of these can be taken back, so both ask first
     ConfirmCard { id: clearCard; objectName: "aiClearCard"; confirmText: "Clear"; cancelText: "Cancel"; title: "Clear the results shown here?"
                   body: "This forgets what the Cull window found for the open folder (a running analysis is stopped) and empties the list of recent runs. Your photos and your decisions are not touched."
@@ -71,11 +74,12 @@ Backdrop {
                     Item { width: 1; height: 12 }
                     H3 { text: "ENGINE"; width: parent.width }
                     Item { width: 1; height: 9 }
-                    Row2 { iconPath: "M7 7h10v10H7zM4 9h3M4 15h3M17 9h3M17 15h3M9 4v3M15 4v3M9 17v3M15 17v3"; title: "AI runtime"; tone: root.c.rtDot; state: root.c.rtState; desc: root.c.rtDesc; busy: root.c.rtInstalling; pct: root.c.rtPct; step: root.c.rtStep
+                    Row2 { iconPath: "M7 7h10v10H7zM4 9h3M4 15h3M17 9h3M17 15h3M9 4v3M15 4v3M9 17v3M15 17v3"; title: "AI runtime"; tone: root.c.rtDot; state: root.c.rtState; desc: root.c.rtDesc; busy: root.c.rtInstalling || !!root.c.rtRemoving; pct: root.c.rtPct; step: root.c.rtStep
                         SButton { objectName: "aiRuntimeButton"; visible: root.c.rtBtnShow !== false; text: root.c.rtBtn; variant: root.c.rtPrimary ? "primary" : "normal"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: root.runtimePressed() }
                         // Files on disk only say "installed". This starts the runtime for real and reports the device it used.
                         SButton { objectName: "aiRuntimeTest"; visible: !!root.c.rtTestShow; text: root.c.rtTestBtn || "Test runtime"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter
-                                  onClicked: root.c.rtTesting ? cull.cancelSetup() : cull.testRuntime() } }
+                                  onClicked: root.c.rtTesting ? cull.cancelSetup() : cull.testRuntime() }
+                        SButton { objectName: "aiRuntimeRemove"; visible: !!root.c.rtRemoveShow; text: "Remove…"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: root.removeRuntimePressed() } }
                     Item { width: 1; height: 8 }
                     Row2 { iconPath: "M4 5h16v10H4zM9 19h6M12 15v4"; title: "Graphics card"; tone: root.c.gpuDot; state: root.c.gpuState; desc: root.c.gpuDesc }
                     Item { visible: root.c.vcShow; width: 1; height: 8 }

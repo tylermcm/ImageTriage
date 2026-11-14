@@ -404,6 +404,8 @@ class CullModel(QObject):
                    "error": "The AI runtime could not be set up.", "checking": "Looking at what is installed…"}[s["rt"]]
         if rt_ready and not s["faceOk"]:
             rt_desc = "The face model is not installed yet (about 4 MB). Install it in the AI Center and the eyes check runs."
+        if self._ai_state is not None and self._ai_state.get("removing"):
+            rt_desc = "The AI runtime is being removed…"
         rtp = round(s["rtp"] * 100)
         rt_step = (self._ai_state["step"] if self._ai_state is not None else
                    ("Downloading the Python runtime" if s["rtp"] < 0.3 else "Installing packages" if s["rtp"] < 0.75 else "Checking that it starts") + f" · {rtp}%")
@@ -523,7 +525,7 @@ class CullModel(QObject):
             "doneTitle": done_title, "doneBody": done_body, "canUndo": bool(applied and ("entry" not in applied or applied["entry"])),
             "mini": s["running"] and s["hidden"] and s["window"] == "", "miniLine": f"{cur_stage} · {round(s['p'] * n)} of {n}",
             "center": self._center(s, rt_ready, rtp, rt_step, flagged, applied) if self._ai_state is not None else {"rtDot": "ok" if rt_ready else ("bad" if s["rt"] == "error" else "warn"), "rtState": {"ready": "Installed", "missing": "Not set up", "installing": "Installing…", "error": "Needs attention", "checking": "Checking…"}[s["rt"]],
-                       "rtInstalling": s["rt"] == "installing", "rtPct": rtp, "rtStep": rt_step,
+                       "rtInstalling": s["rt"] == "installing", "rtPct": rtp, "rtStep": rt_step, "rtRemoving": False, "rtRemoveShow": s["rt"] in ("ready", "error"),
                        "rtDesc": {"ready": "Python 3.13 with the packages the cull needs. It lives in Image Triage’s own folder and can be removed at any time.",
                                   "missing": "The cleanup works without it. The eyes-closed check and ranking need it: a one-time download of about a minute.", "installing": "Setting up…",
                                   "error": "It was installed but does not start on this PC."}[s["rt"]],
@@ -742,6 +744,8 @@ class CullModel(QObject):
     def _center_text(self, rt: str) -> str:
         """The Cull window's word for the AI runtime. "Ready" is only said of a runtime that was run: files on disk are "installed"."""
         a = self._ai_state
+        if a is not None and a.get("removing"):
+            return "Removing…"
         if a is not None and rt == "ready":
             probe = a.get("probe")
             if a.get("probing"):
@@ -819,6 +823,13 @@ class CullModel(QObject):
         elif rt == "ready" and can_test:
             rt_state = "Installed, not tested"
             rt_desc += " Its files are in place, but it has not been run in this session: Test runtime starts it and reports the device it really uses."
+        removing = bool(a.get("removing"))
+        if removing:
+            rt_state, rt_dot = "Removing…", "warn"
+            rt_desc = "Deleting the AI runtime from this PC. The models you installed are kept."
+        elif rt == "missing" and a.get("removed"):
+            freed = int(a["removed"].get("freed", 0) or 0)
+            rt_desc = (f"Removed{': ' + format_mb(max(1, round(freed / 1e6))) + ' freed' if freed else ''}. The models you installed are still on this PC. " + rt_desc)
         models = []
         for key, name, desc in (
                 ("face", "Face model (eyes-closed check)", "MediaPipe face landmarks. Runs on the CPU."),
@@ -854,7 +865,8 @@ class CullModel(QObject):
         return {"rtDot": rt_dot, "rtState": rt_state,
                 "rtTestShow": rt == "ready" and can_test and (probing or not a["busy"]), "rtTesting": probing,
                 "rtTestBtn": "Cancel test" if probing else ("Test again" if probe is not None else "Test runtime"),
-                "rtInstalling": rt == "installing", "rtPct": a["pct"], "rtStep": a["step"], "rtDesc": rt_desc,
+                "rtInstalling": rt == "installing", "rtPct": a.get("removePct", 0) if removing else a["pct"], "rtStep": a.get("removeStep", "") if removing else a["step"], "rtDesc": rt_desc,
+                "rtRemoving": removing, "rtRemoveShow": bool(a.get("canRemove")) and rt in ("ready", "error") and not a["busy"],
                 "rtBtn": "Cancel" if rt == "installing" else ("Set up AI" if rt == "missing" else "Repair"), "rtPrimary": rt == "missing", "rtBtnShow": rt != "checking" and not (a["busy"] and rt != "installing"),
                 "gpuDot": "ok" if gpu_tone == "ok" else "warn", "gpuState": gpu_state, "gpuDesc": gpu_desc,
                 "vcShow": a["vcOld"], "vcFound": f"Visual C++ {a['vcFound']}", "vcNeeded": "14.40",
@@ -1236,6 +1248,41 @@ class CullModel(QObject):
     @Slot(str, result="QVariantMap")
     def removeText(self, key: str) -> dict:
         return self._model_removal_text(key)
+
+    def _runtime_in_use(self) -> str:
+        """Why the AI runtime cannot be removed right now ("" when it can): something of this window is running on it."""
+        if self._s["running"] or bool(self._run is not None and getattr(self._run, "alive", False)):
+            return "An analysis is still running. Wait for it to finish, or cancel it, then remove the runtime."
+        if getattr(self, "_semantic_task", None) is not None or getattr(self, "_face_task", None) is not None:
+            return "The search index or the faces of this folder are still being built. Wait for that to finish, then remove the runtime."
+        return self._ai.can_remove_runtime() if self._ai is not None else ""
+
+    @Slot(result="QVariantMap")
+    def removeRuntimeText(self) -> dict:
+        """The words of the card that asks before the AI runtime is deleted: what goes, how much it frees, and what stays."""
+        a = self._ai_state or {}
+        size = int(a.get("runtimeBytes", 0) or 0)
+        freed = f" and frees about {format_mb(max(1, round(size / 1e6)))}" if size else ""
+        kept = [m["name"] for m in self._view.get("center", {}).get("models", []) if m.get("on")]
+        models = ("The models you installed stay on this PC (" + ", ".join(kept) + "); each has its own Remove button here."
+                  if kept else "No models are installed, so nothing else is left behind.")
+        return {"title": "Remove the AI runtime?", "confirm": "Remove",
+                "body": f"This deletes the AI runtime (Python packages with PyTorch) from Image Triage’s own folder{freed}. {models} "
+                        "The eyes-closed check, ranking, search and AI masks stop working until you set it up again, which downloads it again. "
+                        "Your photos, decisions and saved results are not touched."}
+
+    @Slot()
+    def removeRuntime(self) -> None:
+        """Remove the AI runtime. Refused, with the reason, while anything is running on it."""
+        if self._ai is None:                        # the scripted AI Center
+            self._set(rt="missing", rtp=0.0)
+            return
+        reason = self._runtime_in_use()
+        if reason:
+            if self._toasts is not None:
+                self._toasts.push("error", "The AI runtime is in use", reason)
+            return
+        self._ai.removeRuntime()
 
     def _install_tick(self) -> None:
         p = self._s["rtp"] + 0.06

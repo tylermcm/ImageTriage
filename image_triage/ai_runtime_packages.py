@@ -476,6 +476,53 @@ def uninstall_ai_runtime(*, install_root: str | Path | None = None) -> bool:
     return not directories.root.exists()
 
 
+@dataclass(frozen=True)
+class AIRuntimeRemoval:
+    """What removing the managed runtime did: whether there was one, what it freed, and what could not be deleted."""
+
+    existed: bool
+    freed_bytes: int
+    remaining: tuple[str, ...] = ()      # paths relative to the runtime root, at most REMOVAL_REPORT_LIMIT of them
+    remaining_count: int = 0
+    remaining_bytes: int = 0
+
+    @property
+    def complete(self) -> bool:
+        return self.remaining_count == 0
+
+
+REMOVAL_REPORT_LIMIT = 8
+
+
+def remove_ai_runtime(*, install_root: str | Path | None = None) -> AIRuntimeRemoval:
+    """Remove the managed runtime (every profile and its metadata) and say what happened.
+
+    Holds the install lock, so it never deletes under a running installer (that raises, as a second install does). A file that is
+    still open in another process (a DLL on Windows) cannot be deleted: the rest goes, and what stayed is listed for the person."""
+    directories = resolve_ai_runtime_directories(install_root=install_root)
+    root = directories.root
+    if not root.exists():
+        return AIRuntimeRemoval(existed=False, freed_bytes=0)
+    before = directory_size_bytes(root)
+    with _ai_runtime_install_lock(root):
+        # The metadata goes first: with it gone the runtime is "not installed" whatever else stays, so a half-removed runtime is
+        # never started. Then the tree, with the retries the installer uses for files a scanner holds for a moment.
+        try:
+            directories.metadata_path.unlink()
+        except OSError:
+            pass
+        uninstall_ai_runtime(install_root=root)
+    if not root.exists():
+        return AIRuntimeRemoval(existed=True, freed_bytes=before)
+    left = sorted(child for child in root.rglob("*") if child.is_file())
+    left_bytes = directory_size_bytes(root)
+    if not left:                                     # only empty folders stayed: nothing of the runtime is left
+        _remove_tree_with_retry(root, attempts=1)
+        return AIRuntimeRemoval(existed=True, freed_bytes=before)
+    names = tuple(child.relative_to(root).as_posix() for child in left[:REMOVAL_REPORT_LIMIT])
+    return AIRuntimeRemoval(existed=True, freed_bytes=max(0, before - left_bytes), remaining=names, remaining_count=len(left), remaining_bytes=left_bytes)
+
+
 def lock_path_for(variant: str, *, include_torch: bool = True) -> str:
     """Repository-relative path of the lock for one variant."""
     normalized = normalize_ai_runtime_variant(variant)
