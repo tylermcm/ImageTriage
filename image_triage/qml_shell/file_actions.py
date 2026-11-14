@@ -253,6 +253,20 @@ class FileActions(QObject):
             return item, None
         return item, record
 
+    def _folder_of(self, items: list) -> str:
+        """The folder a delete of ``items`` is carried out for: the open folder, or, when photos of several folders are shown
+        together, a folder of theirs when they all go to the same trash. Photos whose trash is in different places (some on this
+        computer, some on a card) are refused with a notice: one delete is one trash and one Undo. Returns "" then."""
+        folder = self._photos.folder_dir()
+        if folder or not items:
+            return folder
+        folders = list(dict.fromkeys(os.path.dirname(record.path) for record, _annotation in items))
+        roots = {os.path.normcase(str(self._recycle(each).recycle_root_for_folder())) for each in folders}
+        if len(roots) > 1:
+            self._toast("warn", "These photos are on different drives", "Delete the photos of one drive at a time: each drive has its own trash.")
+            return ""
+        return folders[0]
+
     def _recycle(self, folder: str):
         """The Widgets' recycle-bin rules for `folder` (where the safe trash is, whether it is a removable drive, the restore manifest)."""
         from ..safe_trash import SafeTrash
@@ -336,7 +350,9 @@ class FileActions(QObject):
     def _delete(self, items: list, *, single: bool) -> None:
         """``items`` is ``[(record, annotation)]``. Which kind of delete it is depends on the folder and the setting; the files
         themselves are handled on the worker, and the grid and the saved decisions change when it reports back."""
-        folder = self._photos.folder_dir()
+        folder = self._folder_of(items)
+        if not folder:
+            return
         name = items[0][0].name
         if _is_recycle_folder(folder):
             if single:
@@ -468,7 +484,9 @@ class FileActions(QObject):
         rows = [r for r in self._photos.all_rows() if os.path.normcase(os.path.normpath(r["path"])) in wanted and r.get("record") is not None]
         if not rows:
             return 0
-        if not self._safe_trash([(row["record"], row.get("annotation")) for row in rows], self._recycle(self._photos.folder_dir()), False):
+        items = [(row["record"], row.get("annotation")) for row in rows]
+        folder = self._folder_of(items)
+        if not folder or not self._safe_trash(items, self._recycle(folder), False):
             return 0
         self._jobs.wait()
         return self._last_trash_id

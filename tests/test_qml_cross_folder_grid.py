@@ -268,3 +268,38 @@ def test_the_window_names_what_is_shown_and_back_to_folder_returns(qapp, tmp_pat
     assert photos.folderPath == str(day1) and grid.property("count") == 2 and not back.property("visible")
     assert not [w for w in warnings if "PhotoGrid.qml" in w or "Main.qml" in w or "SidePanel.qml" in w or "LibraryWindow.qml" in w], warnings
     window.close(); engine.deleteLater(); pump(qapp, 0.2)
+
+
+def test_a_delete_among_several_folders_uses_the_photos_own_folder_not_an_empty_one(qapp, world, monkeypatch):
+    w = world
+    w.show([w.b, w.c, w.e])
+    asked = []
+    real = FileActions._recycle
+    monkeypatch.setattr(FileActions, "_recycle", lambda self, folder: (asked.append(folder), real(self, folder))[1])
+    w.files.deleteRows([w.row("b"), w.row("c")])
+    w.files.waitForIdle()
+    assert asked and "" not in asked and all(folder in (str(w.day1), str(w.day2)) for folder in asked)
+    assert not (w.day1 / "b.jpg").exists() and not (w.day2 / "c.jpg").exists()
+
+
+def test_photos_whose_trash_is_in_different_places_are_not_deleted_together(qapp, world, monkeypatch):
+    w = world
+    w.show([w.b, w.e])
+    # day 1 is on this computer; "other" is a card with a recycle folder of its own
+    monkeypatch.setattr(FileActions, "_recycle", lambda self, folder: type("R", (), {
+        "recycle_root_for_folder": lambda r: (w.other / "recycle bin") if folder == str(w.other) else (w.day1.parent / "trash")})())
+    w.files.deleteRows([w.row("b"), w.row("e")])
+    w.files.waitForIdle()
+    assert (w.day1 / "b.jpg").exists() and (w.other / "e.jpg").exists()
+    assert w.toasts.items[-1]["title"] == "These photos are on different drives"
+
+
+def test_the_viewer_names_what_is_shown_and_the_photos_own_folder(qapp, world):
+    from image_triage.qml_shell.viewer_host import ViewerHost
+
+    w = world
+    w.show([w.b, w.e], title="Search: sunset")
+    viewer = ViewerHost(w.photos, None, None, memory=True, parent=qapp)
+    viewer._row = w.row("e")
+    assert viewer.crumb == "Search: sunset › other"
+    viewer.shutdown()

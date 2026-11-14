@@ -221,6 +221,10 @@ class ViewerHost(QObject):
     @Property(str, notify=rowChanged)
     def crumb(self) -> str:
         """The folder as the top bar shows it: its last two names."""
+        if getattr(self._photos, "isVirtual", False):     # photos of several folders: what is shown, then the photo's own folder
+            item = self._photos.row_at(self._row)
+            here = Path(item["path"]).parent.name if item else ""
+            return " \u203a ".join(part for part in (self._photos.virtualTitle, here) if part)
         if not self._photos.folder_dir():                 # the sample page (--mock): the mockup's own folder names
             return "Georgia trip \u203a Kutaisi"
         folder = self._photos.folder_dir()
