@@ -298,6 +298,20 @@ function hmacHex(key,msg){
 const deviceKey="pocketdrop.device";
 function savedDevice(){try{const d=JSON.parse(localStorage.getItem(deviceKey)||"null");return d&&d.device&&d.secret?d:null}catch(e){return null}}
 function saveDevice(d){try{d?localStorage.setItem(deviceKey,JSON.stringify(d)):localStorage.removeItem(deviceKey)}catch(e){}}
+// The QR code on the computer's screen carries the receive code after a #, which browsers never send to a server.
+function hashCode(h){const m=/^#c=([A-Za-z0-9-]{8,9})$/.exec(h||"");const c=m?m[1].toUpperCase().replace(/[^A-Z0-9]/g,""):"";return c.length===8?c:""}
+let triedHash=false;
+async function unlockFromLink(){
+  const code=hashCode(location.hash);
+  if(!code||triedHash)return false;
+  triedHash=true;
+  try{history.replaceState(null,"",location.pathname+location.search)}catch(e){}
+  try{
+    const r=await fetch("auth",{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:code});
+    if(r.status===204){data.receiveOk=true;updateSendAuth();return true}
+  }catch(e){}
+  return false;
+}
 let triedDevice=false;
 // A phone remembered on this computer unlocks sending without the code.
 async function unlockRemembered(){
@@ -318,7 +332,7 @@ async function unlockRemembered(){
 function updateSendAuth(){
   const locked=!!(data&&data.receiveAuth&&!data.receiveOk);
   $("#receive-auth").hidden=!locked;
-  if(locked)unlockRemembered();
+  if(locked)unlockFromLink().then(ok=>{if(!ok)unlockRemembered()});
   $("#send-actions").hidden=locked;
   if(locked)setTimeout(()=>$("#authcode").focus(),0);
 }

@@ -532,8 +532,12 @@ void Ui::refreshQr() {
     std::string s;
     if (mode_ == 2 && hotspot_->state() == plat::HotspotState::On && !hotspot_->connected())
         s = qr::wifi(hotspot_->ssid(), hotspot_->passphrase());
-    else
+    else {
         s = shareUrl();
+        // Scanning the screen is proof of being in the room, so on the local network the code rides along in the
+        // link's fragment and the phone unlocks itself. Anywhere links are meant to be forwarded, so they ask for it.
+        if (!s.empty() && mode_ != 1 && !receiveCode_.empty()) s += "#c=" + receiveCode_.substr(0, 4) + "-" + receiveCode_.substr(4);
+    }
     if (s != qrText_) {
         qrText_ = s;
         qr_ = s.empty() ? qr::Code{} : qr::encode(s, qr::Ecc::M);
