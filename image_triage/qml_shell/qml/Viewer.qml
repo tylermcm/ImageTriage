@@ -106,6 +106,7 @@ FocusScope {
     function go(r) { rawPanel.whiteBalancePicking = false; if (rawEditing) zoomed = false; popout.go(r); refocus() }
     function step(n) { go(popout.row + n) }
     function decide(d) { popout.decide(row, d) }
+    function keepBest() { popout.keepBest(row); refocus() }      // this photo wins its burst, the rest are rejected (one undo step)
     function openEditor() {
         if (!popout.canEdit || UiState.vwScene === "noedit") return
         if (rawEditing && (rawEditor.dirty || rawEditor.saving)) {
@@ -577,6 +578,22 @@ FocusScope {
                                   return "Taken as one burst." + (a && b ? " " + a + " and " + b + " jump between bursts." : "") }
                            hovered: burstHover.hovered }
                 Accessible.role: Accessible.StaticText; Accessible.name: v.burst.label || ""
+            }
+            Item {   // this photo is the best of its burst
+                id: bestBtn
+                objectName: "viewerKeepBestButton"
+                readonly property string key: { void settings.shortcutRevision; return settings.seq("burst_keep_best") }
+                visible: (v.burst.label || "") !== ""; y: 0; width: bestRow.implicitWidth + 20; height: 28
+                Rectangle { anchors.fill: parent; radius: 8; color: bestHover.hovered ? v.cHover : v.cS2; border.color: v.cLine }
+                Row { id: bestRow; x: 10; anchors.verticalCenter: parent.verticalCenter; spacing: 6
+                    Icon { anchors.verticalCenter: parent.verticalCenter; path: "M12 20s-7-4.4-7-10a4 4 0 017-2.6A4 4 0 0119 10c0 5.6-7 10-7 10z"; size: 13; color: theme.win }
+                    Text { anchors.verticalCenter: parent.verticalCenter; text: "Keep best"; color: v.cFg; font.pointSize: UiState.pt(11.5); font.weight: Font.Medium }
+                    Kbd { anchors.verticalCenter: parent.verticalCenter; visible: bestBtn.key !== "" && v.width >= 1100; text: bestBtn.key } }
+                HoverHandler { id: bestHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { gesturePolicy: TapHandler.WithinBounds; onTapped: v.keepBest() }
+                HoverTip { tip: "Mark this photo the winner and reject the rest of its burst. Other winners stay."; hovered: bestHover.hovered }
+                Accessible.role: Accessible.Button; Accessible.name: "Keep best, reject rest"
+                Accessible.onPressAction: v.keepBest()
             }
             Item {   // format and size on disk
                 y: 0; width: kindRow.implicitWidth + 20; height: 28

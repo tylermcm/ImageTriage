@@ -26,7 +26,7 @@ BOUND_ACTIONS = (
     ("share_to_phone", "workflow.share_to_phone"), ("best_of_set_auto_assembly", "workflow.best_of"), ("delete_selection", "review.delete_selection"),
     ("move_selection", "review.move_selection"), ("clear_filters", "search.clear_filters"), ("open_ai_workflow_center", "ai.workflow_center"),
     ("zen_mode", "view.zen_mode"), ("next_ai_pick", "ai.next_top_pick"),
-    ("cycle_burst_previous", "review.burst_previous"), ("cycle_burst_next", "review.burst_next"),
+    ("cycle_burst_previous", "review.burst_previous"), ("cycle_burst_next", "review.burst_next"), ("burst_keep_best", "review.burst_keep_best"),
 )
 # Registry rows whose key is asked for where it is pressed (`keyIs` in the grid and the viewer, `seq` for the palette's own shortcut).
 KEY_ACTIONS = ("accept_selection", "reject_selection", "keep_at_cursor", "collect_at_cursor", "open_preview", "open_command_palette")

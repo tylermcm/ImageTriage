@@ -142,6 +142,10 @@ with no Exif date is in no burst, so files written one after another are not mis
 "Burst 3 · 2 of 7". `[` and `]` (Settings > Shortcuts, Cycle Burst) go to the first photo of the previous or next burst,
 in the viewer and in the grid. `popout.bursts` (`burst_model.py`) answers both.
 
+Keep best (the button beside the burst label, Shift+W, or the palette) marks the photo shown Winner and rejects the
+other photos of its burst, as one undo step. Photos already marked Winner are left alone; rejecting more than three
+photos already marked Keep is asked about first. It stays on the winner. From the grid it acts on the grid's photo.
+
 ## Validation and packaging
 
 Cull review keeps a separate stack model, so choosing a photo updates the detail

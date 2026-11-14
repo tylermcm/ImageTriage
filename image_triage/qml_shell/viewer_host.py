@@ -42,6 +42,7 @@ RAW_EDITOR_OPEN_KEY = "viewer/raw_editor_open"
 ASSIST_ON_KEY, ASSIST_COLOR_KEY = "preview/focus_assist_enabled", "preview/focus_assist_color"
 PRELOAD_KEY, ADVANCE_KEY = "preview/preload_batch_size", "view/auto_advance"
 DECISION_WORDS = {"win": "marked Winner", "keep": "kept", "rej": "rejected"}
+KEEP_BEST_CONFIRM_ABOVE = 3        # Keep best, reject rest asks first when it would reject more photos already marked Keep than this
 
 
 def _file_url(path: str) -> str:
@@ -78,6 +79,7 @@ class ViewerHost(QObject):
     stripChanged = Signal()
     barChanged = Signal()
     closed = Signal(int)                       # the viewer was put away on this row of the grid
+    keepBestConfirm = Signal(str, str, str)    # Keep best, reject rest wants a yes first: title, body, the button's words
     _done = Signal(str, str, str, str, int, int, str)
 
     def __init__(self, photos, thumbs, collections=None, *, files=None, cull=None, toasts=None, memory: bool = False,
@@ -90,6 +92,7 @@ class ViewerHost(QObject):
         from .burst_model import BurstModel
 
         self._bursts = BurstModel(photos, parent=self)
+        self._best_pending: tuple[str, dict[str, str]] | None = None      # what Keep best, reject rest asked about: the photo and the decisions
         self._raw_editor = RawEditor(memory=memory, parent=self)
         self._raw_editor.saved.connect(self._raw_saved)
         self._saved_previews: dict[str, tuple[str, int, int]] = {}
@@ -572,6 +575,74 @@ class ViewerHost(QObject):
     def rate(self, row: int, value: int) -> None:
         if self._photos.row_at(row) is not None:
             self._photos.setRating(row, max(0, min(5, int(value))))
+
+    # -- Keep best, reject rest: the photo shown wins its burst ---------------------------------------------------------------
+    @Slot(int)
+    def keepBest(self, row: int) -> None:
+        """Mark the photo on `row` Winner and reject the other photos of its burst, as one step. A photo already a Winner is left alone,
+        and rejecting more than a few photos already marked Keep is asked about first (`keepBestConfirm`, then `keepBestConfirmed`)."""
+        item = self._photos.row_at(row)
+        if item is None:
+            return
+        self._best_pending = None
+        others = [self._photos.row_at(r) for r in self._bursts.rows_of(row) if r != row]
+        if not others:
+            self._tell(self._bursts.missing(1) if self._bursts.reading else f"{item['name']} was not taken in a burst", "info")
+            return
+        values = {other["path"]: "rej" for other in others if other["decision"] not in ("win", "rej")}
+        if item["decision"] != "win":
+            values[item["path"]] = "win"
+        if not values:
+            self._tell("This burst is already decided this way", "info")
+            return
+        kept = sum(1 for other in others if other["decision"] == "keep")
+        if kept > KEEP_BEST_CONFIRM_ABOVE:
+            rejects = sum(1 for value in values.values() if value == "rej")
+            winners = sum(1 for other in others if other["decision"] == "win")
+            self._best_pending = (item["path"], values)
+            self.keepBestConfirm.emit(
+                f"Reject {rejects} photos of this burst?",
+                f"{kept} of them are marked Keep and become Rejects. {item['name']} becomes the Winner."
+                + (f" The {winners} other Winner{'s' if winners != 1 else ''} in the burst {'stay' if winners != 1 else 'stays'} as "
+                   f"{'they are' if winners != 1 else 'it is'}." if winners else "") + " You can undo this.",
+                "Keep best, reject rest")
+            return
+        self._keep_best(item["path"], values)
+
+    @Slot()
+    def keepBestConfirmed(self) -> None:
+        pending, self._best_pending = self._best_pending, None
+        if pending is not None:
+            self._keep_best(*pending)
+
+    def _keep_best(self, path: str, values: dict[str, str]) -> None:
+        previous = self._photos.update_decision_values(values)
+        if not previous:
+            return                                           # the photos went away, or were decided this way, while the question was up
+
+        def undo() -> bool:
+            # a decision made after this one is not overwritten
+            restore = {r["path"]: previous[r["path"]] for r in self._photos.all_rows()
+                       if r["path"] in previous and r["decision"] == values[r["path"]]}
+            self._photos.update_decision_values(restore)
+            return True
+
+        self._photos.push_undo(f"burst pick ({len(previous)} photo{'s' if len(previous) != 1 else ''})", undo)
+        row = self._photos.row_for_path(path)
+        item = self._photos.row_at(row)
+        if item is not None and path in previous and self._collections is not None and self._collections.activeId != "":
+            self._collections.addSelection(self._collections.activeId, row)       # as any new winner
+        rejected = sum(1 for p in previous if values[p] == "rej")
+        name = item["name"] if item is not None else os.path.basename(path)
+        self._tell(f"{name} is the winner, {rejected} other{'s' if rejected != 1 else ''} of the burst rejected" if rejected
+                   else f"{name} is the winner of the burst", "win", undo=True)
+
+    def _tell(self, text: str, kind: str, undo: bool = False) -> None:
+        """The viewer's toast while it is open, else the shell's (the same command runs from the grid)."""
+        if self._open or self._toasts is None:
+            self._say(text, kind, undo)
+        else:
+            self._toasts.show("success" if kind != "info" else "info", text, "")
 
     @Slot()
     def undo(self) -> None:

@@ -36,6 +36,7 @@ _COMMANDS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     ("review.auto_advance", "Review", "Auto Advance", "", ("toggle auto advance",)),
     ("review.burst_previous", "Review", "Previous Burst", "cycle_burst_previous", ("burst", "sequence", "previous burst", "jump")),
     ("review.burst_next", "Review", "Next Burst", "cycle_burst_next", ("burst", "sequence", "next burst", "jump")),
+    ("review.burst_keep_best", "Review", "Keep Best Of Burst, Reject Rest", "burst_keep_best", ("burst", "winner", "keep best", "reject rest", "pick")),
     ("view.zen_mode", "View", "Zen Mode", "zen_mode", ("fullscreen", "focus mode", "hide panels")),
     ("sort.name", "View", "View: Sort By Name", "", ("view", "sort", "name")),
     ("sort.ai", "View", "View: Sort By AI Score", "", ("view", "sort", "ai score")),
