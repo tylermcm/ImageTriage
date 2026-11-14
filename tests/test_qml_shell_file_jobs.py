@@ -2,6 +2,7 @@
 one operation at a time, and the undo step holds exactly what moved."""
 from __future__ import annotations
 
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -306,3 +307,69 @@ def test_a_work_function_that_raises_ends_the_operation_and_frees_the_worker(qap
     assert not done and said and "division" in said[0]
     assert jobs.start("Working", lambda ctx: "ok", done.append)
     assert jobs.wait(5000) and done == ["ok"]
+
+
+# ---- a name that is already used in the destination ---------------------------------------------------------------------------------
+
+
+def test_skip_leaves_the_whole_bundle_where_it_is_when_one_name_is_taken(tmp_path):
+    from image_triage import file_ops
+
+    source, target = tmp_path / "from", tmp_path / "to"
+    source.mkdir(); target.mkdir()
+    bundle = (str(source / "a.nef"), str(source / "a.jpg"))
+    for path in bundle:
+        open(path, "wb").write(b"mine")
+    (target / "a.jpg").write_bytes(b"theirs")                     # only the JPEG's name is taken
+    with pytest.raises(file_ops.NameTaken):
+        file_ops.move_paths(bundle, str(target), file_ops.COLLISION_SKIP)
+    assert all(os.path.exists(path) for path in bundle) and sorted(p.name for p in target.iterdir()) == ["a.jpg"]
+    assert (target / "a.jpg").read_bytes() == b"theirs"
+    with pytest.raises(file_ops.NameTaken):
+        file_ops.copy_paths(bundle, str(target), file_ops.COLLISION_SKIP)
+    assert sorted(p.name for p in target.iterdir()) == ["a.jpg"]
+    with pytest.raises(ValueError):
+        file_ops.move_paths(bundle, str(target), "replace")       # replacing is not a policy
+    moved = file_ops.move_paths(bundle, str(target))               # the default keeps both, with one number for the bundle
+    assert sorted(os.path.basename(m.target_path) for m in moved) == ["a_1.jpg", "a_1.nef"]
+    assert (target / "a.jpg").read_bytes() == b"theirs"
+
+
+def _policy(world, monkeypatch, mode):
+    from PySide6.QtCore import QSettings
+    from image_triage.qml_shell import file_actions
+
+    settings = QSettings(str(world.tmp / "collision.ini"), QSettings.Format.IniFormat)
+    settings.setValue(file_actions.COLLISION_KEY, mode)
+    monkeypatch.setattr(FileActions, "_settings", lambda self: settings)
+
+
+def test_a_move_with_the_skip_policy_says_which_photos_stayed_and_moves_the_rest(world, qapp, monkeypatch):
+    _policy(world, monkeypatch, "skip")
+    target = world.tmp / "delivery"
+    target.mkdir()
+    (target / "b.jpg").write_bytes(b"already here")
+    world.files.moveRows(rows(world.photos, "b", "c"), str(target))
+    assert wait_for(qapp, lambda: not world.files.busy)
+    assert (world.shoot / "b.jpg").exists() and (target / "b.jpg").read_bytes() == b"already here"
+    assert (target / "c.jpg").exists() and not (world.shoot / "c.jpg").exists()
+    assert any("already there" in title for title in titles(world.toasts))
+    assert world.photos.total == 2                                 # only c left the folder
+    assert world.photos.undo() == "move of c.jpg" and (world.shoot / "c.jpg").exists()   # the undo step holds what moved, nothing else
+
+
+def test_a_copy_that_keeps_both_says_what_the_new_name_is(world, qapp, monkeypatch):
+    _policy(world, monkeypatch, "rename")
+    target = world.tmp / "delivery"
+    target.mkdir()
+    (target / "c.jpg").write_bytes(b"already here")
+    world.files.copyRows(rows(world.photos, "c"), str(target))
+    assert wait_for(qapp, lambda: not world.files.busy)
+    assert (target / "c.jpg").read_bytes() == b"already here" and (target / "c_1.jpg").exists()
+    renamed = [item for item in world.toasts.items if "new name" in item["title"]]
+    assert renamed and "c.jpg → c_1.jpg" in renamed[0]["body"]
+
+
+def test_an_unknown_saved_policy_falls_back_to_keeping_both(world, monkeypatch):
+    _policy(world, monkeypatch, "overwrite")
+    assert world.files._collision_mode() == "rename"

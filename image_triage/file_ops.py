@@ -115,8 +115,34 @@ def _with_counter(name: str, shared_stem: str, counter: int) -> str:
     return f"{path.stem}_{counter}{path.suffix}"
 
 
-def move_paths(source_paths: tuple[str, ...], destination_dir: str) -> tuple[FileMove, ...]:
+# What to do with a photo whose name is already used in the destination folder. Replacing what is there is deliberately not
+# offered: nothing in the app overwrites a file.
+COLLISION_RENAME = "rename"      # keep both: the arriving photo gets a number added, the same one on every file of its bundle
+COLLISION_SKIP = "skip"          # leave the arriving photo where it is and say so
+COLLISION_MODES = (COLLISION_RENAME, COLLISION_SKIP)
+
+
+class NameTaken(FileExistsError):
+    """A photo was not moved or copied because its name is used in the destination and the policy is to skip."""
+
+
+def names_taken(source_paths: tuple[str, ...], destination_dir: str) -> list[str]:
+    """The file names of a bundle that already exist in ``destination_dir``."""
+    return [Path(path).name for path in source_paths if os.path.lexists(Path(destination_dir) / Path(path).name)]
+
+
+def _refuse_taken(source_paths: tuple[str, ...], destination_dir: str, on_collision: str) -> None:
+    if on_collision not in COLLISION_MODES:
+        raise ValueError(f"Unknown collision policy: {on_collision}")
+    if on_collision == COLLISION_SKIP:
+        taken = names_taken(source_paths, destination_dir)
+        if taken:
+            raise NameTaken(f"{taken[0]} is already in the destination folder")
+
+
+def move_paths(source_paths: tuple[str, ...], destination_dir: str, on_collision: str = COLLISION_RENAME) -> tuple[FileMove, ...]:
     Path(destination_dir).mkdir(parents=True, exist_ok=True)
+    _refuse_taken(source_paths, destination_dir, on_collision)
     file_moves: list[FileMove] = []
     moved_targets: list[FileMove] = []
     try:
@@ -134,8 +160,9 @@ def move_paths(source_paths: tuple[str, ...], destination_dir: str) -> tuple[Fil
     return tuple(file_moves)
 
 
-def copy_paths(source_paths: tuple[str, ...], destination_dir: str) -> tuple[FileMove, ...]:
+def copy_paths(source_paths: tuple[str, ...], destination_dir: str, on_collision: str = COLLISION_RENAME) -> tuple[FileMove, ...]:
     Path(destination_dir).mkdir(parents=True, exist_ok=True)
+    _refuse_taken(source_paths, destination_dir, on_collision)
     file_copies: list[FileMove] = []
     created_targets: list[FileMove] = []
     try:

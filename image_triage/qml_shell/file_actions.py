@@ -30,6 +30,7 @@ from .file_jobs import FileJobs
 
 _restore = safe_trash_store.restore_moves          # one photo's files back to where they were, all or none, never replacing
 LIMIT_KEY = "workflow/safe_trash_limit_gb"         # 0: no limit
+COLLISION_KEY = "workflow/name_collision"           # file_ops.COLLISION_MODES
 TRASH_ROOTS_KEY = "workflow/safe_trash_roots"       # the recycle folders the app has made on drives
 
 SAFE_TRASH = "Safe Trash (Undoable)"
@@ -229,6 +230,15 @@ class FileActions(QObject):
         if self._memory:
             return SAFE_TRASH
         return str(self._settings().value("workflow/delete_mode", SAFE_TRASH, str) or SAFE_TRASH)
+
+    def _collision_mode(self) -> str:
+        """What a move or copy does with a photo whose name is taken in the destination (Settings, General)."""
+        from ..file_ops import COLLISION_MODES, COLLISION_RENAME
+
+        if self._memory:
+            return COLLISION_RENAME
+        mode = str(self._settings().value(COLLISION_KEY, COLLISION_RENAME, str) or COLLISION_RENAME)
+        return mode if mode in COLLISION_MODES else COLLISION_RENAME
 
     def _toast(self, kind: str, title: str, body: str = "", action: str = "", callback=None) -> None:
         self._toasts.push(kind, title, body, action, callback)
@@ -516,13 +526,23 @@ class FileActions(QObject):
             self._toast("warn", "That is the folder the photos are in" if many else "That is the folder the photo is in", "Pick another folder.")
             return
         what = _plural(len(picked)) if many else picked[0][0].name
-        self._start(f"{'Moving' if move else 'Copying'} {what}", lambda ctx: _work_transfer(ctx, picked, destination, move),
+        policy = self._collision_mode()
+        self._start(f"{'Moving' if move else 'Copying'} {what}", lambda ctx: _work_transfer(ctx, picked, destination, move, policy),
                     lambda result: self._transferred(result, picked, destination, move), route=f"{folder} \u2192 {destination}", total=len(picked))
 
     def _transferred(self, result: dict, picked: list, destination: str, move: bool) -> None:
         done, failed = result["done"], result["failed"]            # done: [(record, moves, annotation)], the photos that went
         many = len(picked) > 1
         verb = "move" if move else "copy"
+        skipped, renamed = result.get("skipped", []), result.get("renamed", [])
+        if skipped:
+            title = (f"{len(skipped)} of {len(picked)} photos were already there and were left where they are" if many
+                     else f"{skipped[0]} is already in that folder")
+            self._toast("warn", title, ("" if not many else ", ".join(skipped[:3]) + (f" and {len(skipped) - 3} more" if len(skipped) > 3 else "") + ". ")
+                        + "Settings, General chooses whether a photo with a taken name is skipped or kept beside the other.")
+        if renamed:
+            self._toast("info", f"{len(renamed)} photo{'s were' if len(renamed) != 1 else ' was'} given a new name",
+                        "The name was taken in that folder: " + ", ".join(renamed[:3]) + (f" and {len(renamed) - 3} more" if len(renamed) > 3 else "") + ".")
         if result.get("name_warnings"):
             self._toast("warn", "Some names may not work on Windows", "\n".join(result["name_warnings"][:3]))
         if result["edits_left"]:
@@ -732,20 +752,29 @@ def _work_remove(ctx, items: list) -> dict:
     return _outcome(ctx, len(items), done, failed)
 
 
-def _work_transfer(ctx, items: list, destination: str, move: bool) -> dict:
+def _work_transfer(ctx, items: list, destination: str, move: bool, on_collision: str = "rename") -> dict:
     """Move or copy each photo's bundle, then its edit data. `move_paths` and `copy_paths` undo their own half-done bundle."""
-    done, failed, edits_left, name_warnings = [], [], [], []
+    from ..file_ops import NameTaken
+
+    done, failed, edits_left, name_warnings, skipped, renamed = [], [], [], [], [], []
     for index, (record, annotation) in enumerate(items):
         if ctx.cancelled:
             break
         ctx.step(index, record.name)
         try:
             bundle = record_paths(record)
-            moves = move_paths(bundle, destination) if move else copy_paths(bundle, destination)
+            policy = {} if on_collision == "rename" else {"on_collision": on_collision}      # keeping both is what the calls do unasked
+            moves = move_paths(bundle, destination, **policy) if move else copy_paths(bundle, destination, **policy)
+        except NameTaken:
+            skipped.append(record.name)                 # not a failure: the policy is to leave it where it is
+            continue
         except Exception as exc:
             failed.append((record.name, str(exc) or type(exc).__name__))
             continue
         pairs = [(m.source_path, m.target_path) for m in moves]
+        arrived = next((Path(target).name for source, target in pairs if source == record.path), "")
+        if arrived and arrived != record.name:
+            renamed.append(f"{record.name} \u2192 {arrived}")
         from ..file_ops import name_warning
         for _source, target in pairs:
             warning = name_warning(Path(target).name, destination)
@@ -760,7 +789,7 @@ def _work_transfer(ctx, items: list, destination: str, move: bool) -> dict:
         # what this copy made, each with its size and time now: undoing the copy removes these, and only while they are still as made
         created = [(path, _stamp(path)) for path in (*(m.target_path for m in moves), *made)]
         done.append((record, moves, annotation, created))
-    return _outcome(ctx, len(items), done, failed, edits_left=edits_left, name_warnings=name_warnings)
+    return _outcome(ctx, len(items), done, failed, edits_left=edits_left, name_warnings=name_warnings, skipped=skipped, renamed=renamed)
 
 
 def _work_uncopy(ctx, entries: list) -> dict:

@@ -49,6 +49,7 @@ APPEARANCE_MODES = (
 DARK_TONE_OPTIONS = (("Slate (darkest)", "slate"), ("Soft (default)", "soft"), ("Dim (lightest)", "dim"))
 GRID_FADE_OPTIONS = (("Soft (default)", "soft"), ("Deep", "deep"), ("Dark", "dark"), ("Off", "off"))
 DELETE_MODES = (("Safe Trash (Undoable)", "Safe Trash (Undoable)"), ("System Trash", "System Trash"))
+COLLISION_CHOICES = (("Keep both", "rename"), ("Skip the photo", "skip"))
 # Accent hues offered as swatches (OKLCH hue); the shell's own theme feature, not a setting of the Widgets app.
 ACCENTS = (("Blue", 255), ("Violet", 300), ("Rose", 10), ("Amber", 75), ("Green", 155), ("Teal", 195))
 
@@ -110,6 +111,9 @@ def build_schema(shortcut_registry=()) -> tuple:
             F("trashLimit", "step", "Safe Trash size limit (GB)", "When the safe trash on this computer is larger than this, the photos deleted longest ago are deleted for good "
               "until it fits. Applied after each delete, never to the photos of that delete. Restore or empty it from File, Safe Trash.",
               key="workflow/safe_trash_limit_gb", kind="int", default=0, lo=0, hi=500, step=5, zero="No limit"),
+            F("nameCollision", "select", "When a name is taken", "What Move and Copy do with a photo whose file name is already used where it is going. "
+              "Keep both adds a number, the same one on every file of the photo. Skip leaves the photo where it is and tells you. Nothing is ever replaced.",
+              key="workflow/name_collision", kind="str", default=COLLISION_CHOICES[0][1], options=COLLISION_CHOICES),
         )),
         Group("App updates", "Keep Image Triage current automatically", (
             _t("updates", "Check for app updates on startup", "Looks for a newer installer when Image Triage starts. If one is available, the download button in the top right lights up.",
