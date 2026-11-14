@@ -130,6 +130,18 @@ during its closing fade. Its X returns to the library. When controls are hidden,
 hovering within the top 52 pixels temporarily reveals the banner; moving away
 hides it again. The banner's controls button restores the full preview UI.
 
+## Viewer: stepping, bursts and compare
+
+Stepping keeps the zoom and the place in the photo (as a fraction of it, so a photo of another size shows the matching
+spot), whichever way the photo changes: the arrow keys, the filmstrip, a decision that moves on, a deleted photo. A photo
+being edited as RAW still starts fitted.
+
+A burst is photos each taken within 2.5 s of the one before (`bursts.burst_runs`, the same step rule as
+`find_burst_groups`), among the photos shown. The capture times are the ones `PhotoModel` reads on its worker; a photo
+with no Exif date is in no burst, so files written one after another are not mistaken for one. The viewer's top bar says
+"Burst 3 · 2 of 7". `[` and `]` (Settings > Shortcuts, Cycle Burst) go to the first photo of the previous or next burst,
+in the viewer and in the grid. `popout.bursts` (`burst_model.py`) answers both.
+
 ## Validation and packaging
 
 Cull review keeps a separate stack model, so choosing a photo updates the detail

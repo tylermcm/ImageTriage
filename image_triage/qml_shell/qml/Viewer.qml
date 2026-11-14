@@ -51,6 +51,8 @@ FocusScope {
     readonly property int curRating: cur.rating || 0
     readonly property var info: popout.info
     readonly property var flag: { if (!cull) return ({}); void cull.view; if (UiState.vwScene === "flagged") return ({ label: "Blurry", color: "#e0b04a" }); return row >= 0 ? popout.flagFor(row) : ({}) }
+    // the burst this photo was taken in ({} for a photo taken on its own): its number, this photo's place in it and how many it has
+    readonly property var burst: { void popout.bursts.revision; return shown && row >= 0 ? popout.bursts.info(row) : ({}) }
     readonly property bool loading: slow || popout.loading
     readonly property bool barOff: popout.barHidden === true         // the action bar is put away (Tab, or the arrow at its end)
     readonly property real bh: barOff ? 0 : 64                       // what the bar and its gap take above the filmstrip
@@ -563,6 +565,19 @@ FocusScope {
                     Rectangle { width: 7; height: 7; radius: 3.5; color: theme.rev; anchors.verticalCenter: parent.verticalCenter }
                     Text { anchors.verticalCenter: parent.verticalCenter; text: "Flagged by Cull"; color: v.cFg2; font.pointSize: UiState.pt(11.5) } }
             }
+            Item {   // Burst 3 · 2 of 7
+                objectName: "viewerBurstChip"
+                visible: (v.burst.label || "") !== ""; y: 0; width: burstRow.implicitWidth + 20; height: 28
+                Rectangle { anchors.fill: parent; radius: 8; color: v.cGlass; border.color: v.cLineSoft }
+                Row { id: burstRow; x: 10; anchors.verticalCenter: parent.verticalCenter; spacing: 6
+                    Icon { anchors.verticalCenter: parent.verticalCenter; path: "M4 8l8-4 8 4-8 4zM4 12l8 4 8-4M4 16l8 4 8-4"; size: 14; color: v.cFg2 }
+                    Text { objectName: "viewerBurstLabel"; anchors.verticalCenter: parent.verticalCenter; text: v.burst.label || ""; color: v.cFg; font.pointSize: UiState.pt(11.5); font.weight: Font.Medium } }
+                HoverHandler { id: burstHover }
+                HoverTip { tip: { void settings.shortcutRevision; var a = settings.seq("cycle_burst_previous"), b = settings.seq("cycle_burst_next")
+                                  return "Taken as one burst." + (a && b ? " " + a + " and " + b + " jump between bursts." : "") }
+                           hovered: burstHover.hovered }
+                Accessible.role: Accessible.StaticText; Accessible.name: v.burst.label || ""
+            }
             Item {   // format and size on disk
                 y: 0; width: kindRow.implicitWidth + 20; height: 28
                 Rectangle { anchors.fill: parent; radius: 8; color: v.cGlass; border.color: v.cLineSoft }
@@ -974,6 +989,14 @@ FocusScope {
         z: 5; spacing: 10
         opacity: v.zen ? 0 : 1; Behavior on opacity { NumberAnimation { duration: 300 } }
         Row { spacing: 4; Kbd { text: "←" } Kbd { text: "→" } Text { text: "step"; color: v.cFg3; font.pointSize: UiState.pt(11.5); anchors.verticalCenter: parent.verticalCenter; leftPadding: 2 } }
+        Row {
+            objectName: "viewerBurstHint"
+            readonly property string prev: { void settings.shortcutRevision; return settings.seq("cycle_burst_previous") }
+            readonly property string next: { void settings.shortcutRevision; return settings.seq("cycle_burst_next") }
+            visible: { void popout.bursts.revision; return v.shown && popout.bursts.count > 0 && prev !== "" && next !== "" }
+            spacing: 4; Kbd { text: parent.prev } Kbd { text: parent.next }
+            Text { text: "burst"; color: v.cFg3; font.pointSize: UiState.pt(11.5); anchors.verticalCenter: parent.verticalCenter; leftPadding: 2 }
+        }
         Row { spacing: 4; Kbd { text: "Space" } Text { text: "close"; color: v.cFg3; font.pointSize: UiState.pt(11.5); anchors.verticalCenter: parent.verticalCenter; leftPadding: 2 } }
     }
 

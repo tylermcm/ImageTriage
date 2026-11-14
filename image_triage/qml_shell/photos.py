@@ -110,6 +110,7 @@ class PhotoModel(QAbstractListModel):
     searchRequested = Signal(str)
     _loaded = Signal(object, str, int)      # `object`, not `list`: a list is copied row by row on its way through the signal
     _captureTimesRead = Signal(int, object)
+    captureTimesChanged = Signal()          # the open folder's capture times were read (capture_times())
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -517,8 +518,14 @@ class PhotoModel(QAbstractListModel):
         if token != self._folder_token:
             return
         self._capture_times = found
+        self.captureTimesChanged.emit()
         if self._sort == "captured":
             self._rebuild(follow=True)
+
+    def capture_times(self) -> dict[str, float]:
+        """path -> when it was taken (read-only). Empty until the worker has read them: asking starts the read, `captureTimesChanged` says when."""
+        self._want_capture_times()
+        return self._capture_times
 
     @Slot()
     def clearFilters(self) -> None:

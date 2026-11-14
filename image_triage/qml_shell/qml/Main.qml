@@ -462,6 +462,12 @@ Window {
     function commandRows() { return viewer.shown ? [popout.row] : photos.selectionRows(grid.row) }
     // Open in editor from the grid, the rail or a menu: the editor is started from the viewer, on that photo.
     function openInEditor(row) { if (row < 0 || row >= photos.shown) return; if (!viewer.shown || popout.row !== row) popout.open(row); viewer.openEditor() }
+    // [ and ]: to the first photo of the previous or next burst, in the viewer or the grid (popout.bursts, burst_model.py).
+    function goBurst(direction) {
+        var to = popout.bursts.target(win.commandRow, direction)
+        if (to < 0) { var why = popout.bursts.missing(direction); if (viewer.shown) popout.notice(why); else toasts.show("info", why, ""); return }
+        if (viewer.shown) viewer.go(to); else { grid.row = to; grid.view.positionViewAtIndex(to + grid.nf, GridView.Contain) }
+    }
     function runCommand(id) {
         if (id === "file.workflow_settings") UiState.settingsOpen = true
         else if (id.indexOf("appearance.") === 0) { settings.set("theme", id.slice(11)); settings.save() }
@@ -517,6 +523,8 @@ Window {
         else if (id === "ai.run_pipeline") cull.openCull()
         else if (id === "ai.apply_culling") cull.openReview()
         else if (id === "ai.next_top_pick") { var tp = aiScores.nextTopPick(win.commandRow); if (tp >= 0) { if (viewer.shown) viewer.go(tp); else { grid.row = tp; grid.view.positionViewAtIndex(tp + grid.nf, GridView.Contain) } } else toasts.show("info", "No AI top picks in this view", "Run the AI analysis first, or clear the filters.") }
+        else if (id === "review.burst_previous") win.goBurst(-1)
+        else if (id === "review.burst_next") win.goBurst(1)
         else if (id === "review.auto_advance") { settings.set("autoAdvance", settings.value("autoAdvance") !== true); settings.save(); cmdPalette.setState("review.auto_advance", settings.value("autoAdvance") === true ? "On" : "Off") }
         else if (id === "tools.performance_logging") { settings.set("perfLog", settings.value("perfLog") !== true); settings.save(); cmdPalette.setState("tools.performance_logging", settings.value("perfLog") === true ? "On" : "Off") }
         else if (id === "view.zen_mode") { UiState.zen = !UiState.zen; cmdPalette.setState("view.zen_mode", UiState.zen ? "On" : "Off") }

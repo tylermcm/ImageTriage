@@ -1,10 +1,47 @@
+"""Which photos were taken as one burst.
+
+One rule decides it in both forms below: a frame continues a burst when it was taken within BURST_STEP_SECONDS of the frame
+before it. `find_burst_groups` works on full capture metadata (and also wants matching lens and exposure settings, and keeps
+a group within BURST_ANCHOR_SECONDS of its first frame); `burst_runs` works on capture times alone, which is what the viewer
+has for a whole folder.
+"""
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Sequence
 
 from .formats import FITS_SUFFIXES, suffix_for_path
 from .metadata import CaptureMetadata, EMPTY_METADATA
 from .models import ImageRecord
+
+
+BURST_ANCHOR_SECONDS = 4.0      # a metadata group reaches no further than this from its first frame
+BURST_STEP_SECONDS = 2.5        # two frames further apart than this are never neighbours in a burst
+
+
+def is_burst_step(previous_seconds: float | None, candidate_seconds: float | None) -> bool:
+    """Were two frames taken close enough together to be neighbours in a burst? A frame without a capture time never is."""
+    if previous_seconds is None or candidate_seconds is None:
+        return False
+    return abs(candidate_seconds - previous_seconds) <= BURST_STEP_SECONDS
+
+
+def burst_runs(times: Sequence[float | None]) -> list[tuple[int, ...]]:
+    """Bursts among photos known only by when they were taken: `times[i]` is photo i's capture time in seconds (with its
+    fraction), or None for a photo with no capture time. Returns each burst as the indexes of its photos, in the order taken,
+    and the bursts in the order taken. A photo taken on its own is in no burst. The photos may be given in any order."""
+    order = sorted((i for i, value in enumerate(times) if value is not None), key=lambda i: (times[i], i))
+    runs: list[tuple[int, ...]] = []
+    current: list[int] = []
+    for index in order:
+        if current and not is_burst_step(times[current[-1]], times[index]):
+            if len(current) >= 2:
+                runs.append(tuple(current))
+            current = []
+        current.append(index)
+    if len(current) >= 2:
+        runs.append(tuple(current))
+    return runs
 
 
 def burst_candidate_indices(
@@ -70,9 +107,9 @@ def is_burst_neighbor(
     ):
         return False
 
-    if abs(candidate_metadata.captured_at_value - anchor_metadata.captured_at_value) > timedelta(seconds=4.0):
+    if abs(candidate_metadata.captured_at_value - anchor_metadata.captured_at_value) > timedelta(seconds=BURST_ANCHOR_SECONDS):
         return False
-    if abs(candidate_metadata.captured_at_value - previous_metadata.captured_at_value) > timedelta(seconds=2.5):
+    if not is_burst_step(0.0, (candidate_metadata.captured_at_value - previous_metadata.captured_at_value).total_seconds()):
         return False
     if anchor_metadata.lens and candidate_metadata.lens and anchor_metadata.lens != candidate_metadata.lens:
         return False

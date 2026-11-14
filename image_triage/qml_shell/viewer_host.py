@@ -87,6 +87,9 @@ class ViewerHost(QObject):
         self._memory = memory
         from .raw_editor import RawEditor
 
+        from .burst_model import BurstModel
+
+        self._bursts = BurstModel(photos, parent=self)
         self._raw_editor = RawEditor(memory=memory, parent=self)
         self._raw_editor.saved.connect(self._raw_saved)
         self._saved_previews: dict[str, tuple[str, int, int]] = {}
@@ -302,6 +305,7 @@ class ViewerHost(QObject):
         self.assistChanged.emit()
 
     rawEditor = Property(QObject, lambda self: self._raw_editor, constant=True)
+    bursts = Property(QObject, lambda self: self._bursts, constant=True)     # which burst a photo is in, and where the others start (burst_model.py)
 
     def _raw_saved(self, path: str, preview: str) -> None:
         previous = self._picture_for(path)
