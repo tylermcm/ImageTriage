@@ -30,6 +30,7 @@ Item {
     clip: true
     property var hiddenPeople: []
 
+    Connections { target: people; function onSaid(kind, title, body) { toasts.show(kind, title, body) } }
     function openPersonWindow(pid) {
         UiState.peopleQuery = ""
         UiState.peopleFilter = "all"
@@ -90,6 +91,7 @@ Item {
         }
         PopItem { objectName: "sidebarPersonRename"; visible: !personMenu.editing; label: personMenu.person.name ? "Rename…" : "Name person…"; icon: "editor"; onClicked: personMenu.rename() }
         PopItem { objectName: "sidebarPersonPhotos"; label: "Show photos"; icon: "view"; onClicked: { var pid = personMenu.pid; personMenu.close(); people.openPerson(pid) } }
+        PopItem { objectName: "sidebarPersonEverywhere"; visible: !!personMenu.person.name; label: "Show photos in every folder"; icon: "library"; onClicked: { var pid = personMenu.pid; personMenu.close(); people.showEverywhere(pid) } }
         PopItem { label: "Open Tag People…"; icon: "people"; onClicked: { personMenu.close(); panel.openPersonWindow(personMenu.pid) } }
         PopItem { objectName: "sidebarPersonClear"; visible: !!personMenu.person.name; label: "Clear name"; icon: "minus"; onClicked: { var pid = personMenu.pid; personMenu.close(); people.clearNames([pid]) } }
         PopDivider {}

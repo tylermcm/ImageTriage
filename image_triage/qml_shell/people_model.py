@@ -22,6 +22,29 @@ def _hue(ident) -> int:
     return (int(digits) * 47 + 20) % 360
 
 
+def photos_of_person(name: str, folders, db_for) -> list[str]:
+    """The photos a person called ``name`` appears in, across ``folders``. ``db_for(folder)`` gives a folder's face index or None.
+    A folder that has not been analysed, or whose index cannot be read, simply contributes nothing."""
+    from ..face_groups import face_group_photo_paths
+
+    wanted, found, seen = name.strip().casefold(), [], set()
+    if not wanted:
+        return found
+    for folder in folders:
+        try:
+            db = db_for(folder)
+            if db is None:
+                continue
+            clusters = [cluster for person in _read_people(db) if person["name"].strip().casefold() == wanted for cluster in person["clusters"]]
+            for path in face_group_photo_paths(db, clusters):
+                if path not in seen:
+                    seen.add(path)
+                    found.append(path)
+        except Exception:
+            continue
+    return found
+
+
 def _read_people(db: Path) -> list[dict]:
     """Everyone the folder's face index holds who is not ignored, most photographed first; clusters with one name are one person."""
     from ..people_search import list_person_clusters
@@ -55,6 +78,8 @@ def _read_people(db: Path) -> list[dict]:
 class PeopleModel(QObject):
     revisionChanged = Signal()
     _read = Signal(int, str, object, object)        # the index was read off the interface thread: (token, folder, its file or None, the people)
+    said = Signal(str, str, str)                    # something to tell the person: kind, title, body (the side panel shows it as a toast)
+    _everywhere = Signal(int, str, object, int)     # token, the person's name, their photos in every folder, how many folders were looked in
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -68,6 +93,9 @@ class PeopleModel(QObject):
         self._read_token = 0                # the newest read asked for: an older one that answers later is dropped
         self._folder = ""                   # the folder `_people` belongs to
         self._read.connect(self._apply_read)
+        self._everywhere.connect(self._show_everywhere)
+        self._everywhere_token = 0
+        self._library_folders = None                 # tests name the folders to look in
         photos.folderChanged.connect(self.reload)
         self.reload()
 
@@ -191,6 +219,49 @@ class PeopleModel(QObject):
             keys = {member_key(p) for p in face_group_photo_paths(self._db, person["clusters"])}
             pred = lambda r, k=keys: (r.get("key") or member_key(r["path"])) in k
         self._photos.set_scope("person", pid, pred)
+
+    @Slot(str)
+    def showEverywhere(self, pid: str) -> None:
+        """Show a named person's photos from every folder of the library together in the grid, not only the open folder's.
+        A person is known across folders by name, so this is for people who have one. The folders are read on a thread."""
+        person = next((p for p in self._people if p["id"] == pid), None)
+        if person is None or self._memory:
+            return
+        name = person["name"].strip()
+        if not name:
+            self.said.emit("info", "Name this person first", "People are recognised across folders by their name.")
+            return
+        self._everywhere_token += 1
+        token, here, listed = self._everywhere_token, self._folder, self._library_folders
+
+        def work() -> None:
+            try:
+                if listed is None:
+                    from ..library_store import LibraryStore
+
+                    folders = LibraryStore().indexed_folders()
+                else:
+                    folders = list(listed)
+            except Exception:
+                folders = []
+            folders = list(dict.fromkeys([here, *folders])) if here else folders
+            paths = photos_of_person(name, folders, self._db_path)
+            try:
+                self._everywhere.emit(token, name, paths, len(folders))
+            except RuntimeError:
+                pass                                # the model was destroyed meanwhile
+
+        threading.Thread(target=work, name="qml-person-everywhere", daemon=True).start()
+
+    def _show_everywhere(self, token: int, name: str, paths, looked_in: int) -> None:
+        if token != self._everywhere_token:
+            return
+        if not paths:
+            self.said.emit("info", f"No photos of {name} were found", "Folders are searched once they have been analysed for faces.")
+            return
+        if looked_in <= 1:
+            self.said.emit("info", "Only this folder was searched", "Add folders in Browse Library to find this person in them too.")
+        self._photos.loadPaths(paths, name, "person")
 
     @Slot(str, result=str)
     def labelOf(self, pid: str) -> str:

@@ -494,6 +494,20 @@ class LibraryStore:
             connection.commit()
         return deleted
 
+    def indexed_folders(self) -> list[str]:
+        """Every folder the library index has read under an enabled root."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT s.folder_path
+                FROM catalog_folder_state AS s
+                JOIN catalog_roots AS r ON r.root_path = s.root_path
+                WHERE r.enabled = 1
+                ORDER BY s.folder_path
+                """
+            ).fetchall()
+        return [str(row[0]) for row in rows if row[0]]
+
     def list_catalog_roots(self) -> list[CatalogRoot]:
         """List configured cross-folder catalog roots and their index status."""
         with self._connect() as connection:
