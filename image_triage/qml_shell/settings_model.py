@@ -37,7 +37,7 @@ LISTED_ACTIONS = frozenset(action for action, _cmd in BOUND_ACTIONS) | frozenset
 SHELL_DEFAULTS = {"delete_selection": "Delete"}
 # Keys the shell binds itself and the registry has no row for: a shortcut changed to one of them is refused, as two rows on one chord are.
 FIXED_KEYS = {
-    "Ctrl+F": "Search photos",
+    "Ctrl+F": "Search photos", "C": "Compare photos",
     "Ctrl+A": "Select all photos", "Ctrl+/": "Keyboard shortcuts", "F1": "Help", "Esc": "Close", "Return": "Open the photo", "Space": "Open the photo",
     "U": "Clear the decision", "I": "Show or hide the inspector", "Left": "Previous photo", "Right": "Next photo", "Up": "Photo above", "Down": "Photo below",
     "Home": "First photo", "End": "Last photo", "0": "Clear the rating", "1": "Rate 1 star", "2": "Rate 2 stars", "3": "Rate 3 stars", "4": "Rate 4 stars", "5": "Rate 5 stars",

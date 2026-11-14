@@ -394,6 +394,8 @@ Window {
     Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; autoRepeat: false; enabled: editor.active || editor.state === "closing"; onActivated: editor.close() }
     Shortcut { sequence: "Escape"; enabled: UiState.zen && !viewer.shown && !win.modalInputBlocked && !UiState.paletteOpen; onActivated: win.runCommand("view.zen_mode") }
     Shortcut { sequence: "Ctrl+/"; enabled: settingsWindow.recording === ""; onActivated: reference.toggleKeys() }
+    // C compares the photos picked in the grid (or the grid's photo and the next); in the viewer the key is the viewer's own
+    Shortcut { sequence: "C"; enabled: settingsWindow.recording === "" && !UiState.settingsOpen && !UiState.paletteOpen && !win.modalInputBlocked && !viewer.shown && !editor.active; onActivated: win.runCommand("review.compare") }
     Shortcut { sequence: "Ctrl+F"; enabled: settingsWindow.recording === "" && !UiState.settingsOpen && !UiState.paletteOpen && !viewer.shown && !editor.active; onActivated: top.focusSearch() }
     Shortcut { sequence: { void settings.shortcutRevision; return settings.seq("open_command_palette") }
                enabled: settingsWindow.recording === "" && !UiState.settingsOpen
@@ -526,6 +528,7 @@ Window {
         else if (id === "ai.run_pipeline") cull.openCull()
         else if (id === "ai.apply_culling") cull.openReview()
         else if (id === "ai.next_top_pick") { var tp = aiScores.nextTopPick(win.commandRow); if (tp >= 0) { if (viewer.shown) viewer.go(tp); else { grid.row = tp; grid.view.positionViewAtIndex(tp + grid.nf, GridView.Contain) } } else toasts.show("info", "No AI top picks in this view", "Run the AI analysis first, or clear the filters.") }
+        else if (id === "review.compare") { if (viewer.shown) viewer.toggleCompare(); else popout.compare.openRows(photos.selectionRows(grid.row), grid.row) }
         else if (id === "review.burst_previous") win.goBurst(-1)
         else if (id === "review.burst_next") win.goBurst(1)
         else if (id === "review.burst_keep_best") popout.keepBest(win.commandRow)

@@ -34,6 +34,7 @@ _COMMANDS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     ("review.delete_selection", "Review", "Delete Selection", "delete_selection", ("trash", "remove", "delete")),
     ("review.reveal_in_explorer", "Review", "Reveal In Explorer", "", ("show in explorer", "reveal file")),
     ("review.auto_advance", "Review", "Auto Advance", "", ("toggle auto advance",)),
+    ("review.compare", "Review", "Compare Photos", "", ("compare", "side by side", "2 up", "versus", "winner stays")),
     ("review.burst_previous", "Review", "Previous Burst", "cycle_burst_previous", ("burst", "sequence", "previous burst", "jump")),
     ("review.burst_next", "Review", "Next Burst", "cycle_burst_next", ("burst", "sequence", "next burst", "jump")),
     ("review.burst_keep_best", "Review", "Keep Best Of Burst, Reject Rest", "burst_keep_best", ("burst", "winner", "keep best", "reject rest", "pick")),

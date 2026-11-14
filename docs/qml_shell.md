@@ -146,6 +146,16 @@ Keep best (the button beside the burst label, Shift+W, or the palette) marks the
 other photos of its burst, as one undo step. Photos already marked Winner are left alone; rejecting more than three
 photos already marked Keep is asked about first. It stays on the winner. From the grid it acts on the grid's photo.
 
+Compare (C, the action bar's first tool, or Compare Photos in the palette) shows two to four photos side by side in the
+viewer's stage: the photos picked in the grid, or the photo shown and the one after it. The panes share one zoom and one
+place, both relative to the photo, so each pane shows the same part of its photo; Z is 100% of the active pane's photo, 0
+fits, the wheel zooms about the pointer and a drag pans every pane. Left and Right choose the active pane. Its photo is
+the viewer's current photo, so the decision and rating keys, the action bar, Delete and the palette act on it, and a
+decision does not move on. N swaps the other panes for the next photos (the winner stays), P takes that back, 2/3/4 in
+the pane bar set how many panes, a filmstrip click puts that photo in the active pane, Esc leaves compare on the active
+photo. Pictures come from the viewer's own readers (`compare_model.py`, `CompareView.qml`); fitted panes are decoded no
+larger than twice the pane. Compare is not offered while a RAW is being edited.
+
 ## Validation and packaging
 
 Cull review keeps a separate stack model, so choosing a photo updates the detail

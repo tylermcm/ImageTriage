@@ -80,6 +80,7 @@ class ViewerHost(QObject):
     barChanged = Signal()
     closed = Signal(int)                       # the viewer was put away on this row of the grid
     keepBestConfirm = Signal(str, str, str)    # Keep best, reject rest wants a yes first: title, body, the button's words
+    pictureArrived = Signal(str)               # a photo's picture was read (or could not be), whichever photo is shown
     _done = Signal(str, str, str, str, int, int, str)
 
     def __init__(self, photos, thumbs, collections=None, *, files=None, cull=None, toasts=None, memory: bool = False,
@@ -135,6 +136,9 @@ class ViewerHost(QObject):
         photos.modelReset.connect(self._photos_changed)
         photos.rowsRemoved.connect(self._photos_changed)
         photos.rowsInserted.connect(self._photos_changed)
+        from .compare_model import CompareModel
+
+        self._compare = CompareModel(self, photos, parent=self)      # after the viewer's own connections: it follows the row the viewer settles on
 
     # -- settings -----------------------------------------------------------------------------------------------------------
     def _read_int(self, key: str, default: int, low: int, high: int) -> int:
@@ -266,6 +270,7 @@ class ViewerHost(QObject):
         if not self._open:
             return
         self._open = False
+        self._compare.close()
         self._preload_timer.stop()
         self.openChanged.emit()
         self.imageChanged.emit()
@@ -294,7 +299,8 @@ class ViewerHost(QObject):
         if item is None:
             return
         if ((self._raw_editor.active and item["path"] != self._raw_editor._path)
-                or (self._raw_wanted and not self._raw_editor.active and suffix_for_path(item["path"]) in RAW_SUFFIXES)):
+                or (self._raw_wanted and not self._raw_editor.active and not self._compare.active
+                    and suffix_for_path(item["path"]) in RAW_SUFFIXES)):
             self._raw_editor.open(item["path"])
         self._row = row
         self._path = item["path"]
@@ -303,12 +309,14 @@ class ViewerHost(QObject):
         if self._assist_on:
             self._ask("assist", self._path)
         self._preload_timer.start()
+        self._compare.row_shown(self._path)
         self.rowChanged.emit()
         self.imageChanged.emit()
         self.assistChanged.emit()
 
     rawEditor = Property(QObject, lambda self: self._raw_editor, constant=True)
     bursts = Property(QObject, lambda self: self._bursts, constant=True)     # which burst a photo is in, and where the others start (burst_model.py)
+    compare = Property(QObject, lambda self: self._compare, constant=True)   # photos side by side (compare_model.py)
 
     def _raw_saved(self, path: str, preview: str) -> None:
         previous = self._picture_for(path)
@@ -467,12 +475,16 @@ class ViewerHost(QObject):
         if file:
             self._pictures[path] = (file, width, height)
             self._stamps.setdefault(path, self._stamp(path))
+            for shown in self._compare.paths():              # the pictures in the compare panes are in use: not the ones to drop
+                if shown in self._pictures:
+                    self._pictures.move_to_end(shown)
             while len(self._pictures) > FILES_KEPT:
                 old, (old_file, _w, _h) = self._pictures.popitem(last=False)
                 self._stamps.pop(old, None)
                 self._remove(old_file)
         elif error != "superseded":
             self._failed[path] = error
+        self.pictureArrived.emit(path)
         if path == self._path:
             self.imageChanged.emit()
             self.assistChanged.emit()
@@ -568,7 +580,8 @@ class ViewerHost(QObject):
             self._say(f"{item['name']} {DECISION_WORDS[after]}", after, undo=True)
         else:
             self._say(f"{item['name']} is no longer {'a winner' if before == 'win' else 'kept' if before == 'keep' else 'rejected'}", "info", undo=True)
-        if after in ("win", "keep", "rej") and self._read_bool(ADVANCE_KEY, True) and row == self._row:
+        # comparing, the photo decided stays in its pane: the other panes are what moves on
+        if after in ("win", "keep", "rej") and self._read_bool(ADVANCE_KEY, True) and row == self._row and not self._compare.active:
             self.step(1)
 
     @Slot(int, int)
