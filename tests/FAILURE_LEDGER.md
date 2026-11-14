@@ -31,6 +31,10 @@ recorded in [the validation handoff](../docs/audit_cloud_validation_20261112.md)
 not substitute for the original machine's Microsoft Store Python, managed GPU/model
 runtime or sealed native editor acceptance.
 
+Linux, 2026-11-14, combined tree at `385119b` after the viewer, grid and AI feature work: **3,161 passed, 56 skipped,
+5 expected failures, 123 passing subtests**, no failures, run with `ulimit -v 9000000` (see the next paragraph for why).
+Not run on Windows.
+
 Linux follow-up on 2026-11-13 after the sorting, Undecided-filter and XMP-import work: **2,984 passed, 1 failed, 56 skipped,
 5 expected failures, 123 passing subtests**, run with `ulimit -v 9000000` because
 `test_qml_shell_viewer.py::test_raw_dock_meets_filmstrip_and_closes_to_full_width` otherwise gets the process killed for
