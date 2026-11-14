@@ -88,6 +88,9 @@ print(json.dumps({name: {'url': json.loads(distribution(name).read_text('direct_
         raise ValueError("Unsupported native engine version")
 
 
+NATIVE_CUDA_CHECK_SECONDS = 120
+
+
 def verify_native_cuda(python: str) -> None:
     """Exercise CUDA in the native engine's own interpreter, not the cascade runtime."""
     code = """
@@ -98,8 +101,13 @@ value = torch.ones((2, 2), device='cuda')
 assert (value @ value).sum().item() == 8
 torch.cuda.synchronize()
 """
-    result = subprocess.run([python, "-I", "-c", code], capture_output=True, text=True,
-                            timeout=30, creationflags=_no_window())
+    try:
+        # A cold start loads PyTorch and initialises the card's driver; that alone can take most of a minute.
+        result = subprocess.run([python, "-I", "-c", code], capture_output=True, text=True,
+                                timeout=NATIVE_CUDA_CHECK_SECONDS, creationflags=_no_window())
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"The native culler did not answer a graphics card check within {NATIVE_CUDA_CHECK_SECONDS} seconds. "
+                         "Try again, repair its GPU runtime or explicitly select CPU.") from None
     if result.returncode:
         raise ValueError("The native culler could not use the requested graphics card. "
                          "Repair its GPU runtime or explicitly select CPU. " + result.stderr.strip())

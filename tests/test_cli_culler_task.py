@@ -456,3 +456,16 @@ def test_real_worker_task_activates_and_reopens_native_results(tmp_path):
     assert len(native["files"]) == 1
     assert next(iter(native["files"].values()))["decision"] == "reject"
     assert seen["progress"] and seen["detail"]
+
+
+def test_a_graphics_card_check_that_never_answers_is_reported_in_plain_words(monkeypatch):
+    import subprocess
+
+    from image_triage import cli_culler_runtime
+
+    def never(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="python", timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(cli_culler_runtime.subprocess, "run", never)
+    with pytest.raises(ValueError, match="did not answer a graphics card check within 120 seconds"):
+        cli_culler_runtime.verify_native_cuda("python")
