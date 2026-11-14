@@ -15,12 +15,16 @@ from PySide6.QtCore import Property, QAbstractListModel, QObject, QByteArray, QM
 
 from ..capture_times import natural_key
 from ..formats import RAW_SUFFIXES
+from ..grid_sections import FILLER, layout, sections_for
 from ..formats import is_image_file_candidate
 from ..path_keys import name_key, path_key
 from ..scanner import format_scan_error, normalized_path_key, scan_child_folders, scan_folder
 from .inspector_sample import sample_ai, sample_measured
 
 PathRole, NameRole, ExtRole, RawRole, DecisionRole, RatingRole, AiRole, TitleRole, SelectedRole, FolderRole = (Qt.ItemDataRole.UserRole + n for n in range(1, 11))
+# What the grid adds to a cell: what kind it is, the photo row it shows, and a section header's words.
+KindRole, PhotoRowRole, SectionDetailRole, SectionCountRole, SectionStartRole = (Qt.ItemDataRole.UserRole + n for n in range(11, 16))
+CELL_PHOTO, CELL_FOLDER, CELL_HEADER, CELL_FILLER = range(4)
 
 _DECISIONS = ("", "keep", "win", "rej", "rev", "", "keep", "")  # weights by position
 
@@ -126,6 +130,7 @@ class PhotoModel(QAbstractListModel):
         self._next_undo_id = 0
         self._history: list[dict] = []      # what undo steps back through: {"path", "decision": (before, after), "rating": (before, after)}
         self._rows: list[dict] = []
+        self._sections: list = []           # the day and hour sections of the shown photos (grid_sections.Section), when sorted by a time
         self._selected: set[str] = set()    # photos picked on purpose (by `_path_key`): empty means "just the one the grid is on", and a scope of every photo shown
         self._filter = "all"
         self._min_rate = 0
@@ -369,13 +374,28 @@ class PhotoModel(QAbstractListModel):
         elif self._sort == "decision":
             order = {"win": 0, "keep": 1, "rev": 2, "": 3, "rej": 4}
             rows.sort(key=lambda r: order.get(r["decision"], 3))
+        sections = self._sections_of(rows)
         self.beginResetModel()
         self._rows = rows
+        self._sections = sections
         self._row_of_path = self._row_of_key = None
         self.endResetModel()
         self.countsChanged.emit()
         self.subfoldersChanged.emit()
         self._bump()
+
+    def _sections_of(self, rows: list[dict]) -> list:
+        """Day (and hour) sections when the photos are in time order; none for the other orders, or when no photo has a time."""
+        if self._sort == "captured":
+            times = self._capture_times
+            return sections_for([times[r["path"]] if r["path"] in times else _modified(r) / 1e9 for r in rows])
+        if self._sort == "modified":
+            return sections_for([_modified(r) / 1e9 for r in rows])
+        return []
+
+    def sections(self) -> list:
+        """The sections the shown photos fall into (`grid_sections.Section`), in order; [] when the grid has no headers."""
+        return self._sections
 
     # -- advanced filters (filters_model.py) -------------------------------------------------------------------------------
     def _search_ok(self, row: dict) -> bool:
@@ -913,15 +933,24 @@ class PhotoModel(QAbstractListModel):
 class GridModel(QAbstractListModel):
     """What the grid shows: the open folder's child folders first, then its photos, in one list so they fill the grid side by side.
 
-    The photo rows are the PhotoModel's own, shifted by the number of folders (``folders``); everything else in the shell keeps asking the
-    PhotoModel for photo rows, and the grid does the shifting (PhotoGrid.row / PhotoGrid.nf)."""
+    Without sections the photo rows are the PhotoModel's own, shifted by the number of folders (``folders``). When the photos are in
+    time order they come in day and hour sections (`PhotoModel.sections`): each section starts a new row of the grid with a header
+    cell, and the row it ends in is filled out with empty cells (`grid_sections.layout`), so the view stays a uniform grid. Which
+    cell a photo is in then depends on how many columns the grid has (`setColumns`). Everything else in the shell keeps asking the
+    PhotoModel for photo rows; the grid translates with `indexOfRow` and `rowAt`."""
 
     foldersChanged = Signal()
+    sectionsChanged = Signal()
 
     def __init__(self, photos: PhotoModel, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._photos = photos
         self._n = 0
+        self._columns = 1
+        self._cells: list[int] | None = None           # the cells after the folders when there are sections; None: photo rows, one after another
+        self._index_of_row: list[int] = []
+        self._sections: list = []
+        self._own_reset = False
         photos.modelAboutToBeReset.connect(self.beginResetModel)
         photos.modelReset.connect(self._reset)
         photos.dataChanged.connect(self._changed)
@@ -929,32 +958,103 @@ class GridModel(QAbstractListModel):
     def _folders(self) -> list[dict]:
         return self._photos.subfolders
 
-    def _reset(self) -> None:
+    def _lay_out(self) -> None:
         self._n = len(self._folders())
+        self._sections = list(self._photos.sections())
+        if self._sections:
+            self._cells, self._index_of_row = layout(self._sections, self._columns, self._n)
+        else:
+            self._cells, self._index_of_row = None, []
+
+    def _reset(self) -> None:
+        self._lay_out()
         self.endResetModel()
         self.foldersChanged.emit()
+        self.sectionsChanged.emit()
+
+    @Slot(int)
+    def setColumns(self, columns: int) -> None:
+        """How many cells a row of the grid has. Sections start on a new row, so their cells are laid out again when it changes."""
+        columns = max(1, int(columns))
+        if columns == self._columns:
+            return
+        self._columns = columns
+        if self._cells is None:
+            return
+        self._own_reset = True
+        self.beginResetModel()
+        self._lay_out()
+        self.endResetModel()
+        self._own_reset = False
+        self.sectionsChanged.emit()
+
+    @Slot(result=bool)
+    def resetFollowsPhoto(self) -> bool:
+        """Asked by the grid while the list is being rebuilt: stay on the same photo (True) or the same position (False)."""
+        return self._own_reset or self._photos.resetFollowsPhoto()
 
     def _changed(self, top: QModelIndex, bottom: QModelIndex, roles) -> None:
-        if self._n + self._photos.rowCount() != self.rowCount():
-            return                                      # a reset is on its way
-        self.dataChanged.emit(self.index(top.row() + self._n), self.index(bottom.row() + self._n), roles)
+        if self._cells is None:
+            if self._n + self._photos.rowCount() != self.rowCount():
+                return                                      # a reset is on its way
+            self.dataChanged.emit(self.index(top.row() + self._n), self.index(bottom.row() + self._n), roles)
+        elif bottom.row() < len(self._index_of_row):
+            self.dataChanged.emit(self.index(self._index_of_row[top.row()]), self.index(self._index_of_row[bottom.row()]), roles)
 
     def roleNames(self) -> dict:
         names = dict(self._photos.roleNames())
         names[FolderRole] = QByteArray(b"isFolder")
+        names[KindRole] = QByteArray(b"cellKind")
+        names[PhotoRowRole] = QByteArray(b"photoRow")
+        names[SectionDetailRole] = QByteArray(b"sectionDetail")
+        names[SectionCountRole] = QByteArray(b"sectionCount")
+        names[SectionStartRole] = QByteArray(b"sectionStart")
         return names
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        return 0 if parent.isValid() else self._n + self._photos.rowCount()
+        if parent.isValid():
+            return 0
+        return self._n + (self._photos.rowCount() if self._cells is None else len(self._cells))
+
+    def _cell(self, row: int) -> int:
+        """What cell `row` (at or after the folders) shows: a photo row, FILLER, or a header as -2 - section."""
+        if self._cells is None:
+            return row - self._n
+        return self._cells[row - self._n] if row - self._n < len(self._cells) else FILLER
+
+    _BLANK = {PathRole: "", NameRole: "", TitleRole: "", ExtRole: "", RawRole: False, DecisionRole: "", RatingRole: 0, AiRole: -1, SelectedRole: False,
+              FolderRole: False, PhotoRowRole: -1, SectionDetailRole: "", SectionCountRole: 0, SectionStartRole: -1}
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
             return None
         row = index.row()
         if row >= self._n:
-            if role == FolderRole:
-                return False
-            return self._photos.data(self._photos.index(row - self._n), role)
+            cell = self._cell(row)
+            if cell >= 0:
+                if role == FolderRole:
+                    return False
+                if role == KindRole:
+                    return CELL_PHOTO
+                if role == PhotoRowRole:
+                    return cell
+                if role >= SectionDetailRole:
+                    return self._BLANK.get(role)
+                return self._photos.data(self._photos.index(cell), role)
+            if cell == FILLER:
+                return CELL_FILLER if role == KindRole else self._BLANK.get(role)
+            section = self._sections[-2 - cell]
+            if role == KindRole:
+                return CELL_HEADER
+            if role in (NameRole, TitleRole):
+                return section.title
+            if role == SectionDetailRole:
+                return section.detail
+            if role == SectionCountRole:
+                return section.count
+            if role == SectionStartRole:
+                return section.start
+            return self._BLANK.get(role)
         folder = self._folders()[row] if row < len(self._folders()) else {"name": "", "path": ""}
         if role in (PathRole,):
             return folder["path"]
@@ -962,6 +1062,56 @@ class GridModel(QAbstractListModel):
             return folder["name"]
         if role == FolderRole:
             return True
-        return {ExtRole: "", RawRole: False, DecisionRole: "", RatingRole: 0, AiRole: -1, SelectedRole: False}.get(role)
+        if role == KindRole:
+            return CELL_FOLDER
+        return self._BLANK.get(role)
+
+    # -- photo rows and grid cells -------------------------------------------------------------------------------------------
+    @Slot(int, result=int)
+    def rowAt(self, index: int) -> int:
+        """The photo row the cell `index` shows. A folder card answers its place before the photos (below zero); a header or an empty cell -1."""
+        if index < self._n or self._cells is None:
+            return index - self._n
+        cell = self._cell(index) if index < self.rowCount() else FILLER
+        return cell if cell >= 0 else -1
+
+    @Slot(int, result=int)
+    def indexOfRow(self, row: int) -> int:
+        """The cell that shows the photo row `row` (a row below zero is a folder card, as `rowAt` answers it)."""
+        if row < 0 or self._cells is None:
+            return row + self._n
+        if not self._index_of_row:
+            return self._n
+        return self._index_of_row[min(row, len(self._index_of_row) - 1)]
+
+    def _stop(self, index: int) -> bool:
+        """Can the cursor be on this cell? (A photo or a folder card; not a header or an empty cell.)"""
+        return 0 <= index < self.rowCount() and (index < self._n or self._cell(index) >= 0)
+
+    @Slot(int, int, result=int)
+    def landing(self, index: int, origin: int) -> int:
+        """Where a move of the cursor from `origin` to `index` ends: on `index`, or, when that is a header or an empty cell, on the
+        photo meant. One step along a row goes on in its direction; a jump (a row up or down, a page, Home, End) takes the photo
+        before an empty cell and the photo after a header. `origin` when there is nowhere to go."""
+        count = self.rowCount()
+        if count == 0:
+            return -1
+        index = max(0, min(count - 1, index))
+        if self._cells is None or self._stop(index):
+            return index
+        if abs(index - origin) == 1:
+            step = 1 if index > origin else -1
+        else:
+            step = -1 if self._cell(index) == FILLER else 1
+        at = index
+        while 0 <= at < count and not self._stop(at):
+            at += step
+        if 0 <= at < count:
+            return at
+        at = index
+        while 0 <= at < count and not self._stop(at):          # nothing that way (a header that opens the list): the other way
+            at -= step
+        return at if 0 <= at < count and abs(index - origin) != 1 else origin
 
     folders = Property(int, lambda self: self._n, notify=foldersChanged)
+    sectioned = Property(bool, lambda self: self._cells is not None, notify=sectionsChanged)

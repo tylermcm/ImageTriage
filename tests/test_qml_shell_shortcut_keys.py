@@ -143,6 +143,7 @@ def test_the_windows_shortcuts_follow_the_saved_shortcuts(qapp, tmp_path):
     engine, window, warnings, photos, settings, grid = open_window(qapp, tmp_path)
     card = window.findChild(QObject, "batchWindow")
     assert card is not None and card.property("shown") is False
+    photos.selectRange(0, 1)                                                                # several photos: Rename is the batch window (one photo is renamed on its card)
     QTest.keyClick(window, Qt.Key.Key_F2)                                                   # Rename Image: its default key
     pump(qapp, 0.5)
     assert card.property("shown") is True and card.property("mode") == "rename"

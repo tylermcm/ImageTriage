@@ -437,7 +437,7 @@ Window {
     function savePositionNow() { if (photos.scopeKind !== "") return; var d = photos.get(grid.row); if (d && d.path) libraryNav.savePosition(d.path) }
     Timer { id: positionTimer; interval: 700; onTriggered: win.savePositionNow() }
     Connections { target: grid.view; function onCurrentIndexChanged() { positionTimer.restart() } }
-    Connections { target: libraryNav; function onPositionRestored(row) { grid.row = row; grid.view.positionViewAtIndex(row + grid.nf, GridView.Center) } }
+    Connections { target: libraryNav; function onPositionRestored(row) { grid.row = row; grid.showRow(row, GridView.Center) } }
     // Closing the window must not silently drop edits: RAW adjustments never saved with Done are kept only as drafts, and the hosted editor is shut
     // down without saving what is open in it. Ask once; "Quit anyway" closes for real.
     property bool quitConfirmed: false
@@ -520,7 +520,7 @@ Window {
         else if (id === "ai.workflow_center") cull.openCenter()
         else if (id === "ai.run_pipeline") cull.openCull()
         else if (id === "ai.apply_culling") cull.openReview()
-        else if (id === "ai.next_top_pick") { var tp = aiScores.nextTopPick(win.commandRow); if (tp >= 0) { if (viewer.shown) viewer.go(tp); else { grid.row = tp; grid.view.positionViewAtIndex(tp + grid.nf, GridView.Contain) } } else toasts.show("info", "No AI top picks in this view", "Run the AI analysis first, or clear the filters.") }
+        else if (id === "ai.next_top_pick") { var tp = aiScores.nextTopPick(win.commandRow); if (tp >= 0) { if (viewer.shown) viewer.go(tp); else { grid.row = tp; grid.showRow(tp, GridView.Contain) } } else toasts.show("info", "No AI top picks in this view", "Run the AI analysis first, or clear the filters.") }
         else if (id === "review.auto_advance") { settings.set("autoAdvance", settings.value("autoAdvance") !== true); settings.save(); cmdPalette.setState("review.auto_advance", settings.value("autoAdvance") === true ? "On" : "Off") }
         else if (id === "tools.performance_logging") { settings.set("perfLog", settings.value("perfLog") !== true); settings.save(); cmdPalette.setState("tools.performance_logging", settings.value("perfLog") === true ? "On" : "Off") }
         else if (id === "view.zen_mode") { UiState.zen = !UiState.zen; cmdPalette.setState("view.zen_mode", UiState.zen ? "On" : "Off") }
