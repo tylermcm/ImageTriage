@@ -225,7 +225,9 @@ class PeopleModel(QObject):
         named = sum(1 for p in self._people if p["name"])
         return {"named": named, "unnamed": len(self._people) - named, "photos": sum(p["count"] for p in self._people)}
 
-    def _write(self, action) -> None:
+    def _write(self, action, named=()) -> None:
+        """Change the folder's people. `named` are the clusters the person has just named by hand: the app's store of named people
+        (people_identities.py, when it is on) learns who this folder names, so the next folder can recognise them."""
         if self._memory:
             action(None)
         elif self._db is not None:
@@ -233,6 +235,15 @@ class PeopleModel(QObject):
             try:
                 action(connection)
                 connection.commit()
+                try:
+                    from .. import people_identities
+
+                    if people_identities.active() is not None:
+                        people_identities.confirm_names(connection, named)
+                        people_identities.remember_folder_names(connection, self._folder)
+                        connection.commit()
+                except Exception:               # carrying names across folders is extra: the folder's own names are already saved
+                    pass
             finally:
                 connection.close()
         self.reload()
@@ -266,7 +277,7 @@ class PeopleModel(QObject):
             return
         from ..people_search import assign_person_names
 
-        self._write(lambda c: assign_person_names(c, ids, clean))
+        self._write(lambda c: assign_person_names(c, ids, clean), named=ids)
 
     @Slot("QVariantList")
     def clearNames(self, pids: list) -> None:
@@ -279,7 +290,7 @@ class PeopleModel(QObject):
         from ..people_search import assign_person_names
 
         ids = self._ids_for(pids)
-        self._write(lambda c: assign_person_names(c, ids, ""))
+        self._write(lambda c: assign_person_names(c, ids, ""), named=ids)
 
     @Slot("QVariantList", result="QVariantList")
     def ignore(self, pids: list) -> list:

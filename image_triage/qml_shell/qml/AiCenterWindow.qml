@@ -31,6 +31,8 @@ Backdrop {
                   body: "This forgets what the Cull window found for the open folder (a running analysis is stopped) and empties the list of recent runs. Your photos and your decisions are not touched."
                   onAccepted: cull.clearRuns() }
     ConfirmCard { id: deleteCard; objectName: "aiDeleteDataCard"; warn: true; cancelText: "Cancel"; onAccepted: cull.deleteFolderData() }
+    ConfirmCard { id: forgetCard; objectName: "aiForgetPeopleCard"; warn: true; cancelText: "Cancel"; onAccepted: cull.forgetPeople() }
+    function forgetPressed() { var t = cull.forgetPeopleText(); forgetCard.title = t.title; forgetCard.body = t.body; forgetCard.confirmText = t.confirm; forgetCard.open() }
     function deletePressed() { var t = cull.deleteDataText(); deleteCard.title = t.title; deleteCard.body = t.body; deleteCard.confirmText = t.confirm; deleteCard.open() }
     component Card: Rectangle { radius: 14; color: theme.s1; border.color: theme.lineSoft }
     component H3: Text { height: 13; verticalAlignment: Text.AlignVCenter; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
@@ -119,6 +121,18 @@ Backdrop {
                         title: "AI data for " + (root.c.dataFolder || ""); tone: ""; state: ""
                         desc: "The analysis keeps its results, the search index, and the faces and names it found in a hidden folder beside these photos. Deleting it removes all of that for this folder; your photos and decisions stay."
                         SButton { objectName: "aiDeleteDataButton"; text: "Delete AI data…"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: root.deletePressed() } }
+                    // People named in one folder are recognised in the next. Their names and face data stay on this PC; this row
+                    // switches that off and deletes what is remembered (people_identities.py).
+                    Item { visible: peopleMemory.visible; width: 1; height: 16 }
+                    H3 { visible: peopleMemory.visible; text: "PEOPLE ACROSS FOLDERS"; width: parent.width }
+                    Item { visible: peopleMemory.visible; width: 1; height: 9 }
+                    Row2 { id: peopleMemory; objectName: "aiPeopleMemory"; visible: !!root.c.peopleMemory && !!root.c.peopleMemory.show
+                        iconPath: "M16 11a3 3 0 100-6 3 3 0 000 6zM8 11a3 3 0 100-6 3 3 0 000 6zM2 19c0-2.8 2.7-5 6-5s6 2.2 6 5M14.5 14.3c.5-.2 1-.3 1.5-.3 3.3 0 6 2.2 6 5"
+                        title: "Remember named people"; tone: root.c.peopleMemory && root.c.peopleMemory.on ? "ok" : "warn"
+                        state: root.c.peopleMemory && root.c.peopleMemory.on ? "On" : "Off"; desc: root.c.peopleMemory ? root.c.peopleMemory.desc : ""
+                        SButton { objectName: "aiForgetPeopleButton"; visible: !!root.c.peopleMemory && root.c.peopleMemory.canForget; text: "Forget everyone…"; h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: root.forgetPressed() }
+                        SSwitch { objectName: "aiPeopleMemorySwitch"; anchors.verticalCenter: parent.verticalCenter; checked: !!root.c.peopleMemory && root.c.peopleMemory.on; name: "Remember named people across folders"
+                                  onToggled: (v) => cull.setPeopleMemory(v) } }
                     Item { width: 1; height: 16 }
                     H3 { text: "RECENT RUNS"; width: parent.width }
                     Item { width: 1; height: 9 }

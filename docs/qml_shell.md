@@ -82,6 +82,33 @@ new default profiles, and saved opt-outs are respected. Native settings are
 validated by the isolated engine. See `cli_culler_cpu_gpu_investigation.md` for
 runtime provenance, validation evidence and the remaining portable-build issue.
 
+## AI results, settings and people
+
+The AI Center can remove the managed runtime (`ai_runtime_packages.remove_ai_runtime`): it asks first with the size
+on disk, refuses while anything runs on it, ends the warm mask engine host, and reports files it could not delete.
+
+Per-photo scores are the recorded ones (`ai_score_details.py`). Cascade reports from version 2 keep, per frame, the
+MANIQA and Q-ReAlign scores for the frames those rankers read, the eyes-closed score, the preview's sharpness and
+clipping, and the pass that settled the frame; the summary names the device a ranker's worker reported. The
+inspector's AI tab and the cull review card list them with their scales and say "not recorded" otherwise. Older
+reports still load and claim nothing.
+
+Every setting of the pinned native engine and of the cascade has a control. `native_cull_controls.py` lists the
+engine's settings with a label, one plain line, the default and Reset to default per group; the scoring weights and
+how the shoot is read are under Advanced, above the whole-profile JSON. `cascade/controls.py` holds the cascade
+fields the ten sliders do not cover. Tests compare both lists with the engines' own dataclasses.
+
+Best-of can choose from the folder's saved AI report without analysing again (`ai_best_of.py`): top overall, per
+stack or per person, by a recorded score, then mark as Winners or add to a collection as one undo step.
+
+Where a cull review was left is kept per folder in the app's data (`cull_review_store.py`), tied to the report's
+content identity: a new analysis never inherits an old review.
+
+People named in one folder are recognised by name in others (`people_identities.py`). The store of names and face
+embeddings is in the app's data on this PC only, is not read by exports or PocketDrop, can be switched off and can be
+deleted from the AI Center. A cluster takes a name only on a clear, unambiguous match; a suggested name is not fed
+back into the store until the person confirms it.
+
 ## Grid navigation and inspector
 
 The library grid supports middle-button autoscroll: click to set an anchor, then

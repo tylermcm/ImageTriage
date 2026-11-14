@@ -39,6 +39,7 @@ PRESETS = {
     "strict": {"split": _D.split_jump, "dup": _D.duplicate_distance, "soft": 50, "clip": 7, "blown": 35, "blink": 50,
                "rdist": 12, "ssim": 58, "rwin": _D.repeat_window, "rounds": 2},
 }
+PEOPLE_MEMORY_KEY = "ai/people_across_folders"       # whether named people are recognised in other folders (on unless switched off)
 REVIEW_KEYS = ("filter", "sort", "restored", "sel", "applied")      # what a kept review holds, besides the scroll position
 SENS_TEXT = {
     "careful": "Flags only the clearest problems. Fewer frames are flagged, so fewer good ones get caught by mistake.",
@@ -107,6 +108,8 @@ class CullModel(QObject):
     _nativeValidated = Signal(int, object, str)
     _reviewLoaded = Signal(int, str, object)      # token, the saved report's identity, the review kept for it (or None): from the loading thread
     _reviewIdentified = Signal(int, str)          # token, the identity of the report a run has just written
+    _peopleMemoryRead = Signal(int, object)       # token, the names remembered across folders: from the reading thread
+    _peopleMemoryForgot = Signal(bool)
     nativeSettingsSaved = Signal()
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None, ai: AiCenterBackend | None = None, toasts=None, files=None) -> None:
@@ -141,6 +144,10 @@ class CullModel(QObject):
         self._review_timer.timeout.connect(self._write_review)
         self._reviewLoaded.connect(self._review_arrived, Qt.ConnectionType.QueuedConnection)
         self._reviewIdentified.connect(self._review_identified, Qt.ConnectionType.QueuedConnection)
+        self._people_memory = None                # the names remembered across folders, once read (None: not read)
+        self._people_store_exists = False
+        self._peopleMemoryRead.connect(self._people_memory_arrived, Qt.ConnectionType.QueuedConnection)
+        self._peopleMemoryForgot.connect(self._people_memory_forgot, Qt.ConnectionType.QueuedConnection)
         self._native_load_failed = False          # the native defaults could not be read: not asked again on every redraw
         self._native_load = None                  # the read of the native defaults now running on its own thread (it starts the engine's Python)
         self._native_load_token = 0               # a result carrying an older token was overtaken or abandoned, and is dropped
@@ -914,6 +921,7 @@ class CullModel(QObject):
                 "vcShow": a["vcOld"], "vcFound": f"Visual C++ {a['vcFound']}", "vcNeeded": "14.40",
                 "models": models, "cpu": s["cpuDefault"], "defSens": s["sens"] if self._settings is None else str(self._settings.value(SENS_KEY, "balanced", str)),
                 "dataFolder": self._photos.folderName if self._photos.folder_dir() else "",
+                "peopleMemory": self._people_memory_view(),
                 "runs": self._runs(flagged, applied) if s["runs"] else [], "noRuns": not s["runs"] or not self._runs(flagged, applied)}
 
     @staticmethod
@@ -1291,6 +1299,104 @@ class CullModel(QObject):
     @Slot()
     def openCenter(self) -> None:
         self._set(window="center", back=self._s["window"] == "cull")
+        self._read_people_memory()
+
+    # -- the people remembered across folders (people_identities.py) ---------------------------------------------------------------------
+    def _read_people_memory(self) -> None:
+        """Count the remembered people on a worker thread (it opens the store's file); the AI Center's row follows."""
+        from .. import people_identities
+
+        if self._memory:
+            self._people_memory = None
+            return
+        # Read even while it is switched off: what is remembered can still be forgotten then.
+        store = people_identities.active() or people_identities.IdentityStore(people_identities.default_path())
+        self._people_memory_token = getattr(self, "_people_memory_token", 0) + 1
+        token = self._people_memory_token
+
+        def work() -> None:
+            try:
+                names = store.names()
+            except Exception:
+                names = []
+            self._peopleMemoryRead.emit(token, names)
+
+        threading.Thread(target=work, name="qml-people-memory", daemon=True).start()
+
+    def _people_memory_arrived(self, token: int, names) -> None:
+        if token == getattr(self, "_people_memory_token", 0):
+            self._people_memory = list(names)
+            self._rebuild()
+
+    def _people_memory_view(self) -> dict:
+        """The AI Center's row: whether names carry across folders, and how many people are remembered."""
+        from .. import people_identities
+
+        if self._memory or self._settings is None:
+            return {"show": False, "on": False, "count": 0, "desc": "", "canForget": False}
+        on = people_identities.active() is not None
+        names = getattr(self, "_people_memory", None) or []
+        count = len(names)
+        if not on:
+            desc = "Off. A person named in one folder is not recognised in another. People already remembered stay until you forget them."
+        elif count:
+            shown = ", ".join(names[:4]) + (f" and {count - 4} more" if count > 4 else "")
+            desc = (f"{count} named {'person' if count == 1 else 'people'} remembered ({shown}), so they are recognised by name in other folders. "
+                    "Their names and face data are kept on this PC only, and are never part of an export or a PocketDrop transfer.")
+        else:
+            desc = ("Nobody is remembered yet. When you name a person in Tag People, they are recognised by name in other folders. "
+                    "Names and face data are kept on this PC only, and are never part of an export or a PocketDrop transfer.")
+        return {"show": True, "on": on, "count": count, "desc": desc, "canForget": count > 0 or self._people_store_exists}
+
+    @Slot(bool)
+    def setPeopleMemory(self, on: bool) -> None:
+        """Switch recognising named people across folders on or off. Off stops reading and writing the store; it does not delete it."""
+        from .. import people_identities
+
+        if self._memory or self._settings is None:
+            return
+        self._settings.setValue(PEOPLE_MEMORY_KEY, bool(on))
+        if on:
+            people_identities.enable()
+        else:
+            people_identities.disable()
+        self._read_people_memory()
+        self._rebuild()
+
+    @Slot(result="QVariantMap")
+    def forgetPeopleText(self) -> dict:
+        count = len(getattr(self, "_people_memory", None) or [])
+        return {"title": "Forget everyone remembered across folders?", "confirm": "Forget everyone",
+                "body": f"This deletes the {count} named {'person' if count == 1 else 'people'} Image Triage remembers so they can be recognised in other folders, "
+                        "with their face data. The names you gave inside each folder stay in that folder. It cannot be undone; naming someone again remembers them again."}
+
+    @Slot()
+    def forgetPeople(self) -> None:
+        """Delete the store of people remembered across folders, off the UI thread."""
+        from .. import people_identities
+
+        store = people_identities.active() or (people_identities.IdentityStore(people_identities.default_path()) if not self._memory else None)
+        if store is None:
+            return
+        self._people_memory_token = getattr(self, "_people_memory_token", 0) + 1      # a read still on its way saw them before they went
+
+        def work() -> None:
+            try:
+                done = store.clear()
+            except Exception:
+                done = False
+            self._peopleMemoryForgot.emit(done)
+
+        threading.Thread(target=work, name="qml-people-forget", daemon=True).start()
+
+    def _people_memory_forgot(self, done: bool) -> None:
+        self._people_memory, self._people_store_exists = [], not done
+        if self._toasts is not None:
+            if done:
+                self._toasts.push("success", "Remembered people forgotten", "Nobody is recognised across folders until you name them again.")
+            else:
+                self._toasts.push("error", "The remembered people could not be deleted", "The file is in use. Close other Image Triage windows and try again.")
+        self._rebuild()
 
     @Slot()
     def close(self) -> None:
@@ -1561,6 +1667,11 @@ class CullModel(QObject):
                 from ..ai_workflow import reset_hidden_ai_review_cache
 
                 reset_hidden_ai_review_cache(folder, clear_logs=True)
+                from .. import people_identities
+
+                store = people_identities.active()
+                if store is not None:               # what this folder's faces contributed to the people remembered across folders goes too
+                    store.forget_source(people_identities.source_key(folder))
             except Exception as exc:
                 error = str(exc) or type(exc).__name__
             self._dataDeleted.emit(token, error)

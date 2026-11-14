@@ -23,10 +23,10 @@ def import_active_index(folder: str, active: Path) -> dict | None:
     identity = compute_semantic_model_identity(runtime.clip_vision_model,
         fallback_model=runtime.clip_fallback_vision_model)
     return import_native_index(Path(output["path"]),
-        aiculler_db_path(build_aiculler_workflow_paths(folder)), semantic_identity=identity)
+        aiculler_db_path(build_aiculler_workflow_paths(folder)), semantic_identity=identity, folder=str(folder))
 
 
-def import_native_index(path: Path, db_path: Path, *, semantic_identity: str) -> dict:
+def import_native_index(path: Path, db_path: Path, *, semantic_identity: str, folder: str = "") -> dict:
     # These are the host's legacy storage APIs, never the engine's ScoreCache.
     from aiculler.features import PreviewExtractor, _file_signature
     from aiculler.storage import SQLiteFeatureStore
@@ -109,6 +109,11 @@ def import_native_index(path: Path, db_path: Path, *, semantic_identity: str) ->
                             (str(path.resolve()), int(arrays["face_person"][row]), image_ids[filename], face_index))
             cluster_face_identities(store.connection, identity_model=face_identity,
                                     threshold=float(meta["face_cluster_threshold"]))
+            if folder:                              # people named in other folders are recognised here by name (people_identities.py)
+                from .people_identities import after_clustering
+
+                store.connection.commit()
+                after_clustering(store.connection, folder)
         store.connection.commit()
     except BaseException:
         store.connection.rollback()
