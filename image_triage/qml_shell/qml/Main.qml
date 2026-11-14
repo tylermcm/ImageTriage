@@ -363,6 +363,7 @@ Window {
             else if (what === "showDrop") UiState.tab = "drop"
             else if (what === "open") popout.open(arg)
             else if (what === "edit") win.openInEditor(Number(arg))
+            else if (what === "batch" && arg === "rename") win.renameSelection(win.actionRows(grid.row))
             else if (what === "batch") UiState.batchMode = arg
             else if (what === "newCollection") { UiState.collDlgId = ""; UiState.collDlg = "new" }
             else if (what === "review") cull.reviewFrame(arg)
@@ -462,6 +463,8 @@ Window {
     function commandRows() { return viewer.shown ? [popout.row] : photos.selectionRows(grid.row) }
     // Open in editor from the grid, the rail or a menu: the editor is started from the viewer, on that photo.
     function openInEditor(row) { if (row < 0 || row >= photos.shown) return; if (!viewer.shown || popout.row !== row) popout.open(row); viewer.openEditor() }
+    // Rename: one photo is renamed on its card in the grid; several open the batch rename window (and so does the viewer, which covers the grid).
+    function renameSelection(rows) { if (viewer.shown || rows.length !== 1 || !grid.beginRename(rows[0])) UiState.batchMode = "rename" }
     function runCommand(id) {
         if (id === "file.workflow_settings") UiState.settingsOpen = true
         else if (id.indexOf("appearance.") === 0) { settings.set("theme", id.slice(11)); settings.save() }
@@ -471,7 +474,8 @@ Window {
         else if (id === "library.create_collection") { UiState.collDlgId = ""; UiState.collDlg = "new" }
         else if (id === "library.add_selected_to_collection") { if (viewer.shown) viewer.collOpen = true; else grid.addToCollection() }
         else if (id === "ai.people") UiState.peopleOpen = true
-        else if (id === "tools.batch_rename" || id === "edit.rename_selection") UiState.batchMode = "rename"
+        else if (id === "edit.rename_selection") win.renameSelection(win.commandRows())
+        else if (id === "tools.batch_rename") UiState.batchMode = "rename"
         else if (id === "tools.batch_resize") UiState.batchMode = "resize"
         else if (id === "tools.batch_convert") UiState.batchMode = "convert"
         else if (id === "search.advanced_filters" || id === "search.save_current") UiState.filtersOpen = true

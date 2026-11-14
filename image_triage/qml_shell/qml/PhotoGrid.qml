@@ -23,6 +23,10 @@ Item {
         // next W or R lands on a different one. A decision or a delete keeps the position, so the next photo comes under the cursor.
         function onModelAboutToBeReset() { root.stopAutoScroll(); root.keepRow = root.row; root.keepPath = root.row >= 0 && photos.resetFollowsPhoto() ? (photos.get(root.row).path || "") : "" }
         function onModelReset() {
+            if (root.renameRow >= 0 && !root.renameBusy) {      // the list changed under the name being edited: stay with that photo, or give up when it is gone
+                var editing = photos.rowForPath(root.renamePath)
+                if (editing >= 0) root.renameRow = editing; else root.cancelRename()
+            }
             if (root.restoringScope || root.keepRow < 0) return
             var same = root.keepPath !== "" ? photos.rowForPath(root.keepPath) : -1
             gv.currentIndex = (same >= 0 ? same : root.keepRow) + gridModel.folders
@@ -112,6 +116,61 @@ Item {
     Connections {
         target: root.Window.window
         function onActiveChanged() { if (!root.Window.active) root.stopAutoScroll() }
+    }
+
+    // ---- F2 with one photo: its name is edited on its card. The rename itself is rename_one.py, through fileActions.renameRow ----
+    property int renameRow: -1                  // the photo whose name is being edited (-1: none)
+    property string renamePath: ""
+    property bool renameBusy: false             // Enter was pressed and the files are being renamed
+    property string renameError: ""             // why the rename was refused (a name that is taken, a file that would not move)
+    property var renameVerdict: ({})            // photos.renameCheck of what is typed: {error, warning, same}
+    property string followPath: ""
+    readonly property bool renaming: renameRow >= 0
+    function beginRename(row) {
+        if (renameRow >= 0) return true
+        if (row === undefined) row = root.row
+        var d = photos.get(row)
+        if (!d.path) return false
+        photos.clearSelection()
+        gv.currentIndex = row + root.nf
+        gv.revealCurrent()
+        renamePath = d.path; renameError = ""; renameBusy = false; renameVerdict = ({})
+        renameRow = row
+        nameField.text = d.title || d.name
+        nameField.selectAll()
+        nameField.forceActiveFocus()
+        return true
+    }
+    function cancelRename() { renameRow = -1; renameBusy = false; renameError = "" }
+    function endRename() { cancelRename(); gv.forceActiveFocus() }
+    function commitRename() {
+        if (renameRow < 0 || renameBusy) return
+        var verdict = photos.renameCheck(renameRow, nameField.text)
+        renameVerdict = verdict
+        if (verdict.error !== "") return
+        if (verdict.same) { endRename(); return }
+        var refused = fileActions.renameRow(renameRow, nameField.text)
+        if (refused !== "") { renameError = refused; return }
+        renameBusy = true
+    }
+    Connections {
+        target: photos
+        function onRenameFinished(from, to, error) {
+            if (error === "" && to !== from) root.followPath = to
+            if (root.renameRow < 0 || from !== root.renamePath) return
+            if (error !== "") { root.renameBusy = false; root.renameError = error; nameField.forceActiveFocus() }
+            else root.endRename()
+        }
+        // The folder has been read again after a rename: the grid goes with the photo to its new place in the order. Last, after the
+        // handlers that put the cursor back at the start or on the photo's old path.
+        function onLoadingChanged() {
+            if (photos.loading || root.followPath === "") return
+            Qt.callLater(function () {
+                var renamed = root.followPath !== "" ? photos.rowForPath(root.followPath) : -1
+                if (renamed >= 0) { libraryNav.savePosition(root.followPath); gv.currentIndex = renamed + root.nf; gv.revealCurrent() }
+                root.followPath = ""
+            })
+        }
     }
 
     // B: the photo you are on goes into the collection that collects (or, when there is none, you choose one)
@@ -415,6 +474,63 @@ Item {
                 acceptedModifiers: Qt.ShiftModifier
                 onTapped: (point) => { if (root.blocked(point.scenePosition) || cell.isFolder) return; photos.selectRange(Math.max(0, gv.anchorIndex - root.nf), cell.index - root.nf); gv.currentIndex = cell.index; gv.forceActiveFocus() }
             }
+        }
+    }
+    Item {   // the name being edited, over the bottom of its card; what is wrong with it (or would be on Windows) is said under it
+        id: renameBox
+        objectName: "gridRename"
+        readonly property Item card: root.renameRow >= 0 ? gv.itemAtIndex(root.renameRow + root.nf) : null
+        readonly property string problem: root.renameError !== "" ? root.renameError : (root.renameVerdict.error || "")
+        readonly property string note: problem !== "" ? problem : (root.renameVerdict.warning || "")
+        visible: card !== null
+        z: 6
+        x: card ? gv.x + card.x - gv.contentX + 7 : 0
+        y: card ? gv.y + card.y - gv.contentY + card.height - height - 7 : 0
+        width: card ? card.width - 14 : 0
+        height: 34
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: (w) => { w.accepted = true } }   // a click on the field is not a click on the card under it
+        Rectangle {
+            anchors.fill: parent; radius: 10; color: theme.base
+            border.width: 1; border.color: renameBox.problem !== "" ? theme.rej : theme.accent
+            Behavior on border.color { ColorAnimation { duration: 200 } }
+        }
+        TextInput {
+            id: nameField
+            objectName: "gridRenameInput"
+            x: 10; anchors.verticalCenter: parent.verticalCenter
+            width: parent.width - 20 - (extTag.visible ? extTag.width + 8 : 0)
+            color: theme.fg; font.pointSize: UiState.pt(13); clip: true; selectByMouse: true
+            selectionColor: theme.accent; selectedTextColor: theme.onAccent
+            readOnly: root.renameBusy
+            opacity: root.renameBusy ? 0.6 : 1
+            onTextEdited: { root.renameError = ""; root.renameVerdict = photos.renameCheck(root.renameRow, text) }
+            Keys.onShortcutOverride: (e) => { e.accepted = !(e.key >= Qt.Key_F1 && e.key <= Qt.Key_F35) }      // while a name is typed every key is text, not a command
+            Keys.onPressed: (e) => {
+                if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) { root.commitRename(); e.accepted = true }
+                else if (e.key === Qt.Key_Escape) { root.endRename(); e.accepted = true }
+            }
+            onActiveFocusChanged: if (!activeFocus && root.renameRow >= 0 && !root.renameBusy) root.cancelRename()      // a click elsewhere leaves the name as it was
+            Accessible.role: Accessible.EditableText
+            Accessible.name: "New name"
+            Accessible.description: renameBox.note
+        }
+        Rectangle {   // the extension stays as it is: shown, not edited
+            id: extTag
+            readonly property string ext: { var dot = root.renamePath.lastIndexOf("."); return dot > root.renamePath.lastIndexOf("/") && dot > root.renamePath.lastIndexOf("\\") ? root.renamePath.slice(dot) : "" }
+            visible: ext !== "" && renameBox.width > 150
+            anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
+            width: extLabel.implicitWidth + 12; height: 18; radius: 6; color: theme.s3
+            Text { id: extLabel; anchors.centerIn: parent; text: extTag.ext; color: theme.fg3; font.pointSize: UiState.pt(11) }
+        }
+        Rectangle {
+            objectName: "gridRenameNote"
+            visible: renameBox.note !== ""
+            readonly property bool above: renameBox.y + renameBox.height + 6 + height > root.height - root.bottomSpace
+            x: Math.max(-renameBox.x + 6, Math.min(0, root.width - renameBox.x - width - 6))
+            y: above ? -height - 6 : parent.height + 6
+            width: Math.max(Math.min(renameBox.width, root.width - 12), Math.min(320, noteText.implicitWidth + 20, root.width - 12)); height: noteText.height + 14
+            radius: 9; color: theme.s3; border.color: renameBox.problem !== "" ? theme.rej : theme.rev
+            Text { id: noteText; x: 10; y: 7; width: parent.width - 20; wrapMode: Text.Wrap; text: renameBox.note; color: theme.fg; font.pointSize: UiState.pt(11.5) }
         }
     }
     // Middle click latches an origin; distance above/below it controls speed.

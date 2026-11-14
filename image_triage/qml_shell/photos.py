@@ -108,6 +108,7 @@ class PhotoModel(QAbstractListModel):
     selectionChanged = Signal()             # the set of photos picked with Ctrl, Shift or Ctrl+A changed
     searchChanged = Signal()
     searchRequested = Signal(str)
+    renameFinished = Signal(str, str, str)  # one photo was renamed from the grid (rename_one.py): old path, new path ("" when it failed), why it failed
     _loaded = Signal(object, str, int)      # `object`, not `list`: a list is copied row by row on its way through the signal
     _captureTimesRead = Signal(int, object)
 
@@ -637,6 +638,16 @@ class PhotoModel(QAbstractListModel):
 
     picked = Property(int, lambda self: len(self._selected_rows()), notify=selectionChanged)
 
+    @Slot(int, str, result="QVariantMap")
+    def renameCheck(self, row: int, name: str) -> dict:
+        """What the grid's rename field shows under a name being typed: {"error", "warning", "same"}. The disk is not looked at."""
+        from .rename_one import check
+
+        item = self.row_at(row)
+        if item is None:
+            return {"error": "There is no photo to rename.", "warning": "", "same": False}
+        return check(item["path"], name)
+
     @Slot(result=bool)
     def resetFollowsPhoto(self) -> bool:
         """Asked by the grid while the list is being rebuilt: stay on the same photo (True) or the same position (False)."""
@@ -828,7 +839,7 @@ class PhotoModel(QAbstractListModel):
         if not 0 <= row < len(self._rows):
             return {}
         item = self._rows[row]
-        detail = dict(item, isRaw=item["raw"], position=row + 1, count=len(self._rows))
+        detail = dict(item, isRaw=item["raw"], title=_title(item), position=row + 1, count=len(self._rows))
         mock = self._mock.get(item["name"])
         if mock:
             detail["capture"] = {"ready": True, "camera": "Nikon Z 6", "lens": "24-70 mm f/4 S", "exposure": mock["exposure"], "focal": mock["focal"],

@@ -293,6 +293,14 @@ class FileActions(QObject):
             self._settings().setValue(RECENT_KEY, [destination, *[d for d in current if os.path.normcase(os.path.normpath(d)) != key]][:10])
         self.recentChanged.emit()
 
+    # ---------------- rename one photo (rename_one.py) ----------------
+    @Slot(int, str, result=str)
+    def renameRow(self, row: int, name: str) -> str:
+        """Rename the shown photo `row` (its whole bundle) on the worker. "" when started, else why not; `photos.renameFinished` says how it ended."""
+        from .rename_one import rename_row
+
+        return rename_row(self, row, name)
+
     # ---------------- delete ----------------
     @Slot(int)
     def deleteRow(self, row: int) -> None:
