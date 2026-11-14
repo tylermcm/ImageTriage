@@ -331,6 +331,22 @@ Backdrop {
                             Item { id: split; width: parent.width; height: Math.max(260, body.height - 18 - revNotes.height - 64 - 14 - 40 - chipFlow.height - 12)
                                 ListView { id: stk; objectName: "cullReviewList"; width: parent.width - 262 - 16; height: parent.height; spacing: 8; clip: true; cacheBuffer: 500; boundsBehavior: Flickable.StopAtBounds; interactive: false; model: cull.reviewRows
                                         property real savedY: 0
+                                        // Where the list was scrolled is kept with the review (cull_review_store.py): the first stack in view is told
+                                        // to the model a moment after scrolling stops, and a kept position is gone to once, when the review is shown.
+                                        property int topRev: -1
+                                        function goToKeptTop() {
+                                            if (root.page !== "rev" || !root.shown || stk.count === 0 || stk.topRev === root.v.reviewTopRev) return
+                                            stk.topRev = root.v.reviewTopRev
+                                            stk.forceLayout()
+                                            stk.positionViewAtIndex(Math.max(0, Math.min(root.v.reviewTop, stk.count - 1)), ListView.Beginning)
+                                        }
+                                        Timer { id: topTimer; interval: 300; onTriggered: if (root.page === "rev" && stk.topRev === root.v.reviewTopRev) cull.setReviewTop(Math.max(0, stk.indexAt(10, stk.contentY + 4))) }
+                                        onContentYChanged: if (root.page === "rev") topTimer.restart()
+                                        onCountChanged: Qt.callLater(stk.goToKeptTop)
+                                        Connections { target: root
+                                            function onPageChanged() { Qt.callLater(stk.goToKeptTop) }
+                                            function onShownChanged() { Qt.callLater(stk.goToKeptTop) } }
+                                        Connections { target: cull; function onChanged() { if (stk.topRev !== root.v.reviewTopRev) Qt.callLater(stk.goToKeptTop) } }
                                         Connections { target: cull
                                             function onReviewRowsAboutToChange() { stk.savedY = stk.contentY; reviewScroll.stop() }
                                             function onReviewRowsChanged() { Qt.callLater(function () { stk.forceLayout(); stk.contentY = reviewScroll.clampY(stk.savedY) }) }

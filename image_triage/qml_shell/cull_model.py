@@ -39,6 +39,7 @@ PRESETS = {
     "strict": {"split": _D.split_jump, "dup": _D.duplicate_distance, "soft": 50, "clip": 7, "blown": 35, "blink": 50,
                "rdist": 12, "ssim": 58, "rwin": _D.repeat_window, "rounds": 2},
 }
+REVIEW_KEYS = ("filter", "sort", "restored", "sel", "applied")      # what a kept review holds, besides the scroll position
 SENS_TEXT = {
     "careful": "Flags only the clearest problems. Fewer frames are flagged, so fewer good ones get caught by mistake.",
     "balanced": "The settings measured on two reviewed albums. Some frames you would have kept still get flagged, which is why nothing is ever hidden.",
@@ -104,6 +105,8 @@ class CullModel(QObject):
     _dataDeleted = Signal(int, str)
     _nativeLoaded = Signal(int, object, str)    # token, (saved profile, engine defaults) or None, error: sent from the loading thread
     _nativeValidated = Signal(int, object, str)
+    _reviewLoaded = Signal(int, str, object)      # token, the saved report's identity, the review kept for it (or None): from the loading thread
+    _reviewIdentified = Signal(int, str)          # token, the identity of the report a run has just written
     nativeSettingsSaved = Signal()
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None, ai: AiCenterBackend | None = None, toasts=None, files=None) -> None:
@@ -124,6 +127,20 @@ class CullModel(QObject):
         self._run_device = ""                     # where the rankers really ran ("the graphics card", "the CPU"), as the worker reported it
         self._face_wanted = False                 # the People pass waits for both the cull and the search index of this run
         self._extras_token = -1
+        # Where the review was left (cull_review_store.py): kept per folder, for the report it was made on, and never for another one.
+        self._review_id = ""                      # the identity of the report the shown results came from ("" until it is known: nothing is kept)
+        self._review_pending = None               # (identity, kept review) read with a folder's saved results, until they are shown
+        self._review_top = 0                      # the first stack in view in the review list, and a counter the list follows to scroll there
+        self._review_top_rev = 0
+        self._review_restoring = False
+        self._review_seq = 0                      # the newest write asked for: an older one that reaches the disk later is dropped
+        self._review_lock = threading.Lock()
+        self._review_timer = QTimer(self)
+        self._review_timer.setSingleShot(True)
+        self._review_timer.setInterval(400)
+        self._review_timer.timeout.connect(self._write_review)
+        self._reviewLoaded.connect(self._review_arrived, Qt.ConnectionType.QueuedConnection)
+        self._reviewIdentified.connect(self._review_identified, Qt.ConnectionType.QueuedConnection)
         self._native_load_failed = False          # the native defaults could not be read: not asked again on every redraw
         self._native_load = None                  # the read of the native defaults now running on its own thread (it starts the engine's Python)
         self._native_load_token = 0               # a result carrying an older token was overtaken or abandoned, and is dropped
@@ -531,6 +548,7 @@ class CullModel(QObject):
             "tunes": [{"key": k, "label": lab, "help": h, "min": lo, "max": hi, "raw": v[k], "val": _fmt(k, v[k]),
                        "def": _fmt(k, PRESETS["balanced"][k]), "isDefault": v[k] == PRESETS["balanced"][k]} for k, lab, h, lo, hi in TUNES],
             "advOpen": s["advOpen"], "advanced": cascade_controls.view(s["adv"]), "advChanged": s["adv"] != cascade_controls.defaults(),
+            "reviewTop": self._review_top, "reviewTopRev": self._review_top_rev,
             "estimate": est_text, "stages": stages, "runLine": f"{cur_stage} · {round(s['p'] * n)} of {n}", "runPct": run_pct,
             "runEta": self._eta_text(s, secs), "notes": notes,
             "tiles": [{"n": n, "l": "Frames"}, {"n": len(self._stacks), "l": "Stacks"}, {"n": sum(cnt(r) for r in REJECTS), "l": "Flagged"}, {"n": cnt("duplicate"), "l": "Near-duplicates"},
@@ -601,6 +619,12 @@ class CullModel(QObject):
         if not (s["done"] and self._real):
             return []
         notes: list[str] = []
+        applied = s["applied"]
+        if applied and applied.get("kept"):
+            count = len(applied["ids"])
+            what = "moved to the recycle bin" if applied["act"] == "bin" else "marked as Rejects"
+            notes.append(f"You applied these results{' on ' + applied['when'] if applied.get('when') else ''}: {count} frame{'s' if count != 1 else ''} {what}. "
+                         "This review is shown as you left it.")
         for note in [*self._run_notes, *self._extra_notes.values()]:
             if note and note not in notes:
                 notes.append(note)
@@ -1120,6 +1144,9 @@ class CullModel(QObject):
         self._apply_timer.stop()
         while self._apply_job is not None:
             self._apply_next(schedule=False)
+        if self._review_timer.isActive():           # a change of the last moments is written before the app goes
+            self._review_timer.stop()
+            self._write_review(wait=True)
         self._cancel_native_load()                  # never waited for: the thread is a daemon and its Python process is ended here
         self._native_save_token += 1
         if self._native_save is not None:
@@ -1134,8 +1161,119 @@ class CullModel(QObject):
     flagRev = Property(int, lambda self: self._grid_rev, notify=gridChanged)
 
     def _set(self, **kw) -> None:
+        watched = [key for key in REVIEW_KEYS if key in kw]
+        before = {key: self._s.get(key) for key in watched}
         self._s.update(kw)
         self._rebuild()
+        if any(before[key] != self._s.get(key) for key in watched):
+            self._review_changed()
+
+    # -- where the review was left, kept for the next time the folder's results are shown ---------------------------------------------
+    def _review_state(self) -> dict:
+        s = self._s
+        applied = s["applied"]
+        if applied and not applied.get("when"):
+            applied["when"] = time.strftime("%Y-%m-%d %H:%M")
+        return {"filter": s["filter"], "sort": s["sort"], "restored": [path for path, on in s["restored"].items() if on], "sel": s["sel"],
+                "top": self._review_top, "applied": {"act": applied["act"], "ids": list(applied["ids"]), "when": applied["when"]} if applied else None}
+
+    def _review_changed(self) -> None:
+        """Something the review keeps has changed: write it shortly (not once per click), for the report on screen only."""
+        if self._memory or self._review_restoring or not self._review_id or not (self._real and self._s["done"]):
+            return
+        self._review_timer.start()
+
+    def _write_review(self, wait: bool = False, folder: str = "") -> None:
+        folder, identity = folder or self._photos.folder_dir(), self._review_id
+        if self._memory or not folder or not identity or not (self._real and self._s["done"]):
+            return
+        state = self._review_state()
+        self._review_seq += 1
+        seq = self._review_seq
+
+        def work() -> None:
+            from .. import cull_review_store
+
+            with self._review_lock:
+                if seq == self._review_seq:         # a newer write was asked for meanwhile: this one is out of date
+                    cull_review_store.save(folder, identity, state)
+
+        if wait:
+            work()
+        else:
+            threading.Thread(target=work, name="qml-cull-review-save", daemon=True).start()
+
+    def _forget_review(self, folder: str) -> None:
+        """The folder's results were cleared or deleted: what was kept about reviewing them goes too."""
+        self._review_timer.stop()
+        self._review_id, self._review_pending, self._review_top = "", None, 0
+        self._review_seq += 1                       # a write still on its way is dropped
+        if self._memory or not folder:
+            return
+
+        def work() -> None:
+            from .. import cull_review_store
+
+            with self._review_lock:
+                cull_review_store.forget(folder)
+
+        threading.Thread(target=work, name="qml-cull-review-forget", daemon=True).start()
+
+    def _review_arrived(self, token: int, identity: str, state) -> None:
+        if token == self._token:
+            self._review_pending = (identity, state)
+
+    def _adopt_review(self) -> None:
+        """A folder's saved results are on screen: put the review back where it was left, if it was left on this very report."""
+        pending, self._review_pending = self._review_pending, None
+        if pending is None:
+            return
+        self._review_id, state = pending
+        if not state or not self._review_id:
+            return
+        flags = self._flags
+        paths = {row["path"] for row in self._rows()}
+        applied = state["applied"]
+        self._review_restoring = True               # putting it back is not a change to write again
+        try:
+            self._review_top = state["top"]
+            self._review_top_rev += 1
+            self._set(filter=state["filter"] if state["filter"] == "all" or state["filter"] in flags.values() else "all", sort=state["sort"],
+                      restored={path: True for path in state["restored"] if path in flags},
+                      sel=state["sel"] if state["sel"] in paths else self._s["sel"],
+                      # Kept so the window can say it was applied; the undo step of that session is gone, so it offers none.
+                      applied={"ids": [path for path in applied["ids"] if path in paths], "prev": {}, "act": applied["act"], "entry": 0,
+                               "when": applied["when"], "kept": True} if applied else None)
+        finally:
+            self._review_restoring = False
+
+    def _identify_report(self) -> None:
+        """A run has just written a new report: find its identity (off the UI thread), so a review of it can be kept."""
+        folder, token = self._photos.folder_dir(), self._token
+        self._review_id = ""
+        if self._memory or not folder:
+            return
+
+        def work() -> None:
+            from .. import cull_review_store
+
+            self._reviewIdentified.emit(token, cull_review_store.report_identity(folder))
+
+        threading.Thread(target=work, name="qml-cull-review-id", daemon=True).start()
+
+    def _review_identified(self, token: int, identity: str) -> None:
+        if token != self._token or not (self._real and self._s["done"]):
+            return
+        self._review_id = identity
+        self._review_changed()                      # what was done while the identity was being read is kept now
+
+    @Slot(int)
+    def setReviewTop(self, index: int) -> None:
+        """The review list was scrolled: `index` is the first stack in view. Kept without redrawing anything."""
+        index = max(0, int(index))
+        if index != self._review_top:
+            self._review_top = index
+            self._review_changed()
 
     # -- windows -----------------------------------------------------------------------------------------------------------------
     @Slot()
@@ -1383,6 +1521,7 @@ class CullModel(QObject):
             self._face_wanted = False
             self._run_notes, self._extra_notes, self._run_device = [], {}, ""
             self._flags, self._outcomes, self._picks, self._stacks, self._real = {}, {}, set(), [], False
+            self._forget_review(self._photos.folder_dir())
             self._set(runs=False, done=False, running=False, applied=None, restored={}, sel="", stage=0, p=0.0, page="prep", ranked=False)
             return
         self._set(runs=False)
@@ -1413,6 +1552,7 @@ class CullModel(QObject):
         self._face_wanted = False
         self._run_notes, self._extra_notes, self._run_device = [], {}, ""
         self._flags, self._outcomes, self._picks, self._stacks, self._real = {}, {}, set(), [], False
+        self._forget_review(folder)
         self._set(done=False, running=False, applied=None, restored={}, sel="", stage=0, p=0.0, page="prep", ranked=False)
 
         def work() -> None:
@@ -1635,6 +1775,8 @@ class CullModel(QObject):
                              else outcomes_from_result(result, getattr(self._run, "measures", None), getattr(self._run, "summary", None)))
         first = next((r for r, _x in self._active_flags()), None)
         self._set(running=False, done=True, stage=4, p=1.0, page=s["page"] if s["hidden"] else "rev", sel=first["path"] if first else "", ranked=ranked, eyesRan=eyes)
+        self._review_top, self._review_top_rev = 0, self._review_top_rev + 1
+        self._identify_report()                     # a new report: the review of it starts fresh and is kept under its own identity
         self.runFinished.emit()
         self._maybe_start_face()
         if self._toasts is not None and s["hidden"]:
@@ -1678,12 +1820,16 @@ class CullModel(QObject):
             if same_folder:
                 return                                  # the open folder was only read again (a refresh): the analysis of it carries on
             self._run.cancel()
+        if self._review_timer.isActive():           # the folder being left: its last change is written under its own name first
+            self._review_timer.stop()
+            self._write_review(wait=True, folder=getattr(self, "_review_folder", ""))
         self._token += 1
         token = self._token
         self._face_wanted = False
         self._run_notes, self._extra_notes, self._run_device = [], {}, ""
         self._real, self._outcomes, self._picks, self._flags, self._stacks = False, {}, set(), {}, []
-        self._set(done=False, running=False, page="prep", restored={}, applied=None, sel="", filter="all", ranked=False, stage=0, p=0.0)
+        self._review_id, self._review_pending, self._review_top, self._review_folder = "", None, 0, folder_now
+        self._set(done=False, running=False, page="prep", restored={}, applied=None, sel="", filter="all", sort="stack", ranked=False, stage=0, p=0.0)
         folder = self._photos.folder_dir()
         rows = list(self._photos.all_rows())
         if not folder or not rows:
@@ -1696,6 +1842,11 @@ class CullModel(QObject):
 
             bundle = load_bundle_shared(folder)             # the inspector's AI tab asks for the same report: it is read once for both
             note = str((getattr(bundle, "summary", None) or {}).get("note") or "") if bundle is not None else ""
+            if bundle is not None:
+                from .. import cull_review_store
+
+                identity = cull_review_store.report_identity(folder)
+                self._reviewLoaded.emit(token, identity, cull_review_store.load(folder, identity))      # before the results: it is applied with them
             self._savedLoaded.emit(token, outcomes_from_bundle(bundle, rows) if bundle is not None else {}, note)
 
         threading.Thread(target=work, name="qml-cull-saved", daemon=True).start()
@@ -1706,6 +1857,7 @@ class CullModel(QObject):
         self._run_notes = [note] if note else []
         self._apply_outcomes(outcomes)
         self._set(done=True, page="prep", stage=4, p=1.0, ranked=any(o.ranked for o in outcomes.values()), eyesRan=any("blink" in o.flags for o in outcomes.values()))
+        self._adopt_review()
 
     @Slot()
     def cancelRun(self) -> None:
