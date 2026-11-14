@@ -611,7 +611,7 @@ class PocketDropModel(QObject):
             "pct": s["pct"], "btHotspot": False, "badges": [badge(0), badge(1), badge(2)], "qrSize": size, "qrPath": path,
             "hasLink": has_link, "canOpen": has_link, "linkText": url.replace("https://", "").replace("http://", "") if has_link else "", "linkEmpty": "" if has_link else "Link appears when ready",
             "copied": copied, "copyLabel": copy_label, "info": info, "rows": rows, "sharing": bool(s["items"] or self._groups),
-            "pc": {"mode": 0, "sent": False, "phase": 0, "code": "", "pair": {"pending": False, "name": "", "code": ""}, "name": "", "error": "",
+            "pc": {"mode": 0, "sent": False, "phase": 0, "senders": [], "code": "", "pair": {"pending": False, "name": "", "code": ""}, "name": "", "error": "",
                    "received": 0, "total": 0},
             "menu": {"burn": s["burn"], "auto": s["auto"], "warn": s["warn"], "topmost": s["topmost"], "tunnelOpen": mode == 1 and st == "ready",
                      "inbox": r"C:\Users\You\Downloads\PocketDrop",

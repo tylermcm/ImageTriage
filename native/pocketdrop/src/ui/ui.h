@@ -105,6 +105,7 @@ private:
     void addHistory(persist::HistoryEntry entry);
     void saveHistory();
     std::string historyJson() const;
+    std::string sendersJson() const;
     void showNearby();
     void startPcSend();
     void startPcReceive();

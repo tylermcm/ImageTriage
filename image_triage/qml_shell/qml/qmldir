@@ -47,7 +47,6 @@ BatchWindow 1.0 BatchWindow.qml
 ConfirmCard 1.0 ConfirmCard.qml
 HandoffWindow 1.0 HandoffWindow.qml
 TransferCards 1.0 TransferCards.qml
-PocketDropMenu 1.0 PocketDropMenu.qml
 PocketDropLibrary 1.0 PocketDropLibrary.qml
 PocketDropPanel 1.0 PocketDropPanel.qml
 PocketDropGhost 1.0 PocketDropGhost.qml
@@ -96,3 +95,11 @@ RawRetouchOverlay 1.0 RawRetouchOverlay.qml
 
 RawRedEyePanel 1.0 RawRedEyePanel.qml
 RawRedEyeOverlay 1.0 RawRedEyeOverlay.qml
+PdButton 1.0 PdButton.qml
+PdChip 1.0 PdChip.qml
+PdIcon 1.0 PdIcon.qml
+PdMenu 1.0 PdMenu.qml
+PdMenuEntry 1.0 PdMenuEntry.qml
+PdPairing 1.0 PdPairing.qml
+PdSwitch 1.0 PdSwitch.qml
+PocketDropView 1.0 PocketDropView.qml

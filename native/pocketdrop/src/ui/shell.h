@@ -1,5 +1,6 @@
 #pragma once
 // What the shared UI needs from the host window/OS. Implemented per platform.
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>

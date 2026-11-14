@@ -552,9 +552,9 @@ bool HttpServer::handleDeviceAuth(plat::Sock s, Session& session, const std::str
     {
         std::lock_guard<std::mutex> l(mu_);
         uint64_t now = plat::tick_ms();
-        int64_t unix = plat::unix_time();
+        int64_t epoch = plat::unix_time();
         auto it = std::find_if(trusted_.begin(), trusted_.end(), [&](const TrustedDevice& d) { return d.id == id; });
-        bool known = it != trusted_.end() && unix - it->lastUsed <= DEVICE_TTL_S;
+        bool known = it != trusted_.end() && epoch - it->lastUsed <= DEVICE_TTL_S;
         if (receiveCode_.empty()) {
             status = 403;
         } else if (session.authFailures >= 8) {
@@ -576,7 +576,7 @@ bool HttpServer::handleDeviceAuth(plat::Sock s, Session& session, const std::str
             if (fresh && crypto::equal_constant_time(want, util::lower(proof))) {
                 session.receiveAuthorized = true;
                 session.authFailures = 0;
-                it->lastUsed = unix;
+                it->lastUsed = epoch;
                 changed = true;
                 status = 204;
             } else if (++session.authFailures >= 8) {

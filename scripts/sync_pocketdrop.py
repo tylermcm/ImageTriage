@@ -23,6 +23,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEST = ROOT / "native" / "pocketdrop" / "src"
+VIEW_DEST = ROOT / "image_triage" / "qml_shell" / "qml"   # PocketDrop's shared screen (PocketDropView.qml and the Pd* parts)
+VIEW_SKIP = {"theme.json"}                                  # Image Triage has its own `theme`
 
 # Relative to PocketDrop/src. Directories are copied whole.
 SOURCES = (
@@ -52,6 +54,17 @@ def main() -> int:
             shutil.copytree(origin, target)
         else:
             shutil.copy2(origin, target)
+    views = sorted((upstream / "qml").glob("*.qml"))
+    if views:
+        for path in views:
+            shutil.copy2(path, VIEW_DEST / path.name)
+        qmldir = VIEW_DEST / "qmldir"
+        lines = qmldir.read_text(encoding="utf-8").splitlines()
+        have = {line.split()[0] for line in lines if line.strip() and not line.startswith(("#", "singleton"))}
+        for path in views:
+            if path.stem not in have:
+                lines.append(f"{path.stem} 1.0 {path.name}")
+        qmldir.write_text("\n".join(lines) + "\n", encoding="utf-8")
     try:
         commit = subprocess.run(
             ["git", "-C", str(upstream), "rev-parse", "HEAD"], capture_output=True, text=True, check=True

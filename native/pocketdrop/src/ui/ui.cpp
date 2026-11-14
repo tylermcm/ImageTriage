@@ -1769,6 +1769,10 @@ void Ui::command(const std::string& name, const std::string& arg) {
             refreshBinding();
             refreshQr();
         }
+    } else if (name == "pc_pick") {
+        auto senders = pcSenders();
+        int i = number();
+        if (i >= 0 && i < (int)senders.size()) receiveFrom(senders[(size_t)i]);
     } else if (name == "pc_allow") {
         server_.pcAnswer(true);
     } else if (name == "pc_decline") {
@@ -1785,6 +1789,18 @@ void Ui::command(const std::string& name, const std::string& arg) {
         if (it != ids.end()) menuCommand(it->second);
     }
     invalidate();
+}
+
+std::string Ui::sendersJson() const {
+    std::string out = "[";
+    bool first = true;
+    if (pcMode_ == PcMode::Receive && !pcStarted_) {
+        for (const auto& p : pcSenders()) {
+            out += std::string(first ? "" : ",") + "{\"name\":" + jstr(p.name) + ",\"ip\":" + jstr(p.ip) + "}";
+            first = false;
+        }
+    }
+    return out + "]";
 }
 
 std::string Ui::historyJson() const {
@@ -1982,7 +1998,7 @@ std::string Ui::stateJson() {
 
     std::string j = "{";
     j += "\"pc\":{\"mode\":" + std::to_string((int)pcMode_) + ",\"sent\":" + jbool(pcSent_) +
-         ",\"phase\":" + std::to_string((int)pcDownload_.phase) + ",\"code\":" + jstr(pcDownload_.code) +
+         ",\"phase\":" + std::to_string((int)pcDownload_.phase) + ",\"senders\":" + sendersJson() + ",\"code\":" + jstr(pcDownload_.code) +
          ",\"pair\":{\"pending\":" + jbool(server_.pcPairing().pending) + ",\"name\":" + jstr(server_.pcPairing().name) +
          ",\"code\":" + jstr(server_.pcPairing().code) + "},\"name\":" + jstr(pcDownload_.name) +
          ",\"error\":" + jstr(pcDownload_.error) + ",\"received\":" + std::to_string(pcDownload_.received) +
