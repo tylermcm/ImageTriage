@@ -58,6 +58,7 @@ DEFAULTS = {
     "redEye": [],
     "hostCrop": DEFAULT_CROP,
     "lightDepth": dict(light_depth.DEFAULTS),
+    "pointColors": [],
     **dict.fromkeys(FIELDS, 0),
     "gradeBlending": 50,
     "curveSplits": [25, 50, 75],
@@ -144,6 +145,10 @@ class RawEditor(QObject):
         self._light_depth_editor = RawLightDepth(self)
         from .raw_sync import RawSync
         self._sync = RawSync(self)
+        from .raw_point_color import RawPointColor
+        self._point_color = RawPointColor(self)
+
+    pointColor = Property(QObject, lambda self: self._point_color, constant=True)
 
     sync = Property(QObject, lambda self: self._sync, constant=True)
 
@@ -789,7 +794,8 @@ class RawEditor(QObject):
             return
         self._proxy_pending = False
         try:
-            self._mask_editor.applySample(*result)
+            target = self._point_color if result[1].get("kind") == "pointColor" else self._mask_editor
+            target.applySample(*result)
         except (ValueError,KeyError,TypeError) as error:
             self._error = str(error)
         self.changed.emit()

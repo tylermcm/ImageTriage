@@ -6,25 +6,42 @@ Column {
     required property var model
     property int channel: 0
     property string mode: "Color"
+    property string page: "mixer"                 // "mixer" or "point"
+    // Point Color belongs to the whole photo. The same mixer adjusts a mask's colours, where there is no such page.
+    readonly property bool hasPoint: !!model && model.pointColor !== undefined
+    signal pickRequested(bool on)                 // the panel arms the picker over the photo
     readonly property var names: ["Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"]
     readonly property var hues: ["#e5635b", "#e99154", "#d8c34d", "#58b96f", "#58bfb7", "#5999ed", "#aa72dc", "#d16eba"]
     spacing: 8
 
     Row {
         height: 29; spacing: 16
-        Text {
-            text: "Mixer"; color: theme.fg; font.pixelSize: 12
-            bottomPadding: 8
-            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 2; color: theme.accent }
-        }
-        Label {
-            text: "Point Color"; color: theme.fg3; font.pixelSize: 12
-            HoverHandler { id: pointHover }
-            ToolTip.text: "Point Color is not available yet."
-            ToolTip.visible: pointHover.hovered
+        Repeater {
+            model: mixer.hasPoint ? [["mixer", "Mixer"], ["point", "Point Color"]] : [["mixer", "Mixer"]]
+            delegate: Text {
+                id: tabText
+                required property var modelData
+                objectName: "rawMixerTab_" + modelData[0]
+                text: modelData[1]; font.pixelSize: 12; bottomPadding: 8
+                color: mixer.page === modelData[0] ? theme.fg : theme.fg3
+                activeFocusOnTab: true
+                Rectangle { visible: mixer.page === tabText.modelData[0]; anchors.bottom: parent.bottom; width: parent.width; height: 2; color: theme.accent }
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: mixer.page = tabText.modelData[0] }
+                Keys.onReturnPressed: mixer.page = modelData[0]
+                Keys.onSpacePressed: mixer.page = modelData[0]
+                Accessible.role: Accessible.PageTab; Accessible.name: modelData[1]
+                Accessible.onPressAction: mixer.page = modelData[0]
+            }
         }
     }
+    Loader {
+        active: mixer.hasPoint
+        visible: active && mixer.page === "point"; width: parent.width
+        sourceComponent: RawPointColor { objectName: "rawPointColor"; model: mixer.model.pointColor; raw: mixer.model }
+    }
     Row {
+        visible: mixer.page === "mixer"
         width: parent.width; height: 28; spacing: 8
         Text { text: "Adjust"; color: theme.fg2; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
         ComboBox {
@@ -37,6 +54,7 @@ Column {
         }
     }
     Row {
+        visible: mixer.page === "mixer"
         width: parent.width; height: 30
         spacing: Math.max(1, (width - 9 * 20) / 8)
         Repeater {
@@ -77,7 +95,7 @@ Column {
         }
     }
     Column {
-        visible: mixer.mode === "Color"
+        visible: mixer.page === "mixer" && mixer.mode === "Color"
         width: parent.width
         Repeater {
             model: [{label: "Hue", key: "hslHue"}, {label: "Saturation", key: "hslSat"}, {label: "Luminance", key: "hslLum"}]
@@ -97,7 +115,7 @@ Column {
         }
     }
     Column {
-        visible: mixer.mode !== "Color"
+        visible: mixer.page === "mixer" && mixer.mode !== "Color"
         width: parent.width
         Repeater {
             model: 8

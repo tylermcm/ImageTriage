@@ -283,7 +283,9 @@ class PreviewWorker(QObject):
                             "recipe": _without_host_settings({"version": 1, "cameraRaw": original})})
                         source = source_key
                     if isinstance(sample, dict):
-                        settings = {k:v for k,v in draft.items() if k != "masks"}
+                        # A Point Color sample is the colour before Point Color acts on it, so that is left out too.
+                        left_out = ("masks", "pointColors") if sample.get("kind") == "pointColor" else ("masks",)
+                        settings = {k:v for k,v in draft.items() if k not in left_out}
                         result = self._connection.call({**request,"op":"render","recipe":_without_host_settings({"version":1,"cameraRaw":settings}),"sample":sample["area"]})
                         if "sampleRGB" not in result[0]:
                             raise RuntimeError("Range sampling needs the updated RAW preview helper.")

@@ -9,6 +9,8 @@ Rectangle {
     property var metadata: ({})
     property bool before: false
     property bool whiteBalancePicking: false
+    // The Point Color dropper is armed: the next click on the photo picks a colour (the viewer routes it).
+    readonly property bool pointColorPicking: !!model && model.pointColor.picking
     signal photoFocusRequested()
     property string tool: "Adjust"
     readonly property string displaySource: visible && model ? model.preview : ""
@@ -44,7 +46,7 @@ Rectangle {
     onPhotoPathChanged: refreshCapture()
     onCaptureChanged: refreshCapture()
     onVisibleChanged: {
-        if (!visible) { before = false; whiteBalancePicking = false; tool = "Adjust" }
+        if (!visible) { before = false; whiteBalancePicking = false; tool = "Adjust"; if (model) model.pointColor.setPicking(false) }
         else refreshCapture()
         if (model) model.setCropEditing(visible && tool === "Crop")
     }

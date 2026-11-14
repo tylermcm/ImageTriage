@@ -211,7 +211,8 @@ FocusScope {
         e.accepted = true
         if (comparing && !collOpen && compareView.key(k, e.modifiers)) return      // the panes' own keys: which pane, the next photos, their zoom, Esc
         if (k === Qt.Key_Escape) {
-            if (rawPanel.whiteBalancePicking) rawPanel.whiteBalancePicking = false
+            if (rawPanel.pointColorPicking) v.rawEditor.pointColor.setPicking(false)
+            else if (rawPanel.whiteBalancePicking) rawPanel.whiteBalancePicking = false
             else if (rawEditing && rawPanel.tool === "Mask" && rawEditor.maskEditor.tool) rawEditor.maskEditor.stop()
             else if (collOpen) collOpen = false
             else close()
@@ -239,8 +240,8 @@ FocusScope {
     Shortcut { sequence: "Space"; context: Qt.WindowShortcut; autoRepeat: false; enabled: v.shown && !editor.active && editor.state !== "closing"; onActivated: { if (v.comparing) popout.compare.close(); else v.close() } }
     Shortcut {
         sequence: "Escape"; context: Qt.WindowShortcut; autoRepeat: false
-        enabled: v.shown && rawPanel.whiteBalancePicking
-        onActivated: { rawPanel.whiteBalancePicking = false; v.refocus() }
+        enabled: v.shown && (rawPanel.whiteBalancePicking || rawPanel.pointColorPicking)
+        onActivated: { rawPanel.whiteBalancePicking = false; if (v.rawEditor) v.rawEditor.pointColor.setPicking(false); v.refocus() }
     }
 
     // test hook: --ui "vwScene=zoom" opens the viewer on the photo `vwRow` and sets the scene the mockup calls by that name
@@ -311,7 +312,7 @@ FocusScope {
             contentWidth: Math.max(width, drawWidth)
             contentHeight: Math.max(height, drawHeight)
             boundsBehavior: Flickable.StopAtBounds
-            interactive: v.zoomed && !rawPanel.whiteBalancePicking
+            interactive: v.zoomed && !rawPanel.whiteBalancePicking && !rawPanel.pointColorPicking
             clip: true
             function centerOn(fx, fy) { contentX = Math.max(0, Math.min(contentWidth - width, fx * contentWidth - width / 2)); contentY = Math.max(0, Math.min(contentHeight - height, fy * contentHeight - height / 2)) }
             Item {
@@ -353,14 +354,17 @@ FocusScope {
                 }
                 MouseArea {
                     objectName: "rawWhiteBalanceSample"
-                    visible: rawPanel.visible && rawPanel.whiteBalancePicking && photoImg.status === Image.Ready
+                    visible: rawPanel.visible && (rawPanel.whiteBalancePicking || rawPanel.pointColorPicking) && photoImg.status === Image.Ready
                     x: photoImg.x + (photoImg.width - photoImg.paintedWidth) / 2
                     y: photoImg.y + (photoImg.height - photoImg.paintedHeight) / 2
                     width: photoImg.paintedWidth; height: photoImg.paintedHeight
                     cursorShape: Qt.CrossCursor
                     onClicked: (mouse) => {
-                        rawPanel.whiteBalancePicking = false
-                        v.rawEditor.pickWhiteBalance(mouse.x / width, mouse.y / height)
+                        if (rawPanel.pointColorPicking) v.rawEditor.pointColor.pick(mouse.x / width, mouse.y / height)
+                        else {
+                            rawPanel.whiteBalancePicking = false
+                            v.rawEditor.pickWhiteBalance(mouse.x / width, mouse.y / height)
+                        }
                         v.refocus()
                     }
                 }
@@ -424,12 +428,12 @@ FocusScope {
             }
         }
         Rectangle {
-            visible: rawPanel.visible && rawPanel.whiteBalancePicking
+            visible: rawPanel.visible && (rawPanel.whiteBalancePicking || rawPanel.pointColorPicking)
             anchors.horizontalCenter: parent.horizontalCenter; y: 12
             width: pickerHint.implicitWidth + 24; height: 30; radius: 8; color: v.cCard
             Text {
                 id: pickerHint; anchors.centerIn: parent
-                text: "Click a neutral area · Esc cancels"
+                text: rawPanel.pointColorPicking ? "Click a color to adjust · Esc cancels" : "Click a neutral area · Esc cancels"
                 color: v.cFg; font.pixelSize: 12
             }
         }
