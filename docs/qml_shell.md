@@ -130,6 +130,32 @@ during its closing fade. Its X returns to the library. When controls are hidden,
 hovering within the top 52 pixels temporarily reveals the banner; moving away
 hides it again. The banner's controls button restores the full preview UI.
 
+## Viewer: stepping, bursts and compare
+
+Stepping keeps the zoom and the place in the photo (as a fraction of it, so a photo of another size shows the matching
+spot), whichever way the photo changes: the arrow keys, the filmstrip, a decision that moves on, a deleted photo. A photo
+being edited as RAW still starts fitted.
+
+A burst is photos each taken within 2.5 s of the one before (`bursts.burst_runs`, the same step rule as
+`find_burst_groups`), among the photos shown. The capture times are the ones `PhotoModel` reads on its worker; a photo
+with no Exif date is in no burst, so files written one after another are not mistaken for one. The viewer's top bar says
+"Burst 3 · 2 of 7". `[` and `]` (Settings > Shortcuts, Cycle Burst) go to the first photo of the previous or next burst,
+in the viewer and in the grid. `popout.bursts` (`burst_model.py`) answers both.
+
+Keep best (the button beside the burst label, Shift+W, or the palette) marks the photo shown Winner and rejects the
+other photos of its burst, as one undo step. Photos already marked Winner are left alone; rejecting more than three
+photos already marked Keep is asked about first. It stays on the winner. From the grid it acts on the grid's photo.
+
+Compare (C, the action bar's first tool, or Compare Photos in the palette) shows two to four photos side by side in the
+viewer's stage: the photos picked in the grid, or the photo shown and the one after it. The panes share one zoom and one
+place, both relative to the photo, so each pane shows the same part of its photo; Z is 100% of the active pane's photo, 0
+fits, the wheel zooms about the pointer and a drag pans every pane. Left and Right choose the active pane. Its photo is
+the viewer's current photo, so the decision and rating keys, the action bar, Delete and the palette act on it, and a
+decision does not move on. N swaps the other panes for the next photos (the winner stays), P takes that back, 2/3/4 in
+the pane bar set how many panes, a filmstrip click puts that photo in the active pane, Esc leaves compare on the active
+photo. Pictures come from the viewer's own readers (`compare_model.py`, `CompareView.qml`); fitted panes are decoded no
+larger than twice the pane. Compare is not offered while a RAW is being edited.
+
 ## Validation and packaging
 
 Cull review keeps a separate stack model, so choosing a photo updates the detail

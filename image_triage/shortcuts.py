@@ -60,6 +60,7 @@ SHORTCUT_REGISTRY: tuple[tuple[str, str, str, str], ...] = (
     ("delete_selection", "Review", "", "Delete Selection"),
     ("cycle_burst_previous", "Review", "[", "Cycle Burst: Previous"),
     ("cycle_burst_next", "Review", "]", "Cycle Burst: Next"),
+    ("burst_keep_best", "Review", "Shift+W", "Keep Best Of Burst, Reject Rest"),
     ("keep_at_cursor", "Review", "K", "Keep Photo At Cursor"),
     ("move_at_cursor", "Review", "M", "Move Photo At Cursor"),
     ("tag_at_cursor", "Review", "T", "Tag Photo At Cursor"),

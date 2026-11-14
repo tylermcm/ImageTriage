@@ -51,6 +51,8 @@ FocusScope {
     readonly property int curRating: cur.rating || 0
     readonly property var info: popout.info
     readonly property var flag: { if (!cull) return ({}); void cull.view; if (UiState.vwScene === "flagged") return ({ label: "Blurry", color: "#e0b04a" }); return row >= 0 ? popout.flagFor(row) : ({}) }
+    // the burst this photo was taken in ({} for a photo taken on its own): its number, this photo's place in it and how many it has
+    readonly property var burst: { void popout.bursts.revision; return shown && row >= 0 ? popout.bursts.info(row) : ({}) }
     readonly property bool loading: slow || popout.loading
     readonly property bool barOff: popout.barHidden === true         // the action bar is put away (Tab, or the arrow at its end)
     readonly property real bh: barOff ? 0 : 64                       // what the bar and its gap take above the filmstrip
@@ -77,23 +79,42 @@ FocusScope {
     signal moveRequested(int row)
     function refocus() { if (shown) keyboardTarget.forceActiveFocus() }
     function close() { popout.close() }
-    // Stepping keeps the zoom and the part of the photo being looked at, so focus can be compared across a burst. The RAW editor's detail view
-    // still starts each photo fitted. The next photo's size may arrive later (a RAW is read on a worker), so the place is put back when it is known.
+    // Stepping keeps the zoom and the part of the photo being looked at (as a fraction of the photo, so a photo of another size shows the
+    // matching place), so focus can be compared across a burst. The place is taken when the host changes row, not in go(): a decision that
+    // moves on, a photo that is deleted and the filmstrip all change row without go(). The RAW editor's detail view still starts each photo
+    // fitted. The next photo's size may arrive later (a RAW is read on a worker), so the place is put back when it is known.
     property var keepCentre: null
     function holdCentre() {
-        keepCentre = zoomed ? Qt.point((pan.contentX + pan.width / 2 - pan.imageLeft) / pan.drawWidth, (pan.contentY + pan.height / 2 - pan.imageTop) / pan.drawHeight) : null
+        if (!zoomed) { keepCentre = null; return }
+        if (keepCentre || popout.pixelWidth <= 0) return        // a place still waiting for its photo outlives the photos stepped past meanwhile
+        keepCentre = Qt.point((pan.contentX + pan.width / 2 - pan.imageLeft) / pan.drawWidth, (pan.contentY + pan.height / 2 - pan.imageTop) / pan.drawHeight)
     }
     function restoreCentre() {
         if (!keepCentre || !zoomed) { keepCentre = null; return }
         if (popout.pixelWidth <= 0) return
+        pan.cancelFlick()
         pan.contentX = Math.max(0, Math.min(pan.contentWidth - pan.width, pan.imageLeft + keepCentre.x * pan.drawWidth - pan.width / 2))
         pan.contentY = Math.max(0, Math.min(pan.contentHeight - pan.height, pan.imageTop + keepCentre.y * pan.drawHeight - pan.height / 2))
         keepCentre = null
     }
-    Connections { target: popout; function onImageChanged() { if (v.keepCentre) Qt.callLater(v.restoreCentre) } }
-    function go(r) { rawPanel.whiteBalancePicking = false; if (rawEditing) zoomed = false; else holdCentre(); popout.go(r); restoreCentre(); refocus() }
+    Connections {
+        target: popout
+        // rowChanged comes before imageChanged, so the view still has the photo being left
+        function onRowChanged() { if (!v.rawEditing) { v.holdCentre(); Qt.callLater(v.restoreCentre) } }
+        function onImageChanged() { if (v.keepCentre) Qt.callLater(v.restoreCentre) }
+    }
+    function go(r) { rawPanel.whiteBalancePicking = false; if (rawEditing) zoomed = false; popout.go(r); refocus() }
     function step(n) { go(popout.row + n) }
     function decide(d) { popout.decide(row, d) }
+    // Compare: the stage shows two to four photos side by side (CompareView.qml); the photo the viewer is on is the active pane's
+    readonly property bool comparing: popout.compare.active
+    onComparingChanged: { if (comparing) { zoomed = false; collOpen = false } }
+    function toggleCompare() {
+        if (comparing) popout.compare.close()
+        else if (!opening) popout.compare.openFor(row)
+        refocus()
+    }
+    function keepBest() { popout.keepBest(row); refocus() }      // this photo wins its burst, the rest are rejected (one undo step)
     function openEditor() {
         if (!popout.canEdit || UiState.vwScene === "noedit") return
         if (rawEditing && (rawEditor.dirty || rawEditor.saving)) {
@@ -149,6 +170,7 @@ FocusScope {
     }
     function setZoom(scale, px, py) {
         if (rawPanel.visible && (rawPanel.tool === "Crop" || rawPanel.tool === "Remove" || rawPanel.tool === "Mask" && v.rawEditor.maskEditor.tool)) return
+        if (comparing) return
         var fx = (pan.contentX + px - pan.imageLeft) / pan.drawWidth
         var fy = (pan.contentY + py - pan.imageTop) / pan.drawHeight
         pan.cancelFlick()
@@ -187,6 +209,7 @@ FocusScope {
         var k = e.key
         if (opening) { e.accepted = true; return }      // the editor is starting and cannot be stopped from here: keys wait for it to open or fail
         e.accepted = true
+        if (comparing && !collOpen && compareView.key(k, e.modifiers)) return      // the panes' own keys: which pane, the next photos, their zoom, Esc
         if (k === Qt.Key_Escape) {
             if (rawPanel.whiteBalancePicking) rawPanel.whiteBalancePicking = false
             else if (rawEditing && rawPanel.tool === "Mask" && rawEditor.maskEditor.tool) rawEditor.maskEditor.stop()
@@ -207,12 +230,13 @@ FocusScope {
         else if (k === Qt.Key_B || k === Qt.Key_G) collOpen = !collOpen
         else if (k === Qt.Key_M) moveRequested(row)
         else if (k === Qt.Key_E) openEditor()
+        else if (k === Qt.Key_C) toggleCompare()
         else e.accepted = false
     }
 
     // Space closes the viewer wherever the focus is. A held key repeats, and the repeats used to land on the grid the viewer had just
     // handed the focus back to (where Space opens a photo), so the viewer closed and reopened.
-    Shortcut { sequence: "Space"; context: Qt.WindowShortcut; autoRepeat: false; enabled: v.shown && !editor.active && editor.state !== "closing"; onActivated: v.close() }
+    Shortcut { sequence: "Space"; context: Qt.WindowShortcut; autoRepeat: false; enabled: v.shown && !editor.active && editor.state !== "closing"; onActivated: { if (v.comparing) popout.compare.close(); else v.close() } }
     Shortcut {
         sequence: "Escape"; context: Qt.WindowShortcut; autoRepeat: false
         enabled: v.shown && rawPanel.whiteBalancePicking
@@ -259,7 +283,8 @@ FocusScope {
         anchors.leftMargin: v.photoPadding
         anchors.rightMargin: v.photoPadding + (rawPanel.visible ? rawPanel.width : 0)
         anchors.topMargin: (v.zen ? 0 : 52) + v.photoPadding
-        anchors.bottomMargin: v.zen ? v.photoPadding : v.fh + (v.barOff ? 30 : v.bh) + v.photoPadding
+        // comparing in a narrow window, the action bar sits a row higher (bar.overlapsControls): the panes' name rows stay clear of it
+        anchors.bottomMargin: v.zen ? v.photoPadding : v.fh + (v.barOff ? 30 : v.bh) + v.photoPadding + (v.comparing && !v.barOff && bar.overlapsControls ? 44 : 0)
         Behavior on anchors.leftMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         Behavior on anchors.rightMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         Behavior on anchors.topMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
@@ -270,6 +295,7 @@ FocusScope {
             id: pan
             objectName: "viewerZoomPan"
             anchors.fill: parent
+            visible: !v.comparing
             readonly property real nw: Math.max(1, v.rawEditing && v.rawEditor.fullWidth > 0 ? v.rawEditor.fullWidth : popout.pixelWidth) / v.dpr
             readonly property real nh: Math.max(1, v.rawEditing && v.rawEditor.fullHeight > 0 ? v.rawEditor.fullHeight : popout.pixelHeight) / v.dpr
             readonly property real fitScale: Math.min(width / nw, height / nh)
@@ -409,7 +435,7 @@ FocusScope {
         }
         // loading spinner and note
         Item {
-            visible: v.loading; anchors.centerIn: parent; width: 34; height: 34
+            visible: v.loading && !v.comparing; anchors.centerIn: parent; width: 34; height: 34
             Rectangle { anchors.fill: parent; radius: 17; color: "transparent"; border.width: 2.5; border.color: Qt.alpha(v.cFg, 0.25) }
             Shape {
                 anchors.fill: parent; preferredRendererType: Shape.CurveRenderer
@@ -420,10 +446,11 @@ FocusScope {
             Text { anchors.horizontalCenter: parent.horizontalCenter; y: 34 + 12; text: "Loading full resolution\u2026"; color: v.cFg; font.pixelSize: 12; style: Text.Outline; styleColor: Qt.rgba(0, 0, 0, 0.6) }
         }
         Text {   // a photo that could not be read
-            visible: popout.error !== "" && !v.loading && !rawPanel.displaySource; anchors.centerIn: parent; width: Math.min(parent.width - 48, 520); horizontalAlignment: Text.AlignHCenter
+            visible: popout.error !== "" && !v.loading && !rawPanel.displaySource && !v.comparing; anchors.centerIn: parent; width: Math.min(parent.width - 48, 520); horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap; text: popout.error; color: v.cFg2; font.pixelSize: 13
         }
     }
+    CompareView { id: compareView; parent: stage; anchors.fill: parent; visible: v.comparing; model: popout.compare }
     // Crop handles may overflow the photo viewport; the photo itself stays clipped.
     RawCropOverlay {
         objectName: "rawCropOverlay"
@@ -487,7 +514,7 @@ FocusScope {
     Item {
         id: mini
         objectName: "viewerZoomNavigator"
-        visible: v.zoomed; z: 5
+        visible: v.zoomed && !v.comparing; z: 5
         x: parent.width - (rawPanel.visible ? rawPanel.width : 0) - 20 - width
         y: parent.height - (v.fh + 36 + v.bh) - height + v.controlsSlide
         width: 150; height: 100
@@ -552,6 +579,35 @@ FocusScope {
                 Row { id: flagRow; x: 10; anchors.verticalCenter: parent.verticalCenter; spacing: 6
                     Rectangle { width: 7; height: 7; radius: 3.5; color: theme.rev; anchors.verticalCenter: parent.verticalCenter }
                     Text { anchors.verticalCenter: parent.verticalCenter; text: "Flagged by Cull"; color: v.cFg2; font.pointSize: UiState.pt(11.5) } }
+            }
+            Item {   // Burst 3 · 2 of 7
+                objectName: "viewerBurstChip"
+                visible: (v.burst.label || "") !== ""; y: 0; width: burstRow.implicitWidth + 20; height: 28
+                Rectangle { anchors.fill: parent; radius: 8; color: v.cGlass; border.color: v.cLineSoft }
+                Row { id: burstRow; x: 10; anchors.verticalCenter: parent.verticalCenter; spacing: 6
+                    Icon { anchors.verticalCenter: parent.verticalCenter; path: "M4 8l8-4 8 4-8 4zM4 12l8 4 8-4M4 16l8 4 8-4"; size: 14; color: v.cFg2 }
+                    Text { objectName: "viewerBurstLabel"; anchors.verticalCenter: parent.verticalCenter; text: v.burst.label || ""; color: v.cFg; font.pointSize: UiState.pt(11.5); font.weight: Font.Medium } }
+                HoverHandler { id: burstHover }
+                HoverTip { tip: { void settings.shortcutRevision; var a = settings.seq("cycle_burst_previous"), b = settings.seq("cycle_burst_next")
+                                  return "Taken as one burst." + (a && b ? " " + a + " and " + b + " jump between bursts." : "") }
+                           hovered: burstHover.hovered; below: true }
+                Accessible.role: Accessible.StaticText; Accessible.name: v.burst.label || ""
+            }
+            Item {   // this photo is the best of its burst
+                id: bestBtn
+                objectName: "viewerKeepBestButton"
+                readonly property string key: { void settings.shortcutRevision; return settings.seq("burst_keep_best") }
+                visible: (v.burst.label || "") !== ""; y: 0; width: bestRow.implicitWidth + 20; height: 28
+                Rectangle { anchors.fill: parent; radius: 8; color: bestHover.hovered ? v.cHover : v.cS2; border.color: v.cLine }
+                Row { id: bestRow; x: 10; anchors.verticalCenter: parent.verticalCenter; spacing: 6
+                    Icon { anchors.verticalCenter: parent.verticalCenter; path: "M12 20s-7-4.4-7-10a4 4 0 017-2.6A4 4 0 0119 10c0 5.6-7 10-7 10z"; size: 13; color: theme.win }
+                    Text { anchors.verticalCenter: parent.verticalCenter; text: "Keep best"; color: v.cFg; font.pointSize: UiState.pt(11.5); font.weight: Font.Medium }
+                    Kbd { anchors.verticalCenter: parent.verticalCenter; visible: bestBtn.key !== "" && v.width >= 1100; text: bestBtn.key } }
+                HoverHandler { id: bestHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { gesturePolicy: TapHandler.WithinBounds; onTapped: v.keepBest() }
+                HoverTip { tip: "Mark this photo the winner and reject the rest of its burst. Other winners stay."; hovered: bestHover.hovered; below: true }
+                Accessible.role: Accessible.Button; Accessible.name: "Keep best, reject rest"
+                Accessible.onPressAction: v.keepBest()
             }
             Item {   // format and size on disk
                 y: 0; width: kindRow.implicitWidth + 20; height: 28
@@ -701,23 +757,26 @@ FocusScope {
                 Repeater {
                     // Delete's key is the one Settings > Shortcuts has; the others are the viewer's own and cannot be changed
                     model: { void settings.shortcutRevision; var del = settings.seq("delete_selection")
-                             return [{ id: "focus", k: "F", tip: "Focus assist (F, Shift+F colour)", icon: "focusAssist" },
+                             return [{ id: "compare", k: "C", tip: "Compare side by side (C)", path: "M4 5h7v14H4zM13 5h7v14h-7z" },
+                            { id: "focus", k: "F", tip: "Focus assist (F, Shift+F colour)", icon: "focusAssist" },
                             { id: "move", k: "M", tip: "Move to… (M)", icon: "movePhoto" },
                             { id: "coll", k: "B", tip: "Add to a collection (B)", icon: "addCollection" },
                             { id: "del", k: del, tip: "Delete this photo" + (del ? " (" + del + ")" : ""), icon: "trash" }] }
                     delegate: Item {
                         id: tb
                         required property var modelData
-                        readonly property bool on: modelData.id === "focus" ? popout.assistOn : modelData.id === "coll" ? v.collOpen : false
+                        readonly property bool on: modelData.id === "focus" ? popout.assistOn : modelData.id === "coll" ? v.collOpen : modelData.id === "compare" ? v.comparing : false
+                        objectName: "viewerTool_" + modelData.id
                         width: 38; height: 38; y: 1
                         Rectangle { anchors.fill: parent; radius: 11; color: tb.on ? Qt.alpha(theme.accent, 0.2) : th.hovered ? v.cHover : "transparent" }
-                        Icon { anchors.horizontalCenter: parent.horizontalCenter; y: 5; name: tb.modelData.icon; size: 20; strokeWidth: 1.7; color: tb.on ? theme.accentFg : th.hovered ? v.cFg : v.cFg2 }
+                        Icon { anchors.horizontalCenter: parent.horizontalCenter; y: 5; name: tb.modelData.icon || ""; path: tb.modelData.path || ""; size: 20; strokeWidth: 1.7; color: tb.on ? theme.accentFg : th.hovered ? v.cFg : v.cFg2 }
                         Text { x: parent.width - width - 2; y: parent.height - height - 1; text: tb.modelData.k; color: v.cFg3; opacity: 0.9; font.pointSize: UiState.pt(8.5); font.weight: Font.Medium }
                         HoverHandler { id: th; cursorShape: Qt.PointingHandCursor }
                         TapHandler {
                             onTapped: {
                                 var id = tb.modelData.id
-                                if (id === "focus") popout.toggleAssist()
+                                if (id === "compare") v.toggleCompare()
+                                else if (id === "focus") popout.toggleAssist()
                                 else if (id === "move") v.moveRequested(v.row)
                                 else if (id === "coll") v.collOpen = !v.collOpen
                                 else if (id === "del") popout.delete(v.row)
@@ -736,7 +795,7 @@ FocusScope {
                     enabled: !v.opening && (!v.rawEditing || !v.rawEditor.saving)
                     onClicked: {
                         if (v.rawEditing) v.rawEditor.cancel()
-                        else v.rawEditor.open(v.curPath)
+                        else { popout.compare.close(); v.rawEditor.open(v.curPath) }
                     }
                 }
                 Item {   // Edit in PhotoCraft: the separate full editor
@@ -924,14 +983,17 @@ FocusScope {
                 delegate: Item {
                     id: zb
                     required property var modelData
-                    readonly property bool on: modelData.z ? v.zoomed && Math.abs(v.zoomScale - 1) < 0.001 : !v.zoomed
+                    readonly property bool on: v.comparing ? (modelData.z ? compareView.zoomed && compareView.atActual : !compareView.zoomed)
+                                                           : modelData.z ? v.zoomed && Math.abs(v.zoomScale - 1) < 0.001 : !v.zoomed
                     width: zbr.implicitWidth + 22; height: 30
                     Rectangle { anchors.fill: parent; anchors.margins: 1; radius: 8; color: zb.on ? Qt.alpha(theme.accent, 0.22) : "transparent" }
                     Row { id: zbr; x: 11; anchors.verticalCenter: parent.verticalCenter; spacing: 6
                         Text { anchors.verticalCenter: parent.verticalCenter; text: zb.modelData.t; color: zb.on ? theme.accentFg : zz.hovered ? v.cFg : v.cFg2; font.pixelSize: 12 }
                         Kbd { anchors.verticalCenter: parent.verticalCenter; text: zb.modelData.k } }
                     HoverHandler { id: zz; cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: { if (zb.modelData.z) v.setZoom(1, pan.width/2, pan.height/2); else v.zoomed = false } }
+                    TapHandler { onTapped: {
+                        if (v.comparing) { if (zb.modelData.z) compareView.actual(); else compareView.fit() }
+                        else if (zb.modelData.z) v.setZoom(1, pan.width/2, pan.height/2); else v.zoomed = false } }
                     Accessible.role: Accessible.RadioButton; Accessible.checked: zb.on; Accessible.name: zb.modelData.t === "Fit" ? "Fit the photo" : "Show at 100%"
                 }
             }
@@ -939,7 +1001,7 @@ FocusScope {
                 width: 56; height: 30
                 Text {
                     objectName: "viewerZoomPercent"
-                    anchors.centerIn: parent; text: Math.round(pan.effectiveScale * 100) + "%"
+                    anchors.centerIn: parent; text: Math.round((v.comparing ? compareView.activeScale : pan.effectiveScale) * 100) + "%"
                     color: v.cFg2; font.pixelSize: 12
                 }
             }
@@ -962,8 +1024,16 @@ FocusScope {
         anchors.rightMargin: 20 + (rawPanel.visible ? rawPanel.width : 0)
         anchors.verticalCenter: zoomPill.verticalCenter
         z: 5; spacing: 10
-        opacity: v.zen ? 0 : 1; Behavior on opacity { NumberAnimation { duration: 300 } }
+        opacity: v.zen || v.comparing ? 0 : 1; Behavior on opacity { NumberAnimation { duration: 300 } }      // comparing, the panes' bar has the keys
         Row { spacing: 4; Kbd { text: "←" } Kbd { text: "→" } Text { text: "step"; color: v.cFg3; font.pointSize: UiState.pt(11.5); anchors.verticalCenter: parent.verticalCenter; leftPadding: 2 } }
+        Row {
+            objectName: "viewerBurstHint"
+            readonly property string prev: { void settings.shortcutRevision; return settings.seq("cycle_burst_previous") }
+            readonly property string next: { void settings.shortcutRevision; return settings.seq("cycle_burst_next") }
+            visible: { void popout.bursts.revision; return v.shown && popout.bursts.count > 0 && prev !== "" && next !== "" }
+            spacing: 4; Kbd { text: parent.prev } Kbd { text: parent.next }
+            Text { text: "burst"; color: v.cFg3; font.pointSize: UiState.pt(11.5); anchors.verticalCenter: parent.verticalCenter; leftPadding: 2 }
+        }
         Row { spacing: 4; Kbd { text: "Space" } Text { text: "close"; color: v.cFg3; font.pointSize: UiState.pt(11.5); anchors.verticalCenter: parent.verticalCenter; leftPadding: 2 } }
     }
 
@@ -1058,9 +1128,10 @@ FocusScope {
         property string tip
         property bool hovered: false
         property bool ready: false
+        property bool below: false           // under the control, for one in the top bar (above it is off the window)
         anchors.fill: parent
         onHoveredChanged: { if (!hovered) ready = false }
         Timer { interval: 500; running: ht.hovered; onTriggered: ht.ready = true }
-        Tip { text: ht.tip; above: true; show: ht.ready && ht.hovered }
+        Tip { text: ht.tip; above: !ht.below; below: ht.below; show: ht.ready && ht.hovered }
     }
 }
