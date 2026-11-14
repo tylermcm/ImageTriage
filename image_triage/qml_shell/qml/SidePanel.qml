@@ -123,6 +123,14 @@ Item {
         Accessible.onPressAction: clicked()
     }
 
+    // Photos dropped on a collection: one add for all of them, and a word about how many were new.
+    function addDragged(id, name, rows) {
+        if (!rows.length) return
+        var added = collections.addRows(id, rows)
+        var many = rows.length !== 1
+        if (added > 0) toasts.show("success", "Added " + (many ? rows.length + " photos" : "the photo") + " to " + name, "")
+        else toasts.show("info", (many ? "Those photos are" : "That photo is") + " already in " + name, "")
+    }
     // Hands a Library entry (a collection key such as "col:album") to PocketDrop and shows its page.
     function shareToPhone(key) {
         pocketDrop.refreshLibrary(UiState.selRow)
@@ -552,11 +560,19 @@ Item {
                                     onActivated: { if (crow.cur) collections.closeScope(); else collections.open(crow.modelData.id) }
                                     onMenuRequested: UiState.collMenu = UiState.collMenu === crow.modelData.id ? "" : crow.modelData.id
                                 }
-                                DropArea {   // photos dragged from the grid (the grid is not a drag source yet)
+                                DropArea {   // photos dragged from the grid (PhotoGrid's drag): all of them are added in one step
+                                    objectName: "collectionDrop_" + crow.modelData.id
                                     anchors.fill: parent
+                                    keys: ["image-triage/photos"]
                                     onEntered: UiState.cldrop = crow.modelData.id
                                     onExited: { if (UiState.cldrop === crow.modelData.id) UiState.cldrop = "" }
-                                    onDropped: { collections.addSelection(crow.modelData.id, UiState.selRow); UiState.cldrop = "" }
+                                    onDropped: (drop) => {
+                                        var rows = drop.source && drop.source.dragRows !== undefined ? drop.source.dragRows : [UiState.selRow]
+                                        UiState.cldrop = ""
+                                        drop.accept()
+                                        // after this handler: the add rebuilds the cards, this one among them
+                                        Qt.callLater(panel.addDragged, crow.modelData.id, crow.modelData.name, rows)
+                                    }
                                 }
                                 DragHandler {   // drag onto the PocketDrop button (it opens after a moment) and drop on its page
                                     id: dragH; target: null; cursorShape: Qt.ClosedHandCursor

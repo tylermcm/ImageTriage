@@ -173,6 +173,66 @@ Item {
         }
     }
 
+    // ---- dragging photos onto a collection in the side panel (its DropArea reads `dragRows`) ----
+    // A photo that is part of the pick drags the whole pick; any other photo drags alone and the pick stays as it is.
+    property var dragRows: []
+    property bool dragging: false
+    property bool dragCancelled: false
+    property point dragAt: Qt.point(0, 0)           // where the pointer is, in the window
+    property string tabBeforeDrag: ""
+    property bool dragOpenedTab: false
+    readonly property var dragInfo: {
+        if (!dragging) return ({ title: "", sub: "", thumbs: ["", "", ""] })
+        void collections.revision
+        var over = UiState.cldrop !== "" ? (collections.get(UiState.cldrop).name || "") : ""
+        var paths = []
+        for (var i = 0; i < 3; ++i) paths.push(i < dragRows.length ? (photos.get(dragRows[i]).path || "") : "")
+        return { title: dragRows.length === 1 ? (photos.get(dragRows[0]).name || "1 photo") : dragRows.length + " photos",
+                 sub: over !== "" ? "Add to " + over : "Drop on a collection", thumbs: paths }
+    }
+    function beginDrag(press) {
+        if (root.blocked(press)) return
+        var p = gv.mapFromItem(null, press.x, press.y)
+        var index = gv.indexAt(p.x + gv.contentX, p.y + gv.contentY)
+        if (index < root.nf) return                                  // a folder card, or the space under the last row
+        var row = index - root.nf
+        var picked = photos.selectionRows(row)
+        dragRows = picked.indexOf(row) >= 0 ? picked : [row]
+        dragAt = press
+        dragCancelled = false; dragOpenedTab = false; tabBeforeDrag = UiState.tab
+        dragging = true
+    }
+    function endDrag(drop) {
+        if (!dragging) return
+        if (drop && !dragCancelled) dragProxy.Drag.drop(); else dragProxy.Drag.cancel()
+        dragging = false
+        UiState.cldrop = ""
+        if (dragOpenedTab) tabBack.restart()
+    }
+    // The Collections page opens when the photos are carried off the grid towards the panel, and the page that was open comes back afterwards.
+    onDragAtChanged: if (dragging && !dragOpenedTab && UiState.tab !== "coll" && root.mapFromItem(null, dragAt.x, dragAt.y).x < 0) { dragOpenedTab = true; UiState.tab = "coll" }
+    Timer { id: tabBack; interval: 1400; onTriggered: if (UiState.tab === "coll" && !root.dragging) UiState.tab = root.tabBeforeDrag }
+    Item {   // what is dragged: the thing the side panel's DropArea sees, and the badge that follows the pointer
+        id: dragProxy
+        objectName: "gridDragBadge"
+        parent: root.Window.contentItem ? root.Window.contentItem : root
+        x: root.dragAt.x; y: root.dragAt.y; width: 1; height: 1; z: 90
+        visible: root.dragging
+        Drag.active: root.dragging
+        Drag.source: root
+        Drag.keys: ["image-triage/photos"]
+        PocketDropGhost {
+            x: 14; y: 10; info: root.dragInfo
+            Rectangle {   // how many photos are being carried
+                objectName: "gridDragCount"
+                readonly property int count: root.dragRows.length
+                anchors.right: parent.right; anchors.rightMargin: -8; y: -8
+                width: Math.max(20, countText.implicitWidth + 12); height: 20; radius: 10; color: theme.accent
+                Text { id: countText; anchors.centerIn: parent; text: parent.count; color: theme.onAccent; font.pointSize: UiState.pt(11); font.weight: Font.DemiBold }
+            }
+        }
+    }
+
     // B: the photo you are on goes into the collection that collects (or, when there is none, you choose one)
     function addToCollection() {
         if (root.row < 0) return
@@ -250,6 +310,17 @@ Item {
                 e.accepted = true
             }
         }
+        DragHandler {   // a plain drag that starts on a photo carries it (or the pick it is part of) to a collection; clicks and Ctrl/Shift picks are not drags
+            id: photoDrag
+            target: null
+            acceptedButtons: Qt.LeftButton
+            acceptedModifiers: Qt.NoModifier
+            dragThreshold: 12
+            enabled: !root.renaming && !root.autoScrolling
+            onActiveChanged: { if (active) root.beginDrag(centroid.scenePressPosition); else root.endDrag(true) }
+            onCentroidChanged: if (active && root.dragging) root.dragAt = centroid.scenePosition
+            onCanceled: root.dragCancelled = true
+        }
         property int anchorIndex: 0       // where a Shift+click or Shift+arrow range starts: the last photo picked on its own
         function pick() { return root.row < 0 ? [] : photos.selectionRows(root.row) }
         // Review advances a single photo; a multi-photo selection stays in place. A press that took the decision off (W on a winner) stays too:
@@ -279,6 +350,7 @@ Item {
                 root.stopAutoScroll()
                 if (k === Qt.Key_Escape) { e.accepted = true; return }
             }
+            if (root.dragging) { if (k === Qt.Key_Escape) { root.dragCancelled = true; root.endDrag(false) } e.accepted = true; return }
             var shift = (e.modifiers & Qt.ShiftModifier) !== 0, ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
             if (settings.keyIs("accept_selection", k, e.modifiers)) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") { var won = rows.filter(function (r) { return photos.get(r).decision === "win" }); if (won.length) collections.addRows(collections.activeId, won) } advance(rows, "win") }
             else if (settings.keyIs("collect_at_cursor", k, e.modifiers)) root.addToCollection();
