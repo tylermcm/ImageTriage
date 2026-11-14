@@ -3916,3 +3916,56 @@ Conflicted paths (no resolutions applied):
 - `crates/ui-egui/src/services.rs`
 - `crates/ui-egui/src/widgets/fields.rs`
 - `docs/control-protocol.md`
+
+### 2026-11-14 upstream v0.23.1 merge (candidate, not promoted)
+
+Merged the upstream release into the hosted line on a new fork branch,
+`codex/photocraft-v0231-integration` (merge commit `dd44a96ce`). The pinned
+hosted build and `codex/image-triage-integration` are unchanged.
+
+- Upstream: `5000240c6` (v0.22.0) to `45066c482` (v0.23.1), 1,388 commits.
+- Merged onto `97ceee530` (`codex/audit-svg-validation-20261112`, the last
+  Windows-validated hosted build).
+
+Conflicts (31) and decisions:
+
+- 20 `crates/ui-egui/src/i18n/*.tsv`: took upstream's deletion. Translations
+  moved to `storytold/craft-i18n`, pinned by `craft-i18n.rev`
+  (`e02939ef0`). A build needs that checkout in `CRAFT_I18N_DIR`; without it
+  the interface is English only.
+- `crates/algo/src/camera_raw.rs`: upstream (an unused local was removed).
+- `crates/algo/src/camera_raw/local_tone.rs`: union of both import lists.
+- `crates/algo/src/camera_raw/per_pixel.rs`: one condition carrying both
+  sides' terms (upstream detail/calibration plus host red-eye and
+  super-resolution).
+- `crates/io/src/lib.rs`, `crates/raw/src/lib.rs`, `crates/ui-egui/src/lib.rs`:
+  unions (host reduced-RAW import and background automation services kept,
+  upstream `FramesImport`, `opaque_surface`, `rafc`, `PenScreenFn` added).
+- `crates/io/src/raw.rs`: host `import_raw_browse_reduced*` and upstream
+  `preview_image`/`preview_document` both kept.
+- `camera_raw_ui/controls.rs`, `camera_raw_ui/convert.rs`: host code kept,
+  upstream tests added beside it.
+- `crates/ui-egui/src/widgets/fields.rs`: dropped the fork's `fixed_decimals`
+  for upstream's `keep_zeros`, which does the same job.
+- `docs/control-protocol.md`: host entries kept, upstream `ui.inspect` and
+  `ui.set` added once.
+
+The 39 files changed on both sides that merged automatically were read; the
+host commands (`app.prefetch`, `app.render`, `app.handoff`, `app.bind`,
+`app.stash`, `ui.cameraRaw`, `ui.viewport`, `ui.theme`), their capabilities
+and the `--raw-workspace`, `--control` and `--control-token-file` flags are
+present.
+
+Validation (Linux container only):
+
+- `cargo check --workspace`: passes.
+- `cargo test --lib --tests` for raw, algo, io and automation: all pass.
+- Engine unit tests: 3,656 pass.
+- `photocraft-ui-egui` unit tests with `CRAFT_I18N_DIR` set: 7,166 pass,
+  23 fail. Twenty panic on a missing CJK or Arabic glyph and three
+  (`font_commit_tests`) compare against installed font families; the container
+  has no such system fonts, and the code those tests cover is identical to
+  upstream v0.23.1. They need rerunning on Windows.
+- Not run: `photocraft-ui-egui` and app integration tests (they filled the
+  container's disk), and every Windows hosted check in this document. No
+  executable was built or promoted and the packaging pin was not changed.
