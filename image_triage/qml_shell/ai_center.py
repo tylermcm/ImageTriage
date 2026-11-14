@@ -39,6 +39,7 @@ class RealOps:
 
     def __init__(self) -> None:
         self._task = None
+        self._size: tuple[tuple, int] | None = None  # (what was installed, its bytes on disk): walking the runtime is slow, once per install
 
     # -- looking --------------------------------------------------------------------------------------------------------------
     def detect(self) -> dict:
@@ -62,8 +63,17 @@ class RealOps:
             identity = runtime_identity()
         except Exception:                           # which runtime would start cannot be told: a kept test result is then not shown
             identity = ""
+        if status.installed_variants:
+            stamp = (identity, tuple(status.installed_variants), str(status.directories.root))
+            if self._size is None or self._size[0] != stamp:
+                from ..ai_runtime_packages import directory_size_bytes
+
+                self._size = (stamp, directory_size_bytes(status.directories.root))
+            runtime_bytes = self._size[1]
+        else:
+            self._size, runtime_bytes = None, 0
         return {
-            "identity": identity,
+            "identity": identity, "runtimeBytes": runtime_bytes,
             "installed": list(status.installed_variants), "torch": list(status.torch_installed_variants), "gpuBuild": AI_RUNTIME_GPU_VARIANT in status.installed_variants,
             "gpu": ai_platform.nvidia_gpu_name() or "", "vc": ".".join(str(part) for part in version) if version else "",
             "vcOld": bool(version and version < ai_platform.RECOMMENDED_VC_RUNTIME), "models": models, "python": f"{sys.version_info.major}.{sys.version_info.minor}",
@@ -114,6 +124,26 @@ class RealOps:
         from ..ai_health import probe_runtime
 
         return probe_runtime("auto", cancel=cancelled)
+
+    def close_workers(self) -> None:
+        """End the helper processes this app keeps warm on the managed runtime, so its files are not in use when they are deleted.
+        The mask engine host is the one that outlives its job; ranker and face workers end with their run, and a run in progress
+        is refused before this is reached (`CullModel.removeRuntime`)."""
+        from ..mask_engine_service import shutdown_mask_engine
+
+        shutdown_mask_engine()
+
+    def remove_runtime(self) -> dict:
+        """Delete the managed runtime with the installer's own code (`ai_runtime_packages.remove_ai_runtime`). Models are elsewhere
+        (`ai_model_store`) and are not touched. Returns what was freed and what could not be deleted."""
+        from ..ai_health import invalidate_ai_health
+        from ..ai_runtime_packages import remove_ai_runtime
+
+        report = remove_ai_runtime()
+        self._size = None
+        invalidate_ai_health()                       # readiness answers computed for the removed runtime are not kept
+        return {"existed": report.existed, "freed": report.freed_bytes, "remaining": list(report.remaining),
+                "remainingCount": report.remaining_count, "remainingBytes": report.remaining_bytes}
 
     def install_bundle(self, key: str, progress, cancelled) -> None:
         from ..ai_model_store import install_bundle
@@ -175,6 +205,8 @@ class AiCenterBackend(QObject):
         self._job: dict | None = None                # the one install, repair or removal running now
         self._errors: dict[str, str] = {}            # "runtime" or a model key -> why it failed, until the next try
         self._probe: dict | None = None              # what the last "Test runtime" of this session found, for the runtime it ran in
+        self._pending_removed: dict | None = None
+        self._removed: dict | None = None            # what the last "Remove runtime" of this session freed, until something is installed
         self._cancel = threading.Event()
         self._detecting = False
         self._detected.connect(self._apply_detected)
@@ -251,11 +283,12 @@ class AiCenterBackend(QObject):
             checked, failed = True, ""
         installed, torch = raw["installed"], raw["torch"]
         runtime_job = job is not None and job["kind"] == "runtime"
+        removing = job is not None and job["kind"] == "remove"
         error = self._errors.get("runtime", "")
         if runtime_job:
             rt = "installing"
-        elif not checked:
-            rt = "checking"
+        elif not checked or removing:
+            rt = "checking"                          # while it is being deleted nothing is offered or claimed; `removing` says why
         elif failed:
             rt, error = "error", f"Could not look at the AI runtime: {failed}"
         elif error:
@@ -285,6 +318,9 @@ class AiCenterBackend(QObject):
             "gpuBuild": bool(raw["gpuBuild"]), "tested": probe is not None, "probe": dict(probe) if probe is not None else None,
             "probing": probing, "probeStep": job["step"] if probing else "", "canTest": callable(getattr(self._ops, "probe_runtime", None)),
             "vcOld": bool(raw["vcOld"]), "vcFound": raw["vc"], "models": models, "busy": job is not None,
+            "removing": removing, "removeStep": job["step"] if removing else "", "removePct": job["pct"] if removing else 0,
+            "runtimeBytes": int(raw.get("runtimeBytes", 0) or 0),
+            "canRemove": bool(installed) and callable(getattr(self._ops, "remove_runtime", None)), "removed": self._removed,
         }
 
     # -- doing things ---------------------------------------------------------------------------------------------------------
@@ -293,6 +329,8 @@ class AiCenterBackend(QObject):
         """Stop what is running: the installer process is ended and a download stops at its next chunk. The part of a model that has
         arrived is kept for the next try; the runtime's packages are not."""
         if self._job is not None:
+            if self._job["kind"] == "remove":
+                return                               # deleting is not stopped half way: a partly deleted runtime is of no use to anyone
             self._cancel.set()
             cancel_runtime = getattr(self._ops, "cancel_runtime", None)
             if callable(cancel_runtime):
@@ -338,11 +376,17 @@ class AiCenterBackend(QObject):
         elif kind == "probe":
             self._probe = dict(payload)
             self._probe_at = time.monotonic()
+        elif kind == "removed":
+            self._pending_removed = dict(payload)
         elif kind == "end" and job is not None:
             self._job = None
-            if job["kind"] == "runtime":
-                self._probe = None                   # installed or repaired (or stopped half way): what was tested is not what is there now
+            if job["kind"] in ("runtime", "remove"):
+                self._probe = None                   # installed, repaired or removed (or stopped half way): what was tested is not what is there now
                 self._auto_identity = None           # and what is there now is tested again without being asked
+                self._removed = None
+            if job["kind"] == "remove" and not payload.get("error"):
+                self._removed = self._pending_removed
+            self._pending_removed = None
             if payload.get("error"):
                 self._errors[job["key"]] = payload["error"]
         self.changed.emit()
@@ -438,6 +482,51 @@ class AiCenterBackend(QObject):
             self._progress(progress)
 
         self._start("runtime", "runtime", "Setting up", work)
+
+    def can_remove_runtime(self) -> str:
+        """"" when the runtime can be removed now, else why not, in words for the person."""
+        if not callable(getattr(self._ops, "remove_runtime", None)):
+            return "This build cannot remove the AI runtime."
+        if self._job is not None:
+            what = {"runtime": "The AI runtime is being set up", "remove": "The AI runtime is already being removed",
+                    "probe": "The AI runtime is being tested", "model": "A model is being installed or removed"}.get(self._job["kind"], "Something is still running")
+            return f"{what}. Wait for it to finish, or cancel it, then remove the runtime."
+        if not (self._raw or {}).get("installed"):
+            return "There is no AI runtime to remove."
+        return ""
+
+    @Slot()
+    def removeRuntime(self) -> None:
+        """Delete the managed runtime, off the UI thread: the warm helper processes are ended first so their files are free, then
+        the runtime's folders go through the installer's own removal. What could not be deleted is reported, not hidden."""
+        if self.can_remove_runtime():
+            return
+
+        def work(job: dict) -> None:
+            self._event.emit("progress", {"pct": 10, "step": "Closing the AI helpers…"})
+            close = getattr(self._ops, "close_workers", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:                    # a helper that will not end shows up as files in use, which is reported below
+                    pass
+            self._event.emit("progress", {"pct": 35, "step": "Removing the files…"})
+            report = self._ops.remove_runtime() or {}
+            count = int(report.get("remainingCount", 0) or 0)
+            if count:
+                names = [str(name) for name in report.get("remaining", [])]
+                more = count - len(names)
+                listed = ", ".join(names) + (f" and {more} more" if more > 0 else "")
+                raise RuntimeError(
+                    f"The AI runtime was only partly removed: {count} file{'s' if count != 1 else ''} "
+                    f"({format_mb(max(1, round(int(report.get('remainingBytes', 0) or 0) / 1e6)))}) could not be deleted, "
+                    f"most likely because another program still has {'them' if count != 1 else 'it'} open: {listed}. "
+                    "Close other Image Triage windows and anything else using it, then choose Remove again. "
+                    "What is left is not used: the runtime counts as not installed.")
+            self._event.emit("removed", {"freed": int(report.get("freed", 0) or 0)})
+            self._event.emit("progress", {"pct": 100, "step": "Removed"})
+
+        self._start("remove", "runtime", "Removing", work)
 
     # -- the models -----------------------------------------------------------------------------------------------------------
     def _bundle_progress(self, key: str, progress, word: str = ""):

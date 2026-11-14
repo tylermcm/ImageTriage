@@ -6,7 +6,9 @@ thread each time the shell opens a folder, and answers from memory afterwards. A
 so ("none") and the inspector offers to analyse it. Nothing here runs the analysis (that is the Cull window's job, docs/qml_unwired.md).
 
 `aiScores.get(path)` is what QML reads: {"has": false, "state": "loading" | "none" | "missing"} or
-{"has": true, "score", "call", "good", "line", "reasons": [{"good", "head", "detail"}], "group": [{"path", "row", "current"}], "size"}.
+{"has": true, "score", "call", "good", "line", "reasons": [{"good", "head", "detail"}], "group": [{"path", "row", "current"}], "size",
+"details": [{"k", "v", "scale", "recorded"}], "stage", "device"}. The details are the values the report really holds, each with its scale;
+a value it does not hold says "not recorded" (`ai_score_details`).
 The score is the one the Widgets badge shows (the photo's percentile in its folder). The wording is `ai_why`'s and `ai_results`'.
 """
 from __future__ import annotations
@@ -207,7 +209,7 @@ class AiScores(QObject):
         good = result.confidence_bucket in (AIConfidenceBucket.OBVIOUS_WINNER, AIConfidenceBucket.LIKELY_KEEPER)
         if result.native_payload is not None:
             item = result.native_payload
-            return {"has": True, "state": "ready", "score": display_score(result),
+            return {"has": True, "state": "ready", "score": display_score(result), **self._details(result),
                     "call": result.confidence_bucket_label, "good": good,
                     "line": result.rank_text or "No comparison rank",
                     "reasons": [{"good": good, "head": str(reason), "detail": ""} for reason in item.get("reasons", [])],
@@ -222,10 +224,17 @@ class AiScores(QObject):
             parts.append(why.category)
         return {
             "has": True, "state": "ready", "score": display_score(result), "call": result.confidence_bucket_label, "good": good,
+            **self._details(result),
             "line": " · ".join(parts) or "Scored on its own",
             "reasons": reasons, "size": result.group_size if grouped else 1,
             "group": self._group_of(result) if grouped else [],
         }
+
+    def _details(self, result) -> dict:
+        from ..ai_score_details import details_for_result
+
+        found = details_for_result(result, getattr(self._bundle, "summary", None))
+        return {"details": found["rows"], "stage": found["stage"], "device": found["device"]}
 
     def _group_of(self, result) -> list[dict]:
         members = list(self._bundle.group_results(result.group_id)) if self._bundle else []

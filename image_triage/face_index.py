@@ -498,6 +498,10 @@ class FaceFolderIndexTask(QRunnable):
             threshold=self.cluster_threshold,
             identity_model=self.model_identity,
         )
+        # People named in other folders are recognised here by name (people_identities.py). Off unless the app turned it on.
+        from .people_identities import after_clustering
+
+        after_clustering(store.connection, self.folder)
 
     @staticmethod
     def _people_count(store: SQLiteFeatureStore) -> int:

@@ -70,6 +70,20 @@ class _Cancelled(RuntimeError):
     pass
 
 
+class _Recording:
+    """A ranker that remembers every score it returned. The cascade only uses the scores to order a stack and drops them; the saved
+    report keeps them, so the review can show the number behind a pick or a cut."""
+
+    def __init__(self, scorer: Scorer) -> None:
+        self._scorer = scorer
+        self.scores: dict[str, float] = {}
+
+    def __call__(self, keys: Sequence[str]):
+        scores = self._scorer(keys)
+        self.scores.update({key: float(value) for key, value in scores.items()})
+        return scores
+
+
 @dataclass(slots=True)
 class CascadeRunSettings:
     cascade: CascadeSettings = field(default_factory=CascadeSettings)
@@ -106,6 +120,9 @@ class CascadeRunTask(QRunnable):
         self.notes: tuple[str, ...] = ()             # what was skipped and why ("Ranking skipped: ...", "People were not updated: ..."), for the review page
         self.ranked_with: tuple[str, ...] = ()       # the rankers still in use when the run ended (empty when ranking was skipped, at the start or part way)
         self.ranking_device = ""                     # the device a ranker's worker said it runs on ("cuda", "cpu"); "" when none was started
+        self.measures: dict[str, dict[str, float]] = {}   # per frame, what was really measured (cascade.export.MEASURES); also saved in the report
+        self._blink_scores: dict[str, float] = {}
+        self._ranker_scores: dict[str, dict[str, float]] = {}
 
     def cancel(self) -> None:
         self._cancel_requested = True
@@ -127,8 +144,10 @@ class CascadeRunTask(QRunnable):
                                         if ranker is not None and (device := str(getattr(ranker, "active_device", "") or ""))), "")
             self._check_cancelled()
             self.signals.stage.emit(folder_text, 3, len(STAGES), STAGES[3])
-            rows = build_rows(result.outcomes, [r.path for r in self.records], _capture_strings(frames))
-            written = write_export(self.paths.report_dir, rows, result, ranked_with=scorers.names, note=" ".join(notes), blink_checked=self.blink_checked)
+            self.measures = self._measures(frames, result)
+            rows = build_rows(result.outcomes, [r.path for r in self.records], _capture_strings(frames), self.measures)
+            written = write_export(self.paths.report_dir, rows, result, ranked_with=scorers.names, note=" ".join(notes), blink_checked=self.blink_checked,
+                                   ranking_device=self.ranking_device, blink_threshold=self.settings.blink_threshold if self.blink_checked else None)
             ledger = build_ledger(result.outcomes, [r.path for r in self.records], protected=self.protected)
             write_ledger(self.paths.report_dir, ledger, result, settings=self.settings.cascade, ranked_with=scorers.names,
                          blink_checked=self.blink_checked, note=" ".join(notes))
@@ -357,6 +376,7 @@ class CascadeRunTask(QRunnable):
             except OSError:
                 pass
         self.blink_checked = True
+        self._blink_scores = dict(scores)
         return [
             replace(f, features=replace(f.features, blink=is_blink(scores.get(f.path, 0.0), self.settings.blink_threshold)))
             if f.features is not None and f.bracket_id is None
@@ -364,12 +384,33 @@ class CascadeRunTask(QRunnable):
             for f in frames
         ]
 
+    def _measures(self, frames: Sequence[FolderFrame], result: FolderResult) -> dict[str, dict[str, float]]:
+        """What was measured for each decided frame, as measured: the preview's sharpness and clipping, the eyes-closed score when the
+        check ran, and a ranker's score for the frames it was really asked about. Nothing is filled in for a frame that was not measured."""
+        out: dict[str, dict[str, float]] = {}
+        for frame in frames:
+            if frame.path not in result.outcomes or frame.features is None:
+                continue
+            values = {"centre_sharpness": float(frame.features.centre_sharpness), "clipped_fraction": float(frame.features.clipped),
+                      "extremes_fraction": float(frame.features.extremes)}
+            if frame.path in self._blink_scores:
+                values["blink_score"] = float(self._blink_scores[frame.path])
+            for name, scores in self._ranker_scores.items():
+                if frame.path in scores:
+                    values[name] = scores[frame.path]
+            out[frame.path] = values
+        return out
+
     def _run(self, frames: list[FolderFrame], scorers: Scorers, progress: Callable[[int, int], None]) -> FolderResult:
+        # Scores of an attempt that failed part way are not kept: the run that follows it is unranked, and says so.
+        maniqa = _Recording(scorers.maniqa) if scorers.maniqa is not None else None
+        aesthetic = _Recording(scorers.aesthetic) if scorers.aesthetic is not None else None
+        self._ranker_scores = {name: recorder.scores for name, recorder in (("maniqa_score", maniqa), ("aesthetic_score", aesthetic)) if recorder is not None}
         return run_folder(
             frames,
             self.settings.cascade,
-            maniqa=scorers.maniqa,
-            aesthetic=scorers.aesthetic,
+            maniqa=maniqa,
+            aesthetic=aesthetic,
             progress=progress,
             cancelled=self._cancelled,
             pixels=PreviewPixels(),

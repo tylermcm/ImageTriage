@@ -7,7 +7,7 @@ report (`ranked_clusters_export.csv`, read with `ai_results.load_ai_bundle`), so
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThreadPool, Signal
@@ -28,18 +28,27 @@ class Outcome:
     stack_size: int
     stack_rank: int         # 1-based, best first
     ranked: bool            # a ranker ordered this frame's stack
+    details: dict | None = field(default=None, compare=False)      # the recorded scores, the deciding pass and the device (ai_score_details); None: not looked up
 
 
 def _key(path: str) -> str:
     return os.path.normcase(os.path.normpath(path))
 
 
-def outcomes_from_result(result) -> dict[str, Outcome]:
-    """{path: Outcome} from a finished run's `FolderResult`."""
+def outcomes_from_result(result, measures=None, summary=None) -> dict[str, Outcome]:
+    """{path: Outcome} from a finished run's `FolderResult`. `measures` ({path: {name: value}}) and `summary` are what the run measured and
+    what it wrote in the report's summary (`CascadeRunTask.measures`, `CullRun.summary`): with them each outcome carries its score details."""
+    from ..ai_score_details import details_cascade
+    from ..cascade.export import decided_by
+
     out = {}
     for path, o in result.outcomes.items():
         cluster = f"b{-o.burst_index}" if o.burst_index < 0 else f"{o.burst_index}-{o.stack_index}"
-        out[path] = Outcome(o.role, tuple(o.flags), o.summary, cluster, o.stack_size, o.stack_rank, o.rank is not None)
+        details = None
+        if measures is not None:
+            mine = dict(measures.get(path) or {})
+            details = details_cascade(mine, decided_by(o, mine), summary)
+        out[path] = Outcome(o.role, tuple(o.flags), o.summary, cluster, o.stack_size, o.stack_rank, o.rank is not None, details)
     return out
 
 
@@ -47,7 +56,10 @@ def outcomes_from_bundle(bundle, rows: list[dict]) -> dict[str, Outcome]:
     """{path: Outcome} for the photos of `rows` that a saved cascade report decided (an older kind of report, without cascade roles, gives none)."""
     from ..ai_results import find_ai_result_for_record
 
+    from ..ai_score_details import details_for_result, details_native
+
     out = {}
+    summary = getattr(bundle, "summary", None) or {}
     if getattr(bundle, "native_document", None) is not None:
         for path, item in bundle.native_document["files"].items():
             decision = item["decision"]
@@ -55,7 +67,8 @@ def outcomes_from_bundle(bundle, rows: list[dict]) -> dict[str, Outcome]:
             out[path] = Outcome("native_" + decision, (flag,) if flag else (),
                                 "; ".join(map(str, item.get("reasons", []))) or decision.capitalize(),
                                 str(item.get("comparison_set") or "alone:" + path),
-                                item.get("set_size") or 1, item.get("rank_in_set") or 1, False)
+                                item.get("set_size") or 1, item.get("rank_in_set") or 1, False,
+                                details_native(item, summary.get("host_runtime")))
         return out
     for row in rows:
         result = find_ai_result_for_record(bundle, row["record"], preferred_path=row["path"]) if row.get("record") is not None else bundle.result_for_path(row["path"])
@@ -63,7 +76,7 @@ def outcomes_from_bundle(bundle, rows: list[dict]) -> dict[str, Outcome]:
             continue
         flags = tuple(t.strip() for t in result.triggered_tags.split(",") if t.strip())
         out[row["path"]] = Outcome(result.cascade_role, flags, result.cascade_summary, result.group_id, result.group_size, result.rank_in_group,
-                                   result.cascade_role == ROLE_PICK or "runner-up" in result.cascade_summary)
+                                   result.cascade_role == ROLE_PICK or "runner-up" in result.cascade_summary, details_for_result(result, summary))
     return out
 
 
@@ -125,6 +138,8 @@ class CullRun(QObject):
         self.running = False
         self.notes: list[str] = []                          # what the last finished run skipped or could not do, in its own words
         self.device_text = ""                               # where its rankers really ran, as their workers reported ("" when none ran)
+        self.measures: dict | None = None                   # {path: {name: value}} the last finished run measured (CascadeRunTask.measures)
+        self.summary: dict = {}                             # what it wrote in the report's summary about them (device, eyes threshold, rankers)
 
     @property
     def alive(self) -> bool:
@@ -204,6 +219,10 @@ class CullRun(QObject):
         ranked = bool(getattr(task, "ranked_with", ())) if task is not None else False
         self.notes = [str(note) for note in getattr(task, "notes", ())] if task is not None else []
         reported = str(getattr(task, "ranking_device", "") or "") if task is not None else ""
+        self.measures = getattr(task, "measures", None) if task is not None else None
+        checked = bool(task and task.blink_checked)
+        self.summary = {"report_version": 2, "ranked_with": list(getattr(task, "ranked_with", ()) or ()), "ranking_device": reported, "blink_checked": checked,
+                        "blink_threshold": getattr(getattr(task, "settings", None), "blink_threshold", None) if checked else None}
         self.device_text = ""
         if ranked and reported:
             on_card = reported.lower().startswith("cuda")

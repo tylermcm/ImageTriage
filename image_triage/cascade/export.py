@@ -43,7 +43,29 @@ CSV_COLUMNS = (
     "capture_timestamp",
     "cascade_role",
     "cascade_summary",
+    # Report version 2: what was really measured for the frame, as measured (see MEASURES). A cell is empty when the value was not
+    # produced for that frame (a ranker only reads the survivors of a stack). Reports written before these columns still load.
+    "decided_by",
+    "maniqa_score",
+    "aesthetic_score",
+    "blink_score",
+    "centre_sharpness",
+    "clipped_fraction",
+    "extremes_fraction",
 )
+REPORT_VERSION = 2
+MEASURES = ("maniqa_score", "aesthetic_score", "blink_score", "centre_sharpness", "clipped_fraction", "extremes_fraction")
+
+# Which pass settled a frame's outcome (the `decided_by` column).
+STAGE_BRACKET = "bracket"
+STAGE_PROTECTED = "protected"
+STAGE_EYES = "eyes"
+STAGE_CLEANUP = "cleanup"
+STAGE_STACK_DUPLICATE = "duplicate_stack"
+STAGE_REPEAT = "repeat"            # followed by the check that folded it: "repeat:phash", "repeat:ssim", "repeat:orb"
+STAGE_QUALITY = "quality_ranker"
+STAGE_APPEAL = "appeal_ranker"
+STAGE_UNRANKED = "unranked"
 
 # Folder-wide ordering for "AI Rank" sorting: picks first, flagged frames last.
 _ROLE_SCORE = {ROLE_PICK: 1.0, ROLE_FINAL: 0.8, ROLE_DUPLICATE: 0.5, ROLE_BRACKET: 0.5, ROLE_FLAGGED: 0.45, ROLE_CUT: 0.4, ROLE_NO_PICK: 0.3, ROLE_REJECTED: 0.1}
@@ -85,15 +107,40 @@ def cluster_reason(outcome: FrameOutcome) -> str:
     return "A single frame."
 
 
-def build_rows(outcomes: Mapping[str, FrameOutcome], order: Sequence[str], captured: Mapping[str, str] | None = None) -> list[dict[str, object]]:
-    """One CSV row per decided frame, in folder ``order``. ``captured`` maps path to a capture-time string."""
+def decided_by(outcome: FrameOutcome, measures: Mapping[str, float] | None = None) -> str:
+    """The pass that settled this frame. A cut or ranked frame names the last ranker that really scored it (from the recorded scores),
+    so it is left empty when no score was kept for it rather than guessed."""
+    measures = measures or {}
+    if outcome.role == ROLE_BRACKET:
+        return STAGE_BRACKET
+    if "already marked" in outcome.summary:
+        return STAGE_PROTECTED
+    if outcome.role in (ROLE_REJECTED, ROLE_FLAGGED, ROLE_NO_PICK):
+        return STAGE_EYES if "blink" in outcome.flags else STAGE_CLEANUP
+    if outcome.role == ROLE_DUPLICATE:
+        by = outcome.duplicate_by or "stack"
+        return STAGE_STACK_DUPLICATE if by == "stack" else f"{STAGE_REPEAT}:{by}"
+    if outcome.role == ROLE_CUT or outcome.rank is not None:
+        if "aesthetic_score" in measures:
+            return STAGE_APPEAL
+        return STAGE_QUALITY if "maniqa_score" in measures else ""
+    return STAGE_UNRANKED
+
+
+def build_rows(outcomes: Mapping[str, FrameOutcome], order: Sequence[str], captured: Mapping[str, str] | None = None,
+               measures: Mapping[str, Mapping[str, float]] | None = None) -> list[dict[str, object]]:
+    """One CSV row per decided frame, in folder ``order``. ``captured`` maps path to a capture-time string; ``measures`` maps path to the
+    values really measured for it (any of MEASURES), written as they are."""
     rows: list[dict[str, object]] = []
     for path in order:
         outcome = outcomes.get(path)
         if outcome is None:
             continue
+        measured = {name: value for name, value in ((measures or {}).get(path) or {}).items() if name in MEASURES and _finite(value)}
         rows.append(
             {
+                **{name: repr(float(value)) for name, value in measured.items()},
+                "decided_by": decided_by(outcome, measured) if measures is not None else "",
                 "image_id": path,
                 "file_path": path,
                 "file_name": Path(path).name,
@@ -120,6 +167,8 @@ def write_export(
     ranked_with: Sequence[str] = (),
     note: str = "",
     blink_checked: bool = False,
+    ranking_device: str = "",
+    blink_threshold: float | None = None,
 ) -> dict[str, Path]:
     """Write the CSV, summary JSON and HTML report into ``report_dir`` (created if needed) and return their paths."""
     folder = Path(report_dir)
@@ -140,12 +189,24 @@ def write_export(
         "scored_by_maniqa": result.scored_by_maniqa,
         "scored_by_aesthetic": result.scored_by_aesthetic,
         "note": note,
+        # Version 2 keeps the per-frame measurements in the CSV; these say where and how they were made.
+        "report_version": REPORT_VERSION if any(row.get("decided_by") for row in rows) else 1,
+        "ranking_device": str(ranking_device or ""),     # what a ranker's worker said it ran on ("cuda", "cpu"); "" when no ranker ran
+        "blink_threshold": blink_threshold,
     }
     summary_path = folder / SUMMARY_FILENAME
     _write_atomic(summary_path, json.dumps(summary, indent=2))
     html_path = folder / HTML_FILENAME
     _write_atomic(html_path, _html_text(rows, summary))
     return {"csv": csv_path, "summary": summary_path, "html": html_path}
+
+
+def _finite(value: object) -> bool:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    return number == number and number not in (float("inf"), float("-inf"))
 
 
 def _csv_text(rows: Sequence[Mapping[str, object]]) -> str:

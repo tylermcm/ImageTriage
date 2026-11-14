@@ -259,7 +259,7 @@ def _run(args, state: dict) -> int:
     handoff.runRequested.connect(transfers.handoff)
     collections = CollectionsModel(photos, memory=bool(args.mock), parent=app)
     people = PeopleModel(photos, memory=bool(args.mock), parent=app)
-    best_of = BestOfModel(photos, parent=app)
+    best_of = BestOfModel(photos, parent=app, collections=collections, toasts=toasts)
     batch = BatchModel(photos, memory=bool(args.mock), parent=app, toasts=toasts)
     from .file_jobs import FileJobs
 
@@ -272,6 +272,14 @@ def _run(args, state: dict) -> int:
     from .safe_trash_model import SafeTrashModel
 
     safe_trash = SafeTrashModel(photos, toasts, file_jobs, memory=bool(args.mock), parent=app)
+    if not args.mock:
+        # People named in one folder are recognised in the next (people_identities.py); the AI Center can switch it off and forget them.
+        from .. import people_identities
+        from ..app_identity import user_settings
+        from .cull_model import PEOPLE_MEMORY_KEY
+
+        if user_settings().value(PEOPLE_MEMORY_KEY, True, type=bool):
+            people_identities.enable()
     cull = CullModel(photos, memory=bool(args.mock), parent=app, toasts=toasts, files=files)
     cull.runFinished.connect(people.reload)            # an analysis has just written the face index: the People page reads it again
     app.aboutToQuit.connect(cull.shutdown)

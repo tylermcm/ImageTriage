@@ -9,6 +9,66 @@ Column {
     property bool customizing: false
     property bool hideAfterSave: false
     spacing: 8
+    // One group of engine settings: its title, "Reset to default" when something in it differs from the engine's defaults, and one row
+    // per setting (label, one plain line, the default, and the control that fits it). Values go to the engine's own validation on Save.
+    component GroupCard: Rectangle {
+        id: section
+        required property var modelData
+        objectName: "nativeGroup_" + modelData.key
+        width: root.width; height: fields.implicitHeight + 28; radius: 14; color: theme.s1; border.color: theme.lineSoft
+        Column { id: fields; x: 14; y: 14; width: parent.width - 28; spacing: 12
+            Item { width: parent.width; height: 18
+                Text { anchors.verticalCenter: parent.verticalCenter; text: section.modelData.title; color: theme.fg; font.pixelSize: 14; font.weight: Font.DemiBold }
+                Text { objectName: "nativeReset_" + section.modelData.key; visible: !!section.modelData.changed; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                    text: "Reset to default"; color: theme.accentFg; font.pixelSize: 12; font.weight: Font.Medium
+                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                    TapHandler { onTapped: cull.resetNativeGroup(section.modelData.key) }
+                    Accessible.role: Accessible.Button; Accessible.name: "Reset " + section.modelData.title + " to default" }
+            }
+            Repeater { model: section.modelData.fields
+                delegate: Item {
+                    id: field
+                    required property var modelData
+                    property real liveValue: typeof modelData.value === "number" ? modelData.value : 0
+                    readonly property real controlW: Math.min(300, width * 0.5)
+                    width: fields.width; height: Math.max(words.implicitHeight, 30)
+                    Column { id: words; width: parent.width - field.controlW - 14; anchors.verticalCenter: parent.verticalCenter; spacing: 2
+                        Text { width: parent.width; text: field.modelData.label; wrapMode: Text.WordWrap; color: theme.fg; font.pixelSize: 12; font.weight: Font.Medium }
+                        Text { visible: text !== ""; width: parent.width; text: field.modelData.help || ""; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 12; lineHeight: 1.3 }
+                        Text { objectName: "nativeDefault_" + field.modelData.key; visible: !!section.modelData.resettable; width: parent.width; wrapMode: Text.WordWrap; font.pixelSize: 11
+                            color: field.modelData.isDefault ? theme.fg3 : theme.rev
+                            text: (field.modelData.isDefault ? "Default: " : "Changed. Default: ") + field.modelData.default }
+                    }
+                    SSwitch { visible: field.modelData.kind === "toggle"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; checked: !!field.modelData.value; name: field.modelData.label
+                        onToggled: cull.setNativeValue(field.modelData.key, !field.modelData.value) }
+                    SSlider { objectName: "nativeControl_" + field.modelData.key; visible: field.modelData.kind === "slider"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; name: field.modelData.label
+                        trackW: Math.min(220, field.width * 0.5 - 66); from: field.modelData.min; to: field.modelData.max; step: field.modelData.step; value: field.liveValue
+                        text: field.modelData.step >= 1 ? String(Math.round(field.liveValue)) : field.liveValue.toFixed(2)
+                        onMoved: (x) => { field.liveValue = x }
+                        onCommitted: (x) => cull.setNativeValue(field.modelData.key, x)
+                    }
+                    TextField { visible: field.modelData.kind === "number"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; width: 110; height: 30; color: theme.fg; text: String(field.modelData.value); selectByMouse: true
+                        background: Rectangle { radius: 7; color: theme.s2; border.color: theme.lineSoft }
+                        Accessible.name: field.modelData.label
+                        onEditingFinished: if (visible) cull.setNativeValue(field.modelData.key, Number(text))
+                    }
+                    // a path or a list of names is typed: there is no slider for a file
+                    TextField { objectName: "nativeText_" + field.modelData.key; visible: field.modelData.kind === "text" || field.modelData.kind === "list"
+                        anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; width: Math.min(260, field.controlW); height: 30; color: theme.fg
+                        text: typeof field.modelData.value === "string" ? field.modelData.value : ""; selectByMouse: true
+                        placeholderText: field.modelData.kind === "list" ? "none" : "no file"; placeholderTextColor: theme.fg3
+                        background: Rectangle { radius: 7; color: theme.s2; border.color: theme.lineSoft }
+                        Accessible.name: field.modelData.label
+                        onEditingFinished: if (visible && text !== field.modelData.value) cull.setNativeValue(field.modelData.key, text)
+                    }
+                    SSelect { visible: field.modelData.kind === "choice"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; width: Math.min(220, field.controlW); name: field.modelData.label
+                        options: field.modelData.choices.map(x => ({label: x.replace(/_/g, " "), value: x})); current: field.modelData.value
+                        onPicked: (value) => cull.setNativeValue(field.modelData.key, value)
+                    }
+                }
+            }
+        }
+    }
     Connections { target: cull; function onChanged() {
         if (root.v.window !== "cull" || root.v.page !== "prep") { root.customizing = false; root.advanced = false }
     }
@@ -60,47 +120,22 @@ Column {
         SSelect { width: 220; options: [{label: "Runtime default", value: "auto"}, {label: "CPU", value: "cpu"}, {label: "CUDA GPU", value: "cuda"}]; current: root.v.nativeDevice || "auto"
             onPicked: (value) => cull.setNativeDevice(value) }
     }
-    Repeater { model: root.v.nativeGroups || []
-        delegate: Rectangle {
-            id: section
-            required property var modelData
-            width: root.width; height: fields.implicitHeight + 28; radius: 14; color: theme.s1; border.color: theme.lineSoft
-            Column { id: fields; x: 14; y: 14; width: parent.width - 28; spacing: 12
-                Text { text: section.modelData.title; color: theme.fg; font.pixelSize: 14; font.weight: Font.DemiBold }
-                Repeater { model: section.modelData.fields
-                    delegate: Item {
-                        id: field
-                        required property var modelData
-                        property real liveValue: typeof modelData.value === "number" ? modelData.value : 0
-                        width: fields.width; height: Math.max(label.implicitHeight, 30)
-                        Text { id: label; width: parent.width - Math.min(300, parent.width * 0.5) - 14; anchors.verticalCenter: parent.verticalCenter; text: field.modelData.label; wrapMode: Text.WordWrap; color: theme.fg2; font.pixelSize: 12 }
-                        SSwitch { visible: field.modelData.kind === "toggle"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; checked: !!field.modelData.value; onToggled: cull.setNativeValue(field.modelData.key, !field.modelData.value) }
-                        SSlider { objectName: "nativeControl_" + field.modelData.key; visible: field.modelData.kind === "slider"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                            trackW: Math.min(220, field.width * 0.5 - 66); from: field.modelData.min; to: field.modelData.max; step: field.modelData.step; value: field.liveValue
-                            text: field.modelData.step >= 1 ? String(Math.round(field.liveValue)) : field.liveValue.toFixed(2)
-                            onMoved: (x) => { field.liveValue = x }
-                            onCommitted: (x) => cull.setNativeValue(field.modelData.key, x)
-                        }
-                        TextField { visible: field.modelData.kind === "number"; anchors.right: parent.right; width: 110; height: 30; color: theme.fg; text: String(field.modelData.value); selectByMouse: true
-                            background: Rectangle { radius: 7; color: theme.s2; border.color: theme.lineSoft }
-                            onEditingFinished: if (visible) cull.setNativeValue(field.modelData.key, Number(text))
-                        }
-                        SSelect { visible: field.modelData.kind === "choice"; anchors.right: parent.right; width: Math.min(220, field.width * 0.5)
-                            options: field.modelData.choices.map(x => ({label: x.replace(/_/g, " "), value: x})); current: field.modelData.value
-                            onPicked: (value) => cull.setNativeValue(field.modelData.key, value)
-                        }
-                    }
-                }
-            }
-        }
+    // Fine-tune: what a cull is usually adjusted with. The scoring weights and how the shoot is read are under Advanced below.
+    Repeater { model: (root.v.nativeGroups || []).filter(g => g.tier !== "advanced")
+        delegate: GroupCard { }
     }
-    Text { width: parent.width; text: "Zero quality-floor levels leave the floor off. Quality levels require the corresponding model. Advanced preserves every native setting, including baselines and scoring weights."; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 12 }
+    Text { width: parent.width; text: "Zero quality-floor levels leave the floor off. Quality levels require the corresponding model. Scoring weights, the score scale and how the shoot is read are under Advanced."; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 12 }
     Text { visible: !!root.v.nativeError; width: parent.width; text: root.v.nativeError || ""; wrapMode: Text.WordWrap; color: theme.rej; font.pixelSize: 12 }
     Row { spacing: 8
         SButton { text: root.v.nativeSaving ? "Saving…" : root.v.nativeDirty ? "Save changes" : "Settings saved"; enabled: !root.v.nativeSaving; h: 32; hpad: 14; onClicked: cull.saveNativeDraft() }
-        SButton { text: root.advanced ? "Hide Advanced" : "Advanced…"; h: 32; hpad: 14; onClicked: root.advanced = !root.advanced }
+        SButton { objectName: "nativeAdvancedButton"; text: root.advanced ? "Hide Advanced" : "Advanced…"; h: 32; hpad: 14; onClicked: root.advanced = !root.advanced }
     }
-    Column { visible: root.advanced; width: parent.width; spacing: 8
+    Column { objectName: "nativeAdvanced"; visible: root.advanced; width: parent.width; spacing: 14
+        Text { width: parent.width; text: "Advanced settings change how frames are scored and how the shoot is read. The defaults are the engine's own."; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 12 }
+        Repeater { model: (root.v.nativeGroups || []).filter(g => g.tier === "advanced")
+            delegate: GroupCard { }
+        }
+        Text { text: "THE WHOLE PROFILE"; color: theme.fg3; font.pixelSize: 11; font.weight: Font.DemiBold; font.letterSpacing: 0.8 }
         ScrollView { width: parent.width; height: 240
             TextArea { id: jsonProfile; text: root.v.nativeSettings || "{}"; color: theme.fg; font.family: "Consolas"; font.pixelSize: 12; wrapMode: TextEdit.Wrap; selectByMouse: true
                 background: Rectangle { color: theme.s2; radius: 8; border.color: theme.lineSoft }
