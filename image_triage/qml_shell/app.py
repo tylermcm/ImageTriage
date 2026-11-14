@@ -259,7 +259,7 @@ def _run(args, state: dict) -> int:
     handoff.runRequested.connect(transfers.handoff)
     collections = CollectionsModel(photos, memory=bool(args.mock), parent=app)
     people = PeopleModel(photos, memory=bool(args.mock), parent=app)
-    best_of = BestOfModel(photos, parent=app)
+    best_of = BestOfModel(photos, parent=app, collections=collections, toasts=toasts)
     batch = BatchModel(photos, memory=bool(args.mock), parent=app, toasts=toasts)
     from .file_jobs import FileJobs
 
