@@ -123,8 +123,9 @@ def test_remove_closes_the_helpers_then_deletes_off_the_ui_thread_and_ends_not_s
     ops.gate.clear()
     cull.removeRuntime()
     until(qapp, lambda: ("remove-runtime",) in ops.calls)
+    until(qapp, lambda: "Removing the files" in cull.view["center"]["rtStep"])      # the step arrives from the worker thread, queued
     center = cull.view["center"]
-    assert center["rtState"] == "Removing…" and center["rtRemoving"] and "Removing the files" in center["rtStep"]
+    assert center["rtState"] == "Removing…" and center["rtRemoving"]
     assert not center["rtRemoveShow"] and not center["rtBtnShow"] and not center["rtTestShow"]        # nothing else is offered meanwhile
     assert cull.view["centerText"] == "Removing…" and all(m["locked"] for m in center["models"])
     cull.cancelSetup()                                                     # a removal is not stopped half way

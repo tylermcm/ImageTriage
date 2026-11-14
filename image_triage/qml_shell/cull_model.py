@@ -22,6 +22,7 @@ from ..app_identity import user_settings
 from ..cascade.launch import CPU_SECONDS_PER_FRAME_FAST, CPU_SECONDS_PER_FRAME_LAPTOP
 from ..cascade.model import CascadeSettings
 from ..cascade.rankers.spec import MANIQA, QREALIGN
+from ..cascade import controls as cascade_controls
 from .ai_center import STATE_WORDS, AiCenterBackend
 from .cull_real import CullRun, outcomes_from_bundle, outcomes_from_result, reason_of, stacks_of
 
@@ -209,7 +210,8 @@ class CullModel(QObject):
         return {"window": "", "page": "prep", "sens": "balanced", "vals": dict(PRESETS["balanced"]), "tune": False, "eyes": True, "semantic": True, "rank": False, "rankTouched": False,
                 "cpuAsk": False, "cpuDefault": cpu, "rt": "ready", "rtp": 0.0, "vcOld": False, "gpu": False, "faceOk": True, "searchOk": True, "peopleOk": True, "models": {"quality": True, "appeal": False},
                 "stage": 0, "p": 0.0, "running": False, "done": False, "hidden": False, "ranked": False, "filter": "all", "sort": "stack", "sel": "", "restored": {},
-                "act": "reject", "inc": {**{r: True for r in REJECTS}, "duplicate": False}, "applied": None, "runs": True, "back": False, "eyesRan": False}
+                "act": "reject", "inc": {**{r: True for r in REJECTS}, "duplicate": False}, "applied": None, "runs": True, "back": False, "eyesRan": False,
+                "adv": cascade_controls.defaults(), "advOpen": False}
 
     # -- helpers -----------------------------------------------------------------------------------------------------------------
     @property
@@ -521,9 +523,14 @@ class CullModel(QObject):
             "rt": {"state": s["rt"], "pct": rtp, "step": rt_step,
                 **self._rt_error()},
             "rank": {"on": s["rank"], "desc": rank_desc, "canSetup": not rank_has, "ask": s["cpuAsk"]},
-            "sens": [{"key": k, "label": k.capitalize(), "on": s["sens"] == k} for k in ("careful", "balanced", "strict")], "sensText": SENS_TEXT[s["sens"]],
+            # A preset is "on" only while every slider still has its values: after a change the strictness is Custom.
+            "sens": [{"key": k, "label": k.capitalize(), "on": s["sens"] == k and v == PRESETS[k]} for k in ("careful", "balanced", "strict")],
+            "sensCustom": v != PRESETS[s["sens"]],
+            "sensText": SENS_TEXT[s["sens"]] if v == PRESETS[s["sens"]] else f"Custom: your own thresholds, started from {s['sens'].capitalize()}. They are shown in Fine-tune.",
             "tuneOpen": s["tune"], "tuneLabel": "Hide fine-tuning" if s["tune"] else "Fine-tune",
-            "tunes": [{"key": k, "label": lab, "help": h, "min": lo, "max": hi, "raw": v[k], "val": _fmt(k, v[k])} for k, lab, h, lo, hi in TUNES],
+            "tunes": [{"key": k, "label": lab, "help": h, "min": lo, "max": hi, "raw": v[k], "val": _fmt(k, v[k]),
+                       "def": _fmt(k, PRESETS["balanced"][k]), "isDefault": v[k] == PRESETS["balanced"][k]} for k, lab, h, lo, hi in TUNES],
+            "advOpen": s["advOpen"], "advanced": cascade_controls.view(s["adv"]), "advChanged": s["adv"] != cascade_controls.defaults(),
             "estimate": est_text, "stages": stages, "runLine": f"{cur_stage} · {round(s['p'] * n)} of {n}", "runPct": run_pct,
             "runEta": self._eta_text(s, secs), "notes": notes,
             "tiles": [{"n": n, "l": "Frames"}, {"n": len(self._stacks), "l": "Stacks"}, {"n": sum(cnt(r) for r in REJECTS), "l": "Flagged"}, {"n": cnt("duplicate"), "l": "Near-duplicates"},
@@ -1053,6 +1060,18 @@ class CullModel(QObject):
         self._rebuild()
 
     @Slot(str)
+    def resetNativeGroup(self, group):
+        """Put one group of native settings back to the engine's defaults (they leave the profile). Saved like any other edit."""
+        if not self._native_controls:
+            return
+        try:
+            self._native_controls.reset_group(group)
+            self._native_error = ""
+        except ValueError as error:
+            self._native_error = str(error)
+        self._rebuild()
+
+    @Slot(str)
     def setNativePreset(self, name):
         if name in ("careful", "balanced", "strict") and self._native_controls:
             self._native_controls.preset(name)
@@ -1189,6 +1208,26 @@ class CullModel(QObject):
     @Slot()
     def toggleTune(self) -> None:
         self._set(tune=not self._s["tune"])
+
+    # -- the cascade settings the ten sliders do not cover (cascade/controls.py); they hold for this session, like the sliders ----------
+    @Slot()
+    def toggleAdvanced(self) -> None:
+        self._set(advOpen=not self._s["advOpen"])
+
+    @Slot(str, "QVariant")
+    def setAdvanced(self, key: str, value) -> None:
+        """Set one advanced cascade setting. A value its control cannot hold is refused and said, never clamped silently."""
+        try:
+            checked = cascade_controls.checked(key, value)
+        except (ValueError, TypeError) as error:
+            if self._toasts is not None:
+                self._toasts.push("error", "That value cannot be used", str(error))
+            return
+        self._set(adv={**self._s["adv"], key: checked})
+
+    @Slot()
+    def resetAdvanced(self) -> None:
+        self._set(adv=cascade_controls.defaults())
 
     @Slot(str, int)
     def setVal(self, key: str, value: int) -> None:
@@ -1505,7 +1544,8 @@ class CullModel(QObject):
         s = self._s
         v = s["vals"]
         cascade = CascadeSettings(split_jump=v["split"], duplicate_distance=v["dup"], soft_ratio=v["soft"] / 100, clip_floor=v["clip"] / 100, blown_out=v["blown"] / 100,
-                                   repeat_distance=v["rdist"], ssim_threshold=v["ssim"] / 100, repeat_window=v["rwin"], repeat_rounds=v["rounds"])
+                                   repeat_distance=v["rdist"], ssim_threshold=v["ssim"] / 100, repeat_window=v["rwin"], repeat_rounds=v["rounds"],
+                                   **cascade_controls.settings_kwargs(s["adv"]))
         records = [r["record"] for r in self._photos.all_rows() if r.get("record") is not None]
         decision = self._ranking_decision()
         self._real, self._outcomes, self._picks, self._flags, self._stacks = True, {}, set(), {}, []

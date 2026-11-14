@@ -136,6 +136,7 @@ Backdrop {
                 }
                 Flickable {
                     id: body
+                    objectName: "cullBody"
                     interactive: root.page !== "rev"
                     y: hd.y + hd.height + 22; width: parent.width; height: parent.height - y - 60
                     contentWidth: width; contentHeight: pages.height + 18; clip: true; boundsBehavior: Flickable.StopAtBounds
@@ -220,23 +221,49 @@ Backdrop {
                                     TapHandler { onTapped: cull.toggleTune() } } }
                             Item { width: 1; height: 9 }
                             Seg { width: parent.width; height: 38; fill: true; showExtras: false; labels: ["Careful", "Balanced", "Strict"]
-                                  current: { for (var i = 0; i < root.v.sens.length; ++i) if (root.v.sens[i].on) return i; return 1 }
+                                  current: { for (var i = 0; i < root.v.sens.length; ++i) if (root.v.sens[i].on) return i; return root.v.sensCustom ? -1 : 1 }     // none is lit once a slider has left its preset
                                   onActivated: (i) => cull.setSens(root.v.sens[i].key) }
                             Text { width: parent.width; topPadding: 9; leftPadding: 2; text: root.v.sensText; wrapMode: Text.WordWrap; color: theme.fg3; font.pointSize: UiState.pt(12.5); lineHeight: 18.75; lineHeightMode: Text.FixedHeight }
                             Item { visible: root.v.tuneOpen; width: 1; height: 12 }
                             Card { visible: root.v.tuneOpen; width: parent.width; height: tcol.implicitHeight + 18
                                 Column { id: tcol; x: 14; y: 4; width: parent.width - 28
                                     Repeater { model: root.v.tunes
-                                        delegate: Item { id: tr; required property var modelData; width: tcol.width; height: 63
+                                        delegate: Item { id: tr; required property var modelData; width: tcol.width; height: Math.max(63, trw.implicitHeight + 22)
                                             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
-                                            Column { y: 11; width: parent.width - 268 - 16; spacing: 2
+                                            Column { id: trw; y: 11; width: parent.width - 268 - 16; spacing: 2
                                                 Text { text: tr.modelData.label; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
-                                                Text { width: parent.width; text: tr.modelData.help; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 12; lineHeight: 16.8; lineHeightMode: Text.FixedHeight } }
+                                                Text { width: parent.width; text: tr.modelData.help; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 12; lineHeight: 16.8; lineHeightMode: Text.FixedHeight }
+                                                Text { text: (tr.modelData.isDefault ? "Measured value: " : "Changed. Measured value: ") + tr.modelData.def; color: tr.modelData.isDefault ? theme.fg3 : theme.rev; font.pixelSize: 11 } }
                                             SSlider { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; trackW: 200; from: tr.modelData.min; to: tr.modelData.max; value: tr.modelData.raw; text: tr.modelData.val
                                                       onMoved: (x) => cull.setVal(tr.modelData.key, Math.round(x)) } } }
                                     Item { width: parent.width; height: 48
                                         Text { y: 14; width: parent.width - 190; text: "Measured on two reviewed albums. Review them on your own genres before relying on them."; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 12; lineHeight: 16.8; lineHeightMode: Text.FixedHeight }
-                                        SButton { anchors.right: parent.right; y: 12; text: "Reset to measured values"; h: 28; hpad: 11; radius: 9; onClicked: cull.resetTune() } } } }
+                                        SButton { anchors.right: parent.right; y: 12; text: "Reset to measured values"; h: 28; hpad: 11; radius: 9; onClicked: cull.resetTune() } }
+                                    // The cascade settings the sliders above do not cover (cascade/controls.py). A preset does not touch them.
+                                    Item { width: parent.width; height: 44
+                                        Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
+                                        Text { anchors.verticalCenter: parent.verticalCenter; text: "Advanced"; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
+                                        Row { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 8
+                                            SButton { objectName: "cullAdvancedReset"; visible: root.v.advOpen && root.v.advChanged; text: "Reset to default"; h: 28; hpad: 11; radius: 9; onClicked: cull.resetAdvanced() }
+                                            SButton { objectName: "cullAdvancedToggle"; text: root.v.advOpen ? "Hide" : (root.v.advChanged ? "Show · changed" : "Show"); h: 28; hpad: 11; radius: 9; onClicked: cull.toggleAdvanced() } } }
+                                    Repeater { model: root.v.advOpen ? root.v.advanced : []
+                                        delegate: Item { id: ar; required property var modelData; width: tcol.width; height: Math.max(63, arw.implicitHeight + 22)
+                                            objectName: "cullAdvanced_" + modelData.key
+                                            property real live: typeof modelData.value === "number" ? modelData.value : 0
+                                            Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
+                                            Column { id: arw; y: 11; width: parent.width - 268 - 16; spacing: 2
+                                                Text { text: ar.modelData.label; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium }
+                                                Text { width: parent.width; text: ar.modelData.help; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 12; lineHeight: 16.8; lineHeightMode: Text.FixedHeight }
+                                                Text { text: (ar.modelData.isDefault ? "Default: " : "Changed. Default: ") + ar.modelData.default; color: ar.modelData.isDefault ? theme.fg3 : theme.rev; font.pixelSize: 11 } }
+                                            SSlider { visible: ar.modelData.kind === "slider"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; trackW: 200; name: ar.modelData.label
+                                                      from: ar.modelData.min; to: ar.modelData.max; step: ar.modelData.step; value: ar.live; text: ar.modelData.text
+                                                      onMoved: (x) => { ar.live = x }
+                                                      onCommitted: (x) => cull.setAdvanced(ar.modelData.key, x) }
+                                            SSwitch { visible: ar.modelData.kind === "switch"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; checked: ar.modelData.value === true; name: ar.modelData.label
+                                                      onToggled: cull.setAdvanced(ar.modelData.key, ar.modelData.value !== true) }
+                                            SSelect { visible: ar.modelData.kind === "select"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; width: 200; name: ar.modelData.label
+                                                      options: ar.modelData.choices; current: ar.modelData.value
+                                                      onPicked: (value) => cull.setAdvanced(ar.modelData.key, value) } } } } }
                         }
                             }
                         // -------- running --------
