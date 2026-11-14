@@ -7,12 +7,19 @@ Item {
     id: root
     property alias view: gv
     // The grid's list is the open folder's child folders first, then its photos (GridModel). Everything outside this file speaks in photo
-    // rows, so `row` is the current photo's row (-1 while a folder card is current) and `nf` is how many folder cards come first.
+    // rows, so `row` is the current photo's row (below zero while a folder card is current) and `nf` is how many folder cards come first.
+    // Sorted by a time the photos come in day and hour sections, each starting a row with a header cell (GridModel), so a photo's cell is
+    // not simply its row plus `nf`: `indexOfRow` and `rowAt` translate, here and for the callers outside.
     readonly property int nf: gridModel.folders
     property int row: -1
-    onRowChanged: if (gv.currentIndex !== row + nf) gv.currentIndex = row + nf
-    Connections { target: gv; function onCurrentIndexChanged() { root.row = gv.currentIndex - root.nf } }
-    onNfChanged: row = gv.currentIndex - nf
+    function indexOfRow(photoRow) { return gridModel.indexOfRow(photoRow) }
+    function rowAt(index) { return gridModel.rowAt(index) }
+    function showRow(photoRow, mode) { gv.positionViewAtIndex(gridModel.indexOfRow(photoRow), mode === undefined ? GridView.Contain : mode) }
+    onRowChanged: if (gridModel.rowAt(gv.currentIndex) !== row) gv.currentIndex = gridModel.indexOfRow(row)
+    Connections { target: gv; function onCurrentIndexChanged() { root.row = gridModel.rowAt(gv.currentIndex) } }
+    onNfChanged: row = gridModel.rowAt(gv.currentIndex)
+    onColsChanged: gridModel.setColumns(cols)
+    Component.onCompleted: gridModel.setColumns(cols)
     // The list is rebuilt (a scope or filter change, a refresh) and the number of folder cards in front can change with it: stay on the same photo,
     // not the same position in the list, or the current photo slips by the difference. (`gridModel.folders` is read directly: `nf` follows a moment later.)
     property int keepRow: -1
@@ -21,12 +28,18 @@ Item {
         target: gridModel
         // Results that arrive on their own (AI scores, search matches, a refresh) reorder the list under the cursor: follow the photo then, or the
         // next W or R lands on a different one. A decision or a delete keeps the position, so the next photo comes under the cursor.
-        function onModelAboutToBeReset() { root.stopAutoScroll(); root.keepRow = root.row; root.keepPath = root.row >= 0 && photos.resetFollowsPhoto() ? (photos.get(root.row).path || "") : "" }
+        function onModelAboutToBeReset() { root.stopAutoScroll(); root.keepRow = root.row; root.keepPath = root.row >= 0 && gridModel.resetFollowsPhoto() ? (photos.get(root.row).path || "") : "" }
         function onModelReset() {
+            if (root.renameRow >= 0 && !root.renameBusy) {      // the list changed under the name being edited: stay with that photo, or give up when it is gone
+                var editing = photos.rowForPath(root.renamePath)
+                if (editing >= 0) root.renameRow = editing; else root.cancelRename()
+            }
             if (root.restoringScope || root.keepRow < 0) return
             var same = root.keepPath !== "" ? photos.rowForPath(root.keepPath) : -1
-            gv.currentIndex = (same >= 0 ? same : root.keepRow) + gridModel.folders
+            gv.currentIndex = gridModel.indexOfRow(same >= 0 ? same : root.keepRow)
         }
+        function onSectionsChanged() { root.row = gridModel.rowAt(gv.currentIndex) }      // the same cell may show another photo now
+
     }
     property bool restoringScope: false
     property var scopePositions: ({})
@@ -36,7 +49,7 @@ Item {
         if (bookmarkFolder !== photos.folderPath) scopePositions = ({})
         bookmarkFolder = photos.folderPath
         var topIndex = gv.indexAt(1, gv.contentY + 1)
-        var top = topIndex >= root.nf ? photos.get(topIndex - root.nf) : ({})
+        var top = gridModel.rowAt(topIndex) >= 0 ? photos.get(gridModel.rowAt(topIndex)) : ({})
         var current = root.row >= 0 ? photos.get(root.row) : ({})
         var states = Object.assign({}, scopePositions)
         states[scopeKey()] = {
@@ -53,14 +66,14 @@ Item {
         var index = 0
         if (saved) {
             var row = saved.path ? photos.rowForPath(saved.path) : -1
-            index = row >= 0 ? row + root.nf : saved.index
+            index = row >= 0 ? gridModel.indexOfRow(row) : saved.index
         }
         gv.currentIndex = gv.count > 0 ? Math.max(0, Math.min(gv.count - 1, index)) : -1
         gv.forceLayout()
         var y = gv.originY
         if (saved) {
             var topRow = saved.topPath ? photos.rowForPath(saved.topPath) : -1
-            y = topRow >= 0 ? gv.originY + Math.floor((topRow + root.nf) / root.cols) * gv.cellHeight
+            y = topRow >= 0 ? gv.originY + Math.floor(gridModel.indexOfRow(topRow) / root.cols) * gv.cellHeight
                     + saved.offset * gv.cellHeight / saved.cellHeight : saved.y
         }
         var high = Math.max(gv.originY, gv.originY + gv.contentHeight - gv.height + gv.bottomMargin)
@@ -112,6 +125,121 @@ Item {
     Connections {
         target: root.Window.window
         function onActiveChanged() { if (!root.Window.active) root.stopAutoScroll() }
+    }
+
+    // ---- F2 with one photo: its name is edited on its card. The rename itself is rename_one.py, through fileActions.renameRow ----
+    property int renameRow: -1                  // the photo whose name is being edited (-1: none)
+    property string renamePath: ""
+    property bool renameBusy: false             // Enter was pressed and the files are being renamed
+    property string renameError: ""             // why the rename was refused (a name that is taken, a file that would not move)
+    property var renameVerdict: ({})            // photos.renameCheck of what is typed: {error, warning, same}
+    property string followPath: ""
+    readonly property bool renaming: renameRow >= 0
+    function beginRename(row) {
+        if (renameRow >= 0) return true
+        if (row === undefined) row = root.row
+        var d = photos.get(row)
+        if (!d.path) return false
+        photos.clearSelection()
+        gv.currentIndex = gridModel.indexOfRow(row)
+        gv.revealCurrent()
+        renamePath = d.path; renameError = ""; renameBusy = false; renameVerdict = ({})
+        renameRow = row
+        nameField.text = d.title || d.name
+        nameField.selectAll()
+        nameField.forceActiveFocus()
+        return true
+    }
+    function cancelRename() { renameRow = -1; renameBusy = false; renameError = "" }
+    function endRename() { cancelRename(); gv.forceActiveFocus() }
+    function commitRename() {
+        if (renameRow < 0 || renameBusy) return
+        var verdict = photos.renameCheck(renameRow, nameField.text)
+        renameVerdict = verdict
+        if (verdict.error !== "") return
+        if (verdict.same) { endRename(); return }
+        var refused = fileActions.renameRow(renameRow, nameField.text)
+        if (refused !== "") { renameError = refused; return }
+        renameBusy = true
+    }
+    Connections {
+        target: photos
+        function onRenameFinished(from, to, error) {
+            if (error === "" && to !== from) root.followPath = to
+            if (root.renameRow < 0 || from !== root.renamePath) return
+            if (error !== "") { root.renameBusy = false; root.renameError = error; nameField.forceActiveFocus() }
+            else root.endRename()
+        }
+        // The folder has been read again after a rename: the grid goes with the photo to its new place in the order. Last, after the
+        // handlers that put the cursor back at the start or on the photo's old path.
+        function onLoadingChanged() {
+            if (photos.loading || root.followPath === "") return
+            Qt.callLater(function () {
+                var renamed = root.followPath !== "" ? photos.rowForPath(root.followPath) : -1
+                if (renamed >= 0) { libraryNav.savePosition(root.followPath); gv.currentIndex = gridModel.indexOfRow(renamed); gv.revealCurrent() }
+                root.followPath = ""
+            })
+        }
+    }
+
+    // ---- dragging photos onto a collection in the side panel (its DropArea reads `dragRows`) ----
+    // A photo that is part of the pick drags the whole pick; any other photo drags alone and the pick stays as it is.
+    property var dragRows: []
+    property bool dragging: false
+    property bool dragCancelled: false
+    property point dragAt: Qt.point(0, 0)           // where the pointer is, in the window
+    property string tabBeforeDrag: ""
+    property bool dragOpenedTab: false
+    readonly property var dragInfo: {
+        if (!dragging) return ({ title: "", sub: "", thumbs: ["", "", ""] })
+        void collections.revision
+        var over = UiState.cldrop !== "" ? (collections.get(UiState.cldrop).name || "") : ""
+        var paths = []
+        for (var i = 0; i < 3; ++i) paths.push(i < dragRows.length ? (photos.get(dragRows[i]).path || "") : "")
+        return { title: dragRows.length === 1 ? (photos.get(dragRows[0]).name || "1 photo") : dragRows.length + " photos",
+                 sub: over !== "" ? "Add to " + over : "Drop on a collection", thumbs: paths }
+    }
+    function beginDrag(press) {
+        if (root.blocked(press)) return
+        var p = gv.mapFromItem(null, press.x, press.y)
+        var index = gv.indexAt(p.x + gv.contentX, p.y + gv.contentY)
+        var row = index >= 0 ? gridModel.rowAt(index) : -1
+        if (row < 0) return                                          // a folder card, a header, or the space under the last row
+        var picked = photos.selectionRows(row)
+        dragRows = picked.indexOf(row) >= 0 ? picked : [row]
+        dragAt = press
+        dragCancelled = false; dragOpenedTab = false; tabBeforeDrag = UiState.tab
+        dragging = true
+    }
+    function endDrag(drop) {
+        if (!dragging) return
+        if (drop && !dragCancelled) dragProxy.Drag.drop(); else dragProxy.Drag.cancel()
+        dragging = false
+        UiState.cldrop = ""
+        if (dragOpenedTab) tabBack.restart()
+    }
+    // The Collections page opens when the photos are carried off the grid towards the panel, and the page that was open comes back afterwards.
+    onDragAtChanged: if (dragging && !dragOpenedTab && UiState.tab !== "coll" && root.mapFromItem(null, dragAt.x, dragAt.y).x < 0) { dragOpenedTab = true; UiState.tab = "coll" }
+    Timer { id: tabBack; interval: 1400; onTriggered: if (UiState.tab === "coll" && !root.dragging) UiState.tab = root.tabBeforeDrag }
+    Item {   // what is dragged: the thing the side panel's DropArea sees, and the badge that follows the pointer
+        id: dragProxy
+        objectName: "gridDragBadge"
+        parent: root.Window.contentItem ? root.Window.contentItem : root
+        x: root.dragAt.x; y: root.dragAt.y; width: 1; height: 1; z: 90
+        visible: root.dragging
+        Drag.active: root.dragging
+        Drag.source: root
+        Drag.keys: ["image-triage/photos"]
+        PocketDropGhost {
+            x: 14; y: 10; info: root.dragInfo
+            Rectangle {   // how many photos are being carried
+                objectName: "gridDragCount"
+                readonly property int count: root.dragRows.length
+                anchors.right: parent.right; anchors.rightMargin: -8; y: -8
+                width: Math.max(20, countText.implicitWidth + 12); height: 20; radius: 10; color: theme.accent
+                Text { id: countText; anchors.centerIn: parent; text: parent.count; color: theme.onAccent; font.pointSize: UiState.pt(11); font.weight: Font.DemiBold }
+            }
+        }
     }
 
     // B: the photo you are on goes into the collection that collects (or, when there is none, you choose one)
@@ -191,6 +319,17 @@ Item {
                 e.accepted = true
             }
         }
+        DragHandler {   // a plain drag that starts on a photo carries it (or the pick it is part of) to a collection; clicks and Ctrl/Shift picks are not drags
+            id: photoDrag
+            target: null
+            acceptedButtons: Qt.LeftButton
+            acceptedModifiers: Qt.NoModifier
+            dragThreshold: 12
+            enabled: !root.renaming && !root.autoScrolling
+            onActiveChanged: { if (active) root.beginDrag(centroid.scenePressPosition); else root.endDrag(true) }
+            onCentroidChanged: if (active && root.dragging) root.dragAt = centroid.scenePosition
+            onCanceled: root.dragCancelled = true
+        }
         property int anchorIndex: 0       // where a Shift+click or Shift+arrow range starts: the last photo picked on its own
         function pick() { return root.row < 0 ? [] : photos.selectionRows(root.row) }
         // Review advances a single photo; a multi-photo selection stays in place. A press that took the decision off (W on a winner) stays too:
@@ -209,7 +348,10 @@ Item {
         }
         function stepTo(target, extend) {
             target = Math.max(0, Math.min(count - 1, target))
-            if (extend) { target = Math.max(root.nf, target); photos.selectRange(Math.max(0, anchorIndex - root.nf), target - root.nf) }
+            if (extend) target = Math.max(root.nf, target)
+            target = gridModel.landing(target, currentIndex)          // a header or an empty cell is not a place to be: the photo meant
+            if (target < 0) return
+            if (extend) { if (gridModel.rowAt(target) < 0) return; photos.selectRange(Math.max(0, gridModel.rowAt(anchorIndex)), gridModel.rowAt(target)) }
             else { photos.clearSelection(); anchorIndex = target }
             currentIndex = target
             revealCurrent()
@@ -220,6 +362,8 @@ Item {
                 root.stopAutoScroll()
                 if (k === Qt.Key_Escape) { e.accepted = true; return }
             }
+            if (root.dragging) { if (k === Qt.Key_Escape) { root.dragCancelled = true; root.endDrag(false) } e.accepted = true; return }
+            if (unavailable.visible && (k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_Space)) { if (!e.isAutoRepeat && !photos.loading) photos.reload(); e.accepted = true; return }
             var shift = (e.modifiers & Qt.ShiftModifier) !== 0, ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
             if (settings.keyIs("accept_selection", k, e.modifiers)) { var rows = pick(); photos.setDecisionMany(rows, "win"); if (collections.activeId !== "") { var won = rows.filter(function (r) { return photos.get(r).decision === "win" }); if (won.length) collections.addRows(collections.activeId, won) } advance(rows, "win") }
             else if (settings.keyIs("collect_at_cursor", k, e.modifiers)) root.addToCollection();
@@ -230,6 +374,12 @@ Item {
             else if (ctrl) return;
             else if (shift && (k === Qt.Key_Left || k === Qt.Key_Right || k === Qt.Key_Up || k === Qt.Key_Down))
                 stepTo(currentIndex + (k === Qt.Key_Left ? -1 : k === Qt.Key_Right ? 1 : k === Qt.Key_Up ? -root.cols : root.cols), true);
+            else if (gridModel.sectioned && (k === Qt.Key_Left || k === Qt.Key_Right || k === Qt.Key_Up || k === Qt.Key_Down)) {
+                // The view's own arrow keys count cells; with sections some cells are headers or empty, so the move is worked out here
+                // (as the view does it: no wrapping, the pick left alone).
+                var to = currentIndex + (k === Qt.Key_Left ? -1 : k === Qt.Key_Right ? 1 : k === Qt.Key_Up ? -root.cols : root.cols)
+                if (to >= 0 && to < count) { to = gridModel.landing(to, currentIndex); if (to >= 0) currentIndex = to }
+            }
             else if (k === Qt.Key_Home) stepTo(0, shift);
             else if (k === Qt.Key_End) stepTo(count - 1, shift);
             else if (k === Qt.Key_PageUp || k === Qt.Key_PageDown) {
@@ -261,18 +411,51 @@ Item {
             required property int ai
             required property bool selected
             required property bool isFolder
+            required property string folderName
+            required property int cellKind              // 0 a photo, 1 a folder card, 2 a section's header, 3 an empty cell that fills out a section's last row
+            required property int photoRow
+            required property string sectionDetail
+            required property int sectionCount
+            required property int sectionStart
+            readonly property bool isPhoto: cellKind === 0
+            readonly property bool isHeader: cellKind === 2
+            function selectSection() {
+                photos.selectRange(cell.sectionStart, cell.sectionStart + cell.sectionCount - 1)
+                gv.currentIndex = gridModel.indexOfRow(cell.sectionStart); gv.anchorIndex = gv.currentIndex; gv.forceActiveFocus()
+            }
             width: GridView.view.cellWidth
             height: GridView.view.cellHeight
             readonly property bool current: GridView.isCurrentItem
-            readonly property var flag: { void cull.flagRev; return cell.isFolder ? ({}) : (cull.gridFlag(cell.path) || ({})) }
+            readonly property var flag: { void cull.flagRev; return cell.isPhoto ? (cull.gridFlag(cell.path) || ({})) : ({}) }
             readonly property bool hot: hover.hovered || current
             Accessible.role: Accessible.ListItem
+            Accessible.ignored: cell.cellKind >= 2          // a header speaks for itself (the button in it); an empty cell says nothing
             Accessible.name: cell.isFolder ? "Folder " + cell.name
                 : cell.name + (cell.decision === "win" ? ", winner" : cell.decision === "keep" ? ", keep" : cell.decision === "rej" ? ", rejected" : "")
                   + (cell.rating > 0 ? ", " + cell.rating + (cell.rating === 1 ? " star" : " stars") : "") + (cell.selected ? ", selected" : "")
             Accessible.selected: cell.selected || cell.current
 
+            Item {   // a section's header: the day, the hours when the day is divided, and how many photos; a click picks them all
+                id: sectionCard
+                objectName: "gridSection"
+                visible: cell.isHeader
+                anchors.fill: parent; anchors.margins: 1
+                Accessible.role: Accessible.Button
+                Accessible.name: cell.name + (cell.sectionDetail !== "" ? ", " + cell.sectionDetail : "") + ", " + cell.sectionCount + (cell.sectionCount === 1 ? " photo" : " photos")
+                Accessible.description: "Selects the photos of this section"
+                Accessible.onPressAction: cell.selectSection()
+                Rectangle { anchors.fill: parent; color: hover.hovered ? theme.s2 : theme.s1; Behavior on color { ColorAnimation { duration: 150 } } }
+                Rectangle { width: 3; height: parent.height; color: theme.accent; opacity: hover.hovered ? 1 : 0.55 }
+                Column {
+                    x: 14; width: parent.width - 24; anchors.verticalCenter: parent.verticalCenter; spacing: 4
+                    Text { width: parent.width; elide: Text.ElideRight; text: cell.name; color: theme.fg; font.pointSize: UiState.pt(13); font.weight: Font.DemiBold }
+                    Text { visible: text !== ""; width: parent.width; elide: Text.ElideRight; text: cell.sectionDetail; color: theme.fg2; font.pointSize: UiState.pt(12) }
+                    Text { width: parent.width; elide: Text.ElideRight; color: theme.fg3; font.pointSize: UiState.pt(11.5)
+                           text: hover.hovered ? "Select " + (cell.sectionCount === 1 ? "this photo" : "these " + cell.sectionCount) : cell.sectionCount + (cell.sectionCount === 1 ? " photo" : " photos") }
+                }
+            }
             Item {
+                visible: cell.isPhoto || cell.isFolder
                 anchors.fill: parent
                 anchors.margins: 1
                 clip: true
@@ -280,7 +463,7 @@ Item {
                 ThumbImage {
                     id: img
                     anchors.fill: parent
-                    path: cell.isFolder ? "" : cell.path
+                    path: cell.isPhoto ? cell.path : ""
                     bucket: root.cellBucket
                     blurFill: true
                     imageOpacity: UiState.filter === "rej" ? 1 : cell.decision === "rej" ? (root.dimRejected ? 0.38 : 1) : (cell.flag.label !== undefined ? 0.38 : 1)
@@ -320,7 +503,7 @@ Item {
                     // the name / stars / format strip: padding 22 9 7, 11.5px text, a 0.72 black ramp
                     anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                     height: 51
-                    opacity: cell.hot && !cell.isFolder ? 1 : 0
+                    opacity: cell.hot && cell.isPhoto ? 1 : 0
                     Behavior on opacity { NumberAnimation { duration: 200 } }
                     gradient: Gradient { GradientStop { position: 0; color: "transparent" } GradientStop { position: 1; color: "#b8000000" } }
                     Text {
@@ -353,9 +536,19 @@ Item {
                         Rectangle { width: 7; height: 7; radius: 3.5; color: cell.flag.color || "transparent"; anchors.verticalCenter: parent.verticalCenter }
                         Text { id: fgl; text: cell.flag.label || ""; color: "white"; font.pointSize: UiState.pt(11); font.weight: Font.Medium; anchors.verticalCenter: parent.verticalCenter } }
                 }
+                Rectangle {   // photos of several folders together: which folder this one is in
+                    objectName: "gridFolderChip"
+                    visible: photos.isVirtual && cell.isPhoto && cell.folderName !== ""
+                    x: 8; y: cell.flag.label !== undefined ? 34 : 8; height: 20; radius: 10; color: Qt.rgba(10 / 255, 12 / 255, 16 / 255, 0.72)
+                    width: Math.min(parent.width - 46, chipRow.implicitWidth + 16)
+                    Row { id: chipRow; x: 7; anchors.verticalCenter: parent.verticalCenter; spacing: 5
+                        Icon { anchors.verticalCenter: parent.verticalCenter; name: "library"; size: 12; strokeWidth: 1.8; color: "white" }
+                        Text { anchors.verticalCenter: parent.verticalCenter; width: Math.min(implicitWidth, cell.width - 46 - 34); elide: Text.ElideMiddle
+                               text: cell.folderName; color: "white"; font.pointSize: UiState.pt(11); font.weight: Font.Medium } }
+                }
                 Item {   // the collection that collects new winners: a small dark disc with its mark, on photos that are in it
                     id: collMark
-                    readonly property var mark: { void collections.revision; void photos.scopeKind; return cell.isFolder ? ({}) : collections.markFor(cell.path, cell.name) }
+                    readonly property var mark: { void collections.revision; void photos.scopeKind; return cell.isPhoto ? collections.markFor(cell.path, cell.name) : ({}) }
                     visible: UiState.showBadges && mark.name !== undefined
                     x: 8; y: cell.flag.label !== undefined ? 34 : 8; width: 22; height: 22
                     Rectangle { x: -1; y: -1; width: 24; height: 24; radius: 12; color: Qt.rgba(1, 1, 1, 0.08) }
@@ -401,20 +594,81 @@ Item {
                     Rectangle { anchors.fill: parent; anchors.margins: 3; color: "transparent"; border.color: Qt.rgba(0, 0, 0, 0.45); border.width: 1 }
                 }
             }
-            HoverHandler { id: hover }
-            TapHandler {   // a click: this photo alone
+            HoverHandler { id: hover; enabled: cell.cellKind !== 3; cursorShape: cell.isHeader ? Qt.PointingHandCursor : Qt.ArrowCursor }
+            TapHandler {   // a click: this photo alone (a section's header: every photo of the section)
                 acceptedModifiers: Qt.NoModifier
-                onTapped: (point) => { if (root.blocked(point.scenePosition)) return; photos.clearSelection(); gv.currentIndex = cell.index; gv.anchorIndex = cell.index; gv.forceActiveFocus() }
-                onDoubleTapped: (point) => { if (root.blocked(point.scenePosition)) return; if (cell.isFolder) libraryNav.openFolder(cell.path); else root.openRequested(cell.index - root.nf) }
+                onTapped: (point) => {
+                    if (root.blocked(point.scenePosition) || cell.cellKind === 3) return
+                    if (cell.isHeader) { cell.selectSection(); return }
+                    photos.clearSelection(); gv.currentIndex = cell.index; gv.anchorIndex = cell.index; gv.forceActiveFocus()
+                }
+                onDoubleTapped: (point) => { if (root.blocked(point.scenePosition)) return; if (cell.isFolder) libraryNav.openFolder(cell.path); else if (cell.isPhoto) root.openRequested(cell.photoRow) }
             }
             TapHandler {   // Ctrl+click: add it to the pick or take it out
                 acceptedModifiers: Qt.ControlModifier
-                onTapped: (point) => { if (root.blocked(point.scenePosition) || cell.isFolder) return; photos.toggleSelected(cell.index - root.nf, Math.max(0, gv.currentIndex - root.nf)); gv.currentIndex = cell.index; gv.anchorIndex = cell.index; gv.forceActiveFocus() }
+                onTapped: (point) => { if (root.blocked(point.scenePosition) || !cell.isPhoto) return; photos.toggleSelected(cell.photoRow, Math.max(0, root.row)); gv.currentIndex = cell.index; gv.anchorIndex = cell.index; gv.forceActiveFocus() }
             }
             TapHandler {   // Shift+click: everything from the last photo picked on its own to this one
                 acceptedModifiers: Qt.ShiftModifier
-                onTapped: (point) => { if (root.blocked(point.scenePosition) || cell.isFolder) return; photos.selectRange(Math.max(0, gv.anchorIndex - root.nf), cell.index - root.nf); gv.currentIndex = cell.index; gv.forceActiveFocus() }
+                onTapped: (point) => { if (root.blocked(point.scenePosition) || !cell.isPhoto) return; photos.selectRange(Math.max(0, gridModel.rowAt(gv.anchorIndex)), cell.photoRow); gv.currentIndex = cell.index; gv.forceActiveFocus() }
             }
+        }
+    }
+    Item {   // the name being edited, over the bottom of its card; what is wrong with it (or would be on Windows) is said under it
+        id: renameBox
+        objectName: "gridRename"
+        readonly property Item card: root.renameRow >= 0 ? gv.itemAtIndex(gridModel.indexOfRow(root.renameRow)) : null
+        readonly property string problem: root.renameError !== "" ? root.renameError : (root.renameVerdict.error || "")
+        readonly property string note: problem !== "" ? problem : (root.renameVerdict.warning || "")
+        visible: card !== null
+        z: 6
+        x: card ? gv.x + card.x - gv.contentX + 7 : 0
+        y: card ? gv.y + card.y - gv.contentY + card.height - height - 7 : 0
+        width: card ? card.width - 14 : 0
+        height: 34
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: (w) => { w.accepted = true } }   // a click on the field is not a click on the card under it
+        Rectangle {
+            anchors.fill: parent; radius: 10; color: theme.base
+            border.width: 1; border.color: renameBox.problem !== "" ? theme.rej : theme.accent
+            Behavior on border.color { ColorAnimation { duration: 200 } }
+        }
+        TextInput {
+            id: nameField
+            objectName: "gridRenameInput"
+            x: 10; anchors.verticalCenter: parent.verticalCenter
+            width: parent.width - 20 - (extTag.visible ? extTag.width + 8 : 0)
+            color: theme.fg; font.pointSize: UiState.pt(13); clip: true; selectByMouse: true
+            selectionColor: theme.accent; selectedTextColor: theme.onAccent
+            readOnly: root.renameBusy
+            opacity: root.renameBusy ? 0.6 : 1
+            onTextEdited: { root.renameError = ""; root.renameVerdict = photos.renameCheck(root.renameRow, text) }
+            Keys.onShortcutOverride: (e) => { e.accepted = !(e.key >= Qt.Key_F1 && e.key <= Qt.Key_F35) }      // while a name is typed every key is text, not a command
+            Keys.onPressed: (e) => {
+                if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) { root.commitRename(); e.accepted = true }
+                else if (e.key === Qt.Key_Escape) { root.endRename(); e.accepted = true }
+            }
+            onActiveFocusChanged: if (!activeFocus && root.renameRow >= 0 && !root.renameBusy) root.cancelRename()      // a click elsewhere leaves the name as it was
+            Accessible.role: Accessible.EditableText
+            Accessible.name: "New name"
+            Accessible.description: renameBox.note
+        }
+        Rectangle {   // the extension stays as it is: shown, not edited
+            id: extTag
+            readonly property string ext: { var dot = root.renamePath.lastIndexOf("."); return dot > root.renamePath.lastIndexOf("/") && dot > root.renamePath.lastIndexOf("\\") ? root.renamePath.slice(dot) : "" }
+            visible: ext !== "" && renameBox.width > 150
+            anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
+            width: extLabel.implicitWidth + 12; height: 18; radius: 6; color: theme.s3
+            Text { id: extLabel; anchors.centerIn: parent; text: extTag.ext; color: theme.fg3; font.pointSize: UiState.pt(11) }
+        }
+        Rectangle {
+            objectName: "gridRenameNote"
+            visible: renameBox.note !== ""
+            readonly property bool above: renameBox.y + renameBox.height + 6 + height > root.height - root.bottomSpace
+            x: Math.max(-renameBox.x + 6, Math.min(0, root.width - renameBox.x - width - 6))
+            y: above ? -height - 6 : parent.height + 6
+            width: Math.max(Math.min(renameBox.width, root.width - 12), Math.min(320, noteText.implicitWidth + 20, root.width - 12)); height: noteText.height + 14
+            radius: 9; color: theme.s3; border.color: renameBox.problem !== "" ? theme.rej : theme.rev
+            Text { id: noteText; x: 10; y: 7; width: parent.width - 20; wrapMode: Text.Wrap; text: renameBox.note; color: theme.fg; font.pointSize: UiState.pt(11.5) }
         }
     }
     // Middle click latches an origin; distance above/below it controls speed.
@@ -481,15 +735,56 @@ Item {
         anchors.centerIn: parent
         anchors.verticalCenterOffset: -root.bottomSpace / 3
         spacing: 10
-        visible: photos.shown === 0 && !photos.loading && photos.subfolders.length === 0
+        visible: photos.shown === 0 && !photos.loading && photos.subfolders.length === 0 && !unavailable.visible
         Icon { anchors.horizontalCenter: parent.horizontalCenter; name: photos.folderPath === "" ? "library" : (photos.total > 0 ? "funnel" : "view"); size: 52; strokeWidth: 1.2; color: theme.fg3 }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg2; font.pointSize: UiState.pt(14); font.weight: Font.Medium
-            text: photos.folderPath === "" ? "Choose a folder to start triaging images" : photos.loadError !== "" ? "This folder could not be read" : (photos.total > 0 ? "No photos match the filters" : "No photos in this folder")
+            text: photos.isVirtual ? (photos.total > 0 ? "No photos match the filters" : "None of these photos could be found")
+                : photos.folderPath === "" ? "Choose a folder to start triaging images" : photos.loadError !== "" ? "This folder could not be read" : (photos.total > 0 ? "No photos match the filters" : "No photos in this folder")
         }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg3; font.pointSize: UiState.pt(11.5)
-            text: photos.folderPath === "" ? "Pick a drive or folder in the Library on the left." : photos.loadError !== "" ? photos.loadError + " Press F5 to try again." : (photos.total > 0 ? "Clear the filters from the bar below to see them." : "It has no supported images and no folders. Pick another from the Library.")
+            text: photos.isVirtual ? (photos.total > 0 ? "Clear the filters from the bar below to see them." : "They may have been moved or deleted, or their drive is not connected. Back to folder returns to where you were.")
+                : photos.folderPath === "" ? "Pick a drive or folder in the Library on the left." : photos.loadError !== "" ? photos.loadError + " Press F5 to try again." : (photos.total > 0 ? "Clear the filters from the bar below to see them." : "It has no supported images and no folders. Pick another from the Library.")
+        }
+    }
+    Item {   // the open folder cannot be read (an offline share, an unplugged drive, no permission): what happened, where, and what can be done
+        id: unavailable
+        objectName: "folderUnavailable"
+        visible: photos.loadError !== "" && photos.folderPath !== "" && photos.shown === 0
+        anchors.fill: parent
+        Accessible.role: Accessible.AlertMessage
+        Accessible.name: "This folder is not available. " + photos.loadError + " " + photos.folderPath
+        Column {
+            anchors.centerIn: parent
+            anchors.verticalCenterOffset: -root.bottomSpace / 3
+            width: Math.min(parent.width - 48, 520)
+            spacing: 12
+            Icon { anchors.horizontalCenter: parent.horizontalCenter; path: Icons.folder + "M4 3.5l16 17"; size: 52; strokeWidth: 1.2; color: theme.fg3 }
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter; color: theme.fg; font.pointSize: UiState.pt(14); font.weight: Font.Medium
+                text: "This folder is not available"
+            }
+            Text {
+                objectName: "folderUnavailableReason"
+                width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; color: theme.fg2; font.pointSize: UiState.pt(12)
+                text: photos.loadError
+            }
+            Rectangle {   // where it is
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: Math.min(parent.width, wherePath.implicitWidth + 24); height: 28; radius: 9; color: theme.s2; border.color: theme.lineSoft
+                Text { id: wherePath; objectName: "folderUnavailablePath"; anchors.centerIn: parent; width: Math.min(implicitWidth, parent.parent.width - 24); elide: Text.ElideMiddle
+                       text: photos.folderPath; color: theme.fg2; font.pointSize: UiState.pt(11.5) }
+            }
+            Row {
+                anchors.horizontalCenter: parent.horizontalCenter; spacing: 10; topPadding: 4
+                SButton { objectName: "folderRetry"; variant: "primary"; text: photos.loading ? "Checking\u2026" : "Try again"; enabled: !photos.loading; onClicked: photos.reload() }
+                SButton { objectName: "folderChooseOther"; text: "Choose another folder\u2026"; onClicked: UiState.openFolderRequested() }
+            }
+            Text {
+                width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; color: theme.fg3; font.pointSize: UiState.pt(11.5)
+                text: "It opens by itself when the folder is back. Your decisions and collections are kept."
+            }
         }
     }
     MouseArea {   // right click: the photo's menu, or the folder's menu on empty space (left clicks pass through to the cells)
@@ -498,7 +793,8 @@ Item {
             if (root.autoScrolling) { root.stopAutoScroll(); return }
             var idx = gv.indexAt(m.x - gv.x + gv.contentX, m.y - gv.y + gv.contentY)
             var p = mapToItem(null, m.x, m.y)
-            if (idx >= root.nf) { gv.currentIndex = idx; gv.forceActiveFocus(); root.contextRequested("photo", idx - root.nf, p.x, p.y) }
+            var photoRow = idx >= 0 ? gridModel.rowAt(idx) : -1
+            if (photoRow >= 0) { gv.currentIndex = idx; gv.forceActiveFocus(); root.contextRequested("photo", photoRow, p.x, p.y) }
             else root.contextRequested("folder", -1, p.x, p.y)
         }
     }

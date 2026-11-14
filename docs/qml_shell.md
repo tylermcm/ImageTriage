@@ -98,6 +98,31 @@ skipped, and photos already in the destination show a disabled checkmarked entry
 On Windows, the autoscroll anchor and directional cursors use the system's
 common-control cursor resources, loaded at runtime rather than redrawn or bundled.
 
+### Renaming, dragging, sections and views across folders
+
+F2 with one photo edits its name on its card (`rename_one.py`, through `fileActions.renameRow`): the batch rename's plan for one
+bundle, run on the file-operation worker, with the decision, collections and edit data following and one undo step. The name is
+checked as it is typed without touching the disk; a name that is taken is refused by the worker and said under the field. Several
+photos, or the viewer, open the batch rename window.
+
+A plain drag that starts on a photo carries it (or the pick it is part of) to a collection card in the side panel; the drop is one
+`collections.addRows`.
+
+Sorted by capture time or date modified the grid shows day headers, and hour headers within a day of more than 100 photos
+(`grid_sections.py`). The view stays a uniform `GridView`: `GridModel` starts each section on a new row with a header cell and fills
+out the row it ends in with empty cells, so a photo's cell is `gridModel.indexOfRow(row)`, not `row + nf`; use `grid.indexOfRow`,
+`grid.rowAt` and `grid.showRow` outside `PhotoGrid.qml`. The cursor never rests on a header or an empty cell
+(`GridModel.landing`). A click on a header picks its section.
+
+A folder that cannot be read shows a screen with the reason, the path, Try again and Choose another folder. `PhotoModel` asks
+every five seconds, on a worker, whether it can be listed and reads it when it can.
+
+`PhotoModel.loadPaths(paths, title, kind)` shows photos of several folders together: Browse Library's Show in grid and a
+collection's Show every photo in the grid use it. The rows are the scanner's own bundles with their saved decisions, so decisions,
+ratings, file actions and the viewer work by path. `photos.isVirtual` is true and `folderPath` and `folder_dir()` are empty
+meanwhile, which is how code that works on one folder is told there is none; Back to folder (`libraryNav.leaveVirtual`) returns
+to the folder that was open.
+
 ## Viewer zoom
 
 Settings > Appearance > Photo review includes Gray out rejected photos. It

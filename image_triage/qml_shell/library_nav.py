@@ -200,6 +200,7 @@ class LibraryNavModel(QObject):
         self._dir_rows = _RowsModel({"folder": "path", "title": "name", "photos": "count", "depth": "depth", "glyph": "icon", "here": "current", "canOpen": "expandable"}, self)
         self.changed.connect(self._publish)
         photos.loadingChanged.connect(self._note_count)
+        photos.loadErrorChanged.connect(self._folder_came_back)
         if memory:                                              # the sample page names the open folder and its count: keep them current
             photos.countsChanged.connect(self.changed.emit)
             photos.folderChanged.connect(self.changed.emit)
@@ -467,12 +468,25 @@ class LibraryNavModel(QObject):
             self._watcher.addPath(folder)
             self._watch_seen = _listing(folder)
 
+    def _folder_came_back(self) -> None:
+        """The open folder could not be read when it was opened, so it was not watched; it has been read now: watch it."""
+        if self._open and not self._photos.loadError and _key(self._photos.folderPath) == _key(self._open):
+            self._watch(self._open)
+
     def _watched_change(self) -> None:
         if not self._open or not self._watching():
             return
+        if self._photos.isVirtual:
+            return                                              # the folder behind a cross-folder view changed: it is read when the person goes back to it
         if self._photos.loading:
             self._watch_timer.start(450)                        # a read is still going: look again once it is done
-        elif not path_policy.confirmed_missing(self._open):
+        elif path_policy.confirmed_missing(self._open):
+            # The folder itself is gone (deleted, renamed, its disk taken out). Read it once more so the grid says so, with a way to
+            # try again or pick another folder, rather than keep showing photos that are not there. Saved decisions are not touched.
+            if not self._photos.loadError:
+                self._watch_seen = None
+                self.refreshFolder()
+        else:
             seen = _listing(self._open)
             if seen is not None and seen == self._watch_seen:
                 return                                          # only the app's own files changed (a sidecar, its hidden AI and edit folders): nothing to read again
@@ -480,8 +494,28 @@ class LibraryNavModel(QObject):
             self.refreshFolder()
 
     @Slot()
+    def leaveVirtual(self) -> None:
+        """Back from photos of several folders shown together (search results, a whole collection) to the folder that was open."""
+        if not self._photos.isVirtual:
+            return
+        target = self._photos.virtual_return() or self._open
+        if target:
+            self._stepping = True                               # going back is not a new step in the Back and Forward history
+            try:
+                self.openFolder(target)
+            finally:
+                self._stepping = False
+            if not self._photos.loading:                        # nothing was started (the folder is provably gone): show nothing rather than stay
+                self._photos.setRows([], "")
+        else:
+            self._photos.setRows([], "")
+
+    @Slot()
     def refreshFolder(self) -> None:
         """Read the open folder again (F5, and a change on disk), keeping the grid on the photo the person is on."""
+        if self._photos.isVirtual:
+            self._photos.reload()                               # photos of several folders are shown: read those again, not the folder behind them
+            return
         if not self._open or self._memory:
             return
         if self._last_photo and self._in_open_folder(self._last_photo):
@@ -553,7 +587,7 @@ class LibraryNavModel(QObject):
     @Slot(str)
     def savePosition(self, photo: str) -> None:
         """Remember `photo` as where the person is in the open folder. Called as they move (after a pause) and when the window closes."""
-        if not photo:
+        if not photo or self._photos.isVirtual:                 # a photo among several folders' is not a place in the open folder
             return
         self._last_photo = photo
         if self._memory or self._settings is None:
