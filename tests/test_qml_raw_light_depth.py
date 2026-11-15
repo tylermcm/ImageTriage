@@ -369,6 +369,71 @@ def test_a_stored_draft_with_an_earlier_mask_does_not_show_it_in_the_mask_tab(qa
         raw.shutdown()
 
 
+# --- the live preview helper (the path every slider drag takes) ---------------------------------------------------------------
+
+def preview_worker(monkeypatch, tmp_path, with_map=True):
+    from PIL import Image
+    from image_triage.qml_shell import raw_preview
+
+    photo = tmp_path / "sample.NEF"
+    photo.write_bytes(b"raw")
+    kept = tmp_path / "kept.png"
+    if with_map:
+        Image.fromarray(ground()).save(kept)
+    monkeypatch.setattr("image_triage.depth_maps.light_depth_cache_file", lambda source, **kw: kept)
+    calls = []
+
+    class Connection:
+        def __init__(self, exe, own):
+            own(self)
+
+        def call(self, request):
+            calls.append(request)
+            image = QImage(40, 30, QImage.Format_RGBA8888)
+            image.fill(QColor("gray"))
+            return ({"histogram": [[1200] + [0] * 255] * 3, "fullSize": [8000, 6000]}, image)
+
+        def close(self):
+            pass
+
+        def interrupt(self):
+            pass
+
+    monkeypatch.setattr(raw_preview, "Connection", Connection)
+    worker = raw_preview.PreviewWorker("worker.exe")
+    done, errors = [], []
+    worker.completed.connect(lambda *args: done.append(args))
+    worker.failed.connect(lambda *args: errors.append(args))
+    return photo, worker, calls, done, errors
+
+
+def test_the_live_preview_gets_light_depths_masks_for_the_draft_and_for_the_saved_picture(qapp, monkeypatch, tmp_path):
+    photo, worker, calls, done, errors = preview_worker(monkeypatch, tmp_path)
+    saved = light_depth.normalized({"amount": 30})
+    draft = {"lightDepth": light_depth.normalized({"amount": 60})}
+    worker.submit(1, str(photo), {"lightDepth": saved}, draft)       # the saved edit already has the effect
+    wait(qapp, lambda: done or errors)
+    assert not errors
+    names = [[m["name"] for m in call["recipe"]["cameraRaw"].get("masks", [])] for call in calls]
+    both = [light_depth.NEAR_NAME, light_depth.FAR_NAME]
+    assert [call["op"] for call in calls] == ["open", "render"] and names == [both, both]
+    assert all("lightDepth" not in call["recipe"]["cameraRaw"] for call in calls)
+    exposure = [call["recipe"]["cameraRaw"]["masks"][0]["adjust"]["exposure"] for call in calls]
+    assert exposure[0] != exposure[1]                                 # the baseline is the saved effect, the render the draft's
+    worker.close()
+
+
+def test_the_live_preview_without_the_effect_or_without_the_map(qapp, monkeypatch, tmp_path):
+    photo, worker, calls, done, errors = preview_worker(monkeypatch, tmp_path, with_map=False)
+    worker.submit(1, str(photo), {}, {"exposure": .5, "lightDepth": light_depth.normalized({"amount": 0})})
+    wait(qapp, lambda: done or errors)
+    assert not errors and "masks" not in calls[-1]["recipe"]["cameraRaw"]          # Amount 0 changes nothing and needs no map
+    worker.submit(2, str(photo), {}, {"lightDepth": light_depth.normalized({"amount": 40})})
+    wait(qapp, lambda: errors)
+    assert "depth map is missing" in errors[-1][1]
+    worker.close()
+
+
 # --- the panel and the handles on the photo -------------------------------------------------------------------------------
 
 def make_item(raw, source):

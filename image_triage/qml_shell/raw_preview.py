@@ -17,6 +17,7 @@ from PySide6.QtGui import QImage, QColorSpace
 from PySide6.QtQuick import QQuickImageProvider
 
 from .. import photocraft_bridge as bridge
+from .. import light_depth
 from ..full_render import _without_host_settings
 
 _frames = OrderedDict()
@@ -293,8 +294,9 @@ class PreviewWorker(QObject):
                     if not signature or bridge.sidecar_pcraft_path(path).exists():
                         raise RuntimeError("The RAW changed or has a PhotoCraft project. Reopen the editor.")
                     state, recipe, reason = bridge.recipe_state(path)
-                    settings = dict(recipe["cameraRaw"]) if recipe else {}
-                    if state == bridge.RECIPE_INVALID or settings != original:
+                    settings = light_depth.strip_legacy(dict(recipe["cameraRaw"]) if recipe else {})
+                    # Light Depth's settings are the host's own (beside the recipe), not part of what the recipe holds.
+                    if state == bridge.RECIPE_INVALID or settings != {k: v for k, v in original.items() if k != "lightDepth"}:
                         raise RuntimeError(reason or "The saved recipe changed. Reopen Edit RAW.")
                     if self._connection is None:
                         def own(connection):
@@ -306,8 +308,9 @@ class PreviewWorker(QObject):
                     request = {"revision": revision, "quality": quality, "backend": os.environ.get("IMAGE_TRIAGE_RAW_PREVIEW_BACKEND", "cpu")}
                     source_key = (os.path.normcase(os.path.abspath(path)), signature, json.dumps(original, sort_keys=True))
                     if source != source_key:
+                        # Light Depth's masks are not kept in the draft: they are built here from its settings and the depth map.
                         baseline = self._connection.call({**request, "quality": "settled", "op": "open", "path": path, "edge": 1800,
-                            "recipe": _without_host_settings({"version": 1, "cameraRaw": original})})
+                            "recipe": _without_host_settings({"version": 1, "cameraRaw": light_depth.with_masks(original, original.get("lightDepth"), path)})})
                         source = source_key
                     if isinstance(sample, dict):
                         # A Point Color sample is the colour before Point Color acts on it, so that is left out too.
@@ -319,7 +322,7 @@ class PreviewWorker(QObject):
                     else:
                         result = (self._connection.call({**request, "op": "render", "recipe": {"version": 1, "cameraRaw": {}}})
                         if sample is not None else baseline if draft == original else self._connection.call({**request, "op": "render",
-                        "recipe": _without_host_settings({"version": 1, "cameraRaw": draft})}))
+                        "recipe": _without_host_settings({"version": 1, "cameraRaw": light_depth.with_masks(draft, draft.get("lightDepth"), path)})}))
                     if bridge.file_signature(path) != signature:
                         raise RuntimeError("The RAW changed during preview. Reopen the editor.")
                     if isinstance(sample, dict):
