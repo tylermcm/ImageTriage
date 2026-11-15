@@ -5,6 +5,7 @@ versions were made by the artists named below. CC0 needs no credit; it is given 
 
 | Picture | Poly Haven asset | Photography / processing |
 |---|---|---|
+| Altocumulus | [aristea_wreck_puresky](https://polyhaven.com/a/aristea_wreck_puresky) | Greg Zaal, Jarod Guest |
 | Big Clouds | [sunflowers_puresky](https://polyhaven.com/a/sunflowers_puresky) | Jarod Guest, Sergej Majboroda |
 | Blue Sky Wisps | [kloofendal_38d_partly_cloudy_puresky](https://polyhaven.com/a/kloofendal_38d_partly_cloudy_puresky) | Greg Zaal, Jarod Guest |
 | Clear Blue | [syferfontein_18d_clear_puresky](https://polyhaven.com/a/syferfontein_18d_clear_puresky) | Greg Zaal, Jarod Guest |
@@ -15,7 +16,10 @@ versions were made by the artists named below. CC0 needs no credit; it is given 
 | Heavy Overcast | [kloofendal_overcast_puresky](https://polyhaven.com/a/kloofendal_overcast_puresky) | Greg Zaal |
 | Pale Dawn | [qwantani_dawn_puresky](https://polyhaven.com/a/qwantani_dawn_puresky) | Greg Zaal, Jarod Guest |
 | Pastel Sunset | [rosendal_park_sunset_puresky](https://polyhaven.com/a/rosendal_park_sunset_puresky) | Dimitrios Savva, Jarod Guest |
+| Plain Blue | [autumn_field_puresky](https://polyhaven.com/a/autumn_field_puresky) | Jarod Guest, Sergej Majboroda |
 | Rose Dawn Clouds | [belfast_sunset_puresky](https://polyhaven.com/a/belfast_sunset_puresky) | Dimitrios Savva, Greg Zaal, Jarod Guest |
 | Soft Overcast | [snow_field_puresky](https://polyhaven.com/a/snow_field_puresky) | Jarod Guest, Sergej Majboroda |
 | Storm Light | [wasteland_clouds_puresky](https://polyhaven.com/a/wasteland_clouds_puresky) | Jarod Guest, Sergej Majboroda |
+| Sunny Cumulus | [kloofendal_48d_partly_cloudy_puresky](https://polyhaven.com/a/kloofendal_48d_partly_cloudy_puresky) | Greg Zaal, Jarod Guest |
 | Warm Overcast Evening | [industrial_sunset_puresky](https://polyhaven.com/a/industrial_sunset_puresky) | Jarod Guest, Sergej Majboroda |
+| White Cumulus | [kloofendal_48d_partly_cloudy_puresky](https://polyhaven.com/a/kloofendal_48d_partly_cloudy_puresky) | Greg Zaal, Jarod Guest |
