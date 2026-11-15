@@ -245,7 +245,10 @@ def make_patch(image, mask, fill, grow: float, photo_path, root: Path | None = N
     rgb, alpha = composite(crop, filled, cm, feather_for((width, height)))
     # only the part of the crop the fill touches: the patch is a small picture, not the crop
     ys, xs = np.nonzero(alpha > 0)
-    px0, py0, px1, py1 = int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+    # keep a ring of the photo's own pixels (alpha 0) around the fill: the renderer's seamless clone measures the mismatch there
+    ring = max(8, round(3 * feather_for((width, height))))
+    px0, py0 = max(0, int(xs.min()) - ring), max(0, int(ys.min()) - ring)
+    px1, py1 = min(alpha.shape[1], int(xs.max()) + 1 + ring), min(alpha.shape[0], int(ys.max()) + 1 + ring)
     rgb, alpha = rgb[py0:py1, px0:px1], alpha[py0:py1, px0:px1]
     gx0, gy0 = x0 + px0, y0 + py0
     path = write_patch(photo_path, srgb_to_working(rgb), alpha, root)
