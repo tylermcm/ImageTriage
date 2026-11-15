@@ -609,7 +609,7 @@ def test_export_builds_light_depths_masks_from_its_settings_and_the_depth_map(ph
     live.control.camera_raw_masks_supported = True      # the masks need a build that renders them
     assert render.FullRenderService(lambda: live).request(photo).outcome == render.RENDERED
     sent = live.requests[-1]["recipe"]["cameraRaw"]
-    assert [m["name"] for m in sent["masks"]] == [light_depth.NEAR_NAME, light_depth.FAR_NAME] and "lightDepth" not in sent
+    assert [m["name"] for m in sent["masks"]] == [light_depth.LIGHT_NAME] and "lightDepth" not in sent
     assert "masks" not in json.loads(bridge.recipe_path(photo).read_text())["cameraRaw"]     # the saved recipe holds none of it
 
 

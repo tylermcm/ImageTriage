@@ -1,4 +1,4 @@
-"""Light Depth: light a photo near and far apart, using a monocular depth map.
+"""Light Depth: add light to whatever lies at a chosen depth of a photo, using a monocular depth map.
 
 The effect belongs to the Light Depth panel and shows nowhere else. The draft and the settings file beside the recipe hold
 only the panel's settings (``lightDepth``). The local masks the native renderer needs are built from those settings and the
@@ -16,7 +16,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 LEGACY_MASK_NAME = "Light Depth"      # earlier versions stored the effect as an ordinary mask with this name
-NEAR_NAME, FAR_NAME = "Light Depth near", "Light Depth far"
+NEAR_NAME, LIGHT_NAME, FAR_NAME = "Light Depth near", "Light Depth light", "Light Depth far"
 SIDECAR_TAIL = ".photocraft.lightdepth.json"  # carried with the photo's other edit files (``edit_carry.EDIT_MARKERS``)
 SIDECAR_VERSION = 2
 MAX_MASKS = 16                        # the most masks a recipe can hold
@@ -26,17 +26,18 @@ MAX_MASKS = 16                        # the most masks a recipe can hold
 COVERAGE_SIDE = 1024   # the depth map's own size: finer than that cannot follow anything the map does not show
 PAD_SIDE = 320  # the depth picture shown in the panel
 
-MAX_EXPOSURE = 2.0  # stops at Amount 100 and a zone Brightness of +/-100
+MAX_EXPOSURE = 2.0  # stops of light at Amount 100 (and of a Near or Far Brightness of +/-100)
 MAX_TEMPERATURE = 60.0  # local Temperature at Amount 100 and a Warmth of +/-100
 
-# amount: strength of the whole effect. depth: where near becomes far (0 far .. 1 near). softness: how far the split spills
-# across object edges. warmth: colour of the whole effect. brightness/warmth Near/Far: what happens on each side of the split.
-# x, y, size: an optional pool of light on the photo (size 100 = the whole photo). wrap: how wide a slab around the depth is
-# left alone (the subject), so the effect "wraps" further around it.
+# amount: the light added at the chosen depth (the picture is otherwise unchanged). depth: which distance is lit (0 far .. 1 near).
+# softness: how far the light spills across object edges. warmth: colour of that light. brightness/warmth Near/Far: optional
+# changes to what is nearer than, or beyond, the lit slab (they start at 0: nothing changes there). x, y, size: an optional
+# pool of light on the photo (size 100 = the whole photo). wrap: how thick the lit slab is, so the light wraps further around
+# the depth.
 # shown: 1 = on, 0 = switched off without losing the settings.
 DEFAULTS = {"amount": 0.0, "depth": 0.5, "softness": 10.0, "warmth": 0.0,
-            "brightnessNear": -50.0, "warmthNear": 0.0, "brightnessFar": -50.0, "warmthFar": 0.0,
-            "x": 0.5, "y": 0.6, "size": 100.0, "wrap": 20.0, "shown": 1.0}
+            "brightnessNear": 0.0, "warmthNear": 0.0, "brightnessFar": 0.0, "warmthFar": 0.0,
+            "x": 0.5, "y": 0.6, "size": 100.0, "wrap": 25.0, "shown": 1.0}
 RANGES = {"amount": (0, 100), "depth": (0, 1), "softness": (0, 100), "warmth": (-100, 100),
           "brightnessNear": (-100, 100), "warmthNear": (-100, 100), "brightnessFar": (-100, 100), "warmthFar": (-100, 100),
           "x": (0, 1), "y": (0, 1), "size": (0, 100), "wrap": (0, 100), "shown": (0, 1)}
@@ -113,11 +114,11 @@ def depth_at(depth, x: float, y: float) -> float:
 
 
 def zones(depth, settings, side: int = COVERAGE_SIDE):
-    """How strongly each pixel belongs to the near side and to the far side, as two uint8 arrays.
+    """How strongly each pixel is lit, or is nearer or farther than what is lit, as three uint8 arrays: (near, light, far).
 
-    What lies at ``depth`` (the subject) belongs to neither and is left alone: ``wrap`` is how wide that slab is, so the
-    light wraps further around the depth with more Wrap. Things nearer than the slab are near and things beyond it far,
-    coming in over a short feather. ``softness`` lets both spill across object edges. Below size 100 both are also
+    ``light`` is what lies at ``depth``: a slab whose thickness is ``wrap`` (more Wrap, and the light wraps further
+    around the depth), fading out over a short feather. What is nearer than the slab is ``near`` and what is beyond it
+    ``far``; the three add up to full. ``softness`` lets them spill across object edges. Below size 100 all three are also
     narrowed to a pool around (``x``, ``y``): the effect fades out beyond it.
     """
     import numpy as np
@@ -128,8 +129,8 @@ def zones(depth, settings, side: int = COVERAGE_SIDE):
     # A touch of smoothing always: the model's map has per-pixel noise that would otherwise show as grain. Not more: the
     # objects in the map (trees, grass, a post) are what the effect should follow.
     scene = _blur(scene, max(width, height) * 0.0015)
-    band = 0.02 + 0.25 * settings["wrap"] / 100        # half the width of the slab around the depth that is left alone
-    feather = 0.05 + 0.2 * settings["wrap"] / 100      # how gradually each side comes in beyond it
+    band = 0.01 + 0.12 * settings["wrap"] / 100        # half the thickness of the slab around the depth that is fully lit
+    feather = 0.02 + 0.08 * settings["wrap"] / 100     # how gradually the light fades out beyond it
 
     def smooth(values):
         values = np.clip(values / feather, 0, 1)
@@ -138,37 +139,45 @@ def zones(depth, settings, side: int = COVERAGE_SIDE):
     blur = max(width, height) * 0.03 * settings["softness"] / 100
     near = _blur(smooth(scene - (settings["depth"] + band)), blur)
     far = _blur(smooth((settings["depth"] - band) - scene), blur)
+    light = np.clip(1 - near - far, 0, 1)
     if settings["size"] < 100:
         columns = (np.arange(width, dtype=np.float32) + 0.5) / width
         rows = (np.arange(height, dtype=np.float32) + 0.5) / height
         distance = np.hypot(columns[None, :] - settings["x"], (rows[:, None] - settings["y"]) * (height / width))
         pool = np.exp(-0.5 * (distance / pool_spread(settings["size"])) ** 2)
-        near, far = near * pool, far * pool
-    return tuple(np.clip(np.rint(part * 255), 0, 255).astype(np.uint8) for part in (near, far))
+        near, light, far = near * pool, light * pool, far * pool
+    return tuple(np.clip(np.rint(part * 255), 0, 255).astype(np.uint8) for part in (near, light, far))
 
 
 def coverage(depth, settings, side: int = COVERAGE_SIDE):
-    """The near side of the split alone (255 = fully near): what the panel's picture shows."""
-    return zones(depth, settings, side)[0]
+    """The lit slab alone (255 = fully lit): what the panel's picture shows."""
+    return zones(depth, settings, side)[1]
 
 
-def adjustments(settings) -> tuple[dict, dict]:
-    """The local adjustment applied on the near side and on the far side. Amount scales both; a zone's Brightness is
-    its exposure and its Warmth, added to the overall Warmth, its temperature."""
+def adjustments(settings) -> tuple[dict, dict, dict]:
+    """The local adjustment for (near, light, far). The lit slab gets Amount as exposure and Warmth as temperature; what
+    is nearer or farther changes only by its own Brightness and Warmth (0 by default), scaled by Amount."""
     settings = normalized(settings)
     strength = settings["amount"] / 100
-    result = []
-    for zone in ("Near", "Far"):
-        adjust = {}
-        exposure = round(MAX_EXPOSURE * strength * settings["brightness" + zone] / 100, 4)
-        warmth = max(-100.0, min(100.0, settings["warmth"] + settings["warmth" + zone]))
-        temperature = round(MAX_TEMPERATURE * strength * warmth / 100, 2)
+
+    def adjust(brightness, warmth):
+        result = {}
+        exposure = round(MAX_EXPOSURE * brightness, 4)
+        temperature = round(MAX_TEMPERATURE * max(-1.0, min(1.0, warmth)), 2)
         if exposure:
-            adjust["exposure"] = exposure
+            result["exposure"] = exposure
         if temperature:
-            adjust["temperature"] = temperature
-        result.append(adjust)
-    return result[0], result[1]
+            result["temperature"] = temperature
+        return result
+
+    return (adjust(strength * settings["brightnessNear"] / 100, strength * settings["warmthNear"] / 100),
+            adjust(strength, strength * settings["warmth"] / 100),
+            adjust(strength * settings["brightnessFar"] / 100, strength * settings["warmthFar"] / 100))
+
+
+def masks_needed(settings) -> int:
+    """How many of a photo's masks the effect takes: one for each zone that changes."""
+    return sum(1 for adjust in adjustments(settings) if adjust) if active(settings) else 0
 
 
 def is_legacy_mask(mask) -> bool:
@@ -196,7 +205,7 @@ _BUILT = OrderedDict()  # (settings, depth digest) -> the two mask rows; a slide
 
 
 def render_masks(settings, depth) -> list:
-    """The two local masks (near, far) that carry ``settings`` into a render, or [] when the effect changes nothing."""
+    """The local masks (near, light, far) that carry ``settings`` into a render; a zone that changes nothing has none."""
     import numpy as np
 
     from .qml_shell.raw_masks import encode_raster
@@ -208,7 +217,7 @@ def render_masks(settings, depth) -> list:
     key = (tuple(sorted(settings.items())), hashlib.blake2b(depth.tobytes(), digest_size=16).digest(), depth.shape)
     if key not in _BUILT:
         rows = []
-        for name, raster, adjust in zip((NEAR_NAME, FAR_NAME), zones(depth, settings), adjustments(settings)):
+        for name, raster, adjust in zip((NEAR_NAME, LIGHT_NAME, FAR_NAME), zones(depth, settings), adjustments(settings)):
             if adjust:
                 rows.append({"name": name, "enabled": True, "invert": False, "amount": 100,
                              "shape": encode_raster(raster), "adjust": adjust})
@@ -267,14 +276,14 @@ def sidecar_path(recipe_path) -> Path:
 
 def _from_version_one(settings) -> dict | None:
     """Settings of the first version (a light at a distance: reach and focus) as near/far settings, approximately: the
-    old light brightened what lay near its distance, which is now the near side."""
+    old light brightened what lay at its distance, which is now the lit slab."""
     old = ("amount", "x", "y", "depth", "softness", "warmth", "reach", "focus")
     if not (isinstance(settings, dict) and settings.keys() == set(old)
             and all(type(settings[key]) in (int, float) and math.isfinite(settings[key]) for key in old)):
         return None
     return normalized({"amount": settings["amount"], "x": settings["x"], "y": settings["y"], "depth": settings["depth"],
                        "softness": settings["softness"], "warmth": settings["warmth"], "wrap": settings["reach"],
-                       "size": 100 - 0.9 * settings["focus"], "brightnessNear": 100, "brightnessFar": 0})
+                       "size": 100 - 0.9 * settings["focus"]})
 
 
 def read_sidecar(recipe_path):

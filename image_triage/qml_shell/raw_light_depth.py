@@ -139,8 +139,7 @@ class RawLightDepth(QObject):
 
     @Property(str, notify=changed)
     def pad(self):
-        """The depth map as a picture (near is bright), with what lies at the chosen depth tinted amber: the objects the
-        light passes, which are left alone while what is nearer and farther changes."""
+        """The depth map as a picture (near is bright), with what lies at the chosen depth tinted amber: what is lit."""
         import numpy as np
 
         from .raw_preview import put_thumbnail
@@ -152,8 +151,7 @@ class RawLightDepth(QObject):
         key = (self._path, tuple(sorted(settings.items())), id(depth))
         if key != self._pad[1]:
             scene = light_depth.working_depth(depth, light_depth.PAD_SIDE)
-            near, far = (part.astype(np.float32) / 255 for part in light_depth.zones(depth, settings, light_depth.PAD_SIDE))
-            slab = (1 - np.maximum(near, far))[:, :, None]
+            slab = (light_depth.coverage(depth, settings, light_depth.PAD_SIDE).astype(np.float32) / 255)[:, :, None]
             base = (.12 + .5 * scene)[:, :, None]
             pixels = np.clip((base * (1 - .45 * slab) + slab * np.array([.55, .38, .06], dtype=np.float32)) * 255, 0, 255).astype(np.uint8)
             height, width = pixels.shape[:2]
@@ -292,8 +290,9 @@ class RawLightDepth(QObject):
         settings = light_depth.normalized(settings)
         old = light_depth.normalized(self.raw._draft.get("lightDepth"))
         masks = self.raw._draft.get("masks") or []
-        if light_depth.active(settings) and not light_depth.active(old) and len(masks) + 2 > light_depth.MAX_MASKS:
-            self._error = "A photo can have up to 16 masks. Light Depth needs two of them: delete some masks to use it."
+        needed = light_depth.masks_needed(settings)
+        if needed > light_depth.masks_needed(old) and len(masks) + needed > light_depth.MAX_MASKS:
+            self._error = f"A photo can have up to 16 masks. Light Depth needs {needed} of them: delete some masks to use it."
             self.changed.emit()
             return
         self._error = ""

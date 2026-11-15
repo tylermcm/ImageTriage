@@ -5,22 +5,23 @@ Luminar Neo: the effect belongs to its own panel, shows nowhere else, is adjuste
 
 ## What the person sees
 
-- **Amount** (0–100): strength of the whole effect. At 0 nothing happens and nothing is drawn on the photo.
-- **Depth**: the distance of the subject, which is left alone; what is nearer is "near" and what is farther "far". Set it by clicking the photo with the dropper (the same way Point Color picks a
-  colour; Esc cancels), with the Depth slider (0 = nearest, 100 = farthest), or by dragging up and down in the depth
-  picture. The depth picture is a secondary view: the photo's depth map (near is bright) with what lies at the chosen depth tinted amber.
-- **Softness** (0–100): how far the near/far split spills across object edges.
-- **Warmth** (−100…100): colour temperature of the whole effect.
-- **Advanced Settings**: **Brightness Near/Far** and **Warmth Near/Far** (−100…100 each; the Brightness defaults are −50,
-  as in Luminar), plus **Size** and **Wrap** (0–100).
+- **Amount** (0-100): how much light is added at the chosen depth. The rest of the photo is unchanged; at 0 nothing happens
+  and nothing is drawn on the photo.
+- **Depth**: which distance is lit. Set it by clicking the photo with the dropper (the same way Point Color picks a colour;
+  Esc cancels), with the Depth slider (0 = nearest, 100 = farthest), or by dragging up and down in the depth picture. The
+  depth picture is a secondary view: the photo's depth map (near is bright) with what is lit tinted amber.
+- **Softness** (0-100, default 10): how far the light spills across object edges.
+- **Warmth** (-100...100): colour temperature of the added light.
+- **Advanced Settings**: **Brightness Near/Far** and **Warmth Near/Far** (-100...100 each, all 0 by default) optionally change
+  what is nearer than, or beyond, the lit slab; plus **Size** and **Wrap** (0-100).
 - **On the photo**, while the section is open and Amount is above zero: a *position* handle (the centre of a pool of light),
   a *size* handle on a ring (the pool's radius; at Size 100 there is no ring and the effect covers the whole photo) and a
   *wrap* handle on a short track under the position handle. Dragging them changes the same settings as the sliders, as one
   undo step per drag.
 - The eye switches the whole effect off and on without losing its settings; the arrow removes it.
 
-Size and Wrap are this tool's own additions (Luminar has no equivalents). **Position and size** narrow the effect to a pool
-around the handle; **Wrap** is the width of the slab around the depth that is left alone (how far the light wraps around the subject).
+Size and Wrap are this tool's own additions. **Position and size** narrow the effect to a pool around the handle; **Wrap** is
+the thickness of the lit slab in depth (how far the light wraps around the chosen depth).
 
 ## How it works
 
@@ -29,17 +30,19 @@ around the handle; **Wrap** is the width of the slab around the depth that is le
    the photo's path, size and date, so it is made once per photo.
 2. The draft holds only the section's settings, `lightDepth`. **There is no mask in the draft and none in the saved recipe,
    so nothing about Light Depth appears in the Mask tab.**
-3. When a render is requested (preview, save, export) the settings and the cached depth map are turned into two ordinary
-   Camera Raw local masks, **near** and **far**: the near mask covers what is nearer than a slab around the depth, the far
-   mask what is beyond it, and the slab itself (the subject) is in neither, so it is not changed. Each carries an exposure (its Brightness × Amount) and a temperature (overall Warmth + its Warmth, × Amount). They are
-   appended after the person's own masks, only in what is sent to the native renderer (`light_depth.with_masks`). A side
-   whose adjustment is zero gets no mask. Built masks are cached for the last few settings, so a slider drag does not rebuild
-   them for repeated renders.
-4. Because the renderer only ever sees ordinary masks, it, the full-resolution render and export need no change.
+3. When a render is requested (preview, save, export) the settings and the cached depth map are turned into up to three
+   ordinary Camera Raw local masks (`light_depth.zones`, `light_depth.render_masks`): **light** (what lies at the chosen depth:
+   exposure = Amount, temperature = Warmth), and optionally **near** and **far** (what is nearer or beyond the slab, only
+   when their own Brightness or Warmth is not 0). A zone that changes nothing gets no mask. The three zones add up to the
+   whole photo, so the light never spreads to what is not at its depth. The masks are appended after the person's own, only
+   in what is sent to the native renderer (`light_depth.with_masks`), and cached for the last few settings.
+4. The live preview helper (`raw_preview.PreviewWorker`) builds them the same way, for the draft and for the saved picture.
+5. Because the renderer only ever sees ordinary masks, it, the full-resolution render and export need no change.
 
-Where the masks are built: `raw_editor._recipe(settings, image_path)` (every preview), the save path in
-`RawEditor._work` (the saved recipe is written from the draft *without* them), and `full_render.FullRenderService._request`
-(export: `light_depth.recipe_for_render`, which also treats a photo whose only edit is Light Depth as edited).
+Where the masks are built: `raw_preview.PreviewWorker` (the fast live preview), `raw_editor._recipe(settings, image_path)`
+(the slower per-edit preview), the save path in `RawEditor._work` (the saved recipe is written from the draft *without*
+them), and `full_render.FullRenderService._request` (export: `light_depth.recipe_for_render`, which also treats a photo whose
+only edit is Light Depth as edited).
 
 ## Where things are kept
 
@@ -58,8 +61,7 @@ Where the masks are built: `raw_editor._recipe(settings, image_path)` (every pre
 The first version stored the effect as an ordinary mask named "Light Depth" in the recipe. On load that mask is removed from
 the photo's masks and never shown in the Mask tab (a stored draft is filtered the same way, and so is the recipe compared
 against when saving). If a version-1 settings file sits beside it, the effect is **converted** and carries on as the panel's
-effect (approximately: the old light became the near side with Brightness +100 and Far 0, its reach became Wrap, its focus
-became Size). Without the settings the old mask is **dropped**: its settings are unknown and it was only a raster. Anything the
+effect (approximately: the old light is the lit slab, its reach became Wrap and its focus became Size). Without the settings the old mask is **dropped**: its settings are unknown and it was only a raster. Anything the
 person added to that mask in the Mask tab (subtracted strokes, other adjustments) is lost. Version-1 settings beside a recipe
 that no longer has the mask are ignored. A mask the person made themselves and named "Light Depth" is treated the same way,
 which is the price of recognising the old ones by name.
@@ -68,7 +70,7 @@ which is the price of recognising the old ones by name.
 
 - The effect needs the depth map in the managed cache whenever it is rendered. If the cache file is gone, preview, save and
   export fail with "Light Depth's depth map is missing. Open Light Depth to make it again." rather than rendering without it.
-- Switching the effect on needs two free mask slots (a photo holds 16); with fewer, Light Depth says so.
+- Each zone that changes takes one of a photo's 16 mask slots (one by default, up to three); with too few free, Light Depth says so.
 - Coverage is authored at the depth map's own size (1024 pixels on the long edge) and scaled by the renderer, and is only
   lightly smoothed, so the effect follows the objects the map shows (trees, grass) rather than the rows they stand on. It
   cannot follow edges finer than the depth map itself, and in a scene dominated by a ground plane a slab of depth is naturally

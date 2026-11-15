@@ -19,56 +19,51 @@ def settings(**changes):
     return {**light_depth.DEFAULTS, "amount": 70, "softness": 0, **changes}
 
 
-def test_what_lies_at_the_depth_is_left_alone_and_what_is_nearer_or_farther_is_not():
-    near, far = light_depth.zones(scene(), settings(depth=0.5, wrap=0))
-    column, beyond = near[:, 60].astype(int), far[:, 60].astype(int)
-    assert column[-1] > 250 and column[0] < 5            # the bottom (near) is near, the top (far) is not
-    assert beyond[0] > 250 and beyond[-1] < 5
-    assert column[40] < 5 and beyond[40] < 5             # the subject's slab belongs to neither side: it is not changed
-    shallow = light_depth.coverage(scene(), settings(depth=0.9, wrap=0)).astype(int).sum()
-    deep = light_depth.coverage(scene(), settings(depth=0.1, wrap=0)).astype(int).sum()
-    assert deep > shallow * 3                            # moving the depth towards far puts more of the photo on the near side
+def test_the_light_falls_only_on_what_lies_at_the_depth():
+    near, light, far = (part.astype(int) for part in light_depth.zones(scene(), settings(depth=0.5, wrap=0)))
+    assert light[40, 60] > 250 and light[2, 60] < 5 and light[-3, 60] < 5       # the middle of the ramp is lit, the ends are not
+    assert near[-1, 60] > 250 and near[2, 60] < 5                                 # what is nearer than the slab
+    assert far[2, 60] > 250 and far[-1, 60] < 5                                   # and what is beyond it
+    assert np.abs(near + light + far - 255).max() <= 2                            # every pixel is in exactly one zone
+    shallow = light_depth.coverage(scene(), settings(depth=0.9, wrap=100)).astype(int).sum()
+    assert shallow > light_depth.coverage(scene(), settings(depth=0.9, wrap=0)).astype(int).sum() * 3
 
 
-def test_wrap_widens_the_slab_around_the_depth_that_is_left_alone():
-    def slab(wrap):
-        near, far = (part[:, 60].astype(int) for part in light_depth.zones(scene(), settings(wrap=wrap)))
-        return int(np.count_nonzero((near < 5) & (far < 5)))      # rows changed by neither side
-    assert slab(100) > slab(0) * 3
+def test_wrap_makes_the_lit_slab_thicker():
+    def rows(wrap):
+        return int(np.count_nonzero(light_depth.coverage(scene(), settings(wrap=wrap))[:, 60] > 128))
+    assert rows(100) > rows(0) * 4
 
 
-def test_softness_spills_the_split_across_a_depth_edge():
+def test_softness_spills_the_light_across_a_depth_edge():
     wall = np.zeros((80, 120), dtype=np.uint8)
     wall[:, 60:] = 255  # a near object against a far background
-    hard = light_depth.coverage(wall, settings(depth=0.5, wrap=0, softness=0)).astype(int)
-    soft = light_depth.coverage(wall, settings(depth=0.5, wrap=0, softness=100)).astype(int)
-    assert hard[40, 57] < 5 and soft[40, 57] > hard[40, 57] + 20
+    hard = light_depth.coverage(wall, settings(depth=1.0, wrap=0, softness=0)).astype(int)
+    soft = light_depth.coverage(wall, settings(depth=1.0, wrap=0, softness=100)).astype(int)
+    assert hard[40, 57] < 5 and soft[40, 57] > hard[40, 57] + 20      # light reaches the background beside the wall
     assert soft[40, 110] > 200
 
 
 def test_the_effect_follows_the_objects_at_the_depth_not_the_rows_they_stand_on():
-    """A tree at the chosen depth is picked up as the depth passes it; the sky beside it on the same rows is not."""
+    """A tree at the chosen depth is lit; the sky beside it on the very same rows is not, and vice versa."""
     scene_ = np.full((120, 160), 40, dtype=np.uint8)           # far sky
     scene_[:, 90:100] = 200                                    # a tree, tall and narrow, at depth ~0.78
     scene_[100:, :] = np.linspace(120, 255, 20).astype(np.uint8)[:, None]    # ground in front
-    near, far = (part.astype(int) for part in light_depth.zones(scene_, settings(depth=0.78, wrap=0, softness=0)))
     tree, sky = (slice(20, 80), slice(92, 98)), (slice(20, 80), slice(30, 60))
-    assert near[tree].max() < 5 and far[tree].max() < 5       # the tree sits at the depth: neither side, it is the slab
-    assert far[sky].min() > 250                                # the sky on the very same rows is not at that depth
-    shifted = light_depth.zones(scene_, settings(depth=0.15, wrap=0, softness=0))[0].astype(int)
-    assert shifted[tree].min() > 250                           # with the depth moved farther, the tree is nearer than it
+    on_tree = light_depth.coverage(scene_, settings(depth=0.78, wrap=0, softness=0)).astype(int)
+    assert on_tree[tree].min() > 250 and on_tree[sky].max() < 5
+    on_sky = light_depth.coverage(scene_, settings(depth=0.157, wrap=0, softness=0)).astype(int)
+    assert on_sky[sky].min() > 250 and on_sky[tree].max() < 5
 
 
-def test_a_size_below_100_narrows_both_sides_to_a_pool_around_the_position():
-    whole = light_depth.zones(scene(), settings(x=0.1, y=0.5, size=100))
-    for part in whole:
-        assert part.max() > 250
-    near = light_depth.zones(scene(), settings(x=0.1, y=0.85, size=0, wrap=0))[0].astype(int)
-    assert near[68, 12] > 200 and near[68, -5] < 5        # near, lit by the pool at the left and not at the far right
-    far = light_depth.zones(scene(), settings(x=0.1, y=0.15, size=0, wrap=0))[1].astype(int)
-    assert far[12, 12] > 200 and far[12, -5] < 5
-    wide = light_depth.zones(scene(), settings(x=0.1, y=0.85, size=60, wrap=0))[0].astype(int)
-    assert wide[68, -5] > near[68, -5] + 40               # a larger size reaches further across the photo
+def test_a_size_below_100_narrows_the_effect_to_a_pool_around_the_position():
+    whole = light_depth.zones(scene(), settings(x=0.1, y=0.5, size=100, depth=0.85, wrap=100))
+    assert whole[1][68, 12] > 200 and whole[1][68, -5] > 200       # the whole photo: lit wherever the depth is
+    pool = light_depth.zones(scene(), settings(x=0.1, y=0.85, size=0, depth=0.85, wrap=100))
+    light = pool[1].astype(int)
+    assert light[68, 12] > 200 and light[68, -5] < 5                # lit by the pool at the left, not at the far right
+    wide = light_depth.zones(scene(), settings(x=0.1, y=0.85, size=60, depth=0.85, wrap=100))[1].astype(int)
+    assert wide[68, -5] > light[68, -5] + 40                        # a larger size reaches further across the photo
 
 
 def test_depth_under_a_point_ignores_one_noisy_pixel():
@@ -78,21 +73,20 @@ def test_depth_under_a_point_ignores_one_noisy_pixel():
     assert light_depth.depth_at(values, 0.5, 0.0) < 0.05 and light_depth.depth_at(values, 0.5, 1.0) > 0.95
 
 
-def test_amount_brightness_and_warmth_become_local_adjustments_for_each_side():
-    near, far = light_depth.adjustments(settings(amount=100, brightnessNear=100, brightnessFar=-50, warmth=20, warmthFar=-30))
-    assert near == {"exposure": light_depth.MAX_EXPOSURE, "temperature": pytest.approx(0.2 * light_depth.MAX_TEMPERATURE)}
-    assert far == {"exposure": -light_depth.MAX_EXPOSURE / 2, "temperature": pytest.approx(-0.1 * light_depth.MAX_TEMPERATURE)}
-    half_near, _ = light_depth.adjustments(settings(amount=50, brightnessNear=100, warmthNear=0))
-    assert half_near == {"exposure": light_depth.MAX_EXPOSURE / 2}      # Amount scales the whole effect; zero values are left out
-    cold, _ = light_depth.adjustments(settings(amount=100, warmth=100, warmthNear=100))
-    assert cold["temperature"] == light_depth.MAX_TEMPERATURE          # warmth adds up but stays inside +/-100
-    assert light_depth.adjustments(settings(amount=0)) == ({}, {})
+def test_amount_brightness_and_warmth_become_local_adjustments_for_each_zone():
+    near, light, far = light_depth.adjustments(settings(amount=100, warmth=20, brightnessNear=-50, warmthFar=-30))
+    assert light == {"exposure": light_depth.MAX_EXPOSURE, "temperature": pytest.approx(0.2 * light_depth.MAX_TEMPERATURE)}
+    assert near == {"exposure": -light_depth.MAX_EXPOSURE / 2}
+    assert far == {"temperature": pytest.approx(-0.3 * light_depth.MAX_TEMPERATURE)}
+    assert light_depth.adjustments(settings(amount=50))[1] == {"exposure": light_depth.MAX_EXPOSURE / 2}   # Amount scales it
+    assert light_depth.adjustments(settings(amount=0)) == ({}, {}, {})
+    assert light_depth.masks_needed(settings(amount=100)) == 1 and light_depth.masks_needed(settings(amount=0)) == 0
+    assert light_depth.masks_needed(settings(brightnessNear=20, warmthFar=10)) == 3
 
 
-def test_the_defaults_darken_both_sides_like_luminar():
-    assert light_depth.DEFAULTS["brightnessNear"] == light_depth.DEFAULTS["brightnessFar"] == -50
-    near, far = light_depth.adjustments({**light_depth.DEFAULTS, "amount": 100})
-    assert near == far == {"exposure": -1.0}
+def test_by_default_only_the_slab_at_the_depth_changes():
+    assert light_depth.DEFAULTS["brightnessNear"] == light_depth.DEFAULTS["brightnessFar"] == 0
+    assert light_depth.adjustments({**light_depth.DEFAULTS, "amount": 100}) == ({}, {"exposure": light_depth.MAX_EXPOSURE}, {})
 
 
 def test_active_needs_an_amount_and_to_be_switched_on():
@@ -100,20 +94,20 @@ def test_active_needs_an_amount_and_to_be_switched_on():
     assert light_depth.active(settings()) and not light_depth.active(settings(shown=0))
 
 
-def test_render_masks_are_valid_recipe_masks_for_near_and_far():
-    rows = light_depth.render_masks(settings(), scene())
-    assert masks_valid(rows) and [row["name"] for row in rows] == [light_depth.NEAR_NAME, light_depth.FAR_NAME]
-    assert rows[0]["adjust"] == {"exposure": pytest.approx(-0.7)} and rows[1]["adjust"] == {"exposure": pytest.approx(-0.7)}
-    near = decode_raster(rows[0]["shape"])
-    far = decode_raster(rows[1]["shape"])
-    assert near[-1, 0] > 250 and far[0, 0] > 250
+def test_render_masks_are_valid_recipe_masks_with_the_light_first_among_those_that_change():
+    rows = light_depth.render_masks(settings(depth=0.5, wrap=0), scene())
+    assert masks_valid(rows) and [row["name"] for row in rows] == [light_depth.LIGHT_NAME]
+    assert rows[0]["adjust"] == {"exposure": pytest.approx(1.4)}
+    assert decode_raster(rows[0]["shape"])[40, 60] > 250
+    both = light_depth.render_masks(settings(brightnessNear=-40, brightnessFar=30), scene())
+    assert [row["name"] for row in both] == [light_depth.NEAR_NAME, light_depth.LIGHT_NAME, light_depth.FAR_NAME]
     rows[0]["adjust"]["exposure"] = 99                  # what a render gets is a copy: the cache is not altered by its user
-    assert light_depth.render_masks(settings(), scene())[0]["adjust"]["exposure"] == pytest.approx(-0.7)
+    assert light_depth.render_masks(settings(depth=0.5, wrap=0), scene())[0]["adjust"]["exposure"] == pytest.approx(1.4)
 
 
-def test_a_side_that_changes_nothing_gets_no_mask_and_an_inactive_light_none():
-    rows = light_depth.render_masks(settings(brightnessFar=0), scene())
-    assert [row["name"] for row in rows] == [light_depth.NEAR_NAME]
+def test_a_zone_that_changes_nothing_gets_no_mask_and_an_inactive_light_none():
+    rows = light_depth.render_masks(settings(warmth=30), scene())
+    assert rows[0]["adjust"].keys() == {"exposure", "temperature"}
     assert light_depth.render_masks(settings(shown=0), scene()) == []
     assert light_depth.render_masks(settings(amount=0), scene()) == []
 
@@ -143,12 +137,12 @@ def photo(tmp_path, monkeypatch):
     return path
 
 
-def test_with_masks_adds_the_two_masks_after_the_persons_own_and_drops_the_host_entry(photo):
+def test_with_masks_adds_the_masks_after_the_persons_own_and_drops_the_host_entry(photo):
     own = {"name": "Brush 1", "shape": {"type": "linear", "x0": 0, "y0": 0, "x1": 1, "y1": 1}, "adjust": {"contrast": 10}}
-    draft = {"exposure": 1, "masks": [own], "lightDepth": settings()}
+    draft = {"exposure": 1, "masks": [own], "lightDepth": settings(brightnessFar=-30)}
     result = light_depth.with_masks(draft, draft["lightDepth"], str(photo))
     assert "lightDepth" not in result and result["exposure"] == 1
-    assert [mask["name"] for mask in result["masks"]] == ["Brush 1", light_depth.NEAR_NAME, light_depth.FAR_NAME]
+    assert [mask["name"] for mask in result["masks"]] == ["Brush 1", light_depth.LIGHT_NAME, light_depth.FAR_NAME]
     assert draft["masks"] == [own] and "lightDepth" in draft          # the draft itself is not changed
     off = light_depth.with_masks({"masks": [own], "lightDepth": settings(shown=0)}, settings(shown=0), str(photo))
     assert off == {"masks": [own]}
@@ -156,10 +150,13 @@ def test_with_masks_adds_the_two_masks_after_the_persons_own_and_drops_the_host_
 
 def test_with_masks_says_so_when_it_cannot_make_them(photo, monkeypatch):
     shape = {"type": "linear", "x0": 0, "y0": 0, "x1": 1, "y1": 1}
-    crowded = {"masks": [{"name": f"M{i}", "shape": shape} for i in range(15)]}
+    many = {"masks": [{"name": f"M{i}", "shape": shape} for i in range(16)]}
     with pytest.raises(ValueError, match="16 masks"):
-        light_depth.with_masks(crowded, settings(), str(photo))
-    assert len(light_depth.with_masks({"masks": crowded["masks"][:14]}, settings(), str(photo))["masks"]) == 16
+        light_depth.with_masks(many, settings(), str(photo))
+    assert len(light_depth.with_masks({"masks": many["masks"][:15]}, settings(), str(photo))["masks"]) == 16
+    three = settings(brightnessNear=20, brightnessFar=20)
+    with pytest.raises(ValueError, match="3 of a photo's 16"):
+        light_depth.with_masks({"masks": many["masks"][:14]}, three, str(photo))
     monkeypatch.setattr("image_triage.depth_maps.light_depth_cache_file", lambda source, **kw: photo.parent / "gone.png")
     with pytest.raises(ValueError, match="depth map is missing"):
         light_depth.with_masks({}, settings(), str(photo))
@@ -188,6 +185,7 @@ def test_an_earlier_versions_mask_with_its_settings_carries_on_as_the_panels_eff
     cleaned, light = light_depth.load_settings(recipe, {"masks": [mine, legacy]})
     assert cleaned == {"masks": [mine]} and light_depth.valid(light)
     assert light["amount"] == 55 and light["depth"] == 0.3 and light["wrap"] == 60 and light["size"] == pytest.approx(55)
+    assert light["brightnessNear"] == light["brightnessFar"] == 0
 
 
 def test_an_earlier_versions_mask_without_settings_is_dropped_and_stale_settings_are_ignored(photo):
@@ -207,7 +205,7 @@ def test_export_adds_the_masks_and_a_photo_with_only_light_depth_is_edited(photo
     assert light_depth.recipe_for_render(str(photo), saved) is saved
     light_depth.write_sidecar(recipe, settings())
     result = light_depth.recipe_for_render(str(photo), saved)
-    assert [m["name"] for m in result["cameraRaw"]["masks"]] == [light_depth.NEAR_NAME, light_depth.FAR_NAME]
+    assert [m["name"] for m in result["cameraRaw"]["masks"]] == [light_depth.LIGHT_NAME]
     assert "masks" not in saved["cameraRaw"]
     only = light_depth.recipe_for_render(str(photo), None)
     assert bridge.classify_recipe(only)[0] == bridge.RECIPE_EDITED and only["version"] == bridge.RECIPE_VERSION
