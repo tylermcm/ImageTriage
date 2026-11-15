@@ -69,9 +69,49 @@ def normalized(sky) -> dict:
 
 
 def library_root() -> Path:
+    """Where the sky pictures are kept: a real folder under the managed root (``~/.image-triage``), not the app's data folder.
+
+    PhotoCraft's native renderer reads a sky from the path the recipe names, and it is another process. Under Microsoft Store
+    Python the per-user data folder is virtualized (the files land in the package's own cache): only that Python can see
+    them, so the renderer found no file and drew no sky. The AI models avoid the same trap the same way.
+    """
+    from .ai_paths import managed_ai_root
+
+    return managed_ai_root() / "skies"
+
+
+def previous_library_root() -> Path:
+    """Where the first version kept the library (the app's data folder; possibly virtualized, see ``library_root``)."""
     from .scan_cache import app_data_root
 
     return app_data_root() / "skies"
+
+
+MIGRATED = ".migrated"
+
+
+def migrate_previous(root: Path, previous: Path | None = None) -> None:
+    """Copy the skies the person imported into the first version's library to ``root``, once. The bundled ones are not copied
+    (they are seeded again) and neither is anything the person removed from the new library."""
+    root = Path(root)
+    marker = root / MIGRATED
+    if marker.exists():
+        return
+    previous = Path(previous) if previous else previous_library_root()
+    try:
+        if previous.resolve() == root.resolve():
+            return
+        files = [f for f in previous.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_SUFFIXES and "-bundled" not in f.stem]
+    except OSError:
+        return
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            if not (root / f.name).exists():
+                shutil.copyfile(f, root / f.name)
+        marker.write_text("1", encoding="utf-8")
+    except OSError:
+        pass
 
 
 SEEDED = ".seeded"
@@ -86,6 +126,8 @@ def seed_bundled(root: Path | None = None, bundled: Path | None = None) -> None:
     names already copied are remembered beside the library."""
     import json
 
+    if root is None:
+        migrate_previous(library_root())
     root, bundled = (Path(root) if root else library_root()), (Path(bundled) if bundled else bundled_root())
     try:
         sources = sorted(f for f in bundled.iterdir() if f.suffix.lower() in IMAGE_SUFFIXES)

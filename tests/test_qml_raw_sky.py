@@ -76,6 +76,28 @@ def test_bundled_skies_are_copied_once_and_stay_removed(tmp_path):
     assert {s["name"] for s in sky_replace.library(lib)} == {"Teal", "Gold"}
 
 
+def test_the_library_is_a_real_folder_under_the_managed_root_not_the_virtualized_data_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("IMAGE_TRIAGE_AI_ROOT", str(tmp_path / "ai"))
+    monkeypatch.setenv("IMAGE_TRIAGE_APPDATA", str(tmp_path / "appdata"))
+    assert sky_replace.library_root() == (tmp_path / "ai" / "skies").resolve()
+    assert sky_replace.previous_library_root() == tmp_path / "appdata" / "skies"
+    assert sky_replace.library_root() != sky_replace.previous_library_root()
+
+
+def test_skies_imported_into_the_first_versions_library_move_over_once(tmp_path):
+    previous, lib = tmp_path / "old", tmp_path / "new"
+    previous.mkdir()
+    Image.new("RGB", (30, 20), "red").save(previous / "Mine-abc123.jpg")
+    Image.new("RGB", (30, 20), "blue").save(previous / "Rose-bundled.jpg")
+    sky_replace.migrate_previous(lib, previous)
+    assert [f.name for f in lib.glob("*.jpg")] == ["Mine-abc123.jpg"]          # the bundled ones are seeded again, not copied
+    sky_replace.forget_sky(lib / "Mine-abc123.jpg", lib)
+    sky_replace.migrate_previous(lib, previous)                                  # once: what was removed stays removed
+    assert list(lib.glob("*.jpg")) == []
+    sky_replace.migrate_previous(previous, previous)                             # the same folder is not copied onto itself
+    assert not (previous / sky_replace.MIGRATED).exists()
+
+
 def test_the_shipped_skies_are_real_pictures():
     files = sorted(sky_replace.bundled_root().glob("*.jpg"))
     assert len(files) >= 10 and (sky_replace.bundled_root() / "CREDITS.md").is_file()
@@ -193,6 +215,13 @@ def test_the_panel_renders_and_adjusts(raw, qapp, tmp_path):
             assert item.findChild(QObject, name) is not None, name
         cards = [c for c in item.findChild(QObject, "skyLibrary").childItems() if c.objectName() == "skyCard"]
         assert len(cards) == len(sky.skies) >= 10          # the bundled skies were copied in, plus the imported one
+        from PySide6.QtCore import QUrl
+
+        from image_triage.qml_shell import raw_preview
+        for _ in range(60):                                # other thumbnails come and go in the editor...
+            raw_preview.put_thumbnail(f"other/{_}", QImage(8, 8, QImage.Format_RGBA8888))
+        for card in sky.skies:                             # ...and the sky cards do not depend on them
+            assert card["thumb"].startswith("file:///") and Path(QUrl(card["thumb"]).toLocalFile()) == Path(card["path"])
         slider = item.findChild(QObject, "sky_amount_slider")
         slider.setProperty("value", 60)
         slider.moved.emit()

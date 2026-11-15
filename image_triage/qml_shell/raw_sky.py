@@ -13,7 +13,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Property, Qt, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QImage, QImageReader
+from PySide6.QtGui import QImageReader
 
 from .. import editor_tools, photocraft_bridge as bridge, sky_replace
 
@@ -74,7 +74,6 @@ class RawSky(QObject):
         self._queued = None            # the latest settings asked for, committed by the timer
         self._runner = run_sky_matte
         self._library_root = None      # tests point this somewhere else
-        self._thumbs = {}
         self._commit_timer = QTimer(self)
         self._commit_timer.setSingleShot(True)
         self._commit_timer.setInterval(COMMIT_MS)
@@ -99,22 +98,12 @@ class RawSky(QObject):
 
     @Property("QVariantList", notify=changed)
     def skies(self):
-        from .raw_preview import put_thumbnail
-
+        """The library, each with the file to show as its card. The card loads the picture file itself (scaled down by the
+        decoder): pictures kept in the editor's thumbnail cache were pushed out of it by every other thumbnail."""
         sky_replace.seed_bundled(self._library_root)
-
-        result = []
-        for item in sky_replace.library(self._library_root):
-            thumb = self._thumbs.get(item["path"])
-            if thumb is None:
-                image = QImageReader(item["path"])
-                image.setScaledSize(image.size().scaled(160, 160, Qt.KeepAspectRatio))
-                picture = image.read()
-                if picture.isNull():
-                    continue
-                thumb = self._thumbs[item["path"]] = put_thumbnail(f"{self.raw._owner}/sky/{len(self._thumbs)}", picture)
-            result.append({**item, "thumb": thumb, "chosen": item["path"] == self.settings["source"]})
-        return result
+        chosen = self.settings["source"]
+        return [{**item, "thumb": QUrl.fromLocalFile(item["path"]).toString(), "chosen": item["path"] == chosen}
+                for item in sky_replace.library(self._library_root)]
 
     def _sync(self):
         if self._path != self.raw._path:
@@ -246,7 +235,6 @@ class RawSky(QObject):
     def forget(self, path):
         """Remove a sky from the library; a photo using it loses the sky too."""
         if sky_replace.forget_sky(path, self._library_root):
-            self._thumbs.pop(path, None)
             if self.raw._draft.get("sky", {}).get("source") == path:
                 self.remove()
             self.changed.emit()

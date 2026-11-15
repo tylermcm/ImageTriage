@@ -49,7 +49,7 @@ Column {
                 objectName: "skyCard"
                 width: (sky.width - 12) / 3; height: width * 0.66; radius: 7; clip: true
                 color: theme.base; border.width: modelData.chosen ? 2 : 1; border.color: modelData.chosen ? theme.accent : theme.line
-                Image { anchors.fill: parent; anchors.margins: 1; source: card.modelData.thumb; fillMode: Image.PreserveAspectCrop; cache: false; smooth: true }
+                Image { anchors.fill: parent; anchors.margins: 1; source: card.modelData.thumb; sourceSize.width: 240; asynchronous: true; fillMode: Image.PreserveAspectCrop; smooth: true }
                 HoverHandler { id: cardHover; cursorShape: Qt.PointingHandCursor }
                 TapHandler { onTapped: sky.model.choose(card.modelData.path) }
                 TapHandler { acceptedButtons: Qt.RightButton; onTapped: sky.model.forget(card.modelData.path) }
