@@ -510,6 +510,7 @@ FocusScope {
         viewport: stage
         objectName: "rawRetouchOverlay"
         model: v.rawEditor.retouchEditor; raw: v.rawEditor
+        onZoomWheel: (x, y, steps) => { var p = mapToItem(pan, x, y); v.setZoom(pan.effectiveScale * Math.pow(1.2, steps), p.x, p.y) }
         visible: rawPanel.visible && rawPanel.tool === "Remove" && !rawPanel.before
         enabled: visible && rawPanel.editable
         x: pan.x - pan.contentX + photoImg.x + (photoImg.width-photoImg.paintedWidth)/2
