@@ -116,10 +116,36 @@ Read on 2026-11-15 from the upstream files; this is not legal advice. Re-read at
    renders and exports include it (the sky stage is the template).
 5. **Limit:** warn on very large fills; they are where these models make things up.
 
-### Spike first (2 days)
+### Spike results (2026-11-15)
 
-Run LaMa and MI-GAN through onnxruntime on your GPU and on CPU, on three test photos (sensor dust, a wire, a person), and
-measure time, memory and look at the 100% crops before any engine work.
+Both models run through onnxruntime on 12 MP and 9 MP developed previews (half-size RAW) of your lake and bear photos, on the
+RTX 4080 SUPER and on CPU, each fill in a local crop with context and a feathered paste-back. Files: LaMa
+`Carve/LaMa-ONNX` `lama_fp32.onnx` (208 MB, fixed 512 x 512 float input) and the authors' MI-GAN pipeline
+`andraniksargsyan/migan` `migan_pipeline_v2.onnx` (28 MB, uint8, any size). Telea (OpenCV) is the classical baseline.
+
+| Case | Hole | GPU: MI-GAN / LaMa | CPU: MI-GAN / LaMa | What the 100% crops show |
+|---|---|---|---|---|
+| 8 dust spots in sky | 0.1% | 0.60 / 0.97 s (all 8) | 2.7 / 8.9 s | All three are seamless. PSNR on the filled pixels (higher is better): LaMa 39.2, MI-GAN 38.3, Telea 37.5 |
+| Wire across forest and water (6 tiles) | 0.1% | 0.47 / 0.77 s | 1.8 / 7.0 s | MI-GAN is seamless (25.9 dB). LaMa leaves a faint smudged band (23.5 dB, the same as Telea at 23.3) |
+| Two spruces against sky | 0.3% | 0.12 / 0.16 s | 0.38 / 1.2 s | Both give a believable tree line and cloud; neither is perfect |
+| Gull on water | 1.4% | 0.12 / 0.18 s | 0.37 / 1.4 s | Both give believable water; LaMa is a little blurrier at the shoreline |
+| Bear (large object) | 7.6% | 0.40 / 0.46 s | 0.67 / 1.4 s | **MI-GAN fails badly**: it invents a bright blue and orange object. LaMa gives plausible, soft water and shore |
+
+- **Memory:** about +540 MB of GPU memory with both models loaded.
+- **LaMa is the robust choice.** On large holes it degrades gracefully (soft, plausible); MI-GAN can fail outright. MI-GAN is
+  only better on thin things such as a wire, and Telea is already close to both on small spots. Recommendation: ship LaMa
+  only; keep MI-GAN as an optional fast path for small and thin masks if CPU speed turns out to matter. LaMa on CPU is
+  about 1.2-1.4 s per object, which is still interactive.
+- **Mask quality decides the result.** A GrabCut mask that missed a gull's head and legs left ghosts in both models; with a
+  complete mask grown by 18 px they vanished. Erase must use SAM masks plus a Grow slider, not a tight cutout.
+- **Large holes must be one fill, not tiles.** Cutting a compact object into tiles (my first run) ruined the result. Tile
+  only long thin masks.
+- **Resolution is the open risk.** Both models work at 512 px internally, so a fill is softer than the 12 MP photo around it,
+  and our test photos were half-size. A 45 MP RAW is not tested. Plan to restore detail (carry the surrounding grain and
+  high-frequency texture over the fill) and test at full size before the engine work starts.
+- **Integration note:** onnxruntime's CUDA provider only loads in this runtime after `import torch` has loaded the CUDA
+  libraries; the managed runtime has torch, so the host should import it first.
+- **Licences are unchanged:** both permissive; Places2 training-data question open (see above).
 
 ## Order
 
