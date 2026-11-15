@@ -34,12 +34,19 @@ Item {
     property bool showCode: false
     Component.onCompleted: { if (autoStart) pocketDrop.start() }
 
-    function chooseFiles() { filesDialog.open() }
-    function chooseFolder() { folderDialog.open() }
-    function chooseInbox() { inboxDialog.open() }
+    // The file dialogs are made when they are asked for and dropped when closed: building four at startup costs time nobody needs.
+    function openDialog(component) {
+        var dialog = component.createObject(page)
+        dialog.accepted.connect(function() { dialog.destroy(1000) })
+        dialog.rejected.connect(function() { dialog.destroy(1000) })
+        dialog.open()
+    }
+    function chooseFiles() { openDialog(filesDialog) }
+    function chooseFolder() { openDialog(folderDialog) }
+    function chooseInbox() { openDialog(inboxDialog) }
     // Files go to a nearby PC: put them in the list, then aim the share at that PC.
     function sendTo(peer, urls) { if (urls && urls.length) pocketDrop.addUrls(urls); pocketDrop.command("pc_send_to", peer.id) }
-    function pickFor(peer) { if (pocketDrop.rows.length) sendTo(peer, []); else { sendTarget = peer; sendDialog.open() } }
+    function pickFor(peer) { if (pocketDrop.rows.length) sendTo(peer, []); else { sendTarget = peer; openDialog(sendDialog) } }
     function hostOf(link) { return (link || "").split("/")[0] }
 
     // ---- header ------------------------------------------------------------------------------------------------------------
@@ -332,7 +339,7 @@ Item {
             Item {
                 id: addGroup
                 width: parent.width - extraRow.width - clearBtn.width - (extraRow.children.length ? 8 : 0) - (clearBtn.visible ? 8 : 0); height: 38
-                PdButton { id: addMain; objectName: "addButton"; width: parent.width - 36; height: 38; primary: true; label: "Add files"; iconPath: "M12 5v14M5 12h14"; onClicked: filesDialog.open() }
+                PdButton { id: addMain; objectName: "addButton"; width: parent.width - 36; height: 38; primary: true; label: "Add files"; iconPath: "M12 5v14M5 12h14"; onClicked: page.chooseFiles() }
                 Rectangle { x: addMain.width + 1; width: 35; height: 38; radius: 12; color: addMore.hovered ? Qt.tint(theme.accent, Qt.alpha(theme.lift, 0.10)) : theme.accent
                     PdIcon { anchors.centerIn: parent; size: 14; strokeWidth: 2.4; color: theme.onAccent; path: "M6 9l6 6 6-6" }
                     HoverHandler { id: addMore; cursorShape: Qt.PointingHandCursor }
@@ -354,7 +361,7 @@ Item {
                         Rectangle { anchors.fill: parent; radius: 9; color: Qt.alpha(theme.lift, h.hovered ? 0.08 : 0) }
                         Text { x: 10; anchors.verticalCenter: parent.verticalCenter; text: modelData.t; color: theme.fg; font.pixelSize: 13 }
                         HoverHandler { id: h; cursorShape: Qt.PointingHandCursor }
-                        TapHandler { onTapped: { addMenu.close(); if (modelData.k === "folder") folderDialog.open(); else pocketDrop.command("paste") } } } }
+                        TapHandler { onTapped: { addMenu.close(); if (modelData.k === "folder") page.chooseFolder(); else pocketDrop.command("paste") } } } }
             }
         }
     }
@@ -436,10 +443,14 @@ Item {
         }
     }
 
-    FileDialog { id: sendDialog; title: "Choose files to send"; fileMode: FileDialog.OpenFiles
-        onAccepted: { if (page.sendTarget) page.sendTo(page.sendTarget, selectedFiles); page.sendTarget = null }
-        onRejected: page.sendTarget = null }
-    FileDialog { id: filesDialog; title: "Choose files to share"; fileMode: FileDialog.OpenFiles; onAccepted: pocketDrop.addUrls(selectedFiles) }
-    FolderDialog { id: folderDialog; title: "Choose a folder to share"; onAccepted: pocketDrop.addUrls([selectedFolder]) }
-    FolderDialog { id: inboxDialog; title: "Choose where received files are saved"; onAccepted: pocketDrop.changeInbox(selectedFolder) }
+    Component { id: sendDialog
+        FileDialog { title: "Choose files to send"; fileMode: FileDialog.OpenFiles
+            onAccepted: { if (page.sendTarget) page.sendTo(page.sendTarget, selectedFiles); page.sendTarget = null }
+            onRejected: page.sendTarget = null } }
+    Component { id: filesDialog
+        FileDialog { title: "Choose files to share"; fileMode: FileDialog.OpenFiles; onAccepted: pocketDrop.addUrls(selectedFiles) } }
+    Component { id: folderDialog
+        FolderDialog { title: "Choose a folder to share"; onAccepted: pocketDrop.addUrls([selectedFolder]) } }
+    Component { id: inboxDialog
+        FolderDialog { title: "Choose where received files are saved"; onAccepted: pocketDrop.changeInbox(selectedFolder) } }
 }
