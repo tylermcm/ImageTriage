@@ -26,6 +26,14 @@ def test_a_picture_round_trips_through_the_array_helper():
     assert np.array_equal(raw_erase.image_to_array(qimage(array)), array)
 
 
+def test_the_array_does_not_borrow_the_images_memory():
+    array = source_image(64, 32)             # a width whose rows are not padded: the slice would be a view
+    result = raw_erase.image_to_array(qimage(array))
+    import gc
+    gc.collect()
+    assert np.array_equal(result, array) and result.flags.owndata
+
+
 def test_the_selection_tint_covers_only_the_shown_part_of_the_frame():
     mask = np.zeros((100, 200), np.uint8)
     mask[10:30, 20:60] = 255

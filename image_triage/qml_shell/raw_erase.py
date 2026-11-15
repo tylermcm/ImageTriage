@@ -20,7 +20,7 @@ def image_to_array(image: QImage):
     rgb = image.convertToFormat(QImage.Format.Format_RGB888)
     stride = rgb.bytesPerLine()
     data = np.frombuffer(rgb.constBits(), np.uint8, count=stride * rgb.height()).reshape(rgb.height(), stride)
-    return np.ascontiguousarray(data[:, : rgb.width() * 3].reshape(rgb.height(), rgb.width(), 3))
+    return np.array(data[:, : rgb.width() * 3].reshape(rgb.height(), rgb.width(), 3), copy=True)     # a copy: the buffer dies with ``rgb``
 
 
 def overlay_image(mask, crop) -> QImage:
