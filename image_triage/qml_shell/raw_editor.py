@@ -56,6 +56,7 @@ DEFAULTS = {
     "masks": [],
     "retouch": [],
     "redEye": [],
+    "sky": {},
     "hostCrop": DEFAULT_CROP,
     "lightDepth": dict(light_depth.DEFAULTS),
     "pointColors": [],
@@ -148,6 +149,8 @@ class RawEditor(QObject):
         self._red_eye_editor = RawRedEye(self)
         from .raw_light_depth import RawLightDepth
         self._light_depth_editor = RawLightDepth(self)
+        from .raw_sky import RawSky
+        self._sky_editor = RawSky(self)
         from .raw_sync import RawSync
         self._sync = RawSync(self)
         from .raw_point_color import RawPointColor
@@ -158,6 +161,8 @@ class RawEditor(QObject):
     sync = Property(QObject, lambda self: self._sync, constant=True)
 
     lightDepthEditor = Property(QObject, lambda self: self._light_depth_editor, constant=True)
+
+    skyEditor = Property(QObject, lambda self: self._sky_editor, constant=True)
 
     redEyeEditor = Property(QObject, lambda self: self._red_eye_editor, constant=True)
 
@@ -642,7 +647,7 @@ class RawEditor(QObject):
         draft = dict(self._draft)
         for key, default in DEFAULTS.items():
             # Global Reset keeps authored masks, as it did before the Mask tab.
-            if key in ("masks","retouch","redEye","lightDepth"):
+            if key in ("masks","retouch","redEye","lightDepth","sky"):
                 continue
             if key in self._original:
                 draft[key] = deepcopy(default)

@@ -109,6 +109,7 @@ class FreezeAssetLayout:
                 str(ROOT / "image_triage" / "assets" / "app_icon-v5.ico"),
                 "lib/image_triage/assets/app_icon-v5.ico",
             ),
+            (str(ROOT / "image_triage" / "assets" / "skies"), "lib/image_triage/assets/skies"),
             # The QML shell loads its .qml files from beside its modules (qml_shell.app.QML_DIR).
             (str(ROOT / "image_triage" / "qml_shell" / "qml"), "lib/image_triage/qml_shell/qml"),
             *_pocketdrop_include_files(),

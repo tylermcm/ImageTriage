@@ -3969,3 +3969,16 @@ Validation (Linux container only):
 - Not run: `photocraft-ui-egui` and app integration tests (they filled the
   container's disk), and every Windows hosted check in this document. No
   executable was built or promoted and the packaging pin was not changed.
+
+## Sky Replacement (our PhotoCraft branch `codex/sky-replacement`)
+
+The pixel work is a Camera Raw stage in the PhotoCraft fork (`crates/algo/src/camera_raw/sky.rs`, recipe field `cameraRaw.sky`).
+Image Triage writes the setting; nothing in Python touches pixels. The preview worker and the hosted editor both need a build
+of that branch: the worker answers `"sky": 1` in its hello, and refuses a recipe with a sky without it.
+
+- `cameraRaw.sky` holds the sky picture's absolute path (`source`), the matte as a raster mask (`mask`), and the sliders. The
+  renderer loads the picture itself on first use (reduced to 3000 px), so no host registration is needed.
+- The matte comes from the landscape model (`sceneMasks`) on the developed preview, once per photo, and is kept in the recipe.
+- Only pictures in the sky library (`<app data>/skies`) can be chosen; imports are copied there as JPEG.
+- The setting is photo-specific (excluded from presets and copy/paste), and counts as an edit in `classify_recipe`.
+- The "Creative" tab holds it. Light Depth stays in Adjust until its rework merges.

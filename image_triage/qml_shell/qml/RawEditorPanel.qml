@@ -267,6 +267,7 @@ Rectangle {
                 {label: "Crop", path: "M7 3v14h14M3 7h14v14"},
                 {label: "Mask", path: "M12 3a9 9 0 1 0 0 18 9 9 0 1 0 0-18m0 0v18"},
                 {label: "Remove", path: "m4 15 9-10a2 2 0 0 1 3 0l4 4a2 2 0 0 1 0 3l-7 8H8zM8 11l8 7"},
+                {label: "Creative", path: "M12 3l2 5 5 .5-3.8 3.4L16.4 17 12 14.2 7.6 17l1.2-5.1L5 8.5 10 8z"},
                 {label: "Red Eye", path: "M2 12s4-6 10-6 10 6 10 6-4 6-10 6S2 12 2 12zm10-3a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"},
                 {label: "Presets", path: "m12 2 2.6 6.4L21 11l-6.4 2.6L12 20l-2.6-6.4L3 11l6.4-2.6z"},
                 {label: "History", path: "M4 12a8 8 0 1 1 2 5m-2-5V5m0 7h6m2-5v5l3 2"}
@@ -275,7 +276,7 @@ Rectangle {
                 id: tab
                 required property var modelData
                 objectName: "rawTool_" + modelData.label
-                y: 5; width: (tools.width - 6) / 7; height: 46; radius: 8
+                y: 5; width: (tools.width - 6) / 8; height: 46; radius: 8
                 color: panel.tool === modelData.label ? Qt.alpha(theme.accent, 0.22) : tabHover.hovered ? panel.raised : "transparent"
                 border.color: panel.tool === modelData.label ? Qt.alpha(theme.accent, 0.5) : "transparent"
                 Icon { anchors.horizontalCenter: parent.horizontalCenter; y: 7; size: 15; path: tab.modelData.path; color: panel.tool === tab.modelData.label ? theme.accentFg : panel.muted }
@@ -418,6 +419,11 @@ Rectangle {
                 objectName: "rawRetouchPanel"
                 visible: panel.tool === "Remove"; x: 13; width: parent.width-26; topPadding: 12
                 model: panel.model.retouchEditor; raw: panel.model
+            }
+            RawSkyPanel {
+                objectName: "rawSkyPanel"
+                visible: panel.tool === "Creative"; x: 13; width: parent.width-26; topPadding: 12
+                model: panel.model.skyEditor; raw: panel.model
             }
             RawRedEyePanel {
                 objectName: "rawRedEyePanel"
