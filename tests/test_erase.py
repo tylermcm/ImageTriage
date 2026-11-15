@@ -136,3 +136,36 @@ def test_making_a_patch_end_to_end_with_a_stand_in_model(tmp_path):
         erase.make_patch(image, np.full((300, 400), 255, np.uint8), fill, 6, photo, tmp_path / "erase")
     with pytest.raises(ValueError, match="wrong size"):
         erase.make_patch(image, mask, lambda crop, hole: crop[:10], 6, photo, tmp_path / "erase")
+
+
+def test_grain_follows_the_photos_fine_noise_not_its_texture_and_can_be_turned_down():
+    import numpy as np
+
+    rng = np.random.default_rng(3)
+    h = w = 160
+    ripples = (90 + 25 * np.sin(np.arange(w) / 3.0))[None, :] + np.zeros((h, 1))     # strong texture, no grain at all
+    original = np.dstack([ripples] * 3).clip(0, 255).astype(np.uint8)
+    hole = np.zeros((h, w), np.uint8)
+    hole[60:100, 60:100] = 255
+    smooth = np.full_like(original, 90)
+    assert abs(float(erase.match_grain(smooth, original, hole).astype(int).std()) - float(smooth.astype(int).std())) < 1.0
+    grainy = original + rng.normal(0, 4, original.shape).clip(-30, 30).astype(np.int16)[..., :]
+    grainy = np.clip(grainy, 0, 255).astype(np.uint8)
+    full = erase.match_grain(smooth, grainy, hole)
+    half = erase.match_grain(smooth, grainy, hole, amount=0.5)
+    inside = hole > 127
+    assert full[inside].std() > half[inside].std() > 0.5 and np.array_equal(erase.match_grain(smooth, grainy, hole, amount=0.0), smooth)
+
+
+def test_chroma_smoothing_removes_colour_speckle_and_keeps_brightness():
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    base = np.full((80, 80, 3), 120.0)
+    speckle = base + rng.normal(0, 12, (80, 80, 1)) * np.array([1.0, -1.0, 0.0])      # colour noise that cancels in brightness
+    filled = np.clip(speckle, 0, 255).astype(np.uint8)
+    hole = np.zeros((80, 80), np.uint8)
+    hole[20:60, 20:60] = 255
+    out = erase.smooth_chroma(filled, hole)
+    assert out[25:55, 25:55].astype(float).std(axis=(0, 1)).max() < filled[25:55, 25:55].astype(float).std(axis=(0, 1)).max() * 0.6
+    assert np.array_equal(out[:10], filled[:10])                    # outside the hole nothing changes

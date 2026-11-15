@@ -69,7 +69,7 @@ def test_selecting_then_erasing_adds_one_patch_stroke_and_one_undo_step(qapp, mo
 
     done = threading.Event()
     eraser._done.connect(lambda *a: done.set())
-    monkeypatch.setattr(erase, "make_patch", lambda image, m, fill, grow, photo_path, root=None: (
+    monkeypatch.setattr(erase, "make_patch", lambda image, m, fill, grow, photo_path, root=None, grain=1.0: (
         erase.patch_stroke(str(tmp_path / "p.png"), (0.4, 0.3, 0.6, 0.6)), {"box": (0, 0, 1, 1)}))
     eraser.erase()
     for _ in range(100):

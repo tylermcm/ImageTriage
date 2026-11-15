@@ -31,6 +31,11 @@ Column {
             label: "Grow"; from: 0; to: erasePanel.eraser.maxGrow; step: 1; decimals: 0; value: erasePanel.eraser.grow
             onCommitted: (next) => erasePanel.eraser.setGrow(next)
         }
+        RawColorSlider {
+            objectName: "eraseGrain"; width: parent.width; controlHeight: 32; visible: erasePanel.eraser.hasSelection
+            label: "Grain"; from: 0; to: 100; step: 1; decimals: 0; value: erasePanel.eraser.grain * 100
+            onCommitted: (next) => erasePanel.eraser.setGrain(next)
+        }
         Row {
             spacing: 6
             SButton { objectName: "eraseGo"; text: "Erase"; variant: "primary"; enabled: erasePanel.eraser.hasSelection && !erasePanel.eraser.busy; onClicked: erasePanel.eraser.erase() }

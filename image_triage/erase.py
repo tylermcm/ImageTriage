@@ -102,7 +102,7 @@ def feather_for(size) -> float:
     return max(2.0, max(size) * FEATHER_FRACTION)
 
 
-def match_grain(filled, original, hole, ring: int = 24, seed: int = 0):
+def match_grain(filled, original, hole, ring: int = 24, seed: int = 0, amount: float = 1.0):
     """Give the fill the photo's grain. A model returns smooth texture, which looks like a clean patch on a noisy photo: the
     fine-grained luminance noise of a ring of the ``original`` around the hole is measured and added to ``filled`` (the
     model's picture, same size) inside the hole where it falls short."""
@@ -116,13 +116,32 @@ def match_grain(filled, original, hole, ring: int = 24, seed: int = 0):
     around = (_gauss(inside.astype(np.float32), ring / 2.05) > 0.02) & ~(_gauss(inside.astype(np.float32), 2 / 2.05) > 0.02)
     if inside.sum() < 16 or around.sum() < 64:
         return filled
-    wanted = float((seen - _gauss(seen / 255, 1.5) * 255)[around].std())
-    have = float((luma - _gauss(luma / 255, 1.5) * 255)[inside].std())
+    # the finest detail only, and a robust spread (median deviation): ripples, edges and foliage in the surroundings are texture
+    # the model has to supply, not grain, and counting them as grain makes the fill look like static
+    def spread(values):
+        return 1.4826 * float(np.median(np.abs(values - np.median(values))))
+
+    wanted = spread((seen - _gauss(seen / 255, 0.8) * 255)[around]) * max(0.0, amount)
+    have = spread((luma - _gauss(luma / 255, 0.8) * 255)[inside])
     if wanted <= have:
         return filled
     rng = np.random.default_rng(seed)
     noise = rng.normal(0.0, math.sqrt(wanted * wanted - have * have), luma.shape).astype(np.float32)
     out = pixels + (noise * inside)[..., None]
+    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
+
+
+def smooth_chroma(filled, hole, sigma: float = 2.0):
+    """``filled`` with the colour (not the brightness) inside ``hole`` smoothed: the model leaves faint coloured speckle that a
+    camera's grain never has."""
+    import numpy as np
+
+    pixels = filled.astype(np.float32)
+    luma = (pixels @ np.array([0.2126, 0.7152, 0.0722], np.float32))[..., None]
+    chroma = pixels - luma
+    soft = np.stack([_gauss((chroma[..., c] + 128) / 255, sigma) * 255 - 128 for c in range(3)], axis=-1)
+    inside = (_gauss((np.asarray(hole) > 127).astype(np.float32), 1.0))[..., None]
+    out = pixels + (soft - chroma) * inside
     return np.clip(np.rint(out), 0, 255).astype(np.uint8)
 
 
@@ -223,7 +242,7 @@ def patch_stroke(path: str, region, opacity: float = 100.0) -> dict:
             "feather": 0.0, "opacity": float(opacity), "patch": {"path": path, "region": [x0, y0, x1, y1]}}
 
 
-def make_patch(image, mask, fill, grow: float, photo_path, root: Path | None = None):
+def make_patch(image, mask, fill, grow: float, photo_path, root: Path | None = None, grain: float = 1.0):
     """Everything after the model: ``image`` is the picture (uint8 RGB) the selection was made on, ``mask`` the object (uint8),
     ``fill(crop, hole)`` the model call (uint8 crop and hole -> uint8 filled crop, same size). Returns ``(stroke, info)`` or
     raises ValueError with a sentence for the panel."""
@@ -241,7 +260,8 @@ def make_patch(image, mask, fill, grow: float, photo_path, root: Path | None = N
     filled = np.asarray(fill(crop, cm))
     if filled.shape != crop.shape:
         raise ValueError("The fill model returned a picture of the wrong size.")
-    filled = match_grain(filled, crop, cm, seed=(x0 * 7919 + y0 * 104729) & 0xFFFFFFFF)
+    filled = smooth_chroma(filled, cm)
+    filled = match_grain(filled, crop, cm, seed=(x0 * 7919 + y0 * 104729) & 0xFFFFFFFF, amount=grain)
     rgb, alpha = composite(crop, filled, cm, feather_for((width, height)))
     # only the part of the crop the fill touches: the patch is a small picture, not the crop
     ys, xs = np.nonzero(alpha > 0)

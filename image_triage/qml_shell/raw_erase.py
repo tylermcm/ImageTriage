@@ -49,6 +49,7 @@ class RawErase(QObject):
         self._message = ""
         self._error = ""
         self._grow = 0.0
+        self._grain = 1.0
         self._source = None            # uint8 RGB, the picture the selection was made on
         self._mask = None              # uint8, 255 = object, same size
         self._overlay = ""
@@ -85,6 +86,14 @@ class RawErase(QObject):
             return lama_installation().is_installed
         except Exception:
             return False
+
+    grain = Property(float, lambda self: self._grain, notify=changed)
+
+    @Slot(float)
+    def setGrain(self, value: float) -> None:
+        if math.isfinite(value):
+            self._grain = max(0.0, min(1.0, value / 100))
+            self.changed.emit()
 
     @Slot(float)
     def setGrow(self, value: float) -> None:
@@ -169,11 +178,11 @@ class RawErase(QObject):
         self._busy, self._error, self._message = True, "", "Filling in..."
         self._serial += 1
         serial, source, mask, cancel = self._serial, self._source, self._mask, self._cancel
-        grow, photo = self.grow, self.raw._path
+        grow, photo, grain = self.grow, self.raw._path, self._grain
         self.changed.emit()
-        threading.Thread(target=self._fill_job, args=(serial, source, mask, grow, photo, cancel), daemon=True).start()
+        threading.Thread(target=self._fill_job, args=(serial, source, mask, grow, photo, cancel, grain), daemon=True).start()
 
-    def _fill_job(self, serial, source, mask, grow, photo, cancel) -> None:
+    def _fill_job(self, serial, source, mask, grow, photo, cancel, grain) -> None:
         try:
             import numpy as np
             from PIL import Image
@@ -189,7 +198,7 @@ class RawErase(QObject):
                     run_inpaint(work / "crop.png", work / "hole.png", work / "out.png", None, cancel)
                     return np.asarray(Image.open(work / "out.png").convert("RGB"))
 
-                stroke, info = erase.make_patch(source, mask, fill, grow=grow, photo_path=photo)
+                stroke, info = erase.make_patch(source, mask, fill, grow=grow, photo_path=photo, grain=grain)
             self._done.emit(serial, ("fill", stroke), "")
         except Exception as error:
             self._done.emit(serial, None, str(error) or type(error).__name__)
