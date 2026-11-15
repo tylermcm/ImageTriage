@@ -19,7 +19,7 @@ class RawRetouch(QObject):
     rows=Property("QVariantList",lambda self:deepcopy(self.raw._draft.get("retouch",[])),notify=changed)
     @Slot(str)
     def choose(self,kind):
-        if kind in ("remove","heal","spot","clone"):self._kind=kind;self.changed.emit()
+        if kind in ("remove","heal","spot","clone","erase"):self._kind=kind;self.changed.emit()
     @Slot(str,float)
     def option(self,key,value):
         import math

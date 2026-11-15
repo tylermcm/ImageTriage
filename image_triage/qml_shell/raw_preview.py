@@ -161,6 +161,7 @@ class Connection:
                 raise RuntimeError("The RAW preview worker needs to be rebuilt.")
             self._red_eye_supported = type(hello.get("redEye")) is int and hello["redEye"] >= 1
             self._sky_supported = type(hello.get("sky")) is int and hello["sky"] >= 1
+            self._patch_supported = type(hello.get("patch")) is int and hello["patch"] >= 1
         except Exception:
             self.close()
             raise
@@ -173,6 +174,9 @@ class Connection:
             raise RuntimeError("Red Eye needs the updated RAW preview worker.")
         if (request.get("recipe", {}).get("cameraRaw", {}).get("sky") and not getattr(self, "_sky_supported", False)):
             raise RuntimeError("Sky Replacement needs the updated RAW preview worker.")
+        if (any(s.get("kind") == "patch" for s in request.get("recipe", {}).get("cameraRaw", {}).get("retouch", []))
+                and not getattr(self, "_patch_supported", False)):
+            raise RuntimeError("AI Erase needs the updated RAW preview worker.")
         limit = CALL_TIMEOUT_S if self.timeout is None else self.timeout
         hung = threading.Event()
 
@@ -260,6 +264,7 @@ class PreviewWorker(QObject):
     completed = Signal(int, object)
     sampled = Signal(int, object)
     maskSampled = Signal(int, object)
+    sourceReady = Signal(int, object)
     coverageReady = Signal(int, object)
     failed = Signal(int, str)
 
@@ -315,7 +320,14 @@ class PreviewWorker(QObject):
                         baseline = self._connection.call({**request, "quality": "settled", "op": "open", "path": path, "edge": 1800,
                             "recipe": _without_host_settings({"version": 1, "cameraRaw": light_depth.with_masks(original, original.get("lightDepth"), path)})})
                         source = source_key
-                    if isinstance(sample, dict):
+                    if isinstance(sample, dict) and sample.get("kind") == "erase":
+                        # The picture AI Erase fills from: what the retouch stage sees, so everything that comes after it (masks, the
+                        # sky, Light Depth) is left out and is not baked into the patch.
+                        left_out = ("masks", "sky", "lightDepth")
+                        settings = {k: v for k, v in draft.items() if k not in left_out}
+                        result = self._connection.call({**request, "quality": "settled", "op": "render",
+                                                        "recipe": _without_host_settings({"version": 1, "cameraRaw": settings})})
+                    elif isinstance(sample, dict):
                         # A Point Color sample is the colour before Point Color acts on it, so that is left out too.
                         left_out = ("masks", "pointColors") if sample.get("kind") == "pointColor" else ("masks",)
                         settings = {k:v for k,v in draft.items() if k not in left_out}
@@ -328,7 +340,9 @@ class PreviewWorker(QObject):
                         "recipe": _without_host_settings({"version": 1, "cameraRaw": light_depth.with_masks(draft, draft.get("lightDepth"), path)})}))
                     if bridge.file_signature(path) != signature:
                         raise RuntimeError("The RAW changed during preview. Reopen the editor.")
-                    if isinstance(sample, dict):
+                    if isinstance(sample, dict) and sample.get("kind") == "erase":
+                        self.sourceReady.emit(revision, (result[1], sample))
+                    elif isinstance(sample, dict):
                         self.maskSampled.emit(revision,(result[0],sample))
                     elif sample is not None:
                         self.sampled.emit(revision, (result[1], sample))

@@ -151,6 +151,8 @@ class RawEditor(QObject):
         self._light_depth_editor = RawLightDepth(self)
         from .raw_sky import RawSky
         self._sky_editor = RawSky(self)
+        from .raw_erase import RawErase
+        self._erase_editor = RawErase(self)
         from .raw_sync import RawSync
         self._sync = RawSync(self)
         from .raw_point_color import RawPointColor
@@ -163,6 +165,8 @@ class RawEditor(QObject):
     lightDepthEditor = Property(QObject, lambda self: self._light_depth_editor, constant=True)
 
     skyEditor = Property(QObject, lambda self: self._sky_editor, constant=True)
+
+    eraseEditor = Property(QObject, lambda self: self._erase_editor, constant=True)
 
     redEyeEditor = Property(QObject, lambda self: self._red_eye_editor, constant=True)
 
@@ -787,6 +791,7 @@ class RawEditor(QObject):
                 self._proxy.completed.connect(self._proxy_arrived)
                 self._proxy.sampled.connect(self._proxy_sampled)
                 self._proxy.maskSampled.connect(self._mask_sampled)
+                self._proxy.sourceReady.connect(self._source_arrived)
                 self._proxy.coverageReady.connect(self._coverage_arrived)
                 self._proxy.failed.connect(self._proxy_failed)
             request = self._proxy_request
@@ -886,6 +891,12 @@ class RawEditor(QObject):
         except (ValueError,KeyError,TypeError) as error:
             self._error = str(error)
         self.changed.emit()
+
+    def _source_arrived(self, revision, result):
+        if revision != self._revision or not self._loaded or self._saving:
+            return
+        self._proxy_pending = False
+        self._erase_editor.accept_source(*result)
 
     def _coverage_arrived(self,revision,result):
         if revision==self._revision and self._loaded and not self._saving:

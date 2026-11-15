@@ -36,7 +36,8 @@ Item {
             ctx.stroke()
         }
     }
-    Rectangle { objectName: "rawRetouchCursor"; visible: pointer.enabled && pointer.containsMouse && overlay.acceptsPoint(pointer.mouseX, pointer.mouseY); x: pointer.mouseX-width/2; y: pointer.mouseY-height/2; width: overlay.diameter; height: width; radius: width/2; color:'transparent'; border.color:'white' }
+    Image { anchors.fill: parent; visible: overlay.model.kind==="erase" && source!==""; source: overlay.visible ? overlay.raw.eraseEditor.overlay : ""; fillMode: Image.Stretch; cache: false }
+    Rectangle { objectName: "rawRetouchCursor"; visible: overlay.model.kind!=="erase" && pointer.enabled && pointer.containsMouse && overlay.acceptsPoint(pointer.mouseX, pointer.mouseY); x: pointer.mouseX-width/2; y: pointer.mouseY-height/2; width: overlay.diameter; height: width; radius: width/2; color:'transparent'; border.color:'white' }
     Rectangle {
         visible: overlay.model.source.length===2 && (overlay.model.kind==='clone' || overlay.model.kind==='heal')
         x: visible ? overlay.toView(overlay.model.source).x-6 : 0; y: visible ? overlay.toView(overlay.model.source).y-6 : 0
@@ -50,6 +51,7 @@ Item {
         onPressed: (event) => {
             if (!overlay.acceptsPoint(event.x, event.y)) { event.accepted = false; return }
             var p=point(event)
+            if(overlay.model.kind==="erase") {overlay.raw.eraseEditor.select(p[0],p[1]);return}
             if(event.modifiers & Qt.AltModifier) {overlay.model.pick(p[0],p[1]);return}
             overlay.points=[p];overlay.drawing=true;path.requestPaint()
         }
