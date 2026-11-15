@@ -784,7 +784,7 @@ def test_raw_dock_meets_filmstrip_and_closes_to_full_width(shell, qapp):
     assert dock.isVisible()
     assert dock.mapToScene(origin).y() + dock.height() == pytest.approx(window.height())
     assert strip.mapToScene(origin).x() + strip.width() == pytest.approx(dock.x())
-    for tool in ("Crop", "Mask", "Remove", "Red Eye", "Presets", "History", "Adjust"):
+    for tool in ("Crop", "Mask", "Remove", "Creative", "Red Eye", "Presets", "History", "Adjust"):
         dock.setProperty("tool", tool)
         pump(qapp, 0.02)
     popout.rawEditor.cancel()

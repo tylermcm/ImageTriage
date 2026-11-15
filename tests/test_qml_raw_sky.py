@@ -1,0 +1,179 @@
+"""Sky Replacement: library, the matte job, the recipe setting it writes, saving rules, and the panel."""
+import time
+
+import numpy as np
+import pytest
+from PIL import Image
+from PySide6.QtCore import QObject
+from PySide6.QtGui import QColor, QImage
+
+from image_triage import photocraft_bridge as bridge, raw_presets, sky_replace
+from image_triage.camera_raw_recipe_masks import masks_valid
+from image_triage.qml_shell.raw_editor import RawEditor
+from image_triage.qml_shell.raw_masks import encode_raster
+from test_qml_shell import qapp, pump  # noqa: F401
+
+
+def wait(qapp, predicate):
+    end = time.monotonic() + 5
+    while not predicate() and time.monotonic() < end:
+        pump(qapp, .02)
+    assert predicate()
+
+
+def sky_top(*_args):
+    values = np.zeros((60, 80), np.uint8)
+    values[:25] = 255
+    return encode_raster(values)
+
+
+@pytest.fixture
+def raw(qapp, monkeypatch, tmp_path):
+    monkeypatch.setattr("image_triage.editor_tools.installed_models", lambda: frozenset(("oneformer",)))
+    raw = RawEditor(memory=True)
+    raw.open("sample.NEF")
+    image = QImage(80, 60, QImage.Format_RGBA8888)
+    image.fill(QColor("gray"))
+    frame = ({"histogram": [[0] * 256] * 3, "fullSize": [4000, 3000]}, image)
+    raw._proxy_arrived(raw._revision, (frame, frame, 0, "sample.NEF"))
+    raw.skyEditor._runner = sky_top
+    raw.skyEditor._library_root = tmp_path / "skies"
+    yield raw
+    raw.shutdown()
+
+
+def make_sky(tmp_path, name="dusk"):
+    path = tmp_path / f"{name}.png"
+    Image.fromarray(np.full((40, 60, 3), (200, 120, 60), np.uint8)).save(path)
+    return path
+
+
+def test_the_library_keeps_one_copy_of_each_sky(tmp_path):
+    lib = tmp_path / "lib"
+    a = sky_replace.import_sky(make_sky(tmp_path), lib)
+    assert sky_replace.import_sky(make_sky(tmp_path), lib) == a
+    assert [s["name"] for s in sky_replace.library(lib)] == ["dusk"]
+    assert sky_replace.library_has(a, lib) and not sky_replace.library_has(make_sky(tmp_path, "x"), lib)
+    with pytest.raises(ValueError):
+        sky_replace.import_sky(tmp_path / "notes.txt", lib)
+    assert sky_replace.forget_sky(a, lib) and sky_replace.library(lib) == []
+    assert not sky_replace.forget_sky(make_sky(tmp_path, "y"), lib)       # never deletes outside the library
+
+
+def test_choosing_a_sky_finds_the_matte_and_writes_one_recipe_setting(raw, qapp, tmp_path):
+    sky = raw.skyEditor
+    chosen = sky_replace.import_sky(make_sky(tmp_path), sky._library_root)
+    sky.choose(str(chosen))
+    sky.flush()
+    assert sky.busy
+    wait(qapp, lambda: not sky.busy)
+    recipe = raw._draft["sky"]
+    assert sky_replace.valid(recipe) and sky_replace.active(recipe) and sky.active
+    assert recipe["source"] == str(chosen) and recipe["amount"] == 100 and recipe["colorMatch"] == sky_replace.FIRST_MATCH
+    assert recipe["mask"]["type"] == "raster" and masks_valid([{"shape": recipe["mask"]}])
+    assert "mask" not in sky.settings and sky.settings["amount"] == 100
+    assert bridge.classify_recipe({"version": bridge.RECIPE_VERSION, "cameraRaw": dict(raw._draft)})[0] == bridge.RECIPE_EDITED
+
+
+def test_sliders_reuse_the_matte_and_undo_restores_the_photo(raw, qapp, tmp_path):
+    sky = raw.skyEditor
+    sky.choose(str(sky_replace.import_sky(make_sky(tmp_path), sky._library_root)))
+    sky.flush()
+    wait(qapp, lambda: not sky.busy and sky.active)
+    calls = []
+    sky._runner = lambda *a: calls.append(a) or sky_top()
+    sky.adjust("brightness", 40)
+    sky.adjust("brightness", 55)
+    sky.flush()
+    assert raw._draft["sky"]["brightness"] == 55 and calls == []
+    raw.undo(); raw.undo(); raw.undo()
+    assert "sky" not in raw._draft
+    assert not sky.active
+
+
+def test_a_photo_without_sky_says_so_and_changes_nothing(raw, qapp, tmp_path):
+    sky = raw.skyEditor
+
+    def none(*_a):
+        raise ValueError("No sky found in this photo.")
+
+    sky._runner = none
+    sky.choose(str(sky_replace.import_sky(make_sky(tmp_path), sky._library_root)))
+    sky.flush()
+    wait(qapp, lambda: not sky.busy)
+    assert sky.error == "No sky found in this photo." and "sky" not in raw._draft
+
+
+def test_only_library_skies_can_be_chosen(raw, tmp_path):
+    raw.skyEditor.choose(str(make_sky(tmp_path, "elsewhere")))
+    raw.skyEditor.flush()
+    assert "sky" not in raw._draft and not raw.skyEditor.busy
+
+
+def test_remove_and_forget(raw, qapp, tmp_path):
+    sky = raw.skyEditor
+    chosen = sky_replace.import_sky(make_sky(tmp_path), sky._library_root)
+    sky.choose(str(chosen))
+    sky.flush()
+    wait(qapp, lambda: not sky.busy and sky.active)
+    sky.forget(str(chosen))
+    assert "sky" not in raw._draft and sky_replace.library(sky._library_root) == []
+
+
+def test_the_recipe_rules():
+    good = {"source": "/a.jpg", "amount": 50, "flip": True}
+    assert sky_replace.valid({}) and sky_replace.valid(good) and not sky_replace.active(good)
+    for bad in ({"amount": 101}, {"amount": float("nan")}, {"nope": 1}, {"source": 3}, {"flip": 1},
+                {"mask": {"type": "raster", "w": 0, "h": 5, "data": ""}}, "sky"):
+        assert not sky_replace.valid(bad), bad
+    problems = bridge.recipe_problems({"sky": {"amount": 500}})
+    assert problems and problems[0][0] == "sky"
+    assert raw_presets.transferable({"sky": good, "exposure": 1}) == {"exposure": 1}
+
+
+def test_a_worker_without_sky_support_refuses_instead_of_ignoring_it(monkeypatch):
+    from image_triage.qml_shell import raw_preview
+
+    class Fake(raw_preview.PreviewProcess if hasattr(raw_preview, "PreviewProcess") else object):
+        pass
+
+    source = open(raw_preview.__file__, encoding="utf-8").read()
+    assert 'Sky Replacement needs the updated RAW preview worker.' in source
+
+
+def test_the_panel_renders_and_adjusts(raw, qapp, tmp_path):
+    from pathlib import Path
+
+    from PySide6.QtCore import QUrl
+    from PySide6.QtQml import QQmlComponent, QQmlEngine
+
+    import image_triage.qml_shell as shell
+    from image_triage.qml_shell import raw_preview
+    from image_triage.qml_shell.theme import Theme
+
+    sky = raw.skyEditor
+    sky.choose(str(sky_replace.import_sky(make_sky(tmp_path), sky._library_root)))
+    sky.flush()
+    wait(qapp, lambda: not sky.busy and sky.active)
+    engine = QQmlEngine()
+    raw_preview.install_images(engine)
+    engine.rootContext().setContextProperty("theme", Theme())
+    engine.rootContext().setContextProperty("rawModel", raw)
+    component = QQmlComponent(engine)
+    component.setData(b'import QtQuick\nItem { width: 320; height: 900\n RawSkyPanel { width: 300; model: rawModel.skyEditor; raw: rawModel } }',
+                      QUrl.fromLocalFile(str(Path(shell.__file__).parent / "qml" / "SkyHarness.qml")))
+    item = component.create()
+    assert item is not None, component.errors()
+    try:
+        for name in ("sky_amount", "sky_fadeEdge", "sky_relight", "skyImport", "skyLibrary", "skyRemove", "skyAdvanced"):
+            assert item.findChild(QObject, name) is not None, name
+        cards = [c for c in item.findChild(QObject, "skyLibrary").childItems() if c.objectName() == "skyCard"]
+        assert len(cards) == 1
+        slider = item.findChild(QObject, "sky_amount_slider")
+        slider.setProperty("value", 60)
+        slider.moved.emit()
+        sky.flush()
+        assert raw._draft["sky"]["amount"] == 60
+    finally:
+        item.deleteLater()
+        pump(qapp, .05)

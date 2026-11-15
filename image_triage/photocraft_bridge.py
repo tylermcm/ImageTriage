@@ -178,7 +178,7 @@ RECIPE_ARRAYS = {"curveSplits": 3, "hslHue": 8, "hslSat": 8, "hslLum": 8, "calib
 RECIPE_CALIBRATION_FIELDS = frozenset(("calibShadowTint", "calibHue", "calibSat"))
 RECIPE_CURVES = ("pointCurve", "pointCurveRed", "pointCurveGreen", "pointCurveBlue")
 RECIPE_WHEELS = ("gradeShadows", "gradeMidtones", "gradeHighlights", "gradeGlobal")
-RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle", "glow", "pointColors", "superResolution", "masks", "hostCrop", "retouch", "redEye"}
+RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle", "glow", "pointColors", "superResolution", "masks", "hostCrop", "retouch", "redEye", "sky"}
 
 
 def _recipe_value_ok(value) -> bool:
@@ -254,6 +254,9 @@ def _setting_problem(name, value) -> str | None:
     elif name == "redEye":
         from .raw_red_eye import valid as red_eye_valid
         valid = red_eye_valid(value)
+    elif name == "sky":
+        from .sky_replace import valid as sky_valid
+        valid = sky_valid(value)
     elif name == "retouch":
         from .raw_retouch import valid as retouch_valid
         valid = retouch_valid(value)
@@ -334,6 +337,8 @@ def classify_recipe(recipe) -> tuple[str, str]:
     identity = identity and not _masks_active(settings.get("masks", []))
     identity = identity and not any(s["opacity"]>0 for s in settings.get("retouch",[]))
     identity = identity and not any(p["darken"] > 0 for p in settings.get("redEye", []))
+    from .sky_replace import active as sky_active
+    identity = identity and not sky_active(settings.get("sky"))
     identity = identity and all(all(sample.get(k, 0) == 0 for k in ("hue", "saturation", "luminance", "variance"))
                                 for sample in settings.get("pointColors", []))
     identity = identity and all(all(v == 0 for v in settings.get(name, [])) for name in ("hslHue", "hslSat", "hslLum", "calibHue", "calibSat"))

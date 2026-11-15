@@ -159,6 +159,7 @@ class Connection:
             if hello.get("protocol") != 2:
                 raise RuntimeError("The RAW preview worker needs to be rebuilt.")
             self._red_eye_supported = type(hello.get("redEye")) is int and hello["redEye"] >= 1
+            self._sky_supported = type(hello.get("sky")) is int and hello["sky"] >= 1
         except Exception:
             self.close()
             raise
@@ -169,6 +170,8 @@ class Connection:
         if (request.get("recipe", {}).get("cameraRaw", {}).get("redEye")
                 and not getattr(self, "_red_eye_supported", False)):
             raise RuntimeError("Red Eye needs the updated RAW preview worker.")
+        if (request.get("recipe", {}).get("cameraRaw", {}).get("sky") and not getattr(self, "_sky_supported", False)):
+            raise RuntimeError("Sky Replacement needs the updated RAW preview worker.")
         limit = CALL_TIMEOUT_S if self.timeout is None else self.timeout
         hung = threading.Event()
 
