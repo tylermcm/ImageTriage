@@ -139,7 +139,8 @@ class RawLightDepth(QObject):
 
     @Property(str, notify=changed)
     def pad(self):
-        """The depth map as a picture (near is bright), tinted on its near side."""
+        """The depth map as a picture (near is bright), with what lies at the chosen depth tinted amber: the objects the
+        light passes, which are left alone while what is nearer and farther changes."""
         import numpy as np
 
         from .raw_preview import put_thumbnail
@@ -151,11 +152,10 @@ class RawLightDepth(QObject):
         key = (self._path, tuple(sorted(settings.items())), id(depth))
         if key != self._pad[1]:
             scene = light_depth.working_depth(depth, light_depth.PAD_SIDE)
-            near = light_depth.coverage(depth, settings, light_depth.PAD_SIDE).astype(np.float32) / 255
-            warm = (settings["warmth"] + settings["warmthNear"]) / 100
-            tint = np.array([1 + .25 * max(0, warm), 1.0, 1 + .25 * max(0, -warm)], dtype=np.float32)
+            near, far = (part.astype(np.float32) / 255 for part in light_depth.zones(depth, settings, light_depth.PAD_SIDE))
+            slab = (1 - np.maximum(near, far))[:, :, None]
             base = (.12 + .5 * scene)[:, :, None]
-            pixels = np.clip((base + near[:, :, None] * .3 * tint) * 255, 0, 255).astype(np.uint8)
+            pixels = np.clip((base * (1 - .45 * slab) + slab * np.array([.55, .38, .06], dtype=np.float32)) * 255, 0, 255).astype(np.uint8)
             height, width = pixels.shape[:2]
             image = QImage(pixels.tobytes(), width, height, width * 3, QImage.Format_RGB888).copy()
             self._revision += 1

@@ -109,7 +109,7 @@ Column {
         onCommitted: (next) => light.model.adjust("depth", 1 - next / 100)
     }
 
-    // The depth picture is the secondary view: the same depth, as a plane drawn across the photo's depth map.
+    // The depth picture is the secondary view: the photo's depth map with what lies at the chosen depth tinted amber.
     Rectangle {
         id: pad
         objectName: "lightDepthPad"
@@ -158,11 +158,6 @@ Column {
             anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 8
             width: parent.width - 24; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
             text: "Raise Amount to light the photo."; color: "#f4f4f4"; style: Text.Outline; styleColor: "#000000"; font.pixelSize: 11
-        }
-        Rectangle {   // the plane: near (bright) below it, far above it
-            visible: light.model.ready
-            x: 0; width: parent.width; height: 2; y: (1 - light.values.depth) * pad.height - 1
-            color: "#f4f4f4"; opacity: 0.8
         }
         Rectangle {
             id: handle

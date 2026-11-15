@@ -8,7 +8,7 @@ Luminar Neo: the effect belongs to its own panel, shows nowhere else, is adjuste
 - **Amount** (0–100): strength of the whole effect. At 0 nothing happens and nothing is drawn on the photo.
 - **Depth**: the distance of the subject, which is left alone; what is nearer is "near" and what is farther "far". Set it by clicking the photo with the dropper (the same way Point Color picks a
   colour; Esc cancels), with the Depth slider (0 = nearest, 100 = farthest), or by dragging up and down in the depth
-  picture. The depth picture is a secondary view: the photo's depth map (near is bright) with a line at the chosen depth.
+  picture. The depth picture is a secondary view: the photo's depth map (near is bright) with what lies at the chosen depth tinted amber.
 - **Softness** (0–100): how far the near/far split spills across object edges.
 - **Warmth** (−100…100): colour temperature of the whole effect.
 - **Advanced Settings**: **Brightness Near/Far** and **Warmth Near/Far** (−100…100 each; the Brightness defaults are −50,
@@ -69,8 +69,10 @@ which is the price of recognising the old ones by name.
 - The effect needs the depth map in the managed cache whenever it is rendered. If the cache file is gone, preview, save and
   export fail with "Light Depth's depth map is missing. Open Light Depth to make it again." rather than rendering without it.
 - Switching the effect on needs two free mask slots (a photo holds 16); with fewer, Light Depth says so.
-- Coverage is authored at 640 pixels on the long edge and scaled by the renderer. It cannot follow edges finer than the depth
-  map itself.
+- Coverage is authored at the depth map's own size (1024 pixels on the long edge) and scaled by the renderer, and is only
+  lightly smoothed, so the effect follows the objects the map shows (trees, grass) rather than the rows they stand on. It
+  cannot follow edges finer than the depth map itself, and in a scene dominated by a ground plane a slab of depth is naturally
+  a band across the ground.
 - Clicks and handles use the picture as the editor shows it. With a host crop applied, the correspondence between the shown
   picture and the depth map has not been checked.
 - Other places that decide whether a photo "has edits" from its recipe alone (badges, sync) do not know about Light Depth's

@@ -23,7 +23,7 @@ MAX_MASKS = 16                        # the most masks a recipe can hold
 
 # Coverage is authored small: it is smooth, and a continuous-tone raster is expensive in the recipe encoding. The renderer
 # scales it to the photo.
-COVERAGE_SIDE = 640
+COVERAGE_SIDE = 1024   # the depth map's own size: finer than that cannot follow anything the map does not show
 PAD_SIDE = 320  # the depth picture shown in the panel
 
 MAX_EXPOSURE = 2.0  # stops at Amount 100 and a zone Brightness of +/-100
@@ -34,9 +34,9 @@ MAX_TEMPERATURE = 60.0  # local Temperature at Amount 100 and a Warmth of +/-100
 # x, y, size: an optional pool of light on the photo (size 100 = the whole photo). wrap: how wide a slab around the depth is
 # left alone (the subject), so the effect "wraps" further around it.
 # shown: 1 = on, 0 = switched off without losing the settings.
-DEFAULTS = {"amount": 0.0, "depth": 0.5, "softness": 30.0, "warmth": 0.0,
+DEFAULTS = {"amount": 0.0, "depth": 0.5, "softness": 10.0, "warmth": 0.0,
             "brightnessNear": -50.0, "warmthNear": 0.0, "brightnessFar": -50.0, "warmthFar": 0.0,
-            "x": 0.5, "y": 0.6, "size": 100.0, "wrap": 30.0, "shown": 1.0}
+            "x": 0.5, "y": 0.6, "size": 100.0, "wrap": 20.0, "shown": 1.0}
 RANGES = {"amount": (0, 100), "depth": (0, 1), "softness": (0, 100), "warmth": (-100, 100),
           "brightnessNear": (-100, 100), "warmthNear": (-100, 100), "brightnessFar": (-100, 100), "warmthFar": (-100, 100),
           "x": (0, 1), "y": (0, 1), "size": (0, 100), "wrap": (0, 100), "shown": (0, 1)}
@@ -125,16 +125,17 @@ def zones(depth, settings, side: int = COVERAGE_SIDE):
     settings = normalized(settings)
     scene = working_depth(depth, side)
     height, width = scene.shape
-    # A touch of smoothing always: the model's map has per-pixel noise that would otherwise show as grain.
-    scene = _blur(scene, max(width, height) * 0.004)
-    band = 0.03 + 0.25 * settings["wrap"] / 100        # half the width of the slab around the depth that is left alone
+    # A touch of smoothing always: the model's map has per-pixel noise that would otherwise show as grain. Not more: the
+    # objects in the map (trees, grass, a post) are what the effect should follow.
+    scene = _blur(scene, max(width, height) * 0.0015)
+    band = 0.02 + 0.25 * settings["wrap"] / 100        # half the width of the slab around the depth that is left alone
     feather = 0.05 + 0.2 * settings["wrap"] / 100      # how gradually each side comes in beyond it
 
     def smooth(values):
         values = np.clip(values / feather, 0, 1)
         return values * values * (3 - 2 * values)
 
-    blur = max(width, height) * 0.06 * settings["softness"] / 100
+    blur = max(width, height) * 0.03 * settings["softness"] / 100
     near = _blur(smooth(scene - (settings["depth"] + band)), blur)
     far = _blur(smooth((settings["depth"] - band) - scene), blur)
     if settings["size"] < 100:

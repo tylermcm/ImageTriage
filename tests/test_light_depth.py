@@ -42,8 +42,21 @@ def test_softness_spills_the_split_across_a_depth_edge():
     wall[:, 60:] = 255  # a near object against a far background
     hard = light_depth.coverage(wall, settings(depth=0.5, wrap=0, softness=0)).astype(int)
     soft = light_depth.coverage(wall, settings(depth=0.5, wrap=0, softness=100)).astype(int)
-    assert hard[40, 52] < 5 and soft[40, 52] > hard[40, 52] + 20
+    assert hard[40, 57] < 5 and soft[40, 57] > hard[40, 57] + 20
     assert soft[40, 110] > 200
+
+
+def test_the_effect_follows_the_objects_at_the_depth_not_the_rows_they_stand_on():
+    """A tree at the chosen depth is picked up as the depth passes it; the sky beside it on the same rows is not."""
+    scene_ = np.full((120, 160), 40, dtype=np.uint8)           # far sky
+    scene_[:, 90:100] = 200                                    # a tree, tall and narrow, at depth ~0.78
+    scene_[100:, :] = np.linspace(120, 255, 20).astype(np.uint8)[:, None]    # ground in front
+    near, far = (part.astype(int) for part in light_depth.zones(scene_, settings(depth=0.78, wrap=0, softness=0)))
+    tree, sky = (slice(20, 80), slice(92, 98)), (slice(20, 80), slice(30, 60))
+    assert near[tree].max() < 5 and far[tree].max() < 5       # the tree sits at the depth: neither side, it is the slab
+    assert far[sky].min() > 250                                # the sky on the very same rows is not at that depth
+    shifted = light_depth.zones(scene_, settings(depth=0.15, wrap=0, softness=0))[0].astype(int)
+    assert shifted[tree].min() > 250                           # with the depth moved farther, the tree is nearer than it
 
 
 def test_a_size_below_100_narrows_both_sides_to_a_pool_around_the_position():
