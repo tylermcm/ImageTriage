@@ -1,40 +1,119 @@
 # Light Depth
 
-A light placed inside the scene, in the in-app RAW editor (Adjust › Light Depth). Modelled on the tool of the same
-name in Luminar: Amount, a depth pad with a draggable light, Softness, Warmth, and Advanced Settings (Distance, Reach,
-Focus).
+Light a photo near and far apart, in the in-app RAW editor (Adjust › Light Depth). Modelled on the tool of the same name in
+Luminar Neo: the effect belongs to its own panel, shows nowhere else, is adjusted in the same panel, and is applied live.
+
+## What the person sees
+
+Light Depth works like Luminar's (checked in Luminar Neo on 2026-11-15): it changes what is **nearer** and what is
+**farther** than a chosen depth, and leaves what lies *at* that depth as it is. Amount alone adds no light there. With the
+default Brightness of -50 on both sides, the photo darkens around the subject and the subject stands out.
+
+- **Amount** (0-100): how strongly the effect is applied. At 0 nothing happens and nothing is drawn on the photo.
+- **Depth**: the distance that is left as it is. Set it by clicking the photo with the dropper (the same way Point Color picks
+  a colour; Esc cancels), with the Depth slider (0 = nearest, 100 = farthest), or by dragging the handle in the depth
+  picture (up is farther, down is nearer).
+- **Feather**: how far from the depth the effect takes to come in: nothing at the depth, in full beyond the feather. In the
+  depth picture it is the two markers either side of the handle (the far one above, the near one below), exactly as in
+  Luminar; drag either. The same setting is the slider under Advanced Settings and the handle on the photo. The depth picture
+  is a secondary view: the photo's depth map (near is bright, at the bottom for a ground plane) with what lies at the chosen
+  depth tinted amber and the feather drawn as a band around it.
+- **Softness** (0-100, default 10): how far the zones spill across object edges.
+- **Warmth** (-100...100): colour temperature of the whole effect, applied to every zone, the depth included.
+- **Advanced Settings**: **Brightness Near/Far** (-100...100, default -50) and **Warmth Near/Far** (-100...100, default 0),
+  which change what is nearer than, or beyond, the depth; plus **Size** (0-100) and the **Feather** slider.
+- **On the photo**, while the section is open and Amount is above zero: a *position* handle (the centre of a pool), a *size*
+  handle on a ring (the pool's radius; at Size 100 there is no ring and the effect covers the whole photo) and a *feather*
+  handle on a short track under the position handle. Dragging them changes the same settings as the sliders, as one undo step
+  per drag.
+- The eye switches the whole effect off and on without losing its settings; the arrow removes it.
+
+Size is this tool's own addition (Luminar has none). **Position and size** narrow the effect to a pool around the handle. An
+earlier build had a separate Wrap (the thickness of the untouched slab); it is the same quantity as the feather, so it is
+gone, and a saved Wrap becomes half that Feather.
 
 ## How it works
 
-1. The first time the section is used on a photo, the developed preview is sent to the depth model
-   (Depth Anything V2 Small, the existing "Depth" model in Set Up AI) on the warm mask-engine host. The map is kept
-   in the managed depth cache, keyed by the photo's path, size and date, so it is made once per photo.
-2. The pad shows that map (near is bright). Dragging the handle puts the light on a point of the photo; the light
-   takes that point's distance in the scene.
-3. The light's reach is turned into the coverage of an ordinary Camera Raw local mask named **Light Depth**:
-   fully lit at the light's distance, fading nearer and farther (Reach), optionally narrowed to a pool around the
-   handle (Focus), spilling across edges (Softness). Amount is a local Exposure of up to +2 stops and Warmth a local
-   Temperature.
+1. The first time the section is used on a photo, the developed preview is sent to a depth model on the warm mask-engine
+   host (see "Depth models" below). The map is kept in the managed depth cache, keyed by the photo's path, size and date and
+   by the model, so it is made once per photo and model.
+2. The draft holds only the section's settings, `lightDepth`. **There is no mask in the draft and none in the saved recipe,
+   so nothing about Light Depth appears in the Mask tab.**
+3. When a render is requested (preview, save, export) the settings and the cached depth map are turned into up to three
+   ordinary Camera Raw local masks (`light_depth.zones`, `light_depth.render_masks`): **near** (nearer than the slab) and
+   **far** (beyond it), each with exposure = Amount x its Brightness and temperature = Amount x (Warmth + its Warmth), and a
+   **depth** mask for the slab itself, which only gets the overall Warmth's temperature. A zone that changes nothing gets no
+   mask, so by default two masks are used. The three zones add up to the whole photo. The masks are appended after the
+   person's own, only in what is sent to the native renderer (`light_depth.with_masks`), and cached for the last few settings.
+4. The live preview helper (`raw_preview.PreviewWorker`) builds them the same way, for the draft and for the saved picture.
+5. Because the renderer only ever sees ordinary masks, it, the full-resolution render and export need no change.
 
-Because the result is a normal mask, the native renderer, export, full-resolution renders and the hosted editor
-need no change, and the mask can be refined in the Mask tab (subtract a brush stroke, intersect with Subject, add
-other local adjustments). Light Depth only replaces the mask's base coverage and its Exposure and Temperature.
-Renaming the mask hands it over as an ordinary mask; Light Depth then starts a new one.
+Where the masks are built: `raw_preview.PreviewWorker` (the fast live preview), `raw_editor._recipe(settings, image_path)`
+(the slower per-edit preview), the save path in `RawEditor._work` (the saved recipe is written from the draft *without*
+them), and `full_render.FullRenderService._request` (export: `light_depth.recipe_for_render`, which also treats a photo whose
+only edit is Light Depth as edited).
+
+## Depth models
+
+The quality of the effect is the quality of the depth map. Light Depth can use three models of the Depth Anything V2 family,
+chosen per photo under Advanced Settings (the choice is the `depthModel` setting and is kept with the photo):
+
+| Model | Repository | Size | Licence |
+|---|---|---|---|
+| Small | `depth-anything/Depth-Anything-V2-Small-hf` | 100 MB | Apache-2.0 |
+| Base | `depth-anything/Depth-Anything-V2-Base-hf` | 390 MB | CC-BY-NC (non-commercial) |
+| Large (default) | `depth-anything/Depth-Anything-V2-Large-hf` | 1.34 GB | CC-BY-NC (non-commercial) |
+
+- Until a model is picked for a photo, the best installed one is used (Large, else Base, else Small); the model that made the
+  map is then saved with the settings. Picking one that is not installed says so instead of falling back.
+- Small is the managed model that Set Up AI installs. Base and Large are not downloaded by the app yet: put the three files
+  (`config.json`, `preprocessor_config.json`, `model.safetensors`) of each in `~/.image-triage/AI/models/Editor/<repository
+  name>/`. A model that is not installed is greyed out in the picker, and choosing it by other means says so.
+- Each model's map is cached separately (`light_depth.png` for Small, `light_depth_base.png`, `light_depth_large.png`), so
+  switching back and forth does not repeat the estimate. The map is kept at 1536 pixels on its long edge.
+- The photo is given to the model at 1036 pixels on the short side instead of the 518 its preprocessing uses
+  (`raw_light_depth.DEPTH_INPUT_SIZE`): on the lake photo the tree outlines are noticeably sharper and a bigger model separates
+  the mountain layers behind them.
+- How long each map took is shown under the picker ("Large depth model: made in 1.9 s (0.8 s loading the model, 1.1 s
+  estimating)") and written, one line per map made or read from the cache, to `light-depth-timing.log` next to
+  `qml-shell.log`, so the models can be compared. The first map after the app starts includes loading the model.
 
 ## Where things are kept
 
-- `image_triage/light_depth.py`: the arithmetic (depth map and settings in, coverage out), no UI.
-- `image_triage/qml_shell/raw_light_depth.py`: the section's model (depth job, undo steps, pad picture).
-- `image_triage/qml_shell/qml/RawLightDepth.qml`: the section.
-- The slider positions travel in the draft as `lightDepth`, so undo and redo restore them. They are host settings:
-  they are removed before anything is sent to the native renderer or written to the recipe, and are saved beside
-  the recipe as `<photo>.photocraft.lightdepth.json`, which moves, renames and deletes with the photo's other edit
-  files.
+- `image_triage/light_depth.py`: the arithmetic (depth map and settings in, coverage out), the render-time masks, the legacy
+  mask filter and the settings file. No UI.
+- `image_triage/qml_shell/raw_light_depth.py`: the section's model (depth job, picking, undo steps, pad picture).
+- `image_triage/qml_shell/qml/RawLightDepth.qml`: the section. `RawLightDepthHandles.qml`: the handles drawn on the photo
+  (placed by `Viewer.qml`, with the dropper's click routed the way Point Color's is).
+- The settings travel in the draft as `lightDepth`, so undo and redo restore them. They are host settings: removed before
+  anything is sent to the native renderer or written to the recipe, and saved beside the recipe as
+  `<photo>.photocraft.lightdepth.json` (version 2) while Amount is above zero. The file moves, renames and deletes with the
+  photo's other edit files.
+
+## Photos edited with the first version
+
+The first version stored the effect as an ordinary mask named "Light Depth" in the recipe. On load that mask is removed from
+the photo's masks and never shown in the Mask tab (a stored draft is filtered the same way, and so is the recipe compared
+against when saving). If a version-1 settings file sits beside it, the effect is **converted** and carries on as the panel's
+effect (approximately: the old light brightened what lay at its depth, which this model cannot express, so its depth, reach and
+focus carry over and the near and far zones get the defaults). Without the settings the old mask is **dropped**: its settings are unknown and it was only a raster. Anything the
+person added to that mask in the Mask tab (subtracted strokes, other adjustments) is lost. Version-1 settings beside a recipe
+that no longer has the mask are ignored. A mask the person made themselves and named "Light Depth" is treated the same way,
+which is the price of recognising the old ones by name.
 
 ## Limits and what has not been checked
 
-- Coverage is authored at 640 pixels on the long edge and scaled by the renderer. Light is smooth, so this is not
-  visible as softness in the picture, but the light cannot follow edges finer than the depth map itself.
-- Windows follow-up on 2026-11-13 ran the installed depth model, generated Light Depth coverage, and rendered it
-  through the paired native RAW preview helper with changed output pixels. The QML section was rendered and
-  visually inspected. Full-resolution edge fidelity and cross-photo synchronization remain separate work.
+- The effect needs the depth map in the managed cache whenever it is rendered. If the cache file is gone, preview, save and
+  export fail with "Light Depth's depth map is missing. Open Light Depth to make it again." rather than rendering without it.
+- Each zone that changes takes one of a photo's 16 mask slots (two by default, three with an overall Warmth); with too few
+  free, Light Depth says so.
+- Coverage is authored at the depth map's own size (1536 pixels on the long edge, the most a raster mask holds) and scaled by the renderer, and is only
+  lightly smoothed, so the effect follows the objects the map shows (trees, grass) rather than the rows they stand on. It
+  cannot follow edges finer than the depth map itself, and in a scene dominated by a ground plane a slab of depth is naturally
+  a band across the ground.
+- Clicks and handles use the picture as the editor shows it. With a host crop applied, the correspondence between the shown
+  picture and the depth map has not been checked.
+- Other places that decide whether a photo "has edits" from its recipe alone (badges, sync) do not know about Light Depth's
+  settings file; only export was changed.
+- The Windows run of the installed depth model and the paired native RAW preview helper from 2026-11-13 predates this design;
+  the near/far masks have not been rendered by the native helper yet.

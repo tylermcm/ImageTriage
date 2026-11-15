@@ -613,6 +613,15 @@ DEFAULT_DEPTH_MODEL_REPO_ID = "depth-anything/Depth-Anything-V2-Small-hf"
 # Apache-2.0 (the Small variant only; Base/Large are CC-BY-NC).
 DEFAULT_DEPTH_MODEL_REVISION = MODEL_BUNDLES["depth"].revision
 DEFAULT_DEPTH_MODEL_SIZE_MB = 100
+# The depth models Light Depth can use, smallest first. Small is the managed default; Base and Large are bigger (and slower,
+# and much more detailed) models of the same family. They sit beside it in the editor models folder. Base and Large are
+# CC-BY-NC (non-commercial).
+DEPTH_VARIANTS = ("small", "base", "large")
+DEPTH_VARIANT_REPOS = {
+    "small": DEFAULT_DEPTH_MODEL_REPO_ID,
+    "base": "depth-anything/Depth-Anything-V2-Base-hf",
+    "large": "depth-anything/Depth-Anything-V2-Large-hf",
+}
 DEPTH_MODEL_DIR_ENV = "IMAGE_TRIAGE_DEPTH_MODEL_DIR"
 DEPTH_MODEL_REPO_ENV = "IMAGE_TRIAGE_DEPTH_MODEL_REPO_ID"
 DEPTH_MODEL_REVISION_ENV = "IMAGE_TRIAGE_DEPTH_MODEL_REVISION"
@@ -625,6 +634,15 @@ DEPTH_MODEL_REQUIRED_FILENAMES = (
 
 def default_depth_model_install_dir(*, repo_id: str = DEFAULT_DEPTH_MODEL_REPO_ID) -> Path:
     return _managed_bundle_dir("depth", repo_id, prefix=("Editor",))
+
+
+def depth_variant_installation(variant: str) -> "AIModelInstallation":
+    """Where the depth model ``variant`` ("small", "base", "large") is, and whether it is installed."""
+    if variant not in DEPTH_VARIANT_REPOS:
+        raise ValueError(f"Unknown depth model: {variant}")
+    if variant == "small":
+        return resolve_depth_model_installation()
+    return resolve_depth_model_installation(repo_id=DEPTH_VARIANT_REPOS[variant], revision="main")
 
 
 def resolve_depth_model_installation(

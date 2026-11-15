@@ -273,15 +273,17 @@ class MaskEngineService:
         input_path: Path,
         output_path: Path,
         progress_callback: ProgressCallback | None,
+        input_size: int | None = None,
     ) -> dict[str, object]:
         """Estimate a relative-depth map (PNG, 255 = nearest). One-shot like the
-        subject/semantic engines."""
+        subject/semantic engines. ``input_size`` is the short side the model is given the photo at."""
         result = self.infer(
             ENGINE_DEPTH,
             model_dir,
             {
                 "inputPath": str(input_path.resolve()),
                 "outputPath": str(output_path.resolve()),
+                **({"inputSize": int(input_size)} if input_size else {}),
             },
             progress_callback,
         )

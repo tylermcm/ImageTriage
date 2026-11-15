@@ -11,6 +11,8 @@ Rectangle {
     property bool whiteBalancePicking: false
     // The Point Color dropper is armed: the next click on the photo picks a colour (the viewer routes it).
     readonly property bool pointColorPicking: !!model && model.pointColor.picking
+    // The Light Depth dropper is armed: the next click on the photo picks the depth under it.
+    readonly property bool lightDepthPicking: !!model && model.lightDepthEditor.picking
     signal photoFocusRequested()
     property string tool: "Adjust"
     readonly property string displaySource: visible && model ? model.preview : ""
@@ -46,7 +48,7 @@ Rectangle {
     onPhotoPathChanged: refreshCapture()
     onCaptureChanged: refreshCapture()
     onVisibleChanged: {
-        if (!visible) { before = false; whiteBalancePicking = false; tool = "Adjust"; if (model) model.pointColor.setPicking(false) }
+        if (!visible) { before = false; whiteBalancePicking = false; tool = "Adjust"; if (model) { model.pointColor.setPicking(false); model.lightDepthEditor.setPicking(false) } }
         else refreshCapture()
         if (model) { model.setCropEditing(visible && tool === "Crop"); model.setSourceView(visible && sourceTool) }
     }

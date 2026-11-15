@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import photocraft_bridge as bridge
+from . import light_depth, photocraft_bridge as bridge
 
 NO_EDITS_OUTCOME = "no_edits"
 RENDERED = "rendered"
@@ -191,6 +191,17 @@ class FullRenderService:
         state, recipe, reason = bridge.recipe_state(image_path)
         if state == bridge.RECIPE_INVALID:
             return failed(reason)
+        # Light Depth's masks are not kept in the saved recipe: they are built from its settings (beside the recipe) and the
+        # photo's depth map. A photo whose only edit is Light Depth is edited although its recipe changes nothing.
+        try:
+            lit = light_depth.recipe_for_render(image_path, recipe)
+        except ValueError as error:
+            return failed(str(error))
+        if lit is not recipe:
+            recipe = lit
+            state, reason = bridge.classify_recipe(recipe)
+            if state == bridge.RECIPE_INVALID:
+                return failed(reason)
         if state == bridge.RECIPE_EDITED:
             return self._with_super_resolution(
                 image_path, recipe, lambda: self._render(image_path, {"recipe": recipe}, proc=proc), progress, cancel

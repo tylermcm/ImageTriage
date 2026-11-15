@@ -78,16 +78,24 @@ def test_a_photo_that_fails_does_not_stop_the_rest_and_cancel_stops_before_the_n
 
 
 def test_a_photos_light_depth_settings_survive_a_sync(tmp_path):
-    import numpy as np
-    from image_triage.qml_shell.raw_masks import encode_raster
-
+    mine = {"name": "Window", "shape": {"type": "linear", "x0": 0, "y0": 0, "x1": 1, "y1": 1}}
     placed = light_depth.normalized({"amount": 60, "depth": 0.4})
-    masks = light_depth.apply([], placed, encode_raster(np.full((4, 6), 200, dtype=np.uint8)))
-    path = photo(tmp_path, "a.NEF", {"masks": masks})
+    path = photo(tmp_path, "a.NEF", {"masks": [mine]})
     light_depth.write_sidecar(bridge.recipe_path(path), placed)
     saves = []
     sync_look([path], {"exposure": 0.5}, save=lambda p, original, draft: saves.append(draft) or "r", defaults=DEFAULTS)
-    assert saves[0]["lightDepth"] == placed and saves[0]["masks"] == masks
+    assert saves[0]["lightDepth"] == placed and saves[0]["masks"] == [mine]      # the effect is settings, not a mask
+
+
+def test_a_sync_converts_an_earlier_versions_light_depth_mask(tmp_path):
+    legacy = {"name": "Light Depth", "shape": {"type": "raster", "w": 1, "h": 1, "data": "AAE="}}
+    path = photo(tmp_path, "a.NEF", {"masks": [legacy]})
+    light_depth.sidecar_path(bridge.recipe_path(path)).write_text(
+        '{"version": 1, "settings": {"amount": 55, "x": 0.3, "y": 0.4, "depth": 0.3, "softness": 20, "warmth": 10, "reach": 60, "focus": 50}}')
+    saves = []
+    sync_look([path], {"exposure": 0.5}, save=lambda p, original, draft: saves.append((original, draft)) or "r", defaults=DEFAULTS)
+    original, draft = saves[0]
+    assert "masks" not in draft and draft["lightDepth"]["amount"] == 55 and original["lightDepth"] == draft["lightDepth"]
 
 
 @pytest.fixture

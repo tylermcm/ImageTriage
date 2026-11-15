@@ -64,15 +64,17 @@ def depth_map_cache_path(
         return None
 
 
-def light_depth_cache_file(source_path: str | Path, *, cache_root: str | Path | None = None) -> Path | None:
+def light_depth_cache_file(source_path: str | Path, *, cache_root: str | Path | None = None, model: str = "small") -> Path | None:
     """Where the Light Depth tool keeps the depth map it made for ``source_path`` (the file may not exist yet), or
     None when the photo cannot be read. A name of its own inside the photo's cache folder: this map is estimated from
-    the developed RAW preview, not from the file the older lens-blur lookup above decodes.
+    the developed RAW preview, not from the file the older lens-blur lookup above decodes. Each depth model has its own file
+    (the Small model's keeps its original name).
     """
     try:
         source = Path(source_path).expanduser().resolve()
         stat = source.stat()
         cache_key = _source_cache_key(source, stat.st_size, stat.st_mtime_ns)
-        return Path(cache_root or default_depth_cache_root()) / cache_key / "light_depth.png"
+        name = "light_depth.png" if model == "small" else f"light_depth_{model}.png"
+        return Path(cache_root or default_depth_cache_root()) / cache_key / name
     except OSError:
         return None
