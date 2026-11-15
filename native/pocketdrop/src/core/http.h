@@ -83,6 +83,7 @@ public:
         std::string name, code;
     };
     PcPairing pcPairing() const;
+    bool pcClaimed() const; // a receiver has paired (or is pairing) with the current offer
     void pcAnswer(bool accept);
     std::string startPcShare(std::shared_ptr<Bundle> bundle);
     void stopPcShare();

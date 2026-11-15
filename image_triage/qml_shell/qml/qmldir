@@ -103,3 +103,4 @@ PdMenuEntry 1.0 PdMenuEntry.qml
 PdPairing 1.0 PdPairing.qml
 PdSwitch 1.0 PdSwitch.qml
 PocketDropView 1.0 PocketDropView.qml
+PdInvite 1.0 PdInvite.qml

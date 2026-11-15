@@ -31,6 +31,7 @@ enum MenuId {
     ID_HIST_CLEAR,
     ID_NOTE_CLIP,
     ID_FORGET_PHONES,
+    ID_VISIBLE,
     ID_ADDR_BASE = 500,
     ID_HIST_BASE = 700,
 };
@@ -164,6 +165,7 @@ void Ui::start() {
     burnAfter_ = shell_.loadSetting("BurnAfter", 0) != 0;
     autoAnywhere_ = shell_.loadSetting("AutoAnywhere", 0) != 0;
     noteClipboard_ = shell_.loadSetting("NoteClipboard", 0) != 0;
+    nearbyVisible_ = shell_.loadSetting("VisibleToNearby", 1) != 0;
     history_ = persist::parse_history(shell_.loadString("History", ""));
     server_.setTrustedDevices(persist::parse_devices(shell_.loadString("TrustedPhones", "")));
     inbox_ = shell_.loadString("InboxDir", util::path_join(plat::downloads_dir(), "PocketDrop"));
@@ -205,6 +207,7 @@ void Ui::shutdown() {
     if (hotspot_) hotspot_->stop();
     if (tunnel_) tunnel_->stop();
     stopPc();
+    nearby_.stop();
     server_.stop();
     bundle_.reset();
 }
@@ -215,6 +218,7 @@ void Ui::saveSettings() {
     shell_.saveSetting("BurnAfter", burnAfter_);
     shell_.saveSetting("AutoAnywhere", autoAnywhere_);
     shell_.saveSetting("NoteClipboard", noteClipboard_);
+    shell_.saveSetting("VisibleToNearby", nearbyVisible_);
 }
 
 // ---------------------------------------------------------------- content
@@ -360,9 +364,10 @@ std::vector<NearbyPeer> Ui::pcSenders() const {
 
 void Ui::stopPc() {
     pcReceiver_.stop();
-    nearby_.stop();
+    nearby_.setOffer({}); // other PCs can still see this one; only the offer is withdrawn
     server_.stopPcShare();
     pcMode_ = PcMode::Phone;
+    inviteTargeted_ = false;
     pcOffer_.clear();
     pcSent_ = pcStarted_ = pcReceived_ = false;
     pcDownload_ = {};
@@ -373,7 +378,7 @@ void Ui::stopPc() {
 void Ui::startPcSend() {
     stopPc();
     if (mode_ == 1) setMode(0); // Anywhere listens on loopback only; a PC on the LAN needs the LAN address
-    if (!nearby_.start(server_.port())) {
+    if (!ensureNearby()) {
         shell_.alert("PC Share", "Couldn't start PC discovery. Check that UDP port 47292 is available.");
         return;
     }
@@ -386,7 +391,7 @@ void Ui::startPcSend() {
 
 void Ui::startPcReceive() {
     stopPc();
-    if (!nearby_.start(server_.port())) {
+    if (!ensureNearby()) {
         shell_.alert("PC Share", "Couldn't start PC discovery. Check that UDP port 47292 is available.");
         return;
     }
@@ -395,11 +400,69 @@ void Ui::startPcReceive() {
     invalidate();
 }
 
+// Discovery runs whenever the server listens on a network address, so other PCs can offer this one files. It never runs
+// for loopback-only Anywhere, whose address nobody else could reach.
+bool Ui::ensureNearby() {
+    if (listenAddress_.empty() || listenAddress_ == "127.0.0.1" || !server_.port()) {
+        nearby_.stop();
+        return false;
+    }
+    if (!nearby_.running() || nearby_.httpPort() != server_.port()) {
+        if (!nearby_.start(server_.port())) return false;
+    }
+    nearby_.setVisible(nearbyVisible_);
+    return true;
+}
+
+// A drop aimed at one PC: offer the files, and invite that PC to fetch them. It pairs and the person here compares the
+// code, exactly as for any PC Share.
+void Ui::startPcSendTo(const std::string& peerId) {
+    NearbyPeer target;
+    bool found = false;
+    for (const auto& p : nearby_.peers()) if (p.id == peerId) { target = p; found = true; }
+    if (!found) return;
+    startPcSend();
+    if (pcMode_ != PcMode::Send) return;
+    inviteTarget_ = target;
+    inviteTargeted_ = true;
+    invitedAt_ = 0;
+    pollPc();
+}
+
+void Ui::answerInvite(bool accept) {
+    auto invites = nearby_.invites();
+    if (invites.empty()) return;
+    NearbyInvite invite = invites.front();
+    nearby_.dismissInvite(invite.senderId);
+    invitesSeen_.erase(invite.senderId);
+    if (!accept) { invalidate(); return; }
+    startPcReceive();
+    if (pcMode_ != PcMode::Receive) return;
+    NearbyPeer peer;
+    peer.id = invite.senderId; peer.name = invite.name; peer.ip = invite.ip; peer.port = invite.port; peer.offer = invite.offer;
+    peer.seen = plat::tick_ms();
+    receiveFrom(peer);
+}
+
+// An invitation is shown until it is answered; a new one gets the person's attention once.
+void Ui::pollNearby() {
+    if (!nearby_.running()) return;
+    for (const auto& invite : nearby_.invites()) {
+        if (invitesSeen_.insert(invite.senderId).second) {
+            doneText_ = invite.name + " wants to send you files";
+            doneAt_ = plat::tick_ms();
+            shell_.attention();
+        }
+    }
+}
+
 void Ui::publishPc() {
     if (pcMode_ != PcMode::Send || pcSent_ || !pcOffer_.empty() || building_ || !bundle_ || !bundle_->ready || paths_.empty()) return;
     pcOffer_ = server_.startPcShare(bundle_);
     nearby_.setOffer(pcOffer_);
 }
+
+
 
 void Ui::receiveFrom(const NearbyPeer& peer) {
     if (pcMode_ != PcMode::Receive || peer.offer.empty()) return;
@@ -411,9 +474,21 @@ void Ui::receiveFrom(const NearbyPeer& peer) {
     invalidate();
 }
 
+namespace {
+const uint64_t INVITE_RETRY_MS = 4000;
+}
+
 void Ui::pollPc() {
     if (pcMode_ == PcMode::Send) {
         publishPc();
+        // Until that PC connects, say again now and then: a UDP packet can be lost.
+        if (inviteTargeted_ && !pcOffer_.empty() && !pcSent_ && !server_.pcClaimed()) {
+            uint64_t now = plat::tick_ms();
+            if (!invitedAt_ || now - invitedAt_ >= INVITE_RETRY_MS) {
+                nearby_.invite(inviteTarget_, pcOffer_);
+                invitedAt_ = now;
+            }
+        }
         if (!pcSent_ && server_.pcShareComplete()) {
             pcSent_ = true;
             nearby_.setOffer({});
@@ -568,6 +643,7 @@ void Ui::refreshBinding(bool force) {
         return;
     }
     listenAddress_ = address;
+    ensureNearby();
     if (mode_ == 1) tunnel_->start(server_.port(), false);
 }
 
@@ -723,6 +799,7 @@ void Ui::onReceived() {
 void Ui::tick() {
     uint64_t now = plat::tick_ms();
     pollPc();
+    pollNearby();
     if (mode_ == 2 && hotspot_) hotspot_->poll();
     if (server_.maintain(sharing())) refreshQr();
     spin_ += 0.2f;
@@ -890,6 +967,7 @@ void Ui::showMenu() {
     items.push_back(sep);
     items.push_back(item(ID_BURN, "Stop sharing after a download", burnAfter_));
     items.push_back(item(ID_NOTE_CLIP, "Copy phone notes to the clipboard", noteClipboard_));
+    items.push_back(item(ID_VISIBLE, "Let nearby PocketDrops see this PC", nearbyVisible_));
     size_t phones = server_.trustedDevices().size();
     if (phones) items.push_back(item(ID_FORGET_PHONES, "Forget remembered phones (" + std::to_string(phones) + ")"));
     items.push_back(item(ID_WARN_ANY, "Warn before using Anywhere", !shell_.loadSetting("AnywhereRiskDismissed", 0)));
@@ -923,6 +1001,11 @@ void Ui::menuCommand(int cmd) {
         saveSettings();
         break;
     case ID_FORGET_PHONES: server_.forgetDevices(); break;
+    case ID_VISIBLE:
+        nearbyVisible_ = !nearbyVisible_;
+        saveSettings();
+        nearby_.setVisible(nearbyVisible_);
+        break;
     case ID_COPY: copyLink(); break;
     case ID_OPEN_BROWSER:
         if (hasLink) shell_.openUrl(shareUrl());
@@ -1769,6 +1852,12 @@ void Ui::command(const std::string& name, const std::string& arg) {
             refreshBinding();
             refreshQr();
         }
+    } else if (name == "pc_send_to") {
+        startPcSendTo(arg);
+    } else if (name == "pc_invite_accept") {
+        answerInvite(true);
+    } else if (name == "pc_invite_decline") {
+        answerInvite(false);
     } else if (name == "pc_pick") {
         auto senders = pcSenders();
         int i = number();
@@ -1783,12 +1872,30 @@ void Ui::command(const std::string& name, const std::string& arg) {
         static const std::map<std::string, int> ids = {
             {"open_inbox", ID_OPEN_INBOX},   {"change_inbox", ID_CHANGE_INBOX}, {"burn", ID_BURN},
             {"auto_any", ID_AUTO_ANY},       {"warn_any", ID_WARN_ANY},         {"topmost", ID_TOPMOST},
-            {"stop_tunnel", ID_STOP_TUNNEL}, {"about", ID_ABOUT},          {"note_clip", ID_NOTE_CLIP},
+            {"stop_tunnel", ID_STOP_TUNNEL}, {"about", ID_ABOUT},          {"note_clip", ID_NOTE_CLIP}, {"visible", ID_VISIBLE},
             {"forget_phones", ID_FORGET_PHONES}, {"history_clear", ID_HIST_CLEAR}};
         auto it = ids.find(arg);
         if (it != ids.end()) menuCommand(it->second);
     }
     invalidate();
+}
+
+std::string Ui::nearbyJson() const {
+    std::string out = "{\"visible\":" + jbool(nearbyVisible_) + ",\"peers\":[";
+    bool first = true;
+    if (nearby_.running()) {
+        for (const auto& p : nearby_.peers()) {
+            out += std::string(first ? "" : ",") + "{\"id\":" + jstr(p.id) + ",\"name\":" + jstr(p.name) + ",\"ip\":" + jstr(p.ip) +
+                   ",\"sending\":" + jbool(!p.offer.empty()) + "}";
+            first = false;
+        }
+    }
+    out += "],\"invite\":";
+    auto invites = nearby_.running() ? nearby_.invites() : std::vector<NearbyInvite>{};
+    out += invites.empty() ? std::string("null")
+                           : "{\"id\":" + jstr(invites[0].senderId) + ",\"name\":" + jstr(invites[0].name) + ",\"ip\":" + jstr(invites[0].ip) + "}";
+    out += ",\"target\":" + jstr(inviteTargeted_ ? inviteTarget_.name : std::string()) + "}";
+    return out;
 }
 
 std::string Ui::sendersJson() const {
@@ -1998,7 +2105,7 @@ std::string Ui::stateJson() {
 
     std::string j = "{";
     j += "\"pc\":{\"mode\":" + std::to_string((int)pcMode_) + ",\"sent\":" + jbool(pcSent_) +
-         ",\"phase\":" + std::to_string((int)pcDownload_.phase) + ",\"senders\":" + sendersJson() + ",\"code\":" + jstr(pcDownload_.code) +
+         ",\"phase\":" + std::to_string((int)pcDownload_.phase) + ",\"senders\":" + sendersJson() + ",\"nearby\":" + nearbyJson() + ",\"code\":" + jstr(pcDownload_.code) +
          ",\"pair\":{\"pending\":" + jbool(server_.pcPairing().pending) + ",\"name\":" + jstr(server_.pcPairing().name) +
          ",\"code\":" + jstr(server_.pcPairing().code) + "},\"name\":" + jstr(pcDownload_.name) +
          ",\"error\":" + jstr(pcDownload_.error) + ",\"received\":" + std::to_string(pcDownload_.received) +

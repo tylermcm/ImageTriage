@@ -58,6 +58,7 @@ Popup {
             Heading { text: "NEARBY PCS" }
             Entry { label: "Send files to another PC…"; onActivated: pocketDrop.command("pc_send") }
             Entry { label: "Receive files from another PC…"; onActivated: pocketDrop.command("pc_receive") }
+            Entry { label: "Let nearby PocketDrops see this PC"; tick: true; ticked: !!((menu.d.pc || {}).nearby || {}).visible; stay: true; onActivated: pocketDrop.command("menu", "visible") }
 
             Heading { text: "SETTINGS" }
             Entry { label: "Stop sharing after a download"; tick: true; ticked: !!menu.m.burn; stay: true; onActivated: pocketDrop.command("menu", "burn") }

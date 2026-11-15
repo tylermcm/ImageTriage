@@ -109,6 +109,11 @@ private:
     void showNearby();
     void startPcSend();
     void startPcReceive();
+    void startPcSendTo(const std::string& peerId);
+    void answerInvite(bool accept);
+    bool ensureNearby();
+    void pollNearby();
+    std::string nearbyJson() const;
     void stopPc();
     void publishPc();
     void pollPc();
@@ -161,6 +166,11 @@ private:
 
     HttpServer server_;
     NearbyDiscovery nearby_;
+    bool nearbyVisible_ = true;      // other PocketDrops on the network may list this PC
+    NearbyPeer inviteTarget_;        // the PC a drop was aimed at, until its person answers
+    bool inviteTargeted_ = false;
+    uint64_t invitedAt_ = 0;
+    std::set<std::string> invitesSeen_;
     enum class PcMode { Phone, Send, Receive };
     PcMode pcMode_ = PcMode::Phone;
     PcReceiver pcReceiver_;

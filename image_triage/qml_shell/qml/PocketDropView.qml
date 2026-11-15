@@ -18,6 +18,9 @@ Item {
     property alias menuExtras: menu.extras        // and entries in the menu's settings group
     readonly property var d: pocketDrop.st
     readonly property var pc: d.pc || ({})
+    readonly property var nearby: pc.nearby || ({})
+    readonly property var peers: nearby.peers || []
+    property var sendTarget: null                 // the nearby PC a file picker is open for
     readonly property bool pcActive: (pc.mode || 0) !== 0
     readonly property string card: dropArea.containsDrag || externalDrag ? "drag" : (d.card || "busy")
     readonly property string mono: Qt.platform.os === "windows" ? "Consolas" : "monospace"
@@ -34,6 +37,9 @@ Item {
     function chooseFiles() { filesDialog.open() }
     function chooseFolder() { folderDialog.open() }
     function chooseInbox() { inboxDialog.open() }
+    // Files go to a nearby PC: put them in the list, then aim the share at that PC.
+    function sendTo(peer, urls) { if (urls && urls.length) pocketDrop.addUrls(urls); pocketDrop.command("pc_send_to", peer.id) }
+    function pickFor(peer) { if (pocketDrop.rows.length) sendTo(peer, []); else { sendTarget = peer; sendDialog.open() } }
     function hostOf(link) { return (link || "").split("/")[0] }
 
     // ---- header ------------------------------------------------------------------------------------------------------------
@@ -109,7 +115,8 @@ Item {
                 if (sending) {
                     if (page.pc.pair && page.pc.pair.pending) return "Code " + page.pc.pair.code
                     if (page.pc.sent) return "Sent successfully"
-                    if (!(page.d.rows || []).length) return "Choose files to send"
+                    if (page.nearby.target) return "Waiting for " + page.nearby.target
+                    if (!pocketDrop.rows.length) return "Choose files to send"
                     return "Waiting for the other PC"
                 }
                 if (phase === 7) return "Code " + (page.pc.code || "")
@@ -125,7 +132,8 @@ Item {
                 if (sending) {
                     if (page.pc.pair && page.pc.pair.pending) return page.pc.pair.name + " wants to receive"
                     if (page.pc.sent) return "The transfer is closed"
-                    return (page.d.rows || []).length ? "On the other PC choose Receive files from another PC" : "Drop files here or choose Add"
+                    if (page.nearby.target) return "They need to accept on their screen"
+                    return pocketDrop.rows.length ? "On the other PC choose Receive files from another PC" : "Drop files here or choose Add"
                 }
                 if (phase === 7) return "Check it matches on the sending PC, then wait for it to accept"
                 if (phase === 2 && page.pc.total) return Math.round(100 * (page.pc.received || 0) / page.pc.total) + "%"
@@ -134,7 +142,7 @@ Item {
                 return page.pc.name || ""
             }
             readonly property string pcAction: {
-                if (sending) return page.pc.sent ? "Send again" : (page.d.rows || []).length ? "Stop sharing" : "Choose files"
+                if (sending) return page.pc.sent ? "Send again" : pocketDrop.rows.length ? "Stop sharing" : "Choose files"
                 if (phase === 4) return "Show in folder"
                 if (phase === 5 || phase === 6) return "Try again"
                 return "Cancel"
@@ -142,7 +150,7 @@ Item {
             function runPc() {
                 if (sending) {
                     if (page.pc.sent) pocketDrop.command("pc_send")
-                    else if (!(page.d.rows || []).length) page.chooseFiles()
+                    else if (!pocketDrop.rows.length) page.chooseFiles()
                     else pocketDrop.command("pc_stop")
                 } else if (phase === 4) pocketDrop.command("pc_action")
                 else if (phase === 5 || phase === 6) pocketDrop.command("pc_receive")
@@ -213,10 +221,48 @@ Item {
         }
     }
 
+    // ---- other PCs nearby: drop files on one to send them ------------------------------------------------------------------------
+    Item {
+        id: nearbyRow
+        objectName: "nearbyStrip"
+        x: page.gutter; y: linkRow.y + linkRow.height + 4; width: page.innerW
+        height: visible ? 40 : 0
+        visible: !page.pcActive && page.peers.length > 0
+        Text { id: nearbyLabel; anchors.verticalCenter: parent.verticalCenter; text: "Nearby"; color: theme.fg3; font.pixelSize: 11; font.weight: Font.Medium; font.letterSpacing: 0.5 }
+        Flickable {
+            x: nearbyLabel.width + 10; width: parent.width - x; height: parent.height
+            contentWidth: peerRow.width; clip: true; boundsBehavior: Flickable.StopAtBounds
+            Row {
+                id: peerRow; spacing: 6; y: 5
+                Repeater {
+                    model: page.peers
+                    delegate: Item {
+                        id: peerChip
+                        objectName: "peerChip" + index
+                        required property var modelData
+                        required property int index
+                        width: chipRow.width + 20; height: 30
+                        readonly property bool aimed: drop.containsDrag
+                        Rectangle { anchors.fill: parent; radius: 10; color: peerChip.aimed ? Qt.alpha(theme.accent, 0.28) : Qt.alpha(theme.accent, ph.hovered ? 0.2 : 0.12)
+                            border.color: peerChip.aimed ? theme.accent : "transparent"; border.width: 1.5 }
+                        Row { id: chipRow; anchors.centerIn: parent; spacing: 6
+                            PdIcon { path: "M4 5h16v10H4zM9 19h6M12 15v4"; size: 14; strokeWidth: 2; color: theme.accentFg; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: peerChip.modelData.name; color: theme.accentFg; font.pixelSize: 12; font.weight: Font.Medium; anchors.verticalCenter: parent.verticalCenter } }
+                        DropArea { id: drop; anchors.fill: parent; keys: ["text/uri-list"]
+                            onDropped: (drop) => { if (drop.hasUrls) page.sendTo(peerChip.modelData, drop.urls); drop.accept() } }
+                        HoverHandler { id: ph; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: page.pickFor(peerChip.modelData) }
+                        Accessible.role: Accessible.Button; Accessible.name: "Send files to " + peerChip.modelData.name
+                    }
+                }
+            }
+        }
+    }
+
     // ---- one line: the connection, with the one switch that matters ------------------------------------------------------------
     Item {
         id: connRow
-        x: page.gutter; y: linkRow.y + linkRow.height + 6; width: page.innerW; height: 34
+        x: page.gutter; y: nearbyRow.y + nearbyRow.height + 6; width: page.innerW; height: 34
         visible: !page.pcActive
         readonly property bool offlineNow: page.mode === 2
         PdIcon { x: 2; anchors.verticalCenter: parent.verticalCenter; size: 16; strokeWidth: 1.9; color: theme.fg3
@@ -294,7 +340,7 @@ Item {
                     Accessible.role: Accessible.Button; Accessible.name: "More ways to add" }
             }
             Row { id: extraRow; spacing: 8; height: 38 }
-            PdButton { id: clearBtn; visible: (page.d.rows || []).length > 0 && !page.pcActive; height: 38; width: 38; iconPath: "M6 6l12 12M18 6L6 18"; Accessible.name: "Clear everything"
+            PdButton { id: clearBtn; visible: pocketDrop.rows.length > 0 && !page.pcActive; height: 38; width: 38; iconPath: "M6 6l12 12M18 6L6 18"; Accessible.name: "Clear everything"
                 onClicked: pocketDrop.clearAll() }
         }
         Popup {
@@ -370,6 +416,7 @@ Item {
     }
     PdMenu { id: menu; view: page; d: page.d; x: page.width - width - page.gutter; y: top.y + top.height + 4 }
     PdPairing { anchors.fill: parent; pair: page.pc.pair || ({}) }
+    PdInvite { anchors.fill: parent; invite: page.nearby.invite || null }
 
     Rectangle {
         id: risk
@@ -389,6 +436,9 @@ Item {
         }
     }
 
+    FileDialog { id: sendDialog; title: "Choose files to send"; fileMode: FileDialog.OpenFiles
+        onAccepted: { if (page.sendTarget) page.sendTo(page.sendTarget, selectedFiles); page.sendTarget = null }
+        onRejected: page.sendTarget = null }
     FileDialog { id: filesDialog; title: "Choose files to share"; fileMode: FileDialog.OpenFiles; onAccepted: pocketDrop.addUrls(selectedFiles) }
     FolderDialog { id: folderDialog; title: "Choose a folder to share"; onAccepted: pocketDrop.addUrls([selectedFolder]) }
     FolderDialog { id: inboxDialog; title: "Choose where received files are saved"; onAccepted: pocketDrop.changeInbox(selectedFolder) }
