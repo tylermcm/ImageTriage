@@ -41,10 +41,9 @@ def sync_look(paths, look, *, save, unsaved=lambda path: False, cancelled=lambda
             if state == bridge.RECIPE_INVALID:
                 skipped.append((name, reason or "its saved edit cannot be read"))
                 continue
-            original = dict(recipe["cameraRaw"]) if recipe else {}
-            placed = light_depth.read_sidecar(bridge.recipe_path(path))
-            if placed and light_depth.find_mask(original.get("masks")) >= 0:
-                original["lightDepth"] = placed          # so saving keeps the photo's Light Depth settings
+            original, placed = light_depth.load_settings(bridge.recipe_path(path), dict(recipe["cameraRaw"]) if recipe else {})
+            if placed:
+                original = {**original, "lightDepth": placed}      # so saving keeps the photo's Light Depth settings
             draft = with_look(original, look, original, defaults or {})
             if draft == original:
                 skipped.append((name, "already has these settings"))

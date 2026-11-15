@@ -1,32 +1,44 @@
-"""Light Depth: place a light inside the scene using a monocular depth map.
+"""Light Depth: light a photo near and far apart, using a monocular depth map.
 
-The light is not a new pixel operation. Its reach is turned into the coverage of an ordinary Camera Raw local mask
-(brighter and warmer where the light falls), so the native renderer, export and the hosted editor all treat it like any
-other mask. This module is the arithmetic only: depth map and settings in, 8-bit coverage out.
+The effect belongs to the Light Depth panel and shows nowhere else. The draft and the settings file beside the recipe hold
+only the panel's settings (``lightDepth``). The local masks the native renderer needs are built from those settings and the
+photo's cached depth map when a render is requested (preview, save, export) and are never stored in the recipe's masks, so
+they do not appear in the Mask tab. This module is the arithmetic and the file handling only, with no UI.
 
-Depth maps are 8-bit, 255 = nearest (``depth_worker``).
+Depth maps are 8-bit, 255 = nearest (``depth_worker``). Inside this module depth is 0 (far) .. 1 (near).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+from collections import OrderedDict
 from pathlib import Path
 
-MASK_NAME = "Light Depth"
+LEGACY_MASK_NAME = "Light Depth"      # earlier versions stored the effect as an ordinary mask with this name
+NEAR_NAME, FAR_NAME = "Light Depth near", "Light Depth far"
 SIDECAR_TAIL = ".photocraft.lightdepth.json"  # carried with the photo's other edit files (``edit_carry.EDIT_MARKERS``)
-SIDECAR_VERSION = 1
+SIDECAR_VERSION = 2
+MAX_MASKS = 16                        # the most masks a recipe can hold
 
-# Coverage is authored small: light falls off smoothly, and a continuous-tone raster is expensive in the run-length
-# recipe encoding. The renderer scales it to the photo.
+# Coverage is authored small: it is smooth, and a continuous-tone raster is expensive in the recipe encoding. The renderer
+# scales it to the photo.
 COVERAGE_SIDE = 640
 PAD_SIDE = 320  # the depth picture shown in the panel
 
-MAX_EXPOSURE = 2.0  # stops at Amount 100
-MAX_TEMPERATURE = 60.0  # local Temperature at Warmth +/-100
+MAX_EXPOSURE = 2.0  # stops at Amount 100 and a zone Brightness of +/-100
+MAX_TEMPERATURE = 60.0  # local Temperature at Amount 100 and a Warmth of +/-100
 
-DEFAULTS = {"amount": 0.0, "x": 0.5, "y": 0.6, "depth": 0.5, "softness": 30.0, "warmth": 0.0, "reach": 50.0, "focus": 0.0}
-RANGES = {"amount": (0, 100), "x": (0, 1), "y": (0, 1), "depth": (0, 1), "softness": (0, 100), "warmth": (-100, 100),
-          "reach": (0, 100), "focus": (0, 100)}
+# amount: strength of the whole effect. depth: where near becomes far (0 far .. 1 near). softness: how far the split spills
+# across object edges. warmth: colour of the whole effect. brightness/warmth Near/Far: what happens on each side of the split.
+# x, y, size: an optional pool of light on the photo (size 100 = the whole photo). wrap: how gradually near becomes far.
+# shown: 1 = on, 0 = switched off without losing the settings.
+DEFAULTS = {"amount": 0.0, "depth": 0.5, "softness": 30.0, "warmth": 0.0,
+            "brightnessNear": -50.0, "warmthNear": 0.0, "brightnessFar": -50.0, "warmthFar": 0.0,
+            "x": 0.5, "y": 0.6, "size": 100.0, "wrap": 30.0, "shown": 1.0}
+RANGES = {"amount": (0, 100), "depth": (0, 1), "softness": (0, 100), "warmth": (-100, 100),
+          "brightnessNear": (-100, 100), "warmthNear": (-100, 100), "brightnessFar": (-100, 100), "warmthFar": (-100, 100),
+          "x": (0, 1), "y": (0, 1), "size": (0, 100), "wrap": (0, 100), "shown": (0, 1)}
 
 
 def valid(settings) -> bool:
@@ -44,6 +56,17 @@ def normalized(settings) -> dict:
             if type(value) in (int, float) and math.isfinite(value):
                 result[key] = float(max(low, min(high, value)))
     return result
+
+
+def active(settings) -> bool:
+    """Whether the effect changes the photo: switched on and with some Amount."""
+    settings = normalized(settings)
+    return settings["amount"] > 0 and settings["shown"] > 0
+
+
+def pool_spread(size) -> float:
+    """The pool's reach in picture widths (a Gaussian's sigma) for a ``size`` below 100."""
+    return 0.05 + 0.95 * max(0.0, min(100.0, float(size))) / 100
 
 
 def _blur(values, radius: float):
@@ -75,7 +98,7 @@ def working_depth(depth, side: int = COVERAGE_SIDE):
 
 def depth_at(depth, x: float, y: float) -> float:
     """Scene depth (0 far .. 1 near) under a point of the photo, averaged over a small patch so one noisy pixel does
-    not decide where the light sits."""
+    not decide what a click picks."""
     import numpy as np
 
     values = np.asarray(depth, dtype=np.float32)
@@ -88,68 +111,143 @@ def depth_at(depth, x: float, y: float) -> float:
     return float(np.median(patch))
 
 
-def coverage(depth, settings, side: int = COVERAGE_SIDE):
-    """How strongly the light falls on each pixel, as uint8 (255 = full light).
+def zones(depth, settings, side: int = COVERAGE_SIDE):
+    """How strongly each pixel belongs to the near side and to the far side of the split, as two uint8 arrays.
 
-    The light sits at ``depth`` in the scene. Things at that distance are fully lit and the light fades for things
-    nearer or farther; ``reach`` sets how far through the scene it carries. ``focus`` above zero also narrows it
-    sideways around ``x``, turning a sheet of light into a pool. ``softness`` lets it spill across object edges.
+    Things nearer than ``depth`` are near and farther things far; ``wrap`` sets how gradually one becomes the other and
+    ``softness`` lets the split spill across object edges. Below size 100 both are also narrowed to a pool around
+    (``x``, ``y``): the effect fades out beyond it.
     """
     import numpy as np
 
     settings = normalized(settings)
     scene = working_depth(depth, side)
     height, width = scene.shape
-    # A touch of smoothing always: the model's map has per-pixel noise that would otherwise show as grain in the light.
+    # A touch of smoothing always: the model's map has per-pixel noise that would otherwise show as grain.
     scene = _blur(scene, max(width, height) * 0.004)
-    sigma = 0.05 + 0.45 * (settings["reach"] / 100) ** 1.5
-    light = np.exp(-0.5 * ((scene - settings["depth"]) / sigma) ** 2)
-    if settings["focus"] > 0:
-        spread = 1.2 - 1.05 * settings["focus"] / 100  # in picture widths
+    span = 0.02 + 0.5 * settings["wrap"] / 100
+    ramp = np.clip((scene - (settings["depth"] - span / 2)) / span, 0, 1)
+    near = ramp * ramp * (3 - 2 * ramp)
+    near = _blur(near, max(width, height) * 0.06 * settings["softness"] / 100)
+    far = 1 - near
+    if settings["size"] < 100:
         columns = (np.arange(width, dtype=np.float32) + 0.5) / width
         rows = (np.arange(height, dtype=np.float32) + 0.5) / height
-        aspect = height / width
-        distance = np.hypot(columns[None, :] - settings["x"], (rows[:, None] - settings["y"]) * aspect)
-        light = light * np.exp(-0.5 * (distance / spread) ** 2)
-    light = _blur(light, max(width, height) * 0.06 * settings["softness"] / 100)
-    return np.clip(np.rint(light * 255), 0, 255).astype(np.uint8)
+        distance = np.hypot(columns[None, :] - settings["x"], (rows[:, None] - settings["y"]) * (height / width))
+        pool = np.exp(-0.5 * (distance / pool_spread(settings["size"])) ** 2)
+        near, far = near * pool, far * pool
+    return tuple(np.clip(np.rint(part * 255), 0, 255).astype(np.uint8) for part in (near, far))
 
 
-def adjustment(settings) -> dict:
-    """The local adjustment the light applies where it falls."""
+def coverage(depth, settings, side: int = COVERAGE_SIDE):
+    """The near side of the split alone (255 = fully near): what the panel's picture shows."""
+    return zones(depth, settings, side)[0]
+
+
+def adjustments(settings) -> tuple[dict, dict]:
+    """The local adjustment applied on the near side and on the far side. Amount scales both; a zone's Brightness is
+    its exposure and its Warmth, added to the overall Warmth, its temperature."""
     settings = normalized(settings)
-    result = {"exposure": round(MAX_EXPOSURE * settings["amount"] / 100, 4)}
-    if settings["warmth"]:
-        result["temperature"] = round(MAX_TEMPERATURE * settings["warmth"] / 100, 2)
+    strength = settings["amount"] / 100
+    result = []
+    for zone in ("Near", "Far"):
+        adjust = {}
+        exposure = round(MAX_EXPOSURE * strength * settings["brightness" + zone] / 100, 4)
+        warmth = max(-100.0, min(100.0, settings["warmth"] + settings["warmth" + zone]))
+        temperature = round(MAX_TEMPERATURE * strength * warmth / 100, 2)
+        if exposure:
+            adjust["exposure"] = exposure
+        if temperature:
+            adjust["temperature"] = temperature
+        result.append(adjust)
+    return result[0], result[1]
+
+
+def is_legacy_mask(mask) -> bool:
+    return isinstance(mask, dict) and mask.get("name") == LEGACY_MASK_NAME
+
+
+def strip_legacy(settings: dict) -> dict:
+    """``settings`` (a recipe's Camera Raw settings) without a mask that an earlier version made for Light Depth. A
+    photo's masks are authored in the Mask tab, which never shows that one."""
+    masks = settings.get("masks")
+    if not isinstance(masks, list) or not any(is_legacy_mask(mask) for mask in masks):
+        return settings
+    result = dict(settings)
+    kept = [mask for mask in masks if not is_legacy_mask(mask)]
+    if kept:
+        result["masks"] = kept
+    else:
+        result.pop("masks")
     return result
 
 
-def find_mask(masks) -> int:
-    """Index of the mask Light Depth manages, or -1. It is found by name, so renaming it in the Mask tab hands it over
-    to the person as an ordinary mask."""
-    for index, mask in enumerate(masks or []):
-        if isinstance(mask, dict) and mask.get("name") == MASK_NAME:
-            return index
-    return -1
+# --- the masks a render uses ----------------------------------------------------------------------------------------------
+
+_BUILT = OrderedDict()  # (settings, depth digest) -> the two mask rows; a slider drag renders the same settings again and again
 
 
-def apply(masks, settings, shape) -> list:
-    """``masks`` with the Light Depth mask created or updated. Only its base coverage and the two values the light
-    owns are replaced, so components and other adjustments added to it in the Mask tab stay."""
-    from copy import deepcopy
+def render_masks(settings, depth) -> list:
+    """The two local masks (near, far) that carry ``settings`` into a render, or [] when the effect changes nothing."""
+    import numpy as np
 
-    rows = deepcopy(list(masks or []))
-    index = find_mask(rows)
-    owned = adjustment(settings)
-    if index < 0:
-        rows.append({"name": MASK_NAME, "enabled": True, "invert": False, "amount": 100, "shape": shape, "adjust": owned})
-        return rows
-    mask = rows[index]
-    mask["shape"] = shape
-    kept = {key: value for key, value in mask.get("adjust", {}).items() if key not in ("exposure", "temperature")}
-    mask["adjust"] = {**kept, **owned}
-    return rows
+    from .qml_shell.raw_masks import encode_raster
 
+    settings = normalized(settings)
+    if not active(settings):
+        return []
+    depth = np.ascontiguousarray(depth)
+    key = (tuple(sorted(settings.items())), hashlib.blake2b(depth.tobytes(), digest_size=16).digest(), depth.shape)
+    if key not in _BUILT:
+        rows = []
+        for name, raster, adjust in zip((NEAR_NAME, FAR_NAME), zones(depth, settings), adjustments(settings)):
+            if adjust:
+                rows.append({"name": name, "enabled": True, "invert": False, "amount": 100,
+                             "shape": encode_raster(raster), "adjust": adjust})
+        _BUILT[key] = rows
+        while len(_BUILT) > 4:
+            _BUILT.popitem(last=False)
+    _BUILT.move_to_end(key)
+    return [dict(row, adjust=dict(row["adjust"])) for row in _BUILT[key]]
+
+
+def load_depth(image_path):
+    """The depth map kept for ``image_path`` as a uint8 array, or None when there is none."""
+    import numpy as np
+    from PIL import Image
+
+    from .depth_maps import light_depth_cache_file
+
+    kept = light_depth_cache_file(image_path)
+    if kept is None or not kept.is_file():
+        return None
+    try:
+        with Image.open(kept) as opened:
+            return np.asarray(opened.convert("L"), dtype=np.uint8)
+    except (OSError, ValueError):
+        return None
+
+
+def with_masks(settings: dict, light, image_path) -> dict:
+    """The Camera Raw ``settings`` as the renderer should get them: without the host's ``lightDepth`` entry and, when
+    ``light`` is on, with its masks added after the person's own. Raises ValueError when they cannot be made: the depth
+    map is gone, or the photo already has too many masks."""
+    result = {key: value for key, value in settings.items() if key != "lightDepth"}
+    if not active(light):
+        return result
+    depth = load_depth(image_path)
+    if depth is None:
+        raise ValueError("Light Depth's depth map is missing. Open Light Depth to make it again.")
+    added = render_masks(light, depth)
+    masks = list(result.get("masks") or [])
+    if len(masks) + len(added) > MAX_MASKS:
+        raise ValueError(f"Light Depth needs {len(added)} of a photo's {MAX_MASKS} masks. Delete some masks to use it.")
+    if added:
+        result["masks"] = masks + added
+    return result
+
+
+# --- the settings file beside the recipe ----------------------------------------------------------------------------------
 
 def sidecar_path(recipe_path) -> Path:
     """Where a photo's Light Depth settings are kept, next to its recipe (``<photo>.cameraraw.json``)."""
@@ -159,16 +257,60 @@ def sidecar_path(recipe_path) -> Path:
     return recipe.with_name(stem + SIDECAR_TAIL)
 
 
+def _from_version_one(settings) -> dict | None:
+    """Settings of the first version (a light at a distance: reach and focus) as near/far settings, approximately: the
+    old light brightened what lay near its distance, which is now the near side."""
+    old = ("amount", "x", "y", "depth", "softness", "warmth", "reach", "focus")
+    if not (isinstance(settings, dict) and settings.keys() == set(old)
+            and all(type(settings[key]) in (int, float) and math.isfinite(settings[key]) for key in old)):
+        return None
+    return normalized({"amount": settings["amount"], "x": settings["x"], "y": settings["y"], "depth": settings["depth"],
+                       "softness": settings["softness"], "warmth": settings["warmth"], "wrap": settings["reach"],
+                       "size": 100 - 0.9 * settings["focus"], "brightnessNear": 100, "brightnessFar": 0})
+
+
 def read_sidecar(recipe_path):
-    """The saved settings, or None when there are none or the file cannot be used."""
+    """``(settings, legacy)``: the saved settings (None when there are none or the file cannot be used) and whether they
+    came from the first version, which only applies to a photo whose recipe still holds that version's mask."""
     try:
         data = json.loads(sidecar_path(recipe_path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or data.get("version") != SIDECAR_VERSION:
-        return None
+        return None, False
+    if not isinstance(data, dict):
+        return None, False
     settings = data.get("settings")
-    return dict(settings) if valid(settings) else None
+    if data.get("version") == SIDECAR_VERSION:
+        return (dict(settings) if valid(settings) else None), False
+    if data.get("version") == 1:
+        return _from_version_one(settings), True
+    return None, False
+
+
+def load_settings(recipe_path, recipe_settings: dict) -> tuple[dict, dict | None]:
+    """``(settings, light)`` for a photo that is opened or exported: the recipe's Camera Raw settings without any mask an
+    earlier version made for Light Depth, and the Light Depth settings that go with them (None for none).
+
+    An earlier version's mask is converted when settings were saved beside it (the effect carries on, now owned by the
+    panel); without them it is dropped, since its settings are unknown. Settings saved by an earlier version beside a
+    recipe that no longer has its mask are stale and are ignored, as before.
+    """
+    had_legacy = any(is_legacy_mask(mask) for mask in recipe_settings.get("masks") or [])
+    light, legacy = read_sidecar(recipe_path)
+    if light is not None and legacy and not had_legacy:
+        light = None
+    return strip_legacy(recipe_settings), light
+
+
+def recipe_for_render(image_path, recipe: dict | None) -> dict | None:
+    """``recipe`` (as saved) with Light Depth's masks added, for an export. A photo whose only edit is Light Depth has an
+    identity recipe, so one is made for it. Raises ValueError when the masks cannot be made."""
+    from . import photocraft_bridge as bridge
+
+    base = (recipe or {}).get("cameraRaw") or {}
+    settings, light = load_settings(bridge.recipe_path(image_path), base)
+    if not active(light):
+        return recipe if settings is base else {**recipe, "cameraRaw": settings}
+    return {**(recipe or {"version": bridge.RECIPE_VERSION}), "cameraRaw": with_masks(settings, light, image_path)}
 
 
 def write_sidecar(recipe_path, settings) -> None:

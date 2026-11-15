@@ -583,3 +583,55 @@ def test_combined_mask_parts_are_validated():
     assert pb._masks_valid(ok)
     for parts in ([{"op": "xor", "shape": base}], [{"shape": {"type": "blob"}}], [{"op": "add", "extra": 1}], "nope", [{}] * 9):
         assert not pb._masks_valid([{"shape": base, "parts": parts}]), parts
+
+
+def light_depth_settings(photo, monkeypatch, tmp_path, **changes):
+    """Light Depth settings saved beside the photo's recipe, and a kept depth map for it."""
+    import numpy as np
+    from PIL import Image
+
+    from image_triage import light_depth
+
+    kept = tmp_path / "kept-depth.png"
+    Image.fromarray(np.repeat(np.linspace(0, 255, 60).astype(np.uint8)[:, None], 80, axis=1)).save(kept)
+    monkeypatch.setattr("image_triage.depth_maps.light_depth_cache_file", lambda source, **kw: kept)
+    settings = light_depth.normalized({"amount": 60, **changes})
+    light_depth.write_sidecar(bridge.recipe_path(photo), settings)
+    return settings
+
+
+def test_export_builds_light_depths_masks_from_its_settings_and_the_depth_map(photo, monkeypatch, tmp_path):
+    from image_triage import light_depth
+
+    recipe(photo, {"exposure": 1.0})
+    light_depth_settings(photo, monkeypatch, tmp_path)
+    live = editor(photo)
+    live.control.camera_raw_masks_supported = True      # the masks need a build that renders them
+    assert render.FullRenderService(lambda: live).request(photo).outcome == render.RENDERED
+    sent = live.requests[-1]["recipe"]["cameraRaw"]
+    assert [m["name"] for m in sent["masks"]] == [light_depth.NEAR_NAME, light_depth.FAR_NAME] and "lightDepth" not in sent
+    assert "masks" not in json.loads(bridge.recipe_path(photo).read_text())["cameraRaw"]     # the saved recipe holds none of it
+
+
+def test_a_photo_whose_only_edit_is_light_depth_is_exported_not_skipped(photo, monkeypatch, tmp_path):
+    recipe(photo, {"sharpenRadius": 2}, identity=True)
+    light_depth_settings(photo, monkeypatch, tmp_path)
+    live = editor(photo)
+    live.control.camera_raw_masks_supported = True      # the masks need a build that renders them
+    assert render.FullRenderService(lambda: live).request(photo).outcome == render.RENDERED
+    assert live.requests[-1]["recipe"]["cameraRaw"]["masks"]
+
+
+def test_export_with_a_switched_off_light_is_the_photo_without_it(photo, monkeypatch, tmp_path):
+    recipe(photo, {"sharpenRadius": 2}, identity=True)
+    light_depth_settings(photo, monkeypatch, tmp_path, shown=0)
+    assert render.FullRenderService(lambda: None).request(photo) == render.NO_EDITS
+
+
+def test_export_without_the_depth_map_fails_and_says_why_instead_of_dropping_the_effect(photo, monkeypatch, tmp_path):
+    recipe(photo, {"exposure": 1.0})
+    light_depth_settings(photo, monkeypatch, tmp_path)
+    monkeypatch.setattr("image_triage.depth_maps.light_depth_cache_file", lambda source, **kw: tmp_path / "gone.png")
+    live = editor(photo)
+    result = render.FullRenderService(lambda: live).request(photo)
+    assert result.outcome == render.FAILED and "depth map is missing" in result.reason and live.requests == []

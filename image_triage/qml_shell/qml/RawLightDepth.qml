@@ -1,8 +1,9 @@
 import QtQuick
 import QtQuick.Controls
 
-// Light Depth: a light placed inside the scene. The pad is the photo's depth map (near is bright); the handle is the
-// light. Where it falls becomes an ordinary mask named "Light Depth", so it can be refined in the Mask tab.
+// Light Depth: light a photo near and far apart. The effect lives in this section only: it is adjusted here, applied live,
+// and is not a mask in the Mask tab. The depth is chosen by clicking the photo with the dropper (or with the Depth slider, or
+// by dragging in the depth picture); the handles for position, size and wrap are drawn on the photo while the section is open.
 Column {
     id: light
     required property var model
@@ -12,7 +13,8 @@ Column {
     readonly property var values: model.settings
     spacing: 4
     enabled: editable
-    Component.onCompleted: { model.refresh(); if (!model.unavailable && raw.loaded) model.prepare() }
+    Component.onCompleted: { model.setOpen(true); model.refresh(); if (!model.unavailable && raw.loaded) model.prepare() }
+    Component.onDestruction: model.setOpen(false)
     Connections {
         target: light.raw
         function onChanged() { if (light.raw.loaded && !light.model.ready && !light.model.busy && !light.model.unavailable && !light.model.error) light.model.prepare() }
@@ -39,16 +41,38 @@ Column {
     }
 
     Item {
-        width: parent.width; height: 28
+        width: parent.width; height: 30
+        Rectangle {
+            id: pickButton
+            objectName: "lightDepthPick"
+            width: 30; height: 30; radius: 8
+            color: light.model.picking ? Qt.alpha(theme.accent, 0.22) : pickHover.hovered || activeFocus ? theme.s3 : theme.s2
+            border.color: light.model.picking ? Qt.alpha(theme.accent, 0.5) : activeFocus ? theme.accent : theme.lineSoft
+            activeFocusOnTab: true
+            function toggle() { light.model.setPicking(!light.model.picking) }
+            Icon { anchors.centerIn: parent; size: 16; color: light.model.picking ? theme.accentFg : theme.fg2
+                   path: "m14 4 6 6m-9-3 6 6M4 16l9-9 4 4-9 9H4zM15 5l2-2 4 4-2 2" }
+            HoverHandler { id: pickHover; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: pickButton.toggle() }
+            Keys.onReturnPressed: toggle()
+            Keys.onSpacePressed: toggle()
+            ToolTip.text: light.model.picking ? "Click the photo where the light should divide near from far. Escape cancels." : "Pick the depth by clicking the photo"
+            ToolTip.visible: pickHover.hovered; ToolTip.delay: 500
+            Accessible.role: Accessible.Button; Accessible.name: "Pick the depth from the photo"
+            Accessible.onPressAction: toggle()
+        }
         Text {
-            anchors.verticalCenter: parent.verticalCenter; width: parent.width - 62
-            text: "Place a light inside the scene."; color: theme.fg2; font.pixelSize: 12; elide: Text.ElideRight
+            objectName: "lightDepthPickHint"
+            anchors.verticalCenter: parent.verticalCenter; anchors.left: pickButton.right; anchors.leftMargin: 8
+            width: parent.width - 30 - 8 - 62
+            text: light.model.picking ? "Click the photo to pick the depth." : "Pick the depth from the photo."
+            color: theme.fg2; font.pixelSize: 12; elide: Text.ElideRight
         }
         Row {
             anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 4
             Glyph {
                 objectName: "lightDepthShown"; name: "eye"; lit: light.model.shown
-                label: light.model.shown ? "Hide the light" : "Show the light"
+                label: light.model.shown ? "Hide the effect" : "Show the effect"
                 enabled: light.model.active; opacity: enabled ? 1 : 0.35
                 onActivated: light.model.toggleShown()
             }
@@ -75,7 +99,17 @@ Column {
         enabled: !light.model.unavailable
         onCommitted: (next) => light.model.adjust("amount", next)
     }
+    RawColorSlider {
+        objectName: "lightDepth_depth"
+        editModel: light.raw; width: parent.width; controlHeight: 32
+        label: "Depth"; from: 0; to: 100
+        // 0 is the nearest thing in the photo, 100 the farthest: what lies nearer than this is "near".
+        value: (1 - light.values.depth) * 100
+        enabled: !light.model.unavailable
+        onCommitted: (next) => light.model.adjust("depth", 1 - next / 100)
+    }
 
+    // The depth picture is the secondary view: the same depth, as a plane drawn across the photo's depth map.
     Rectangle {
         id: pad
         objectName: "lightDepthPad"
@@ -86,16 +120,12 @@ Column {
         radius: 8; color: theme.base; border.color: pad.activeFocus ? theme.accent : theme.line
         clip: true
         activeFocusOnTab: true
-        function nudge(dx, dy) {
-            light.model.place(light.values.x + dx, light.values.y + dy)
-        }
-        Keys.onLeftPressed: nudge(-0.02, 0)
-        Keys.onRightPressed: nudge(0.02, 0)
-        Keys.onUpPressed: nudge(0, -0.02)
-        Keys.onDownPressed: nudge(0, 0.02)
+        function nudge(delta) { light.model.adjust("depth", light.values.depth + delta); light.model.flush() }
+        Keys.onUpPressed: nudge(0.02)
+        Keys.onDownPressed: nudge(-0.02)
         Accessible.role: Accessible.Pane
-        Accessible.name: "Light position in the scene"
-        Accessible.description: "Drag, or use the arrow keys, to move the light. It takes the distance of the point it is on."
+        Accessible.name: "Depth of the split between near and far"
+        Accessible.description: "Drag up or down, or use the arrow keys, to change the depth."
         Image {
             anchors.fill: parent; anchors.margins: 1
             source: light.model.pad; cache: false; smooth: true
@@ -124,24 +154,31 @@ Column {
         }
         Text {
             objectName: "lightDepthHint"
-            visible: light.model.ready && light.values.amount <= 0 && !light.model.active
+            visible: light.model.ready && light.values.amount <= 0
             anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 8
             width: parent.width - 24; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
             text: "Raise Amount to light the photo."; color: "#f4f4f4"; style: Text.Outline; styleColor: "#000000"; font.pixelSize: 11
         }
+        Rectangle {   // the plane: near (bright) below it, far above it
+            visible: light.model.ready
+            x: 0; width: parent.width; height: 2; y: (1 - light.values.depth) * pad.height - 1
+            color: "#f4f4f4"; opacity: 0.8
+        }
         Rectangle {
             id: handle
+            objectName: "lightDepthPadHandle"
             visible: light.model.ready
-            x: light.values.x * pad.width - width / 2; y: light.values.y * pad.height - height / 2
+            x: pad.width / 2 - width / 2; y: (1 - light.values.depth) * pad.height - height / 2
             width: 20; height: 20; radius: 10
             color: "#f4f4f4"; border.color: "#202020"; border.width: 1
             Icon { anchors.centerIn: parent; size: 12; path: "M12 4v16M8 8l4-4 4 4M8 16l4 4 4-4"; color: "#202020" }
         }
         MouseArea {
+            objectName: "lightDepthPadDrag"
             anchors.fill: parent
             enabled: light.model.ready && light.editable
-            cursorShape: Qt.CrossCursor
-            function put(mouse) { light.model.place(mouse.x / pad.width, mouse.y / pad.height) }
+            cursorShape: Qt.SizeVerCursor
+            function put(mouse) { light.model.adjust("depth", 1 - Math.max(0, Math.min(1, mouse.y / pad.height))) }
             onPressed: (mouse) => { pad.forceActiveFocus(); light.raw.beginGesture(); put(mouse) }
             onPositionChanged: (mouse) => { if (pressed) put(mouse) }
             onReleased: light.raw.endGesture()
@@ -201,34 +238,29 @@ Column {
     Column {
         visible: light.advanced
         width: parent.width; spacing: 4
-        RawColorSlider {
-            objectName: "lightDepth_depth"
-            editModel: light.raw; width: parent.width; controlHeight: 32
-            label: "Distance"; from: 0; to: 100
-            // 0 is the nearest thing in the photo, 100 the farthest.
-            value: (1 - light.values.depth) * 100
-            enabled: !light.model.unavailable
-            onCommitted: (next) => light.model.adjust("depth", 1 - next / 100)
-        }
-        RawColorSlider {
-            objectName: "lightDepth_reach"
-            editModel: light.raw; width: parent.width; controlHeight: 32
-            label: "Reach"; from: 0; to: 100
-            value: light.values.reach
-            enabled: !light.model.unavailable
-            onCommitted: (next) => light.model.adjust("reach", next)
-        }
-        RawColorSlider {
-            objectName: "lightDepth_focus"
-            editModel: light.raw; width: parent.width; controlHeight: 32
-            label: "Focus"; from: 0; to: 100
-            value: light.values.focus
-            enabled: !light.model.unavailable
-            onCommitted: (next) => light.model.adjust("focus", next)
+        Repeater {
+            model: [
+                {key: "brightnessNear", label: "Brightness Near", from: -100, to: 100, colors: null},
+                {key: "warmthNear", label: "Warmth Near", from: -100, to: 100, colors: ["#608fc3", "#a7a7a0", "#d3bd64"]},
+                {key: "brightnessFar", label: "Brightness Far", from: -100, to: 100, colors: null},
+                {key: "warmthFar", label: "Warmth Far", from: -100, to: 100, colors: ["#608fc3", "#a7a7a0", "#d3bd64"]},
+                {key: "size", label: "Size", from: 0, to: 100, colors: null},
+                {key: "wrap", label: "Wrap", from: 0, to: 100, colors: null}
+            ]
+            delegate: RawColorSlider {
+                required property var modelData
+                objectName: "lightDepth_" + modelData.key
+                editModel: light.raw; width: parent.width; controlHeight: 32
+                label: modelData.label; from: modelData.from; to: modelData.to
+                colors: modelData.colors ? modelData.colors : [theme.s3, theme.s3]
+                value: light.values[modelData.key]
+                enabled: !light.model.unavailable
+                onCommitted: (next) => light.model.adjust(modelData.key, next)
+            }
         }
         Text {
             width: parent.width; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 11
-            text: "Reach is how far through the scene the light carries. Focus narrows it to a pool around the handle. The light is a mask named “Light Depth”: refine it in the Mask tab."
+            text: "Near is everything closer than the depth, far everything beyond it. Size narrows the effect to a pool around the handle on the photo (100 is the whole photo); Wrap is how gradually near turns into far. Drag the handles on the photo to change position, size and wrap."
         }
     }
 }

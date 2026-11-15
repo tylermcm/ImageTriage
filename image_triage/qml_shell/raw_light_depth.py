@@ -1,8 +1,8 @@
-"""The Light Depth section of the RAW editor: a depth map made once per photo, and a light placed in it.
+"""The Light Depth section of the RAW editor: a depth map made once per photo, and the settings that light it near and far.
 
-The pixels are not changed here. The light's reach becomes the coverage of an ordinary local mask named "Light Depth"
-(see ``image_triage.light_depth``); the draft also carries the settings that produced it so the sliders, undo and a
-later session can find them again.
+The pixels are not changed here, and no mask is made here. The draft carries only the section's settings (``lightDepth``);
+the local masks a render needs are built from them and the cached depth map when the render is requested (see
+``image_triage.light_depth``), so the effect shows in this section and nowhere else, and is adjusted in it.
 """
 from __future__ import annotations
 
@@ -16,8 +16,6 @@ from PySide6.QtCore import QObject, Property, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QImage, QImageReader
 
 from .. import editor_tools, light_depth, photocraft_bridge as bridge
-from ..camera_raw_recipe_masks import masks_valid
-from .raw_masks import encode_raster
 
 TOOL = "depthMap"
 _KEPT_MAPS = 6
@@ -86,6 +84,8 @@ class RawLightDepth(QObject):
         self._commit_timer.timeout.connect(self.flush)
         self._pad = ("", None)
         self._revision = 0
+        self._open = False              # the Light Depth section is open: its handles are drawn on the photo
+        self._picking = False           # the next click on the photo picks the depth
         self._finished.connect(self._arrived)
         self._progress.connect(self._report)
         raw.changed.connect(self._sync)
@@ -97,6 +97,7 @@ class RawLightDepth(QObject):
             self._ticket += 1
             self._busy, self._pending, self._waiting = False, None, False
             self._queued = None
+            self._picking = False
             self._commit_timer.stop()
             self._message = self._error = ""
         elif self._waiting and not self._busy and self._path:
@@ -119,16 +120,26 @@ class RawLightDepth(QObject):
     error = Property(str, lambda self: self._error, notify=changed)
     unavailable = Property(str, lambda self: self._reason, notify=changed)
     ready = Property(bool, lambda self: self._depth() is not None, notify=changed)
-    active = Property(bool, lambda self: light_depth.find_mask(self.raw._draft.get("masks")) >= 0, notify=changed)
+    open = Property(bool, lambda self: self._open, notify=changed)
+    picking = Property(bool, lambda self: self._picking, notify=changed)
 
     @Property("QVariantMap", notify=changed)
     def settings(self):
         # What was just asked for shows at once, even while its commit to the photo waits a moment.
         return light_depth.normalized(self._queued if self._queued is not None else self.raw._draft.get("lightDepth"))
 
+    @Property(bool, notify=changed)
+    def active(self):
+        """The photo has a Light Depth edit (Amount above zero), whether or not it is switched on."""
+        return self.settings["amount"] > 0
+
+    @Property(bool, notify=changed)
+    def shown(self):
+        return self.settings["shown"] > 0
+
     @Property(str, notify=changed)
     def pad(self):
-        """The depth map as a picture (near is bright), tinted where the light falls."""
+        """The depth map as a picture (near is bright), tinted on its near side."""
         import numpy as np
 
         from .raw_preview import put_thumbnail
@@ -140,12 +151,11 @@ class RawLightDepth(QObject):
         key = (self._path, tuple(sorted(settings.items())), id(depth))
         if key != self._pad[1]:
             scene = light_depth.working_depth(depth, light_depth.PAD_SIDE)
-            light = light_depth.coverage(depth, settings, light_depth.PAD_SIDE).astype(np.float32) / 255
-            lit = min(1.0, .35 + settings["amount"] / 100)
-            warm = settings["warmth"] / 100
+            near = light_depth.coverage(depth, settings, light_depth.PAD_SIDE).astype(np.float32) / 255
+            warm = (settings["warmth"] + settings["warmthNear"]) / 100
             tint = np.array([1 + .25 * max(0, warm), 1.0, 1 + .25 * max(0, -warm)], dtype=np.float32)
             base = (.12 + .5 * scene)[:, :, None]
-            pixels = np.clip((base + light[:, :, None] * lit * .36 * tint) * 255, 0, 255).astype(np.uint8)
+            pixels = np.clip((base + near[:, :, None] * .3 * tint) * 255, 0, 255).astype(np.uint8)
             height, width = pixels.shape[:2]
             image = QImage(pixels.tobytes(), width, height, width * 3, QImage.Format_RGB888).copy()
             self._revision += 1
@@ -170,29 +180,58 @@ class RawLightDepth(QObject):
         if self._depth() is None and not self._busy:
             self._start(self._pending)
 
+    @Slot(bool)
+    def setOpen(self, on):
+        """The section was opened or closed: its handles are drawn on the photo while it is open."""
+        if not on:
+            self._picking = False
+        if on != self._open or not on:
+            self._open = on
+            self.changed.emit()
+
+    @Slot(bool)
+    def setPicking(self, on):
+        """Arm or disarm the depth dropper: the next click on the photo picks the depth under it."""
+        on = bool(on) and self.raw.loaded and not self.raw.saving
+        if on != self._picking:
+            self._picking = on
+            if on:
+                self.prepare()
+            self.changed.emit()
+
     @Slot(str, float)
     def adjust(self, key, value):
-        if key not in ("amount", "softness", "warmth", "reach", "focus", "depth") or not math.isfinite(value):
+        if key not in light_depth.RANGES or key in ("x", "y", "shown") or not math.isfinite(value):
             return
         low, high = light_depth.RANGES[key]
         self._queue({**self._current(), key: max(low, min(high, value))})
 
+    def _first_use(self, settings):
+        """Placing the light for the first time switches it on (Amount 0 would add nothing to the photo)."""
+        if settings.get("amount", 0) <= 0 and "lightDepth" not in self.raw._draft:
+            settings["amount"] = FIRST_AMOUNT
+        return settings
+
     @Slot(float, float)
     def place(self, x, y):
-        """Put the light on a point of the photo: it takes that point's distance in the scene."""
+        """Move the light's position on the photo (the centre of its pool, when it has a size below 100)."""
         if not all(math.isfinite(v) for v in (x, y)):
             return
-        x, y = max(0.0, min(1.0, x)), max(0.0, min(1.0, y))
+        settings = {**self._current(), "x": max(0.0, min(1.0, x)), "y": max(0.0, min(1.0, y))}
+        self._queue(self._first_use(settings))
+
+    @Slot(float, float)
+    def pick(self, x, y):
+        """A click on the photo while picking: the depth under that point becomes the depth of the split."""
+        if not self._picking or not all(math.isfinite(v) and 0 <= v <= 1 for v in (x, y)):
+            return
+        self._picking = False
         depth = self._depth()
         settings = {**self._current(), "x": x, "y": y}
-        if depth is not None:
-            settings["depth"] = light_depth.depth_at(depth, x, y)
-        else:
-            # Without a map the distance is not known yet; it is read from the map when it arrives.
-            settings["depth"] = None
-        if settings.get("amount", 0) <= 0 and light_depth.find_mask(self.raw._draft.get("masks")) < 0:
-            settings["amount"] = FIRST_AMOUNT       # a light that adds nothing is no light: placing it switches it on
-        self._queue(settings)
+        # Without a map the distance is not known yet; it is read from the map when it arrives.
+        settings["depth"] = light_depth.depth_at(depth, x, y) if depth is not None else None
+        self._queue(self._first_use(settings))
+        self.flush()
 
     def _queue(self, settings):
         """Show the change now and commit it to the photo within COMMIT_MS: one commit per pause, not one per mouse event."""
@@ -211,36 +250,23 @@ class RawLightDepth(QObject):
 
     @Slot()
     def remove(self):
-        """Take the light out of the photo: its mask and its settings, as one step."""
+        """Take the light out of the photo: all its settings, as one step."""
         if not self.raw.loaded or self.raw.saving:
             return
         self.cancel()
         self._queued = None
         self._commit_timer.stop()
-        rows = list(self.raw._draft.get("masks", []))
-        index = light_depth.find_mask(rows)
-        if index >= 0:
-            rows.pop(index)
-        self.raw._set_values({"masks": rows, "lightDepth": dict(light_depth.DEFAULTS)}, "Remove Light Depth")
-
-    @Property(bool, notify=changed)
-    def shown(self):
-        rows = self.raw._draft.get("masks", [])
-        index = light_depth.find_mask(rows)
-        return index >= 0 and rows[index].get("enabled", True)
+        self.raw._set_values({"lightDepth": dict(light_depth.DEFAULTS)}, "Remove Light Depth")
 
     @Slot()
     def toggleShown(self):
-        """Switch the light off and on without losing where it was placed."""
+        """Switch the light off and on without losing its settings."""
         if not self.raw.loaded or self.raw.saving:
             return
-        from copy import deepcopy
-
-        rows = deepcopy(list(self.raw._draft.get("masks", [])))
-        index = light_depth.find_mask(rows)
-        if index >= 0:
-            rows[index]["enabled"] = not rows[index].get("enabled", True)
-            self.raw._set_values({"masks": rows}, "Light Depth on" if rows[index]["enabled"] else "Light Depth off")
+        settings = self.settings
+        on = settings["shown"] <= 0
+        self.raw._set_values({"lightDepth": {**settings, "shown": 1.0 if on else 0.0}},
+                             "Light Depth on" if on else "Light Depth off", render=settings["amount"] > 0)
 
     @Slot()
     def cancel(self):
@@ -255,7 +281,8 @@ class RawLightDepth(QObject):
         if not self.raw.loaded or self.raw.saving:
             return
         depth = self._depth()
-        if depth is None:
+        # The map is needed to resolve a depth that was asked for before it existed, and by any render of the effect.
+        if depth is None and (settings.get("depth") is None or light_depth.active(settings)):
             self._pending = settings
             if not self._busy:
                 self._start(settings)
@@ -263,24 +290,16 @@ class RawLightDepth(QObject):
         if settings.get("depth") is None:
             settings = {**settings, "depth": light_depth.depth_at(depth, settings["x"], settings["y"])}
         settings = light_depth.normalized(settings)
-        rows = list(self.raw._draft.get("masks", []))
-        exists = light_depth.find_mask(rows) >= 0
-        if not exists and settings["amount"] <= 0:
-            # Nothing is lit yet: remember where the light is without adding an empty mask.
-            self.raw._set_values({"lightDepth": settings}, "Light Depth", render=False)
-            return
-        if not exists and len(rows) >= 16:
-            self._error = "A photo can have up to 16 masks. Delete one to add Light Depth."
-            self.changed.emit()
-            return
-        shape = encode_raster(light_depth.coverage(depth, settings))
-        rows = light_depth.apply(rows, settings, shape)
-        if not masks_valid(rows):
-            self._error = "Light Depth could not be applied to this photo."
+        old = light_depth.normalized(self.raw._draft.get("lightDepth"))
+        masks = self.raw._draft.get("masks") or []
+        if light_depth.active(settings) and not light_depth.active(old) and len(masks) + 2 > light_depth.MAX_MASKS:
+            self._error = "A photo can have up to 16 masks. Light Depth needs two of them: delete some masks to use it."
             self.changed.emit()
             return
         self._error = ""
-        self.raw._set_values({"masks": rows, "lightDepth": settings}, "Light Depth")
+        # Only the settings go in the draft. The masks the renderer needs are built from them for each render.
+        self.raw._set_values({"lightDepth": settings}, "Light Depth",
+                             render=light_depth.active(old) or light_depth.active(settings))
 
     def _snapshot(self):
         from .raw_preview import frame_image

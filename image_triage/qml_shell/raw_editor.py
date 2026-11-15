@@ -79,7 +79,11 @@ def _without_light_depth(settings: dict) -> dict:
     return {key: value for key, value in settings.items() if key != "lightDepth"}
 
 
-def _recipe(settings: dict) -> dict:
+def _recipe(settings: dict, image_path: str | None = None) -> dict:
+    """The recipe for the native renderer. With ``image_path``, Light Depth's settings in ``settings`` are turned into the
+    masks that carry them (built from the photo's cached depth map; they are not kept in the draft)."""
+    if image_path is not None:
+        settings = light_depth.with_masks(settings, settings.get("lightDepth"), image_path)
     return {"version": bridge.RECIPE_VERSION, "cameraRaw": settings}
 
 
@@ -889,16 +893,20 @@ class RawEditor(QObject):
         state, recipe, reason = bridge.recipe_state(path, set_aside=action == "load")
         if state == bridge.RECIPE_INVALID:
             raise ValueError(reason)
-        settings = dict(recipe["cameraRaw"]) if recipe else {}
+        # Light Depth lives in its own settings: a mask an earlier version stored for it is not part of the draft.
+        settings, light = light_depth.load_settings(bridge.recipe_path(path), dict(recipe["cameraRaw"]) if recipe else {})
         if action == "load":
-            placed = light_depth.read_sidecar(bridge.recipe_path(path))
-            if placed and light_depth.find_mask(settings.get("masks")) >= 0:
-                settings["lightDepth"] = placed
+            if light:
+                settings = {**settings, "lightDepth": light}
             return settings, str(bridge.saved_render_path(path) or ""), *(sample.read(path, settings) if sample else (None, ""))
-        placed = draft.get("lightDepth") if light_depth.find_mask(draft.get("masks")) >= 0 else None
-        original, draft = _without_light_depth(original), _without_light_depth(draft)
+        placed = draft.get("lightDepth")
+        placed = placed if light_depth.normalized(placed)["amount"] > 0 else None   # kept beside the recipe only while it does something
+        original, light_draft, draft = _without_light_depth(original), draft, _without_light_depth(draft)
         if settings != original:
             raise ValueError("The saved recipe changed. Reopen Edit RAW before applying more edits.")
+        # What the renderer gets: the draft plus the masks Light Depth's settings make. They are built here, for every
+        # preview and save, and are never stored (the saved recipe and the Mask tab only hold the person's own masks).
+        full = _recipe({} if action == "whiteBalance" else light_draft, path)
         folder = str(Path(path).parent)
         saving = action == "save"
         write_root = str(edit_storage.ensure_edit_root(folder)) if saving else directory
@@ -914,9 +922,9 @@ class RawEditor(QObject):
             source = proc.path_within_root(path)
             if not source:
                 raise ValueError("The photo is outside the editor's read folder.")
-            bridge.require_masks_support({"recipe": _recipe(draft)}, getattr(proc.control, "camera_raw_masks_supported", False) is True)
-            bridge.require_retouch_support({"recipe": _recipe(draft)}, getattr(proc.control, "camera_raw_retouch_supported", False) is True)
-            bridge.require_red_eye_support({"recipe": _recipe(draft)}, getattr(proc.control, "camera_raw_red_eye_supported", False) is True)
+            bridge.require_masks_support({"recipe": full}, getattr(proc.control, "camera_raw_masks_supported", False) is True)
+            bridge.require_retouch_support({"recipe": full}, getattr(proc.control, "camera_raw_retouch_supported", False) is True)
+            bridge.require_red_eye_support({"recipe": full}, getattr(proc.control, "camera_raw_red_eye_supported", False) is True)
             if not proc.control.full_render_supported:
                 raise ValueError("This PhotoCraft build cannot render RAW recipes.")
             if not saving:
@@ -924,8 +932,7 @@ class RawEditor(QObject):
                 from ..full_render import _without_host_settings
 
                 out = uuid4().hex
-                settings = {} if action == "whiteBalance" else draft
-                reply = proc.control.call("app.render", {"source": source, "recipe": _without_host_settings(_recipe(settings)), "out": out})
+                reply = proc.control.call("app.render", {"source": source, "recipe": _without_host_settings(full), "out": out})
                 name = reply.get("out")
                 if name not in (out + ".png", out + ".tif", out + ".tiff"):
                     raise ValueError("PhotoCraft returned an unexpected preview path.")
@@ -945,13 +952,13 @@ class RawEditor(QObject):
             from ..raw_crop import publish
 
             bridge.require_super_resolution_support(
-                {"recipe": _recipe(draft)}, getattr(proc.control, "camera_raw_super_resolution_supported", False),
+                {"recipe": full}, getattr(proc.control, "camera_raw_super_resolution_supported", False),
             )
             signature = bridge.file_signature(path)
             if not signature:
                 raise ValueError("The original photo could not be read")
             out = uuid4().hex
-            reply = proc.control.call("app.render", {"source": source, "recipe": _without_host_settings(_recipe(draft)), "out": out})
+            reply = proc.control.call("app.render", {"source": source, "recipe": _without_host_settings(full), "out": out})
             name = reply.get("out")
             if name not in (out + ".png", out + ".tif", out + ".tiff"):
                 raise ValueError("PhotoCraft returned an unexpected RAW render path")
@@ -960,7 +967,7 @@ class RawEditor(QObject):
                 state, current, reason = bridge.recipe_state(path)
                 if state == bridge.RECIPE_INVALID:
                     raise ValueError(reason)
-                if (current or {}).get("cameraRaw", {}) != original:
+                if light_depth.strip_legacy((current or {}).get("cameraRaw", {})) != original:
                     raise ValueError("The saved recipe changed while the RAW was rendering")
                 published = publish(path, rendered, draft, signature)
                 try:
@@ -993,7 +1000,7 @@ class RawEditor(QObject):
                 if recovered is not None:
                     # One undo step back to the saved edit, so bringing a draft back is never a trap.
                     self._undo.append(("Recovered unsaved edits", dict(self._original)))
-                    self._draft = recovered
+                    self._draft = light_depth.strip_legacy(recovered)   # a stored draft may still hold an earlier Light Depth mask
                     self._notice = "Unsaved edits from an earlier session were restored. Undo returns to the saved edit."
                 # A saved display is already cropped; redevelop from the RAW before editing.
                 self._preview = self._baseline = ""
