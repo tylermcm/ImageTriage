@@ -16,8 +16,8 @@ DEFAULTS = {"source": "", "amount": 0.0, "shiftEdge": 0.0, "fadeEdge": 0.0, "bri
 RANGES = {"amount": (0, 100), "shiftEdge": (-100, 100), "fadeEdge": (0, 100), "brightness": (-100, 100), "warmth": (-100, 100),
           "colorMatch": (0, 100), "relight": (0, 100), "scale": (25, 400), "offsetX": (-100, 100), "offsetY": (-100, 100)}
 FIRST_AMOUNT = 100                 # choosing a sky shows it
-FIRST_MATCH, FIRST_RELIGHT, FIRST_FADE = 35, 25, 20   # a believable start: the sky sits in the scene instead of on it
-MATTE_SIDE = 1024                  # the matte is authored at this long edge; the renderer fits it to the photo's edges
+FIRST_MATCH, FIRST_RELIGHT, FIRST_FADE = 35, 25, 3    # a believable start: the sky sits in the scene instead of on it
+MATTE_SIDE = 1536                  # the matte is authored at this long edge (the most a raster mask holds)
 SKY_SIDE = 3000
 MAX_LIBRARY = 200
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp")
@@ -25,6 +25,47 @@ IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp")
 
 def _number(value) -> bool:
     return type(value) in (int, float) and math.isfinite(value)
+
+
+def _box(values, radius: int):
+    """Mean over a (2 radius + 1) square at every pixel (edges repeated), for a 2-D or (h, w, n) array."""
+    import numpy as np
+
+    size = 2 * radius + 1
+    padded = np.pad(values, ((radius + 1, radius), (radius + 1, radius)) + ((0, 0),) * (values.ndim - 2), mode="edge")
+    total = np.zeros((padded.shape[0] + 1, padded.shape[1] + 1) + values.shape[2:], dtype=np.float64)
+    total[1:, 1:] = padded.cumsum(0).cumsum(1)
+    h, w = values.shape[:2]
+    area = total[size:size + h, size:size + w] - total[:h, size:size + w] - total[size:size + h, :w] + total[:h, :w]
+    return (area / (size * size)).astype(np.float32)
+
+
+def refine_matte(matte, rgb, radius: int | None = None, eps: float = 1e-3):
+    """Snap a soft sky matte onto the photo's own edges.
+
+    ``matte`` is the model's mask (float 0..1, white = sky) at the size of ``rgb`` (float 0..1, h x w x 3): the model sees a
+    reduced picture and its edge is a blur several pixels wide, much wider than a tree's outline. A colour-guided filter (He
+    et al.) makes the matte follow the photo's edges, and a steep curve then settles what is left of the transition. Trees,
+    ridgelines and fine gaps come out crisp, so the sky's edge needs little fade and no longer looks blocky without one.
+    """
+    import numpy as np
+
+    h, w = matte.shape
+    radius = radius or int(max(3, min(12, round(max(h, w) * 0.004))))
+    guide = np.sqrt(np.clip(rgb, 0, 1)).astype(np.float32)          # shadows count: the edges of dark trees are the hard ones
+    mean_g = _box(guide, radius)
+    mean_p = _box(matte, radius)
+    covariance = np.stack([_box(guide[..., c] * matte, radius) - mean_g[..., c] * mean_p for c in range(3)], -1)
+    variance = np.empty((h, w, 3, 3), dtype=np.float32)
+    for i in range(3):
+        for j in range(i, 3):
+            variance[..., i, j] = variance[..., j, i] = _box(guide[..., i] * guide[..., j], radius) - mean_g[..., i] * mean_g[..., j]
+    variance += np.eye(3, dtype=np.float32) * eps
+    gain = np.linalg.solve(variance.reshape(-1, 3, 3), covariance.reshape(-1, 3, 1)).reshape(h, w, 3)
+    offset = mean_p - (gain * mean_g).sum(-1)
+    filtered = (np.stack([_box(gain[..., c], radius) for c in range(3)], -1) * guide).sum(-1) + _box(offset, radius)
+    t = np.clip((np.clip(filtered, 0, 1) - 0.3) / 0.4, 0, 1)
+    return t * t * (3 - 2 * t)
 
 
 def valid(sky) -> bool:

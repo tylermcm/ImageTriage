@@ -100,6 +100,28 @@ def test_skies_imported_into_the_first_versions_library_move_over_once(tmp_path)
     assert not (previous / sky_replace.MIGRATED).exists()
 
 
+def test_the_refined_matte_follows_the_photos_edges_instead_of_the_models_blur():
+    """A bright sky over dark ground with a sloping horizon and a tree: the model's mask is a blur of the truth."""
+    from PIL import ImageFilter
+
+    h, w = 120, 160
+    yy, xx = np.mgrid[:h, :w]
+    truth = (yy < 55 + 0.15 * xx).astype(np.float32)
+    truth[40:80, 100:108] = 0                                    # a tree standing in the sky
+    sky = np.array([0.7, 0.8, 0.95], np.float32)
+    ground = np.array([0.08, 0.1, 0.06], np.float32)
+    rgb = truth[..., None] * sky + (1 - truth[..., None]) * ground
+    rng = np.random.default_rng(1)
+    rgb = np.clip(rgb + rng.normal(0, 0.01, rgb.shape), 0, 1).astype(np.float32)
+    soft = np.asarray(Image.fromarray((truth * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(3)), np.float32) / 255
+    refined = sky_replace.refine_matte(soft, rgb)
+    wrong = lambda m: float(np.abs(m - truth).mean())                    # noqa: E731
+    assert wrong(refined) < wrong(soft) / 3                      # the edge is where the photo's edge is
+    assert refined[50:65, 104].max() < 0.2 and refined[10, 10] > 0.95 and refined[110, 10] < 0.05    # the tree is back
+    transition = float(((refined > 0.1) & (refined < 0.9)).mean())
+    assert transition < 0.03                                     # crisp: only a thin band is neither sky nor ground
+
+
 def test_the_shipped_skies_are_real_pictures():
     files = sorted(sky_replace.bundled_root().glob("*.jpg"))
     assert len(files) >= 10 and (sky_replace.bundled_root() / "CREDITS.md").is_file()

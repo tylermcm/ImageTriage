@@ -22,6 +22,17 @@ _KEPT_MATTES = 6
 COMMIT_MS = 80
 
 
+def _rgb(image):
+    """``image`` (a QImage) as float 0..1, h x w x 3."""
+    import numpy as np
+
+    from PySide6.QtGui import QImage
+
+    converted = image.convertToFormat(QImage.Format_RGB888)
+    rows = np.frombuffer(converted.constBits(), dtype=np.uint8).reshape(converted.height(), converted.bytesPerLine())
+    return rows[:, :converted.width() * 3].reshape(converted.height(), converted.width(), 3).astype(np.float32) / 255
+
+
 def run_sky_matte(image, on_progress, cancel):
     """The raster matte (white = sky) of ``image``, the developed preview. Runs on a worker thread."""
     import numpy as np
@@ -48,11 +59,14 @@ def run_sky_matte(image, on_progress, cancel):
                 if abs(opened.width / opened.height / (image.width() / image.height()) - 1) > .025:
                     raise ValueError("The model mask does not match the photo's proportions")
                 picture = opened.convert("L")
-                picture.thumbnail((sky_replace.MATTE_SIDE, sky_replace.MATTE_SIDE), Image.Resampling.BILINEAR)
-                values = np.asarray(picture, dtype=np.uint8)
-            if float((values >= 128).mean()) < .005:
-                break
-            return encode_raster(values)
+                if float((np.asarray(picture) >= 128).mean()) < .005:
+                    break
+                # The model's mask is soft and at a reduced size. Bring it to the photo's size and snap it to the photo's edges.
+                picture = picture.resize((image.width(), image.height()), Image.Resampling.BICUBIC)
+            matte = sky_replace.refine_matte(np.asarray(picture, dtype=np.float32) / 255, _rgb(image))
+            refined = Image.fromarray(np.clip(np.rint(matte * 255), 0, 255).astype(np.uint8))
+            refined.thumbnail((sky_replace.MATTE_SIDE, sky_replace.MATTE_SIDE), Image.Resampling.BOX)
+            return encode_raster(np.asarray(refined, dtype=np.uint8))
     raise ValueError("No sky found in this photo.")
 
 
