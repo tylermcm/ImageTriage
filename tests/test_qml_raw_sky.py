@@ -80,7 +80,9 @@ def test_the_library_is_a_real_folder_under_the_managed_root_not_the_virtualized
     monkeypatch.setenv("IMAGE_TRIAGE_AI_ROOT", str(tmp_path / "ai"))
     monkeypatch.setenv("IMAGE_TRIAGE_APPDATA", str(tmp_path / "appdata"))
     assert sky_replace.library_root() == (tmp_path / "ai" / "skies").resolve()
-    assert sky_replace.previous_library_root() == tmp_path / "appdata" / "skies"
+    from image_triage.scan_cache import app_data_root
+
+    assert sky_replace.previous_library_root() == app_data_root() / "skies"
     assert sky_replace.library_root() != sky_replace.previous_library_root()
 
 
