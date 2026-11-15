@@ -169,7 +169,7 @@ FocusScope {
         function onToolChanged() { if (rawPanel.tool === "Crop") v.zoomed = false }
     }
     function setZoom(scale, px, py) {
-        if (rawPanel.visible && (rawPanel.tool === "Crop" || rawPanel.tool === "Remove" || rawPanel.tool === "Mask" && v.rawEditor.maskEditor.tool)) return
+        if (rawPanel.visible && (rawPanel.tool === "Crop" || rawPanel.tool === "Remove" && !v.rawEditor.retouchEditor.zoomable || rawPanel.tool === "Mask" && v.rawEditor.maskEditor.tool)) return
         if (comparing) return
         var fx = (pan.contentX + px - pan.imageLeft) / pan.drawWidth
         var fy = (pan.contentY + py - pan.imageTop) / pan.drawHeight
@@ -431,7 +431,7 @@ FocusScope {
         MouseArea {
             parent: pan
             anchors.fill: parent
-            enabled: !rawPanel.whiteBalancePicking && !(rawPanel.visible && (rawPanel.tool === "Crop" || rawPanel.tool === "Remove" || rawPanel.tool === "Red Eye" || rawPanel.tool === "Mask" && v.rawEditor.maskEditor.tool))
+            enabled: !rawPanel.whiteBalancePicking && !(rawPanel.visible && (rawPanel.tool === "Crop" || rawPanel.tool === "Remove" && !v.rawEditor.retouchEditor.zoomable || rawPanel.tool === "Red Eye" || rawPanel.tool === "Mask" && v.rawEditor.maskEditor.tool))
             acceptedButtons: Qt.NoButton
             // Intercept wheels before Flickable can also scroll the image.
             // Button events pass through so dragging still pans normally.

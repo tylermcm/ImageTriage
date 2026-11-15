@@ -211,6 +211,7 @@ class RawErase(QObject):
             else:
                 self._source = self._mask = None
                 self._discard()
+                self.changed.emit()
                 self.raw._set_values({"retouch": rows}, "AI Erase")
                 return
         self.changed.emit()

@@ -16,6 +16,7 @@ class RawRetouch(QObject):
     feather=Property(float,lambda self:self._feather,notify=changed)
     opacity=Property(float,lambda self:self._opacity,notify=changed)
     source=Property("QVariantList",lambda self:list(self._source or []),notify=changed)
+    zoomable=Property(bool,lambda self:self._kind=="erase",notify=changed)    # clicking, not painting: the wheel may zoom
     rows=Property("QVariantList",lambda self:deepcopy(self.raw._draft.get("retouch",[])),notify=changed)
     @Slot(str)
     def choose(self,kind):
