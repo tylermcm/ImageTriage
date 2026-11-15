@@ -29,9 +29,9 @@ around the handle; **Wrap** is the thickness of the slab around the chosen depth
 
 ## How it works
 
-1. The first time the section is used on a photo, the developed preview is sent to the depth model (Depth Anything V2
-   Small, the "Depth" model in Set Up AI) on the warm mask-engine host. The map is kept in the managed depth cache, keyed by
-   the photo's path, size and date, so it is made once per photo.
+1. The first time the section is used on a photo, the developed preview is sent to a depth model on the warm mask-engine
+   host (see "Depth models" below). The map is kept in the managed depth cache, keyed by the photo's path, size and date and
+   by the model, so it is made once per photo and model.
 2. The draft holds only the section's settings, `lightDepth`. **There is no mask in the draft and none in the saved recipe,
    so nothing about Light Depth appears in the Mask tab.**
 3. When a render is requested (preview, save, export) the settings and the cached depth map are turned into up to three
@@ -47,6 +47,29 @@ Where the masks are built: `raw_preview.PreviewWorker` (the fast live preview), 
 (the slower per-edit preview), the save path in `RawEditor._work` (the saved recipe is written from the draft *without*
 them), and `full_render.FullRenderService._request` (export: `light_depth.recipe_for_render`, which also treats a photo whose
 only edit is Light Depth as edited).
+
+## Depth models
+
+The quality of the effect is the quality of the depth map. Light Depth can use three models of the Depth Anything V2 family,
+chosen per photo under Advanced Settings (the choice is the `depthModel` setting and is kept with the photo):
+
+| Model | Repository | Size | Licence |
+|---|---|---|---|
+| Small (default) | `depth-anything/Depth-Anything-V2-Small-hf` | 100 MB | Apache-2.0 |
+| Base | `depth-anything/Depth-Anything-V2-Base-hf` | 390 MB | CC-BY-NC (non-commercial) |
+| Large | `depth-anything/Depth-Anything-V2-Large-hf` | 1.34 GB | CC-BY-NC (non-commercial) |
+
+- Small is the managed model that Set Up AI installs. Base and Large are not downloaded by the app yet: put the three files
+  (`config.json`, `preprocessor_config.json`, `model.safetensors`) of each in `~/.image-triage/AI/models/Editor/<repository
+  name>/`. A model that is not installed is greyed out in the picker, and choosing it by other means says so.
+- Each model's map is cached separately (`light_depth.png` for Small, `light_depth_base.png`, `light_depth_large.png`), so
+  switching back and forth does not repeat the estimate. The map is kept at 1536 pixels on its long edge.
+- The photo is given to the model at 1036 pixels on the short side instead of the 518 its preprocessing uses
+  (`raw_light_depth.DEPTH_INPUT_SIZE`): on the lake photo the tree outlines are noticeably sharper and a bigger model separates
+  the mountain layers behind them.
+- How long each map took is shown under the picker ("Large depth model: made in 1.9 s (0.8 s loading the model, 1.1 s
+  estimating)") and written, one line per map made or read from the cache, to `light-depth-timing.log` next to
+  `qml-shell.log`, so the models can be compared. The first map after the app starts includes loading the model.
 
 ## Where things are kept
 
@@ -77,7 +100,7 @@ which is the price of recognising the old ones by name.
   export fail with "Light Depth's depth map is missing. Open Light Depth to make it again." rather than rendering without it.
 - Each zone that changes takes one of a photo's 16 mask slots (two by default, three with an overall Warmth); with too few
   free, Light Depth says so.
-- Coverage is authored at the depth map's own size (1024 pixels on the long edge) and scaled by the renderer, and is only
+- Coverage is authored at the depth map's own size (1536 pixels on the long edge, the most a raster mask holds) and scaled by the renderer, and is only
   lightly smoothed, so the effect follows the objects the map shows (trees, grass) rather than the rows they stand on. It
   cannot follow edges finer than the depth map itself, and in a scene dominated by a ground plane a slab of depth is naturally
   a band across the ground.

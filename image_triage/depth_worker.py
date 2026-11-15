@@ -113,6 +113,13 @@ class _DepthEngine:
         return self.device
 
 
+def model_input_size(width: int, height: int, short_side: int) -> tuple[int, int]:
+    """The size (width, height) a photo is given to the depth model at when its short side should be ``short_side``: the
+    model needs both sides to be multiples of 14."""
+    scale = int(short_side) / min(width, height)
+    return max(14, round(width * scale / 14) * 14), max(14, round(height * scale / 14) * 14)
+
+
 def generate_depth(
     *,
     model_dir: Path,
@@ -121,10 +128,14 @@ def generate_depth(
     requested_device: str,
     engine: _DepthEngine | None = None,
     emit_result: bool = True,
+    input_size: int | None = None,
 ) -> dict[str, object]:
+    """``input_size`` is the short side, in pixels, the photo is given to the model at (rounded to a multiple of 14, which the
+    model needs); None leaves it to the model's own preprocessing (518)."""
     total_started = time.perf_counter()
     active = engine or _DepthEngine(requested_device)
     device = active.load_model(model_dir)
+    load_seconds = time.perf_counter() - total_started
     torch = active.torch
     np = active.np
     Image = active.Image
@@ -136,7 +147,13 @@ def generate_depth(
     with Image.open(input_path) as loaded:
         image = loaded.convert("RGB")
     width, height = image.size
-    inputs = active.processor(images=image, return_tensors="pt").to(device)
+    if input_size:
+        model_size = model_input_size(width, height, input_size)
+        inputs = active.processor(images=image.resize(model_size, Image.Resampling.BICUBIC), return_tensors="pt",
+                                  do_resize=False).to(device)
+    else:
+        model_size = None
+        inputs = active.processor(images=image, return_tensors="pt").to(device)
     with torch.inference_mode():
         outputs = active.model(**inputs)
     predicted = outputs.predicted_depth  # (1, h, w), higher = nearer
@@ -175,6 +192,9 @@ def generate_depth(
     _emit_metric("ai.mask.depth.worker.total", total_started, device=device)
 
     result: dict[str, object] = {
+        "modelLoadSeconds": round(load_seconds, 3),
+        "inferenceSeconds": round(time.perf_counter() - total_started - load_seconds, 3),
+        "modelInput": list(model_size) if model_size else None,
         "device": device,
         "width": width,
         "height": height,

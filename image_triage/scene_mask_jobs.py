@@ -256,23 +256,28 @@ def run_depth_map(
     cancel: threading.Event | None = None,
     *,
     engine=None,
-) -> None:
-    """A relative-depth map of ``source`` (8-bit PNG, 255 = nearest) on the warm mask-engine host. There is no one-shot
-    fallback: the depth model only runs inside the host."""
+    variant: str = "small",
+    input_size: int | None = None,
+):
+    """A relative-depth map of ``source`` (8-bit PNG, 255 = nearest) on the warm mask-engine host, made with the model
+    ``variant`` ("small", "base" or "large"; see ``ai_model.DEPTH_VARIANTS``) at ``input_size`` (its short side). There is no
+    one-shot fallback: the depth model only runs inside the host. Returns what the host reported (timings, device)."""
     _check(cancel)
     if engine is None:
-        from .ai_model import resolve_depth_model_installation
+        from .ai_model import depth_variant_installation
         from .mask_engine_service import default_mask_engine_service
 
-        installation = resolve_depth_model_installation()
+        installation = depth_variant_installation(variant)
         if not installation.is_installed:
-            raise RuntimeError("The depth model is not installed.")
+            raise RuntimeError(f"The {variant} depth model is not installed." if variant != "small" else "The depth model is not installed.")
         service = default_mask_engine_service()
         engine = lambda src, out, progress: service.infer_depth(  # noqa: E731
             model_dir=installation.install_dir,
             input_path=src,
             output_path=out,
             progress_callback=progress,
+            input_size=input_size,
         )
-    engine(source, output, on_progress)
+    result = engine(source, output, on_progress)
     _check(cancel)
+    return result

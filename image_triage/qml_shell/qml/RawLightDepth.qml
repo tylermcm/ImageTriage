@@ -233,6 +233,41 @@ Column {
     Column {
         visible: light.advanced
         width: parent.width; spacing: 4
+        Text { text: "Depth model"; color: theme.fg2; font.pixelSize: 12; topPadding: 2 }
+        Row {
+            spacing: 6
+            Repeater {
+                model: light.model.models
+                delegate: Rectangle {
+                    id: choice
+                    required property var modelData
+                    required property int index
+                    objectName: "lightDepthModel_" + modelData.key
+                    readonly property bool selected: light.model.selectedModel === index
+                    width: Math.floor((light.width - 12) / 3); height: 26; radius: 7
+                    color: selected ? Qt.alpha(theme.accent, 0.22) : choiceHover.hovered && modelData.installed ? theme.s3 : theme.s2
+                    border.color: selected ? Qt.alpha(theme.accent, 0.6) : theme.lineSoft
+                    opacity: modelData.installed ? 1 : 0.4
+                    activeFocusOnTab: modelData.installed
+                    Text { anchors.centerIn: parent; text: choice.modelData.label; color: choice.selected ? theme.accentFg : theme.fg; font.pixelSize: 12 }
+                    HoverHandler { id: choiceHover; cursorShape: choice.modelData.installed ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                    TapHandler { enabled: choice.modelData.installed; onTapped: light.model.setModel(choice.index) }
+                    Keys.onReturnPressed: if (modelData.installed) light.model.setModel(index)
+                    Keys.onSpacePressed: if (modelData.installed) light.model.setModel(index)
+                    ToolTip.text: modelData.installed ? modelData.label + " depth model" : modelData.label + " depth model is not installed"
+                    ToolTip.visible: choiceHover.hovered; ToolTip.delay: 500
+                    Accessible.role: Accessible.RadioButton; Accessible.name: modelData.label + " depth model"
+                    Accessible.checked: selected
+                    Accessible.onPressAction: if (modelData.installed) light.model.setModel(index)
+                }
+            }
+        }
+        Text {
+            objectName: "lightDepthModelInfo"
+            visible: text.length > 0
+            width: parent.width; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 11
+            text: light.model.busy ? light.model.message : light.model.modelInfo
+        }
         Repeater {
             model: [
                 {key: "brightnessNear", label: "Brightness Near", from: -100, to: 100, colors: null},

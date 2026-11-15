@@ -483,6 +483,9 @@ def test_the_section_renders_with_all_its_controls_and_drives_the_settings(raw, 
         pump(qapp, .05)
         for name in ("brightnessNear", "warmthNear", "brightnessFar", "warmthFar", "size", "wrap"):
             assert find_item(item, "lightDepth_" + name) is not None, name
+        for name in ("small", "base", "large"):
+            assert find_item(item, "lightDepthModel_" + name) is not None, name       # the depth model choice
+        assert find_item(item, "lightDepthModelInfo") is not None
         slider = item.findChild(QObject, "lightDepth_amount_slider")
         slider.setProperty("value", 45)
         slider.moved.emit()
@@ -634,3 +637,46 @@ def test_a_run_of_slider_moves_commits_far_less_often(raw, qapp, monkeypatch):
     assert light.settings["amount"] == 60 and commits == []      # shown at once, not yet committed
     wait(qapp, lambda: raw._draft["lightDepth"]["amount"] == 60)
     assert len(commits) == 1                            # one commit for the whole burst
+
+
+# --- the choice of depth model -----------------------------------------------------------------------------------------------
+
+def counting_runner(calls):
+    def run(image, path, progress, cancel, model=0):
+        calls.append(model)
+        return ground(), {"model": light_depth.DEPTH_MODELS[model], "cached": False, "seconds": 1.5, "load": 0.5, "inference": 1.0}
+    return run
+
+
+def test_each_depth_model_makes_its_own_map_and_switching_back_needs_no_new_one(raw, qapp):
+    light = raw.lightDepthEditor
+    calls = []
+    light._runner = counting_runner(calls)
+    light._installed = lambda key: True
+    light.adjust("amount", 60)
+    light.flush()
+    wait(qapp, lambda: not light.busy and light.ready)
+    assert calls == [0] and light.selectedModel == 0 and light.modelInfo.startswith("Small depth model: made in 1.5 s")
+    light.setModel(1)                                       # the picture keeps its settings; the Base model reads the scene
+    assert light.selectedModel == 1 and light.busy and not light.ready
+    wait(qapp, lambda: not light.busy)
+    assert calls == [0, 1] and light.ready and raw._draft["lightDepth"]["depthModel"] == 1
+    assert light.modelInfo == "Base depth model: made in 1.5 s (0.5 s loading the model, 1.0 s estimating)"
+    light.setModel(0)
+    assert calls == [0, 1] and light.ready and raw._draft["lightDepth"]["depthModel"] == 0     # the first map is still there
+    assert [m["key"] for m in light.models] == ["small", "base", "large"] and all(m["installed"] for m in light.models)
+
+
+def test_a_model_that_is_not_installed_is_named_and_nothing_starts(raw, qapp):
+    light = raw.lightDepthEditor
+    calls = []
+    light._runner = counting_runner(calls)
+    light._installed = lambda key: key != "large"
+    light.setModel(2)
+    light.prepare()
+    assert calls == [] and not light.busy
+    assert light.unavailable == "The Large depth model is not installed." and light.error == light.unavailable
+    assert [m["installed"] for m in light.models] == [True, True, False]
+    light.setModel(0)                                       # back to one that is: the reason goes away
+    light.refresh()
+    assert light.unavailable == ""

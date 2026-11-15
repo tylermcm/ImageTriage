@@ -23,8 +23,11 @@ MAX_MASKS = 16                        # the most masks a recipe can hold
 
 # Coverage is authored small: it is smooth, and a continuous-tone raster is expensive in the recipe encoding. The renderer
 # scales it to the photo.
-COVERAGE_SIDE = 1024   # the depth map's own size: finer than that cannot follow anything the map does not show
+COVERAGE_SIDE = 1536   # the most a raster mask holds; the depth map is kept at this size too
 PAD_SIDE = 320  # the depth picture shown in the panel
+
+DEPTH_MODELS = ("small", "base", "large")   # the depth models; ``ai_model.DEPTH_VARIANTS`` names the same ones
+DEPTH_MODEL_LABELS = ("Small", "Base", "Large")
 
 MAX_EXPOSURE = 2.0  # stops at Amount 100 and a Near or Far Brightness of +/-100
 MAX_TEMPERATURE = 60.0  # local Temperature at Amount 100 and a Warmth of +/-100
@@ -36,10 +39,10 @@ MAX_TEMPERATURE = 60.0  # local Temperature at Amount 100 and a Warmth of +/-100
 # the slab around the depth is that is left alone.
 DEFAULTS = {"amount": 0.0, "depth": 0.5, "softness": 10.0, "warmth": 0.0,
             "brightnessNear": -50.0, "warmthNear": 0.0, "brightnessFar": -50.0, "warmthFar": 0.0,
-            "x": 0.5, "y": 0.6, "size": 100.0, "wrap": 25.0, "shown": 1.0}
+            "x": 0.5, "y": 0.6, "size": 100.0, "wrap": 25.0, "shown": 1.0, "depthModel": 0.0}
 RANGES = {"amount": (0, 100), "depth": (0, 1), "softness": (0, 100), "warmth": (-100, 100),
           "brightnessNear": (-100, 100), "warmthNear": (-100, 100), "brightnessFar": (-100, 100), "warmthFar": (-100, 100),
-          "x": (0, 1), "y": (0, 1), "size": (0, 100), "wrap": (0, 100), "shown": (0, 1)}
+          "x": (0, 1), "y": (0, 1), "size": (0, 100), "wrap": (0, 100), "shown": (0, 1), "depthModel": (0, 2)}
 
 
 def valid(settings) -> bool:
@@ -57,6 +60,11 @@ def normalized(settings) -> dict:
             if type(value) in (int, float) and math.isfinite(value):
                 result[key] = float(max(low, min(high, value)))
     return result
+
+
+def model_key(settings) -> str:
+    """Which depth model ("small", "base" or "large") the settings use: the one that made the map they are built from."""
+    return DEPTH_MODELS[int(round(normalized(settings)["depthModel"]))]
 
 
 def active(settings) -> bool:
@@ -227,14 +235,14 @@ def render_masks(settings, depth) -> list:
     return [dict(row, adjust=dict(row["adjust"])) for row in _BUILT[key]]
 
 
-def load_depth(image_path):
-    """The depth map kept for ``image_path`` as a uint8 array, or None when there is none."""
+def load_depth(image_path, model: str = "small"):
+    """The depth map the depth model ``model`` kept for ``image_path`` as a uint8 array, or None when there is none."""
     import numpy as np
     from PIL import Image
 
     from .depth_maps import light_depth_cache_file
 
-    kept = light_depth_cache_file(image_path)
+    kept = light_depth_cache_file(image_path, model=model)
     if kept is None or not kept.is_file():
         return None
     try:
@@ -251,7 +259,7 @@ def with_masks(settings: dict, light, image_path) -> dict:
     result = {key: value for key, value in settings.items() if key != "lightDepth"}
     if not active(light):
         return result
-    depth = load_depth(image_path)
+    depth = load_depth(image_path, model_key(light))
     if depth is None:
         raise ValueError("Light Depth's depth map is missing. Open Light Depth to make it again.")
     added = render_masks(light, depth)
@@ -297,6 +305,8 @@ def read_sidecar(recipe_path):
         return None, False
     settings = data.get("settings")
     if data.get("version") == SIDECAR_VERSION:
+        if isinstance(settings, dict) and "depthModel" not in settings:
+            settings = {**settings, "depthModel": DEFAULTS["depthModel"]}     # saved before there was a choice of model
         return (dict(settings) if valid(settings) else None), False
     if data.get("version") == 1:
         return _from_version_one(settings), True

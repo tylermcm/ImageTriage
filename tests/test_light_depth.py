@@ -118,7 +118,7 @@ def test_a_zone_that_changes_nothing_gets_no_mask_and_an_inactive_light_none():
 
 def test_coverage_stays_small_enough_for_the_recipe():
     rng = np.random.default_rng(3)
-    noisy = np.clip(scene(1500, 1000).astype(int) + rng.integers(-6, 7, (1000, 1500)), 0, 255).astype(np.uint8)
+    noisy = np.clip(scene(2000, 1400).astype(int) + rng.integers(-6, 7, (1400, 2000)), 0, 255).astype(np.uint8)
     lit = light_depth.coverage(noisy, settings(softness=30))
     assert max(lit.shape) == light_depth.COVERAGE_SIDE
     shape = encode_raster(lit)

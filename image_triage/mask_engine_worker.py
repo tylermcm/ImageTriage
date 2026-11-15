@@ -241,6 +241,7 @@ class MaskEngineHost:
                 requested_device=self.requested_device,
                 engine=self._depth,
                 emit_result=False,
+                input_size=int(request.get("inputSize") or 0) or None,
             )
         raise ValueError(f"Unknown engine: {engine or '<empty>'}")
 
