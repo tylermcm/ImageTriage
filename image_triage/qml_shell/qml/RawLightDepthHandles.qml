@@ -1,13 +1,13 @@
 import QtQuick
 
-// The Light Depth handles drawn on the photo: position (the centre of the pool of light), size (its radius) and wrap (how
-// gradually near turns into far). The item covers the photo as it is painted; the settings are fractions of it.
+// The Light Depth handles drawn on the photo: position (the centre of the pool of light), size (its radius) and feather
+// (how far from the depth the effect takes to come in). The item covers the photo as it is painted; the settings are fractions of it.
 Item {
     id: handles
     required property var model     // RawLightDepth
     required property var raw       // RawEditor (gestures: one drag is one undo step)
     property bool suppressed: false   // the picture is not the one the handles belong to (before/after, dropper armed)
-    readonly property var values: model ? model.settings : ({x: 0.5, y: 0.5, size: 100, wrap: 30})
+    readonly property var values: model ? model.settings : ({x: 0.5, y: 0.5, size: 100, feather: 15})
     readonly property real cx: values.x * width
     readonly property real cy: values.y * height
     // The pool's radius on screen: pool_spread (picture widths) halved so every size can be reached from the middle.
@@ -78,24 +78,24 @@ Item {
         }
         Rectangle { anchors.centerIn: parent; width: 8; height: 2; color: "#202020" }
     }
-    Item {   // wrap: a short track below the position handle
-        id: wrapTrack
-        objectName: "lightDepthWrapTrack"
+    Item {   // feather: a short track below the position handle
+        id: featherTrack
+        objectName: "lightDepthFeatherTrack"
         width: handles.trackWidth; height: 22
         x: Math.max(4, Math.min(handles.width - width - 4, handles.cx - width / 2))
         y: Math.min(handles.height - height - 4, handles.cy + 34)
         Rectangle { x: 0; y: parent.height / 2 - 1.5; width: parent.width; height: 3; radius: 1.5; color: "#ccffffff"; border.color: "#66000000"; border.width: 1 }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.top; anchors.bottomMargin: 1
-            text: "Wrap"; color: "#f4f4f4"; font.pixelSize: 10; style: Text.Outline; styleColor: "#000000"
+            text: "Feather"; color: "#f4f4f4"; font.pixelSize: 10; style: Text.Outline; styleColor: "#000000"
         }
         Grip {
-            objectName: "lightDepthWrap"
-            tip: "Wrap: how gradually near turns into far"
-            x: handles.values.wrap / 100 * (wrapTrack.width - width); y: (wrapTrack.height - height) / 2
+            objectName: "lightDepthFeather"
+            tip: "Feather: how far from the depth the effect takes to come in"
+            x: handles.values.feather / 100 * (featherTrack.width - width); y: (featherTrack.height - height) / 2
             onMoved: (px, py) => {
-                var local = handles.mapToItem(wrapTrack, px, py).x
-                handles.model.adjust("wrap", Math.max(0, Math.min(100, (local - width / 2) / (wrapTrack.width - width) * 100)))
+                var local = handles.mapToItem(featherTrack, px, py).x
+                handles.model.adjust("feather", Math.max(0, Math.min(100, (local - width / 2) / (featherTrack.width - width) * 100)))
             }
         }
     }

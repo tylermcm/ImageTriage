@@ -51,7 +51,7 @@ def test_the_effect_builds_from_the_map_of_the_model_it_uses(tmp_path, monkeypat
     for key, value in (("small", 40), ("base", 120), ("large", 220)):
         assert light_depth.load_depth(str(photo), key).mean() == value
     base = light_depth.normalized({"amount": 50, "depthModel": 1})
-    assert light_depth.model_key(base) == "base" and light_depth.model_key(None) == "small"
+    assert light_depth.model_key(base) == "base" and light_depth.model_key(None) == "large"
     result = light_depth.with_masks({}, base, str(photo))
     assert "masks" in result
     maps["base"].unlink()

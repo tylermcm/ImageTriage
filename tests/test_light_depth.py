@@ -20,26 +20,26 @@ def settings(**changes):
 
 
 def test_the_light_falls_only_on_what_lies_at_the_depth():
-    near, light, far = (part.astype(int) for part in light_depth.zones(scene(), settings(depth=0.5, wrap=0)))
+    near, light, far = (part.astype(int) for part in light_depth.zones(scene(), settings(depth=0.5, feather=0)))
     assert light[40, 60] > 250 and light[2, 60] < 5 and light[-3, 60] < 5       # the middle of the ramp is lit, the ends are not
     assert near[-1, 60] > 250 and near[2, 60] < 5                                 # what is nearer than the slab
     assert far[2, 60] > 250 and far[-1, 60] < 5                                   # and what is beyond it
     assert np.abs(near + light + far - 255).max() <= 2                            # every pixel is in exactly one zone
-    shallow = light_depth.coverage(scene(), settings(depth=0.9, wrap=100)).astype(int).sum()
-    assert shallow > light_depth.coverage(scene(), settings(depth=0.9, wrap=0)).astype(int).sum() * 3
+    shallow = light_depth.coverage(scene(), settings(depth=0.9, feather=100)).astype(int).sum()
+    assert shallow > light_depth.coverage(scene(), settings(depth=0.9, feather=0)).astype(int).sum() * 3
 
 
-def test_wrap_makes_the_lit_slab_thicker():
-    def rows(wrap):
-        return int(np.count_nonzero(light_depth.coverage(scene(), settings(wrap=wrap))[:, 60] > 128))
+def test_feather_makes_the_slab_at_the_depth_thicker():
+    def rows(feather):
+        return int(np.count_nonzero(light_depth.coverage(scene(), settings(feather=feather))[:, 60] > 128))
     assert rows(100) > rows(0) * 4
 
 
 def test_softness_spills_the_light_across_a_depth_edge():
     wall = np.zeros((80, 120), dtype=np.uint8)
     wall[:, 60:] = 255  # a near object against a far background
-    hard = light_depth.coverage(wall, settings(depth=1.0, wrap=0, softness=0)).astype(int)
-    soft = light_depth.coverage(wall, settings(depth=1.0, wrap=0, softness=100)).astype(int)
+    hard = light_depth.coverage(wall, settings(depth=1.0, feather=0, softness=0)).astype(int)
+    soft = light_depth.coverage(wall, settings(depth=1.0, feather=0, softness=100)).astype(int)
     assert hard[40, 57] < 5 and soft[40, 57] > hard[40, 57] + 20      # light reaches the background beside the wall
     assert soft[40, 110] > 200
 
@@ -50,19 +50,19 @@ def test_the_effect_follows_the_objects_at_the_depth_not_the_rows_they_stand_on(
     scene_[:, 90:100] = 200                                    # a tree, tall and narrow, at depth ~0.78
     scene_[100:, :] = np.linspace(120, 255, 20).astype(np.uint8)[:, None]    # ground in front
     tree, sky = (slice(20, 80), slice(92, 98)), (slice(20, 80), slice(30, 60))
-    on_tree = light_depth.coverage(scene_, settings(depth=0.78, wrap=0, softness=0)).astype(int)
+    on_tree = light_depth.coverage(scene_, settings(depth=0.78, feather=0, softness=0)).astype(int)
     assert on_tree[tree].min() > 250 and on_tree[sky].max() < 5
-    on_sky = light_depth.coverage(scene_, settings(depth=0.157, wrap=0, softness=0)).astype(int)
+    on_sky = light_depth.coverage(scene_, settings(depth=0.157, feather=0, softness=0)).astype(int)
     assert on_sky[sky].min() > 250 and on_sky[tree].max() < 5
 
 
 def test_a_size_below_100_narrows_the_effect_to_a_pool_around_the_position():
-    whole = light_depth.zones(scene(), settings(x=0.1, y=0.5, size=100, depth=0.85, wrap=100))
+    whole = light_depth.zones(scene(), settings(x=0.1, y=0.5, size=100, depth=0.85, feather=100))
     assert whole[1][68, 12] > 200 and whole[1][68, -5] > 200       # the whole photo: lit wherever the depth is
-    pool = light_depth.zones(scene(), settings(x=0.1, y=0.85, size=0, depth=0.85, wrap=100))
+    pool = light_depth.zones(scene(), settings(x=0.1, y=0.85, size=0, depth=0.85, feather=100))
     light = pool[1].astype(int)
     assert light[68, 12] > 200 and light[68, -5] < 5                # lit by the pool at the left, not at the far right
-    wide = light_depth.zones(scene(), settings(x=0.1, y=0.85, size=60, depth=0.85, wrap=100))[1].astype(int)
+    wide = light_depth.zones(scene(), settings(x=0.1, y=0.85, size=60, depth=0.85, feather=100))[1].astype(int)
     assert wide[68, -5] > light[68, -5] + 40                        # a larger size reaches further across the photo
 
 
@@ -97,13 +97,13 @@ def test_active_needs_an_amount_and_to_be_switched_on():
 
 
 def test_render_masks_are_valid_recipe_masks_for_the_zones_that_change():
-    rows = light_depth.render_masks(settings(depth=0.5, wrap=0), scene())
+    rows = light_depth.render_masks(settings(depth=0.5, feather=0), scene())
     assert masks_valid(rows) and [row["name"] for row in rows] == [light_depth.NEAR_NAME, light_depth.FAR_NAME]
     assert [row["adjust"] for row in rows] == [{"exposure": pytest.approx(-0.7)}] * 2
     assert decode_raster(rows[0]["shape"])[-1, 60] > 250 and decode_raster(rows[1]["shape"])[2, 60] > 250
     assert light_depth.SLAB_NAME not in [row["name"] for row in rows]             # the depth itself is not touched
     rows[0]["adjust"]["exposure"] = 99                  # what a render gets is a copy: the cache is not altered by its user
-    assert light_depth.render_masks(settings(depth=0.5, wrap=0), scene())[0]["adjust"]["exposure"] == pytest.approx(-0.7)
+    assert light_depth.render_masks(settings(depth=0.5, feather=0), scene())[0]["adjust"]["exposure"] == pytest.approx(-0.7)
 
 
 def test_a_zone_that_changes_nothing_gets_no_mask_and_an_inactive_light_none():
@@ -187,7 +187,8 @@ def test_an_earlier_versions_mask_with_its_settings_carries_on_as_the_panels_eff
     old_sidecar(recipe)
     cleaned, light = light_depth.load_settings(recipe, {"masks": [mine, legacy]})
     assert cleaned == {"masks": [mine]} and light_depth.valid(light)
-    assert light["amount"] == 55 and light["depth"] == 0.3 and light["wrap"] == 60 and light["size"] == pytest.approx(55)
+    assert light["amount"] == 55 and light["depth"] == 0.3 and light["feather"] == 30 and light["size"] == pytest.approx(55)
+    assert light["depthModel"] == 0                          # the first version's maps were the Small model's
     assert light["brightnessNear"] == light["brightnessFar"] == -50
 
 
@@ -273,3 +274,29 @@ def test_raster_encoding_is_byte_identical_to_the_recipe_format(array):
     assert base64.b64decode(shape["data"]) == _reference_encoding(array)
     assert masks_valid([{"shape": shape}]) or max(array.shape) > 1536
     assert np.array_equal(decode_raster(shape), array)
+
+
+def test_the_effect_comes_in_over_the_feather_and_the_markers_sit_where_it_is_full():
+    ramp = np.repeat(np.linspace(0, 255, 256).astype(np.uint8)[:, None], 20, axis=1)      # depth 0..1 down the rows
+    for feather in (0, 25, 100):
+        span = light_depth.feather_span(feather)
+        near, light, far = (part[:, 10].astype(int) for part in light_depth.zones(ramp, settings(depth=0.5, feather=feather, softness=0)))
+        row = lambda depth: int(round(depth * 255))      # noqa: E731
+        assert light[row(0.5)] > 250 and near[row(0.5)] < 5 and far[row(0.5)] < 5          # nothing happens at the depth itself
+        assert near[min(255, row(0.5 + span) + 2)] > 245 or 0.5 + span > 1                 # in full at the near marker
+        assert far[max(0, row(0.5 - span) - 2)] > 245 or 0.5 - span < 0                    # and at the far one
+        if feather == 100:
+            assert 40 < near[row(0.5 + span / 2)] < 215                                    # between them it is gradual
+    assert light_depth.feather_span(0) < light_depth.feather_span(50) < light_depth.feather_span(100)
+    for feather in (0, 13, 50, 100):
+        assert light_depth.feather_for_span(light_depth.feather_span(feather)) == pytest.approx(feather)
+    assert light_depth.feather_for_span(5) == 100 and light_depth.feather_for_span(0) == 0       # out of range: held at the ends
+
+
+def test_light_depth_uses_the_large_model_by_default_and_an_earlier_builds_wrap_becomes_feather(tmp_path):
+    assert light_depth.model_key(None) == "large" and light_depth.DEFAULTS["feather"] == 15
+    recipe = tmp_path / "IMG_1.NEF.cameraraw.json"
+    old = {k: v for k, v in light_depth.normalized({"amount": 40}).items() if k not in ("feather", "depthModel")}
+    light_depth.sidecar_path(recipe).write_text('{"version": 2, "settings": %s}' % __import__("json").dumps({**old, "wrap": 40}))
+    settings_, legacy = light_depth.read_sidecar(recipe)
+    assert settings_["feather"] == 20 and "wrap" not in settings_ and settings_["depthModel"] == 0 and not legacy

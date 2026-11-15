@@ -125,6 +125,8 @@ class RawLightDepth(QObject):
         self._revision = 0
         self._open = False              # the Light Depth section is open: its handles are drawn on the photo
         self._picking = False           # the next click on the photo picks the depth
+        self._chosen = False            # the person picked a depth model (otherwise the best installed one is used)
+        self._installed_seen = {}       # depth model -> (when it was looked up, whether it is installed)
         self._finished.connect(self._arrived)
         self._progress.connect(self._report)
         raw.changed.connect(self._sync)
@@ -137,6 +139,7 @@ class RawLightDepth(QObject):
             self._busy, self._pending, self._waiting = False, None, False
             self._queued = None
             self._picking = False
+            self._chosen = False
             self._commit_timer.stop()
             self._message = self._error = ""
         elif self._waiting and not self._busy and self._path:
@@ -145,8 +148,15 @@ class RawLightDepth(QObject):
         self.changed.emit()
 
     def _model_of(self, settings=None):
-        """The index of the depth model that ``settings`` (by default what the next change builds on) asks for."""
-        return int(round(light_depth.normalized(self._current() if settings is None else settings)["depthModel"]))
+        """The index of the depth model that ``settings`` (by default what the next change builds on) asks for. Until the
+        person has picked one for the photo, that is the best installed model at or below the default (Large)."""
+        index = int(round(light_depth.normalized(self._current() if settings is None else settings)["depthModel"]))
+        if self._chosen or "lightDepth" in self.raw._draft:
+            return index
+        for candidate in range(index, -1, -1):
+            if self._installed(light_depth.DEPTH_MODELS[candidate]):
+                return candidate
+        return index
 
     def _depth(self, model=None):
         """The depth map of the model in use (or of ``model``) for the open photo, or None when it has not been made."""
@@ -198,16 +208,35 @@ class RawLightDepth(QObject):
             text += f" ({info['load']:.1f} s loading the model, {info.get('inference', 0):.1f} s estimating)"
         return text
 
-    @staticmethod
-    def _installed(key):
-        if key == "small":
-            return not editor_tools.block_reason(TOOL, editor_tools.installed_models())
-        try:
-            from ..ai_model import depth_variant_installation
+    def _installed(self, key):
+        """Whether the depth model ``key`` is installed (looked up at most every couple of seconds: the panel asks often)."""
+        import time
 
-            return bool(depth_variant_installation(key).is_installed)
-        except Exception:
-            return False
+        seen = self._installed_seen.get(key)
+        if seen is not None and time.monotonic() - seen[0] < 2.0:
+            return seen[1]
+        if key == "small":
+            found = not editor_tools.block_reason(TOOL, editor_tools.installed_models())
+        else:
+            try:
+                from ..ai_model import depth_variant_installation
+
+                found = bool(depth_variant_installation(key).is_installed)
+            except Exception:
+                found = False
+        self._installed_seen[key] = (time.monotonic(), found)
+        return found
+
+    @Property(float, notify=changed)
+    def featherSpan(self):
+        """How far from the chosen depth the effect reaches full strength, in depth units (where the feather markers sit)."""
+        return light_depth.feather_span(self.settings["feather"])
+
+    @Slot(float)
+    def setFeatherSpan(self, span):
+        """Set the Feather from the distance (in depth units) a marker was dragged to from the chosen depth."""
+        if math.isfinite(span):
+            self.adjust("feather", light_depth.feather_for_span(span))
 
     @Slot(int)
     def setModel(self, index):
@@ -257,6 +286,7 @@ class RawLightDepth(QObject):
     @Slot()
     def refresh(self):
         """Ask again whether the depth model is installed (the section was opened, or models were just set up)."""
+        self._installed_seen.clear()
         index = self._model_of()
         if index == 0:
             self._reason = editor_tools.block_reason(TOOL, editor_tools.installed_models())
@@ -296,6 +326,7 @@ class RawLightDepth(QObject):
             return
         if key == "depthModel":
             value = float(round(value))
+            self._chosen = True
         low, high = light_depth.RANGES[key]
         self._queue({**self._current(), key: max(low, min(high, value))})
 
@@ -348,6 +379,7 @@ class RawLightDepth(QObject):
             return
         self.cancel()
         self._queued = None
+        self._chosen = False
         self._commit_timer.stop()
         self.raw._set_values({"lightDepth": dict(light_depth.DEFAULTS)}, "Remove Light Depth")
 
@@ -373,7 +405,8 @@ class RawLightDepth(QObject):
     def _apply(self, settings):
         if not self.raw.loaded or self.raw.saving:
             return
-        depth = self._depth(self._model_of(settings))
+        model = self._model_of(settings)
+        depth = self._depth(model)
         # The map is needed to resolve a depth that was asked for before it existed, and by any render of the effect.
         if depth is None and (settings.get("depth") is None or light_depth.active(settings)):
             self._pending = settings
@@ -382,7 +415,7 @@ class RawLightDepth(QObject):
             return
         if settings.get("depth") is None:
             settings = {**settings, "depth": light_depth.depth_at(depth, settings["x"], settings["y"])}
-        settings = light_depth.normalized(settings)
+        settings = light_depth.normalized({**settings, "depthModel": float(model)})      # the model that made the map in use
         old = light_depth.normalized(self.raw._draft.get("lightDepth"))
         masks = self.raw._draft.get("masks") or []
         needed = light_depth.masks_needed(settings)

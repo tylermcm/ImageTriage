@@ -3,7 +3,7 @@ import QtQuick.Controls
 
 // Light Depth: light a photo near and far apart. The effect lives in this section only: it is adjusted here, applied live,
 // and is not a mask in the Mask tab. The depth is chosen by clicking the photo with the dropper (or with the Depth slider, or
-// by dragging in the depth picture); the handles for position, size and wrap are drawn on the photo while the section is open.
+// by dragging in the depth picture); the handles for position, size and feather are drawn on the photo while the section is open.
 Column {
     id: light
     required property var model
@@ -109,7 +109,9 @@ Column {
         onCommitted: (next) => light.model.adjust("depth", 1 - next / 100)
     }
 
-    // The depth picture is the secondary view: the photo's depth map with what lies at the chosen depth tinted amber.
+    // The depth picture is the secondary view: the photo's depth map with what lies at the chosen depth tinted amber. The
+    // handle in the middle sets the depth (far is up, near is down); the two markers either side of it are the feather, the
+    // depth range over which the effect comes in, as in Luminar: drag either one.
     Rectangle {
         id: pad
         objectName: "lightDepthPad"
@@ -121,11 +123,11 @@ Column {
         clip: true
         activeFocusOnTab: true
         function nudge(delta) { light.model.adjust("depth", light.values.depth + delta); light.model.flush() }
-        Keys.onUpPressed: nudge(0.02)
-        Keys.onDownPressed: nudge(-0.02)
+        Keys.onUpPressed: nudge(-0.02)
+        Keys.onDownPressed: nudge(0.02)
         Accessible.role: Accessible.Pane
-        Accessible.name: "Depth of the split between near and far"
-        Accessible.description: "Drag up or down, or use the arrow keys, to change the depth."
+        Accessible.name: "Depth that is left as it is"
+        Accessible.description: "Drag up (farther) or down (nearer), or use the arrow keys, to change the depth. Drag the markers either side of it to change the feather."
         Image {
             anchors.fill: parent; anchors.margins: 1
             source: light.model.pad; cache: false; smooth: true
@@ -159,11 +161,20 @@ Column {
             width: parent.width - 24; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
             text: "Raise Amount to light the photo."; color: "#f4f4f4"; style: Text.Outline; styleColor: "#000000"; font.pixelSize: 11
         }
+        Rectangle {   // the feather: the depth range the effect comes in over, either side of the chosen depth
+            objectName: "lightDepthFeatherBand"
+            visible: light.model.ready
+            x: -pad.width * 0.05; width: pad.width * 1.1
+            y: Math.max(-2, (light.values.depth - light.model.featherSpan) * pad.height)
+            height: Math.min(pad.height + 2, (light.values.depth + light.model.featherSpan) * pad.height) - y
+            radius: Math.min(height / 2, width / 2)
+            color: "transparent"; border.color: "#77ffffff"; border.width: 1
+        }
         Rectangle {
             id: handle
             objectName: "lightDepthPadHandle"
             visible: light.model.ready
-            x: pad.width / 2 - width / 2; y: (1 - light.values.depth) * pad.height - height / 2
+            x: pad.width / 2 - width / 2; y: light.values.depth * pad.height - height / 2
             width: 20; height: 20; radius: 10
             color: "#f4f4f4"; border.color: "#202020"; border.width: 1
             Icon { anchors.centerIn: parent; size: 12; path: "M12 4v16M8 8l4-4 4 4M8 16l4 4 4-4"; color: "#202020" }
@@ -173,12 +184,43 @@ Column {
             anchors.fill: parent
             enabled: light.model.ready && light.editable
             cursorShape: Qt.SizeVerCursor
-            function put(mouse) { light.model.adjust("depth", 1 - Math.max(0, Math.min(1, mouse.y / pad.height))) }
+            function put(mouse) { light.model.adjust("depth", Math.max(0, Math.min(1, mouse.y / pad.height))) }
             onPressed: (mouse) => { pad.forceActiveFocus(); light.raw.beginGesture(); put(mouse) }
             onPositionChanged: (mouse) => { if (pressed) put(mouse) }
             onReleased: light.raw.endGesture()
             onCanceled: light.raw.endGesture()
         }
+        component FeatherMarker: Item {
+            id: marker
+            property var host: light
+            property bool far: true       // the far marker (arrow up) or the near one (arrow down)
+            readonly property real depthAt: host.values.depth + (far ? -1 : 1) * host.model.featherSpan
+            width: 34; height: 24
+            visible: host.model.ready
+            x: pad.width / 2 - width / 2
+            y: Math.max(2, Math.min(pad.height - height - 2, depthAt * pad.height - height / 2))
+            Rectangle { x: 5; y: 10; width: 24; height: 3; radius: 1.5; color: "#f4f4f4"; border.color: "#202020"; border.width: 1 }
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter; y: marker.far ? -1 : 12
+                text: marker.far ? "\u25B2" : "\u25BC"; font.pixelSize: 10; color: "#f4f4f4"; style: Text.Outline; styleColor: "#000000"
+            }
+            Accessible.role: Accessible.Slider; Accessible.name: "Feather, " + (marker.far ? "far side" : "near side")
+            MouseArea {
+                anchors.fill: parent; anchors.margins: -5
+                enabled: marker.host.editable
+                preventStealing: true; cursorShape: Qt.SizeVerCursor
+                onPressed: { pad.forceActiveFocus(); marker.host.raw.beginGesture() }
+                onPositionChanged: (mouse) => {
+                    if (!pressed) return
+                    var p = mapToItem(pad, mouse.x, mouse.y)
+                    marker.host.model.setFeatherSpan(Math.abs(p.y / pad.height - marker.host.values.depth))
+                }
+                onReleased: marker.host.raw.endGesture()
+                onCanceled: marker.host.raw.endGesture()
+            }
+        }
+        FeatherMarker { objectName: "lightDepthFeatherFar"; far: true }
+        FeatherMarker { objectName: "lightDepthFeatherNear"; far: false }
     }
     Item {
         visible: light.model.busy
@@ -275,7 +317,7 @@ Column {
                 {key: "brightnessFar", label: "Brightness Far", from: -100, to: 100, colors: null},
                 {key: "warmthFar", label: "Warmth Far", from: -100, to: 100, colors: ["#608fc3", "#a7a7a0", "#d3bd64"]},
                 {key: "size", label: "Size", from: 0, to: 100, colors: null},
-                {key: "wrap", label: "Wrap", from: 0, to: 100, colors: null}
+                {key: "feather", label: "Feather", from: 0, to: 100, colors: null}
             ]
             delegate: RawColorSlider {
                 required property var modelData
@@ -290,7 +332,7 @@ Column {
         }
         Text {
             width: parent.width; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 11
-            text: "What lies at the chosen depth is left as it is; Brightness and Warmth Near / Far change what is nearer or farther. Wrap is how thick the slab at the depth is. Size narrows the effect to a pool around the handle on the photo (100 is the whole photo). Drag the handles on the photo to change position, size and wrap."
+            text: "What lies at the chosen depth is left as it is; Brightness and Warmth Near / Far change what is nearer or farther. Feather is how far from the depth the effect takes to come in: drag the two markers on the depth picture, or the handle under the position handle on the photo. Size narrows the effect to a pool around the handle on the photo (100 is the whole photo). Drag the handles on the photo to change position, size and feather."
         }
     }
 }

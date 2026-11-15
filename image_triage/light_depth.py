@@ -35,14 +35,15 @@ MAX_TEMPERATURE = 60.0  # local Temperature at Amount 100 and a Warmth of +/-100
 # amount: how strongly the effect is applied. depth: the distance that is left as it is (0 far .. 1 near). Brightness/Warmth
 # Near/Far: what happens to what is nearer than, or beyond, that depth (Brightness starts at -50, so by default both sides
 # are darkened and what lies at the depth stands out, as in Luminar). warmth: colour of the whole effect. softness: how far
-# the zones spill across object edges. x, y, size: an optional pool on the photo (size 100 = the whole photo). wrap: how thick
-# the slab around the depth is that is left alone.
+# the zones spill across object edges. x, y, size: an optional pool on the photo (size 100 = the whole photo). feather: how
+# far from the depth the effect takes to come in (nothing at the depth, in full beyond the feather), as the two markers on
+# Luminar's depth picture show. depthModel: which depth model made the map (an index into DEPTH_MODELS; Large by default).
 DEFAULTS = {"amount": 0.0, "depth": 0.5, "softness": 10.0, "warmth": 0.0,
             "brightnessNear": -50.0, "warmthNear": 0.0, "brightnessFar": -50.0, "warmthFar": 0.0,
-            "x": 0.5, "y": 0.6, "size": 100.0, "wrap": 25.0, "shown": 1.0, "depthModel": 0.0}
+            "x": 0.5, "y": 0.6, "size": 100.0, "feather": 15.0, "shown": 1.0, "depthModel": 2.0}
 RANGES = {"amount": (0, 100), "depth": (0, 1), "softness": (0, 100), "warmth": (-100, 100),
           "brightnessNear": (-100, 100), "warmthNear": (-100, 100), "brightnessFar": (-100, 100), "warmthFar": (-100, 100),
-          "x": (0, 1), "y": (0, 1), "size": (0, 100), "wrap": (0, 100), "shown": (0, 1), "depthModel": (0, 2)}
+          "x": (0, 1), "y": (0, 1), "size": (0, 100), "feather": (0, 100), "shown": (0, 1), "depthModel": (0, 2)}
 
 
 def valid(settings) -> bool:
@@ -71,6 +72,20 @@ def active(settings) -> bool:
     """Whether the effect changes the photo: switched on and with some Amount."""
     settings = normalized(settings)
     return settings["amount"] > 0 and settings["shown"] > 0
+
+
+BAND = 0.01  # half the thickness, in depth, of what lies exactly at the chosen depth and is left fully alone
+
+
+def feather_span(feather) -> float:
+    """The distance in depth (0..1) from the chosen depth at which the effect reaches full strength: where the feather
+    markers on the depth picture sit."""
+    return BAND + 0.02 + 0.4 * max(0.0, min(100.0, float(feather))) / 100
+
+
+def feather_for_span(span) -> float:
+    """The Feather setting (0..100) whose markers sit ``span`` away from the chosen depth."""
+    return max(0.0, min(100.0, (float(span) - BAND - 0.02) / 0.4 * 100))
 
 
 def pool_spread(size) -> float:
@@ -123,8 +138,8 @@ def depth_at(depth, x: float, y: float) -> float:
 def zones(depth, settings, side: int = COVERAGE_SIDE):
     """Which zone each pixel is in, as three uint8 arrays: (near, slab, far).
 
-    The slab is what lies at ``depth``: ``wrap`` is its thickness, with a short feather beyond it. What is nearer than the
-    slab is ``near`` and what is beyond it ``far``; the three add up to full. ``softness`` lets them spill across object
+    The slab is what lies at ``depth``. Moving away from it, ``near`` and ``far`` come in over the feather (see
+    ``feather_span``): none at the depth, all of it beyond. The three add up to full. ``softness`` lets them spill across object
     edges. Below size 100 all three are also narrowed to a pool around (``x``, ``y``): the effect fades out beyond it.
     """
     import numpy as np
@@ -135,16 +150,15 @@ def zones(depth, settings, side: int = COVERAGE_SIDE):
     # A touch of smoothing always: the model's map has per-pixel noise that would otherwise show as grain. Not more: the
     # objects in the map (trees, grass, a post) are what the effect should follow.
     scene = _blur(scene, max(width, height) * 0.0015)
-    band = 0.01 + 0.12 * settings["wrap"] / 100        # half the thickness of the slab around the depth that is fully lit
-    feather = 0.02 + 0.08 * settings["wrap"] / 100     # how gradually the light fades out beyond it
+    feather = 0.02 + 0.4 * settings["feather"] / 100   # how far the effect takes to come in beyond the depth
 
     def smooth(values):
         values = np.clip(values / feather, 0, 1)
         return values * values * (3 - 2 * values)
 
     blur = max(width, height) * 0.03 * settings["softness"] / 100
-    near = _blur(smooth(scene - (settings["depth"] + band)), blur)
-    far = _blur(smooth((settings["depth"] - band) - scene), blur)
+    near = _blur(smooth(scene - (settings["depth"] + BAND)), blur)
+    far = _blur(smooth((settings["depth"] - BAND) - scene), blur)
     light = np.clip(1 - near - far, 0, 1)
     if settings["size"] < 100:
         columns = (np.arange(width, dtype=np.float32) + 0.5) / width
@@ -290,7 +304,7 @@ def _from_version_one(settings) -> dict | None:
             and all(type(settings[key]) in (int, float) and math.isfinite(settings[key]) for key in old)):
         return None
     return normalized({"amount": settings["amount"], "x": settings["x"], "y": settings["y"], "depth": settings["depth"],
-                       "softness": settings["softness"], "warmth": settings["warmth"], "wrap": settings["reach"],
+                       "softness": settings["softness"], "warmth": settings["warmth"], "feather": settings["reach"] / 2, "depthModel": 0,
                        "size": 100 - 0.9 * settings["focus"]})
 
 
@@ -306,7 +320,10 @@ def read_sidecar(recipe_path):
     settings = data.get("settings")
     if data.get("version") == SIDECAR_VERSION:
         if isinstance(settings, dict) and "depthModel" not in settings:
-            settings = {**settings, "depthModel": DEFAULTS["depthModel"]}     # saved before there was a choice of model
+            settings = {**settings, "depthModel": 0.0}          # saved before there was a choice of model: the Small one's map
+        if isinstance(settings, dict) and "wrap" in settings and "feather" not in settings:
+            # An earlier build called the thickness of the untouched slab Wrap; half of it is about the same Feather.
+            settings = {**{k: v for k, v in settings.items() if k != "wrap"}, "feather": settings["wrap"] / 2}
         return (dict(settings) if valid(settings) else None), False
     if data.get("version") == 1:
         return _from_version_one(settings), True

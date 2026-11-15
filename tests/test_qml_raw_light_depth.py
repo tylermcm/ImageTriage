@@ -13,6 +13,7 @@ from PySide6.QtQml import QQmlComponent, QQmlEngine
 
 from image_triage import light_depth, photocraft_bridge as bridge
 from image_triage.qml_shell.raw_editor import RawEditor, _recipe, _without_light_depth
+from image_triage.qml_shell.raw_light_depth import RawLightDepth
 from test_qml_shell import qapp, pump  # noqa: F401
 
 
@@ -30,6 +31,7 @@ def ground(*_args):
 @pytest.fixture
 def raw(qapp, monkeypatch):
     monkeypatch.setattr("image_triage.editor_tools.installed_models", lambda: frozenset(("depth",)))
+    monkeypatch.setattr(RawLightDepth, "_installed", lambda self, key: key == "small")     # whatever is on this machine
     raw = RawEditor(memory=True)
     raw.open("sample.NEF")
     image = QImage(80, 60, QImage.Format_RGBA8888)
@@ -481,7 +483,7 @@ def test_the_section_renders_with_all_its_controls_and_drives_the_settings(raw, 
         section = item.childItems()[0]
         section.setProperty("advanced", True)
         pump(qapp, .05)
-        for name in ("brightnessNear", "warmthNear", "brightnessFar", "warmthFar", "size", "wrap"):
+        for name in ("brightnessNear", "warmthNear", "brightnessFar", "warmthFar", "size", "feather"):
             assert find_item(item, "lightDepth_" + name) is not None, name
         for name in ("small", "base", "large"):
             assert find_item(item, "lightDepthModel_" + name) is not None, name       # the depth model choice
@@ -519,7 +521,7 @@ HANDLES = (b'import QtQuick\nItem { width: 600; height: 400\n RawLightDepthHandl
            b' model: rawModel.lightDepthEditor; raw: rawModel } }')
 
 
-def test_the_handles_on_the_photo_move_the_position_and_set_the_size_and_wrap(raw, qapp):
+def test_the_handles_on_the_photo_move_the_position_and_set_the_size_and_feather(raw, qapp):
     light = ready(raw, qapp)
     light.adjust("amount", 50)
     light.adjust("size", 40)
@@ -531,7 +533,7 @@ def test_the_handles_on_the_photo_move_the_position_and_set_the_size_and_wrap(ra
         light.setOpen(True)
         pump(qapp, .05)
         assert handles.property("visible")
-        position, size, wrap = (item.findChild(QObject, name) for name in ("lightDepthPosition", "lightDepthSize", "lightDepthWrap"))
+        position, size, feather = (item.findChild(QObject, name) for name in ("lightDepthPosition", "lightDepthSize", "lightDepthFeather"))
         assert item.findChild(QObject, "lightDepthRing").property("visible")             # a pool: size below 100
         centre = (position.property("x") + position.property("width") / 2, position.property("y") + position.property("height") / 2)
         assert centre == pytest.approx((300, 240))        # the default position, 0.5 and 0.6 of the picture
@@ -542,9 +544,9 @@ def test_the_handles_on_the_photo_move_the_position_and_set_the_size_and_wrap(ra
         size.moved.emit(150.0 + 200.0, 100.0)              # dragged 200 pixels from the centre: half of 600 wide is 300
         light.flush()
         assert light.settings["size"] != before and light.settings["size"] == pytest.approx((200 / 300 - .05) / .95 * 100)
-        wrap.moved.emit(item.findChild(QObject, "lightDepthWrapTrack").property("x") + 1000, 380.0)   # past the end of its track
+        feather.moved.emit(item.findChild(QObject, "lightDepthFeatherTrack").property("x") + 1000, 380.0)   # past the end of its track
         light.flush()
-        assert light.settings["wrap"] == 100
+        assert light.settings["feather"] == 100
         light.adjust("size", 100)                          # the whole photo: no ring
         light.flush()
         pump(qapp, .05)
@@ -559,6 +561,7 @@ def test_the_handles_on_the_photo_move_the_position_and_set_the_size_and_wrap(ra
 
 def test_no_preview_yet_waits_instead_of_failing_and_goes_on_when_it_arrives(qapp, monkeypatch):
     monkeypatch.setattr("image_triage.editor_tools.installed_models", lambda: frozenset(("depth",)))
+    monkeypatch.setattr(RawLightDepth, "_installed", lambda self, key: key == "small")
     raw = RawEditor(memory=True)
     raw.open("sample.NEF")
     light = raw.lightDepthEditor
@@ -580,6 +583,7 @@ def test_no_preview_yet_waits_instead_of_failing_and_goes_on_when_it_arrives(qap
 
 def test_a_preview_that_failed_is_named_not_waited_for_silently(qapp, monkeypatch):
     monkeypatch.setattr("image_triage.editor_tools.installed_models", lambda: frozenset(("depth",)))
+    monkeypatch.setattr(RawLightDepth, "_installed", lambda self, key: key == "small")
     raw = RawEditor(memory=True)
     raw.open("sample.NEF")
     try:
@@ -656,15 +660,28 @@ def test_each_depth_model_makes_its_own_map_and_switching_back_needs_no_new_one(
     light.adjust("amount", 60)
     light.flush()
     wait(qapp, lambda: not light.busy and light.ready)
-    assert calls == [0] and light.selectedModel == 0 and light.modelInfo.startswith("Small depth model: made in 1.5 s")
-    light.setModel(1)                                       # the picture keeps its settings; the Base model reads the scene
+    assert calls == [2] and light.selectedModel == 2 and light.modelInfo.startswith("Large depth model: made in 1.5 s")
+    light.setModel(1)                                       # the settings stay; the Base model reads the scene
     assert light.selectedModel == 1 and light.busy and not light.ready
     wait(qapp, lambda: not light.busy)
-    assert calls == [0, 1] and light.ready and raw._draft["lightDepth"]["depthModel"] == 1
+    assert calls == [2, 1] and light.ready and raw._draft["lightDepth"]["depthModel"] == 1
     assert light.modelInfo == "Base depth model: made in 1.5 s (0.5 s loading the model, 1.0 s estimating)"
-    light.setModel(0)
-    assert calls == [0, 1] and light.ready and raw._draft["lightDepth"]["depthModel"] == 0     # the first map is still there
+    light.setModel(2)
+    assert calls == [2, 1] and light.ready and raw._draft["lightDepth"]["depthModel"] == 2     # the first map is still there
     assert [m["key"] for m in light.models] == ["small", "base", "large"] and all(m["installed"] for m in light.models)
+
+
+@pytest.mark.parametrize("installed, expected", [({"small", "base", "large"}, 2), ({"small", "base"}, 1), ({"small"}, 0)])
+def test_the_best_installed_model_is_used_until_one_is_picked(raw, qapp, installed, expected):
+    light = raw.lightDepthEditor
+    calls = []
+    light._runner = counting_runner(calls)
+    light._installed = lambda key: key in installed
+    light.adjust("amount", 60)
+    light.flush()
+    wait(qapp, lambda: not light.busy and light.ready)
+    assert calls == [expected] and light.selectedModel == expected and raw._draft["lightDepth"]["depthModel"] == expected
+    assert not light.error
 
 
 def test_a_model_that_is_not_installed_is_named_and_nothing_starts(raw, qapp):
@@ -680,3 +697,29 @@ def test_a_model_that_is_not_installed_is_named_and_nothing_starts(raw, qapp):
     light.setModel(0)                                       # back to one that is: the reason goes away
     light.refresh()
     assert light.unavailable == ""
+
+
+def test_the_feather_markers_follow_the_setting_and_dragging_them_sets_it(raw, qapp):
+    item, keep = make_item(raw, PANEL)
+    try:
+        light = raw.lightDepthEditor
+        wait(qapp, lambda: light.ready)
+        light.adjust("amount", 50)
+        light.adjust("depth", 0.4)
+        light.flush()
+        pump(qapp, .1)
+        far, near = find_item(item, "lightDepthFeatherFar"), find_item(item, "lightDepthFeatherNear")
+        handle = find_item(item, "lightDepthPadHandle")
+        assert far.property("visible") and near.property("visible") and find_item(item, "lightDepthFeatherBand") is not None
+        assert far.property("y") < handle.property("y") < near.property("y")        # far above the depth, near below it
+        before = near.property("y") - far.property("y")
+        light.setFeatherSpan(light_depth.feather_span(80))                           # what dragging a marker does
+        light.flush()
+        pump(qapp, .1)
+        assert light.settings["feather"] == pytest.approx(80)
+        assert light.featherSpan == pytest.approx(light_depth.feather_span(80))
+        assert near.property("y") - far.property("y") > before                      # the markers moved apart
+        assert handle.property("y") + handle.property("height") / 2 == pytest.approx(0.4 * find_item(item, "lightDepthPad").property("height"))
+    finally:
+        item.deleteLater()
+        pump(qapp, .05)

@@ -11,21 +11,26 @@ default Brightness of -50 on both sides, the photo darkens around the subject an
 
 - **Amount** (0-100): how strongly the effect is applied. At 0 nothing happens and nothing is drawn on the photo.
 - **Depth**: the distance that is left as it is. Set it by clicking the photo with the dropper (the same way Point Color picks
-  a colour; Esc cancels), with the Depth slider (0 = nearest, 100 = farthest), or by dragging up and down in the depth
-  picture. The depth picture is a secondary view: the photo's depth map (near is bright) with what lies at the chosen depth
-  tinted amber.
+  a colour; Esc cancels), with the Depth slider (0 = nearest, 100 = farthest), or by dragging the handle in the depth
+  picture (up is farther, down is nearer).
+- **Feather**: how far from the depth the effect takes to come in: nothing at the depth, in full beyond the feather. In the
+  depth picture it is the two markers either side of the handle (the far one above, the near one below), exactly as in
+  Luminar; drag either. The same setting is the slider under Advanced Settings and the handle on the photo. The depth picture
+  is a secondary view: the photo's depth map (near is bright, at the bottom for a ground plane) with what lies at the chosen
+  depth tinted amber and the feather drawn as a band around it.
 - **Softness** (0-100, default 10): how far the zones spill across object edges.
 - **Warmth** (-100...100): colour temperature of the whole effect, applied to every zone, the depth included.
 - **Advanced Settings**: **Brightness Near/Far** (-100...100, default -50) and **Warmth Near/Far** (-100...100, default 0),
-  which change what is nearer than, or beyond, the depth; plus **Size** and **Wrap** (0-100).
+  which change what is nearer than, or beyond, the depth; plus **Size** (0-100) and the **Feather** slider.
 - **On the photo**, while the section is open and Amount is above zero: a *position* handle (the centre of a pool), a *size*
-  handle on a ring (the pool's radius; at Size 100 there is no ring and the effect covers the whole photo) and a *wrap*
+  handle on a ring (the pool's radius; at Size 100 there is no ring and the effect covers the whole photo) and a *feather*
   handle on a short track under the position handle. Dragging them changes the same settings as the sliders, as one undo step
   per drag.
 - The eye switches the whole effect off and on without losing its settings; the arrow removes it.
 
-Size and Wrap are this tool's own additions (Luminar has no equivalents). **Position and size** narrow the effect to a pool
-around the handle; **Wrap** is the thickness of the slab around the chosen depth that is left alone.
+Size is this tool's own addition (Luminar has none). **Position and size** narrow the effect to a pool around the handle. An
+earlier build had a separate Wrap (the thickness of the untouched slab); it is the same quantity as the feather, so it is
+gone, and a saved Wrap becomes half that Feather.
 
 ## How it works
 
@@ -55,10 +60,12 @@ chosen per photo under Advanced Settings (the choice is the `depthModel` setting
 
 | Model | Repository | Size | Licence |
 |---|---|---|---|
-| Small (default) | `depth-anything/Depth-Anything-V2-Small-hf` | 100 MB | Apache-2.0 |
+| Small | `depth-anything/Depth-Anything-V2-Small-hf` | 100 MB | Apache-2.0 |
 | Base | `depth-anything/Depth-Anything-V2-Base-hf` | 390 MB | CC-BY-NC (non-commercial) |
-| Large | `depth-anything/Depth-Anything-V2-Large-hf` | 1.34 GB | CC-BY-NC (non-commercial) |
+| Large (default) | `depth-anything/Depth-Anything-V2-Large-hf` | 1.34 GB | CC-BY-NC (non-commercial) |
 
+- Until a model is picked for a photo, the best installed one is used (Large, else Base, else Small); the model that made the
+  map is then saved with the settings. Picking one that is not installed says so instead of falling back.
 - Small is the managed model that Set Up AI installs. Base and Large are not downloaded by the app yet: put the three files
   (`config.json`, `preprocessor_config.json`, `model.safetensors`) of each in `~/.image-triage/AI/models/Editor/<repository
   name>/`. A model that is not installed is greyed out in the picker, and choosing it by other means says so.
