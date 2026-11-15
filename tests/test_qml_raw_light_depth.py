@@ -167,18 +167,18 @@ def test_hide_show_and_remove(raw, qapp, monkeypatch):
 def test_a_free_mask_is_needed_for_each_zone_the_effect_changes(raw, qapp):
     shape = {"type": "linear", "x0": 0, "y0": 0, "x1": 1, "y1": 1}
     light = raw.lightDepthEditor
-    raw._set_values({"masks": [{"name": f"M{i}", "shape": shape} for i in range(16)]}, "fill")
+    raw._set_values({"masks": [{"name": f"M{i}", "shape": shape} for i in range(15)]}, "fill")
     light.adjust("amount", 60)
     light.flush()
     wait(qapp, lambda: not light.busy)
-    assert len(raw.maskEditor.rows) == 16 and "16 masks" in light.error and not light.active
-    raw._set_values({"masks": [{"name": f"M{i}", "shape": shape} for i in range(15)]}, "fewer")
+    assert len(raw.maskEditor.rows) == 15 and "16 masks" in light.error and not light.active     # near and far need two
+    raw._set_values({"masks": [{"name": f"M{i}", "shape": shape} for i in range(14)]}, "fewer")
     light.adjust("amount", 60)
     light.flush()
-    assert light.active and not light.error and len(raw.maskEditor.rows) == 15
-    light.adjust("brightnessNear", -30)                    # a second zone would take a second mask: there is no room
+    assert light.active and not light.error and len(raw.maskEditor.rows) == 14
+    light.adjust("warmth", 30)                             # a third zone (the depth itself) would take a third mask
     light.flush()
-    assert "2 of them" in light.error and light.settings["brightnessNear"] == 0     # refused: the slider goes back
+    assert "3 of them" in light.error and light.settings["warmth"] == 0     # refused: the slider goes back
 
 
 def test_missing_model_says_so_and_starts_nothing(raw, qapp, monkeypatch):
@@ -255,7 +255,7 @@ def test_reset_keeps_the_effect_and_the_native_renderer_never_sees_its_settings(
     Image.fromarray(ground()).save(kept)
     monkeypatch.setattr("image_triage.depth_maps.light_depth_cache_file", lambda source, **kw: kept)
     built = _recipe(raw._draft, "sample.NEF")["cameraRaw"]
-    assert [m["name"] for m in built["masks"]] == [light_depth.LIGHT_NAME] and "lightDepth" not in built
+    assert [m["name"] for m in built["masks"]] == [light_depth.NEAR_NAME, light_depth.FAR_NAME] and "lightDepth" not in built
     assert "masks" not in raw._draft and raw.maskEditor.rows == []     # building them for a render leaves the draft alone
 
 
@@ -305,9 +305,9 @@ def test_previews_and_saves_build_the_masks_but_the_saved_recipe_holds_none(lit_
     out = tmp_path / "preview"
     out.mkdir()
     RawEditor._work("preview", str(photo), original, draft, str(out))
-    assert [m["name"] for m in sent[-1]["masks"]] == [light_depth.LIGHT_NAME] and "lightDepth" not in sent[-1]
+    assert [m["name"] for m in sent[-1]["masks"]] == [light_depth.NEAR_NAME, light_depth.FAR_NAME] and "lightDepth" not in sent[-1]
     RawEditor._work("save", str(photo), original, draft, "")
-    assert [m["name"] for m in sent[-1]["masks"]] == [light_depth.LIGHT_NAME]
+    assert [m["name"] for m in sent[-1]["masks"]] == [light_depth.NEAR_NAME, light_depth.FAR_NAME]
     assert bridge.load_recipe(str(photo))["cameraRaw"] == {"exposure": .25}      # no masks, no host settings in the recipe
     assert light_depth.read_sidecar(bridge.recipe_path(str(photo)))[0] == light
     # Switched off or at Amount 0: nothing is sent to be rendered as a mask, and the settings file goes only at Amount 0.
@@ -418,7 +418,7 @@ def test_the_live_preview_gets_light_depths_masks_for_the_draft_and_for_the_save
     wait(qapp, lambda: done or errors)
     assert not errors
     names = [[m["name"] for m in call["recipe"]["cameraRaw"].get("masks", [])] for call in calls]
-    both = [light_depth.LIGHT_NAME]
+    both = [light_depth.NEAR_NAME, light_depth.FAR_NAME]
     assert [call["op"] for call in calls] == ["open", "render"] and names == [both, both]
     assert all("lightDepth" not in call["recipe"]["cameraRaw"] for call in calls)
     exposure = [call["recipe"]["cameraRaw"]["masks"][0]["adjust"]["exposure"] for call in calls]

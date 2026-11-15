@@ -74,19 +74,21 @@ def test_depth_under_a_point_ignores_one_noisy_pixel():
 
 
 def test_amount_brightness_and_warmth_become_local_adjustments_for_each_zone():
-    near, light, far = light_depth.adjustments(settings(amount=100, warmth=20, brightnessNear=-50, warmthFar=-30))
-    assert light == {"exposure": light_depth.MAX_EXPOSURE, "temperature": pytest.approx(0.2 * light_depth.MAX_TEMPERATURE)}
-    assert near == {"exposure": -light_depth.MAX_EXPOSURE / 2}
-    assert far == {"temperature": pytest.approx(-0.3 * light_depth.MAX_TEMPERATURE)}
-    assert light_depth.adjustments(settings(amount=50))[1] == {"exposure": light_depth.MAX_EXPOSURE / 2}   # Amount scales it
+    near, slab, far = light_depth.adjustments(settings(amount=100, warmth=20, brightnessNear=40, brightnessFar=-100, warmthFar=-30))
+    assert near == {"exposure": pytest.approx(0.4 * light_depth.MAX_EXPOSURE), "temperature": pytest.approx(0.2 * light_depth.MAX_TEMPERATURE)}
+    assert far == {"exposure": -light_depth.MAX_EXPOSURE, "temperature": pytest.approx(-0.1 * light_depth.MAX_TEMPERATURE)}
+    assert slab == {"temperature": pytest.approx(0.2 * light_depth.MAX_TEMPERATURE)}     # the depth keeps its brightness; Warmth is overall
+    half = light_depth.adjustments(settings(amount=50, brightnessNear=100))[0]
+    assert half == {"exposure": light_depth.MAX_EXPOSURE / 2}                            # Amount scales it; zero values are left out
     assert light_depth.adjustments(settings(amount=0)) == ({}, {}, {})
-    assert light_depth.masks_needed(settings(amount=100)) == 1 and light_depth.masks_needed(settings(amount=0)) == 0
-    assert light_depth.masks_needed(settings(brightnessNear=20, warmthFar=10)) == 3
+    assert light_depth.masks_needed(settings()) == 2 and light_depth.masks_needed(settings(warmth=10)) == 3
+    assert light_depth.masks_needed(settings(amount=0)) == 0 and light_depth.masks_needed(settings(shown=0)) == 0
 
 
-def test_by_default_only_the_slab_at_the_depth_changes():
-    assert light_depth.DEFAULTS["brightnessNear"] == light_depth.DEFAULTS["brightnessFar"] == 0
-    assert light_depth.adjustments({**light_depth.DEFAULTS, "amount": 100}) == ({}, {"exposure": light_depth.MAX_EXPOSURE}, {})
+def test_by_default_both_sides_are_darkened_and_the_depth_is_left_alone_like_luminar():
+    assert light_depth.DEFAULTS["brightnessNear"] == light_depth.DEFAULTS["brightnessFar"] == -50
+    near, slab, far = light_depth.adjustments({**light_depth.DEFAULTS, "amount": 100})
+    assert near == far == {"exposure": -1.0} and slab == {}
 
 
 def test_active_needs_an_amount_and_to_be_switched_on():
@@ -94,20 +96,22 @@ def test_active_needs_an_amount_and_to_be_switched_on():
     assert light_depth.active(settings()) and not light_depth.active(settings(shown=0))
 
 
-def test_render_masks_are_valid_recipe_masks_with_the_light_first_among_those_that_change():
+def test_render_masks_are_valid_recipe_masks_for_the_zones_that_change():
     rows = light_depth.render_masks(settings(depth=0.5, wrap=0), scene())
-    assert masks_valid(rows) and [row["name"] for row in rows] == [light_depth.LIGHT_NAME]
-    assert rows[0]["adjust"] == {"exposure": pytest.approx(1.4)}
-    assert decode_raster(rows[0]["shape"])[40, 60] > 250
-    both = light_depth.render_masks(settings(brightnessNear=-40, brightnessFar=30), scene())
-    assert [row["name"] for row in both] == [light_depth.NEAR_NAME, light_depth.LIGHT_NAME, light_depth.FAR_NAME]
+    assert masks_valid(rows) and [row["name"] for row in rows] == [light_depth.NEAR_NAME, light_depth.FAR_NAME]
+    assert [row["adjust"] for row in rows] == [{"exposure": pytest.approx(-0.7)}] * 2
+    assert decode_raster(rows[0]["shape"])[-1, 60] > 250 and decode_raster(rows[1]["shape"])[2, 60] > 250
+    assert light_depth.SLAB_NAME not in [row["name"] for row in rows]             # the depth itself is not touched
     rows[0]["adjust"]["exposure"] = 99                  # what a render gets is a copy: the cache is not altered by its user
-    assert light_depth.render_masks(settings(depth=0.5, wrap=0), scene())[0]["adjust"]["exposure"] == pytest.approx(1.4)
+    assert light_depth.render_masks(settings(depth=0.5, wrap=0), scene())[0]["adjust"]["exposure"] == pytest.approx(-0.7)
 
 
 def test_a_zone_that_changes_nothing_gets_no_mask_and_an_inactive_light_none():
-    rows = light_depth.render_masks(settings(warmth=30), scene())
-    assert rows[0]["adjust"].keys() == {"exposure", "temperature"}
+    only_near = light_depth.render_masks(settings(brightnessFar=0), scene())
+    assert [row["name"] for row in only_near] == [light_depth.NEAR_NAME]
+    warm = light_depth.render_masks(settings(warmth=30), scene())
+    assert [row["name"] for row in warm] == [light_depth.NEAR_NAME, light_depth.SLAB_NAME, light_depth.FAR_NAME]
+    assert warm[1]["adjust"].keys() == {"temperature"}
     assert light_depth.render_masks(settings(shown=0), scene()) == []
     assert light_depth.render_masks(settings(amount=0), scene()) == []
 
@@ -139,10 +143,10 @@ def photo(tmp_path, monkeypatch):
 
 def test_with_masks_adds_the_masks_after_the_persons_own_and_drops_the_host_entry(photo):
     own = {"name": "Brush 1", "shape": {"type": "linear", "x0": 0, "y0": 0, "x1": 1, "y1": 1}, "adjust": {"contrast": 10}}
-    draft = {"exposure": 1, "masks": [own], "lightDepth": settings(brightnessFar=-30)}
+    draft = {"exposure": 1, "masks": [own], "lightDepth": settings(brightnessFar=0)}
     result = light_depth.with_masks(draft, draft["lightDepth"], str(photo))
     assert "lightDepth" not in result and result["exposure"] == 1
-    assert [mask["name"] for mask in result["masks"]] == ["Brush 1", light_depth.LIGHT_NAME, light_depth.FAR_NAME]
+    assert [mask["name"] for mask in result["masks"]] == ["Brush 1", light_depth.NEAR_NAME]
     assert draft["masks"] == [own] and "lightDepth" in draft          # the draft itself is not changed
     off = light_depth.with_masks({"masks": [own], "lightDepth": settings(shown=0)}, settings(shown=0), str(photo))
     assert off == {"masks": [own]}
@@ -151,12 +155,11 @@ def test_with_masks_adds_the_masks_after_the_persons_own_and_drops_the_host_entr
 def test_with_masks_says_so_when_it_cannot_make_them(photo, monkeypatch):
     shape = {"type": "linear", "x0": 0, "y0": 0, "x1": 1, "y1": 1}
     many = {"masks": [{"name": f"M{i}", "shape": shape} for i in range(16)]}
-    with pytest.raises(ValueError, match="16 masks"):
-        light_depth.with_masks(many, settings(), str(photo))
-    assert len(light_depth.with_masks({"masks": many["masks"][:15]}, settings(), str(photo))["masks"]) == 16
-    three = settings(brightnessNear=20, brightnessFar=20)
+    with pytest.raises(ValueError, match="2 of a photo's 16"):
+        light_depth.with_masks({"masks": many["masks"][:15]}, settings(), str(photo))
+    assert len(light_depth.with_masks({"masks": many["masks"][:14]}, settings(), str(photo))["masks"]) == 16
     with pytest.raises(ValueError, match="3 of a photo's 16"):
-        light_depth.with_masks({"masks": many["masks"][:14]}, three, str(photo))
+        light_depth.with_masks({"masks": many["masks"][:14]}, settings(warmth=20), str(photo))
     monkeypatch.setattr("image_triage.depth_maps.light_depth_cache_file", lambda source, **kw: photo.parent / "gone.png")
     with pytest.raises(ValueError, match="depth map is missing"):
         light_depth.with_masks({}, settings(), str(photo))
@@ -185,7 +188,7 @@ def test_an_earlier_versions_mask_with_its_settings_carries_on_as_the_panels_eff
     cleaned, light = light_depth.load_settings(recipe, {"masks": [mine, legacy]})
     assert cleaned == {"masks": [mine]} and light_depth.valid(light)
     assert light["amount"] == 55 and light["depth"] == 0.3 and light["wrap"] == 60 and light["size"] == pytest.approx(55)
-    assert light["brightnessNear"] == light["brightnessFar"] == 0
+    assert light["brightnessNear"] == light["brightnessFar"] == -50
 
 
 def test_an_earlier_versions_mask_without_settings_is_dropped_and_stale_settings_are_ignored(photo):
@@ -205,7 +208,7 @@ def test_export_adds_the_masks_and_a_photo_with_only_light_depth_is_edited(photo
     assert light_depth.recipe_for_render(str(photo), saved) is saved
     light_depth.write_sidecar(recipe, settings())
     result = light_depth.recipe_for_render(str(photo), saved)
-    assert [m["name"] for m in result["cameraRaw"]["masks"]] == [light_depth.LIGHT_NAME]
+    assert [m["name"] for m in result["cameraRaw"]["masks"]] == [light_depth.NEAR_NAME, light_depth.FAR_NAME]
     assert "masks" not in saved["cameraRaw"]
     only = light_depth.recipe_for_render(str(photo), None)
     assert bridge.classify_recipe(only)[0] == bridge.RECIPE_EDITED and only["version"] == bridge.RECIPE_VERSION

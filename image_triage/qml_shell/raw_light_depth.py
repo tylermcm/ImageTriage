@@ -139,7 +139,7 @@ class RawLightDepth(QObject):
 
     @Property(str, notify=changed)
     def pad(self):
-        """The depth map as a picture (near is bright), with what lies at the chosen depth tinted amber: what is lit."""
+        """The depth map as a picture (near is bright), with what lies at the chosen depth tinted amber: what is left as it is."""
         import numpy as np
 
         from .raw_preview import put_thumbnail

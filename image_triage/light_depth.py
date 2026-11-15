@@ -1,4 +1,4 @@
-"""Light Depth: add light to whatever lies at a chosen depth of a photo, using a monocular depth map.
+"""Light Depth: change the light on what is nearer and farther than a chosen depth, using a monocular depth map.
 
 The effect belongs to the Light Depth panel and shows nowhere else. The draft and the settings file beside the recipe hold
 only the panel's settings (``lightDepth``). The local masks the native renderer needs are built from those settings and the
@@ -16,7 +16,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 LEGACY_MASK_NAME = "Light Depth"      # earlier versions stored the effect as an ordinary mask with this name
-NEAR_NAME, LIGHT_NAME, FAR_NAME = "Light Depth near", "Light Depth light", "Light Depth far"
+NEAR_NAME, SLAB_NAME, FAR_NAME = "Light Depth near", "Light Depth depth", "Light Depth far"
 SIDECAR_TAIL = ".photocraft.lightdepth.json"  # carried with the photo's other edit files (``edit_carry.EDIT_MARKERS``)
 SIDECAR_VERSION = 2
 MAX_MASKS = 16                        # the most masks a recipe can hold
@@ -26,17 +26,16 @@ MAX_MASKS = 16                        # the most masks a recipe can hold
 COVERAGE_SIDE = 1024   # the depth map's own size: finer than that cannot follow anything the map does not show
 PAD_SIDE = 320  # the depth picture shown in the panel
 
-MAX_EXPOSURE = 2.0  # stops of light at Amount 100 (and of a Near or Far Brightness of +/-100)
+MAX_EXPOSURE = 2.0  # stops at Amount 100 and a Near or Far Brightness of +/-100
 MAX_TEMPERATURE = 60.0  # local Temperature at Amount 100 and a Warmth of +/-100
 
-# amount: the light added at the chosen depth (the picture is otherwise unchanged). depth: which distance is lit (0 far .. 1 near).
-# softness: how far the light spills across object edges. warmth: colour of that light. brightness/warmth Near/Far: optional
-# changes to what is nearer than, or beyond, the lit slab (they start at 0: nothing changes there). x, y, size: an optional
-# pool of light on the photo (size 100 = the whole photo). wrap: how thick the lit slab is, so the light wraps further around
-# the depth.
-# shown: 1 = on, 0 = switched off without losing the settings.
+# amount: how strongly the effect is applied. depth: the distance that is left as it is (0 far .. 1 near). Brightness/Warmth
+# Near/Far: what happens to what is nearer than, or beyond, that depth (Brightness starts at -50, so by default both sides
+# are darkened and what lies at the depth stands out, as in Luminar). warmth: colour of the whole effect. softness: how far
+# the zones spill across object edges. x, y, size: an optional pool on the photo (size 100 = the whole photo). wrap: how thick
+# the slab around the depth is that is left alone.
 DEFAULTS = {"amount": 0.0, "depth": 0.5, "softness": 10.0, "warmth": 0.0,
-            "brightnessNear": 0.0, "warmthNear": 0.0, "brightnessFar": 0.0, "warmthFar": 0.0,
+            "brightnessNear": -50.0, "warmthNear": 0.0, "brightnessFar": -50.0, "warmthFar": 0.0,
             "x": 0.5, "y": 0.6, "size": 100.0, "wrap": 25.0, "shown": 1.0}
 RANGES = {"amount": (0, 100), "depth": (0, 1), "softness": (0, 100), "warmth": (-100, 100),
           "brightnessNear": (-100, 100), "warmthNear": (-100, 100), "brightnessFar": (-100, 100), "warmthFar": (-100, 100),
@@ -114,12 +113,11 @@ def depth_at(depth, x: float, y: float) -> float:
 
 
 def zones(depth, settings, side: int = COVERAGE_SIDE):
-    """How strongly each pixel is lit, or is nearer or farther than what is lit, as three uint8 arrays: (near, light, far).
+    """Which zone each pixel is in, as three uint8 arrays: (near, slab, far).
 
-    ``light`` is what lies at ``depth``: a slab whose thickness is ``wrap`` (more Wrap, and the light wraps further
-    around the depth), fading out over a short feather. What is nearer than the slab is ``near`` and what is beyond it
-    ``far``; the three add up to full. ``softness`` lets them spill across object edges. Below size 100 all three are also
-    narrowed to a pool around (``x``, ``y``): the effect fades out beyond it.
+    The slab is what lies at ``depth``: ``wrap`` is its thickness, with a short feather beyond it. What is nearer than the
+    slab is ``near`` and what is beyond it ``far``; the three add up to full. ``softness`` lets them spill across object
+    edges. Below size 100 all three are also narrowed to a pool around (``x``, ``y``): the effect fades out beyond it.
     """
     import numpy as np
 
@@ -150,29 +148,30 @@ def zones(depth, settings, side: int = COVERAGE_SIDE):
 
 
 def coverage(depth, settings, side: int = COVERAGE_SIDE):
-    """The lit slab alone (255 = fully lit): what the panel's picture shows."""
+    """The slab at the chosen depth alone (255 = fully in it): what the panel's picture shows."""
     return zones(depth, settings, side)[1]
 
 
 def adjustments(settings) -> tuple[dict, dict, dict]:
-    """The local adjustment for (near, light, far). The lit slab gets Amount as exposure and Warmth as temperature; what
-    is nearer or farther changes only by its own Brightness and Warmth (0 by default), scaled by Amount."""
+    """The local adjustment for (near, slab, far), as Luminar's Light Depth does it: what is nearer than the slab and what
+    is beyond it change by their own Brightness and Warmth, the slab at the depth keeps its brightness, and the overall
+    Warmth is added everywhere. Amount scales all of it."""
     settings = normalized(settings)
     strength = settings["amount"] / 100
 
     def adjust(brightness, warmth):
         result = {}
-        exposure = round(MAX_EXPOSURE * brightness, 4)
-        temperature = round(MAX_TEMPERATURE * max(-1.0, min(1.0, warmth)), 2)
+        exposure = round(MAX_EXPOSURE * strength * brightness / 100, 4)
+        temperature = round(MAX_TEMPERATURE * strength * max(-100.0, min(100.0, warmth)) / 100, 2)
         if exposure:
             result["exposure"] = exposure
         if temperature:
             result["temperature"] = temperature
         return result
 
-    return (adjust(strength * settings["brightnessNear"] / 100, strength * settings["warmthNear"] / 100),
-            adjust(strength, strength * settings["warmth"] / 100),
-            adjust(strength * settings["brightnessFar"] / 100, strength * settings["warmthFar"] / 100))
+    return (adjust(settings["brightnessNear"], settings["warmth"] + settings["warmthNear"]),
+            adjust(0, settings["warmth"]),
+            adjust(settings["brightnessFar"], settings["warmth"] + settings["warmthFar"]))
 
 
 def masks_needed(settings) -> int:
@@ -205,7 +204,7 @@ _BUILT = OrderedDict()  # (settings, depth digest) -> the two mask rows; a slide
 
 
 def render_masks(settings, depth) -> list:
-    """The local masks (near, light, far) that carry ``settings`` into a render; a zone that changes nothing has none."""
+    """The local masks (near, slab, far) that carry ``settings`` into a render; a zone that changes nothing has none."""
     import numpy as np
 
     from .qml_shell.raw_masks import encode_raster
@@ -217,7 +216,7 @@ def render_masks(settings, depth) -> list:
     key = (tuple(sorted(settings.items())), hashlib.blake2b(depth.tobytes(), digest_size=16).digest(), depth.shape)
     if key not in _BUILT:
         rows = []
-        for name, raster, adjust in zip((NEAR_NAME, LIGHT_NAME, FAR_NAME), zones(depth, settings), adjustments(settings)):
+        for name, raster, adjust in zip((NEAR_NAME, SLAB_NAME, FAR_NAME), zones(depth, settings), adjustments(settings)):
             if adjust:
                 rows.append({"name": name, "enabled": True, "invert": False, "amount": 100,
                              "shape": encode_raster(raster), "adjust": adjust})
@@ -276,7 +275,8 @@ def sidecar_path(recipe_path) -> Path:
 
 def _from_version_one(settings) -> dict | None:
     """Settings of the first version (a light at a distance: reach and focus) as near/far settings, approximately: the
-    old light brightened what lay at its distance, which is now the lit slab."""
+    old light brightened what lay at its distance; that cannot be expressed now, so its depth, reach and focus carry over
+    and the near and far zones get the defaults."""
     old = ("amount", "x", "y", "depth", "softness", "warmth", "reach", "focus")
     if not (isinstance(settings, dict) and settings.keys() == set(old)
             and all(type(settings[key]) in (int, float) and math.isfinite(settings[key]) for key in old)):
