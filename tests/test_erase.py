@@ -33,8 +33,17 @@ def test_the_model_crop_holds_the_object_with_context_inside_the_picture():
     assert erase.plan_crop((100, 100, 140, 120), (1000, 800)) == (100 - 160, 100 - 160, 140 + 160, 120 + 160) or True
     x0, y0, x1, y1 = erase.plan_crop((100, 100, 140, 120), (1000, 800))
     assert (x0, y0) == (0, 0) and x1 > 140 and y1 > 120                          # clamped at the picture's edge, context beyond it
-    x0, y0, x1, y1 = erase.plan_crop((400, 300, 700, 500), (1000, 800))
-    assert x0 == 400 - 240 and x1 == 700 + 240 and (y0, y1) == (300 - 240, 500 + 240)   # 0.8 of the larger side
+    x0, y0, x1, y1 = erase.plan_crop((400, 300, 800, 500), (1400, 1000))
+    assert x0 == 400 - 320 and x1 == 800 + 320 and (y0, y1) == (0, 500 + 320)           # 0.8 of the larger side, clamped
+
+
+def test_a_small_hole_gets_the_models_own_window_at_the_photos_resolution():
+    size = (2064, 1376)
+    for box in [(900, 600, 1000, 700), (10, 20, 60, 90), (2000, 1300, 2060, 1370), (700, 400, 1000, 700)]:
+        x0, y0, x1, y1 = erase.plan_crop(box, size)
+        assert (x1 - x0, y1 - y0) == (512, 512) and 0 <= x0 and x1 <= 2064 and 0 <= y0 and y1 <= 1376    # nothing to scale
+        assert x0 <= box[0] and y0 <= box[1] and x1 >= box[2] and y1 >= box[3]
+    assert erase.plan_crop((100, 100, 140, 140), (400, 300)) == (0, 0, 400, 300)        # a picture smaller than the window: all of it
 
 
 def test_the_composite_keeps_every_pixel_outside_the_fill_and_blends_the_edge():

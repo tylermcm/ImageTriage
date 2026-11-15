@@ -20,6 +20,7 @@ GROW_FRACTION = 0.006         # default Grow, as a share of the picture's long e
 GROW_MAX_FRACTION = 0.03
 MAX_HOLE_FRACTION = 0.25      # past this much of the picture the fill is invention; the panel says so
 CONTEXT = 0.8                 # the crop reaches this many hole-sizes beyond the hole
+NATIVE_HOLE = 320            # a hole up to this long is filled at the photo's own resolution (see plan_crop)
 MIN_CONTEXT = 160             # ... and at least this many pixels
 FEATHER_FRACTION = 0.0012     # the patch's edge, as a share of the long edge (at least 2 px)
 
@@ -77,6 +78,21 @@ def plan_crop(box, size, context: float = CONTEXT, minimum: int = MIN_CONTEXT):
     ``(width, height)``. A compact object is one fill; the model sees what surrounds it and invents what lies behind."""
     width, height = size
     x0, y0, x1, y1 = box
+    if max(x1 - x0, y1 - y0) <= NATIVE_HOLE:
+        # Small enough that the model's own window holds it with room around: cut exactly that window, so nothing is scaled
+        # (a scaled crop comes back soft). The window slides to stay inside the picture; a picture smaller than the window is
+        # used whole.
+        side = MODEL_SIDE
+
+        def window(low, high, limit):
+            if limit <= side:
+                return 0, limit
+            start = min(max(0, (low + high) // 2 - side // 2), limit - side)
+            return start, start + side
+
+        wx0, wx1 = window(x0, x1, width)
+        wy0, wy1 = window(y0, y1, height)
+        return wx0, wy0, wx1, wy1
     margin = int(max(minimum, context * max(x1 - x0, y1 - y0)))
     return max(0, x0 - margin), max(0, y0 - margin), min(width, x1 + margin), min(height, y1 + margin)
 
