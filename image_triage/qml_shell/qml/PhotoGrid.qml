@@ -48,14 +48,17 @@ Item {
     function saveScopePosition() {
         if (bookmarkFolder !== photos.folderPath) scopePositions = ({})
         bookmarkFolder = photos.folderPath
-        var topIndex = gv.indexAt(1, gv.contentY + 1)
-        var top = gridModel.rowAt(topIndex) >= 0 ? photos.get(gridModel.rowAt(topIndex)) : ({})
+        // Rows are measured from the top of the list (content y 0), not from gv.originY: after a jump of contentY the view keeps a provisional
+        // originY (here 511 px, a third of a row) until its delegates catch up, and a bookmark taken against that was off by whole rows when it was
+        // applied to the fresh layout. The top cell comes from the geometry too, not from gv.indexAt(), which reads the delegates that happen to exist.
+        var topIndex = gv.count > 0 && gv.cellHeight > 0 ? Math.min(gv.count - 1, Math.floor(Math.max(0, gv.contentY) / gv.cellHeight) * root.cols) : -1
+        var top = topIndex >= 0 && gridModel.rowAt(topIndex) >= 0 ? photos.get(gridModel.rowAt(topIndex)) : ({})
         var current = root.row >= 0 ? photos.get(root.row) : ({})
         var states = Object.assign({}, scopePositions)
         states[scopeKey()] = {
             path: current.path || "", index: gv.currentIndex, y: gv.contentY,
             topPath: top.path || "", cellHeight: gv.cellHeight,
-            offset: topIndex >= 0 ? gv.contentY - gv.originY - Math.floor(topIndex / root.cols) * gv.cellHeight : 0
+            offset: topIndex >= 0 ? gv.contentY - Math.floor(topIndex / root.cols) * gv.cellHeight : 0
         }
         scopePositions = states
     }
