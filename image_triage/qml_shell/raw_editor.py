@@ -445,6 +445,7 @@ class RawEditor(QObject):
 
     @Slot()
     def endGesture(self):
+        self._light_depth_editor.flush()           # a slider's last position is committed inside its gesture, as one undo step
         changed = self._gesture_recorded
         self._gesture = self._gesture_recorded = False
         self._mask_editor.changed.emit()

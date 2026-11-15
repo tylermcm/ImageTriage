@@ -42,6 +42,7 @@ def test_first_adjustment_reads_depth_then_adds_one_managed_mask(raw, qapp):
     light = raw.lightDepthEditor
     assert not light.ready and not light.active
     light.adjust("amount", 70)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     assert light.busy and raw.maskEditor.rows == []
     wait(qapp, lambda: not light.busy)
     rows = raw.maskEditor.rows
@@ -54,11 +55,14 @@ def test_first_adjustment_reads_depth_then_adds_one_managed_mask(raw, qapp):
 def test_placing_the_light_takes_the_distance_under_the_handle(raw, qapp):
     light = raw.lightDepthEditor
     light.adjust("amount", 50)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     wait(qapp, lambda: not light.busy)
     light.place(0.5, 0.95)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     near = light.settings
     assert near["depth"] > 0.85 and (near["x"], near["y"]) == (0.5, 0.95)
     light.place(0.5, 0.05)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     assert light.settings["depth"] < 0.15
     assert len(raw.maskEditor.rows) == 1
 
@@ -66,7 +70,9 @@ def test_placing_the_light_takes_the_distance_under_the_handle(raw, qapp):
 def test_placing_before_the_map_exists_waits_for_the_scene_depth(raw, qapp):
     light = raw.lightDepthEditor
     light.adjust("amount", 40)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     light.place(0.25, 1.0)  # while the depth job is still running
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     wait(qapp, lambda: not light.busy)
     assert light.settings["depth"] > 0.9 and light.settings["amount"] == 40 and light.active
 
@@ -74,11 +80,13 @@ def test_placing_before_the_map_exists_waits_for_the_scene_depth(raw, qapp):
 def test_a_drag_is_one_undo_step_and_undo_restores_the_sliders(raw, qapp):
     light = raw.lightDepthEditor
     light.adjust("amount", 30)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     wait(qapp, lambda: not light.busy)
     steps = len(raw._undo)
     raw.beginGesture()
     for y in (0.2, 0.4, 0.6, 0.8):
         light.place(0.5, y)
+        light.flush()          # the panel commits after a short pause; tests do not wait for it
     raw.endGesture()
     assert len(raw._undo) == steps + 1
     raw.undo()
@@ -90,15 +98,18 @@ def test_a_drag_is_one_undo_step_and_undo_restores_the_sliders(raw, qapp):
 def test_no_mask_is_added_while_the_amount_is_zero(raw, qapp):
     light = raw.lightDepthEditor
     light.adjust("warmth", 40)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     wait(qapp, lambda: not light.busy)
     assert raw.maskEditor.rows == [] and light.settings["warmth"] == 40
     light.adjust("amount", 10)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     assert raw.maskEditor.rows[0]["adjust"] == {"exposure": pytest.approx(0.2), "temperature": pytest.approx(24)}
 
 
 def test_hide_show_and_remove(raw, qapp):
     light = raw.lightDepthEditor
     light.adjust("amount", 60)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     wait(qapp, lambda: not light.busy)
     light.toggleShown()
     assert not light.shown and light.active and raw.maskEditor.rows[0]["enabled"] is False
@@ -115,6 +126,7 @@ def test_sixteen_masks_refuse_a_seventeenth_with_a_reason(raw, qapp):
     raw._set_values({"masks": [{"name": f"M{i}", "shape": shape} for i in range(16)]}, "fill")
     light = raw.lightDepthEditor
     light.adjust("amount", 60)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     wait(qapp, lambda: not light.busy)
     assert len(raw.maskEditor.rows) == 16 and "16 masks" in light.error and not light.active
 
@@ -125,6 +137,7 @@ def test_missing_model_says_so_and_starts_nothing(raw, qapp, monkeypatch):
     called = []
     light._runner = lambda *args: called.append(1)
     light.adjust("amount", 60)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     pump(qapp, .05)
     assert not light.busy and not called and light.unavailable and light.error == light.unavailable
 
@@ -140,6 +153,7 @@ def test_cancel_and_photo_switch_never_apply_a_late_map(raw, qapp):
 
     light._runner = slow
     light.adjust("amount", 60)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     wait(qapp, started.is_set)
     light.cancel()
     release.set()
@@ -147,6 +161,7 @@ def test_cancel_and_photo_switch_never_apply_a_late_map(raw, qapp):
     assert not light.busy and not light.ready and raw.maskEditor.rows == []
     started.clear(); release.clear()
     light.adjust("amount", 60)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     wait(qapp, started.is_set)
     raw.open("second.NEF")
     release.set()
@@ -162,10 +177,12 @@ def test_a_failed_depth_job_reports_and_can_be_retried(raw, qapp):
 
     light._runner = broken
     light.adjust("amount", 60)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     wait(qapp, lambda: not light.busy)
     assert light.error == "The mask engine stopped" and not light.active
     light._runner = ground
     light.adjust("amount", 60)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     wait(qapp, lambda: not light.busy)
     assert light.active and not light.error
 
@@ -175,6 +192,7 @@ def test_reset_keeps_the_light_like_other_masks_and_native_never_sees_its_settin
 
     light = raw.lightDepthEditor
     light.adjust("amount", 60)
+    light.flush()          # the panel commits after a short pause; tests do not wait for it
     wait(qapp, lambda: not light.busy)
     raw.adjust("contrast", 20)
     raw.reset()
@@ -232,6 +250,7 @@ def test_the_section_renders_with_its_controls(raw, qapp):
         slider = item.findChild(QObject, "lightDepth_amount_slider")
         slider.setProperty("value", 45)
         slider.moved.emit()
+        light.flush()
         assert light.settings["amount"] == 45 and light.active
         pad = item.findChild(QObject, "lightDepthPad")
         assert pad.property("width") == 300 and pad.property("height") == 225
@@ -248,6 +267,7 @@ def test_no_preview_yet_waits_instead_of_failing_and_goes_on_when_it_arrives(qap
     light._runner = ground
     try:
         light.adjust("amount", 60)                        # asked for before any preview has been developed
+        light.flush()          # the panel commits after a short pause; tests do not wait for it
         assert light.waiting and not light.busy and light.error == ""
         assert "RAW preview" in light.message and light.settings["amount"] != 60
         image = QImage(80, 60, QImage.Format_RGBA8888)
@@ -306,3 +326,34 @@ def test_an_idle_panel_offers_to_create_the_depth_map(raw, qapp):
     finally:
         item.deleteLater()
         pump(qapp, .05)
+
+
+def test_the_first_placement_switches_the_light_on(raw, qapp):
+    light = raw.lightDepthEditor
+    light.prepare()
+    wait(qapp, lambda: light.ready)
+    assert light.settings["amount"] == 0 and not light.active
+    light.place(0.4, 0.7)
+    light.flush()
+    assert light.settings["amount"] == 35 and light.active                 # Amount 0 would have added nothing to the photo
+    light.adjust("amount", 0)
+    light.flush()
+    light.place(0.5, 0.5)                                                  # once there is a light, placing it leaves Amount alone
+    light.flush()
+    assert light.settings["amount"] == 0
+
+
+def test_a_run_of_slider_moves_commits_far_less_often(raw, qapp, monkeypatch):
+    light = raw.lightDepthEditor
+    light.adjust("amount", 20)
+    light.flush()
+    wait(qapp, lambda: light.ready and not light.busy)
+    commits = []
+    original = raw._set_values
+    monkeypatch.setattr(raw, "_set_values", lambda *a, **k: (commits.append(1), original(*a, **k))[1])
+    for value in range(21, 61):                         # forty slider events in a burst
+        light.adjust("amount", value)
+    assert light.settings["amount"] == 60 and commits == []      # shown at once, not yet committed
+    wait(qapp, lambda: light.raw._draft["masks"][0]["adjust"]["exposure"] > 1.1)
+    assert len(commits) == 1 and light.settings["amount"] == 60  # one commit for the whole burst
+

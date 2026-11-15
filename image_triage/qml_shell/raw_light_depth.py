@@ -12,7 +12,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Property, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Property, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QImage, QImageReader
 
 from .. import editor_tools, light_depth, photocraft_bridge as bridge
@@ -21,6 +21,8 @@ from .raw_masks import encode_raster
 
 TOOL = "depthMap"
 _KEPT_MAPS = 6
+COMMIT_MS = 80        # a slider can move faster than the photo can be developed: changes are committed at most this often
+FIRST_AMOUNT = 35     # placing the light for the first time switches it on (Amount 0 would add nothing to the photo)
 
 
 def run_depth_job(image, path, on_progress, cancel):
@@ -77,6 +79,11 @@ class RawLightDepth(QObject):
         self._cancel = threading.Event()
         self._pending = None  # settings to apply when the depth map arrives
         self._runner = run_depth_job
+        self._queued = None             # the latest settings asked for, to be committed to the photo by the timer
+        self._commit_timer = QTimer(self)
+        self._commit_timer.setSingleShot(True)
+        self._commit_timer.setInterval(COMMIT_MS)
+        self._commit_timer.timeout.connect(self.flush)
         self._pad = ("", None)
         self._revision = 0
         self._finished.connect(self._arrived)
@@ -89,6 +96,8 @@ class RawLightDepth(QObject):
             self._cancel.set()
             self._ticket += 1
             self._busy, self._pending, self._waiting = False, None, False
+            self._queued = None
+            self._commit_timer.stop()
             self._message = self._error = ""
         elif self._waiting and not self._busy and self._path:
             self._start(self._pending)      # a preview may have arrived
@@ -114,7 +123,8 @@ class RawLightDepth(QObject):
 
     @Property("QVariantMap", notify=changed)
     def settings(self):
-        return light_depth.normalized(self.raw._draft.get("lightDepth"))
+        # What was just asked for shows at once, even while its commit to the photo waits a moment.
+        return light_depth.normalized(self._queued if self._queued is not None else self.raw._draft.get("lightDepth"))
 
     @Property(str, notify=changed)
     def pad(self):
@@ -144,6 +154,8 @@ class RawLightDepth(QObject):
 
     def _current(self):
         """What the next change builds on: changes made while the depth map is still being read are not lost."""
+        if self._queued is not None:
+            return dict(self._queued)
         return dict(self._pending) if self._pending is not None else self.settings
 
     @Slot()
@@ -163,7 +175,7 @@ class RawLightDepth(QObject):
         if key not in ("amount", "softness", "warmth", "reach", "focus", "depth") or not math.isfinite(value):
             return
         low, high = light_depth.RANGES[key]
-        self._apply({**self._current(), key: max(low, min(high, value))})
+        self._queue({**self._current(), key: max(low, min(high, value))})
 
     @Slot(float, float)
     def place(self, x, y):
@@ -178,7 +190,24 @@ class RawLightDepth(QObject):
         else:
             # Without a map the distance is not known yet; it is read from the map when it arrives.
             settings["depth"] = None
-        self._apply(settings)
+        if settings.get("amount", 0) <= 0 and light_depth.find_mask(self.raw._draft.get("masks")) < 0:
+            settings["amount"] = FIRST_AMOUNT       # a light that adds nothing is no light: placing it switches it on
+        self._queue(settings)
+
+    def _queue(self, settings):
+        """Show the change now and commit it to the photo within COMMIT_MS: one commit per pause, not one per mouse event."""
+        self._queued = settings
+        self.changed.emit()
+        if not self._commit_timer.isActive():
+            self._commit_timer.start()
+
+    @Slot()
+    def flush(self):
+        """Commit what is waiting (the timer does this; ending a gesture does it at once)."""
+        self._commit_timer.stop()
+        queued, self._queued = self._queued, None
+        if queued is not None:
+            self._apply(queued)
 
     @Slot()
     def remove(self):
@@ -186,6 +215,8 @@ class RawLightDepth(QObject):
         if not self.raw.loaded or self.raw.saving:
             return
         self.cancel()
+        self._queued = None
+        self._commit_timer.stop()
         rows = list(self.raw._draft.get("masks", []))
         index = light_depth.find_mask(rows)
         if index >= 0:

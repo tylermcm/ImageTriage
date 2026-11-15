@@ -122,6 +122,13 @@ Column {
             Accessible.role: Accessible.Button; Accessible.name: createLabel.text
             Accessible.onPressAction: light.model.prepare()
         }
+        Text {
+            objectName: "lightDepthHint"
+            visible: light.model.ready && light.values.amount <= 0 && !light.model.active
+            anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 8
+            width: parent.width - 24; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
+            text: "Raise Amount to light the photo."; color: "#f4f4f4"; style: Text.Outline; styleColor: "#000000"; font.pixelSize: 11
+        }
         Rectangle {
             id: handle
             visible: light.model.ready
