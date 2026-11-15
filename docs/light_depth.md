@@ -6,7 +6,7 @@ Luminar Neo: the effect belongs to its own panel, shows nowhere else, is adjuste
 ## What the person sees
 
 - **Amount** (0–100): strength of the whole effect. At 0 nothing happens and nothing is drawn on the photo.
-- **Depth**: where "near" becomes "far". Set it by clicking the photo with the dropper (the same way Point Color picks a
+- **Depth**: the distance of the subject, which is left alone; what is nearer is "near" and what is farther "far". Set it by clicking the photo with the dropper (the same way Point Color picks a
   colour; Esc cancels), with the Depth slider (0 = nearest, 100 = farthest), or by dragging up and down in the depth
   picture. The depth picture is a secondary view: the photo's depth map (near is bright) with a line at the chosen depth.
 - **Softness** (0–100): how far the near/far split spills across object edges.
@@ -20,7 +20,7 @@ Luminar Neo: the effect belongs to its own panel, shows nowhere else, is adjuste
 - The eye switches the whole effect off and on without losing its settings; the arrow removes it.
 
 Size and Wrap are this tool's own additions (Luminar has no equivalents). **Position and size** narrow the effect to a pool
-around the handle; **Wrap** is the width of the transition between near and far (how gradually near turns into far).
+around the handle; **Wrap** is the width of the slab around the depth that is left alone (how far the light wraps around the subject).
 
 ## How it works
 
@@ -30,8 +30,8 @@ around the handle; **Wrap** is the width of the transition between near and far 
 2. The draft holds only the section's settings, `lightDepth`. **There is no mask in the draft and none in the saved recipe,
    so nothing about Light Depth appears in the Mask tab.**
 3. When a render is requested (preview, save, export) the settings and the cached depth map are turned into two ordinary
-   Camera Raw local masks, **near** and **far**: the near mask covers what is nearer than the depth, the far mask the rest,
-   and each carries an exposure (its Brightness × Amount) and a temperature (overall Warmth + its Warmth, × Amount). They are
+   Camera Raw local masks, **near** and **far**: the near mask covers what is nearer than a slab around the depth, the far
+   mask what is beyond it, and the slab itself (the subject) is in neither, so it is not changed. Each carries an exposure (its Brightness × Amount) and a temperature (overall Warmth + its Warmth, × Amount). They are
    appended after the person's own masks, only in what is sent to the native renderer (`light_depth.with_masks`). A side
    whose adjustment is zero gets no mask. Built masks are cached for the last few settings, so a slider drag does not rebuild
    them for repeated renders.

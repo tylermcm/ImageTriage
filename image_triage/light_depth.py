@@ -31,7 +31,8 @@ MAX_TEMPERATURE = 60.0  # local Temperature at Amount 100 and a Warmth of +/-100
 
 # amount: strength of the whole effect. depth: where near becomes far (0 far .. 1 near). softness: how far the split spills
 # across object edges. warmth: colour of the whole effect. brightness/warmth Near/Far: what happens on each side of the split.
-# x, y, size: an optional pool of light on the photo (size 100 = the whole photo). wrap: how gradually near becomes far.
+# x, y, size: an optional pool of light on the photo (size 100 = the whole photo). wrap: how wide a slab around the depth is
+# left alone (the subject), so the effect "wraps" further around it.
 # shown: 1 = on, 0 = switched off without losing the settings.
 DEFAULTS = {"amount": 0.0, "depth": 0.5, "softness": 30.0, "warmth": 0.0,
             "brightnessNear": -50.0, "warmthNear": 0.0, "brightnessFar": -50.0, "warmthFar": 0.0,
@@ -112,11 +113,12 @@ def depth_at(depth, x: float, y: float) -> float:
 
 
 def zones(depth, settings, side: int = COVERAGE_SIDE):
-    """How strongly each pixel belongs to the near side and to the far side of the split, as two uint8 arrays.
+    """How strongly each pixel belongs to the near side and to the far side, as two uint8 arrays.
 
-    Things nearer than ``depth`` are near and farther things far; ``wrap`` sets how gradually one becomes the other and
-    ``softness`` lets the split spill across object edges. Below size 100 both are also narrowed to a pool around
-    (``x``, ``y``): the effect fades out beyond it.
+    What lies at ``depth`` (the subject) belongs to neither and is left alone: ``wrap`` is how wide that slab is, so the
+    light wraps further around the depth with more Wrap. Things nearer than the slab are near and things beyond it far,
+    coming in over a short feather. ``softness`` lets both spill across object edges. Below size 100 both are also
+    narrowed to a pool around (``x``, ``y``): the effect fades out beyond it.
     """
     import numpy as np
 
@@ -125,11 +127,16 @@ def zones(depth, settings, side: int = COVERAGE_SIDE):
     height, width = scene.shape
     # A touch of smoothing always: the model's map has per-pixel noise that would otherwise show as grain.
     scene = _blur(scene, max(width, height) * 0.004)
-    span = 0.02 + 0.5 * settings["wrap"] / 100
-    ramp = np.clip((scene - (settings["depth"] - span / 2)) / span, 0, 1)
-    near = ramp * ramp * (3 - 2 * ramp)
-    near = _blur(near, max(width, height) * 0.06 * settings["softness"] / 100)
-    far = 1 - near
+    band = 0.03 + 0.25 * settings["wrap"] / 100        # half the width of the slab around the depth that is left alone
+    feather = 0.05 + 0.2 * settings["wrap"] / 100      # how gradually each side comes in beyond it
+
+    def smooth(values):
+        values = np.clip(values / feather, 0, 1)
+        return values * values * (3 - 2 * values)
+
+    blur = max(width, height) * 0.06 * settings["softness"] / 100
+    near = _blur(smooth(scene - (settings["depth"] + band)), blur)
+    far = _blur(smooth((settings["depth"] - band) - scene), blur)
     if settings["size"] < 100:
         columns = (np.arange(width, dtype=np.float32) + 0.5) / width
         rows = (np.arange(height, dtype=np.float32) + 0.5) / height

@@ -103,7 +103,7 @@ Column {
         objectName: "lightDepth_depth"
         editModel: light.raw; width: parent.width; controlHeight: 32
         label: "Depth"; from: 0; to: 100
-        // 0 is the nearest thing in the photo, 100 the farthest: what lies nearer than this is "near".
+        // 0 is the nearest thing in the photo, 100 the farthest: the subject sits at this depth and is left alone.
         value: (1 - light.values.depth) * 100
         enabled: !light.model.unavailable
         onCommitted: (next) => light.model.adjust("depth", 1 - next / 100)
@@ -260,7 +260,7 @@ Column {
         }
         Text {
             width: parent.width; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 11
-            text: "Near is everything closer than the depth, far everything beyond it. Size narrows the effect to a pool around the handle on the photo (100 is the whole photo); Wrap is how gradually near turns into far. Drag the handles on the photo to change position, size and wrap."
+            text: "What lies at the depth is left alone; Brightness and Warmth change what is nearer (Near) and what is farther (Far). Wrap is how wide a slab around the depth is left alone. Size narrows the effect to a pool around the handle on the photo (100 is the whole photo). Drag the handles on the photo to change position, size and wrap."
         }
     }
 }

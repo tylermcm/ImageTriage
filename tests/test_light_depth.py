@@ -19,21 +19,22 @@ def settings(**changes):
     return {**light_depth.DEFAULTS, "amount": 70, "softness": 0, **changes}
 
 
-def test_the_split_puts_what_is_nearer_than_the_depth_on_the_near_side():
+def test_what_lies_at_the_depth_is_left_alone_and_what_is_nearer_or_farther_is_not():
     near, far = light_depth.zones(scene(), settings(depth=0.5, wrap=0))
-    column = near[:, near.shape[1] // 2].astype(int)
+    column, beyond = near[:, 60].astype(int), far[:, 60].astype(int)
     assert column[-1] > 250 and column[0] < 5            # the bottom (near) is near, the top (far) is not
-    assert np.array_equal(far.astype(int), 255 - near.astype(int))   # without a pool the two sides are complementary
+    assert beyond[0] > 250 and beyond[-1] < 5
+    assert column[40] < 5 and beyond[40] < 5             # the subject's slab belongs to neither side: it is not changed
     shallow = light_depth.coverage(scene(), settings(depth=0.9, wrap=0)).astype(int).sum()
     deep = light_depth.coverage(scene(), settings(depth=0.1, wrap=0)).astype(int).sum()
     assert deep > shallow * 3                            # moving the depth towards far puts more of the photo on the near side
 
 
-def test_wrap_makes_near_turn_into_far_more_gradually():
-    def steps(wrap):
-        column = light_depth.coverage(scene(), settings(wrap=wrap))[:, 60].astype(int)
-        return int(np.count_nonzero((column > 10) & (column < 245)))   # rows that are neither fully near nor fully far
-    assert steps(100) > steps(0) * 3
+def test_wrap_widens_the_slab_around_the_depth_that_is_left_alone():
+    def slab(wrap):
+        near, far = (part[:, 60].astype(int) for part in light_depth.zones(scene(), settings(wrap=wrap)))
+        return int(np.count_nonzero((near < 5) & (far < 5)))      # rows changed by neither side
+    assert slab(100) > slab(0) * 3
 
 
 def test_softness_spills_the_split_across_a_depth_edge():
