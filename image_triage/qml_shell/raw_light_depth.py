@@ -71,6 +71,7 @@ class RawLightDepth(QObject):
         self._maps = OrderedDict()  # photo path -> (file signature, depth map)
         self._busy = False
         self._message = self._error = ""
+        self._waiting = False           # no developed preview yet: the depth map is made as soon as there is one
         self._reason = ""
         self._ticket = 0
         self._cancel = threading.Event()
@@ -87,8 +88,11 @@ class RawLightDepth(QObject):
             self._path = self.raw._path
             self._cancel.set()
             self._ticket += 1
-            self._busy, self._pending = False, None
+            self._busy, self._pending, self._waiting = False, None, False
             self._message = self._error = ""
+        elif self._waiting and not self._busy and self._path:
+            self._start(self._pending)      # a preview may have arrived
+            return
         self.changed.emit()
 
     def _depth(self):
@@ -102,6 +106,7 @@ class RawLightDepth(QObject):
 
     busy = Property(bool, lambda self: self._busy, notify=changed)
     message = Property(str, lambda self: self._message, notify=changed)
+    waiting = Property(bool, lambda self: self._waiting, notify=changed)
     error = Property(str, lambda self: self._error, notify=changed)
     unavailable = Property(str, lambda self: self._reason, notify=changed)
     ready = Property(bool, lambda self: self._depth() is not None, notify=changed)
@@ -151,7 +156,7 @@ class RawLightDepth(QObject):
     def prepare(self):
         """Make the depth map now, so the pad is ready before a control is touched."""
         if self._depth() is None and not self._busy:
-            self._start(None)
+            self._start(self._pending)
 
     @Slot(str, float)
     def adjust(self, key, value):
@@ -266,10 +271,15 @@ class RawLightDepth(QObject):
             return
         try:
             image = self._snapshot()
-        except ValueError as error:
-            self._error, self._pending = str(error), None
+        except ValueError:
+            # Not a failure: the preview is developed in the background and may arrive any moment. Say what is awaited, keep what
+            # was asked for, and try again when the editor changes (the panel asks again on every change that has no error).
+            self._waiting, self._pending, self._error = True, settings, ""
+            reason = getattr(self.raw, "_error", "")
+            self._message = (f"The RAW preview could not be made: {reason}" if reason else "Waiting for the RAW preview…")
             self.changed.emit()
             return
+        self._waiting = False
         self._ticket += 1
         ticket, path = self._ticket, self._path
         signature = bridge.file_signature(path)

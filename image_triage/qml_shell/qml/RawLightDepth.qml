@@ -107,7 +107,7 @@ Column {
             anchors.centerIn: parent; width: parent.width - 24
             horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
             color: light.model.error ? theme.rej : theme.fg3; font.pixelSize: 11
-            text: light.model.error || (light.model.busy ? light.model.message : light.model.unavailable ? "Depth model not installed" : "The depth map appears here.")
+            text: light.model.error || (light.model.busy || light.model.waiting ? light.model.message : light.model.unavailable ? "Depth model not installed" : "The depth map appears here.")
         }
         Rectangle {
             id: handle

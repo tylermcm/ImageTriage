@@ -238,3 +238,35 @@ def test_the_section_renders_with_its_controls(raw, qapp):
     finally:
         item.deleteLater()
         pump(qapp, .05)
+
+
+def test_no_preview_yet_waits_instead_of_failing_and_goes_on_when_it_arrives(qapp, monkeypatch):
+    monkeypatch.setattr("image_triage.editor_tools.installed_models", lambda: frozenset(("depth",)))
+    raw = RawEditor(memory=True)
+    raw.open("sample.NEF")
+    light = raw.lightDepthEditor
+    light._runner = ground
+    try:
+        light.adjust("amount", 60)                        # asked for before any preview has been developed
+        assert light.waiting and not light.busy and light.error == ""
+        assert "RAW preview" in light.message and light.settings["amount"] != 60
+        image = QImage(80, 60, QImage.Format_RGBA8888)
+        image.fill(QColor("gray"))
+        frame = ({"histogram": [[0] * 256] * 3, "fullSize": [4000, 3000]}, image)
+        raw._proxy_arrived(raw._revision, (frame, frame, 0, "sample.NEF"))     # the preview arrives
+        wait(qapp, lambda: light.ready and not light.busy)
+        assert not light.waiting and light.active and light.settings["amount"] == 60   # and what was asked for is applied
+    finally:
+        raw.shutdown()
+
+
+def test_a_preview_that_failed_is_named_not_waited_for_silently(qapp, monkeypatch):
+    monkeypatch.setattr("image_triage.editor_tools.installed_models", lambda: frozenset(("depth",)))
+    raw = RawEditor(memory=True)
+    raw.open("sample.NEF")
+    try:
+        raw._error = "PhotoCraft is not installed"
+        raw.lightDepthEditor.prepare()
+        assert raw.lightDepthEditor.waiting and "PhotoCraft is not installed" in raw.lightDepthEditor.message
+    finally:
+        raw.shutdown()
