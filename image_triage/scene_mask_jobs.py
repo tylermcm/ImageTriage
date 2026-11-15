@@ -249,6 +249,38 @@ def run_subject_mask(
         fallback(source, output, on_progress, cancel)
 
 
+def run_inpaint(
+    image_path: Path,
+    mask_path: Path,
+    output_path: Path,
+    on_progress: ProgressCallback | None = None,
+    cancel: threading.Event | None = None,
+    *,
+    engine=None,
+):
+    """The picture ``image_path`` (PNG) with the part ``mask_path`` marks (255 = fill) filled in, written to ``output_path``,
+    by the fill model on the warm mask-engine host. Returns what the host reported (device, timings)."""
+    _check(cancel)
+    if engine is None:
+        from .ai_model import lama_installation
+        from .mask_engine_service import default_mask_engine_service
+
+        installation = lama_installation()
+        if not installation.is_installed:
+            raise RuntimeError("The fill model is not installed.")
+        service = default_mask_engine_service()
+        engine = lambda src, mask, out, progress: service.infer_inpaint(  # noqa: E731
+            model_dir=installation.install_dir,
+            input_path=src,
+            mask_path=mask,
+            output_path=out,
+            progress_callback=progress,
+        )
+    result = engine(image_path, mask_path, output_path, on_progress)
+    _check(cancel)
+    return result
+
+
 def run_depth_map(
     source: Path,
     output: Path,
