@@ -35,7 +35,7 @@ include = ["image_triage*", "aiculler*"]
 
 [tool.setuptools.package-data]
 aiculler = ["resources/*.csv"]
-"image_triage" = ["assets/*.png", "assets/*.ico"]
+"image_triage" = ["assets/*.png", "assets/*.ico", "assets/skies/*.jpg", "assets/skies/*.md"]
 # The native PocketDrop module, loaded by name from this folder (pocketdrop/_bridge.py).
 "image_triage.pocketdrop" = ["pocketdrop.dll", "libpocketdrop.so", "libpocketdrop.dylib"]
 "image_triage.qml_shell" = ["qml/**/*"]

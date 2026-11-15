@@ -60,6 +60,30 @@ def test_the_library_keeps_one_copy_of_each_sky(tmp_path):
     assert not sky_replace.forget_sky(make_sky(tmp_path, "y"), lib)       # never deletes outside the library
 
 
+def test_bundled_skies_are_copied_once_and_stay_removed(tmp_path):
+    bundled, lib = tmp_path / "bundled", tmp_path / "lib"
+    bundled.mkdir()
+    for name in ("Rose", "Teal"):
+        Image.new("RGB", (30, 20), "blue").save(bundled / f"{name}.jpg")
+    (bundled / "CREDITS.md").write_text("x")
+    sky_replace.seed_bundled(lib, bundled)
+    assert [s["name"] for s in sky_replace.library(lib)] and {s["name"] for s in sky_replace.library(lib)} == {"Rose", "Teal"}
+    sky_replace.forget_sky(lib / "Rose-bundled.jpg", lib)
+    sky_replace.seed_bundled(lib, bundled)
+    assert {s["name"] for s in sky_replace.library(lib)} == {"Teal"}
+    Image.new("RGB", (30, 20), "red").save(bundled / "Gold.jpg")
+    sky_replace.seed_bundled(lib, bundled)
+    assert {s["name"] for s in sky_replace.library(lib)} == {"Teal", "Gold"}
+
+
+def test_the_shipped_skies_are_real_pictures():
+    files = sorted(sky_replace.bundled_root().glob("*.jpg"))
+    assert len(files) >= 10 and (sky_replace.bundled_root() / "CREDITS.md").is_file()
+    for f in files:
+        with Image.open(f) as im:
+            assert im.size == (2000, 1333), f
+
+
 def test_choosing_a_sky_finds_the_matte_and_writes_one_recipe_setting(raw, qapp, tmp_path):
     sky = raw.skyEditor
     chosen = sky_replace.import_sky(make_sky(tmp_path), sky._library_root)
@@ -168,7 +192,7 @@ def test_the_panel_renders_and_adjusts(raw, qapp, tmp_path):
         for name in ("sky_amount", "sky_fadeEdge", "sky_relight", "skyImport", "skyLibrary", "skyRemove", "skyAdvanced"):
             assert item.findChild(QObject, name) is not None, name
         cards = [c for c in item.findChild(QObject, "skyLibrary").childItems() if c.objectName() == "skyCard"]
-        assert len(cards) == 1
+        assert len(cards) == len(sky.skies) >= 10          # the bundled skies were copied in, plus the imported one
         slider = item.findChild(QObject, "sky_amount_slider")
         slider.setProperty("value", 60)
         slider.moved.emit()

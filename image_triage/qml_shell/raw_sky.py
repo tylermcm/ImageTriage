@@ -101,6 +101,8 @@ class RawSky(QObject):
     def skies(self):
         from .raw_preview import put_thumbnail
 
+        sky_replace.seed_bundled(self._library_root)
+
         result = []
         for item in sky_replace.library(self._library_root):
             thumb = self._thumbs.get(item["path"])

@@ -74,6 +74,41 @@ def library_root() -> Path:
     return app_data_root() / "skies"
 
 
+SEEDED = ".seeded"
+
+
+def bundled_root() -> Path:
+    return Path(__file__).parent / "assets" / "skies"
+
+
+def seed_bundled(root: Path | None = None, bundled: Path | None = None) -> None:
+    """Copy the skies that ship with the app into the library, each one once. A sky the user removes stays removed: the
+    names already copied are remembered beside the library."""
+    import json
+
+    root, bundled = (Path(root) if root else library_root()), (Path(bundled) if bundled else bundled_root())
+    try:
+        sources = sorted(f for f in bundled.iterdir() if f.suffix.lower() in IMAGE_SUFFIXES)
+    except OSError:
+        return
+    marker = root / SEEDED
+    try:
+        done = set(json.loads(marker.read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError):
+        done = set()
+    fresh = [f for f in sources if f.name not in done]
+    if not fresh:
+        return
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        for f in fresh:
+            shutil.copyfile(f, root / f"{f.stem}-bundled{f.suffix.lower()}")
+            done.add(f.name)
+        marker.write_text(json.dumps(sorted(done)), encoding="utf-8")
+    except OSError:
+        pass          # the library just has fewer skies this time
+
+
 def library(root: Path | None = None) -> list[dict]:
     """The imported skies, newest first: ``{"path", "name"}``."""
     root = Path(root) if root else library_root()
