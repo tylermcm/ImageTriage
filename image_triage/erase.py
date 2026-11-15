@@ -147,6 +147,45 @@ def match_grain(filled, original, hole, ring: int = 24, seed: int = 0, amount: f
     return np.clip(np.rint(out), 0, 255).astype(np.uint8)
 
 
+def _spread(values) -> float:
+    import numpy as np
+
+    values = np.asarray(values, np.float32)
+    return 1.4826 * float(np.median(np.abs(values - np.median(values)))) if values.size else 0.0
+
+
+def _blur_rgb(rgb, sigma: float):
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    return np.asarray(Image.fromarray(rgb).filter(ImageFilter.GaussianBlur(sigma)), dtype=np.float32)
+
+
+def restore_sharpness(filled, original, hole, amount: float = 1.0, sigma: float = 2.5, limit: float = 3.0):
+    """Counter the softness of a fill made at a reduced size: sharpen the fill, inside the hole only, until its fine contrast is
+    that of the photo around it (never past ``limit`` times the sharpening, so it cannot ring). Nothing is copied from elsewhere,
+    which is why it is safe on anything, but it can only bring out contrast the fill has: it cannot invent ripples."""
+    import numpy as np
+
+    inside = np.asarray(hole) > 127
+    if inside.sum() < 64 or amount <= 0:
+        return filled
+    weights = np.array([0.2126, 0.7152, 0.0722], np.float32)
+    ring = (_gauss(inside.astype(np.float32), 24 / 2.05) > 0.02) & ~(_gauss(inside.astype(np.float32), 2 / 2.05) > 0.02)
+    if ring.sum() < 64:
+        return filled
+    seen = (original.astype(np.float32) - _blur_rgb(original, sigma)) @ weights
+    pixels = filled.astype(np.float32)
+    fine = pixels - _blur_rgb(filled, sigma)
+    own = fine @ weights
+    target, have = _spread(seen[ring]) * amount, _spread(own[inside])
+    if have < 1e-3 or have >= 0.9 * target:
+        return filled
+    gain = min(limit, target / have - 1.0)
+    soft = np.clip(_gauss(inside.astype(np.float32), 1.5), 0.0, 1.0)[..., None]
+    return np.clip(np.rint(pixels + fine * gain * soft), 0, 255).astype(np.uint8)
+
+
 def smooth_chroma(filled, hole, sigma: float = 2.0):
     """``filled`` with the colour (not the brightness) inside ``hole`` smoothed: the model leaves faint coloured speckle that a
     camera's grain never has."""
@@ -276,6 +315,7 @@ def make_patch(image, mask, fill, grow: float, photo_path, root: Path | None = N
     filled = np.asarray(fill(crop, cm))
     if filled.shape != crop.shape:
         raise ValueError("The fill model returned a picture of the wrong size.")
+    filled = restore_sharpness(filled, crop, cm, amount=grain)
     filled = smooth_chroma(filled, cm)
     filled = match_grain(filled, crop, cm, seed=(x0 * 7919 + y0 * 104729) & 0xFFFFFFFF, amount=grain)
     rgb, alpha = composite(crop, filled, cm, feather_for((width, height)))

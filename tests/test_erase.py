@@ -178,3 +178,29 @@ def test_chroma_smoothing_removes_colour_speckle_and_keeps_brightness():
     out = erase.smooth_chroma(filled, hole)
     assert out[25:55, 25:55].astype(float).std(axis=(0, 1)).max() < filled[25:55, 25:55].astype(float).std(axis=(0, 1)).max() * 0.6
     assert np.array_equal(out[:10], filled[:10])                    # outside the hole nothing changes
+
+
+def test_a_soft_fill_is_sharpened_to_the_surroundings_and_only_inside_the_hole():
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    rng = np.random.default_rng(5)
+    h, w = 300, 400
+    yy, xx = np.mgrid[:h, :w]
+    ripples = 110 + 18 * np.sin(xx / 2.3) * np.cos(yy / 3.1) + rng.normal(0, 2, (h, w))
+    original = np.clip(np.dstack([ripples * 0.8, ripples * 0.95, ripples]), 0, 255).astype(np.uint8)
+    hole = np.zeros((h, w), np.uint8)
+    hole[100:200, 150:260] = 255
+    soft = np.asarray(Image.fromarray(original).filter(ImageFilter.GaussianBlur(2.2)))     # a fill that lost its fine contrast
+    out = erase.restore_sharpness(soft, original, hole)
+    inside = hole > 127
+
+    def fine(a):
+        low = np.asarray(Image.fromarray(a).filter(ImageFilter.GaussianBlur(2.5)), np.float32)
+        return float((a.astype(np.float32) - low)[inside].std())
+
+    assert fine(out) > 1.3 * fine(soft)
+    assert fine(out) < 1.3 * fine(original)                                     # brought up to the surroundings, not past them
+    assert np.array_equal(out[~inside][:200], soft[~inside][:200]) or np.abs(out[:50].astype(int) - soft[:50].astype(int)).max() == 0
+    assert np.array_equal(erase.restore_sharpness(soft, original, hole, amount=0.0), soft)
+    assert np.array_equal(erase.restore_sharpness(original, original, hole), original)     # a fill that is already as sharp is left be
