@@ -270,3 +270,39 @@ def test_a_preview_that_failed_is_named_not_waited_for_silently(qapp, monkeypatc
         assert raw.lightDepthEditor.waiting and "PhotoCraft is not installed" in raw.lightDepthEditor.message
     finally:
         raw.shutdown()
+
+
+def test_an_idle_panel_offers_to_create_the_depth_map(raw, qapp):
+    from PySide6.QtQml import QQmlComponent, QQmlEngine
+    from PySide6.QtCore import QUrl
+    from pathlib import Path
+    import image_triage.qml_shell as shell
+    from image_triage.qml_shell import raw_preview
+    from image_triage.qml_shell.theme import Theme
+
+    engine = QQmlEngine()
+    raw_preview.install_images(engine)
+    engine.rootContext().setContextProperty("theme", Theme())
+    engine.rootContext().setContextProperty("rawModel", raw)
+    component = QQmlComponent(engine)
+    component.setData(b'import QtQuick\nItem { width: 320; height: 600\n RawLightDepth { width: 300; model: rawModel.lightDepthEditor; raw: rawModel } }',
+                      QUrl.fromLocalFile(str(Path(shell.__file__).parent / "qml" / "LightDepthHarness.qml")))
+    item = component.create()
+    assert item is not None, component.errors()
+    try:
+        light = raw.lightDepthEditor
+        wait(qapp, lambda: light.ready)
+        button = item.findChild(QObject, "lightDepthCreate")
+        assert button is not None and not button.property("visible")          # a depth map exists: no button
+        light._maps.clear()                                                    # as after a cancel, or when it never started
+        light._message = "Cancelled"
+        light.changed.emit()
+        pump(qapp, .1)
+        assert button.property("visible")
+        light.prepare()                                                        # what the button does
+        wait(qapp, lambda: light.ready)
+        pump(qapp, .1)
+        assert not button.property("visible")
+    finally:
+        item.deleteLater()
+        pump(qapp, .05)

@@ -102,12 +102,25 @@ Column {
             visible: light.model.ready
         }
         Text {
+            id: status
             objectName: "lightDepthStatus"
             visible: !light.model.ready
             anchors.centerIn: parent; width: parent.width - 24
             horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
             color: light.model.error ? theme.rej : theme.fg3; font.pixelSize: 11
             text: light.model.error || (light.model.busy || light.model.waiting ? light.model.message : light.model.unavailable ? "Depth model not installed" : "The depth map appears here.")
+        }
+        // The depth map is read when the section opens; this is for when that did not happen (cancelled, failed, or never started).
+        Rectangle {
+            objectName: "lightDepthCreate"
+            visible: !light.model.ready && !light.model.busy && !light.model.waiting && !light.model.unavailable
+            anchors.horizontalCenter: parent.horizontalCenter; y: status.y + status.height + 10
+            width: createLabel.implicitWidth + 28; height: 28; radius: 9; color: createHover.hovered ? Qt.lighter(theme.accent, 1.1) : theme.accent
+            Text { id: createLabel; anchors.centerIn: parent; text: light.model.error ? "Try again" : "Create depth map"; color: theme.onAccent; font.pixelSize: 12; font.weight: Font.Medium }
+            HoverHandler { id: createHover; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: light.model.prepare() }
+            Accessible.role: Accessible.Button; Accessible.name: createLabel.text
+            Accessible.onPressAction: light.model.prepare()
         }
         Rectangle {
             id: handle
