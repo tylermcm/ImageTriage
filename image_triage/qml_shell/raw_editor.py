@@ -376,6 +376,32 @@ class RawEditor(QObject):
         self.changed.emit()
 
     @Slot(str, float)
+    def auto(self, what: str, strength: float) -> None:
+        """Auto tone, auto white balance or both (``what`` is "tone", "wb" or "all") from the picture on screen, as one undo
+        step. ``strength`` is a percentage."""
+        if not self._loaded or self._saving or what not in ("tone", "wb", "all") or not math.isfinite(strength):
+            return
+        from .. import auto_tone
+        from . import raw_preview
+        from .raw_erase import image_to_array
+
+        image = raw_preview.frame_image(self._preview) if self._preview else None
+        if image is None or image.isNull():
+            self._notice = "Wait for the preview to finish, then try again."
+            self.changed.emit()
+            return
+        current = {key: self._draft.get(key, DEFAULTS[key]) for key in (*auto_tone.TONE_KEYS, *auto_tone.WB_KEYS)}
+        compute = {"tone": auto_tone.tone, "wb": auto_tone.white_balance, "all": auto_tone.auto}[what]
+        changes = compute(image_to_array(image), current, max(0.0, min(100.0, strength)) / 100)
+        label = {"tone": "Auto tone", "wb": "Auto white balance", "all": "Auto"}[what]
+        if not changes:
+            self._notice = "No change needed." if what != "wb" else "No clear colour cast found."
+            self.changed.emit()
+            return
+        self._notice = ""
+        self._set_values(changes, label)
+
+    @Slot(str, float)
     def adjust(self, key: str, value: float) -> None:
         if not self._loaded or self._saving or key not in FIELDS or not math.isfinite(value):
             return

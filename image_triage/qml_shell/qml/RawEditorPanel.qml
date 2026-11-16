@@ -309,6 +309,30 @@ Rectangle {
                     Choice { x: parent.width - 127; width: 114; anchors.verticalCenter: parent.verticalCenter; choices: ["Embedded", "Neutral", "Vivid", "Monochrome"] }
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: panel.line }
                 }
+                Item {
+                    id: autoRow
+                    property real strength: 100
+                    width: parent.width; height: 84
+                    Copy { x: 13; y: 10; text: "AUTO"; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; color: panel.muted }
+                    Row {
+                        x: 13; y: 28; spacing: 6
+                        Action { objectName: "rawAutoAll"; text: "Auto"; quiet: false; enabled: panel.editable; onClicked: { panel.before = false; panel.model.auto("all", autoRow.strength) } }
+                        Action { objectName: "rawAutoTone"; text: "Tone"; quiet: false; enabled: panel.editable; onClicked: { panel.before = false; panel.model.auto("tone", autoRow.strength) } }
+                        Action { objectName: "rawAutoWb"; text: "White balance"; quiet: false; enabled: panel.editable; onClicked: { panel.before = false; panel.model.auto("wb", autoRow.strength) } }
+                    }
+                    Copy { x: 13; y: 66; text: "Strength"; font.pixelSize: 12 }
+                    Slider {
+                        objectName: "rawAutoStrength"
+                        x: 89; y: 62; width: Math.max(20, parent.width - 145); height: 24; padding: 0
+                        from: 0; to: 100; stepSize: 1; value: autoRow.strength
+                        onMoved: autoRow.strength = value
+                        background: Rectangle { y: 10.5; width: parent.width; height: 3; radius: 1.5; color: theme.s3
+                            Rectangle { width: parent.parent.visualPosition * parent.width; height: parent.height; radius: 1.5; color: theme.accent } }
+                        handle: Rectangle { x: parent.visualPosition * (parent.width - width); y: 5; width: 14; height: 14; radius: 7; color: theme.fg }
+                    }
+                    Copy { x: parent.width - 48; y: 66; text: Math.round(autoRow.strength) + "%"; font.pixelSize: 12; color: panel.muted }
+                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: panel.line }
+                }
                 Repeater {
                     model: panel.groups
                     delegate: Section {
