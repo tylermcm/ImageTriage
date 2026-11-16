@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
-from .. import light_depth, photocraft_bridge as bridge
+from .. import host_effects, photocraft_bridge as bridge
 
 
 def sync_look(paths, look, *, save, unsaved=lambda path: False, cancelled=lambda: False, step=lambda index, name: None,
@@ -41,9 +41,8 @@ def sync_look(paths, look, *, save, unsaved=lambda path: False, cancelled=lambda
             if state == bridge.RECIPE_INVALID:
                 skipped.append((name, reason or "its saved edit cannot be read"))
                 continue
-            original, placed = light_depth.load_settings(bridge.recipe_path(path), dict(recipe["cameraRaw"]) if recipe else {})
-            if placed:
-                original = {**original, "lightDepth": placed}      # so saving keeps the photo's Light Depth settings
+            original, extras = host_effects.load_extras(bridge.recipe_path(path), dict(recipe["cameraRaw"]) if recipe else {})
+            original = {**original, **extras}                  # so saving keeps the photo's Light Depth and Atmosphere settings
             draft = with_look(original, look, original, defaults or {})
             if draft == original:
                 skipped.append((name, "already has these settings"))

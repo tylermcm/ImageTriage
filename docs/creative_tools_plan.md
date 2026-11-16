@@ -55,6 +55,8 @@ Light Depth and Sky Replacement each grew their own copy of the same plumbing. T
 
 ## 3. Atmosphere
 
+> **Built** (phase 1, local-mask fog): see `docs/atmosphere.md`. The text below is the original plan.
+
 - **Idea:** the depth map already gives every pixel a distance. Atmosphere is one continuous mask, strongest far away, that
   applies negative Dehaze, a little exposure and less saturation and contrast, with a cool or warm tilt. Sliders: Amount, Haze,
   Mist (softness), Warmth, and a Depth start so the nearest layers stay clean.
