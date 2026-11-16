@@ -20,6 +20,7 @@ from .. import editor_tools, light_depth, photocraft_bridge as bridge
 TOOL = "depthMap"
 _KEPT_MAPS = 6
 COMMIT_MS = 80        # a slider can move faster than the photo can be developed: changes are committed at most this often
+HISTOGRAM_BINS = 48   # the bars of the depth scale
 FIRST_AMOUNT = 35     # placing the light for the first time switches it on (Amount 0 would add nothing to the photo)
 
 
@@ -122,6 +123,7 @@ class RawLightDepth(QObject):
         self._commit_timer.setInterval(COMMIT_MS)
         self._commit_timer.timeout.connect(self.flush)
         self._pad = ("", None)
+        self._bars = (None, [])
         self._revision = 0
         self._open = False              # the Light Depth section is open: its handles are drawn on the photo
         self._picking = False           # the next click on the photo picks the depth
@@ -276,6 +278,23 @@ class RawLightDepth(QObject):
             self._revision += 1
             self._pad = (put_thumbnail(f"{self.raw._owner}/lightdepth/{self._revision}", image), key)
         return self._pad[0]
+
+    @Property("QVariantList", notify=changed)
+    def histogram(self):
+        """How much of the photo lies at each depth, as bars from far (first) to near (last), each 0..1 of the tallest. The depth
+        scale beside the picture draws it, so a position on the scale is a depth the photo really has."""
+        import numpy as np
+
+        depth = self._depth()
+        if depth is None:
+            return []
+        key = (self._path, id(depth), int(np.asarray(depth).sum()))
+        if self._bars[0] != key:
+            scene = light_depth.working_depth(depth, light_depth.PAD_SIDE)
+            counts, _ = np.histogram(scene, bins=HISTOGRAM_BINS, range=(0.0, 1.0))
+            bars = np.sqrt(counts.astype(np.float64))              # the square root keeps small depths visible beside a big one
+            self._bars = (key, [float(v) for v in (bars / bars.max() if bars.max() > 0 else bars)])
+        return self._bars[1]
 
     def _current(self):
         """What the next change builds on: changes made while the depth map is still being read are not lost."""

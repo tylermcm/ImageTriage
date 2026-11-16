@@ -504,7 +504,8 @@ def test_the_section_renders_with_all_its_controls_and_drives_the_settings(raw, 
         light.flush()
         assert raw._draft["lightDepth"]["brightnessFar"] == 90
         pad = item.findChild(QObject, "lightDepthPad")
-        assert pad.property("width") == 300 and pad.property("height") == 225
+        picture = item.findChild(QObject, "lightDepthPicture")
+        assert picture.property("width") + 8 + pad.property("width") == 300 and pad.property("height") == picture.property("height")
         button = item.findChild(QObject, "lightDepthPick")
         from PySide6.QtCore import QMetaObject
         QMetaObject.invokeMethod(button, "toggle")

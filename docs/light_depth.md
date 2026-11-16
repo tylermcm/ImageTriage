@@ -117,3 +117,11 @@ which is the price of recognising the old ones by name.
   settings file; only export was changed.
 - The Windows run of the installed depth model and the paired native RAW preview helper from 2026-11-13 predates this design;
   the near/far masks have not been rendered by the native helper yet.
+
+## The depth picture and the depth scale
+
+The panel shows the photo's depth map (what lies at the chosen depth tinted amber) and, beside it, a vertical depth scale: far at
+the top, near at the bottom, with how much of the photo lies at each depth drawn along it (a histogram of the map). The handle and the
+two feather markers sit on that scale, so a position on it is a depth the photo really has. A marker whose depth lies beyond the
+end of the scale is shown dimmed at the end. The scale's drag holds on to the pointer (`preventStealing`): the panel scrolls
+vertically and used to take a vertical drag away after a few percent.

@@ -109,118 +109,165 @@ Column {
         onCommitted: (next) => light.model.adjust("depth", 1 - next / 100)
     }
 
-    // The depth picture is the secondary view: the photo's depth map with what lies at the chosen depth tinted amber. The
-    // handle in the middle sets the depth (far is up, near is down); the two markers either side of it are the feather, the
-    // depth range over which the effect comes in, as in Luminar: drag either one.
-    Rectangle {
-        id: pad
-        objectName: "lightDepthPad"
+    // The depth picture is the secondary view: the photo's depth map with what lies at the chosen depth tinted amber. Beside it
+    // is the depth scale: far at the top, near at the bottom, with how much of the photo lies at each depth drawn along it. The
+    // handle on the scale sets the depth; the two markers either side of it are the feather, the depth range over which the effect
+    // comes in, as in Luminar: drag either one. A position on the scale is a real depth, whatever the photo looks like.
+    Item {
+        id: padArea
         readonly property real aspect: light.raw.originalWidth > 0 ? light.raw.originalHeight / light.raw.originalWidth : 2 / 3
-        width: aspect > 1 ? Math.round(Math.min(parent.width, 230 / aspect)) : parent.width
-        height: Math.round(width * aspect)
-        anchors.horizontalCenter: parent.horizontalCenter
-        radius: 8; color: theme.base; border.color: pad.activeFocus ? theme.accent : theme.line
-        clip: true
-        activeFocusOnTab: true
-        function nudge(delta) { light.model.adjust("depth", light.values.depth + delta); light.model.flush() }
-        Keys.onUpPressed: nudge(-0.02)
-        Keys.onDownPressed: nudge(0.02)
-        Accessible.role: Accessible.Pane
-        Accessible.name: "Depth that is left as it is"
-        Accessible.description: "Drag up (farther) or down (nearer), or use the arrow keys, to change the depth. Drag the markers either side of it to change the feather."
-        Image {
-            anchors.fill: parent; anchors.margins: 1
-            source: light.model.pad; cache: false; smooth: true
-            visible: light.model.ready
-        }
-        Text {
-            id: status
-            objectName: "lightDepthStatus"
-            visible: !light.model.ready
-            anchors.centerIn: parent; width: parent.width - 24
-            horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
-            color: light.model.error ? theme.rej : theme.fg3; font.pixelSize: 11
-            text: light.model.error || (light.model.busy || light.model.waiting ? light.model.message : light.model.unavailable ? "Depth model not installed" : "The depth map appears here.")
-        }
-        // The depth map is read when the section opens; this is for when that did not happen (cancelled, failed, or never started).
+        readonly property real scaleWidth: 56
+        readonly property real pictureWidth: Math.max(40, Math.min(parent.width - scaleWidth - 8, aspect > 1 ? 230 / aspect : parent.width))
+        width: parent.width; height: Math.round(pictureWidth * aspect)
+
         Rectangle {
-            objectName: "lightDepthCreate"
-            visible: !light.model.ready && !light.model.busy && !light.model.waiting && !light.model.unavailable
-            anchors.horizontalCenter: parent.horizontalCenter; y: status.y + status.height + 10
-            width: createLabel.implicitWidth + 28; height: 28; radius: 9; color: createHover.hovered ? Qt.lighter(theme.accent, 1.1) : theme.accent
-            Text { id: createLabel; anchors.centerIn: parent; text: light.model.error ? "Try again" : "Create depth map"; color: theme.onAccent; font.pixelSize: 12; font.weight: Font.Medium }
-            HoverHandler { id: createHover; cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: light.model.prepare() }
-            Accessible.role: Accessible.Button; Accessible.name: createLabel.text
-            Accessible.onPressAction: light.model.prepare()
-        }
-        Text {
-            objectName: "lightDepthHint"
-            visible: light.model.ready && light.values.amount <= 0
-            anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 8
-            width: parent.width - 24; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
-            text: "Raise Amount to light the photo."; color: "#f4f4f4"; style: Text.Outline; styleColor: "#000000"; font.pixelSize: 11
-        }
-        Rectangle {   // the feather: the depth range the effect comes in over, either side of the chosen depth
-            objectName: "lightDepthFeatherBand"
-            visible: light.model.ready
-            x: -pad.width * 0.05; width: pad.width * 1.1
-            y: Math.max(-2, (light.values.depth - light.model.featherSpan) * pad.height)
-            height: Math.min(pad.height + 2, (light.values.depth + light.model.featherSpan) * pad.height) - y
-            radius: Math.min(height / 2, width / 2)
-            color: "transparent"; border.color: "#77ffffff"; border.width: 1
-        }
-        Rectangle {
-            id: handle
-            objectName: "lightDepthPadHandle"
-            visible: light.model.ready
-            x: pad.width / 2 - width / 2; y: light.values.depth * pad.height - height / 2
-            width: 20; height: 20; radius: 10
-            color: "#f4f4f4"; border.color: "#202020"; border.width: 1
-            Icon { anchors.centerIn: parent; size: 12; path: "M12 4v16M8 8l4-4 4 4M8 16l4 4 4-4"; color: "#202020" }
-        }
-        MouseArea {
-            objectName: "lightDepthPadDrag"
-            anchors.fill: parent
-            enabled: light.model.ready && light.editable
-            cursorShape: Qt.SizeVerCursor
-            function put(mouse) { light.model.adjust("depth", Math.max(0, Math.min(1, mouse.y / pad.height))) }
-            onPressed: (mouse) => { pad.forceActiveFocus(); light.raw.beginGesture(); put(mouse) }
-            onPositionChanged: (mouse) => { if (pressed) put(mouse) }
-            onReleased: light.raw.endGesture()
-            onCanceled: light.raw.endGesture()
-        }
-        component FeatherMarker: Item {
-            id: marker
-            property var host: light
-            property bool far: true       // the far marker (arrow up) or the near one (arrow down)
-            readonly property real depthAt: host.values.depth + (far ? -1 : 1) * host.model.featherSpan
-            width: 34; height: 24
-            visible: host.model.ready
-            x: pad.width / 2 - width / 2
-            y: Math.max(2, Math.min(pad.height - height - 2, depthAt * pad.height - height / 2))
-            Rectangle { x: 5; y: 10; width: 24; height: 3; radius: 1.5; color: "#f4f4f4"; border.color: "#202020"; border.width: 1 }
+            id: picture
+            objectName: "lightDepthPicture"
+            width: padArea.pictureWidth; height: parent.height
+            radius: 8; color: theme.base; border.color: theme.line
+            clip: true
+            Image {
+                anchors.fill: parent; anchors.margins: 1
+                source: light.model.pad; cache: false; smooth: true
+                visible: light.model.ready
+            }
             Text {
-                anchors.horizontalCenter: parent.horizontalCenter; y: marker.far ? -1 : 12
-                text: marker.far ? "\u25B2" : "\u25BC"; font.pixelSize: 10; color: "#f4f4f4"; style: Text.Outline; styleColor: "#000000"
+                id: status
+                objectName: "lightDepthStatus"
+                visible: !light.model.ready
+                anchors.centerIn: parent; width: parent.width - 24
+                horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
+                color: light.model.error ? theme.rej : theme.fg3; font.pixelSize: 11
+                text: light.model.error || (light.model.busy || light.model.waiting ? light.model.message : light.model.unavailable ? "Depth model not installed" : "The depth map appears here.")
             }
-            Accessible.role: Accessible.Slider; Accessible.name: "Feather, " + (marker.far ? "far side" : "near side")
-            MouseArea {
-                anchors.fill: parent; anchors.margins: -5
-                enabled: marker.host.editable
-                preventStealing: true; cursorShape: Qt.SizeVerCursor
-                onPressed: { pad.forceActiveFocus(); marker.host.raw.beginGesture() }
-                onPositionChanged: (mouse) => {
-                    if (!pressed) return
-                    var p = mapToItem(pad, mouse.x, mouse.y)
-                    marker.host.model.setFeatherSpan(Math.abs(p.y / pad.height - marker.host.values.depth))
-                }
-                onReleased: marker.host.raw.endGesture()
-                onCanceled: marker.host.raw.endGesture()
+            // The depth map is read when the section opens; this is for when that did not happen (cancelled, failed, or never started).
+            Rectangle {
+                objectName: "lightDepthCreate"
+                visible: !light.model.ready && !light.model.busy && !light.model.waiting && !light.model.unavailable
+                anchors.horizontalCenter: parent.horizontalCenter; y: status.y + status.height + 10
+                width: createLabel.implicitWidth + 28; height: 28; radius: 9; color: createHover.hovered ? Qt.lighter(theme.accent, 1.1) : theme.accent
+                Text { id: createLabel; anchors.centerIn: parent; text: light.model.error ? "Try again" : "Create depth map"; color: theme.onAccent; font.pixelSize: 12; font.weight: Font.Medium }
+                HoverHandler { id: createHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: light.model.prepare() }
+                Accessible.role: Accessible.Button; Accessible.name: createLabel.text
+                Accessible.onPressAction: light.model.prepare()
+            }
+            Text {
+                objectName: "lightDepthHint"
+                visible: light.model.ready && light.values.amount <= 0
+                anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 8
+                width: parent.width - 24; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
+                text: "Raise Amount to light the photo."; color: "#f4f4f4"; style: Text.Outline; styleColor: "#000000"; font.pixelSize: 11
             }
         }
-        FeatherMarker { objectName: "lightDepthFeatherFar"; far: true }
-        FeatherMarker { objectName: "lightDepthFeatherNear"; far: false }
+
+        Rectangle {
+            id: pad
+            objectName: "lightDepthPad"
+            x: padArea.width - width; width: padArea.scaleWidth; height: parent.height
+            radius: 8; border.color: pad.activeFocus ? theme.accent : theme.line
+            clip: true
+            activeFocusOnTab: true
+            // the same brightness ramp the depth picture uses: far dark, near bright
+            gradient: Gradient {
+                GradientStop { position: 0; color: "#1f1f1f" }
+                GradientStop { position: 1; color: "#9e9e9e" }
+            }
+            function nudge(delta) { light.model.adjust("depth", light.values.depth + delta); light.model.flush() }
+            Keys.onUpPressed: nudge(-0.02)
+            Keys.onDownPressed: nudge(0.02)
+            Accessible.role: Accessible.Slider
+            Accessible.name: "Depth that is left as it is"
+            Accessible.description: "Drag up (farther) or down (nearer), or use the arrow keys, to change the depth. Drag the markers either side of it to change the feather."
+            Canvas {   // how much of the photo lies at each depth
+                id: spread
+                objectName: "lightDepthSpread"
+                anchors.fill: parent
+                visible: light.model.ready
+                onPaint: {
+                    var ctx = getContext("2d"); ctx.reset(); ctx.clearRect(0, 0, width, height)
+                    var bins = light.model.histogram, n = bins.length
+                    if (n < 1) return
+                    ctx.fillStyle = "#66ffffff"
+                    for (var i = 0; i < n; i++) {
+                        var y = Math.round(i / n * height), h = Math.max(1, Math.round((i + 1) / n * height) - y - 1)
+                        ctx.fillRect(0, y, bins[i] * width * 0.62, h)
+                    }
+                }
+                onWidthChanged: requestPaint()
+                onHeightChanged: requestPaint()
+                Connections { target: light.model; function onChanged() { spread.requestPaint() } }
+            }
+            Text { x: pad.width - implicitWidth - 5; y: 3; visible: light.model.ready; text: "Far"; color: "#d8d8d8"; font.pixelSize: 9 }
+            Text { x: pad.width - implicitWidth - 5; y: pad.height - implicitHeight - 3; visible: light.model.ready; text: "Near"; color: "#202020"; font.pixelSize: 9 }
+            Rectangle {   // the feather: the depth range the effect comes in over, either side of the chosen depth
+                objectName: "lightDepthFeatherBand"
+                visible: light.model.ready
+                width: parent.width
+                y: Math.max(0, (light.values.depth - light.model.featherSpan) * pad.height)
+                height: Math.min(pad.height, (light.values.depth + light.model.featherSpan) * pad.height) - y
+                color: "#22ffffff"; border.color: "#66ffffff"; border.width: 1
+            }
+            MouseArea {
+                objectName: "lightDepthPadDrag"
+                anchors.fill: parent
+                enabled: light.model.ready && light.editable
+                preventStealing: true          // the panel scrolls vertically: it must not take a vertical drag away
+                cursorShape: Qt.SizeVerCursor
+                function put(mouse) { light.model.adjust("depth", Math.max(0, Math.min(1, mouse.y / pad.height))) }
+                onPressed: (mouse) => { pad.forceActiveFocus(); light.raw.beginGesture(); put(mouse) }
+                onPositionChanged: (mouse) => { if (pressed) put(mouse) }
+                onReleased: light.raw.endGesture()
+                onCanceled: light.raw.endGesture()
+            }
+            Item {
+                id: handle
+                objectName: "lightDepthPadHandle"
+                visible: light.model.ready
+                width: pad.width; height: 20
+                y: light.values.depth * pad.height - height / 2
+                Rectangle { x: 0; y: parent.height / 2 - 1; width: parent.width; height: 2; color: "#ffb02e" }   // the depth itself
+                Rectangle {
+                    x: parent.width - width - 4; y: Math.max(-handle.y, Math.min(pad.height - 20 - handle.y, 0)); width: 20; height: 20; radius: 10     // the grip stays whole at either end
+                    color: "#f4f4f4"; border.color: "#202020"; border.width: 1
+                    Icon { anchors.centerIn: parent; size: 12; path: "M12 4v16M8 8l4-4 4 4M8 16l4 4 4-4"; color: "#202020" }
+                }
+            }
+            component FeatherMarker: Item {
+                id: marker
+                property var host: light
+                property bool far: true       // the far marker (arrow up) or the near one (arrow down)
+                readonly property real depthAt: host.values.depth + (far ? -1 : 1) * host.model.featherSpan
+                readonly property bool off: depthAt < 0 || depthAt > 1       // beyond the end of the scale: shown at the end
+                width: 26; height: 16
+                visible: host.model.ready
+                opacity: off ? 0.55 : 1
+                x: 4
+                y: far ? Math.max(0, Math.min(pad.height - height, depthAt * pad.height - height))
+                       : Math.max(0, Math.min(pad.height - height, depthAt * pad.height))
+                Rectangle { anchors.fill: parent; radius: 4; color: "#f4f4f4"; border.color: "#202020"; border.width: 1 }
+                Text {
+                    anchors.centerIn: parent
+                    text: marker.far ? "\u25B2" : "\u25BC"; font.pixelSize: 9; color: "#202020"
+                }
+                Accessible.role: Accessible.Slider; Accessible.name: "Feather, " + (marker.far ? "far side" : "near side")
+                MouseArea {
+                    anchors.fill: parent; anchors.margins: -4
+                    enabled: marker.host.editable
+                    preventStealing: true; cursorShape: Qt.SizeVerCursor
+                    onPressed: { pad.forceActiveFocus(); marker.host.raw.beginGesture() }
+                    onPositionChanged: (mouse) => {
+                        if (!pressed) return
+                        var p = mapToItem(pad, mouse.x, mouse.y)
+                        marker.host.model.setFeatherSpan(Math.abs(p.y / pad.height - marker.host.values.depth))
+                    }
+                    onReleased: marker.host.raw.endGesture()
+                    onCanceled: marker.host.raw.endGesture()
+                }
+            }
+            FeatherMarker { objectName: "lightDepthFeatherFar"; far: true }
+            FeatherMarker { objectName: "lightDepthFeatherNear"; far: false }
+        }
     }
     Item {
         visible: light.model.busy
