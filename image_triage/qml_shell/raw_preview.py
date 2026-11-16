@@ -17,7 +17,7 @@ from PySide6.QtGui import QImage, QColorSpace
 from PySide6.QtQuick import QQuickImageProvider
 
 from .. import photocraft_bridge as bridge
-from .. import host_effects, light_depth
+from .. import atmosphere, host_effects, light_depth
 from ..full_render import _without_host_settings
 
 _frames = OrderedDict()
@@ -319,6 +319,7 @@ class PreviewWorker(QObject):
                         # Light Depth's masks are not kept in the draft: they are built here from its settings and the depth map.
                         baseline = self._connection.call({**request, "quality": "settled", "op": "open", "path": path, "edge": 1800,
                             "recipe": _without_host_settings({"version": 1, "cameraRaw": host_effects.with_masks(original, path)})})
+                        baseline = atmosphere.fogged_frame(baseline, path, original.get("atmosphere"))     # the saved fog is in "before"
                         source = source_key
                     if isinstance(sample, dict) and sample.get("kind") == "erase":
                         # The picture AI Erase fills from: what the retouch stage sees, so everything that comes after it (masks, the
@@ -338,6 +339,8 @@ class PreviewWorker(QObject):
                         result = (self._connection.call({**request, "op": "render", "recipe": {"version": 1, "cameraRaw": {}}})
                         if sample is not None else baseline if draft == original else self._connection.call({**request, "op": "render",
                         "recipe": _without_host_settings({"version": 1, "cameraRaw": host_effects.with_masks(draft, path)})}))
+                    if sample is None and draft != original:
+                        result = atmosphere.fogged_frame(result, path, draft.get("atmosphere"))      # Atmosphere is laid over the render
                     if bridge.file_signature(path) != signature:
                         raise RuntimeError("The RAW changed during preview. Reopen the editor.")
                     if isinstance(sample, dict) and sample.get("kind") == "erase":

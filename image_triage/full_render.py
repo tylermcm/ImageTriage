@@ -217,7 +217,7 @@ class FullRenderService:
         from .raw_crop import apply_render
 
         develop = render
-        render = lambda: apply_render(develop(), recipe)
+        render = lambda: apply_render(host_effects.fog_result(develop(), image_path, recipe), recipe)
 
         if not sr.wants_super_resolution(recipe):
             return render()

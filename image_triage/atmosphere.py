@@ -10,11 +10,11 @@ How the fog is made
 * **Density** at a pixel is how much fog lies in front of it: none on what is close, rising with distance (the depth map), held
   to a height in the frame (Height: how far up from the bottom the fog reaches), and broken into patches by smooth noise
   (Patchiness: how broken, Cloud Size: how large the pieces are).
-* The renderer cannot blend a pixel toward a fog colour (a fog stage in the engine would; see ``docs/creative_tools_plan.md``),
-  so the look is built from what a local adjustment can do: negative Dehaze, a lift of the exposure and the blacks, less
-  contrast, clarity and texture, and less colour. The density is the mask; Amount scales the adjustment. Because the
-  adjustment acts on the photo's own pixels, the fog keeps the photo's colour and light (Luminar's fog "adapts to the photo's
-  colours and lighting"); Vibrance says how much colour it keeps.
+* The fog is laid over the finished picture: every pixel is blended toward a fog colour by how much fog lies in front of it
+  (``composite``), as Luminar does, so distant things disappear into it and the dark foreground stays dark. The renderer
+  never sees it (no masks are made); the host does it after the render, for the live preview, a save and an export alike.
+  The fog colour is a cool grey-blue that takes its brightness and some of its colour from the photo (blurred), so the fog
+  "adapts to the photo's colours and lighting"; Vibrance says how much of the photo's colour it takes.
 * **Drift** moves the patches of fog across the picture (Luminar's "Clouds Drift" pad): the same fog, shifted.
 
 Depth maps are 8-bit, 255 = nearest (``depth_worker``). Inside this module depth is 0 (far) .. 1 (near).
@@ -49,11 +49,11 @@ DEFAULTS = {"amount": 0.0, "height": 100.0, "patchiness": 35.0, "cloudSize": 50.
 RANGES = {"amount": (0, 100), "height": (0, 100), "patchiness": (0, 100), "cloudSize": (0, 100), "vibrance": (0, 100),
           "start": (0, 100), "driftX": (0, 1), "driftY": (0, 1), "shown": (0, 1), "depthModel": (0, 2), "preset": (0, 3)}
 
-# What each preset sets (the Amount too: a wisp is not applied as strongly as a bank of fog).
+# What each preset sets (the Amount too, as in Luminar: Heavy Fog is a low Amount over the whole frame, Ground Fog a full one low down).
 PRESETS = (
-    {"amount": 35.0, "height": 60.0, "patchiness": 70.0, "cloudSize": 40.0, "vibrance": 45.0, "start": 30.0},
-    {"amount": 65.0, "height": 100.0, "patchiness": 35.0, "cloudSize": 60.0, "vibrance": 50.0, "start": 10.0},
-    {"amount": 55.0, "height": 28.0, "patchiness": 50.0, "cloudSize": 30.0, "vibrance": 50.0, "start": 0.0},
+    {"amount": 56.0, "height": 70.0, "patchiness": 56.0, "cloudSize": 0.0, "vibrance": 50.0, "start": 15.0},
+    {"amount": 20.0, "height": 100.0, "patchiness": 25.0, "cloudSize": 70.0, "vibrance": 50.0, "start": 0.0},
+    {"amount": 100.0, "height": 15.0, "patchiness": 100.0, "cloudSize": 100.0, "vibrance": 50.0, "start": 20.0},
 )
 
 
@@ -94,8 +94,8 @@ def active(settings) -> bool:
 
 
 def masks_needed(settings) -> int:
-    """How many of a photo's masks the effect takes: one, the fog."""
-    return 1 if active(settings) else 0
+    """How many of a photo's masks the effect takes: none (the fog is laid over the finished picture, not made with masks)."""
+    return 0
 
 
 # --- the fog ---------------------------------------------------------------------------------------------------------------
@@ -107,7 +107,7 @@ def _smooth(values):
     return values * values * (3 - 2 * values)
 
 
-def noise(shape, cells: float, seed: int, octaves: int = 4, drift=(0.5, 0.5)):
+def noise(shape, cells: float, seed: int, octaves: int = 6, drift=(0.5, 0.5), stretch: float = 1.0):
     """Smooth value noise over ``shape`` (height, width), 0..1: ``cells`` random cells across the long side at the coarsest
     octave, each finer octave twice as many and half as strong. The same seed gives the same picture; ``drift`` (0..1 each way)
     slides the window over a larger field of the same noise, so the patches move without changing."""
@@ -120,17 +120,35 @@ def noise(shape, cells: float, seed: int, octaves: int = 4, drift=(0.5, 0.5)):
     weight = 0.0
     for octave in range(octaves):
         across = max(2, round(cells * 2 ** octave))
-        grid = (max(2, round(across * height / max(width, height))), max(2, round(across * width / max(width, height))))
+        grid = (max(2, round(across * height / max(width, height))), max(2, round(across * width / max(width, height) / stretch)))
         layer = rng.random((grid[0] + 4, grid[1] + 4)).astype(np.float32)      # two spare cells each side to slide over
         left, top = 2 * drift[0], 2 * drift[1]
         box = (left, top, left + grid[1], top + grid[0])
         image = Image.fromarray(layer, mode="F").resize((width, height), Image.Resampling.BICUBIC, box=box)
-        strength = 0.5 ** octave
+        strength = 0.62 ** octave
         total += np.asarray(image, np.float32) * strength
         weight += strength
     total /= weight
     low, high = np.percentile(total, [2, 98])
     return np.clip((total - low) / max(float(high - low), 1e-6), 0.0, 1.0)
+
+
+def _above_ground(distance):
+    """How far above the ground each pixel is, 0 (on it) .. 1 (the whole frame's height): the ground at a given distance lies at
+    the row where that distance is typical (the rows' median distance, farther toward the top), so a bank of fog that hugs the
+    ground is a band across the far ground and not the bottom edge of the picture. Things that stand up (trees, mountains, the
+    sky) are above the ground line of their distance."""
+    import numpy as np
+
+    height = distance.shape[0]
+    profile = np.median(distance, axis=1)[::-1]                                  # index 0 is the bottom row, the nearest
+    profile = np.maximum.accumulate(profile)                                      # never nearer higher up
+    horizon = int(np.argmax(profile >= 0.9 * profile[-1]))                        # where the rows are as far away as they get: the horizon
+    profile = np.minimum(profile, profile[horizon])                               # above it nothing is farther: the sky is at the horizon
+    profile = profile + np.linspace(0.0, 1e-3, height, dtype=np.float32)          # strictly rising
+    rows = np.arange(height, dtype=np.float32)[::-1]                              # the row of each profile entry
+    ground_row = np.interp(np.minimum(distance, profile[horizon]), profile, rows)  # the row the ground has this distance at
+    return np.clip((ground_row - np.arange(height, dtype=np.float32)[:, None]) / height, 0.0, 1.0)
 
 
 def density(depth, settings, side: int = COVERAGE_SIDE, seed: int = 0):
@@ -143,38 +161,18 @@ def density(depth, settings, side: int = COVERAGE_SIDE, seed: int = 0):
     distance = 1.0 - scene                                                        # 0 close .. 1 far
     begin = settings["start"] / 100 * 0.6
     by_distance = _smooth((distance - begin) / 0.55)
-    rows = (np.arange(height, dtype=np.float32) + 0.5) / height
-    above_ground = 1.0 - rows[:, None]                                            # 0 at the bottom edge .. 1 at the top
+    above_ground = _above_ground(distance)
     reach = settings["height"] / 100
     by_height = 1.0 - _smooth((above_ground - reach) / 0.25)
     clumps = settings["patchiness"] / 100
     if clumps > 0:
         cells = 3 + (1 - settings["cloudSize"] / 100) * 21                        # cloud size 0 is small clumps, 100 is large ones
-        shape = _smooth((noise((height, width), cells, seed, drift=(settings["driftX"], settings["driftY"])) - 0.25) / 0.6)
+        shape = _smooth((noise((height, width), cells, seed, drift=(settings["driftX"], settings["driftY"]), stretch=1.8) - 0.25) / 0.6)
         by_clump = 1.0 - clumps * (1.0 - shape)
     else:
         by_clump = 1.0
     fog = by_distance * by_height * by_clump
     return np.clip(light_depth._blur(fog, max(width, height) * 0.004), 0.0, 1.0)
-
-
-def adjustments(settings) -> dict:
-    """The local adjustment for the fog: what a bank of fog does to what is seen through it, as far as a local adjustment can
-    say it (the renderer cannot blend toward a colour; see the module note). Amount scales all of it. Vibrance is how much of
-    the photo's own colour the fog keeps."""
-    settings = normalized(settings)
-    s = settings["amount"] / 100
-    fog = {
-        "dehaze": round(-75.0 * s, 2),            # negative Dehaze is a milky veil
-        "exposure": round(0.6 * s, 3),
-        "contrast": round(-40.0 * s, 2),
-        "blacks": round(35.0 * s, 2),
-        "shadows": round(20.0 * s, 2),
-        "clarity": round(-30.0 * s, 2),
-        "texture": round(-20.0 * s, 2),
-        "saturation": round(max(-100.0, min(100.0, (settings["vibrance"] - 50) * 0.6 - 30.0 * s)), 2),
-    }
-    return {k: v for k, v in fog.items() if v}
 
 
 def seed_of(depth) -> int:
@@ -193,50 +191,160 @@ def coverage(depth, settings, side: int = COVERAGE_SIDE):
     return np.clip(np.rint(fog * 255), 0, 255).astype(np.uint8)
 
 
-# --- the masks a render uses -----------------------------------------------------------------------------------------------
+# --- laying the fog over a picture -----------------------------------------------------------------------------------------
 
-_BUILT = OrderedDict()  # (settings, depth digest) -> the mask rows; a slider drag renders the same settings again and again
+_COOL = (0.80, 0.89, 1.0)           # the fog's colour before the photo's own is mixed in (a cool grey-blue)
+_LUMA = (0.2126, 0.7152, 0.0722)
+_FIELDS = OrderedDict()             # (settings, depth digest, size) -> the fog's density; a slider drag lays the same fog again and again
 
 
-def render_masks(settings, depth) -> list:
-    """The local mask that carries ``settings`` into a render: one row, the fog."""
+def _field(depth, settings, width: int, height: int):
+    """The fog's density 0..1 at exactly ``width`` x ``height``."""
+    import numpy as np
+    from PIL import Image
+
+    depth = np.ascontiguousarray(depth)
+    key = (tuple(sorted(settings.items())), hashlib.blake2b(depth.tobytes(), digest_size=16).digest(), depth.shape, width, height)
+    if key not in _FIELDS:
+        fog = density(depth, settings, 1024, seed_of(depth))
+        if fog.shape != (height, width):
+            fog = np.asarray(Image.fromarray(fog.astype(np.float32), mode="F").resize((width, height), Image.Resampling.BICUBIC), np.float32)
+        _FIELDS[key] = np.clip(fog, 0.0, 1.0)
+        while len(_FIELDS) > 3:
+            _FIELDS.popitem(last=False)
+    _FIELDS.move_to_end(key)
+    return _FIELDS[key]
+
+
+def _small(rgb):
+    """The photo reduced to about 48 pixels across (float 0..1): where it is light and what colour the light is."""
+    import numpy as np
+    from PIL import Image
+
+    height, width = rgb.shape[:2]
+    scale = 48 / max(height, width)
+    reduced = Image.fromarray((np.clip(rgb, 0, 1) * 255 + 0.5).astype(np.uint8)).resize(
+        (max(2, round(width * scale)), max(2, round(height * scale))), Image.Resampling.BOX)
+    return np.asarray(reduced, np.float32) / 255.0
+
+
+def _shade(small, settings):
+    """The fog's colour across the picture, as a small array: cool grey-blue, as bright as the light is there, with some of the
+    light's own colour (Vibrance)."""
     import numpy as np
 
-    from .qml_shell.raw_masks import encode_raster
+    weights = np.array(_LUMA, np.float32)
+    light = small @ weights
+    ambient = np.clip(0.55 + 0.45 * light, 0.0, 0.9)
+    colour = np.clip(small / np.maximum(light[..., None], 0.03), 0.55, 1.6)       # the colour of the light, as a ratio
+    mix = settings["vibrance"] / 100 * 0.35
+    tint = np.array(_COOL, np.float32) * (1 - mix) + colour * mix
+    tint = tint / np.maximum(tint @ weights, 0.05)[..., None]
+    return np.clip(tint * ambient[..., None], 0.0, 1.0)
+
+
+def _spread(shade, width: int, height: int, rows=None):
+    """``shade`` (small) as a ``width`` x ``height`` picture; ``rows`` = (first, last) of the frame's ``height`` when only that part is wanted."""
+    import numpy as np
+    from PIL import Image
+
+    first, last = (rows[0], rows[1]) if rows else (0, height)
+    full = rows[2] if rows else height
+    top, bottom = shade.shape[0] * first / full, shade.shape[0] * last / full
+    box = (0.0, top, float(shade.shape[1]), bottom)
+    channels = [np.asarray(Image.fromarray(np.ascontiguousarray(shade[..., i]), mode="F").resize(
+        (width, last - first), Image.Resampling.BICUBIC, box=box), np.float32) for i in range(3)]
+    return np.clip(np.stack(channels, axis=-1), 0.0, 1.0)
+
+
+def composite(rgb, depth, settings):
+    """``rgb`` (float 0..1, height x width x 3, as shown) with the fog laid over it: each pixel blended toward the fog colour by
+    ``1 - exp(-thickness x density)``."""
+    import numpy as np
 
     settings = normalized(settings)
     if not active(settings):
-        return []
-    depth = np.ascontiguousarray(depth)
-    key = (tuple(sorted(settings.items())), hashlib.blake2b(depth.tobytes(), digest_size=16).digest(), depth.shape)
-    if key not in _BUILT:
-        adjust = adjustments(settings)
-        rows = ([{"name": FOG_NAME, "enabled": True, "invert": False, "amount": 100,
-                  "shape": encode_raster(coverage(depth, settings)), "adjust": adjust}] if adjust else [])
-        _BUILT[key] = rows
-        while len(_BUILT) > 4:
-            _BUILT.popitem(last=False)
-    _BUILT.move_to_end(key)
-    return [dict(row, adjust=dict(row["adjust"])) for row in _BUILT[key]]
+        return rgb
+    height, width = rgb.shape[:2]
+    cover = 1.0 - np.exp(-5.5 * settings["amount"] / 100 * _field(depth, settings, width, height))      # 0 clear .. 1 solid
+    shade = _spread(_shade(_small(rgb), settings), width, height)
+    return rgb * (1 - cover[..., None]) + shade * cover[..., None]
+
+
+def fogged_image(image, depth, settings):
+    """``image`` (a QImage, any format) with the fog laid over it, as an 8-bit RGB QImage; ``image`` itself when there is none."""
+    import numpy as np
+    from PySide6.QtGui import QImage
+
+    if not active(settings):
+        return image
+    rgb = image.convertToFormat(QImage.Format.Format_RGB888)
+    stride = rgb.bytesPerLine()
+    flat = np.frombuffer(rgb.constBits(), np.uint8, count=stride * rgb.height()).reshape(rgb.height(), stride)
+    pixels = flat[:, : rgb.width() * 3].reshape(rgb.height(), rgb.width(), 3).astype(np.float32) / 255.0
+    out = np.ascontiguousarray(np.clip(composite(pixels, depth, settings) * 255 + 0.5, 0, 255).astype(np.uint8))
+    return QImage(out.data, out.shape[1], out.shape[0], out.shape[1] * 3, QImage.Format.Format_RGB888).copy()
+
+
+def _depth_of(image_path, settings):
+    depth = light_depth.load_depth(image_path, model_key(settings))
+    if depth is None:
+        raise ValueError("Atmosphere's depth map is missing. Open Atmosphere to make it again.")
+    return depth
+
+
+def fogged_frame(frame, image_path, settings):
+    """A preview worker's ``(header, QImage)`` with the fog laid over the picture. Raises ValueError when the depth map is gone."""
+    if not active(settings):
+        return frame
+    return frame[0], fogged_image(frame[1], _depth_of(image_path, settings), settings)
+
+
+def fogged_file(source, destination, image_path, settings):
+    """Write ``source`` (a full-size render, 8 or 16 bit) to ``destination`` (PNG) with the fog laid over it, in strips so a
+    camera-sized picture is never held as floats all at once. Raises ValueError when the depth map is gone."""
+    import numpy as np
+    from PySide6.QtCore import QIODevice, QSaveFile
+    from PySide6.QtGui import QImage, QImageReader
+
+    settings = normalized(settings)
+    depth = _depth_of(image_path, settings)
+    reader = QImageReader(str(source))
+    size = reader.size()
+    if size.width() <= 0 or size.height() <= 0 or size.width() * size.height() > 120_000_000:
+        raise ValueError("The full-resolution picture has invalid dimensions")
+    if 0 < QImageReader.allocationLimit() < 1024:
+        QImageReader.setAllocationLimit(1024)
+    image = reader.read()
+    del reader
+    if image.isNull():
+        raise ValueError("The full-resolution picture could not be decoded")
+    wide = image.depth() > 32
+    image = image.convertToFormat(QImage.Format.Format_RGBA64 if wide else QImage.Format.Format_RGBA8888)
+    height, width = image.height(), image.width()
+    unit = np.uint16 if wide else np.uint8
+    top = float(np.iinfo(unit).max)
+    per_line = image.bytesPerLine() // np.dtype(unit).itemsize
+    pixels = np.frombuffer(image.bits(), unit, count=per_line * height).reshape(height, per_line)[:, : width * 4].reshape(height, width, 4)
+    sample = pixels[:: max(1, height // 600), :: max(1, width // 600), :3].astype(np.float32) / top
+    shade = _shade(_small(sample), settings)               # one fog colour for the whole picture, spread over each strip
+    whole = _field(depth, settings, width, height)
+    thickness = 5.5 * settings["amount"] / 100
+    for start in range(0, height, 512):
+        end = min(height, start + 512)
+        strip = pixels[start:end, :, :3].astype(np.float32) / top
+        cover = (1.0 - np.exp(-thickness * whole[start:end]))[..., None]
+        fog = _spread(shade, width, end - start, rows=(start, end, height))
+        pixels[start:end, :, :3] = np.clip((strip * (1 - cover) + fog * cover) * top + 0.5, 0, top).astype(unit)
+    output = QSaveFile(str(destination))
+    if not output.open(QIODevice.WriteOnly) or not image.save(output, "PNG") or not output.commit():
+        raise OSError("The picture with fog could not be saved")
 
 
 def with_masks(settings: dict, atmosphere, image_path) -> dict:
-    """The Camera Raw ``settings`` as the renderer should get them: without the host's ``atmosphere`` entry and, when
-    ``atmosphere`` is on, with its masks added after the others. Raises ValueError when they cannot be made: the depth map
-    is gone, or the photo already has too many masks."""
-    result = {key: value for key, value in settings.items() if key != "atmosphere"}
-    if not active(atmosphere):
-        return result
-    depth = light_depth.load_depth(image_path, model_key(atmosphere))
-    if depth is None:
-        raise ValueError("Atmosphere's depth map is missing. Open Atmosphere to make it again.")
-    added = render_masks(atmosphere, depth)
-    masks = list(result.get("masks") or [])
-    if len(masks) + len(added) > MAX_MASKS:
-        raise ValueError(f"Atmosphere needs {len(added)} of a photo's {MAX_MASKS} masks. Delete some masks to use it.")
-    if added:
-        result["masks"] = masks + added
-    return result
+    """The Camera Raw ``settings`` as the renderer should get them: without the host's ``atmosphere`` entry (the fog is laid over
+    the render afterwards, never made with masks)."""
+    return {key: value for key, value in settings.items() if key != "atmosphere"}
 
 
 # --- the settings file beside the recipe -----------------------------------------------------------------------------------

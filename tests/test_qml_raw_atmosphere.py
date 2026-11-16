@@ -2,6 +2,7 @@
 import json
 
 import pytest
+from PySide6.QtGui import QImage
 from image_triage import atmosphere, light_depth, photocraft_bridge as bridge
 from image_triage.qml_shell.raw_editor import RawEditor, _recipe, _without_light_depth
 from test_qml_raw_light_depth import (  # noqa: F401  (the fixtures and helpers Light Depth's tests are built on)
@@ -76,16 +77,13 @@ def test_hide_show_and_remove(raw, qapp):
     assert air.active
 
 
-def test_the_budget_counts_light_depth_and_the_persons_masks(raw, qapp):
+def test_fog_takes_none_of_the_masks_so_a_full_set_of_the_persons_own_does_not_block_it(raw, qapp):
     air = ready(raw, qapp)
     mine = {"name": "m", "shape": {"type": "linear", "x0": 0, "y0": 0, "x1": 1, "y1": 1}}
-    raw._set_values({"masks": [dict(mine) for _ in range(atmosphere.MAX_MASKS - 1)],
-                     "lightDepth": light_depth.normalized({"amount": 50})}, "setup")           # 15 + 2 for Light Depth: full
+    raw._set_values({"masks": [dict(mine) for _ in range(atmosphere.MAX_MASKS)],
+                     "lightDepth": light_depth.normalized({"amount": 50})}, "setup")
     air.choosePreset(1)
-    assert "masks" in air.error and "atmosphere" not in raw._draft and not air.active
-    raw._set_values({"masks": []}, "clear")
-    air.choosePreset(1)
-    assert air.error == "" and air.active
+    assert air.error == "" and air.active and "atmosphere" in raw._draft
 
 
 def test_missing_model_says_so_and_starts_nothing(raw, qapp, monkeypatch):
@@ -118,26 +116,29 @@ def test_a_photo_switch_never_applies_a_late_map(raw, qapp):
 
 # --- what the native renderer is sent, what is saved --------------------------------------------------------------------------
 
-def test_previews_and_saves_build_the_fog_mask_but_the_saved_recipe_holds_none(lit_photo, tmp_path):
+def test_the_renderer_is_never_sent_the_fog_and_a_save_lays_it_over_the_picture(lit_photo, tmp_path):
     photo, original, sent = lit_photo
     air = atmosphere.with_preset({}, 1)
     draft = {"exposure": .25, "atmosphere": air}
     out = tmp_path / "preview"
     out.mkdir()
     RawEditor._work("preview", str(photo), original, draft, str(out))
-    assert [m["name"] for m in sent[-1]["masks"]] == [atmosphere.FOG_NAME] and "atmosphere" not in sent[-1]
+    assert "masks" not in sent[-1] and "atmosphere" not in sent[-1]                  # no masks: the host lays it over the render
     RawEditor._work("save", str(photo), original, draft, "")
-    assert [m["name"] for m in sent[-1]["masks"]] == [atmosphere.FOG_NAME]
-    assert bridge.load_recipe(str(photo))["cameraRaw"] == {"exposure": .25}          # no masks, no host settings in the recipe
+    assert "masks" not in sent[-1] and "atmosphere" not in sent[-1]
+    assert bridge.load_recipe(str(photo))["cameraRaw"] == {"exposure": .25}          # no host settings in the recipe
     assert atmosphere.read_sidecar(bridge.recipe_path(str(photo))) == air
-    # Light Depth and Atmosphere together: both masks, both settings files
+    saved = QImage(str(bridge.saved_render_path(str(photo))))
+    assert saved.pixelColor(10, 1).blue() > 20 and saved.pixelColor(10, 22).blue() < saved.pixelColor(10, 1).blue()    # the far part of a red picture is fogged blue-grey, the near part is clear
+    # Light Depth and Atmosphere together: Light Depth's masks go to the renderer, the fog is laid on afterwards
     both = {"exposure": .25, "atmosphere": air, "lightDepth": light_depth.normalized({"amount": 60})}
     RawEditor._work("save", str(photo), {"exposure": .25}, both, "")
-    assert [m["name"] for m in sent[-1]["masks"]] == [light_depth.NEAR_NAME, light_depth.FAR_NAME, atmosphere.FOG_NAME]
+    assert [m["name"] for m in sent[-1]["masks"]] == [light_depth.NEAR_NAME, light_depth.FAR_NAME]
     assert light_depth.read_sidecar(bridge.recipe_path(str(photo)))[0] and atmosphere.read_sidecar(bridge.recipe_path(str(photo)))
-    # Switched off: no mask; the file stays with the sliders. At Amount 0 the file goes.
+    # Switched off: nothing laid over it; the file stays with the sliders. At Amount 0 the file goes.
     RawEditor._work("save", str(photo), {"exposure": .25}, {"exposure": .25, "atmosphere": {**air, "shown": 0}}, "")
-    assert "masks" not in sent[-1] and atmosphere.read_sidecar(bridge.recipe_path(str(photo)))["shown"] == 0
+    assert atmosphere.read_sidecar(bridge.recipe_path(str(photo)))["shown"] == 0
+    assert QImage(str(bridge.saved_render_path(str(photo)))).pixelColor(10, 1).blue() == 0
     RawEditor._work("save", str(photo), {"exposure": .25}, {"exposure": .25}, "")
     assert not atmosphere.sidecar_path(bridge.recipe_path(str(photo))).exists()
 
@@ -158,29 +159,29 @@ def test_a_save_without_the_depth_map_says_why_and_changes_nothing(lit_photo, mo
     monkeypatch.setattr("image_triage.depth_maps.light_depth_cache_file", lambda source, **kw: photo.parent / "gone.png")
     with pytest.raises(ValueError, match="depth map is missing"):
         RawEditor._work("save", str(photo), original, {"exposure": .25, "atmosphere": atmosphere.with_preset({}, 1)}, "")
-    assert bridge.recipe_path(str(photo)).read_bytes() == before and sent == []
+    assert bridge.recipe_path(str(photo)).read_bytes() == before
 
 
-def test_the_recipe_helpers_strip_the_hosts_entries(monkeypatch):
-    monkeypatch.setattr(light_depth, "load_depth", lambda path, model="small": ground())
+def test_the_recipe_helpers_strip_the_hosts_entries():
     draft = {"exposure": .1, "atmosphere": atmosphere.with_preset({}, 1)}
     assert _without_light_depth(draft) == {"exposure": .1}
-    sent = _recipe(draft, "photo.nef")["cameraRaw"]
-    assert "atmosphere" not in sent and sent["masks"][0]["name"] == atmosphere.FOG_NAME
+    assert _recipe(draft, "photo.nef")["cameraRaw"] == {"exposure": .1}              # the fog is no part of what the renderer is sent
 
 
-def test_the_live_preview_gets_the_fog_for_the_draft_and_for_the_saved_picture(qapp, monkeypatch, tmp_path):
+def test_the_live_preview_lays_the_fog_over_the_draft_and_over_the_saved_picture(qapp, monkeypatch, tmp_path):
     photo, worker, calls, done, errors = preview_worker(monkeypatch, tmp_path)
     saved = atmosphere.with_preset({}, 0)
     draft = {"atmosphere": atmosphere.with_preset({}, 1)}
     worker.submit(1, str(photo), {"atmosphere": saved}, draft)         # the saved edit already has fog
     wait(qapp, lambda: done or errors)
     assert not errors, errors
-    opened = [c for c in calls if c.get("op") == "open"][0]["recipe"]["cameraRaw"]
-    rendered = [c for c in calls if c.get("op") == "render"][-1]["recipe"]["cameraRaw"]
-    assert [m["name"] for m in opened["masks"]] == [atmosphere.FOG_NAME] and "atmosphere" not in opened
-    assert [m["name"] for m in rendered["masks"]] == [atmosphere.FOG_NAME] and "atmosphere" not in rendered
-    assert opened["masks"][0]["adjust"] != rendered["masks"][0]["adjust"]
+    for call in calls:
+        recipe = call.get("recipe", {}).get("cameraRaw", {})
+        assert "masks" not in recipe and "atmosphere" not in recipe
+    result, baseline = done[-1][1][0], done[-1][1][1]
+    top = lambda frame: frame[1].pixelColor(20, 0)
+    assert top(result).blue() > 128 and top(baseline).blue() > 128               # a grey picture, fogged blue-grey at the far end
+    assert (top(result).blue(), top(result).red()) != (top(baseline).blue(), top(baseline).red())      # the draft's fog is not the saved one
 
 
 def test_a_preset_is_not_part_of_a_look_that_is_pasted_to_another_photo():

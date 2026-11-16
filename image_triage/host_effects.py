@@ -57,5 +57,29 @@ def recipe_for_render(image_path, recipe: dict | None) -> dict | None:
     air = atmosphere.read_sidecar(bridge.recipe_path(image_path))
     if not atmosphere.active(air):
         return lit
+    # The fog is laid over the finished render by the host (``fog_result``), so its settings ride in the recipe; the renderer is
+    # never sent them (``full_render._without_host_settings``).
     base = (lit or {}).get("cameraRaw") or {}
-    return {**(lit or {"version": bridge.RECIPE_VERSION}), "cameraRaw": atmosphere.with_masks(base, air, image_path)}
+    return {**(lit or {"version": bridge.RECIPE_VERSION}), "cameraRaw": {**base, "atmosphere": air}}
+
+
+def fog_result(result, image_path, recipe):
+    """A full-size render with the recipe's Atmosphere laid over it (before any crop), or ``result`` when there is none."""
+    from pathlib import Path
+    from uuid import uuid4
+
+    from .full_render import RENDERED, RenderResult, failed
+
+    air = ((recipe or {}).get("cameraRaw") or {}).get("atmosphere")
+    if result.outcome != RENDERED or not atmosphere.active(air):
+        return result
+    target = Path(result.path).with_name(Path(result.path).stem + ".fog-" + uuid4().hex + ".png")
+    try:
+        atmosphere.fogged_file(result.path, target, image_path, air)
+        return RenderResult(RENDERED, path=target, format="png", width=result.width, height=result.height, depth=result.depth,
+                            icc=result.icc, temporary=True)
+    except Exception as error:
+        target.unlink(missing_ok=True)
+        return failed(str(error))
+    finally:
+        result.release()

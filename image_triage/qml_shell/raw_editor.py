@@ -1070,7 +1070,15 @@ class RawEditor(QObject):
                     raise ValueError(reason)
                 if light_depth.strip_legacy((current or {}).get("cameraRaw", {})) != original:
                     raise ValueError("The saved recipe changed while the RAW was rendering")
-                published = publish(path, rendered, draft, signature)
+                fogged = None
+                if atmosphere.active(placed_air):
+                    fogged = rendered.with_name(rendered.stem + ".fog.png")
+                    atmosphere.fogged_file(rendered, fogged, path, placed_air)
+                try:
+                    published = publish(path, fogged or rendered, draft, signature)
+                finally:
+                    if fogged is not None:
+                        fogged.unlink(missing_ok=True)
                 try:
                     light_depth.write_sidecar(bridge.recipe_path(path), placed)
                     atmosphere.write_sidecar(bridge.recipe_path(path), placed_air)
