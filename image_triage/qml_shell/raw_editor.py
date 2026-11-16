@@ -445,6 +445,9 @@ class RawEditor(QObject):
         for what, record in list(self.__dict__.get("_auto_records", {}).items()):
             if self._auto_active(what):
                 applied = self._auto_blend(record["full"], record["previous"], self._auto_strength / 100)
+                # the record must already say what is about to be applied: the panel reads "is Auto on" while the draft changes,
+                # and a record that is a step behind switches Auto off for a moment, which drops the slider being dragged
+                record["applied"] = applied
                 self._set_values(applied, self._AUTO[what][0] + " strength")
                 record["applied"] = {key: self._draft.get(key, DEFAULTS[key]) for key in applied}
         self.changed.emit()

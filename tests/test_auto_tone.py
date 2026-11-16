@@ -134,6 +134,11 @@ def test_the_strength_slider_changes_what_is_applied_at_once(qapp, monkeypatch):
     raw = make_editor(monkeypatch, scene(0.1, 0.15))
     raw.toggleAuto("tone")
     full = raw._draft["exposure"]
+    seen = []
+    raw.changed.connect(lambda: seen.append(raw.autoToneOn))
+    raw.setAutoStrength(70)                                         # while the value changes the switch must never flicker off:
+    assert seen and all(seen)                                       # that would remove the slider being dragged
+    raw.changed.disconnect()
     raw.setAutoStrength(50)
     assert raw.autoToneOn and 0 < raw._draft["exposure"] < full and raw.autoStrength == 50
     raw.setAutoStrength(0)
