@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 
-from .. import atmosphere, edit_storage, host_effects, light_depth, photocraft_bridge as bridge
+from .. import atmosphere, bokeh, edit_storage, host_effects, light_depth, photocraft_bridge as bridge
 from .histograms import HistogramService
 from . import raw_preview
 from ..raw_crop import DEFAULT_CROP, RATIOS, bounds as crop_bounds, valid as crop_valid
@@ -60,6 +60,7 @@ DEFAULTS = {
     "hostCrop": DEFAULT_CROP,
     "lightDepth": dict(light_depth.DEFAULTS),
     "atmosphere": dict(atmosphere.DEFAULTS),
+    "bokeh": dict(bokeh.DEFAULTS),
     "pointColors": [],
     **dict.fromkeys(FIELDS, 0),
     "gradeBlending": 50,
@@ -154,6 +155,8 @@ class RawEditor(QObject):
         self._sky_editor = RawSky(self)
         from .raw_atmosphere import RawAtmosphere
         self._atmosphere_editor = RawAtmosphere(self)
+        from .raw_bokeh import RawBokeh
+        self._bokeh_editor = RawBokeh(self)
         from .raw_erase import RawErase
         self._erase_editor = RawErase(self)
         from .raw_sync import RawSync
@@ -170,6 +173,8 @@ class RawEditor(QObject):
     skyEditor = Property(QObject, lambda self: self._sky_editor, constant=True)
 
     atmosphereEditor = Property(QObject, lambda self: self._atmosphere_editor, constant=True)
+
+    bokehEditor = Property(QObject, lambda self: self._bokeh_editor, constant=True)
 
     eraseEditor = Property(QObject, lambda self: self._erase_editor, constant=True)
 
@@ -542,6 +547,7 @@ class RawEditor(QObject):
     def endGesture(self):
         self._light_depth_editor.flush()           # a slider's last position is committed inside its gesture, as one undo step
         self._atmosphere_editor.flush()
+        self._bokeh_editor.flush()
         changed = self._gesture_recorded
         self._gesture = self._gesture_recorded = False
         self._mask_editor.changed.emit()
@@ -734,7 +740,7 @@ class RawEditor(QObject):
         draft = dict(self._draft)
         for key, default in DEFAULTS.items():
             # Global Reset keeps authored masks, as it did before the Mask tab.
-            if key in ("masks","retouch","redEye","lightDepth","atmosphere","sky"):
+            if key in ("masks","retouch","redEye","lightDepth","atmosphere","bokeh","sky"):
                 continue
             if key in self._original:
                 draft[key] = deepcopy(default)
@@ -1002,6 +1008,8 @@ class RawEditor(QObject):
         placed = placed if light_depth.normalized(placed)["amount"] > 0 else None   # kept beside the recipe only while it does something
         placed_air = draft.get("atmosphere")
         placed_air = placed_air if atmosphere.normalized(placed_air)["amount"] > 0 else None
+        placed_blur = draft.get("bokeh")
+        placed_blur = placed_blur if bokeh.normalized(placed_blur)["amount"] > 0 else None
         original, light_draft, draft = _without_light_depth(original), draft, _without_light_depth(draft)
         if settings != original:
             raise ValueError("The saved recipe changed. Reopen Edit RAW before applying more edits.")
@@ -1070,18 +1078,16 @@ class RawEditor(QObject):
                     raise ValueError(reason)
                 if light_depth.strip_legacy((current or {}).get("cameraRaw", {})) != original:
                     raise ValueError("The saved recipe changed while the RAW was rendering")
-                fogged = None
-                if atmosphere.active(placed_air):
-                    fogged = rendered.with_name(rendered.stem + ".fog.png")
-                    atmosphere.fogged_file(rendered, fogged, path, placed_air)
+                laid, scratch = host_effects.effects_file(rendered, path, {"atmosphere": placed_air, "bokeh": placed_blur})
                 try:
-                    published = publish(path, fogged or rendered, draft, signature)
+                    published = publish(path, laid, draft, signature)
                 finally:
-                    if fogged is not None:
-                        fogged.unlink(missing_ok=True)
+                    for stale in scratch:
+                        stale.unlink(missing_ok=True)
                 try:
                     light_depth.write_sidecar(bridge.recipe_path(path), placed)
                     atmosphere.write_sidecar(bridge.recipe_path(path), placed_air)
+                    bokeh.write_sidecar(bridge.recipe_path(path), placed_blur)
                 except OSError:
                     pass  # the saved mask still renders; only the Light Depth sliders start from their defaults next time
                 return published

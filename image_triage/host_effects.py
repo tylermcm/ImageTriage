@@ -6,10 +6,10 @@ cannot disagree about which effects are applied or in which order.
 """
 from __future__ import annotations
 
-from . import atmosphere, light_depth
+from . import atmosphere, bokeh, light_depth
 
 # The draft keys that are the host's own: never part of a recipe the renderer or the saved file sees.
-KEYS = ("lightDepth", "atmosphere")
+KEYS = ("lightDepth", "atmosphere", "bokeh")
 
 
 def without_host(settings: dict) -> dict:
@@ -22,7 +22,8 @@ def with_masks(settings: dict, image_path) -> dict:
     those that are on, after the person's own (Light Depth's, then Atmosphere's). Raises ValueError when they cannot be made
     (a depth map is gone, or the photo would hold too many masks)."""
     result = light_depth.with_masks(settings, settings.get("lightDepth"), image_path)
-    return atmosphere.with_masks(result, settings.get("atmosphere"), image_path)
+    result = atmosphere.with_masks(result, settings.get("atmosphere"), image_path)
+    return bokeh.with_masks(result, settings.get("bokeh"), image_path)
 
 
 def masks_in_use(settings: dict, *, besides: str) -> int:
@@ -45,6 +46,9 @@ def load_extras(recipe_path, recipe_settings: dict) -> tuple[dict, dict]:
     air = atmosphere.read_sidecar(recipe_path)
     if air:
         extras["atmosphere"] = air
+    blur = bokeh.read_sidecar(recipe_path)
+    if blur:
+        extras["bokeh"] = blur
     return settings, extras
 
 
@@ -54,32 +58,67 @@ def recipe_for_render(image_path, recipe: dict | None) -> dict | None:
     from . import photocraft_bridge as bridge
 
     lit = light_depth.recipe_for_render(image_path, recipe)
-    air = atmosphere.read_sidecar(bridge.recipe_path(image_path))
-    if not atmosphere.active(air):
+    path = bridge.recipe_path(image_path)
+    laid = {key: found for key, found, on in (("atmosphere", atmosphere.read_sidecar(path), atmosphere.active),
+                                              ("bokeh", bokeh.read_sidecar(path), bokeh.active)) if on(found)}
+    if not laid:
         return lit
-    # The fog is laid over the finished render by the host (``fog_result``), so its settings ride in the recipe; the renderer is
+    # These are laid over the finished render by the host (``effects_result``), so their settings ride in the recipe; the renderer is
     # never sent them (``full_render._without_host_settings``).
     base = (lit or {}).get("cameraRaw") or {}
-    return {**(lit or {"version": bridge.RECIPE_VERSION}), "cameraRaw": {**base, "atmosphere": air}}
+    return {**(lit or {"version": bridge.RECIPE_VERSION}), "cameraRaw": {**base, **laid}}
 
 
-def fog_result(result, image_path, recipe):
-    """A full-size render with the recipe's Atmosphere laid over it (before any crop), or ``result`` when there is none."""
+def effects_result(result, image_path, recipe):
+    """A full-size render with the recipe's Atmosphere and then Bokeh laid over it (before any crop), or ``result`` when there are none."""
     from pathlib import Path
     from uuid import uuid4
 
     from .full_render import RENDERED, RenderResult, failed
 
-    air = ((recipe or {}).get("cameraRaw") or {}).get("atmosphere")
-    if result.outcome != RENDERED or not atmosphere.active(air):
+    settings = (recipe or {}).get("cameraRaw") or {}
+    todo = [(atmosphere.fogged_file, settings.get("atmosphere"), atmosphere.active),
+            (bokeh.bokeh_file, settings.get("bokeh"), bokeh.active)]
+    todo = [(make, found) for make, found, on in todo if on(found)]
+    if result.outcome != RENDERED or not todo:
         return result
-    target = Path(result.path).with_name(Path(result.path).stem + ".fog-" + uuid4().hex + ".png")
+    current, temporary = Path(result.path), []
     try:
-        atmosphere.fogged_file(result.path, target, image_path, air)
-        return RenderResult(RENDERED, path=target, format="png", width=result.width, height=result.height, depth=result.depth,
+        for make, found in todo:
+            target = current.with_name(current.stem + ".fx-" + uuid4().hex + ".png")
+            temporary.append(target)
+            make(current, target, image_path, found)
+            current = target
+        for stale in temporary[:-1]:
+            stale.unlink(missing_ok=True)
+        return RenderResult(RENDERED, path=current, format="png", width=result.width, height=result.height, depth=result.depth,
                             icc=result.icc, temporary=True)
     except Exception as error:
-        target.unlink(missing_ok=True)
+        for stale in temporary:
+            stale.unlink(missing_ok=True)
         return failed(str(error))
     finally:
         result.release()
+
+
+def effects_file(rendered, image_path, settings):
+    """``(path, temporaries)``: ``rendered`` (a full-size render) with the draft's Atmosphere and then Bokeh laid over it. The caller
+    removes the temporaries. Raises ValueError when a depth map is gone."""
+    from pathlib import Path
+
+    current, temporary = Path(rendered), []
+    try:
+        for make, found, on in ((atmosphere.fogged_file, settings.get("atmosphere"), atmosphere.active),
+                                (bokeh.bokeh_file, settings.get("bokeh"), bokeh.active)):
+            if on(found):
+                target = current.with_name(current.stem + ".fx.png")
+                if target == current:
+                    target = current.with_name(current.stem + ".fx2.png")
+                temporary.append(target)
+                make(current, target, image_path, found)
+                current = target
+    except BaseException:
+        for stale in temporary:
+            stale.unlink(missing_ok=True)
+        raise
+    return current, temporary

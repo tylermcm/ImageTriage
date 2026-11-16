@@ -105,7 +105,7 @@ def _described(path: Path, reply: dict, *, temporary: bool) -> RenderResult:
     )
 
 
-HOST_SETTINGS = ("superResolution", "hostCrop", "lightDepth", "atmosphere")
+HOST_SETTINGS = ("superResolution", "hostCrop", "lightDepth", "atmosphere", "bokeh")
 
 
 def _without_host_settings(recipe: dict) -> dict:
@@ -217,7 +217,7 @@ class FullRenderService:
         from .raw_crop import apply_render
 
         develop = render
-        render = lambda: apply_render(host_effects.fog_result(develop(), image_path, recipe), recipe)
+        render = lambda: apply_render(host_effects.effects_result(develop(), image_path, recipe), recipe)
 
         if not sr.wants_super_resolution(recipe):
             return render()

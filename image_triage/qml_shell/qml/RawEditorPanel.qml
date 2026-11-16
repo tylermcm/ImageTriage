@@ -437,6 +437,17 @@ Rectangle {
                 }
             }
             Section {
+                id: bokehPage
+                objectName: "rawBokehPage"
+                visible: panel.tool === "Creative"; title: "Bokeh"
+                Loader {
+                    width: parent.width
+                    active: bokehPage.expanded
+                    visible: active
+                    sourceComponent: RawBokeh { model: panel.model.bokehEditor; raw: panel.model }
+                }
+            }
+            Section {
                 id: skyPage
                 objectName: "rawSkyPage"
                 visible: panel.tool === "Creative"; title: "Sky Replacement"

@@ -17,7 +17,7 @@ from PySide6.QtGui import QImage, QColorSpace
 from PySide6.QtQuick import QQuickImageProvider
 
 from .. import photocraft_bridge as bridge
-from .. import atmosphere, host_effects, light_depth
+from .. import atmosphere, bokeh, host_effects, light_depth
 from ..full_render import _without_host_settings
 
 _frames = OrderedDict()
@@ -320,11 +320,12 @@ class PreviewWorker(QObject):
                         baseline = self._connection.call({**request, "quality": "settled", "op": "open", "path": path, "edge": 1800,
                             "recipe": _without_host_settings({"version": 1, "cameraRaw": host_effects.with_masks(original, path)})})
                         baseline = atmosphere.fogged_frame(baseline, path, original.get("atmosphere"))     # the saved fog is in "before"
+                        baseline = bokeh.bokeh_frame(baseline, path, original.get("bokeh"))                # and the saved blur
                         source = source_key
                     if isinstance(sample, dict) and sample.get("kind") == "erase":
                         # The picture AI Erase fills from: what the retouch stage sees, so everything that comes after it (masks, the
                         # sky, Light Depth) is left out and is not baked into the patch.
-                        left_out = ("masks", "sky", "lightDepth", "atmosphere")
+                        left_out = ("masks", "sky", "lightDepth", "atmosphere", "bokeh")
                         settings = {k: v for k, v in draft.items() if k not in left_out}
                         result = self._connection.call({**request, "quality": "settled", "op": "render",
                                                         "recipe": _without_host_settings({"version": 1, "cameraRaw": settings})})
@@ -341,6 +342,7 @@ class PreviewWorker(QObject):
                         "recipe": _without_host_settings({"version": 1, "cameraRaw": host_effects.with_masks(draft, path)})}))
                     if sample is None and draft != original:
                         result = atmosphere.fogged_frame(result, path, draft.get("atmosphere"))      # Atmosphere is laid over the render
+                        result = bokeh.bokeh_frame(result, path, draft.get("bokeh"))                 # and then Bokeh (a lens blurs the fog too)
                     if bridge.file_signature(path) != signature:
                         raise RuntimeError("The RAW changed during preview. Reopen the editor.")
                     if isinstance(sample, dict) and sample.get("kind") == "erase":
