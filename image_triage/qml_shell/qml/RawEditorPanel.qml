@@ -426,6 +426,19 @@ Rectangle {
                 }
             }
             Rectangle { visible: panel.tool === "Creative"; x: 13; width: parent.width-26; height: 1; color: panel.line }
+            Column {
+                id: atmospherePage
+                objectName: "rawAtmospherePage"
+                visible: panel.tool === "Creative"; x: 13; width: parent.width-26; topPadding: 12; bottomPadding: 12; spacing: 8
+                Text { text: "Atmosphere"; color: theme.fg; font.pixelSize: 14; font.bold: true }
+                Loader {
+                    width: parent.width
+                    active: atmospherePage.visible
+                    visible: active
+                    sourceComponent: RawAtmosphere { model: panel.model.atmosphereEditor; raw: panel.model }
+                }
+            }
+            Rectangle { visible: panel.tool === "Creative"; x: 13; width: parent.width-26; height: 1; color: panel.line }
             RawSkyPanel {
                 objectName: "rawSkyPanel"
                 visible: panel.tool === "Creative"; x: 13; width: parent.width-26; topPadding: 12

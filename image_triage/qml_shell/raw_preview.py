@@ -17,7 +17,7 @@ from PySide6.QtGui import QImage, QColorSpace
 from PySide6.QtQuick import QQuickImageProvider
 
 from .. import photocraft_bridge as bridge
-from .. import light_depth
+from .. import host_effects, light_depth
 from ..full_render import _without_host_settings
 
 _frames = OrderedDict()
@@ -304,7 +304,7 @@ class PreviewWorker(QObject):
                     state, recipe, reason = bridge.recipe_state(path)
                     settings = light_depth.strip_legacy(dict(recipe["cameraRaw"]) if recipe else {})
                     # Light Depth's settings are the host's own (beside the recipe), not part of what the recipe holds.
-                    if state == bridge.RECIPE_INVALID or settings != {k: v for k, v in original.items() if k != "lightDepth"}:
+                    if state == bridge.RECIPE_INVALID or settings != host_effects.without_host(original):
                         raise RuntimeError(reason or "The saved recipe changed. Reopen Edit RAW.")
                     if self._connection is None:
                         def own(connection):
@@ -318,12 +318,12 @@ class PreviewWorker(QObject):
                     if source != source_key:
                         # Light Depth's masks are not kept in the draft: they are built here from its settings and the depth map.
                         baseline = self._connection.call({**request, "quality": "settled", "op": "open", "path": path, "edge": 1800,
-                            "recipe": _without_host_settings({"version": 1, "cameraRaw": light_depth.with_masks(original, original.get("lightDepth"), path)})})
+                            "recipe": _without_host_settings({"version": 1, "cameraRaw": host_effects.with_masks(original, path)})})
                         source = source_key
                     if isinstance(sample, dict) and sample.get("kind") == "erase":
                         # The picture AI Erase fills from: what the retouch stage sees, so everything that comes after it (masks, the
                         # sky, Light Depth) is left out and is not baked into the patch.
-                        left_out = ("masks", "sky", "lightDepth")
+                        left_out = ("masks", "sky", "lightDepth", "atmosphere")
                         settings = {k: v for k, v in draft.items() if k not in left_out}
                         result = self._connection.call({**request, "quality": "settled", "op": "render",
                                                         "recipe": _without_host_settings({"version": 1, "cameraRaw": settings})})
@@ -337,7 +337,7 @@ class PreviewWorker(QObject):
                     else:
                         result = (self._connection.call({**request, "op": "render", "recipe": {"version": 1, "cameraRaw": {}}})
                         if sample is not None else baseline if draft == original else self._connection.call({**request, "op": "render",
-                        "recipe": _without_host_settings({"version": 1, "cameraRaw": light_depth.with_masks(draft, draft.get("lightDepth"), path)})}))
+                        "recipe": _without_host_settings({"version": 1, "cameraRaw": host_effects.with_masks(draft, path)})}))
                     if bridge.file_signature(path) != signature:
                         raise RuntimeError("The RAW changed during preview. Reopen the editor.")
                     if isinstance(sample, dict) and sample.get("kind") == "erase":

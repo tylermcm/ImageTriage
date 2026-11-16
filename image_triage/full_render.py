@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import light_depth, photocraft_bridge as bridge
+from . import host_effects, light_depth, photocraft_bridge as bridge
 
 NO_EDITS_OUTCOME = "no_edits"
 RENDERED = "rendered"
@@ -105,7 +105,7 @@ def _described(path: Path, reply: dict, *, temporary: bool) -> RenderResult:
     )
 
 
-HOST_SETTINGS = ("superResolution", "hostCrop", "lightDepth")
+HOST_SETTINGS = ("superResolution", "hostCrop", "lightDepth", "atmosphere")
 
 
 def _without_host_settings(recipe: dict) -> dict:
@@ -194,7 +194,7 @@ class FullRenderService:
         # Light Depth's masks are not kept in the saved recipe: they are built from its settings (beside the recipe) and the
         # photo's depth map. A photo whose only edit is Light Depth is edited although its recipe changes nothing.
         try:
-            lit = light_depth.recipe_for_render(image_path, recipe)
+            lit = host_effects.recipe_for_render(image_path, recipe)
         except ValueError as error:
             return failed(str(error))
         if lit is not recipe:

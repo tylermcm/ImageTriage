@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 
-from .. import edit_storage, light_depth, photocraft_bridge as bridge
+from .. import atmosphere, edit_storage, host_effects, light_depth, photocraft_bridge as bridge
 from .histograms import HistogramService
 from . import raw_preview
 from ..raw_crop import DEFAULT_CROP, RATIOS, bounds as crop_bounds, valid as crop_valid
@@ -59,6 +59,7 @@ DEFAULTS = {
     "sky": {},
     "hostCrop": DEFAULT_CROP,
     "lightDepth": dict(light_depth.DEFAULTS),
+    "atmosphere": dict(atmosphere.DEFAULTS),
     "pointColors": [],
     **dict.fromkeys(FIELDS, 0),
     "gradeBlending": 50,
@@ -75,16 +76,16 @@ DEFAULTS = {
 
 
 def _without_light_depth(settings: dict) -> dict:
-    """The settings a recipe file and the native renderer hold. Light Depth's own settings stay with the host (in a
-    small file beside the recipe); the recipe carries only the mask they produce."""
-    return {key: value for key, value in settings.items() if key != "lightDepth"}
+    """The settings a recipe file and the native renderer hold. The host effects' own settings (Light Depth, Atmosphere) stay
+    with the host (in small files beside the recipe); the recipe carries only the masks they produce."""
+    return host_effects.without_host(settings)
 
 
 def _recipe(settings: dict, image_path: str | None = None) -> dict:
     """The recipe for the native renderer. With ``image_path``, Light Depth's settings in ``settings`` are turned into the
     masks that carry them (built from the photo's cached depth map; they are not kept in the draft)."""
     if image_path is not None:
-        settings = light_depth.with_masks(settings, settings.get("lightDepth"), image_path)
+        settings = host_effects.with_masks(settings, image_path)
     return {"version": bridge.RECIPE_VERSION, "cameraRaw": settings}
 
 
@@ -151,6 +152,8 @@ class RawEditor(QObject):
         self._light_depth_editor = RawLightDepth(self)
         from .raw_sky import RawSky
         self._sky_editor = RawSky(self)
+        from .raw_atmosphere import RawAtmosphere
+        self._atmosphere_editor = RawAtmosphere(self)
         from .raw_erase import RawErase
         self._erase_editor = RawErase(self)
         from .raw_sync import RawSync
@@ -165,6 +168,8 @@ class RawEditor(QObject):
     lightDepthEditor = Property(QObject, lambda self: self._light_depth_editor, constant=True)
 
     skyEditor = Property(QObject, lambda self: self._sky_editor, constant=True)
+
+    atmosphereEditor = Property(QObject, lambda self: self._atmosphere_editor, constant=True)
 
     eraseEditor = Property(QObject, lambda self: self._erase_editor, constant=True)
 
@@ -536,6 +541,7 @@ class RawEditor(QObject):
     @Slot()
     def endGesture(self):
         self._light_depth_editor.flush()           # a slider's last position is committed inside its gesture, as one undo step
+        self._atmosphere_editor.flush()
         changed = self._gesture_recorded
         self._gesture = self._gesture_recorded = False
         self._mask_editor.changed.emit()
@@ -728,7 +734,7 @@ class RawEditor(QObject):
         draft = dict(self._draft)
         for key, default in DEFAULTS.items():
             # Global Reset keeps authored masks, as it did before the Mask tab.
-            if key in ("masks","retouch","redEye","lightDepth","sky"):
+            if key in ("masks","retouch","redEye","lightDepth","atmosphere","sky"):
                 continue
             if key in self._original:
                 draft[key] = deepcopy(default)
@@ -986,14 +992,16 @@ class RawEditor(QObject):
         state, recipe, reason = bridge.recipe_state(path, set_aside=action == "load")
         if state == bridge.RECIPE_INVALID:
             raise ValueError(reason)
-        # Light Depth lives in its own settings: a mask an earlier version stored for it is not part of the draft.
-        settings, light = light_depth.load_settings(bridge.recipe_path(path), dict(recipe["cameraRaw"]) if recipe else {})
+        # Light Depth and Atmosphere live in their own settings: a mask an earlier version stored for Light Depth is not part of
+        # the draft.
+        settings, extras = host_effects.load_extras(bridge.recipe_path(path), dict(recipe["cameraRaw"]) if recipe else {})
         if action == "load":
-            if light:
-                settings = {**settings, "lightDepth": light}
+            settings = {**settings, **extras}
             return settings, str(bridge.saved_render_path(path) or ""), *(sample.read(path, settings) if sample else (None, ""))
         placed = draft.get("lightDepth")
         placed = placed if light_depth.normalized(placed)["amount"] > 0 else None   # kept beside the recipe only while it does something
+        placed_air = draft.get("atmosphere")
+        placed_air = placed_air if atmosphere.normalized(placed_air)["amount"] > 0 else None
         original, light_draft, draft = _without_light_depth(original), draft, _without_light_depth(draft)
         if settings != original:
             raise ValueError("The saved recipe changed. Reopen Edit RAW before applying more edits.")
@@ -1065,6 +1073,7 @@ class RawEditor(QObject):
                 published = publish(path, rendered, draft, signature)
                 try:
                     light_depth.write_sidecar(bridge.recipe_path(path), placed)
+                    atmosphere.write_sidecar(bridge.recipe_path(path), placed_air)
                 except OSError:
                     pass  # the saved mask still renders; only the Light Depth sliders start from their defaults next time
                 return published
