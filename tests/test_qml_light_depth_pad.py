@@ -33,6 +33,8 @@ def open_section(shell, qapp, monkeypatch):
     raw.lightDepthEditor._runner = ground
     dock = window.findChild(QObject, "viewerRawEditorPanel")
     dock.setProperty("tool", "Creative")                           # Light Depth lives in the Creative tab, below Sky Replacement
+    page = next(i for i in walk(window.contentItem()) if i.objectName() == "rawLightDepthPage")
+    page.setProperty("expanded", True)                            # the Creative tools are collapsible sections, closed to begin with
     pump(qapp, 1.2)
     pad = next(i for i in walk(window.contentItem()) if i.objectName() == "lightDepthPadDrag")
     flick = pad

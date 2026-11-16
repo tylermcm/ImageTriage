@@ -16,8 +16,8 @@ Column {
     Component.onCompleted: model.refresh()
 
     Item {
-        width: parent.width; height: 24
-        Text { anchors.verticalCenter: parent.verticalCenter; text: "Sky Replacement"; color: theme.fg; font.pixelSize: 14; font.bold: true }
+        visible: sky.model.active
+        width: parent.width; height: visible ? 24 : 0
         Rectangle {
             objectName: "skyRemove"
             visible: sky.model.active

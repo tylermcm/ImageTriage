@@ -2,7 +2,7 @@
 import json
 
 import pytest
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QColor, QImage
 from image_triage import atmosphere, light_depth, photocraft_bridge as bridge
 from image_triage.qml_shell.raw_editor import RawEditor, _recipe, _without_light_depth
 from test_qml_raw_light_depth import (  # noqa: F401  (the fixtures and helpers Light Depth's tests are built on)
@@ -226,3 +226,56 @@ def test_the_panel_renders_with_all_its_controls_and_drives_the_settings(raw, qa
     finally:
         item.deleteLater()
         pump(qapp, .05)
+
+
+# --- the Creative tab: collapsible sections in the Adjust tab's style ----------------------------------------------------------
+
+from test_qml_shell_viewer import shell  # noqa: E402,F401
+
+
+def test_the_creative_tools_are_collapsible_sections_like_the_adjust_tab_headers(shell, qapp):
+    import os
+
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, model, popout, warnings = shell
+    popout.open(0)
+    raw = popout.rawEditor
+    raw.open("sample.NEF")
+    image = QImage(60, 40, QImage.Format_RGBA8888)
+    image.fill(QColor("gray"))
+    frame = ({"histogram": [[0] * 256] * 3, "fullSize": [6000, 4000]}, image)
+    raw._proxy_arrived(raw._revision, (frame, frame, 0, "sample.NEF"))
+    pump(qapp, 0.4)
+    dock = window.findChild(QQuickItem, "viewerRawEditorPanel")
+    dock.setProperty("tool", "Creative")
+    pump(qapp, 0.2)
+
+    def walk(node):
+        yield node
+        for child in node.childItems():
+            yield from walk(child)
+
+    def named(name):
+        return next((node for node in walk(dock) if node.objectName() == name), None)
+
+    pages = {name: named(name) for name in ("rawLightDepthPage", "rawAtmospherePage", "rawSkyPage")}
+    assert all(page is not None and page.property("visible") for page in pages.values())
+    assert [page.property("title") for page in pages.values()] == ["Light Depth", "Atmosphere", "Sky Replacement"]
+    assert not any(page.property("expanded") for page in pages.values())            # all collapsed to begin with
+    assert named("atmosphere_amount_slider") is None and named("skyLibrary") is None  # and nothing of them is built
+    pages["rawAtmospherePage"].setProperty("expanded", True)
+    pump(qapp, 0.3)
+    assert named("atmosphere_amount_slider") is not None and named("atmospherePresets") is not None
+    pages["rawSkyPage"].setProperty("expanded", True)
+    pump(qapp, 0.3)
+    assert named("skyLibrary") is not None
+    pages["rawAtmospherePage"].setProperty("expanded", False)
+    pump(qapp, 0.2)
+    assert named("atmosphere_amount_slider") is None                                  # closing one takes its body away
+    out = os.environ.get("CREATIVE_SHOT")
+    if out:
+        window.grabWindow().save(out)
+    raw.cancel()
+    pump(qapp, 0.2)
+    assert not [w for w in warnings if "RawEditorPanel.qml" in w or "RawSkyPanel.qml" in w or "TypeError" in w], warnings

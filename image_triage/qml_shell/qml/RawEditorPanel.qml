@@ -413,36 +413,39 @@ Rectangle {
                 visible: panel.tool === "Remove"; x: 13; width: parent.width-26; topPadding: 12
                 model: panel.model.retouchEditor; raw: panel.model
             }
-            Column {
+            // Creative tools: collapsible sections in the Adjust tab's own style (a tool's body is only built while it is open).
+            Section {
                 id: lightDepthPage
                 objectName: "rawLightDepthPage"
-                visible: panel.tool === "Creative"; x: 13; width: parent.width-26; topPadding: 12; bottomPadding: 12; spacing: 8
-                Text { text: "Light Depth"; color: theme.fg; font.pixelSize: 14; font.bold: true }
+                visible: panel.tool === "Creative"; title: "Light Depth"
                 Loader {
                     width: parent.width
-                    active: lightDepthPage.visible
+                    active: lightDepthPage.expanded
                     visible: active
                     sourceComponent: RawLightDepth { model: panel.model.lightDepthEditor; raw: panel.model }
                 }
             }
-            Rectangle { visible: panel.tool === "Creative"; x: 13; width: parent.width-26; height: 1; color: panel.line }
-            Column {
+            Section {
                 id: atmospherePage
                 objectName: "rawAtmospherePage"
-                visible: panel.tool === "Creative"; x: 13; width: parent.width-26; topPadding: 12; bottomPadding: 12; spacing: 8
-                Text { text: "Atmosphere"; color: theme.fg; font.pixelSize: 14; font.bold: true }
+                visible: panel.tool === "Creative"; title: "Atmosphere"
                 Loader {
                     width: parent.width
-                    active: atmospherePage.visible
+                    active: atmospherePage.expanded
                     visible: active
                     sourceComponent: RawAtmosphere { model: panel.model.atmosphereEditor; raw: panel.model }
                 }
             }
-            Rectangle { visible: panel.tool === "Creative"; x: 13; width: parent.width-26; height: 1; color: panel.line }
-            RawSkyPanel {
-                objectName: "rawSkyPanel"
-                visible: panel.tool === "Creative"; x: 13; width: parent.width-26; topPadding: 12
-                model: panel.model.skyEditor; raw: panel.model
+            Section {
+                id: skyPage
+                objectName: "rawSkyPage"
+                visible: panel.tool === "Creative"; title: "Sky Replacement"
+                Loader {
+                    width: parent.width
+                    active: skyPage.expanded
+                    visible: active
+                    sourceComponent: RawSkyPanel { objectName: "rawSkyPanel"; model: panel.model.skyEditor; raw: panel.model }
+                }
             }
             RawRedEyePanel {
                 objectName: "rawRedEyePanel"
