@@ -168,13 +168,25 @@ def test_the_settings_file_round_trips_and_an_unusable_one_is_ignored(tmp_path):
     assert atmosphere.SIDECAR_TAIL.casefold().startswith(edit_carry.EDIT_MARKERS) and edit_carry.EDIT_MARKERS[-1] in atmosphere.SIDECAR_TAIL
 
 
-def test_the_height_marker_on_the_picture_and_the_height_setting_follow_each_other():
+def test_the_height_marker_travels_the_whole_picture_and_is_the_height_setting():
     scene = standing_scene()
-    horizon = atmosphere.horizon_fraction(scene)
-    assert 0.3 < horizon < 0.5                                              # the sky takes the top 40 % of this scene
     tops = [atmosphere.ceiling_of(scene, {"height": h}) for h in (0, 25, 50, 100)]
-    assert tops == sorted(tops, reverse=True) and tops[0] < horizon and tops[-1] == 0.0       # more Height, a higher top
+    assert tops == [1.0, 0.75, 0.5, 0.0]                                    # Height 0 at the bottom edge, 100 at the top
     for height in (0.0, 20.0, 60.0, 100.0):
-        back = atmosphere.height_for_ceiling(scene, atmosphere.ceiling_of(scene, {"height": height}))
-        assert abs(back - height) < 0.5
-    assert atmosphere.height_for_ceiling(scene, 0.0) == 100.0 and atmosphere.height_for_ceiling(scene, 1.0) == 0.0
+        assert abs(atmosphere.height_for_ceiling(scene, atmosphere.ceiling_of(scene, {"height": height})) - height) < 1e-6
+    assert atmosphere.height_for_ceiling(scene, -1) == 100.0 and atmosphere.height_for_ceiling(scene, 2) == 0.0
+
+
+def test_the_fog_has_perspective_puffs_are_larger_and_wider_close_up_than_far_away():
+    import numpy as np
+
+    scene = standing_scene(200, 300)
+    fog = atmosphere.density(scene, atmosphere.normalized({"patchiness": 80, "height": 40, "start": 0, "cloudSize": 40}), 300, 1)
+    far, near = fog[85:105], fog[150:190]                                  # bands of the ground, the horizon being at 40 % of the frame
+
+    def run(band):                                                          # the typical width of a puff: how far the fog stays on across a row
+        on = band > 0.35
+        changes = np.abs(np.diff(on.astype(int), axis=1)).sum()
+        return on.size / max(1, changes)
+
+    assert run(near) > run(far)

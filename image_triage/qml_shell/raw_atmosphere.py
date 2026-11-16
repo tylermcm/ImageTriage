@@ -151,7 +151,7 @@ class RawAtmosphere(QObject):
 
     @Property(float, notify=changed)
     def ceiling(self):
-        """Where the top of the fog lies on the picture, 0 (top) .. 1 (bottom), for the Height marker."""
+        """Where the Height marker sits on the picture, 0 (top = Height 100) .. 1 (bottom = Height 0)."""
         depth = self._depth()
         return atmosphere.ceiling_of(depth, self.settings) if depth is not None else 0.5
 

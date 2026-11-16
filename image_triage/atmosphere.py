@@ -153,23 +153,22 @@ def horizon_fraction(depth, side: int = 256) -> float:
 
 
 def ceiling_of(depth, settings) -> float:
-    """Where the top of the fog lies in the frame, 0 (top) .. 1 (bottom): the Height marker on the picture. Height 0 puts it a little
-    above the horizon, Height 100 at the top of the frame (the sky fogged too)."""
-    top = max(0.0, horizon_fraction(depth) - CEILING_HALF)
-    return top * (1.0 - normalized(settings)["height"] / 100)
+    """Where the Height marker sits on the picture, 0 (top) .. 1 (bottom): Height 0 at the bottom edge, Height 100 at the top, so
+    the marker can be moved over the whole picture."""
+    return 1.0 - normalized(settings)["height"] / 100
 
 
 def height_for_ceiling(depth, ceiling: float) -> float:
-    """The Height setting that puts the top of the fog at ``ceiling`` (the inverse of ``ceiling_of``), 0..100."""
-    top = max(0.0, horizon_fraction(depth) - CEILING_HALF)
-    return 100.0 if top <= 0 else max(0.0, min(100.0, (1.0 - float(ceiling) / top) * 100))
+    """The Height setting for a marker at ``ceiling`` (the inverse of ``ceiling_of``), 0..100."""
+    return max(0.0, min(100.0, (1.0 - float(ceiling)) * 100))
 
 
-def _above_ground(distance):
-    """How far above the ground each pixel is, 0 (on it) .. 1 (the whole frame's height): the ground at a given distance lies at
-    the row where that distance is typical (the rows' median distance, farther toward the top), so a bank of fog that hugs the
-    ground is a band across the far ground and not the bottom edge of the picture. Things that stand up (trees, mountains, the
-    sky) are above the ground line of their distance."""
+def _ground(distance):
+    """``(above, row)``: how far above the ground each pixel is, 0 (on it) .. 1 (the whole frame's height), and the row (0 top .. 1
+    bottom) at which the ground lies at that pixel's distance. The ground at a given distance lies at the row where that distance is
+    typical (the rows' median distance, farther toward the top), so a bank of fog that hugs the ground is a band across the far ground
+    and not the bottom edge of the picture. Things that stand up (trees, mountains, the sky) are above the ground line of their
+    distance."""
     import numpy as np
 
     height = distance.shape[0]
@@ -180,7 +179,56 @@ def _above_ground(distance):
     profile = profile + np.linspace(0.0, 1e-3, height, dtype=np.float32)          # strictly rising
     rows = np.arange(height, dtype=np.float32)[::-1]                              # the row of each profile entry
     ground_row = np.interp(np.minimum(distance, profile[horizon]), profile, rows)  # the row the ground has this distance at
-    return np.clip((ground_row - np.arange(height, dtype=np.float32)[:, None]) / height, 0.0, 1.0)
+    here = np.arange(height, dtype=np.float32)[:, None]
+    return np.clip((ground_row - here) / height, 0.0, 1.0), ground_row / height
+
+
+def _lattice(seed: int, octave: int, size: int = 256):
+    import numpy as np
+
+    return np.random.default_rng([seed, octave]).random((size, size)).astype(np.float32)
+
+
+def _value_noise(lattice, u, v):
+    """Smooth value noise of the (wrapping) ``lattice`` at coordinates ``u``, ``v`` (arrays, in lattice cells), 0..1."""
+    import numpy as np
+
+    size = lattice.shape[0]
+    iu, iv = np.floor(u).astype(np.int64), np.floor(v).astype(np.int64)
+    fu, fv = u - iu, v - iv
+    fu, fv = fu * fu * (3 - 2 * fu), fv * fv * (3 - 2 * fv)
+    iu0, iu1, iv0, iv1 = iu % size, (iu + 1) % size, iv % size, (iv + 1) % size
+    top = lattice[iv0, iu0] * (1 - fu) + lattice[iv0, iu1] * fu
+    bottom = lattice[iv1, iu0] * (1 - fu) + lattice[iv1, iu1] * fu
+    return top * (1 - fv) + bottom * fv
+
+
+def scene_noise(ground_row, horizon: float, cells: float, seed: int, drift=(0.5, 0.5), octaves: int = 5):
+    """Billow noise (puffs with creases between them) laid on the ground plane of the picture, 0..1. ``ground_row`` is the row (0 top .. 1
+    bottom) the ground has at each pixel's distance and ``horizon`` the horizon's row. Like the pattern on a floor running away from
+    the camera, the puffs are large and wide close up and small and flattened toward the horizon, so the fog sits in the scene
+    and not on the picture. ``cells`` is the puff size close up (across the frame)."""
+    import numpy as np
+
+    height, width = ground_row.shape
+    below = light_depth._blur(np.clip(ground_row - horizon, 0.0, 1.0), max(width, height) * 0.006)     # the map's wobbles must not bend the pattern
+    z = 1.0 / (below + 0.45)                                                   # 1 / distance: 2.2 at the horizon, 1.2 near the bottom edge (a mild perspective)
+    x = (np.arange(width, dtype=np.float32)[None, :] - width / 2) / max(width, height)
+    rows = (np.arange(height, dtype=np.float32)[:, None]) / height
+    u0 = x * z * cells * 0.2 + (drift[0] - 0.5) * 24.0
+    # the distance axis is compressed (far layers are thin bands); the screen row adds variation where the distance does not (the sky, a far hill)
+    v0 = z * cells * 0.07 + rows * cells * 0.5 + (drift[1] - 0.5) * 24.0
+    total = np.zeros((height, width), np.float32)
+    weight = 0.0
+    for octave in range(octaves):
+        scale = 2.0 ** octave
+        layer = _value_noise(_lattice(seed, octave), u0 * scale, v0 * scale)
+        strength = 0.52 ** octave
+        total += np.abs(2.0 * layer - 1.0) * strength
+        weight += strength
+    total /= weight
+    low, high = np.percentile(total, [2, 98])
+    return np.clip((total - low) / max(float(high - low), 1e-6), 0.0, 1.0)
 
 
 def density(depth, settings, side: int = COVERAGE_SIDE, seed: int = 0):
@@ -193,7 +241,7 @@ def density(depth, settings, side: int = COVERAGE_SIDE, seed: int = 0):
     distance = 1.0 - scene                                                        # 0 close .. 1 far
     begin = settings["start"] / 100 * 0.6
     by_distance = _smooth((distance - begin) / 0.55)
-    above_ground = _above_ground(distance)
+    above_ground, ground_row = _ground(distance)
     up = settings["height"] / 100
     top = max(0.0, _horizon_of(distance) - CEILING_HALF)                          # where the fog's top is at Height 0 .. 100
     half = _horizon_of(distance) - top * (1.0 - up)                                # how far above the ground it is half as thick
@@ -202,8 +250,11 @@ def density(depth, settings, side: int = COVERAGE_SIDE, seed: int = 0):
     # Cumulus-like structure: puffs with defined edges and a brighter middle. Patchiness opens gaps in a solid layer (0 is solid),
     # Cloud Size sets the size of the puffs.
     cells = 3 + (1 - settings["cloudSize"] / 100) * 21
-    puffs = noise((height, width), cells, seed, drift=(settings["driftX"], settings["driftY"]), stretch=1.6, billow=True)
-    inner = 0.3 + 0.7 * puffs                                                  # lit from within: the middle of a puff is brighter
+    puffs = scene_noise(ground_row, _horizon_of(distance), cells * 0.7, seed, drift=(settings["driftX"], settings["driftY"]))
+    # lit from above and from within: the top of a puff is brighter than its underside, the middle brighter than its edge
+    rise = puffs - np.roll(puffs, max(2, height // 90), axis=0)
+    lit = np.clip(0.55 + 2.4 * rise, 0.25, 1.0)
+    inner = (0.3 + 0.7 * puffs) * (0.55 + 0.45 * lit)
     shape = _smooth((puffs - clumps * 0.5) / 0.34)
     floor = 0.9 * (1.0 - clumps) ** 1.2                                          # a thin fog lies between the puffs until the gaps open up
     by_clump = floor + (1.0 - floor) * shape * inner

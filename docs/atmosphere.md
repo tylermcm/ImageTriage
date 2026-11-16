@@ -11,7 +11,7 @@ slider and the Clouds Drift pad).
 - **Amount** (0-100): how thick the fog is.
 - **Picture:** where the fog lies on the photo (the photo's depth, with the fog white). It follows every slider.
 - **Clouds Drift** (pad): slides the patches of fog about. The fog stays the same; it only lies elsewhere.
-- **Height** (0-100): how far above the ground the fog reaches (100 = all of the frame, the sky too; low values keep it to a
+- **Height** (0-100): how far above the ground the fog reaches. The orange marker on the picture is this slider: bottom edge = 0, top = 100.
   bank lying on the ground).
 - **Advanced:** **Patchiness** (even fog to broken clumps), **Cloud Size** (size of the clumps), **Vibrance** (how much of the
   photo's own colour the fog takes; 50 is nearly a neutral cool grey-blue fog), **Depth** (how far from the camera the fog
@@ -28,8 +28,10 @@ colour:
 - **Density** (`atmosphere.density`): rises with distance from the depth map (from the Depth setting on); held by Height to a
   band above the *ground line* (`_above_ground`: the ground at a given distance lies at the row where that distance is typical,
   so Ground Fog is a bank across the far ground and not the bottom edge of the picture; the sky and what stands up are above
-  it); broken into horizontally stretched patches by six octaves of smooth noise seeded from the photo's depth map (the same every
-  render; Drift slides the window over a larger field of the same noise).
+  it); broken into cumulus-like puffs (billow noise, five octaves, seeded from the photo's depth map so it is the same every render) laid
+  on the ground plane of the picture (`scene_noise`): large and wide close up, small and flattened toward the horizon, so the fog
+  has depth; lit from above (the top of a puff is brighter). Drift slides the pattern. Patchiness opens gaps in a solid layer
+  (0 is solid); Amount is the fog's brightness only.
 - **The blend:** each pixel goes toward the fog colour by `1 - exp(-5.5 x Amount x density)`. The fog colour is a cool grey-blue,
   as bright as the photo is there (the photo blurred to ~48 px) with some of the light's own colour (Vibrance), so distant things
   disappear into it, dark ground lifts to the fog's grey, and the near foreground stays dark.
