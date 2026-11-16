@@ -1,6 +1,6 @@
 # Light Depth
 
-Light a photo near and far apart, in the in-app RAW editor (Adjust › Light Depth). Modelled on the tool of the same name in
+Light a photo near and far apart, in the in-app RAW editor (Creative › Light Depth). Modelled on the tool of the same name in
 Luminar Neo: the effect belongs to its own panel, shows nowhere else, is adjusted in the same panel, and is applied live.
 
 ## What the person sees
