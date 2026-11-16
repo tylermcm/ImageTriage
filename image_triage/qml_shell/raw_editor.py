@@ -897,7 +897,9 @@ class RawEditor(QObject):
         if revision != self._revision:
             return
         if action in ("preview", "whiteBalance", "detail") and self._files is None:
-            self._files = tempfile.TemporaryDirectory(prefix="image-triage-raw-")
+            # A preview picture can still be held open by Windows (or the editor) when the app closes: leaving that one small temporary
+            # file behind is better than a traceback at exit.
+            self._files = tempfile.TemporaryDirectory(prefix="image-triage-raw-", ignore_cleanup_errors=True)
         directory = self._files.name if self._files else ""
         self._running = True
         job = self._native_job = _NativeJob()
