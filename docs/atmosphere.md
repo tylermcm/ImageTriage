@@ -8,11 +8,10 @@ slider and the Clouds Drift pad).
 - **Presets:** Wispy Fog, Heavy Fog, Ground Fog. A tile sets Amount, Height, Patchiness, Cloud Size, Vibrance and Depth in one go
   (and switches the fog on), as Luminar's do (Heavy Fog is a low Amount over the whole frame, Ground Fog a full one low down).
   Moving any of those sliders afterwards clears the highlight.
-- **Amount** (0-100): how thick the fog is.
+- **Amount** (0-100): the fog's brightness (the shape does not change with it).
 - **Picture:** where the fog lies on the photo (the photo's depth, with the fog white). It follows every slider.
 - **Clouds Drift** (pad): slides the patches of fog about. The fog stays the same; it only lies elsewhere.
 - **Height** (0-100): how far above the ground the fog reaches. The orange marker on the picture is this slider: bottom edge = 0, top = 100.
-  bank lying on the ground).
 - **Advanced:** **Patchiness** (even fog to broken clumps), **Cloud Size** (size of the clumps), **Vibrance** (how much of the
   photo's own colour the fog takes; 50 is nearly a neutral cool grey-blue fog), **Depth** (how far from the camera the fog
   begins: raise it to keep the foreground clear).
@@ -32,7 +31,7 @@ colour:
   on the ground plane of the picture (`scene_noise`): large and wide close up, small and flattened toward the horizon, so the fog
   has depth; lit from above (the top of a puff is brighter). Drift slides the pattern. Patchiness opens gaps in a solid layer
   (0 is solid); Amount is the fog's brightness only.
-- **The blend:** each pixel goes toward the fog colour by `1 - exp(-5.5 x Amount x density)`. The fog colour is a cool grey-blue,
+- **The blend:** each pixel goes toward the fog colour by `0.95 x Amount x density`. The fog colour is a cool grey-blue,
   as bright as the photo is there (the photo blurred to ~48 px) with some of the light's own colour (Vibrance), so distant things
   disappear into it, dark ground lifts to the fog's grey, and the near foreground stays dark.
 - **Where it is applied:** the live preview worker's frames (`raw_preview`, "before" included), a save (`raw_editor._work`, on the
