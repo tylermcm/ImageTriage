@@ -107,35 +107,6 @@ def _smooth(values):
     return values * values * (3 - 2 * values)
 
 
-def noise(shape, cells: float, seed: int, octaves: int = 6, drift=(0.5, 0.5), stretch: float = 1.0, billow: bool = False):
-    """Smooth value noise over ``shape`` (height, width), 0..1: ``cells`` random cells across the long side at the coarsest
-    octave, each finer octave twice as many and half as strong. The same seed gives the same picture; ``drift`` (0..1 each way)
-    slides the window over a larger field of the same noise, so the patches move without changing."""
-    import numpy as np
-    from PIL import Image
-
-    height, width = shape
-    rng = np.random.default_rng(seed)
-    total = np.zeros(shape, np.float32)
-    weight = 0.0
-    for octave in range(octaves):
-        across = max(2, round(cells * 2 ** octave))
-        grid = (max(2, round(across * height / max(width, height))), max(2, round(across * width / max(width, height) / stretch)))
-        layer = rng.random((grid[0] + 4, grid[1] + 4)).astype(np.float32)      # two spare cells each side to slide over
-        left, top = 2 * drift[0], 2 * drift[1]
-        box = (left, top, left + grid[1], top + grid[0])
-        image = Image.fromarray(layer, mode="F").resize((width, height), Image.Resampling.BICUBIC, box=box)
-        strength = (0.52 if billow else 0.62) ** octave
-        values = np.asarray(image, np.float32)
-        if billow:
-            values = np.abs(2.0 * values - 1.0)                 # rounded puffs, with a crease wherever the noise crosses its middle
-        total += values * strength
-        weight += strength
-    total /= weight
-    low, high = np.percentile(total, [2, 98])
-    return np.clip((total - low) / max(float(high - low), 1e-6), 0.0, 1.0)
-
-
 CEILING_HALF = 0.125    # at Height 0 the fog is half as thick as it is lower down this far above the ground line (a frame fraction)
 
 
@@ -183,85 +154,119 @@ def _ground(distance):
     return np.clip((ground_row - here) / height, 0.0, 1.0), ground_row / height
 
 
-def _lattice(seed: int, octave: int, size: int = 256):
+# --- the fog as a volume -----------------------------------------------------------------------------------------------------
+#
+# The fog is a density in 3D space, not a pattern on the picture: thickest near the ground and thinning with height (exponential
+# height fog), broken up by 3D noise (the puffs), and each pixel's fog is that density added up along the pixel's view ray as far as
+# the surface the pixel shows (see Quilez, "Better fog", and Wronski's volumetric fog). The depth map says how far each pixel's
+# surface is. Metric depth is not known, so it is read from the picture's own geometry: the ground at a given distance lies at the
+# row ``_ground`` finds, and for a camera at height HC over a flat ground that row is at distance HC x FOCAL / (row - horizon).
+
+HC = 1.0                # the camera's height above the ground, in world units (all other lengths are in these)
+FOCAL = 1.1             # the focal length, in frame heights
+Z_NEAR, Z_FAR = 1.5, 40.0
+SLICES = 28             # the planes the view rays are marched through (parallel to the picture, spaced geometrically)
+SIZE_MAX = 288          # the longest side the fog is worked out at: it is soft, so it is made small and scaled up
+DENSITY_SCALE = 1.4
+
+
+def _lattice3(seed: int, octave: int, size: int = 32):
     import numpy as np
 
-    return np.random.default_rng([seed, octave]).random((size, size)).astype(np.float32)
+    return np.random.default_rng([seed, octave]).random(size ** 3).astype(np.float32)
 
 
-def _value_noise(lattice, u, v):
-    """Smooth value noise of the (wrapping) ``lattice`` at coordinates ``u``, ``v`` (arrays, in lattice cells), 0..1."""
+def _noise3(lattice, x, y, z, size: int = 32):
+    """Smooth 3D value noise of the (wrapping) ``lattice`` at world coordinates ``x``, ``y``, ``z`` (arrays), 0..1."""
     import numpy as np
 
-    size = lattice.shape[0]
-    iu, iv = np.floor(u).astype(np.int64), np.floor(v).astype(np.int64)
-    fu, fv = u - iu, v - iv
-    fu, fv = fu * fu * (3 - 2 * fu), fv * fv * (3 - 2 * fv)
-    iu0, iu1, iv0, iv1 = iu % size, (iu + 1) % size, iv % size, (iv + 1) % size
-    top = lattice[iv0, iu0] * (1 - fu) + lattice[iv0, iu1] * fu
-    bottom = lattice[iv1, iu0] * (1 - fu) + lattice[iv1, iu1] * fu
-    return top * (1 - fv) + bottom * fv
+    ix, iy, iz = np.floor(x).astype(np.int64), np.floor(y).astype(np.int64), np.floor(z).astype(np.int64)
+    fx, fy, fz = x - ix, y - iy, z - iz
+    fx, fy, fz = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy), fz * fz * (3 - 2 * fz)
+    mask = size - 1
+    x0, x1, y0, y1, z0, z1 = ix & mask, (ix + 1) & mask, iy & mask, (iy + 1) & mask, iz & mask, (iz + 1) & mask
+
+    def at(zz, yy, xx):
+        return lattice[(zz * size + yy) * size + xx]
+
+    front = (at(z0, y0, x0) * (1 - fx) + at(z0, y0, x1) * fx) * (1 - fy) + (at(z0, y1, x0) * (1 - fx) + at(z0, y1, x1) * fx) * fy
+    back = (at(z1, y0, x0) * (1 - fx) + at(z1, y0, x1) * fx) * (1 - fy) + (at(z1, y1, x0) * (1 - fx) + at(z1, y1, x1) * fx) * fy
+    return front * (1 - fz) + back * fz
 
 
-def scene_noise(ground_row, horizon: float, cells: float, seed: int, drift=(0.5, 0.5), octaves: int = 5):
-    """Billow noise (puffs with creases between them) laid on the ground plane of the picture, 0..1. ``ground_row`` is the row (0 top .. 1
-    bottom) the ground has at each pixel's distance and ``horizon`` the horizon's row. Like the pattern on a floor running away from
-    the camera, the puffs are large and wide close up and small and flattened toward the horizon, so the fog sits in the scene
-    and not on the picture. ``cells`` is the puff size close up (across the frame)."""
+def _puffs(x, y, z, frequency: float, seed: int, octaves: int = 3):
+    """Billow noise at world position (``x``, ``y`` = height, ``z`` = distance): rounded puffs with a crease where the noise crosses its
+    middle, 0..1 (about 0.5 inside a puff). Puffs are flatter than they are wide."""
     import numpy as np
 
-    height, width = ground_row.shape
-    below = light_depth._blur(np.clip(ground_row - horizon, 0.0, 1.0), max(width, height) * 0.006)     # the map's wobbles must not bend the pattern
-    z = 1.0 / (below + 0.45)                                                   # 1 / distance: 2.2 at the horizon, 1.2 near the bottom edge (a mild perspective)
-    x = (np.arange(width, dtype=np.float32)[None, :] - width / 2) / max(width, height)
-    rows = (np.arange(height, dtype=np.float32)[:, None]) / height
-    u0 = x * z * cells * 0.2 + (drift[0] - 0.5) * 24.0
-    # the distance axis is compressed (far layers are thin bands); the screen row adds variation where the distance does not (the sky, a far hill)
-    v0 = z * cells * 0.07 + rows * cells * 0.5 + (drift[1] - 0.5) * 24.0
-    total = np.zeros((height, width), np.float32)
+    total = np.zeros(x.shape, np.float32)
     weight = 0.0
     for octave in range(octaves):
-        scale = 2.0 ** octave
-        layer = _value_noise(_lattice(seed, octave), u0 * scale, v0 * scale)
-        strength = 0.52 ** octave
+        scale = frequency * 2.1 ** octave
+        layer = _noise3(_lattice3(seed, octave), x * scale, y * scale * 1.7, z * scale * 0.8)
+        strength = 0.5 ** octave
         total += np.abs(2.0 * layer - 1.0) * strength
         weight += strength
-    total /= weight
-    low, high = np.percentile(total, [2, 98])
-    return np.clip((total - low) / max(float(high - low), 1e-6), 0.0, 1.0)
+    return np.clip((total / weight - 0.08) / 0.5, 0.0, 1.0)
+
+
+def volume(depth, settings, side: int = SIZE_MAX, seed: int = 0):
+    """The fog's optical thickness through each pixel, as ``1 - exp(-thickness)`` (0 clear .. 1 solid), at working size."""
+    import numpy as np
+
+    settings = normalized(settings)
+    side = min(side, SIZE_MAX)
+    near = light_depth._blur(light_depth.working_depth(depth, side), 1.0)
+    height, width = near.shape
+    distance = 1.0 - near
+    _above, ground_row = _ground(distance)
+    horizon = _horizon_of(distance)
+    # how far away each pixel's surface is: the ground's own distance at that row (the sky and the far hills are at the far limit)
+    surface = np.clip(HC * FOCAL / np.maximum(ground_row - horizon, 0.005), Z_NEAR, Z_FAR)
+    rows = (np.arange(height, dtype=np.float32)[:, None] + 0.5) / height
+    across = ((np.arange(width, dtype=np.float32)[None, :] + 0.5) / width - 0.5) * (width / height)
+    rise = (horizon - rows) / FOCAL                                               # height gained per unit of distance along the ray
+    sideways = across / FOCAL
+
+    scale_height = 0.3 + 2.5 * (settings["height"] / 100) ** 1.6                  # how far up the fog thins out: Height
+    frequency = 0.1 + 0.9 * (1.0 - settings["cloudSize"] / 100) ** 1.5             # puffs per unit: Cloud Size
+    clumps = settings["patchiness"] / 100
+    floor = 0.9 * (1.0 - clumps) ** 1.2                                           # a thin fog lies between the puffs until the gaps open up
+    begin = settings["start"] / 100 * 12.0
+    shift_x, shift_z = (settings["driftX"] - 0.5) * 20.0, (settings["driftY"] - 0.5) * 20.0
+
+    steps = Z_NEAR * 0.9 * (Z_FAR / (Z_NEAR * 0.9)) ** (np.arange(SLICES + 1) / SLICES)
+    total = np.zeros((height, width), np.float32)
+    jitter = np.random.default_rng(seed).random((SLICES, height, width)).astype(np.float32)
+    for k in range(SLICES):
+        z0, z1 = float(steps[k]), float(steps[k + 1])
+        z = z0 + (z1 - z0) * jitter[k]                                           # a different sample point in each pixel: no visible bands
+        weight = (z < surface).astype(np.float32)                                # only the part of the ray in front of the surface (the jitter makes it fair)
+        if not weight.any():
+            break
+        y = HC + rise * z                                                         # the world height of this ray at this distance (z is per pixel)
+        above = np.maximum(y, 0.0)
+        thin = np.exp(-above / scale_height) * (y > 0)
+        puffs = _puffs(sideways * z + shift_x, y, z + shift_z, frequency, seed)
+        by_clump = floor + (1.0 - floor) * _smooth((puffs - (0.25 + 0.55 * clumps)) / 0.14) * (0.2 + 0.8 * puffs)
+        if clumps <= 0:
+            by_clump = np.ones_like(by_clump)
+        fade = _smooth((z - begin) / (0.4 * begin + 0.5))
+        total += thin * by_clump * fade * weight * (z1 - z0)
+    total = light_depth._blur(total, 1.6)                                          # the jittered samples leave grain: smooth it
+    return 1.0 - np.exp(-DENSITY_SCALE * total)
 
 
 def density(depth, settings, side: int = COVERAGE_SIDE, seed: int = 0):
     """How much fog lies in front of each pixel, as a float array 0..1 at working size (long edge ``side`` at most)."""
     import numpy as np
+    from PIL import Image
 
-    settings = normalized(settings)
-    scene = light_depth._blur(light_depth.working_depth(depth, side), 1.5)      # the map's per-pixel noise would show as grain
-    height, width = scene.shape
-    distance = 1.0 - scene                                                        # 0 close .. 1 far
-    begin = settings["start"] / 100 * 0.6
-    by_distance = _smooth((distance - begin) / 0.55)
-    above_ground, ground_row = _ground(distance)
-    up = settings["height"] / 100
-    top = max(0.0, _horizon_of(distance) - CEILING_HALF)                          # where the fog's top is at Height 0 .. 100
-    half = _horizon_of(distance) - top * (1.0 - up)                                # how far above the ground it is half as thick
-    by_height = 1.0 - _smooth((above_ground - half) / (0.25 * (1.0 - up) + 0.03))
-    clumps = settings["patchiness"] / 100
-    # Cumulus-like structure: puffs with defined edges and a brighter middle. Patchiness opens gaps in a solid layer (0 is solid),
-    # Cloud Size sets the size of the puffs.
-    cells = 3 + (1 - settings["cloudSize"] / 100) * 21
-    puffs = scene_noise(ground_row, _horizon_of(distance), cells * 0.7, seed, drift=(settings["driftX"], settings["driftY"]))
-    # lit from above and from within: the top of a puff is brighter than its underside, the middle brighter than its edge
-    rise = puffs - np.roll(puffs, max(2, height // 90), axis=0)
-    lit = np.clip(0.55 + 2.4 * rise, 0.25, 1.0)
-    inner = (0.3 + 0.7 * puffs) * (0.55 + 0.45 * lit)
-    shape = _smooth((puffs - clumps * 0.5) / 0.34)
-    floor = 0.9 * (1.0 - clumps) ** 1.2                                          # a thin fog lies between the puffs until the gaps open up
-    by_clump = floor + (1.0 - floor) * shape * inner
-    if clumps <= 0:
-        by_clump = np.ones_like(by_clump)                                        # solid
-    fog = by_distance * by_height * by_clump
-    return np.clip(light_depth._blur(fog, max(width, height) * 0.003), 0.0, 1.0)
+    fog = volume(depth, settings, side, seed)
+    target = light_depth.working_depth(depth, side).shape
+    if fog.shape != target:
+        fog = np.asarray(Image.fromarray(fog.astype(np.float32), mode="F").resize((target[1], target[0]), Image.Resampling.BICUBIC), np.float32)
+    return np.clip(fog, 0.0, 1.0)
 
 
 def seed_of(depth) -> int:
@@ -293,9 +298,10 @@ def _field(depth, settings, width: int, height: int):
     from PIL import Image
 
     depth = np.ascontiguousarray(depth)
-    key = (tuple(sorted(settings.items())), hashlib.blake2b(depth.tobytes(), digest_size=16).digest(), depth.shape, width, height)
+    shape = tuple(settings[k] for k in ("height", "patchiness", "cloudSize", "start", "driftX", "driftY"))      # Amount and Vibrance do not change it
+    key = (shape, hashlib.blake2b(depth.tobytes(), digest_size=16).digest(), depth.shape, width, height)
     if key not in _FIELDS:
-        fog = density(depth, settings, 1024, seed_of(depth))
+        fog = volume(depth, settings, SIZE_MAX, seed_of(depth))
         if fog.shape != (height, width):
             fog = np.asarray(Image.fromarray(fog.astype(np.float32), mode="F").resize((width, height), Image.Resampling.BICUBIC), np.float32)
         _FIELDS[key] = np.clip(fog, 0.0, 1.0)

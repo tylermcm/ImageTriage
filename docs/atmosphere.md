@@ -24,13 +24,17 @@ into the recipe, no masks are made for it and nothing shows in the Mask tab (it 
 The fog is laid over the **finished render** by the host (`atmosphere.composite`), because the renderer cannot blend toward a
 colour:
 
-- **Density** (`atmosphere.density`): rises with distance from the depth map (from the Depth setting on); held by Height to a
-  band above the *ground line* (`_above_ground`: the ground at a given distance lies at the row where that distance is typical,
-  so Ground Fog is a bank across the far ground and not the bottom edge of the picture; the sky and what stands up are above
-  it); broken into cumulus-like puffs (billow noise, five octaves, seeded from the photo's depth map so it is the same every render) laid
-  on the ground plane of the picture (`scene_noise`): large and wide close up, small and flattened toward the horizon, so the fog
-  has depth; lit from above (the top of a puff is brighter). Drift slides the pattern. Patchiness opens gaps in a solid layer
-  (0 is solid); Amount is the fog's brightness only.
+- **The fog is a volume, not a pattern on the picture** (`atmosphere.volume`). An earlier version textured the picture with 2D noise
+  steered by the depth map; it stretched along the ground and stood up like a wall where the depth jumps. The fog is now what
+  volumetric fog is in a renderer ([Quilez, "Better fog"](https://iquilezles.org/articles/fog/); Wronski's volumetric fog,
+  SIGGRAPH 2014): a density in 3D space, thickest at the ground and thinning exponentially with height (Height is how far up),
+  broken into puffs by 3D billow noise (Cloud Size is their size, Patchiness how much of the space is empty, Drift slides the noise
+  through the volume), added up along each pixel's view ray as far as the surface that pixel shows. Marched in 28 planes parallel
+  to the picture, each pixel sampling a jittered position in its slice, then smoothed; worked out at 288 px and scaled up.
+- **Distance** is not known in metres, so it is read from the picture's own geometry: for a camera at height 1 over flat ground the
+  ground at row `y` is at distance `focal / (y - horizon)`, and `_ground` finds the row each pixel's depth corresponds to (the rows'
+  median depth), so trees, hills and the sky are at the distance of the ground line they stand on (the sky and far hills at the far
+  limit). Depth start fades the fog in from a distance; Amount is the fog's brightness only.
 - **The blend:** each pixel goes toward the fog colour by `0.95 x Amount x density`. The fog colour is a cool grey-blue,
   as bright as the photo is there (the photo blurred to ~48 px) with some of the light's own colour (Vibrance), so distant things
   disappear into it, dark ground lifts to the fog's grey, and the near foreground stays dark.
@@ -44,6 +48,6 @@ colour:
 - Light-aware fog (Luminar's fog is lit by suns, street lights and headlights): it would need a brightness map of the photo, kept
   beside the depth map. Today the fog's brightness follows the photo blurred, not point lights.
 - Subject protection beyond what the depth gives (Luminar also uses content-aware masks to keep fog off people and trees).
-- Luminar's wisps have finer structure than a few octaves of value noise give; a flow-noise or warped-noise field would be closer.
+- **Structure is too smooth.** Adding many planes along a ray averages the puffs out, so the fog reads as a smooth mist layer where Luminar's has defined cumulus. Needs sparser, denser puffs (or a few thick sprites per ray), internal lighting (a light direction marched through the volume), and a finer detail pass at full size.
 - Not wired into the live preview's other consumers (thumbnails of unsaved edits, the hosted editor's own view).
 - Base and Large depth models are CC-BY-NC; a commercial release must default to Small (see the licence audit).
