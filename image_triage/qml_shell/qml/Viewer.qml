@@ -387,15 +387,6 @@ FocusScope {
                         v.refocus()
                     }
                 }
-                RawLightDepthHandles {
-                    objectName: "rawLightDepthHandles"
-                    suppressed: !rawPanel.visible || rawPanel.before || rawPanel.lightDepthPicking || photoImg.status !== Image.Ready
-                    model: v.rawEditor ? v.rawEditor.lightDepthEditor : null
-                    raw: v.rawEditor
-                    x: photoImg.x + (photoImg.width - photoImg.paintedWidth) / 2
-                    y: photoImg.y + (photoImg.height - photoImg.paintedHeight) / 2
-                    width: photoImg.paintedWidth; height: photoImg.paintedHeight
-                }
                 Image {
                     visible: rawPanel.visible && rawPanel.before
                     width: parent.width / 2 - 7; height: parent.height

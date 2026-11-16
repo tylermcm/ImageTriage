@@ -31,7 +31,6 @@ Rectangle {
         {label: "Color Mixer", fields: []},
         {label: "Color Grading", fields: []},
         {label: "Effects", fields: []},
-        {label: "Light Depth", fields: []},
         {label: "Detail", fields: []},
         {label: "Optics", fields: []},
         {label: "Lens Blur", fields: []},
@@ -339,12 +338,6 @@ Rectangle {
                         }
                         Loader {
                             width: parent.width
-                            active: parent.parent.expanded && parent.parent.title === "Light Depth"
-                            visible: active
-                            sourceComponent: RawLightDepth { model: panel.model.lightDepthEditor; raw: panel.model }
-                        }
-                        Loader {
-                            width: parent.width
                             active: parent.parent.expanded && parent.parent.title === "Curve"
                             visible: active
                             sourceComponent: RawCurve { model: panel.model }
@@ -420,6 +413,19 @@ Rectangle {
                 visible: panel.tool === "Remove"; x: 13; width: parent.width-26; topPadding: 12
                 model: panel.model.retouchEditor; raw: panel.model
             }
+            Column {
+                id: lightDepthPage
+                objectName: "rawLightDepthPage"
+                visible: panel.tool === "Creative"; x: 13; width: parent.width-26; topPadding: 12; bottomPadding: 12; spacing: 8
+                Text { text: "Light Depth"; color: theme.fg; font.pixelSize: 14; font.bold: true }
+                Loader {
+                    width: parent.width
+                    active: lightDepthPage.visible
+                    visible: active
+                    sourceComponent: RawLightDepth { model: panel.model.lightDepthEditor; raw: panel.model }
+                }
+            }
+            Rectangle { visible: panel.tool === "Creative"; x: 13; width: parent.width-26; height: 1; color: panel.line }
             RawSkyPanel {
                 objectName: "rawSkyPanel"
                 visible: panel.tool === "Creative"; x: 13; width: parent.width-26; topPadding: 12
