@@ -375,11 +375,41 @@ class RawEditor(QObject):
             self._enqueue("load", self._drafts)
         self.changed.emit()
 
-    @Slot(str, float)
-    def auto(self, what: str, strength: float) -> None:
-        """Auto tone, auto white balance or both (``what`` is "tone", "wb" or "all") from the picture on screen, as one undo
-        step. ``strength`` is a percentage."""
-        if not self._loaded or self._saving or what not in ("tone", "wb", "all") or not math.isfinite(strength):
+    # --- auto tone / auto white balance: a toggle. Press once to apply it, press again to take it off. ---
+    _AUTO = {"tone": ("Auto tone", "No change needed."), "wb": ("Auto white balance", "No clear colour cast found.")}
+
+    def _auto_active(self, what: str) -> bool:
+        record = self.__dict__.get("_auto_records", {}).get(what)
+        if not record or record["path"] != self._path:
+            return False
+        return all(self._draft.get(key, DEFAULTS[key]) == value for key, value in record["applied"].items())
+
+    autoToneOn = Property(bool, lambda self: self._auto_active("tone"), notify=changed)
+    autoWbOn = Property(bool, lambda self: self._auto_active("wb"), notify=changed)
+    autoStrength = Property(float, lambda self: self.__dict__.get("_auto_strength", 100.0), notify=changed)
+
+    @staticmethod
+    def _auto_blend(full: dict, previous: dict, strength: float) -> dict:
+        """The slider values at ``strength`` (0..1) between the values before Auto and what Auto asked for."""
+        out = {}
+        for key, target in full.items():
+            value = previous[key] + (target - previous[key]) * strength
+            out[key] = round(value, 2) if key == "exposure" else round(value)
+        return out
+
+    @Slot(str)
+    def toggleAuto(self, what: str) -> None:
+        """Apply auto tone ("tone") or auto white balance ("wb") from the picture on screen; when it is already applied, take it
+        off again. One undo step either way."""
+        if not self._loaded or self._saving or what not in self._AUTO:
+            return
+        records = self.__dict__.setdefault("_auto_records", {})
+        label, nothing = self._AUTO[what]
+        if self._auto_active(what):
+            record = records.pop(what)
+            self._notice = ""
+            self._set_values(record["previous"], label + " off")
+            self.changed.emit()
             return
         from .. import auto_tone
         from . import raw_preview
@@ -391,15 +421,33 @@ class RawEditor(QObject):
             self.changed.emit()
             return
         current = {key: self._draft.get(key, DEFAULTS[key]) for key in (*auto_tone.TONE_KEYS, *auto_tone.WB_KEYS)}
-        compute = {"tone": auto_tone.tone, "wb": auto_tone.white_balance, "all": auto_tone.auto}[what]
-        changes = compute(image_to_array(image), current, max(0.0, min(100.0, strength)) / 100)
-        label = {"tone": "Auto tone", "wb": "Auto white balance", "all": "Auto"}[what]
-        if not changes:
-            self._notice = "No change needed." if what != "wb" else "No clear colour cast found."
+        compute = auto_tone.tone if what == "tone" else auto_tone.white_balance
+        full = compute(image_to_array(image), current, 1.0)
+        if not full:
+            records.pop(what, None)
+            self._notice = nothing
             self.changed.emit()
             return
+        previous = {key: current[key] for key in full}
+        applied = self._auto_blend(full, previous, self.__dict__.get("_auto_strength", 100.0) / 100)
+        records[what] = {"path": self._path, "full": full, "previous": previous, "applied": applied}
         self._notice = ""
-        self._set_values(changes, label)
+        self._set_values(applied, label)
+        records[what]["applied"] = {key: self._draft.get(key, DEFAULTS[key]) for key in applied}
+        self.changed.emit()
+
+    @Slot(float)
+    def setAutoStrength(self, value: float) -> None:
+        """How much of what Auto asked for is applied (a percentage). Takes effect at once on whatever Auto is applied."""
+        if not math.isfinite(value):
+            return
+        self._auto_strength = max(0.0, min(100.0, value))
+        for what, record in list(self.__dict__.get("_auto_records", {}).items()):
+            if self._auto_active(what):
+                applied = self._auto_blend(record["full"], record["previous"], self._auto_strength / 100)
+                self._set_values(applied, self._AUTO[what][0] + " strength")
+                record["applied"] = {key: self._draft.get(key, DEFAULTS[key]) for key in applied}
+        self.changed.emit()
 
     @Slot(str, float)
     def adjust(self, key: str, value: float) -> None:

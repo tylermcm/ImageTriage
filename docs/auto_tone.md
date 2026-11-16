@@ -1,7 +1,8 @@
 # Auto tone and white balance
 
-Adjust tab -> **AUTO**: **Auto** (tone and white balance), **Tone**, **White balance**, and a **Strength** slider (default 100).
-One undo step. If nothing is needed the footer says so.
+Two switches in the Adjust tab: **Tone** (in the Light section) and **Auto** beside the white-balance dropper (Color section).
+Press once to apply, press again to take it off (back to the values from before, one undo step each way). While one is on, a
+**Strength** slider appears under it and changes what is applied at once (0 = nothing, 100 = everything Auto asked for).
 
 `image_triage/auto_tone.py` works from the editor's own preview (display pixels with the edits so far), so every result is a
 *change* to the current slider values; asking again after an edit asks for less. Rules, not a model:

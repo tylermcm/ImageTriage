@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 from image_triage import auto_tone
+from test_qml_shell_viewer import qapp  # noqa: F401  (a QApplication for the editor tests)
 
 
 def scene(level=0.45, spread=0.25, seed=0, size=(240, 320), tint=(1.0, 1.0, 1.0)):
@@ -87,7 +88,7 @@ def test_auto_is_both_and_small_pictures_work():
     auto_tone.white_balance(np.full((4, 4, 3), 255, np.uint8))
 
 
-def test_the_editor_applies_auto_as_one_undo_step_and_says_so_when_nothing_is_needed(monkeypatch):
+def make_editor(monkeypatch, picture):
     from PySide6.QtGui import QImage
     from image_triage.qml_shell import raw_preview
     from image_triage.qml_shell.raw_editor import RawEditor
@@ -95,18 +96,63 @@ def test_the_editor_applies_auto_as_one_undo_step_and_says_so_when_nothing_is_ne
 
     raw = RawEditor(memory=True)
     raw.open("sample.NEF")
-    dark = scene(0.1, 0.15, tint=(0.85, 0.95, 1.1))
-    image = QImage(dark.data, dark.shape[1], dark.shape[0], dark.shape[1] * 3, QImage.Format.Format_RGB888).copy()
+    image = QImage(picture.data, picture.shape[1], picture.shape[0], picture.shape[1] * 3, QImage.Format.Format_RGB888).copy()
     raw._preview = "image://rawpreview/x"
     monkeypatch.setattr(raw_preview, "frame_image", lambda url: image)
+    return raw
+
+
+def test_auto_tone_is_a_switch_press_to_apply_press_again_to_take_it_off(qapp, monkeypatch):
+    raw = make_editor(monkeypatch, scene(0.1, 0.15))
     before = len(raw._undo)
-    raw.auto("all", 100)
-    assert len(raw._undo) == before + 1 and raw._draft["exposure"] > 0.5 and raw._draft.get("temperature", 0) > 0
+    assert not raw.autoToneOn
+    raw.toggleAuto("tone")
+    assert raw.autoToneOn and len(raw._undo) == before + 1 and raw._draft["exposure"] > 0.5
+    applied = {k: raw._draft[k] for k in ("exposure",)}
+    raw.toggleAuto("tone")                                          # the second press takes it off, it does not stack
+    assert not raw.autoToneOn and len(raw._undo) == before + 2
+    assert raw._draft.get("exposure", 0) == 0 and "contrast" not in raw._draft or raw._draft.get("contrast", 0) == 0
+    raw.toggleAuto("tone")                                          # and a third applies the same thing again
+    assert raw.autoToneOn and raw._draft["exposure"] == applied["exposure"]
     raw.undo()
-    assert "exposure" not in raw._draft or raw._draft["exposure"] == 0
-    raw.auto("all", 0)
-    assert raw.notice == "No change needed."
+    assert not raw.autoToneOn                                       # undoing it by hand also switches it off
+    raw.shutdown()
+
+
+def test_auto_white_balance_is_a_switch_and_tone_and_white_balance_are_independent(qapp, monkeypatch):
+    raw = make_editor(monkeypatch, scene(0.15, 0.15, tint=(0.8, 0.95, 1.12)))
+    raw.toggleAuto("wb")
+    assert raw.autoWbOn and not raw.autoToneOn and raw._draft.get("temperature", 0) > 0
+    raw.toggleAuto("tone")
+    assert raw.autoWbOn and raw.autoToneOn
+    raw.toggleAuto("wb")
+    assert not raw.autoWbOn and raw.autoToneOn and raw._draft.get("temperature", 0) == 0 and raw._draft["exposure"] > 0
+    raw.shutdown()
+
+
+def test_the_strength_slider_changes_what_is_applied_at_once(qapp, monkeypatch):
+    raw = make_editor(monkeypatch, scene(0.1, 0.15))
+    raw.toggleAuto("tone")
+    full = raw._draft["exposure"]
+    raw.setAutoStrength(50)
+    assert raw.autoToneOn and 0 < raw._draft["exposure"] < full and raw.autoStrength == 50
+    raw.setAutoStrength(0)
+    assert raw._draft.get("exposure", 0) == 0 and raw.autoToneOn
+    raw.setAutoStrength(100)
+    assert raw._draft["exposure"] == full
+    raw.toggleAuto("tone")
+    raw.setAutoStrength(30)                                         # nothing applied: the slider changes nothing in the photo
+    assert raw._draft.get("exposure", 0) == 0
+    raw.toggleAuto("tone")                                          # but it is used by the next press
+    assert 0 < raw._draft["exposure"] < full
+    raw.shutdown()
+
+
+def test_auto_says_so_when_nothing_is_needed_or_the_preview_is_not_ready(qapp, monkeypatch):
+    raw = make_editor(monkeypatch, scene(0.46, 0.30))
+    raw.toggleAuto("wb")
+    assert raw.notice == "No clear colour cast found." and not raw.autoWbOn
     raw._preview = ""
-    raw.auto("tone", 100)
+    raw.toggleAuto("tone")
     assert "preview" in raw.notice
     raw.shutdown()
