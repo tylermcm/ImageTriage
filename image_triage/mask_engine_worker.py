@@ -30,6 +30,7 @@ if str(_WORKER_DIR) not in sys.path:
 
 import birefnet_worker  # noqa: E402
 import depth_worker  # noqa: E402
+import inpaint_worker  # noqa: E402
 import oneformer_worker  # noqa: E402
 import sam_worker  # noqa: E402
 
@@ -38,7 +39,8 @@ ENGINE_SUBJECT = "subject"
 ENGINE_SEMANTIC = "semantic"
 ENGINE_PROMPT = "prompt"
 ENGINE_DEPTH = "depth"
-ENGINE_NAMES = (ENGINE_SUBJECT, ENGINE_SEMANTIC, ENGINE_PROMPT, ENGINE_DEPTH)
+ENGINE_INPAINT = "inpaint"
+ENGINE_NAMES = (ENGINE_SUBJECT, ENGINE_SEMANTIC, ENGINE_PROMPT, ENGINE_DEPTH, ENGINE_INPAINT)
 
 # Must match mask_engine_service.MASK_ENGINE_PROTOCOL_VERSION.
 MASK_ENGINE_PROTOCOL_VERSION = 1
@@ -92,12 +94,14 @@ class MaskEngineHost:
         semantic_engine=None,
         prompt_engine=None,
         depth_engine=None,
+        inpaint_engine=None,
     ) -> None:
         self.requested_device = requested_device
         self._subject = subject_engine or birefnet_worker._BiRefNetEngine(requested_device)
         self._semantic = semantic_engine or oneformer_worker._OneFormerEngine(requested_device)
         self._prompt = prompt_engine or sam_worker._SamEngine(requested_device)
         self._depth = depth_engine or depth_worker._DepthEngine(requested_device)
+        self._inpaint = inpaint_engine or inpaint_worker._InpaintEngine(requested_device)
 
     def _engine(self, name: str):
         if name == ENGINE_SUBJECT:
@@ -108,6 +112,8 @@ class MaskEngineHost:
             return self._prompt
         if name == ENGINE_DEPTH:
             return self._depth
+        if name == ENGINE_INPAINT:
+            return self._inpaint
         raise ValueError(f"Unknown engine: {name or '<empty>'}")
 
     def _time_imports(self) -> None:
@@ -149,6 +155,7 @@ class MaskEngineHost:
             self._semantic.warm_imports()
             self._prompt.warm_imports()
             self._depth.warm_imports()
+            self._inpaint.warm_imports()
             return device
         return self._engine(engine).warm_imports()
 
@@ -242,6 +249,16 @@ class MaskEngineHost:
                 engine=self._depth,
                 emit_result=False,
                 input_size=int(request.get("inputSize") or 0) or None,
+            )
+        if engine == ENGINE_INPAINT:
+            return inpaint_worker.generate_inpaint(
+                model_dir=Path(str(request.get("modelDir") or "")).resolve(),
+                input_path=Path(str(request.get("inputPath") or "")).resolve(),
+                mask_path=Path(str(request.get("maskPath") or "")).resolve(),
+                output_path=Path(str(request.get("outputPath") or "")).resolve(),
+                requested_device=self.requested_device,
+                engine=self._inpaint,
+                emit_result=False,
             )
         raise ValueError(f"Unknown engine: {engine or '<empty>'}")
 

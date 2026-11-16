@@ -636,6 +636,26 @@ def default_depth_model_install_dir(*, repo_id: str = DEFAULT_DEPTH_MODEL_REPO_I
     return _managed_bundle_dir("depth", repo_id, prefix=("Editor",))
 
 
+# The object-removal fill model (AI Erase). Apache-2.0 port of advimman/lama's big-lama; trained on Places365-Challenge, see
+# docs/creative_tools_plan.md and docs/ai_model_licence_audit.md for the training-data caveat. Installed by hand for now: put
+# lama_fp32.onnx in the folder below.
+LAMA_MODEL_REPO_ID = "Carve/LaMa-ONNX"
+LAMA_MODEL_FILE = "lama_fp32.onnx"
+LAMA_MODEL_SHA256 = "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6"
+LAMA_MODEL_SIZE_MB = 198
+
+
+def lama_installation() -> "AIModelInstallation":
+    """Where the fill model is and whether it is installed."""
+    return AIModelInstallation(
+        repo_id=LAMA_MODEL_REPO_ID,
+        revision="main",
+        install_dir=managed_model_dir("Editor", "LaMa-ONNX").expanduser().resolve(),
+        required_filenames=(LAMA_MODEL_FILE,),
+        expected_sha256={LAMA_MODEL_FILE: LAMA_MODEL_SHA256},
+    )
+
+
 def depth_variant_installation(variant: str) -> "AIModelInstallation":
     """Where the depth model ``variant`` ("small", "base", "large") is, and whether it is installed."""
     if variant not in DEPTH_VARIANT_REPOS:

@@ -7,6 +7,7 @@ Item {
     property Item viewport: null
     readonly property var crop: raw.values.hostCrop
     property var points: []
+    signal zoomWheel(real x, real y, real steps)
     property bool drawing: false
     readonly property real diameter: visible ? model.size/100*Math.min(width/crop.w,height/crop.h) : 0
     function toView(p) { return Qt.point((p[0]-crop.x)/crop.w*width,(p[1]-crop.y)/crop.h*height) }
@@ -36,7 +37,8 @@ Item {
             ctx.stroke()
         }
     }
-    Rectangle { objectName: "rawRetouchCursor"; visible: pointer.enabled && pointer.containsMouse && overlay.acceptsPoint(pointer.mouseX, pointer.mouseY); x: pointer.mouseX-width/2; y: pointer.mouseY-height/2; width: overlay.diameter; height: width; radius: width/2; color:'transparent'; border.color:'white' }
+    Image { anchors.fill: parent; visible: overlay.model.kind==="erase" && source!==""; source: overlay.visible ? overlay.raw.eraseEditor.overlay : ""; fillMode: Image.Stretch; cache: false }
+    Rectangle { objectName: "rawRetouchCursor"; visible: overlay.model.kind!=="erase" && pointer.enabled && pointer.containsMouse && overlay.acceptsPoint(pointer.mouseX, pointer.mouseY); x: pointer.mouseX-width/2; y: pointer.mouseY-height/2; width: overlay.diameter; height: width; radius: width/2; color:'transparent'; border.color:'white' }
     Rectangle {
         visible: overlay.model.source.length===2 && (overlay.model.kind==='clone' || overlay.model.kind==='heal')
         x: visible ? overlay.toView(overlay.model.source).x-6 : 0; y: visible ? overlay.toView(overlay.model.source).y-6 : 0
@@ -50,6 +52,7 @@ Item {
         onPressed: (event) => {
             if (!overlay.acceptsPoint(event.x, event.y)) { event.accepted = false; return }
             var p=point(event)
+            if(overlay.model.kind==="erase") {overlay.raw.eraseEditor.select(p[0],p[1]);return}
             if(event.modifiers & Qt.AltModifier) {overlay.model.pick(p[0],p[1]);return}
             overlay.points=[p];overlay.drawing=true;path.requestPaint()
         }
@@ -61,5 +64,14 @@ Item {
         }
         onReleased: { if (overlay.drawing) overlay.finishStroke() }
         onCanceled: {overlay.drawing=false;overlay.points=[];path.requestPaint()}
+        // Erase only clicks, so the wheel may zoom (the viewer does the zooming)
+        WheelHandler {
+            target: null; enabled: overlay.model.kind==="erase"
+            onWheel: (event) => {
+                var steps = event.pixelDelta.y !== 0 ? event.pixelDelta.y / 60 : event.angleDelta.y / 120
+                if (steps !== 0) overlay.zoomWheel(event.x, event.y, steps)
+                event.accepted = true
+            }
+        }
     }
 }

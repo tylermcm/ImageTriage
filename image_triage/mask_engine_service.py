@@ -45,6 +45,7 @@ ENGINE_SUBJECT = "subject"
 ENGINE_SEMANTIC = "semantic"
 ENGINE_PROMPT = "prompt"
 ENGINE_DEPTH = "depth"
+ENGINE_INPAINT = "inpaint"
 
 
 # How long the host may say nothing while it works on one command before it is taken to be hung. Every line it prints (progress, a
@@ -288,6 +289,27 @@ class MaskEngineService:
             progress_callback,
         )
         return result
+
+    def infer_inpaint(
+        self,
+        *,
+        model_dir: Path,
+        input_path: Path,
+        mask_path: Path,
+        output_path: Path,
+        progress_callback: ProgressCallback | None,
+    ) -> dict[str, object]:
+        """Fill the masked part of a picture crop (PNG; mask 255 = fill) and write the filled crop to ``output_path``."""
+        return self.infer(
+            ENGINE_INPAINT,
+            model_dir,
+            {
+                "inputPath": str(input_path.resolve()),
+                "maskPath": str(mask_path.resolve()),
+                "outputPath": str(output_path.resolve()),
+            },
+            progress_callback,
+        )
 
     def infer_subject(
         self,
@@ -741,6 +763,7 @@ __all__ = [
     "MaskEngineService",
     "ENGINE_SUBJECT",
     "ENGINE_SEMANTIC",
+    "ENGINE_INPAINT",
     "SemanticWorkerResult",
     "default_mask_engine_service",
     "shutdown_mask_engine",

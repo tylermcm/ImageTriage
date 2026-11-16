@@ -151,6 +151,8 @@ class RawEditor(QObject):
         self._light_depth_editor = RawLightDepth(self)
         from .raw_sky import RawSky
         self._sky_editor = RawSky(self)
+        from .raw_erase import RawErase
+        self._erase_editor = RawErase(self)
         from .raw_sync import RawSync
         self._sync = RawSync(self)
         from .raw_point_color import RawPointColor
@@ -163,6 +165,8 @@ class RawEditor(QObject):
     lightDepthEditor = Property(QObject, lambda self: self._light_depth_editor, constant=True)
 
     skyEditor = Property(QObject, lambda self: self._sky_editor, constant=True)
+
+    eraseEditor = Property(QObject, lambda self: self._erase_editor, constant=True)
 
     redEyeEditor = Property(QObject, lambda self: self._red_eye_editor, constant=True)
 
@@ -369,6 +373,83 @@ class RawEditor(QObject):
             self._error = "Choose a RAW photo to use these adjustments."
         elif not self._memory:
             self._enqueue("load", self._drafts)
+        self.changed.emit()
+
+    # --- auto tone / auto white balance: a toggle. Press once to apply it, press again to take it off. ---
+    _AUTO = {"tone": ("Auto tone", "No change needed."), "wb": ("Auto white balance", "No clear colour cast found.")}
+
+    def _auto_active(self, what: str) -> bool:
+        record = self.__dict__.get("_auto_records", {}).get(what)
+        if not record or record["path"] != self._path:
+            return False
+        return all(self._draft.get(key, DEFAULTS[key]) == value for key, value in record["applied"].items())
+
+    autoToneOn = Property(bool, lambda self: self._auto_active("tone"), notify=changed)
+    autoWbOn = Property(bool, lambda self: self._auto_active("wb"), notify=changed)
+    autoStrength = Property(float, lambda self: self.__dict__.get("_auto_strength", 100.0), notify=changed)
+
+    @staticmethod
+    def _auto_blend(full: dict, previous: dict, strength: float) -> dict:
+        """The slider values at ``strength`` (0..1) between the values before Auto and what Auto asked for."""
+        out = {}
+        for key, target in full.items():
+            value = previous[key] + (target - previous[key]) * strength
+            out[key] = round(value, 2) if key == "exposure" else round(value)
+        return out
+
+    @Slot(str)
+    def toggleAuto(self, what: str) -> None:
+        """Apply auto tone ("tone") or auto white balance ("wb") from the picture on screen; when it is already applied, take it
+        off again. One undo step either way."""
+        if not self._loaded or self._saving or what not in self._AUTO:
+            return
+        records = self.__dict__.setdefault("_auto_records", {})
+        label, nothing = self._AUTO[what]
+        if self._auto_active(what):
+            record = records.pop(what)
+            self._notice = ""
+            self._set_values(record["previous"], label + " off")
+            self.changed.emit()
+            return
+        from .. import auto_tone
+        from . import raw_preview
+        from .raw_erase import image_to_array
+
+        image = raw_preview.frame_image(self._preview) if self._preview else None
+        if image is None or image.isNull():
+            self._notice = "Wait for the preview to finish, then try again."
+            self.changed.emit()
+            return
+        current = {key: self._draft.get(key, DEFAULTS[key]) for key in (*auto_tone.TONE_KEYS, *auto_tone.WB_KEYS)}
+        compute = auto_tone.tone if what == "tone" else auto_tone.white_balance
+        full = compute(image_to_array(image), current, 1.0)
+        if not full:
+            records.pop(what, None)
+            self._notice = nothing
+            self.changed.emit()
+            return
+        previous = {key: current[key] for key in full}
+        applied = self._auto_blend(full, previous, self.__dict__.get("_auto_strength", 100.0) / 100)
+        records[what] = {"path": self._path, "full": full, "previous": previous, "applied": applied}
+        self._notice = ""
+        self._set_values(applied, label)
+        records[what]["applied"] = {key: self._draft.get(key, DEFAULTS[key]) for key in applied}
+        self.changed.emit()
+
+    @Slot(float)
+    def setAutoStrength(self, value: float) -> None:
+        """How much of what Auto asked for is applied (a percentage). Takes effect at once on whatever Auto is applied."""
+        if not math.isfinite(value):
+            return
+        self._auto_strength = max(0.0, min(100.0, value))
+        for what, record in list(self.__dict__.get("_auto_records", {}).items()):
+            if self._auto_active(what):
+                applied = self._auto_blend(record["full"], record["previous"], self._auto_strength / 100)
+                # the record must already say what is about to be applied: the panel reads "is Auto on" while the draft changes,
+                # and a record that is a step behind switches Auto off for a moment, which drops the slider being dragged
+                record["applied"] = applied
+                self._set_values(applied, self._AUTO[what][0] + " strength")
+                record["applied"] = {key: self._draft.get(key, DEFAULTS[key]) for key in applied}
         self.changed.emit()
 
     @Slot(str, float)
@@ -787,6 +868,7 @@ class RawEditor(QObject):
                 self._proxy.completed.connect(self._proxy_arrived)
                 self._proxy.sampled.connect(self._proxy_sampled)
                 self._proxy.maskSampled.connect(self._mask_sampled)
+                self._proxy.sourceReady.connect(self._source_arrived)
                 self._proxy.coverageReady.connect(self._coverage_arrived)
                 self._proxy.failed.connect(self._proxy_failed)
             request = self._proxy_request
@@ -886,6 +968,12 @@ class RawEditor(QObject):
         except (ValueError,KeyError,TypeError) as error:
             self._error = str(error)
         self.changed.emit()
+
+    def _source_arrived(self, revision, result):
+        if revision != self._revision or not self._loaded or self._saving:
+            return
+        self._proxy_pending = False
+        self._erase_editor.accept_source(*result)
 
     def _coverage_arrived(self,revision,result):
         if revision==self._revision and self._loaded and not self._saving:

@@ -16,12 +16,41 @@ Column {
     Grid {
         width: parent.width; columns: 2; spacing: 6
         Repeater {
-            model: [{name:"Remove",kind:"remove"},{name:"Spot Healing",kind:"spot"},{name:"Heal",kind:"heal"},{name:"Clone",kind:"clone"}]
+            model: [{name:"Remove",kind:"remove"},{name:"Spot Healing",kind:"spot"},{name:"Heal",kind:"heal"},{name:"Clone",kind:"clone"},{name:"Erase (AI)",kind:"erase"}]
             SButton { required property var modelData; objectName: "retouchTool_"+modelData.kind; width: (parent.width-6)/2; text: modelData.name; variant: panel.model.kind===modelData.kind ? "primary" : "normal"; onClicked: panel.model.choose(modelData.kind) }
         }
     }
+    Column {
+        id: erasePanel
+        visible: panel.model.kind==="erase"; width: parent.width; spacing: 8
+        readonly property var eraser: panel.raw.eraseEditor
+        Text { width: parent.width; wrapMode: Text.WordWrap; color: theme.fg2; font.pixelSize: 12
+            text: !erasePanel.eraser.available ? "The fill model is not installed (LaMa-ONNX)." : erasePanel.eraser.hasSelection ? "Adjust Grow if a shadow or edge is left, then press Erase." : "Click an object to select it." }
+        RawColorSlider {
+            objectName: "eraseGrow"; width: parent.width; controlHeight: 32; visible: erasePanel.eraser.hasSelection
+            label: "Grow"; from: 0; to: erasePanel.eraser.maxGrow; step: 1; decimals: 0; value: erasePanel.eraser.grow
+            onCommitted: (next) => erasePanel.eraser.setGrow(next)
+        }
+        RawColorSlider {
+            objectName: "eraseGrain"; width: parent.width; controlHeight: 32; visible: erasePanel.eraser.hasSelection
+            label: "Grain"; from: 0; to: 100; step: 1; decimals: 0; value: erasePanel.eraser.grain * 100
+            onCommitted: (next) => erasePanel.eraser.setGrain(next)
+        }
+        Row {
+            spacing: 6
+            SButton { objectName: "eraseGo"; text: "Erase"; variant: "primary"; enabled: erasePanel.eraser.hasSelection && !erasePanel.eraser.busy; onClicked: erasePanel.eraser.erase() }
+            SButton { text: "Deselect"; enabled: erasePanel.eraser.hasSelection && !erasePanel.eraser.busy; onClicked: erasePanel.eraser.clearSelection() }
+        }
+        Row {
+            visible: erasePanel.eraser.busy; spacing: 8
+            BusyIndicator { width: 24; height: 24; running: visible }
+            Text { text: erasePanel.eraser.message; color: theme.fg2; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+        }
+        Text { visible: erasePanel.eraser.error.length>0; width: parent.width; wrapMode: Text.WordWrap; text: erasePanel.eraser.error; color: "#f36565"; font.pixelSize: 12 }
+    }
     Repeater {
-        model: [{label:"Size",key:"size",low:.1,high:50,step:.1},{label:"Feather",key:"feather",low:0,high:100,step:1},{label:"Opacity",key:"opacity",low:0,high:100,step:1}]
+        visible: panel.model.kind!=="erase"
+        model: panel.model.kind==="erase" ? [] : [{label:"Size",key:"size",low:.1,high:50,step:.1},{label:"Feather",key:"feather",low:0,high:100,step:1},{label:"Opacity",key:"opacity",low:0,high:100,step:1}]
         RawColorSlider {
             required property var modelData
             objectName: "retouchOption_"+modelData.key
@@ -45,9 +74,9 @@ Column {
             required property var modelData
             required property int index
             width: parent.width
-            Text { width: parent.width-62; height: 28; verticalAlignment: Text.AlignVCenter; text: (index+1)+" · "+({remove:"Remove",spot:"Spot Healing",heal:"Heal",clone:"Clone"}[modelData.kind]); color: theme.fg2; font.pixelSize: 12 }
+            Text { width: parent.width-62; height: 28; verticalAlignment: Text.AlignVCenter; text: (index+1)+" · "+({remove:"Remove",spot:"Spot Healing",heal:"Heal",clone:"Clone",patch:"AI Erase"}[modelData.kind]); color: theme.fg2; font.pixelSize: 12 }
             SButton { text: "Delete"; h: 28; onClicked: panel.model.remove(parent.index) }
         }
     }
-    Text { width: parent.width; text: "Generative AI and automatic distraction removal are not available."; color: theme.fg3; font.pixelSize: 11; wrapMode: Text.WordWrap }
+    Text { width: parent.width; text: "AI Erase fills with a local model. Nothing is sent anywhere."; color: theme.fg3; font.pixelSize: 11; wrapMode: Text.WordWrap }
 }

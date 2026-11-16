@@ -51,6 +51,38 @@ Column {
         }
     }
 
+    component AutoButton: Item {
+        id: autoButton
+        property bool on: false
+        property string tip: ""
+        signal toggled()
+        width: 44; height: 27
+        Rectangle { anchors.fill: parent; radius: 6; color: autoButton.on ? Qt.alpha(theme.accent, 0.2) : theme.s2; border.color: autoButton.on ? theme.accent : theme.lineSoft }
+        Text { anchors.centerIn: parent; text: "Auto"; color: autoButton.on ? theme.accentFg : theme.fg2; font.pixelSize: 12 }
+        TapHandler { enabled: autoButton.enabled; onTapped: autoButton.toggled() }
+        HoverHandler { id: autoHover; cursorShape: Qt.PointingHandCursor }
+        ToolTip.text: autoButton.tip; ToolTip.visible: autoHover.hovered; ToolTip.delay: 500
+        Accessible.role: Accessible.CheckBox; Accessible.name: "Auto"; Accessible.checked: autoButton.on
+        Accessible.onPressAction: autoButton.toggled()
+    }
+    Row {
+        visible: basic.section === "Light" && !basic.localAdjustments
+        width: parent.width; height: visible ? 35 : 0; spacing: 8
+        Text { id: toneLabel; anchors.verticalCenter: parent.verticalCenter; text: "Tone"; color: theme.fg2; font.pixelSize: 12 }
+        Item { width: Math.max(0, parent.width - toneLabel.implicitWidth - 44 - parent.spacing * 2); height: 1 }
+        AutoButton {
+            objectName: "rawAutoTone"; anchors.verticalCenter: parent.verticalCenter
+            on: !basic.localAdjustments && basic.model.autoToneOn === true; tip: on ? "Take auto tone off" : "Set exposure and tone from the photo"
+            onToggled: basic.model.toggleAuto("tone")
+        }
+    }
+    RawColorSlider {
+        visible: basic.section === "Light" && !basic.localAdjustments && basic.model.autoToneOn === true
+        objectName: "rawAutoToneStrength"
+        width: parent.width; controlHeight: 32
+        label: "Strength"; from: 0; to: 100; value: basic.localAdjustments ? 0 : basic.model.autoStrength
+        onCommitted: (next) => basic.model.setAutoStrength(next)
+    }
     Row {
         visible: basic.section === "Color" && !basic.localAdjustments
         width: parent.width; height: visible ? 35 : 0; spacing: 8
@@ -61,7 +93,7 @@ Column {
         }
         ComboBox {
             objectName: "rawWhiteBalance"
-            width: Math.max(30, parent.width - balanceLabel.implicitWidth - 20 - parent.spacing * 2); height: 27
+            width: Math.max(30, parent.width - balanceLabel.implicitWidth - 20 - 44 - parent.spacing * 3); height: 27
             model: ["As Shot", "Custom"]
             currentIndex: basic.model.values.temperature === 0 && basic.model.values.tint === 0 ? 0 : 1
             onActivated: if (currentIndex === 0) basic.model.asShotWhiteBalance()
@@ -92,6 +124,18 @@ Column {
             Accessible.name: "White balance picker"
             Accessible.onPressAction: basic.pickerToggled()
         }
+        AutoButton {
+            objectName: "rawAutoWb"; anchors.verticalCenter: parent.verticalCenter
+            on: !basic.localAdjustments && basic.model.autoWbOn === true; tip: on ? "Take auto white balance off" : "Fix a colour cast, if the photo has one"
+            onToggled: basic.model.toggleAuto("wb")
+        }
+    }
+    RawColorSlider {
+        visible: basic.section === "Color" && !basic.localAdjustments && basic.model.autoWbOn === true
+        objectName: "rawAutoWbStrength"
+        width: parent.width; controlHeight: 32
+        label: "Strength"; from: 0; to: 100; value: basic.localAdjustments ? 0 : basic.model.autoStrength
+        onCommitted: (next) => basic.model.setAutoStrength(next)
     }
     Repeater {
         model: basic.section === "Light" ? basic.lightFields : basic.section === "Color" ? basic.colorFields : (basic.localAdjustments ? basic.effectFields.slice(0,3) : basic.effectFields)
