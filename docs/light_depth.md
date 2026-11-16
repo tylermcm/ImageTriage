@@ -15,7 +15,7 @@ default Brightness of -50 on both sides, the photo darkens around the subject an
   picture (up is farther, down is nearer).
 - **Feather**: how far from the depth the effect takes to come in: nothing at the depth, in full beyond the feather. In the
   depth picture it is the two markers either side of the handle (the far one above, the near one below), exactly as in
-  Luminar; drag either. The same setting is the slider under Advanced Settings and the handle on the photo. The depth picture
+  Luminar; drag either. The same setting is the slider under Advanced Settings. The depth picture
   is a secondary view: the photo's depth map (near is bright, at the bottom for a ground plane) with what lies at the chosen
   depth tinted amber and the feather drawn as a band around it.
 - **Softness** (0-100, default 10): how far the zones spill across object edges.
@@ -83,7 +83,7 @@ chosen per photo under Advanced Settings (the choice is the `depthModel` setting
 - `image_triage/light_depth.py`: the arithmetic (depth map and settings in, coverage out), the render-time masks, the legacy
   mask filter and the settings file. No UI.
 - `image_triage/qml_shell/raw_light_depth.py`: the section's model (depth job, picking, undo steps, pad picture).
-- `image_triage/qml_shell/qml/RawLightDepth.qml`: the section. `RawLightDepthHandles.qml`: the handles drawn on the photo
+- `image_triage/qml_shell/qml/RawLightDepth.qml`: the section. nothing is drawn on the photo any more (the position, size and feather handles were removed; position is set by the dropper, size and feather under Advanced Settings)
   (placed by `Viewer.qml`, with the dropper's click routed the way Point Color's is).
 - The settings travel in the draft as `lightDepth`, so undo and redo restore them. They are host settings: removed before
   anything is sent to the native renderer or written to the recipe, and saved beside the recipe as
