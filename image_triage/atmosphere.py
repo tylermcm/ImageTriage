@@ -52,8 +52,8 @@ RANGES = {"amount": (0, 100), "height": (0, 100), "patchiness": (0, 100), "cloud
 # What each preset sets (the Amount too, as in Luminar: Heavy Fog is a low Amount over the whole frame, Ground Fog a full one low down).
 PRESETS = (
     {"amount": 56.0, "height": 70.0, "patchiness": 56.0, "cloudSize": 0.0, "vibrance": 50.0, "start": 15.0},
-    {"amount": 20.0, "height": 100.0, "patchiness": 25.0, "cloudSize": 70.0, "vibrance": 50.0, "start": 0.0},
-    {"amount": 100.0, "height": 15.0, "patchiness": 100.0, "cloudSize": 100.0, "vibrance": 50.0, "start": 20.0},
+    {"amount": 55.0, "height": 100.0, "patchiness": 25.0, "cloudSize": 70.0, "vibrance": 50.0, "start": 0.0},
+    {"amount": 100.0, "height": 15.0, "patchiness": 45.0, "cloudSize": 100.0, "vibrance": 50.0, "start": 20.0},
 )
 
 
@@ -107,7 +107,7 @@ def _smooth(values):
     return values * values * (3 - 2 * values)
 
 
-def noise(shape, cells: float, seed: int, octaves: int = 6, drift=(0.5, 0.5), stretch: float = 1.0):
+def noise(shape, cells: float, seed: int, octaves: int = 6, drift=(0.5, 0.5), stretch: float = 1.0, billow: bool = False):
     """Smooth value noise over ``shape`` (height, width), 0..1: ``cells`` random cells across the long side at the coarsest
     octave, each finer octave twice as many and half as strong. The same seed gives the same picture; ``drift`` (0..1 each way)
     slides the window over a larger field of the same noise, so the patches move without changing."""
@@ -125,12 +125,44 @@ def noise(shape, cells: float, seed: int, octaves: int = 6, drift=(0.5, 0.5), st
         left, top = 2 * drift[0], 2 * drift[1]
         box = (left, top, left + grid[1], top + grid[0])
         image = Image.fromarray(layer, mode="F").resize((width, height), Image.Resampling.BICUBIC, box=box)
-        strength = 0.62 ** octave
-        total += np.asarray(image, np.float32) * strength
+        strength = (0.52 if billow else 0.62) ** octave
+        values = np.asarray(image, np.float32)
+        if billow:
+            values = np.abs(2.0 * values - 1.0)                 # rounded puffs, with a crease wherever the noise crosses its middle
+        total += values * strength
         weight += strength
     total /= weight
     low, high = np.percentile(total, [2, 98])
     return np.clip((total - low) / max(float(high - low), 1e-6), 0.0, 1.0)
+
+
+CEILING_HALF = 0.125    # at Height 0 the fog is half as thick as it is lower down this far above the ground line (a frame fraction)
+
+
+def _horizon_of(distance) -> float:
+    """Where the horizon lies in a frame of ``distance`` (0 near .. 1 far), 0 (top) .. 1 (bottom): the row from which the picture is
+    as far away as it gets."""
+    import numpy as np
+
+    profile = np.maximum.accumulate(np.median(distance, axis=1)[::-1])
+    return float(1.0 - int(np.argmax(profile >= 0.9 * profile[-1])) / max(1, distance.shape[0]))
+
+
+def horizon_fraction(depth, side: int = 256) -> float:
+    return _horizon_of(1.0 - light_depth.working_depth(depth, side))
+
+
+def ceiling_of(depth, settings) -> float:
+    """Where the top of the fog lies in the frame, 0 (top) .. 1 (bottom): the Height marker on the picture. Height 0 puts it a little
+    above the horizon, Height 100 at the top of the frame (the sky fogged too)."""
+    top = max(0.0, horizon_fraction(depth) - CEILING_HALF)
+    return top * (1.0 - normalized(settings)["height"] / 100)
+
+
+def height_for_ceiling(depth, ceiling: float) -> float:
+    """The Height setting that puts the top of the fog at ``ceiling`` (the inverse of ``ceiling_of``), 0..100."""
+    top = max(0.0, horizon_fraction(depth) - CEILING_HALF)
+    return 100.0 if top <= 0 else max(0.0, min(100.0, (1.0 - float(ceiling) / top) * 100))
 
 
 def _above_ground(distance):
@@ -162,17 +194,23 @@ def density(depth, settings, side: int = COVERAGE_SIDE, seed: int = 0):
     begin = settings["start"] / 100 * 0.6
     by_distance = _smooth((distance - begin) / 0.55)
     above_ground = _above_ground(distance)
-    reach = settings["height"] / 100
-    by_height = 1.0 - _smooth((above_ground - reach) / 0.25)
+    up = settings["height"] / 100
+    top = max(0.0, _horizon_of(distance) - CEILING_HALF)                          # where the fog's top is at Height 0 .. 100
+    half = _horizon_of(distance) - top * (1.0 - up)                                # how far above the ground it is half as thick
+    by_height = 1.0 - _smooth((above_ground - half) / (0.25 * (1.0 - up) + 0.03))
     clumps = settings["patchiness"] / 100
-    if clumps > 0:
-        cells = 3 + (1 - settings["cloudSize"] / 100) * 21                        # cloud size 0 is small clumps, 100 is large ones
-        shape = _smooth((noise((height, width), cells, seed, drift=(settings["driftX"], settings["driftY"]), stretch=1.8) - 0.25) / 0.6)
-        by_clump = 1.0 - clumps * (1.0 - shape)
-    else:
-        by_clump = 1.0
+    # Cumulus-like structure: puffs with defined edges and a brighter middle. Patchiness opens gaps in a solid layer (0 is solid),
+    # Cloud Size sets the size of the puffs.
+    cells = 3 + (1 - settings["cloudSize"] / 100) * 21
+    puffs = noise((height, width), cells, seed, drift=(settings["driftX"], settings["driftY"]), stretch=1.6, billow=True)
+    inner = 0.3 + 0.7 * puffs                                                  # lit from within: the middle of a puff is brighter
+    shape = _smooth((puffs - clumps * 0.5) / 0.34)
+    floor = 0.9 * (1.0 - clumps) ** 1.2                                          # a thin fog lies between the puffs until the gaps open up
+    by_clump = floor + (1.0 - floor) * shape * inner
+    if clumps <= 0:
+        by_clump = np.ones_like(by_clump)                                        # solid
     fog = by_distance * by_height * by_clump
-    return np.clip(light_depth._blur(fog, max(width, height) * 0.004), 0.0, 1.0)
+    return np.clip(light_depth._blur(fog, max(width, height) * 0.003), 0.0, 1.0)
 
 
 def seed_of(depth) -> int:
@@ -235,10 +273,11 @@ def _shade(small, settings):
 
     weights = np.array(_LUMA, np.float32)
     light = small @ weights
-    ambient = np.clip(0.55 + 0.45 * light, 0.0, 0.9)
+    ambient = np.clip(0.72 + 0.22 * light, 0.0, 0.92)
     colour = np.clip(small / np.maximum(light[..., None], 0.03), 0.55, 1.6)       # the colour of the light, as a ratio
-    mix = settings["vibrance"] / 100 * 0.35
-    tint = np.array(_COOL, np.float32) * (1 - mix) + colour * mix
+    cool = 1.0 + (np.array(_COOL, np.float32) - 1.0) * (settings["vibrance"] / 50)       # 0 is a grey fog, 50 the usual cool one, 100 twice as blue
+    mix = settings["vibrance"] / 100 * 0.2
+    tint = np.clip(cool, 0.2, 1.4) * (1 - mix) + colour * mix
     tint = tint / np.maximum(tint @ weights, 0.05)[..., None]
     return np.clip(tint * ambient[..., None], 0.0, 1.0)
 
@@ -259,14 +298,14 @@ def _spread(shade, width: int, height: int, rows=None):
 
 def composite(rgb, depth, settings):
     """``rgb`` (float 0..1, height x width x 3, as shown) with the fog laid over it: each pixel blended toward the fog colour by
-    ``1 - exp(-thickness x density)``."""
+    ``0.95 x Amount x density`` (Amount is the fog's brightness: the structure does not change with it)."""
     import numpy as np
 
     settings = normalized(settings)
     if not active(settings):
         return rgb
     height, width = rgb.shape[:2]
-    cover = 1.0 - np.exp(-5.5 * settings["amount"] / 100 * _field(depth, settings, width, height))      # 0 clear .. 1 solid
+    cover = 0.95 * settings["amount"] / 100 * _field(depth, settings, width, height)      # 0 clear .. 1 solid
     shade = _spread(_shade(_small(rgb), settings), width, height)
     return rgb * (1 - cover[..., None]) + shade * cover[..., None]
 
@@ -329,11 +368,11 @@ def fogged_file(source, destination, image_path, settings):
     sample = pixels[:: max(1, height // 600), :: max(1, width // 600), :3].astype(np.float32) / top
     shade = _shade(_small(sample), settings)               # one fog colour for the whole picture, spread over each strip
     whole = _field(depth, settings, width, height)
-    thickness = 5.5 * settings["amount"] / 100
+    strength = 0.95 * settings["amount"] / 100
     for start in range(0, height, 512):
         end = min(height, start + 512)
         strip = pixels[start:end, :, :3].astype(np.float32) / top
-        cover = (1.0 - np.exp(-thickness * whole[start:end]))[..., None]
+        cover = (strength * whole[start:end])[..., None]
         fog = _spread(shade, width, end - start, rows=(start, end, height))
         pixels[start:end, :, :3] = np.clip((strip * (1 - cover) + fog * cover) * top + 0.5, 0, top).astype(unit)
     output = QSaveFile(str(destination))

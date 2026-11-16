@@ -137,12 +137,31 @@ class RawAtmosphere(QObject):
             fog = atmosphere.density(depth, settings, atmosphere.PAD_SIDE, atmosphere.seed_of(depth))
             scene = light_depth.working_depth(depth, atmosphere.PAD_SIDE)
             gray = (0.10 + 0.34 * scene) * (1 - fog) + fog * 0.92          # the scene's depth, with the fog standing out in white
+            level = np.floor(scene * 10)                                    # contour lines: where the distance passes a tenth
+            lines = np.zeros(scene.shape, bool)
+            lines[:, 1:] |= level[:, 1:] != level[:, :-1]
+            lines[1:, :] |= level[1:, :] != level[:-1, :]
+            gray = np.where(lines, np.minimum(1.0, gray + 0.28), gray)
             pixels = np.clip(np.stack([gray * 0.92, gray * 0.97, gray], axis=-1) * 255, 0, 255).astype(np.uint8)
             height, width = pixels.shape[:2]
             image = QImage(pixels.tobytes(), width, height, width * 3, QImage.Format_RGB888).copy()
             self._revision += 1
             self._picture = (put_thumbnail(f"{self.raw._owner}/atmosphere/{self._revision}", image), key)
         return self._picture[0]
+
+    @Property(float, notify=changed)
+    def ceiling(self):
+        """Where the top of the fog lies on the picture, 0 (top) .. 1 (bottom), for the Height marker."""
+        depth = self._depth()
+        return atmosphere.ceiling_of(depth, self.settings) if depth is not None else 0.5
+
+    @Slot(float)
+    def setCeiling(self, fraction: float) -> None:
+        """The Height marker was moved on the picture: ``fraction`` is where the person put the top of the fog (0 top .. 1 bottom)."""
+        depth = self._depth()
+        if depth is None or not math.isfinite(fraction):
+            return
+        self.adjust("height", atmosphere.height_for_ceiling(depth, max(0.0, min(1.0, fraction))))
 
     def _current(self):
         """What the next change builds on: changes made while the depth map is still being read are not lost."""

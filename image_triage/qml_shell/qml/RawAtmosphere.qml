@@ -131,6 +131,25 @@ Column {
             source: air.model.picture; cache: false; smooth: true
             visible: air.model.ready
         }
+        Item {                                                  // the top of the fog: drag it up and down (the Height slider)
+            id: ceilingMarker
+            objectName: "atmosphereCeiling"
+            visible: air.model.ready
+            width: parent.width; height: 22
+            y: Math.max(0, Math.min(picture.height - height, air.model.ceiling * picture.height - height / 2))
+            Rectangle { x: 0; y: 10; width: parent.width; height: 1; color: "#f0a020"; opacity: 0.5 }
+            Rectangle { x: (parent.width - width) / 2; y: 6; width: 22; height: 3; radius: 1.5; color: "#f0a020" }
+            Rectangle { x: (parent.width - width) / 2 + 7; y: 11; width: 8; height: 6; color: "#f0a020"; rotation: 0 }
+            MouseArea {
+                objectName: "atmosphereCeilingGrip"
+                anchors.fill: parent; cursorShape: Qt.SizeVerCursor; preventStealing: true
+                onPressed: air.raw.beginGesture()
+                onReleased: air.raw.endGesture()
+                onPositionChanged: (mouse) => {
+                    if (pressed) air.model.setCeiling(mapToItem(picture, mouse.x, mouse.y).y / picture.height)
+                }
+            }
+        }
         Text {
             objectName: "atmosphereStatus"
             visible: !air.model.ready

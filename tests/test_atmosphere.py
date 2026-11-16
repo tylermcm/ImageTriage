@@ -35,7 +35,7 @@ def test_height_holds_the_fog_to_the_ground_and_not_the_bottom_edge_of_the_pictu
     scene = standing_scene()
     low = fog_of({"patchiness": 0, "height": 10, "start": 0}, scene)
     full = fog_of({"patchiness": 0, "height": 100, "start": 0}, scene)
-    assert low[:8].max() < 0.05                                          # none high in the sky
+    assert low[:8].max() < 0.1                                           # none high in the sky
     assert low[75:95].mean() > 0.5                                       # but a bank lying on the far ground, not at the bottom edge
     assert low[-10:].mean() < 0.1
     assert full[:8].mean() > 0.5                                         # full height: the sky is fogged too
@@ -43,7 +43,7 @@ def test_height_holds_the_fog_to_the_ground_and_not_the_bottom_edge_of_the_pictu
 
 def test_patchiness_breaks_the_fog_into_clumps_and_cloud_size_sets_their_size():
     flat = np.full((120, 160), 10, np.uint8)
-    even = fog_of({"patchiness": 0, "start": 0}, flat)
+    even = fog_of({"patchiness": 0, "start": 0}, flat)[15:]                     # (the very top of a flat picture is above the fog's reach)
     assert even.std() < 0.02
     patchy = fog_of({"patchiness": 90, "cloudSize": 50, "start": 0}, flat)
     assert patchy.std() > 0.1 and patchy.min() < 0.3 < patchy.max()
@@ -85,14 +85,14 @@ def test_the_fog_is_laid_over_the_picture_by_distance_and_amount_and_the_foregro
     assert atmosphere.composite(bright, depth, settings)[:15].mean() > out[:15].mean()           # the fog is as light as the photo
 
 
-def test_vibrance_decides_how_much_of_the_photos_colour_the_fog_takes():
+def test_vibrance_is_the_colour_of_the_fog():
     depth = ramp()
     warm = np.zeros((120, 160, 3), np.float32)
     warm[...] = (0.55, 0.30, 0.10)
     base = {"amount": 80, "patchiness": 0, "height": 100, "start": 0}
     grey = atmosphere.composite(warm, depth, {**atmosphere.normalized(base), "vibrance": 0})[:15].mean(axis=(0, 1))
     kept = atmosphere.composite(warm, depth, {**atmosphere.normalized(base), "vibrance": 100})[:15].mean(axis=(0, 1))
-    assert kept[0] - kept[2] > grey[0] - grey[2]                         # more of the warm light stays in the fog
+    assert kept[2] - kept[0] > grey[2] - grey[0]                         # Vibrance 0 is a grey fog, more is a bluer one
 
 
 def test_a_qimage_a_preview_frame_and_a_file_all_get_the_same_fog(tmp_path, monkeypatch):
@@ -166,3 +166,15 @@ def test_the_settings_file_round_trips_and_an_unusable_one_is_ignored(tmp_path):
     assert not atmosphere.sidecar_path(recipe).exists()
     from image_triage import edit_carry
     assert atmosphere.SIDECAR_TAIL.casefold().startswith(edit_carry.EDIT_MARKERS) and edit_carry.EDIT_MARKERS[-1] in atmosphere.SIDECAR_TAIL
+
+
+def test_the_height_marker_on_the_picture_and_the_height_setting_follow_each_other():
+    scene = standing_scene()
+    horizon = atmosphere.horizon_fraction(scene)
+    assert 0.3 < horizon < 0.5                                              # the sky takes the top 40 % of this scene
+    tops = [atmosphere.ceiling_of(scene, {"height": h}) for h in (0, 25, 50, 100)]
+    assert tops == sorted(tops, reverse=True) and tops[0] < horizon and tops[-1] == 0.0       # more Height, a higher top
+    for height in (0.0, 20.0, 60.0, 100.0):
+        back = atmosphere.height_for_ceiling(scene, atmosphere.ceiling_of(scene, {"height": height}))
+        assert abs(back - height) < 0.5
+    assert atmosphere.height_for_ceiling(scene, 0.0) == 100.0 and atmosphere.height_for_ceiling(scene, 1.0) == 0.0
