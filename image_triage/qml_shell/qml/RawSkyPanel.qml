@@ -110,16 +110,6 @@ Column {
         onCommitted: (next) => sky.model.adjust("shiftEdge", next)
     }
     RawColorSlider {
-        objectName: "sky_brightness"; editModel: sky.raw; width: parent.width; controlHeight: 32
-        label: "Sky Brightness"; from: -100; to: 100; value: sky.values.brightness
-        onCommitted: (next) => sky.model.adjust("brightness", next)
-    }
-    RawColorSlider {
-        objectName: "sky_warmth"; editModel: sky.raw; width: parent.width; controlHeight: 32
-        label: "Sky Warmth"; from: -100; to: 100; colors: ["#608fc3", "#a7a7a0", "#d3bd64"]; value: sky.values.warmth
-        onCommitted: (next) => sky.model.adjust("warmth", next)
-    }
-    RawColorSlider {
         objectName: "sky_colorMatch"; editModel: sky.raw; width: parent.width; controlHeight: 32
         label: "Match Colors"; from: 0; to: 100; value: sky.values.colorMatch
         onCommitted: (next) => sky.model.adjust("colorMatch", next)
@@ -194,7 +184,6 @@ Column {
         }
         Group {
             objectName: "skyRelighting"; title: "Scene Relighting"
-            Knob { key: "relight"; label: "Relight Strength"; from: 0; to: 100 }
             Knob { key: "relightSaturation"; label: "Relight Saturation"; from: 0; to: 100 }
             Knob { key: "relightHuman"; label: "Relight Human"; from: 0; to: 100 }
             Text {

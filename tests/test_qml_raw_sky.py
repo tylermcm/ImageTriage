@@ -407,6 +407,7 @@ def test_the_advanced_groups_render_and_drive_the_settings(raw, qapp, tmp_path):
         for key in ("horizon", "offsetY", "offsetX", "scale", "global", "closeGaps", "fixDetails", "relight", "relightSaturation",
                     "relightHuman", "reflection", "waterBlur", "defocus", "grain", "haze", "warmth", "brightness"):
             assert item.findChild(QObject, f"sky_{key}_slider") is not None, key
+            assert len(item.findChildren(QObject, f"sky_{key}_slider")) == 1, key          # each control once: no duplicates
         for key, value in (("horizon", -40), ("closeGaps", 30), ("reflection", 55), ("haze", 20)):
             slider = item.findChild(QObject, f"sky_{key}_slider")
             slider.setProperty("value", value)

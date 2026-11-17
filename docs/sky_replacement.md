@@ -8,7 +8,8 @@ so those are ours.
 
 ## Controls
 - **Sky library** (cards, + Add sky; right-click a card to remove it).
-- **Amount, Fade Edge, Shift Edge, Sky Brightness, Sky Warmth, Match Colors, Relight Scene**: the blend.
+- **Amount, Fade Edge, Shift Edge, Match Colors, Relight Scene**: the blend (Relight Scene is how much the change in the
+  sky's light changes the scene's exposure, strongest beside the sky).
 - **Advanced Settings**, in Luminar's groups (each folds away):
   - **Sky Orientation**: *Horizon Position* moves the new sky's horizon (the bottom of the sky picture) below or above the photo's
     own horizon, which is found from the matte. *Vertical Position* pans the sky picture up (a higher part of it shows) or
@@ -18,14 +19,13 @@ so those are ours.
     branches). *Close Gaps* fills the holes the matte left where the old sky still shows through near the sky (between branches,
     through wires and arches): close to the sky, pixels with the old sky's colour and brightness become sky. *Fix Details* fits
     the edge more tightly to fine detail (a second, tighter guided filter) and clears small specks.
-  - **Scene Relighting**: *Relight Strength* (the same setting as Relight Scene) is how much the change in the sky's light
-    changes the scene's exposure, strongest beside the sky; *Relight Saturation* is how much of the sky's colour comes with it
+  - **Scene Relighting**: *Relight Saturation* is how much of the sky's colour comes with it
     (50 = its own colour, 0 = only its brightness). People are left out of the scene's relight; *Relight Human* relights them on
     their own.
   - **Reflection**: *Reflection Amount* reflects the new sky in the water in place of the old sky's reflection (each column is
     mirrored about its shoreline; the water's ripples and colour stay). *Water Blur* softens the reflection for rippled water.
   - **Sky Adjustments**: *Defocus* (to match a shallow depth of field), *Grain* (to match the photo's), *Atmospheric Haze*
-    (thickest at the new sky's horizon), *Warmth* and *Brightness* (the same settings as Sky Warmth and Sky Brightness).
+    (thickest at the new sky's horizon), *Warmth* and *Brightness* of the new sky.
 
 ## How it works
 - **Masks:** one run of the scene model (OneFormer, ADE20k) finds the sky, the water and the people; each is brought to the
