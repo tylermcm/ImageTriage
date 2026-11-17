@@ -29,6 +29,13 @@ Scale zooms and the offsets move it. The result is one homography (`raw_perspect
 **Constrain crop** zooms the warped picture just enough that no empty corner shows (corners of the frame mapped back must fall
 inside the picture; found by bisection). Without it the empty parts are left transparent/black, as Lightroom shows them white.
 
+## Status (2026-11-17)
+
+All three phases are built (`raw_perspective.py`, `raw_upright.py`, Crop tab > Transform). Upright writes Vertical, Horizontal and
+Straighten (the sliders stay adjustable); its mode and Guided's guides are stored beside them in `hostCrop`. Moving Vertical or
+Horizontal by hand after Auto/Level/Vertical/Full clears the mode. Guided needs two lines for a perspective correction: a single
+guide can be satisfied by straightening alone.
+
 ## Phases
 
 1. **Manual Transform** — Vertical, Horizontal, Aspect, Scale, X Offset, Y Offset, Constrain crop; a grid over the photo while a

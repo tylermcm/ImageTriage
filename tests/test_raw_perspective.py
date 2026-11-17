@@ -135,3 +135,86 @@ def test_the_editor_sets_and_resets_the_transform(qapp):
         assert raw._draft["hostCrop"]["vertical"] == -30
     finally:
         raw.shutdown()
+
+
+def test_guides_solve_the_sliders_that_make_them_upright():
+    from image_triage import raw_upright as ru
+
+    h = rp.homography({"vertical": 40, "constrain": False}, W, H)
+
+    def seen(x1, y1, x2, y2):
+        a, b = rp.apply(h, x1 * W, y1 * H), rp.apply(h, x2 * W, y2 * H)
+        return (a[0] / W, a[1] / H, b[0] / W, b[1] / H)
+
+    lines = [seen(0.25, 0.1, 0.25, 0.9), seen(0.75, 0.1, 0.75, 0.9)]
+    result = ru.solve(lines, W, H, "guided")
+    assert result["vertical"] < -25 and abs(result["horizontal"]) < 3
+    assert ru._residual(result, lines, W, H, 0) < 1e-4                 # the guides end up vertical
+    assert ru.solve([], W, H, "guided") == {"vertical": 0.0, "horizontal": 0.0, "angle": 0.0}
+
+
+def test_level_only_turns_the_picture():
+    from image_triage import raw_upright as ru
+
+    tilted = [(0.1, 0.45, 0.9, 0.55)]                                   # a horizon falling to the right
+    result = ru.solve(tilted, W, H, "level")
+    assert result["vertical"] == 0 and result["horizontal"] == 0 and result["angle"] < -3
+    assert ru._residual(result, tilted, W, H, 0) < 1e-4
+
+
+def test_auto_upright_finds_the_lines_of_a_keystoned_building():
+    from image_triage import raw_upright as ru
+
+    image = QImage(W, H, QImage.Format.Format_RGB32)
+    image.fill(QColor(200, 200, 200))
+    painter = QPainter(image)
+    for x in (120, 240, 360, 480):
+        painter.fillRect(x, 0, 8, H, QColor(40, 40, 40))
+    painter.fillRect(0, 300, W, 8, QColor(40, 40, 40))
+    painter.end()
+    leaning = rp.warp(image, {"vertical": 35, "constrain": False})
+    lines = ru.find_lines(leaning)
+    assert sum(ru.classify(l) == "vertical" for l in lines) >= 4 and any(ru.classify(l) == "horizontal" for l in lines)
+    full = ru.solve(ru.auto_lines(leaning, "full"), W, H, "full")
+    assert full["vertical"] < -25
+    blank = QImage(W, H, QImage.Format.Format_RGB32)
+    blank.fill(QColor(90, 90, 90))
+    assert ru.find_lines(blank) == []                                      # a plain picture has none
+
+
+def test_the_editor_runs_upright_and_guides(qapp):
+    from image_triage.qml_shell import raw_preview
+    from image_triage.qml_shell.raw_editor import RawEditor
+
+    image = QImage(W, H, QImage.Format.Format_RGBA8888)
+    image.fill(QColor(200, 200, 200))
+    painter = QPainter(image)
+    for x in (120, 240, 360, 480):
+        painter.fillRect(x, 0, 8, H, QColor(40, 40, 40))
+    painter.end()
+    leaning = rp.warp(image, {"vertical": 35, "constrain": False}).convertToFormat(QImage.Format.Format_RGBA8888)
+    raw = RawEditor(memory=True)
+    raw.open("sample.NEF")
+    frame = ({"histogram": [[0] * 256] * 3, "fullSize": [W, H]}, leaning)
+    raw._proxy_arrived(raw._revision, (frame, frame, 0, "sample.NEF"))
+    try:
+        raw.setUpright("vertical")
+        crop = raw._draft["hostCrop"]
+        assert crop["upright"] == "vertical" and crop["vertical"] < -25 and raw_crop.valid(crop)
+        raw.setUpright("guided")
+        assert raw._draft["hostCrop"]["upright"] == "guided" and raw.uprightGuides == []
+        raw.setUpright("off")
+        raw.setUpright("guided")
+        for start, stop in ((0, 200), (420, 600)):                       # two edges that should be vertical
+            top, bottom = edge_x(leaning, 20, start, stop) / W, edge_x(leaning, H - 20, start, stop) / W
+            raw.addGuide(top, 20 / H, bottom, (H - 20) / H)
+        raw.addGuide(0.9, 0.05, 0.9, 0.06)                                 # too short: ignored
+        assert len(raw.uprightGuides) == 2 and raw._draft["hostCrop"]["vertical"] < -20
+        for shown in raw.uprightGuides:
+            assert abs(shown[0] - shown[2]) < 0.01                          # the guides are shown upright once solved
+        raw.clearGuides()
+        assert raw.uprightGuides == [] and "vertical" not in raw._draft["hostCrop"]
+        raw.resetTransform()
+        assert "upright" not in raw._draft.get("hostCrop", {})
+    finally:
+        raw.shutdown()

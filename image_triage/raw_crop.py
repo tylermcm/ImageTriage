@@ -24,7 +24,9 @@ MAX_ANGLE = 45.0
 def valid(crop):
     from .raw_perspective import KEYS as TRANSFORM_KEYS
 
-    if not isinstance(crop, dict) or set(crop) - set(DEFAULT_CROP) - set(TRANSFORM_KEYS):
+    from .raw_perspective import EXTRA
+
+    if not isinstance(crop, dict) or set(crop) - set(DEFAULT_CROP) - set(TRANSFORM_KEYS) - set(EXTRA):
         return False
     c = {**DEFAULT_CROP, **crop}
     if c["ratio"] not in RATIOS:

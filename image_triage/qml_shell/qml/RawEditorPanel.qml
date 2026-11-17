@@ -388,6 +388,21 @@ Rectangle {
                     inset: 0; topPadding: 8
                     title: "Transform"; expanded: true
                     Copy { width: parent.width; text: "Correct converging lines: Vertical for buildings, Horizontal for walls seen at an angle."; wrapMode: Text.WordWrap; color: panel.muted; font.pixelSize: 12; bottomPadding: 6 }
+                    Copy { text: "Upright"; color: panel.ink; bottomPadding: 4 }
+                    SSelect {
+                        objectName: "rawUpright"; width: parent.width; enabled: panel.editable
+                        options: [{label: "Off", value: "off"}, {label: "Auto", value: "auto"}, {label: "Level", value: "level"},
+                                  {label: "Vertical", value: "vertical"}, {label: "Full", value: "full"}, {label: "Guided", value: "guided"}]
+                        current: panel.model.values.hostCrop.upright || "off"
+                        onPicked: (value) => panel.model.setUpright(value)
+                    }
+                    Item {
+                        visible: panel.model.values.hostCrop.upright === "guided"
+                        width: parent.width; height: visible ? guideHint.implicitHeight + 34 : 0
+                        Copy { id: guideHint; width: parent.width; topPadding: 6; wrapMode: Text.WordWrap; color: panel.muted; font.pixelSize: 12
+                               text: "Drag along two to four lines in the photo that should be vertical or horizontal. " + panel.model.uprightGuides.length + " of 4 drawn." }
+                        Action { objectName: "rawClearGuides"; anchors.bottom: parent.bottom; text: "Clear guides"; enabled: panel.editable && panel.model.uprightGuides.length > 0; onClicked: panel.model.clearGuides() }
+                    }
                     Repeater {
                         model: [["vertical", "Vertical", -100, 100], ["horizontal", "Horizontal", -100, 100], ["aspect", "Aspect", -100, 100],
                                 ["scale", "Scale", 50, 150], ["offsetX", "Offset X", -100, 100], ["offsetY", "Offset Y", -100, 100]]

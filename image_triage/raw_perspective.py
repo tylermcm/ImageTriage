@@ -19,7 +19,19 @@ MAX_TILT = 25.0            # degrees of tilt at 100
 FILL = (255, 255, 255)     # what shows where the warped picture leaves the frame (Lightroom shows white)
 
 
+EXTRA = ("upright", "guides")      # how Upright set the sliders (``raw_upright``); stored beside them
+
+
 def valid_values(crop: dict) -> bool:
+    from .raw_upright import MAX_GUIDES, MODES
+
+    if crop.get("upright", "off") not in MODES:
+        return False
+    guides = crop.get("guides", [])
+    if not isinstance(guides, list) or len(guides) > MAX_GUIDES or not all(
+            isinstance(g, list) and len(g) == 4 and all(type(v) in (int, float) and math.isfinite(v) and -0.5 <= v <= 1.5 for v in g)
+            for g in guides):
+        return False
     for key, (low, high) in RANGES.items():
         value = crop.get(key, KEYS[key])
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
@@ -134,6 +146,13 @@ def homography(crop: dict, width: float, height: float):
                 low = mid
         h = _shown_homography(p, sw, sh, high)
     return _mul(_mul(_inv(m), h), m)
+
+
+def shown_homography(crop: dict, width: float, height: float):
+    """``(H, shown width, shown height)``: the warp in the shown frame (after quarter turns and mirrors), for a recorded
+    ``width`` x ``height`` picture. Points of the crop tool's view are in this frame (0..1 times the shown size)."""
+    m, sw, sh = _shown_frame(crop, width, height)
+    return _mul(_mul(m, homography(crop, width, height)), _inv(m)), sw, sh
 
 
 def warped_to_recorded(u: float, v: float, crop: dict, shape: tuple[float, float]) -> tuple[float, float]:
