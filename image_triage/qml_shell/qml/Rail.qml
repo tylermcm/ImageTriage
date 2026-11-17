@@ -35,7 +35,7 @@ Rectangle {
         { k: "reject", id: "reject", t: "Reject selection", i: "reject" }, { k: "sort", id: "sort", t: "Sort", i: "sort", menu: true },
         { k: "columns", id: "columns", t: "Columns", i: "columns", menu: true },
         { k: "preview", id: "eye", t: "Open preview", i: "eye" }, { k: "rename", id: "tag", t: "Rename selection", i: "tag" },
-        { k: "convert", id: "convert", t: "Resize and convert", i: "convert" }, { k: "share", id: "pocketdrop", t: "Share to phone", i: "pocketdrop" },
+        { k: "convert", id: "convert", t: "Export", i: "convert" }, { k: "share", id: "pocketdrop", t: "Share to phone", i: "pocketdrop" },
         { k: "editor", id: "editor", t: "Open in editor", i: "editor" },
         { k: "palette", id: "palette", t: "Command palette", i: "palette" }, { k: "shortcuts", id: "keyboard", t: "Keyboard shortcuts", i: "keyboard" }
     ]
@@ -345,7 +345,7 @@ Rectangle {
                 PopHeader { caption: "Selection" }
                 Repeater { model: [["accept", "Keep selection"], ["reject", "Reject selection"], ["rename", "Rename selection"]]; delegate: pinRow }
                 PopHeader { caption: "Files" }
-                Repeater { model: [["open", "Open folder"], ["undo", "Undo"], ["convert", "Resize and convert"], ["share", "Share to phone"]]; delegate: pinRow }
+                Repeater { model: [["open", "Open folder"], ["undo", "Undo"], ["convert", "Export"], ["share", "Share to phone"]]; delegate: pinRow }
                 PopHeader { caption: "Tools" }
                 Repeater { model: [["preview", "Open preview"], ["editor", "Open in editor"], ["palette", "Command palette"], ["shortcuts", "Keyboard shortcuts"]]; delegate: pinRow }
             }
