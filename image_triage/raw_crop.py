@@ -15,12 +15,18 @@ from PySide6.QtGui import QColorSpace, QImage, QImageReader
 # by ``angle`` degrees (clockwise, keeping the largest upright rectangle of the same shape), a quarter-turn ``rotate`` (clockwise
 # degrees), then the two mirrors as the person sees the picture. A recipe written before these existed has none of them.
 DEFAULT_CROP = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "ratio": "Original", "rotate": 0, "flipH": False, "flipV": False, "angle": 0.0}
+# Transform (perspective, ``raw_perspective.KEYS``) may sit beside them: applied to the whole picture before the rectangle. It is only
+# written once it is used, so a crop without it is stored as before.
 RATIOS = ("Original", "Free", "1:1", "4:5", "3:2", "16:9")
 MAX_ANGLE = 45.0
 
 
 def valid(crop):
-    if not isinstance(crop, dict) or set(crop) - set(DEFAULT_CROP):
+    from .raw_perspective import KEYS as TRANSFORM_KEYS
+
+    from .raw_perspective import EXTRA
+
+    if not isinstance(crop, dict) or set(crop) - set(DEFAULT_CROP) - set(TRANSFORM_KEYS) - set(EXTRA):
         return False
     c = {**DEFAULT_CROP, **crop}
     if c["ratio"] not in RATIOS:
@@ -30,6 +36,10 @@ def valid(crop):
     if type(c["rotate"]) is not int or c["rotate"] not in (0, 90, 180, 270):
         return False
     if type(c["flipH"]) is not bool or type(c["flipV"]) is not bool or abs(c["angle"]) > MAX_ANGLE:
+        return False
+    from .raw_perspective import valid_values
+
+    if not valid_values(c):
         return False
     return (0 <= c["x"] < 1 and 0 <= c["y"] < 1 and 0 < c["w"] <= 1 and 0 < c["h"] <= 1
             and c["x"] + c["w"] <= 1.000001 and c["y"] + c["h"] <= 1.000001)
@@ -48,8 +58,15 @@ def turned(crop):
     return bool(c["rotate"] or c["flipH"] or c["flipV"] or abs(c["angle"]) > 1e-7)
 
 
+def transformed(crop):
+    """Whether the perspective is corrected."""
+    from .raw_perspective import active as perspective_active
+
+    return valid(crop) and perspective_active({**DEFAULT_CROP, **crop})
+
+
 def active(crop):
-    return framed(crop) or turned(crop)
+    return framed(crop) or turned(crop) or transformed(crop)
 
 
 def _straightened(width: float, height: float, angle: float) -> float:
@@ -109,9 +126,11 @@ def view_to_frame(u: float, v: float, crop, quarter_only: bool = False, shape: t
 def view_to_source(u: float, v: float, crop, shape: tuple[float, float] = (1.0, 1.0)) -> tuple[float, float]:
     """Where a point of the finished picture (cropped and turned, 0..1) is in the developed picture as recorded (0..1).
     ``shape`` is the developed picture's width and height."""
+    from .raw_perspective import warped_to_recorded
+
     c = {**DEFAULT_CROP, **crop}
     u, v = view_to_frame(u, v, c, shape=(shape[0] * c["w"], shape[1] * c["h"]))
-    return c["x"] + u * c["w"], c["y"] + v * c["h"]
+    return warped_to_recorded(c["x"] + u * c["w"], c["y"] + v * c["h"], c, shape)
 
 
 def rect_to_view(crop):
@@ -201,6 +220,10 @@ def _crop_to_file(source, destination, crop):
     del reader
     if image.isNull():
         raise ValueError("The full-resolution crop source could not be decoded")
+    if transformed(crop):
+        from .raw_perspective import warp
+
+        image = warp(image, {**DEFAULT_CROP, **crop})
     if framed(crop):
         image = image.copy(*bounds(crop, image.width(), image.height()))
     if turned(crop):

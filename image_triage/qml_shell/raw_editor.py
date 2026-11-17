@@ -231,6 +231,12 @@ class RawEditor(QObject):
         from ..raw_crop import framed
         crop = self.values["hostCrop"]
         parts = []
+        if not self._source_view or self._crop_editing:
+            from ..raw_perspective import query as perspective_query
+
+            warp = perspective_query({**DEFAULT_CROP, **crop})      # masks and retouching are drawn on the picture as recorded
+            if warp:
+                parts.append(warp)
         if not self._crop_editing and clip["w"] > 0 and framed(crop):
             parts.append("crop=" + ",".join(str(clip[key]) for key in ("x", "y", "w", "h")))
         if not self._source_view or self._crop_editing:
@@ -274,7 +280,11 @@ class RawEditor(QObject):
         from ..raw_crop import view_to_frame, view_to_source
         crop = self.values["hostCrop"]
         if self._crop_editing:
-            return view_to_frame(x, y, crop, quarter_only=True)
+            from ..raw_perspective import warped_to_recorded
+
+            u, v = view_to_frame(x, y, crop, quarter_only=True)
+            shape = tuple(self._full_size) if min(self._full_size) > 0 else (1.0, 1.0)
+            return warped_to_recorded(u, v, {**DEFAULT_CROP, **crop}, shape)
         if self._source_view:
             return crop["x"] + x * crop["w"], crop["y"] + y * crop["h"]
         return view_to_source(x, y, crop, shape=tuple(self._full_size) if min(self._full_size) > 0 else (1.0, 1.0))
@@ -316,6 +326,106 @@ class RawEditor(QObject):
         angle = max(-MAX_ANGLE, min(MAX_ANGLE, round(angle, 2)))
         crop["angle"] = -angle if crop["flipH"] != crop["flipV"] else angle
         self._set_values({"hostCrop": crop}, "Straighten", render=False)
+
+    @Slot(str, float)
+    def setTransform(self, key, value):
+        """Crop > Transform: one of the perspective sliders (``raw_perspective``), or Constrain crop (1 or 0)."""
+        from ..raw_perspective import KEYS, RANGES
+        if key not in KEYS or not math.isfinite(value):
+            return
+        crop = self.values["hostCrop"]
+        if key in ("vertical", "horizontal") and crop.get("upright", "off") != "guided":
+            crop.pop("upright", None)            # moved by hand: no longer what an Upright mode found
+        if key == "constrain":
+            crop["constrain"] = bool(value)
+        else:
+            low, high = RANGES[key]
+            crop[key] = round(max(low, min(high, float(value))), 1)
+        self._set_values({"hostCrop": crop}, "Transform", render=False)
+
+    def _shown_crop_angle(self, crop, angle):
+        """A straighten angle as seen (clockwise) as it is stored (a single mirror reverses it), as ``setCropAngle`` does."""
+        from ..raw_crop import MAX_ANGLE
+        angle = max(-MAX_ANGLE, min(MAX_ANGLE, round(angle, 2)))
+        return -angle if crop["flipH"] != crop["flipV"] else angle
+
+    def _solved(self, crop, lines, mode):
+        from ..raw_upright import solve
+        width, height = self._full_size if min(self._full_size) > 0 else (3, 2)
+        shown = (height, width) if crop.get("rotate") in (90, 270) else (width, height)
+        result = solve(lines, *shown, mode)
+        crop.update(vertical=result["vertical"], horizontal=result["horizontal"], upright=mode)
+        crop["angle"] = self._shown_crop_angle(crop, result["angle"])
+        return crop
+
+    @Slot(str)
+    def setUpright(self, mode):
+        """Crop > Transform > Upright: Off, Auto, Level, Vertical or Full solve the sliders from the lines found in the photo; Guided
+        from the guides drawn on it."""
+        from ..raw_upright import MODES, auto_lines
+        from ..raw_crop import turn
+        if mode not in MODES or not self._loaded or self._saving:
+            return
+        crop = self.values["hostCrop"]
+        if mode == "off":
+            from ..raw_perspective import KEYS
+            crop = {k: v for k, v in crop.items() if k not in ("upright", "guides", "vertical", "horizontal")}
+            self._set_values({"hostCrop": crop}, "Upright off", render=False)
+            return
+        if mode == "guided":
+            crop["upright"] = "guided"
+            crop = self._solved(crop, crop.get("guides", []), "guided") if crop.get("guides") else crop
+            self._set_values({"hostCrop": crop}, "Guided upright", render=False)
+            return
+        from PySide6.QtGui import QImage
+        image = raw_preview.frame_image(self._preview) if self._preview.startswith("image://") else QImage(self._preview)
+        if image.isNull():
+            return
+        shown = turn(image, {**crop, "angle": 0.0}, quarter_only=True)
+        lines = auto_lines(shown, mode)
+        crop.pop("guides", None)
+        self._set_values({"hostCrop": self._solved(crop, lines, mode)}, f"Upright {mode}", render=False)
+
+    @Property("QVariantList", notify=changed)
+    def uprightGuides(self):
+        """The guides as the crop tool shows them (over the warped frame, 0..1)."""
+        from ..raw_perspective import apply, shown_homography
+        crop = {**DEFAULT_CROP, **self.values["hostCrop"]}
+        width, height = self._full_size if min(self._full_size) > 0 else (3, 2)
+        h, sw, sh = shown_homography(crop, width, height)
+        shown = []
+        for x1, y1, x2, y2 in crop.get("guides", []):
+            a, b = apply(h, x1 * sw, y1 * sh), apply(h, x2 * sw, y2 * sh)
+            shown.append([a[0] / sw, a[1] / sh, b[0] / sw, b[1] / sh])
+        return shown
+
+    @Slot(float, float, float, float)
+    def addGuide(self, x1, y1, x2, y2):
+        """A guide drawn in the crop tool (0..1 over the warped frame) on a line that should be vertical or horizontal."""
+        from ..raw_perspective import _inv, apply, shown_homography
+        from ..raw_upright import MAX_GUIDES
+        if not all(math.isfinite(v) for v in (x1, y1, x2, y2)) or math.hypot(x2 - x1, y2 - y1) < 0.02:
+            return
+        crop = self.values["hostCrop"]
+        width, height = self._full_size if min(self._full_size) > 0 else (3, 2)
+        h, sw, sh = shown_homography({**DEFAULT_CROP, **crop}, width, height)
+        back = _inv(h)
+        a, b = apply(back, x1 * sw, y1 * sh), apply(back, x2 * sw, y2 * sh)
+        guides = list(crop.get("guides", []))[-(MAX_GUIDES - 1):] + [[round(a[0] / sw, 5), round(a[1] / sh, 5), round(b[0] / sw, 5), round(b[1] / sh, 5)]]
+        crop["guides"] = guides
+        self._set_values({"hostCrop": self._solved(crop, guides, "guided")}, "Upright guide", render=False)
+
+    @Slot()
+    def clearGuides(self):
+        crop = {k: v for k, v in self.values["hostCrop"].items() if k not in ("guides", "vertical", "horizontal")}
+        crop["upright"] = "guided"
+        self._set_values({"hostCrop": crop}, "Clear guides", render=False)
+
+    @Slot()
+    def resetTransform(self):
+        from ..raw_perspective import KEYS, EXTRA
+        crop = {k: v for k, v in self.values["hostCrop"].items() if k not in KEYS and k not in EXTRA}
+        self._set_values({"hostCrop": crop}, "Reset transform", render=False)
 
     @Property("QVariantMap", notify=changed)
     def previewClip(self):
@@ -545,7 +655,9 @@ class RawEditor(QObject):
 
     @Slot()
     def resetCrop(self):
-        self._set_values({"hostCrop": dict(DEFAULT_CROP)}, "Reset crop", render=False)
+        from ..raw_perspective import KEYS
+        kept = {k: v for k, v in self.values["hostCrop"].items() if k in KEYS}      # Reset transform has its own button
+        self._set_values({"hostCrop": {**DEFAULT_CROP, **kept}}, "Reset crop", render=False)
 
     @Slot()
     def beginGesture(self):

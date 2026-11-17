@@ -13,6 +13,9 @@ Item {
     property point lastPoint: Qt.point(0, 0)
     property var startRect: ({x: 0, y: 0, w: 1, h: 1})
     property bool free: false
+    // Upright > Guided: drags draw guides on lines that should be vertical or horizontal, instead of a crop
+    readonly property bool guiding: model.values.hostCrop.upright === "guided"
+    property point guideEnd: Qt.point(0, 0)
     readonly property string preset: model.values.hostCrop.ratio
     readonly property real ratio: preset === "Free" ? 0 : preset === "Original" ? width / Math.max(1, height) : Number(preset.split(":")[0]) / Number(preset.split(":")[1])
     function sync() {
@@ -78,8 +81,42 @@ Item {
             }
         }
     }
+    Repeater {
+        model: crop.guiding ? crop.model.uprightGuides : []
+        delegate: Item {
+            required property var modelData
+            anchors.fill: parent
+            Rectangle {
+                x: modelData[0] * crop.width; y: modelData[1] * crop.height
+                width: Math.hypot((modelData[2] - modelData[0]) * crop.width, (modelData[3] - modelData[1]) * crop.height); height: 2
+                transformOrigin: Item.Left
+                rotation: Math.atan2((modelData[3] - modelData[1]) * crop.height, (modelData[2] - modelData[0]) * crop.width) * 180 / Math.PI
+                color: "#ffd84a"
+            }
+        }
+    }
+    Rectangle {
+        objectName: "rawGuideDraft"
+        visible: crop.guiding && crop.dragging
+        x: crop.origin.x; y: crop.origin.y; height: 2; transformOrigin: Item.Left; color: "#ffd84a"
+        width: Math.hypot(crop.guideEnd.x - crop.origin.x, crop.guideEnd.y - crop.origin.y)
+        rotation: Math.atan2(crop.guideEnd.y - crop.origin.y, crop.guideEnd.x - crop.origin.x) * 180 / Math.PI
+    }
+    MouseArea {
+        objectName: "rawGuideInput"
+        visible: crop.guiding; enabled: crop.guiding
+        anchors.fill: parent; acceptedButtons: Qt.LeftButton; preventStealing: true; cursorShape: Qt.CrossCursor; z: 2
+        onPressed: (event) => { crop.origin = Qt.point(event.x, event.y); crop.guideEnd = crop.origin; crop.dragging = true }
+        onPositionChanged: (event) => { if (pressed) crop.guideEnd = Qt.point(Math.max(0, Math.min(crop.width, event.x)), Math.max(0, Math.min(crop.height, event.y))) }
+        onReleased: {
+            crop.dragging = false
+            crop.model.addGuide(crop.origin.x / crop.width, crop.origin.y / crop.height, crop.guideEnd.x / crop.width, crop.guideEnd.y / crop.height)
+        }
+        onCanceled: crop.dragging = false
+    }
     MouseArea {
         objectName: "rawCropInput"
+        enabled: !crop.guiding
         anchors.fill: parent; anchors.margins: -4; acceptedButtons: Qt.LeftButton; preventStealing: true; hoverEnabled: true
         cursorShape: crop.dragging && crop.kind === "move" ? Qt.ClosedHandCursor : Qt.CrossCursor
         onPressed: (event) => {

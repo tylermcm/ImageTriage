@@ -34,6 +34,12 @@ class _Images(QQuickImageProvider):
         options = dict(part.split("=", 1) for part in query.split("&") if "=" in part)
         with _frame_lock:
             image = (_thumbnails if key.startswith("thumb/") else _frames).get(key, QImage())
+        if options.get("persp") and not image.isNull():
+            from ..raw_perspective import from_query, warp
+
+            settings = from_query(options["persp"])
+            if settings is not None:
+                image = warp(image, settings)        # the whole frame first: the crop rectangle is in the warped picture
         clip = options.get("crop", "")
         if clip and not image.isNull():
             try:
