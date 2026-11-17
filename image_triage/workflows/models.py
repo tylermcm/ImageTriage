@@ -38,6 +38,7 @@ class WorkflowRecipe:
     strip_metadata: bool = False
     rename_prefix: str = ""
     rename_suffix: str = ""
+    export_preset: str = ""          # a Batch Export preset's name; empty: the fields above describe the export
 
     @property
     def uses_transform_export(self) -> bool:
@@ -206,6 +207,7 @@ def serialize_workflow_recipe(recipe: WorkflowRecipe) -> dict[str, object]:
         "strip_metadata": recipe.strip_metadata,
         "rename_prefix": recipe.rename_prefix,
         "rename_suffix": recipe.rename_suffix,
+        "export_preset": recipe.export_preset,
     }
 
 
@@ -231,6 +233,7 @@ def deserialize_workflow_recipe(payload: dict[str, object] | None) -> WorkflowRe
         strip_metadata=bool(payload.get("strip_metadata", False)),
         rename_prefix=str(payload.get("rename_prefix") or ""),
         rename_suffix=str(payload.get("rename_suffix") or ""),
+        export_preset=str(payload.get("export_preset") or "")[:60],
     )
 
 
@@ -279,9 +282,11 @@ def recipe_summary_lines(recipe: WorkflowRecipe) -> tuple[str, ...]:
     lines: list[str] = []
     if recipe.uses_transform_export:
         output_parts = ["Export primary deliverables"]
-        if recipe.convert_suffix:
+        if recipe.export_preset:
+            output_parts.append(f"with the {recipe.export_preset} export preset")
+        elif recipe.convert_suffix:
             output_parts.append(f"as {recipe.convert_suffix.upper().lstrip('.')}")
-        if recipe.resize_preset_key:
+        if recipe.resize_preset_key and not recipe.export_preset:
             output_parts.append(f"using {preset_for_key(recipe.resize_preset_key).name}")
         if recipe.rename_prefix or recipe.rename_suffix:
             output_parts.append("with filename affixes")

@@ -159,6 +159,7 @@ class BatchModel(QObject):
                                       item.message, "" if item.status == "Error" else where, overwrite_tone="g3"))
             errors, ok, count = plan.error_count, plan.can_apply, len(plan.executable)
             fmt = next(label for key, label, _ in pipeline.FORMATS if key == plan.values["format"])
+            fmt = "Each photo's own format" if plan.values["format"] == "original" else fmt
             if plan.values["profile"] == "file" and plan.values["profileFile"]:
                 from ..soft_proof import profile_name
 

@@ -63,7 +63,11 @@ paper and ink* (absolute colorimetric to the screen) and a *Gamut warning* found
 profiles are taken, CMYK output is refused; a 16-bit export to an ICC profile file is written with 8 bits), 4 (`raw_soft_proof.py`: a **Proof** button in the RAW editor's
 header opens the settings (profile or ICC file, intent, black point compensation, paper and ink, gamut warning) with an on/off
 switch; only the displayed picture is proofed, through the image provider (`proof=` in its address), so the render, the recipe and the
-frames the AI tools read are unchanged; the settings are remembered, proofing starts off each session).
+frames the AI tools read are unchanged; the settings are remembered, proofing starts off each session), 5 (Handoff workflows export
+through the same pipeline: a workflow can name an export preset (Handoff window, OUTPUT > Export preset), which then decides size,
+format, colour, sharpening, watermark and metadata; a workflow without one, or whose preset was deleted, has its own resize, format,
+strip-metadata and name fields mapped onto the pipeline at run time (no stored data is rewritten); "Keep Original Format" became the
+pipeline's "Same as the photo" format).
 
 1. Export pipeline + Export mode (size, format, colour, metadata, name, destination) replacing Resize/Convert, with the preview
    pane. Presets (save, load, built-ins).

@@ -45,6 +45,42 @@ class WorkflowExportPlan:
     error_count: int
     can_apply: bool
     general_error: str = ""
+    values: dict | None = None       # the Batch Export settings the files are written with
+
+
+_LEGACY_FORMATS = {".jpg": "jpg", ".jpeg": "jpg", ".png": "png", ".tif": "tif", ".tiff": "tif", ".webp": "webp"}
+
+
+def recipe_export_values(recipe: WorkflowRecipe) -> dict:
+    """The Batch Export settings a workflow exports with: its export preset's, or, for a workflow made before presets (or whose
+    preset was deleted), the same export described by its own resize, format, metadata and name fields. The workflow's own
+    name prefix and suffix, when it has them, are used in either case."""
+    from .. import export_pipeline as pipeline
+    from ..export_presets import PresetStore
+
+    values = PresetStore().get(recipe.export_preset) if recipe.export_preset else None
+    if values is None:
+        values = dict(pipeline.DEFAULTS)
+        if recipe.resize_preset_key:
+            preset = preset_for_key(recipe.resize_preset_key)
+            if preset.width > 0 and preset.height > 0:
+                values.update(sizeMode="fit", fitW=str(preset.width), fitH=str(preset.height), noEnlarge=True)
+        values["format"] = _LEGACY_FORMATS.get(_normalized_output_suffix(recipe.convert_suffix), "original")
+        values["meta"] = "none" if recipe.strip_metadata else "all"
+    values = dict(values)
+    if recipe.rename_prefix or recipe.rename_suffix:
+        values["xPrefix"], values["xSuffix"] = recipe.rename_prefix, recipe.rename_suffix
+    return pipeline.normalized(values)
+
+
+def _output_label(values: dict) -> str:
+    from .. import export_pipeline as pipeline
+
+    fmt = "Original format" if values["format"] == "original" else next(l for k, l, _ in pipeline.FORMATS if k == values["format"])
+    size = values["sizeMode"]
+    size_label = {"original": "Original Size", "long": f"{values['long']} px long edge", "short": f"{values['short']} px short edge",
+                  "fit": f"fits {values['fitW']} x {values['fitH']}", "mp": f"{values['mp']} MP", "pct": f"{values['pct']}%"}[size]
+    return f"{fmt} | {size_label}"
 
 
 def build_workflow_export_plan(
@@ -53,104 +89,34 @@ def build_workflow_export_plan(
     *,
     destination_dir: str,
 ) -> WorkflowExportPlan:
-    normalized_destination = str(Path(destination_dir).expanduser())
+    """The workflow's export as a Batch Export plan into ``destination_dir`` (the files get a number when a name is taken)."""
+    from .. import export_pipeline as pipeline
+
+    normalized_destination = str(Path(destination_dir).expanduser()) if destination_dir else ""
     if not normalized_destination:
-        return WorkflowExportPlan(
-            recipe=recipe,
-            destination_dir="",
-            items=(),
-            executable_items=(),
-            output_label="",
-            error_count=1,
-            can_apply=False,
-            general_error="Choose a destination folder.",
-        )
-
-    destination_path = Path(normalized_destination)
-    final_suffix = _normalized_output_suffix(recipe.convert_suffix)
-    if final_suffix and final_suffix not in OUTPUT_FORMAT_NAMES:
-        return WorkflowExportPlan(
-            recipe=recipe,
-            destination_dir=normalized_destination,
-            items=(),
-            executable_items=(),
-            output_label="",
-            error_count=1,
-            can_apply=False,
-            general_error="Choose a supported export format.",
-        )
-
-    width = 0
-    height = 0
-    size_label = ""
-    if recipe.resize_preset_key:
-        preset = preset_for_key(recipe.resize_preset_key)
-        width = max(0, preset.width)
-        height = max(0, preset.height)
-        size_label = preset.name
-
+        return WorkflowExportPlan(recipe=recipe, destination_dir="", items=(), executable_items=(), output_label="", error_count=1,
+                                  can_apply=False, general_error="Choose a destination folder.")
+    values = {**recipe_export_values(recipe), "dest": "choose", "folder": normalized_destination, "exists": "unique"}
+    present = [s for s in sources if s.source_path and os.path.exists(s.source_path)]
+    plan = pipeline.build_plan([pipeline.ExportSource(s.source_path, s.source_name) for s in present], values)
+    by_path = {item.source.path: item for item in plan.items}
     items: list[WorkflowExportItem] = []
-    executable: list[WorkflowExportItem] = []
-    reserved_targets: set[str] = set()
-    error_count = 0
-
     for source in sources:
-        if not source.source_path or not os.path.exists(source.source_path):
-            item = WorkflowExportItem(
-                source=source,
-                target_path=source.source_path,
-                target_name=source.source_name,
-                target_suffix=final_suffix or suffix_for_path(source.source_path) or ".jpg",
-                width=width,
-                height=height,
-                status="Error",
-                message="Source file is missing.",
-            )
-            items.append(item)
-            error_count += 1
+        item = by_path.get(source.source_path)
+        if item is None:
+            items.append(WorkflowExportItem(source=source, target_path=source.source_path, target_name=source.source_name,
+                                            target_suffix=suffix_for_path(source.source_path) or ".jpg", width=0, height=0,
+                                            status="Error", message="Source file is missing."))
             continue
-
-        source_suffix = suffix_for_path(source.source_path)
-        target_suffix = final_suffix or source_suffix or ".jpg"
-        if target_suffix not in OUTPUT_FORMAT_NAMES:
-            target_suffix = ".jpg"
-        target_name = _export_target_name(
-            source.source_name,
-            target_suffix,
-            recipe.rename_prefix,
-            recipe.rename_suffix,
-        )
-        target_path = _unique_export_target_path(destination_path, target_name, reserved_targets)
-        reserved_targets.add(normalized_path_key(target_path))
-        item = WorkflowExportItem(
-            source=source,
-            target_path=target_path,
-            target_name=Path(target_path).name,
-            target_suffix=target_suffix,
-            width=width,
-            height=height,
-            status="Export",
-            message="",
-        )
-        items.append(item)
-        executable.append(item)
-
-    output_label_parts: list[str] = []
-    if final_suffix:
-        output_label_parts.append(OUTPUT_FORMAT_NAMES.get(final_suffix, final_suffix.upper().lstrip(".")))
-    if size_label:
-        output_label_parts.append(size_label)
-
-    return WorkflowExportPlan(
-        recipe=recipe,
-        destination_dir=normalized_destination,
-        items=tuple(items),
-        executable_items=tuple(executable),
-        output_label=" | ".join(output_label_parts) if output_label_parts else "Original Size",
-        error_count=error_count,
-        can_apply=bool(executable) and error_count == 0,
-        general_error="",
-    )
+        items.append(WorkflowExportItem(source=source, target_path=item.target_path, target_name=item.target_name,
+                                        target_suffix=Path(item.target_path).suffix, width=0, height=0, status=item.status,
+                                        message=item.message))
+    executable = tuple(i for i in items if i.status in ("Export", "Overwrite"))
+    errors = sum(1 for i in items if i.status == "Error")
+    return WorkflowExportPlan(recipe=recipe, destination_dir=normalized_destination, items=tuple(items), executable_items=executable,
+                              output_label=_output_label(plan.values), error_count=errors,
+                              can_apply=bool(executable) and errors == 0 and not plan.general_error,
+                              general_error=plan.general_error, values=plan.values)
 
 
 def apply_workflow_export_plan(
@@ -158,28 +124,18 @@ def apply_workflow_export_plan(
     *,
     progress_callback=None,
 ) -> tuple[str, ...]:
+    from .. import export_pipeline as pipeline
+
     if not plan.executable_items:
         return ()
-
     written_paths: list[str] = []
     failed: list[tuple[str, str]] = []
-    notes: list[str] = []
     total = len(plan.executable_items)
     for index, item in enumerate(plan.executable_items, start=1):
-        target_size = QSize(item.width, item.height) if item.width > 0 and item.height > 0 else QSize()
+        export = pipeline.ExportItem(pipeline.ExportSource(item.source.source_path, item.source.source_name), item.target_path,
+                                     item.target_name, item.status)
         try:
-            loaded = load_image_for_export(item.source.source_path, target_size=target_size, ignore_orientation=False,
-                                           strip_metadata=plan.recipe.strip_metadata)
-            image = loaded.image
-            if item.width > 0 and item.height > 0:
-                image = _scaled_image(image, target_size=QSize(item.width, item.height), shrink_only=True)
-            note = _save_resized_image(
-                image,
-                target_path=item.target_path,
-                target_suffix=item.target_suffix,
-                exif_bytes=None if plan.recipe.strip_metadata else loaded.exif_bytes,
-                icc_profile=None if plan.recipe.strip_metadata else loaded.icc_profile,
-            )
+            pipeline.export_item(export, plan.values)
         except EditedRenderFailed as error:
             failed.append((item.source.source_path, error.reason))
             if progress_callback is not None:
@@ -191,12 +147,10 @@ def apply_workflow_export_plan(
             if progress_callback is not None:
                 progress_callback(index, total, f"Left out {item.source.source_name}")
             continue
-        if note:
-            notes.append(note)
         written_paths.append(item.target_path)
         if progress_callback is not None:
             progress_callback(index, total, f"Saved {item.target_name}")
-    return BatchOutcome(written_paths, failed, notes)
+    return BatchOutcome(written_paths, failed)
 
 
 class WorkflowExportSignals(QObject):

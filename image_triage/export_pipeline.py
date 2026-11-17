@@ -34,7 +34,10 @@ DEFAULTS: dict[str, object] = {
 
 SIZE_MODES = (("original", "Original size"), ("long", "Long edge"), ("short", "Short edge"), ("fit", "Fit within"),
               ("mp", "Megapixels"), ("pct", "Percentage"))
-FORMATS = (("jpg", "JPEG", ".jpg"), ("png", "PNG", ".png"), ("tif", "TIFF", ".tif"), ("webp", "WebP", ".webp"))
+FORMATS = (("jpg", "JPEG", ".jpg"), ("png", "PNG", ".png"), ("tif", "TIFF", ".tif"), ("webp", "WebP", ".webp"),
+           ("original", "Same as the photo", ""))
+_FORMAT_OF_SUFFIX = {".jpg": "jpg", ".jpeg": "jpg", ".jpe": "jpg", ".jfif": "jpg", ".png": "png", ".tif": "tif", ".tiff": "tif",
+                     ".webp": "webp"}
 PROFILES = (("srgb", "sRGB"), ("p3", "Display P3"), ("adobergb", "Adobe RGB (1998)"), ("prophoto", "ProPhoto RGB"),
             ("source", "Same as the photo"), ("file", "ICC profile file (printer and paper)"))
 INTENTS = (("perceptual", "Perceptual"), ("relative", "Relative colorimetric"), ("saturation", "Saturation"))
@@ -90,8 +93,17 @@ def normalized(values: dict | None) -> dict:
     return result
 
 
-def suffix_of(values: dict) -> str:
-    return next(s for f, _, s in FORMATS if f == values["format"])
+def format_for(values: dict, source_path: str = "") -> str:
+    """The format written for a photo: the chosen one, or (for "Same as the photo") the photo's own when it is one of the formats
+    written here, otherwise JPEG (a RAW photo's export is a JPEG)."""
+    if values["format"] != "original":
+        return values["format"]
+    return _FORMAT_OF_SUFFIX.get(Path(source_path).suffix.lower(), "jpg")
+
+
+def suffix_of(values: dict, source_path: str = "") -> str:
+    fmt = format_for(values, source_path)
+    return next(s for f, _, s in FORMATS if f == fmt)
 
 
 def output_size(width: int, height: int, values: dict) -> tuple[int, int]:
@@ -332,6 +344,8 @@ def filtered_exif(exif_bytes: bytes | None, mode: str) -> bytes | None:
 
 def encode(image: QImage, values: dict, exif_bytes: bytes | None) -> bytes:
     """The file's bytes for a prepared picture. JPEG and WebP are 8-bit; PNG and TIFF are 8- or 16-bit as asked."""
+    if values["format"] == "original":
+        values = {**values, "format": "jpg"}        # resolved per photo by export_item; a preview estimates as JPEG
     fmt = values["format"]
     if values["profile"] == "file":
         icc = output_icc(values, None)            # Qt may not read a lookup-table profile back, so it is not taken from the picture
@@ -417,10 +431,10 @@ def build_plan(sources: list[ExportSource], values: dict) -> ExportPlan:
         general = "Choose the folder to export to."
     if not general and any(c in values["sub"] for c in '<>:"/\\|?*'):
         general = "The folder name cannot hold < > : \" / \\ | ? *"
-    suffix = suffix_of(values)
     reserved: set[str] = set()
     items: list[ExportItem] = []
     for source in sources:
+        suffix = suffix_of(values, source.path)
         folder = destination_for(source.path, values)
         name = _clean(values["xPrefix"]) + Path(source.name).stem + _clean(values["xSuffix"]) + suffix
         if folder is None:
@@ -467,6 +481,7 @@ def load_source(path: str):
 
 
 def export_item(item: ExportItem, values: dict, loader=load_source) -> None:
+    values = {**values, "format": format_for(values, item.source.path)}
     image, exif, icc = loader(item.source.path)
     data = encode(prepare(image, icc, values), values, exif)
     target = Path(item.target_path)

@@ -204,6 +204,8 @@ FocusScope {
                         // OUTPUT
                         Head { title: "OUTPUT" }
                         Item { width: 1; height: root.rowGap }
+                        Pick { label: "Export preset"; key: "preset"; off: root.dis("preset") }
+                        Item { width: 1; height: root.rowGap }
                         Pick { label: "Resize"; key: "resize"; off: root.dis("resize") }
                         Item { width: 1; height: root.rowGap }
                         Pick { label: "Convert"; key: "convert"; off: root.dis("convert") }
