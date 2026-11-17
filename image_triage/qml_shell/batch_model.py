@@ -1,10 +1,13 @@
-"""Batch rename, resize and convert for the QML shell.
+"""Batch rename and export for the QML shell.
 
-The plans are built by the shared planners (`batch_rename.build_batch_rename_preview`, `image_resize.build_resize_plan`,
-`image_convert.build_convert_plan`), so names, statuses, error messages and what blocks Apply are identical. The scope is every photo the
-grid shows. **Applying is real** (not for the sample photos of `--mock`): rename runs the Widgets' `BatchRenameApplyTask`, resize and convert their
-`ResizeApplyTask` / `ConvertApplyTask`, on a worker thread with a toast that follows the progress. A rename moves the saved decisions with the files
-and can be undone (Ctrl+Z); resize and convert write copies (or overwrite, if the option says so) and have no undo, as in the backend.
+Export (``export_pipeline``) replaced the separate resize and convert tools: it sizes, converts the colour profile, encodes, filters
+the metadata and names the files in one pass, with export presets (``export_presets``) and a result preview of the selected photo.
+The old ``resize`` and ``convert`` commands open Export with the size step (or the original size) filled in.
+
+
+Rename uses the shared planner (`batch_rename.build_batch_rename_preview`). The scope is every photo the grid shows. **Applying is
+real** (not for the sample photos of `--mock`), on a worker thread with a toast that follows the progress. A rename moves the saved
+decisions with the files and can be undone (Ctrl+Z); an export writes new files and leaves the originals alone.
 """
 from __future__ import annotations
 
@@ -16,22 +19,28 @@ from pathlib import Path
 from PySide6.QtCore import Property, QObject, Qt, QThreadPool, Signal, Slot
 
 from ..batch_rename import BatchRenameRules, RenameCaseMode, build_batch_rename_preview
-from ..image_convert import ConvertOptions, ConvertSourceItem, build_convert_plan, convert_formats, format_for_suffix
-from ..image_resize import ResizeOptions, ResizeSourceItem, build_resize_plan, preset_for_key, resize_presets
+import threading
+from collections import OrderedDict
+
+from .. import export_pipeline as pipeline
+from ..export_presets import PresetStore
 from ..models import ImageRecord
 
-MODES = ("rename", "resize", "convert")
-TITLES = {"rename": "Batch rename", "resize": "Batch resize", "convert": "Batch convert"}
-LABELS = {"rename": "Apply rename", "resize": "Resize", "convert": "Convert"}
+MODES = ("rename", "export")
+ALIASES = {"resize": "export", "convert": "export"}      # the old tools' commands open Export
+TITLES = {"rename": "Batch rename", "export": "Batch export"}
+LABELS = {"rename": "Apply rename", "export": "Export"}
 PREVIEW_ROW_LIMIT = 1200          # the Widgets dialogs show the first 1200 rows and validate the whole batch
 SOURCE_LIMIT = 20000
-_TONE = {"Rename": "g1", "Unchanged": "", "Error": "g4", "Copy": "g1", "Convert": "g2"}
+_TONE = {"Rename": "g1", "Unchanged": "", "Error": "g4", "Copy": "g1", "Convert": "g2", "Export": "g1", "Skip": ""}
 
 _DEFAULTS = {
     "newName": "", "prefix": "", "suffix": "", "case": RenameCaseMode.KEEP.value, "collapse": False, "seq": True,
     "start": 1, "step": 1, "pad": 3, "sep": "_",
-    "preset": "small", "cw": "1920", "ch": "1080", "shrink": False, "ignOri": False, "over": False, "strip": False, "fmt": ".png",
+    **pipeline.DEFAULTS, "xPreset": "",
 }
+_EXPORT_KEYS = tuple(pipeline.DEFAULTS)
+_KEPT_SOURCES = 3
 _LIMITS = {"start": (0, 999999), "step": (1, 999999), "pad": (0, 8)}
 
 
@@ -44,7 +53,9 @@ def _int(text, default: int = 0) -> int:
 
 class BatchModel(QObject):
     revisionChanged = Signal()
+    previewChanged = Signal()
     applied = Signal(str, int)          # mode, how many items the plan would have touched
+    _previewReady = Signal(int, object, str)
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None, toasts=None) -> None:
         super().__init__(parent)
@@ -54,7 +65,7 @@ class BatchModel(QObject):
         self._toast_id = 0
         self._done = None
         self._signals = None
-        self._exec: tuple = ()           # what Apply would run: ("rename", preview, None) or ("resize" | "convert", plan, options)
+        self._exec: tuple = ()           # what Apply would run: ("rename", preview, None) or ("export", plan, None)
         self._memory = memory
         self._mode = "rename"
         self._v: dict[str, object] = dict(_DEFAULTS)
@@ -62,6 +73,16 @@ class BatchModel(QObject):
         self._stage: str = ""            # --mock: empty files named like the sample photos, so the planners have real paths to look at
         self._revision = 0
         self._active = False
+        self._store = PresetStore()
+        self._batch_cache: list[dict] = []
+        self._pindex = 0
+        self._pgen = 0
+        self._pbusy = False
+        self._before = self._after = ""
+        self._pinfo = self._perror = ""
+        self._sources: OrderedDict = OrderedDict()   # path -> (image, exif, icc), the last few photos previewed
+        self._sources_lock = threading.Lock()
+        self._previewReady.connect(self._preview_arrived)
         photos.selectionChanged.connect(self._photos_changed)
         photos.countsChanged.connect(self._photos_changed)      # the folder finished loading, or a filter changed what is shown
 
@@ -99,7 +120,7 @@ class BatchModel(QObject):
         return out
 
     def _compute(self) -> None:
-        batch = self._batch()
+        batch = self._batch_cache = self._batch()
         v = self._v
         mode = self._mode
         rows: list[dict] = []
@@ -128,39 +149,23 @@ class BatchModel(QObject):
             foot = (f"Fix {errors} {'error' if errors == 1 else 'errors'} before renaming." if errors
                     else f"The preview is clean. {preview.renamed_count} will be renamed." if preview.renamed_count else "Nothing would change.")
             count = preview.renamed_count
-        elif mode == "resize":
-            options = ResizeOptions(
-                preset_key=str(v["preset"]), custom_width=_int(v["cw"]), custom_height=_int(v["ch"]), shrink_only=bool(v["shrink"]),
-                ignore_orientation=bool(v["ignOri"]), overwrite=bool(v["over"]), strip_metadata=bool(v["strip"]),
-            )
-            plan = build_resize_plan([ResizeSourceItem(b["path"], b["name"]) for b in batch], options)
-            self._exec = ("resize", plan, options)
-            thumbs = {b["path"]: b["thumb"] for b in batch}
-            for item in plan.items[:PREVIEW_ROW_LIMIT]:
-                rows.append(self._row(thumbs.get(item.source.source_path, ""), item.source.source_name, item.target_name or item.source.source_name,
-                                      item.status, item.message, "", overwrite_tone="g2"))
-            errors, ok, count = plan.error_count, plan.can_apply, plan.executable_count
-            summary = (f"{plan.error_count} error(s)" if plan.general_error
-                       else f"{plan.executable_count} item(s) | {plan.copy_mode} | fits within {plan.target_width} x {plan.target_height}"
-                       + (f" | {plan.error_count} error(s)" if plan.error_count else ""))
-            foot = (plan.general_error if plan.general_error
-                    else f"Fix {errors} {'error' if errors == 1 else 'errors'} before resizing." if errors
-                    else f"{count} will be resized as {'overwrites' if v['over'] else 'copies'}.")
         else:
-            options = ConvertOptions(output_suffix=str(v["fmt"]), overwrite=bool(v["over"]), strip_metadata=bool(v["strip"]))
-            plan = build_convert_plan([ConvertSourceItem(b["path"], b["name"]) for b in batch], options)
-            self._exec = ("convert", plan, options)
+            plan = pipeline.build_plan([pipeline.ExportSource(b["path"], b["name"]) for b in batch], {k: v[k] for k in _EXPORT_KEYS})
+            self._exec = ("export", plan, None)
             thumbs = {b["path"]: b["thumb"] for b in batch}
             for item in plan.items[:PREVIEW_ROW_LIMIT]:
-                rows.append(self._row(thumbs.get(item.source.source_path, ""), item.source.source_name, item.target_name or item.source.source_name,
-                                      item.status, item.message, "", overwrite_tone="g3"))
-            errors, ok, count = plan.error_count, plan.can_apply, plan.executable_count
+                where = str(Path(item.target_path).parent) if item.target_path else ""
+                rows.append(self._row(thumbs.get(item.source.path, ""), item.source.name, item.target_name, item.status,
+                                      item.message, "" if item.status == "Error" else where, overwrite_tone="g3"))
+            errors, ok, count = plan.error_count, plan.can_apply, len(plan.executable)
+            fmt = next(label for key, label, _ in pipeline.FORMATS if key == plan.values["format"])
+            profile = next(label for key, label in pipeline.PROFILES if key == plan.values["profile"])
             summary = (plan.general_error if plan.general_error
-                       else f"{plan.executable_count} item(s) | {plan.copy_mode} | {plan.output_label}"
-                       + (f" | {plan.error_count} error(s)" if plan.error_count else ""))
+                       else f"{count} file(s) | {fmt} | {profile}" + (f" | {plan.skip_count} skipped" if plan.skip_count else "")
+                       + (f" | {errors} error(s)" if errors else ""))
             foot = (plan.general_error if plan.general_error
-                    else f"Fix {errors} {'error' if errors == 1 else 'errors'} before converting." if errors
-                    else f"{count} will be converted.")
+                    else f"Fix {errors} {'error' if errors == 1 else 'errors'} before exporting." if errors
+                    else f"{count} will be exported." if count else "Nothing to export.")
         self._result = {"rows": rows, "ok": bool(ok), "summary": summary, "foot": foot, "errors": int(errors), "count": int(count), "total": len(batch)}
 
     @staticmethod
@@ -174,18 +179,32 @@ class BatchModel(QObject):
     @Slot(str)
     def begin(self, mode: str) -> None:
         self._active = True
-        self._mode = mode if mode in MODES else "rename"
+        self._mode = self._mode_for(mode)
+        self._pindex = 0
         self._refresh()
 
     @Slot()
     def end(self) -> None:
         self._active = False
+        self._pgen += 1
+        with self._sources_lock:
+            self._sources.clear()
 
     @Slot(str)
     def setMode(self, mode: str) -> None:
-        if mode in MODES and mode != self._mode:
+        mode = self._mode_for(mode)
+        if mode != self._mode:
             self._mode = mode
             self._refresh()
+
+    def _mode_for(self, mode: str) -> str:
+        """The mode to show for a command: resize opens Export with a long edge to fill in, convert with the original size."""
+        if mode == "resize" and self._v["sizeMode"] == "original":
+            self._v["sizeMode"] = "long"
+        elif mode == "convert":
+            self._v["sizeMode"] = "original"
+        mode = ALIASES.get(mode, mode)
+        return mode if mode in MODES else "rename"
 
     @Slot(str, result="QVariant")
     def get(self, key: str):
@@ -206,6 +225,8 @@ class BatchModel(QObject):
             value = str(value)
         if self._v[key] != value:
             self._v[key] = value
+            if key in _EXPORT_KEYS:
+                self._v["xPreset"] = ""        # the settings no longer match the preset they came from
             self._refresh()
 
     @Slot()
@@ -217,10 +238,14 @@ class BatchModel(QObject):
     def options(self, key: str) -> list:
         if key == "case":
             return [{"label": m.value, "value": m.value} for m in RenameCaseMode]
-        if key == "preset":
-            return [{"label": p.name, "value": p.key} for p in resize_presets()]
-        if key == "fmt":
-            return [{"label": f.name, "value": f.suffix} for f in convert_formats()]
+        lists = {"sizeMode": pipeline.SIZE_MODES, "profile": pipeline.PROFILES, "intent": pipeline.INTENTS, "meta": pipeline.METADATA,
+                 "dest": pipeline.DESTINATIONS, "exists": pipeline.EXISTS, "depth": (("8", "8 bits per channel"), ("16", "16 bits per channel"))}
+        if key in lists:
+            return [{"label": label, "value": value} for value, label in lists[key]]
+        if key == "format":
+            return [{"label": label, "value": value} for value, label, _ in pipeline.FORMATS]
+        if key == "xPreset":
+            return [{"label": "Custom", "value": ""}] + [{"label": p["name"], "value": p["name"]} for p in self._store.presets()]
         return []
 
     # -- what the window shows ---------------------------------------------------------------------------------------------------
@@ -234,22 +259,51 @@ class BatchModel(QObject):
         total = self._result.get("total", 0)
         if self._mode == "rename":
             return f"{total} image bundles|in {folder}. A RAW file and its JPG companion rename together, and extensions stay as they are."
-        return f"{total} images|in {folder}. Copies are saved next to the originals unless Overwrite files is on."
+        return f"{total} photos|in {folder}. Photos with edits are exported with them, at full size; the originals are not changed."
+
+    @Slot(str)
+    def usePreset(self, name: str) -> None:
+        """Fill the export settings from a preset (a chosen folder stays as it is)."""
+        values = self._store.get(name)
+        if values is None:
+            return
+        folder = self._v["folder"]
+        self._v.update(values)
+        if self._v["dest"] == "choose":
+            self._v["folder"] = folder
+        self._v["xPreset"] = name
+        self._refresh()
+
+    @Slot(str, result=str)
+    def savePreset(self, name: str) -> str:
+        """Save the current export settings as a preset; returns why it could not be, or ""."""
+        problem = self._store.save(name, {k: self._v[k] for k in _EXPORT_KEYS})
+        if not problem:
+            self._v["xPreset"] = name.strip()
+            self._refresh()
+        return problem
+
+    @Slot(str)
+    def deletePreset(self, name: str) -> None:
+        if self._store.delete(name):
+            if self._v["xPreset"] == name:
+                self._v["xPreset"] = ""
+            self._refresh()
+
+    @Slot(str, result=bool)
+    def presetIsBuiltin(self, name: str) -> bool:
+        return any(p["name"] == name and p["builtin"] for p in self._store.presets())
 
     @Slot(result=str)
-    def presetDesc(self) -> str:
-        key = str(self._v["preset"])
-        return "fits within a custom size" if key == "custom" else preset_for_key(key).description
-
-    @Slot(result=str)
-    def fmtDesc(self) -> str:
-        return format_for_suffix(str(self._v["fmt"])).description
-
-    @Slot(result=str)
-    def note(self) -> str:
-        if self._mode == "resize":
-            return ("Resize can’t be used on RAW files. Formats that cannot be written directly will export as JPG copies when overwrite is off.")
-        return "Convert can’t be used on RAW files. Converted files keep the original dimensions unless you use Resize instead."
+    def sizeDesc(self) -> str:
+        v = pipeline.normalized({k: self._v[k] for k in _EXPORT_KEYS})
+        mode = v["sizeMode"]
+        if mode == "original":
+            return "The photo's own size."
+        enlarge = "" if v["noEnlarge"] else " Smaller photos are enlarged."
+        return {"long": "The longer side becomes this many pixels.", "short": "The shorter side becomes this many pixels.",
+                "fit": "Fits inside this box, keeping its shape.", "mp": "About this many million pixels.",
+                "pct": "This share of the photo's size."}[mode] + enlarge
 
     @Slot()
     def apply(self) -> None:
@@ -261,7 +315,7 @@ class BatchModel(QObject):
         kind, plan, options = self._exec
         self._busy = True
         self.revisionChanged.emit()
-        noun = {"rename": "Renaming", "resize": "Resizing", "convert": "Converting"}[kind]
+        noun = {"rename": "Renaming", "export": "Exporting"}[kind]
         self._toast_id = self._toasts.push("info", f"{noun} {count} photo{'s' if count != 1 else ''}\u2026", "Preparing\u2026", seconds=0) if self._toasts is not None else 0
         if kind == "rename":
             from ..batch_rename import BatchRenameApplyTask
@@ -269,16 +323,9 @@ class BatchModel(QObject):
             task = BatchRenameApplyTask(plan.planned_moves)
             annotations = {row["path"]: row.get("annotation") for row in self._photos.all_rows()}
             self._done = lambda result: self._rename_done(plan, annotations, result)
-        elif kind == "resize":
-            from ..image_resize import ResizeApplyTask
-
-            task = ResizeApplyTask(plan, options)
-            self._done = lambda result: self._copies_done("Resized", result)
         else:
-            from ..image_convert import ConvertApplyTask
-
-            task = ConvertApplyTask(plan, options)
-            self._done = lambda result: self._copies_done("Converted", result)
+            task = pipeline.ExportApplyTask(plan)
+            self._done = lambda result: self._copies_done("Exported", result)
         self._signals = task.signals               # kept: the task is deleted when it has run, and the signals must outlive it
         # bound methods of this object, queued: the results arrive on the UI thread, not on the worker's
         task.signals.progress.connect(self._progress, Qt.ConnectionType.QueuedConnection)
@@ -316,7 +363,8 @@ class BatchModel(QObject):
             if failed:
                 self._toasts.push("warn", f"{verb} {written}, left out {len(failed)}", f"{Path(failed[0][0]).name}: {failed[0][1]}")
             else:
-                self._toasts.push("success", f"{verb} {written} photo{'s' if written != 1 else ''}", "The new files are in the folder.")
+                where = str(Path(outcome[0]).parent) if written else ""
+                self._toasts.push("success", f"{verb} {written} photo{'s' if written != 1 else ''}", f"The files are in {where}." if where else "")
         self._photos.reload()
 
     def _rename_done(self, preview, annotations: dict, moves) -> None:
@@ -382,6 +430,88 @@ class BatchModel(QObject):
         self._compute()
         self._revision += 1
         self.revisionChanged.emit()
+        self._render_preview()
+
+    # -- the result preview --------------------------------------------------------------------------------------------------------
+    def _preview_entry(self) -> dict | None:
+        batch = self._batch_cache
+        if not batch:
+            return None
+        self._pindex = max(0, min(self._pindex, len(batch) - 1))
+        return batch[self._pindex]
+
+    def _render_preview(self) -> None:
+        self._pgen += 1
+        entry = self._preview_entry()
+        if entry is None or not self._active:
+            self._before = self._after = self._pinfo = self._perror = ""
+            self._pbusy = False
+            self.previewChanged.emit()
+            return
+        generation, values, mode = self._pgen, {k: self._v[k] for k in _EXPORT_KEYS}, self._mode
+        path = entry["thumb"] if self._memory else entry["path"]     # the sample photos' staged files are empty
+        self._pbusy = True
+        self.previewChanged.emit()
+
+        def work():
+            result, error = None, ""
+            try:
+                with self._sources_lock:
+                    kept = self._sources.get(path)
+                if kept is None:
+                    kept = pipeline.load_source(path)
+                    with self._sources_lock:
+                        self._sources[path] = kept
+                        while len(self._sources) > _KEPT_SOURCES:
+                            self._sources.popitem(last=False)
+                if generation == self._pgen:
+                    image, _exif, icc = kept
+                    result = pipeline.make_preview(image, icc, values if mode == "export" else pipeline.DEFAULTS)
+            except pipeline.EditedRenderFailed as exc:
+                error = f"Its edits could not be rendered: {exc.reason}"
+            except Exception as exc:
+                error = str(exc) or "The photo could not be read"
+            try:
+                self._previewReady.emit(generation, result, error)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=work, name="batch-preview", daemon=True).start()
+
+    def _preview_arrived(self, generation: int, result, error: str) -> None:
+        if generation != self._pgen:
+            return
+        from .raw_preview import put_thumbnail
+
+        self._pbusy = False
+        self._perror = error
+        if result is None:
+            self._before = self._after = self._pinfo = ""
+        else:
+            self._before = put_thumbnail(f"batch/{generation}/before", result.before)
+            self._after = put_thumbnail(f"batch/{generation}/after", result.after)
+            self._pinfo = (f"{result.width} x {result.height} px  ·  about {pipeline.human_bytes(result.estimated_bytes)}"
+                           if self._mode == "export" else "")
+        self.previewChanged.emit()
+
+    @Slot(int)
+    def setPreviewIndex(self, index: int) -> None:
+        if self._batch_cache and index != self._pindex:
+            self._pindex = max(0, min(index, len(self._batch_cache) - 1))
+            self._render_preview()
+
+    @Slot(int)
+    def stepPreview(self, delta: int) -> None:
+        self.setPreviewIndex(self._pindex + delta)
+
+    previewIndex = Property(int, lambda self: self._pindex, notify=previewChanged)
+    previewBefore = Property(str, lambda self: self._before, notify=previewChanged)
+    previewAfter = Property(str, lambda self: self._after, notify=previewChanged)
+    previewInfo = Property(str, lambda self: self._pinfo, notify=previewChanged)
+    previewError = Property(str, lambda self: self._perror, notify=previewChanged)
+    previewBusy = Property(bool, lambda self: self._pbusy, notify=previewChanged)
+    previewName = Property(str, lambda self: (self._preview_entry() or {}).get("name", ""), notify=previewChanged)
+    previewCount = Property(int, lambda self: len(self._batch_cache), notify=previewChanged)
 
     mode = Property(str, lambda self: self._mode, notify=revisionChanged)
     title = Property(str, lambda self: TITLES[self._mode], notify=revisionChanged)

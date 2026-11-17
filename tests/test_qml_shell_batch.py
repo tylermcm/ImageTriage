@@ -1,4 +1,5 @@
-"""The QML shell's batch rename, resize and convert: the Widgets app's own planners decide names, statuses and what blocks Apply."""
+"""The QML shell's batch rename and export: rename uses the Widgets app's planner; export (which replaced resize and convert) plans names,
+folders and what blocks Apply."""
 from __future__ import annotations
 
 import os
@@ -87,34 +88,68 @@ def test_rename_blocks_apply_when_a_target_already_exists_outside_the_batch(qapp
     assert batch.foot == "Fix 1 error before renaming."
 
 
-def test_resize_copies_name_by_preset_and_overwrite_refuses_raw(qapp, folder):
+def test_export_names_the_files_in_a_folder_next_to_the_photos(qapp, folder):
+    batch = BatchModel(grid(qapp, folder), parent=qapp)
+    batch.begin("export")
+    rows = batch.rows()
+    assert [r["next"] for r in rows] == ["A1.jpg", "A2.jpg", "B1.jpg", "B2.jpg"]           # RAW photos export too
+    assert rows[0]["note"] == str(folder / "Export") and rows[0]["status"] == "Export"
+    assert batch.canApply and batch.summary == "4 file(s) | JPEG | sRGB" and batch.foot == "4 will be exported."
+    batch.set("format", "png")
+    batch.set("xPrefix", "web_")
+    assert batch.rows()[2]["next"] == "web_B1.png"
+    batch.set("sub", "")                                        # an empty folder name means "Export"
+    assert batch.rows()[0]["note"] == str(folder / "Export")
+
+
+def test_export_size_and_destination_problems_block_apply(qapp, folder):
+    batch = BatchModel(grid(qapp, folder), parent=qapp)
+    batch.begin("export")
+    batch.set("sizeMode", "long")
+    batch.set("long", "0")
+    assert not batch.canApply and batch.foot == "Enter a size above zero."
+    batch.set("long", "2048")
+    batch.set("dest", "choose")
+    assert not batch.canApply and batch.foot == "Choose the folder to export to."
+    batch.set("folder", str(folder / "out"))
+    assert batch.canApply and batch.rows()[0]["note"] == str(folder / "out")
+    batch.set("folder", str(folder))
+    batch.set("format", "jpg")
+    rows = batch.rows()
+    assert rows[2]["status"] == "Export" and rows[2]["next"] == "B1_1.jpg"     # B1.jpg is there: a number is added
+    batch.set("exists", "skip")
+    assert batch.rows()[2]["next"] == "B1_1.jpg"                  # never over the photo itself, whatever the setting
+    (folder / "out").mkdir()
+    (folder / "out" / "B1.jpg").write_bytes(b"x")
+    batch.set("folder", str(folder / "out"))
+    assert batch.rows()[2]["status"] == "Skip" and "skipped" in batch.summary
+    batch.set("exists", "overwrite")
+    assert batch.rows()[2]["status"] == "Overwrite"
+
+
+def test_resize_and_convert_open_export(qapp, folder):
     batch = BatchModel(grid(qapp, folder), parent=qapp)
     batch.begin("resize")
-    rows = batch.rows()
-    assert rows[0]["next"] == "A1 (Small).jpg" and rows[0]["note"] == "Exports as a JPG copy." and rows[2]["next"] == "B1 (Small).jpg"
-    assert batch.canApply and batch.summary == "4 item(s) | Copy | fits within 854 x 480"
-    batch.set("over", True)
-    assert not batch.canApply and batch.errorCount == 2
-    assert batch.rows()[0]["err"].startswith("Overwrite is only available") and batch.rows()[2]["status"] == "Overwrite"
-    batch.set("over", False)
-    batch.set("preset", "custom")
-    batch.set("cw", "0")
-    assert not batch.canApply and batch.foot == "Enter a width and height greater than zero." and batch.summary == "4 error(s)"
-    batch.set("cw", "1200")
-    batch.set("ch", "800")
-    assert batch.canApply and batch.rows()[2]["next"] == "B1 (1200x800).jpg"
-
-
-def test_convert_refuses_raw_and_names_the_copy_by_format(qapp, folder):
-    batch = BatchModel(grid(qapp, folder), parent=qapp)
+    assert batch.mode == "export" and batch.get("sizeMode") == "long"
     batch.begin("convert")
-    assert not batch.canApply and batch.errorCount == 2
-    assert batch.rows()[0]["err"] == "RAW files are not supported by Convert."
-    assert batch.rows()[2]["next"] == "B1 (PNG).png" and batch.rows()[2]["note"] == "Converts to PNG."
-    batch.set("fmt", ".webp")
-    assert batch.rows()[2]["next"] == "B1 (WebP).webp"
-    batch.set("over", True)
-    assert batch.rows()[2]["next"] == "B1.webp" and batch.rows()[2]["status"] == "Convert"
+    assert batch.mode == "export" and batch.get("sizeMode") == "original"
+
+
+def test_presets_fill_the_settings_and_saved_ones_can_be_deleted(qapp, folder):
+    batch = BatchModel(grid(qapp, folder), parent=qapp)
+    batch.begin("export")
+    names = [o["value"] for o in batch.options("xPreset")]
+    assert "Web 2048 px" in names and names[0] == ""
+    batch.usePreset("Print TIFF 16-bit Adobe RGB")
+    assert batch.get("format") == "tif" and batch.get("depth") == "16" and batch.get("profile") == "adobergb"
+    assert batch.get("xPreset") == "Print TIFF 16-bit Adobe RGB" and batch.presetIsBuiltin("Print TIFF 16-bit Adobe RGB")
+    batch.set("quality", "70")
+    assert batch.get("xPreset") == ""                            # changed: no longer that preset
+    assert batch.savePreset("Web 2048 px") == "That name belongs to a built-in preset."
+    assert batch.savePreset("Client proofs") == "" and batch.get("xPreset") == "Client proofs"
+    assert not batch.presetIsBuiltin("Client proofs")
+    batch.deletePreset("Client proofs")
+    assert "Client proofs" not in [o["value"] for o in batch.options("xPreset")]
 
 
 def test_only_the_shown_photos_are_in_the_batch_and_the_preview_is_capped(qapp, folder):
@@ -140,9 +175,9 @@ def test_apply_is_not_connected_and_only_reports_the_count(qapp, folder):
     batch = BatchModel(grid(qapp, folder), parent=qapp)
     seen = []
     batch.applied.connect(lambda mode, n: seen.append((mode, n)))
-    batch.begin("resize")
+    batch.begin("export")
     batch.apply()
-    assert seen == [("resize", 4)]
+    assert seen == [("export", 4)]
     assert sorted(os.listdir(folder)) == ["A1.JPG", "A1.NEF", "A2.JPG", "A2.NEF", "B1.jpg", "B2.jpg"]     # nothing changed on disk
 
 
@@ -180,7 +215,7 @@ def test_batch_window_opens_from_the_palette_and_switches_tools_in_qml(qapp, tmp
     assert card is not None and card.property("shown") is False
     palette.run("tools.batch_resize")
     pump(qapp, 0.5)
-    assert card.property("shown") is True and card.property("mode") == "resize" and len(card.property("rows")) == 4
+    assert card.property("shown") is True and card.property("mode") == "export" and len(card.property("rows")) == 4
     QTest.keyClick(window, Qt.Key.Key_Escape)
     pump(qapp, 0.4)
     assert card.property("shown") is False

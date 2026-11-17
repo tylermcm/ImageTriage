@@ -1,4 +1,4 @@
-"""Batch rename, resize and convert really apply, off the UI thread, with a toast, and a rename can be undone."""
+"""Batch rename and export really apply, off the UI thread, with a toast, and a rename can be undone."""
 from __future__ import annotations
 
 import time
@@ -83,40 +83,52 @@ def test_rename_renames_the_files_keeps_the_decisions_and_undoes(qapp, world):
     assert wait_for(qapp, lambda: not photos.loading and photos.total == 3 and photos.winCount == 1)
 
 
-def test_resize_writes_smaller_copies_and_leaves_the_originals(qapp, world):
+def test_export_writes_sized_copies_in_a_folder_and_leaves_the_originals(qapp, world):
     shoot, photos, toasts, bridge, batch = world
-    batch.begin("resize")
-    batch.set("preset", "custom")
-    batch.set("cw", "200")
-    batch.set("ch", "200")
+    batch.begin("export")
+    batch.set("sizeMode", "long")
+    batch.set("long", "200")
     assert batch.canApply, batch.foot
     batch.apply()
-    assert wait_for(qapp, lambda: any(t["title"].startswith("Resized") for t in toasts.items))
-    files = names(shoot)
-    assert len(files) == 6 and {"a.jpg", "b.jpg", "c.jpg"} <= set(files)
-    copy = next(shoot / n for n in files if n not in ("a.jpg", "b.jpg", "c.jpg"))
-    assert max(Image.open(copy).size) <= 200
-    assert wait_for(qapp, lambda: not photos.loading and photos.total == 6)               # the folder was read again
+    assert wait_for(qapp, lambda: any(t["title"].startswith("Exported") for t in toasts.items))
+    assert names(shoot) == ["a.jpg", "b.jpg", "c.jpg"]
+    out = shoot / "Export"
+    assert names(out) == ["a.jpg", "b.jpg", "c.jpg"]
+    with Image.open(out / "c.jpg") as copy:
+        assert max(copy.size) == 200 and copy.info.get("icc_profile")         # sRGB, embedded
 
 
-def test_convert_writes_the_new_format(qapp, world):
+def test_export_writes_the_chosen_format(qapp, world):
     shoot, photos, toasts, bridge, batch = world
-    batch.begin("convert")
-    batch.set("fmt", ".png")
-    assert batch.canApply, batch.foot
+    batch.begin("export")
+    batch.set("format", "png")
     batch.apply()
-    assert wait_for(qapp, lambda: any(t["title"].startswith("Converted") for t in toasts.items))
-    assert sorted(n for n in names(shoot) if n.endswith(".png")) == ["a (PNG).png", "b (PNG).png", "c (PNG).png"]       # the Widgets' naming of a converted copy
+    assert wait_for(qapp, lambda: any(t["title"].startswith("Exported") for t in toasts.items))
+    assert names(shoot / "Export") == ["a.png", "b.png", "c.png"]
 
 
 def test_a_second_apply_while_one_runs_does_nothing(qapp, world):
     shoot, photos, toasts, bridge, batch = world
-    batch.begin("convert")
-    batch.set("fmt", ".png")
+    batch.begin("export")
     batch.apply()
     batch.apply()
-    assert wait_for(qapp, lambda: any(t["title"].startswith("Converted") for t in toasts.items))
-    assert len([t for t in toasts.items if t["title"].startswith("Converted")]) == 1
+    assert wait_for(qapp, lambda: any(t["title"].startswith("Exported") for t in toasts.items))
+    pump(qapp, 0.3)
+    assert len([t for t in toasts.items if t["title"].startswith("Exported")]) == 1
+
+
+def test_the_preview_shows_the_selected_photo_as_it_will_be_written(qapp, world):
+    shoot, photos, toasts, bridge, batch = world
+    batch.begin("export")
+    batch.set("sizeMode", "long")
+    batch.set("long", "100")
+    assert wait_for(qapp, lambda: not batch.previewBusy and batch.previewAfter != "")
+    assert batch.previewInfo.startswith("100 x 75 px") and batch.previewName == "a.jpg" and batch.previewCount == 3
+    batch.stepPreview(1)
+    assert wait_for(qapp, lambda: not batch.previewBusy and batch.previewName == "b.jpg")
+    assert batch.previewInfo.startswith("100 x 73 px")
+    batch.setPreviewIndex(99)
+    assert batch.previewIndex == 2
 
 
 def test_a_plan_with_errors_is_not_applied(qapp, world):

@@ -1,8 +1,9 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Effects
+import QtQuick.Dialogs
 
-// Batch rename, resize and convert: one window over the dimmed and blurred application (the same overlay as settings and filters). Layout,
+// Batch rename and export (Export replaced resize and convert; their commands open it): one window over the dimmed and blurred application (the same overlay as settings and filters). Layout,
 // sizes and colours follow the HTML mockup; the plans are the Widgets app's own, built by `batch` (batch_model.py).
 FocusScope {
     id: root
@@ -15,12 +16,15 @@ FocusScope {
     z: 106
     Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
 
-    readonly property real winW: Math.min(1040, width - 96)
-    readonly property real winH: Math.min(680, height - 68 - 64)
+    readonly property real winW: Math.min(1180, width - 96)
+    readonly property real winH: Math.min(780, height - 68 - 64)
     readonly property int rev: batch.revision
-    readonly property string mode: shown ? UiState.batchMode : batch.mode
+    readonly property string mode: batch.mode
     readonly property var rows: { void rev; return batch.rows() }
-    readonly property var modes: [["rename", "Rename"], ["resize", "Resize"], ["convert", "Convert"]]
+    readonly property var modes: [["rename", "Rename"], ["export", "Export"]]
+    property bool showBefore: false
+    property bool picking: false
+    property string presetError: ""
     readonly property var scopeParts: { void rev; return batch.scope(photos.folderName).split("|") }
     property string applied: ""
 
@@ -28,19 +32,31 @@ FocusScope {
     function close() { UiState.batchMode = ""; batch.end() }
     // Resize and Convert have no undo, so writing over the originals asks first and says how many.
     function apply() {
-        if ((UiState.batchMode === "resize" || UiState.batchMode === "convert") && batch.get("over") === true) { overwriteCard.open(); return }
+        if (batch.mode === "export" && root.overwrites() > 0) { overwriteCard.open(); return }
         batch.apply(); close()
     }
+    function overwrites() { var n = 0; for (var i = 0; i < rows.length; ++i) if (rows[i].status === "Overwrite") ++n; return n }
     onShownChanged: if (shown) { batch.begin(UiState.batchMode); forceActiveFocus() }
     ConfirmCard {
         id: overwriteCard; objectName: "batchOverwriteCard"; warn: true; cancelText: "Cancel"; confirmText: "Overwrite"
         title: "Write over the original files?"
-        body: batch.summary + (batch.summary !== "" ? " " : "") + "The originals are replaced and this cannot be undone."
+        body: root.overwrites() + " file(s) already in the export folder will be replaced. This cannot be undone."
         onAccepted: { batch.apply(); root.close() }
         onRejected: root.forceActiveFocus()
     }
     Keys.onEscapePressed: root.close()
+    Keys.onLeftPressed: batch.stepPreview(-1)
+    Keys.onRightPressed: batch.stepPreview(1)
 
+    Loader {
+        active: root.picking
+        sourceComponent: FolderDialog {
+            title: "Export to"
+            Component.onCompleted: open()
+            onAccepted: { batch.set("folder", decodeURIComponent(String(selectedFolder).replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/"))); root.picking = false }
+            onRejected: root.picking = false
+        }
+    }
     ShaderEffectSource { id: snap; anchors.fill: parent; sourceItem: root.sourceItem; live: true; visible: false }
     MultiEffect { anchors.fill: parent; source: snap; blurEnabled: true; blur: 1.0; blurMax: 20 }
     Rectangle { anchors.fill: parent; color: theme.scrim }
@@ -55,6 +71,7 @@ FocusScope {
     component Field: Column {
         id: fld
         property string label; property string key; property string placeholder; property string suffix
+        objectName: "batchField_" + key
         spacing: 6; width: 299
         Lbl { text: fld.label }
         FInput { width: parent.width; placeholder: fld.placeholder; suffix: fld.suffix; text: { void root.rev; return String(batch.get(fld.key)) }
@@ -62,13 +79,16 @@ FocusScope {
     }
     component Pick: Column {
         id: pk
-        property string label; property string key
+        property string label; property string key; property bool custom: false
+        signal chosen(var value)
+        objectName: "batchPick_" + key
         spacing: 6; width: 299
         Lbl { text: pk.label }
         SSelect { width: parent.width; menuMax: 268; options: { void root.rev; return batch.options(pk.key) }
                   current: { void root.rev; return batch.get(pk.key) }
-                  onPicked: (v) => batch.set(pk.key, v) }
+                  onPicked: (v) => { if (pk.custom) pk.chosen(v); else batch.set(pk.key, v) } }
     }
+    component Gap: Item { property real h: 12; width: 1; height: h }
     component Num: Column {
         id: nm
         property string label; property string key; property int lo: 0; property int hi: 999999
@@ -136,7 +156,7 @@ FocusScope {
                 Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: theme.lineSoft }
                 Item {
                     id: modeBox; x: 12; y: 12; width: 315; height: 32
-                    Seg { anchors.fill: parent; fill: true; showExtras: false; labels: ["Rename", "Resize", "Convert"]
+                    Seg { anchors.fill: parent; fill: true; showExtras: false; labels: ["Rename", "Export"]
                           current: { var i = 0; for (var k = 0; k < root.modes.length; ++k) if (root.modes[k][0] === root.mode) i = k; return i }
                           onActivated: (i) => { UiState.batchMode = root.modes[i][0]; batch.setMode(root.modes[i][0]) } }
                 }
@@ -179,46 +199,74 @@ FocusScope {
                             Field { label: "Separator"; key: "sep"; placeholder: "_" }
                         }
 
-                        // ---- resize
+                        // ---- export
                         Column {
-                            visible: root.mode === "resize"; width: parent.width
+                            objectName: "batchExportOptions"
+                            visible: root.mode === "export"; width: parent.width
+                            readonly property string sizeMode: { void root.rev; return batch.get("sizeMode") }
+                            readonly property string format: { void root.rev; return batch.get("format") }
+                            readonly property string dest: { void root.rev; return batch.get("dest") }
+                            readonly property string preset: { void root.rev; return batch.get("xPreset") }
+                            Gh { title: "PRESET" }
+                            Gap {}
+                            Pick { label: "Preset"; key: "xPreset"; custom: true; onChosen: (v) => { root.presetError = ""; if (v !== "") batch.usePreset(v) } }
+                            Gap { h: 8 }
+                            Row {
+                                spacing: 8
+                                FInput { id: presetName; objectName: "batchPresetName"; width: 299 - 8 - 70 - (deleteBtn.visible ? 70 + 8 : 0); placeholder: "Save these settings as…" }
+                                SButton { text: "Save"; variant: "ghost"; h: 34; hpad: 14; radius: 10; width: 70
+                                          onClicked: { root.presetError = batch.savePreset(presetName.text); if (root.presetError === "") presetName.text = "" } }
+                                SButton { id: deleteBtn; text: "Delete"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 70
+                                          visible: parent.parent.preset !== "" && !batch.presetIsBuiltin(parent.parent.preset)
+                                          onClicked: batch.deletePreset(parent.parent.preset) }
+                            }
+                            Note { visible: root.presetError !== ""; color: theme.rej; text: root.presetError }
+                            Gap { h: 22 }
                             Gh { title: "IMAGE SIZE" }
-                            Item { width: 1; height: 12 }
-                            Pick { label: "Preset"; key: "preset" }
-                            Item { width: 1; height: 8 }
-                            Note { text: { void root.rev; return batch.presetDesc() } }
-                            Item { visible: { void root.rev; return batch.get("preset") === "custom" } width: 1; height: visible ? 12 : 0 }
-                            Row { visible: { void root.rev; return batch.get("preset") === "custom" } spacing: 8
-                                Field { width: 145.5; label: "Width"; key: "cw"; placeholder: "1920"; suffix: "px" }
-                                Field { width: 145.5; label: "Height"; key: "ch"; placeholder: "1080"; suffix: "px" } }
-                            Item { width: 1; height: 22 }
-                            Gh { title: "OPTIONS" }
-                            Item { width: 1; height: 6 }
-                            Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
-                            SwRow { label: "Make pictures smaller but not larger"; key: "shrink" }
-                            SwRow { label: "Ignore the orientation of pictures"; key: "ignOri" }
-                            SwRow { label: "Overwrite files"; key: "over" }
-                            SwRow { label: "Remove metadata that doesn’t affect rendering"; key: "strip" }
-                            Item { width: 1; height: 14 }
-                            Note { text: { void root.rev; return batch.note() } }
-                        }
-
-                        // ---- convert
-                        Column {
-                            visible: root.mode === "convert"; width: parent.width
-                            Gh { title: "OUTPUT FORMAT" }
-                            Item { width: 1; height: 12 }
-                            Pick { label: "Format"; key: "fmt" }
-                            Item { width: 1; height: 8 }
-                            Note { text: { void root.rev; return batch.fmtDesc() } }
-                            Item { width: 1; height: 22 }
-                            Gh { title: "OPTIONS" }
-                            Item { width: 1; height: 6 }
-                            Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
-                            SwRow { label: "Overwrite files"; key: "over" }
-                            SwRow { label: "Remove metadata that doesn’t affect rendering"; key: "strip" }
-                            Item { width: 1; height: 14 }
-                            Note { text: { void root.rev; return batch.note() } }
+                            Gap {}
+                            Pick { label: "Size"; key: "sizeMode" }
+                            Gap { h: 8 }
+                            Field { visible: parent.sizeMode === "long"; label: "Long edge"; key: "long"; placeholder: "2048"; suffix: "px" }
+                            Field { visible: parent.sizeMode === "short"; label: "Short edge"; key: "short"; placeholder: "1080"; suffix: "px" }
+                            Row { visible: parent.sizeMode === "fit"; spacing: 8
+                                Field { width: 145.5; label: "Width"; key: "fitW"; placeholder: "1920"; suffix: "px" }
+                                Field { width: 145.5; label: "Height"; key: "fitH"; placeholder: "1080"; suffix: "px" } }
+                            Field { visible: parent.sizeMode === "mp"; label: "Megapixels"; key: "mp"; placeholder: "12"; suffix: "MP" }
+                            Field { visible: parent.sizeMode === "pct"; label: "Percentage"; key: "pct"; placeholder: "50"; suffix: "%" }
+                            Gap { h: 8 }
+                            Note { text: { void root.rev; return batch.sizeDesc() } }
+                            Gap { h: 6; visible: parent.sizeMode !== "original" }
+                            Rectangle { visible: parent.sizeMode !== "original"; width: parent.width; height: 1; color: theme.lineSoft }
+                            SwRow { visible: parent.sizeMode !== "original"; label: "Don’t enlarge smaller photos"; key: "noEnlarge" }
+                            Gap { h: 22 }
+                            Gh { title: "FILE" }
+                            Gap {}
+                            Pick { label: "Format"; key: "format" }
+                            Gap { visible: parent.format === "jpg" || parent.format === "webp" }
+                            Field { visible: parent.format === "jpg" || parent.format === "webp"; label: "Quality (1–100)"; key: "quality"; placeholder: "90" }
+                            Gap { visible: parent.format === "png" || parent.format === "tif" }
+                            Pick { visible: parent.format === "png" || parent.format === "tif"; label: "Bit depth"; key: "depth" }
+                            Gap {}
+                            Pick { label: "Colour profile"; key: "profile" }
+                            Gap {}
+                            Pick { label: "Metadata"; key: "meta" }
+                            Gap { h: 22 }
+                            Gh { title: "NAME AND PLACE" }
+                            Gap {}
+                            Row { spacing: 8
+                                Field { width: 145.5; label: "Before the name"; key: "xPrefix"; placeholder: "Optional" }
+                                Field { width: 145.5; label: "After the name"; key: "xSuffix"; placeholder: "Optional" } }
+                            Gap {}
+                            Pick { label: "Export to"; key: "dest" }
+                            Gap {}
+                            Field { visible: parent.dest === "subfolder"; label: "Folder name"; key: "sub"; placeholder: "Export" }
+                            Row {
+                                visible: parent.dest === "choose"; spacing: 8
+                                Field { width: 299 - 8 - 84; label: "Folder"; key: "folder"; placeholder: "Choose a folder" }
+                                SButton { anchors.bottom: parent.bottom; text: "Browse…"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 84; onClicked: root.picking = true }
+                            }
+                            Gap {}
+                            Pick { label: "When a file is already there"; key: "exists" }
                         }
                     }
                 }
@@ -243,15 +291,58 @@ FocusScope {
                         }
                     }
                 }
+                Item {
+                    id: pane
+                    objectName: "batchPreviewPane"
+                    x: 24; y: 44 + 12; width: parent.width - 48; height: Math.round((parent.height - 44) * 0.52)
+                    Rectangle { anchors.fill: parent; radius: 10; color: theme.s1; border.color: theme.lineSoft }
+                    Image {
+                        id: shot
+                        objectName: "batchPreviewImage"
+                        anchors.fill: parent; anchors.margins: 10; anchors.bottomMargin: 34
+                        fillMode: Image.PreserveAspectFit; asynchronous: true; cache: false; smooth: true; mipmap: true
+                        source: root.showBefore || batch.mode === "rename" ? batch.previewBefore : batch.previewAfter
+                    }
+                    Text {
+                        anchors.centerIn: shot; width: shot.width - 40; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
+                        visible: batch.previewBusy && shot.status !== Image.Ready || batch.previewError !== ""
+                        text: batch.previewError !== "" ? batch.previewError : "Preparing the preview…"
+                        color: batch.previewError !== "" ? theme.rej : theme.fg3; font.pixelSize: 12
+                    }
+                    Rectangle {
+                        visible: batch.previewBusy && shot.status === Image.Ready
+                        anchors.right: shot.right; anchors.top: shot.top; anchors.margins: 6; width: 8; height: 8; radius: 4; color: theme.accent
+                        SequentialAnimation on opacity { running: parent.visible; loops: Animation.Infinite; NumberAnimation { to: 0.2; duration: 500 } NumberAnimation { to: 1; duration: 500 } }
+                    }
+                    Item {
+                        x: 10; y: parent.height - 30; width: parent.width - 20; height: 24
+                        Row {
+                            anchors.verticalCenter: parent.verticalCenter; spacing: 6
+                            SButton { objectName: "batchPreviewPrev"; text: "‹"; variant: "ghost"; h: 24; hpad: 9; radius: 8; enabled: batch.previewIndex > 0; onClicked: batch.stepPreview(-1) }
+                            SButton { objectName: "batchPreviewNext"; text: "›"; variant: "ghost"; h: 24; hpad: 9; radius: 8; enabled: batch.previewIndex < batch.previewCount - 1; onClicked: batch.stepPreview(1) }
+                            Text { anchors.verticalCenter: parent.verticalCenter; text: batch.previewCount > 0 ? (batch.previewIndex + 1) + " of " + batch.previewCount + "  ·  " + batch.previewName : ""
+                                   color: theme.fg2; font.pixelSize: 12; elide: Text.ElideMiddle; width: Math.min(implicitWidth, pane.width - 330) }
+                        }
+                        Row {
+                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 10
+                            Text { objectName: "batchPreviewInfo"; anchors.verticalCenter: parent.verticalCenter; text: batch.previewInfo; color: theme.fg3; font.pixelSize: 12 }
+                            SButton {
+                                objectName: "batchPreviewBefore"; visible: batch.mode === "export"
+                                text: "Before"; variant: root.showBefore ? "primary" : "ghost"; h: 24; hpad: 10; radius: 8
+                                onClicked: root.showBefore = !root.showBefore
+                            }
+                        }
+                    }
+                }
                 Text {
                     id: scopeText
-                    x: 24; y: 44 + 12; width: parent.width - 48; wrapMode: Text.WordWrap; textFormat: Text.StyledText
+                    x: 24; y: pane.y + pane.height + 12; width: parent.width - 48; wrapMode: Text.WordWrap; textFormat: Text.StyledText
                     color: theme.fg3; font.pixelSize: 12; lineHeight: 17.4; lineHeightMode: Text.FixedHeight
                     text: "<b><font color='" + theme.fg2 + "'>" + root.scopeParts[0] + "</font></b> " + (root.scopeParts[1] || "")
                 }
                 ListView {
                     id: table
-                    x: 0; y: 44 + 12 + scopeText.height + 10; width: parent.width; height: parent.height - y
+                    x: 0; y: scopeText.y + scopeText.height + 10; width: parent.width; height: parent.height - y
                     clip: true; boundsBehavior: Flickable.StopAtBounds; model: root.rows
                     headerPositioning: ListView.OverlayHeader
                     ScrollBar.vertical: ScrollBar { id: tbar; policy: ScrollBar.AsNeeded; contentItem: Rectangle { implicitWidth: 6; radius: 3; color: Qt.alpha(theme.fg, 0.22); opacity: tbar.active || tbar.hovered ? 1 : 0; Behavior on opacity { NumberAnimation { duration: 300 } } } background: Item {} }
@@ -260,7 +351,7 @@ FocusScope {
                         z: 2; width: table.width; height: 30; color: theme.base
                         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
                         Text { x: 24 + 28 + 12; anchors.verticalCenter: parent.verticalCenter; text: "CURRENT NAME"; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
-                        Text { x: 24 + 28 + 12 + table.fr + 12 + 16 + 12; anchors.verticalCenter: parent.verticalCenter; text: root.mode === "rename" ? "NEW NAME" : "OUTPUT FILE"; color: theme.fg3
+                        Text { x: 24 + 28 + 12 + table.fr + 12 + 16 + 12; anchors.verticalCenter: parent.verticalCenter; text: root.mode === "rename" ? "NEW NAME" : "EXPORTED FILE"; color: theme.fg3
                                font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
                         Text { x: table.width - 24 - 104; anchors.verticalCenter: parent.verticalCenter; text: "STATUS"; color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
                     }
@@ -271,8 +362,9 @@ FocusScope {
                         readonly property bool second: modelData.note !== "" || modelData.err !== ""
                         width: table.width
                         height: Math.max(44, 6 + Math.max(28, nameCol.height, newCol.height) + 6 + 1)
-                        Rectangle { anchors.fill: parent; color: Qt.alpha(theme.lift, rh.hovered ? 0.03 : 0) }
+                        Rectangle { anchors.fill: parent; color: row.index === batch.previewIndex ? Qt.alpha(theme.accent, 0.10) : Qt.alpha(theme.lift, rh.hovered ? 0.03 : 0) }
                         HoverHandler { id: rh }
+                        TapHandler { onTapped: { batch.setPreviewIndex(row.index); root.forceActiveFocus() } }
                         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
                         Item {
                             x: 24; y: (parent.height - 1 - 28) / 2; width: 28; height: 28
