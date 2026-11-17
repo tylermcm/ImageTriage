@@ -70,6 +70,7 @@ DEFAULTS = {
     "glow": {"amount": 0, "style": "diffusion", "range": 50, "spread": 50, "warmth": 0},
     "sharpenRadius": 1, "sharpenDetail": 25, "noiseLuminanceDetail": 50, "noiseColorDetail": 50,
     "calibHue": [0, 0, 0], "calibSat": [0, 0, 0], "superResolution": False,
+    "aiDenoise": {"enabled": False, "amount": 50.0},
     **{key: [] for key in CURVES},
     **{key: [0] * 8 for key in MIXER},
     **{key: {"hue": 0, "sat": 0, "lum": 0} for key in WHEELS},
@@ -159,12 +160,16 @@ class RawEditor(QObject):
         self._bokeh_editor = RawBokeh(self)
         from .raw_erase import RawErase
         self._erase_editor = RawErase(self)
+        from .raw_denoise import RawDenoise
+        self._denoise_editor = RawDenoise(self)
         from .raw_sync import RawSync
         self._sync = RawSync(self)
         from .raw_point_color import RawPointColor
         self._point_color = RawPointColor(self)
 
     pointColor = Property(QObject, lambda self: self._point_color, constant=True)
+
+    denoiseEditor = Property(QObject, lambda self: self._denoise_editor, constant=True)
 
     sync = Property(QObject, lambda self: self._sync, constant=True)
 
@@ -548,6 +553,7 @@ class RawEditor(QObject):
         self._light_depth_editor.flush()           # a slider's last position is committed inside its gesture, as one undo step
         self._atmosphere_editor.flush()
         self._bokeh_editor.flush()
+        self._denoise_editor.flush()
         changed = self._gesture_recorded
         self._gesture = self._gesture_recorded = False
         self._mask_editor.changed.emit()
@@ -1030,7 +1036,10 @@ class RawEditor(QObject):
                 if job.stopped.is_set():
                     job.cancel()
                     raise RuntimeError("RAW request cancelled")
-            source = proc.path_within_root(path)
+            from .. import ai_denoise
+
+            # Detail > Denoise: the denoised raw is developed in the photo's place once it has been made.
+            source = proc.path_within_root(ai_denoise.render_source(path, draft))
             if not source:
                 raise ValueError("The photo is outside the editor's read folder.")
             bridge.require_masks_support({"recipe": full}, getattr(proc.control, "camera_raw_masks_supported", False) is True)

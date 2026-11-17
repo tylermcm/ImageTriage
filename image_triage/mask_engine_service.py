@@ -46,6 +46,7 @@ ENGINE_SEMANTIC = "semantic"
 ENGINE_PROMPT = "prompt"
 ENGINE_DEPTH = "depth"
 ENGINE_INPAINT = "inpaint"
+ENGINE_DENOISE = "denoise"
 
 
 # How long the host may say nothing while it works on one command before it is taken to be hung. Every line it prints (progress, a
@@ -307,6 +308,32 @@ class MaskEngineService:
                 "inputPath": str(input_path.resolve()),
                 "maskPath": str(mask_path.resolve()),
                 "outputPath": str(output_path.resolve()),
+            },
+            progress_callback,
+        )
+
+    def infer_denoise(
+        self,
+        *,
+        model_dir: Path,
+        input_path: Path,
+        output_path: Path,
+        region,
+        pattern: str,
+        multipliers,
+        progress_callback: ProgressCallback | None,
+    ) -> dict[str, object]:
+        """Denoise the CFA samples the preview worker wrote to ``input_path`` (float32) and write the denoised samples of their
+        red-aligned part to ``output_path`` (float16). The result names that part (``region``)."""
+        return self.infer(
+            ENGINE_DENOISE,
+            model_dir,
+            {
+                "inputPath": str(input_path.resolve()),
+                "outputPath": str(output_path.resolve()),
+                "region": [int(v) for v in region],
+                "pattern": str(pattern),
+                "multipliers": [float(v) for v in multipliers],
             },
             progress_callback,
         )
@@ -764,6 +791,7 @@ __all__ = [
     "ENGINE_SUBJECT",
     "ENGINE_SEMANTIC",
     "ENGINE_INPAINT",
+    "ENGINE_DENOISE",
     "SemanticWorkerResult",
     "default_mask_engine_service",
     "shutdown_mask_engine",

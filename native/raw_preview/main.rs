@@ -330,6 +330,33 @@ fn frame(source: &mut Source, request: &Value, gpu: &mut Option<Gpu>) -> Result<
         "histogram":histogram.channels.iter().map(|c| c.to_vec()).collect::<Vec<_>>()});
     Ok((header, rgba))
 }
+/// AI Denoise: the crop's normalised CFA samples of the original raw at `path` (a file that
+/// already carries denoised samples is read as its original), written as little-endian f32 to
+/// `out`, with what the denoiser needs to know about them.
+fn denoise_input(p: &Value) -> Result<(Value, Vec<u8>)> {
+    let path = p["path"].as_str().ok_or("Missing source path")?;
+    let out = p["out"].as_str().ok_or("Missing output path")?;
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let limits = photocraft_raw::Limits {
+        max_pixels: 128_000_000,
+        max_alloc: 768 * 1024 * 1024,
+        ..Default::default()
+    };
+    let original = photocraft_raw::denoised::original(&bytes);
+    let sensor = photocraft_raw::decode(original, &limits).map_err(|e| e.to_string())?;
+    let input = photocraft_raw::denoised::denoise_input(&sensor)?;
+    let mut data = Vec::with_capacity(input.samples.len() * 4);
+    for v in &input.samples {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    std::fs::write(out, data).map_err(|e| e.to_string())?;
+    let r = input.region;
+    Ok((
+        json!({"ok":true,"bytes":0,"region":[r.x,r.y,r.width,r.height],"sensor":[sensor.width,sensor.height],
+               "pattern":input.pattern,"multipliers":input.daylight_multipliers,"originalBytes":original.len()}),
+        vec![],
+    ))
+}
 fn run() -> Result<()> {
     let mut gpu = match Gpu::new() {
         Ok(g) => Some(g),
@@ -346,7 +373,7 @@ fn run() -> Result<()> {
         let result = (|| -> Result<(Value, Vec<u8>)> {
             let request: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
             if request["op"] == "hello" {
-                Ok((json!({"ok":true,"protocol":2,"redEye":1,"sky":2,"patch":1,"bytes":0}), vec![]))
+                Ok((json!({"ok":true,"protocol":2,"redEye":1,"sky":2,"patch":1,"denoise":1,"bytes":0}), vec![]))
             } else if request["op"] == "open" {
                 let start = Instant::now();
                 source = None;
@@ -355,6 +382,8 @@ fn run() -> Result<()> {
                 let mut result = frame(source.as_mut().ok_or("No source")?, &request, &mut gpu)?;
                 result.0["openMs"] = json!(start.elapsed().as_secs_f64() * 1000.0);
                 Ok(result)
+            } else if request["op"] == "denoiseInput" {
+                denoise_input(&request)
             } else if request["op"] == "render" {
                 frame(
                     source.as_mut().ok_or("Open a RAW first")?,
