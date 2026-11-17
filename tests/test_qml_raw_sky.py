@@ -254,3 +254,168 @@ def test_the_panel_renders_and_adjusts(raw, qapp, tmp_path):
     finally:
         item.deleteLater()
         pump(qapp, .05)
+
+
+# --- the full Sky AI set: orientation, mask refinement, relighting, reflection, sky adjustments --------------------------------
+
+def scene_maps(water=True, people=True):
+    """What the scene job finds: the sky matte, and water (bottom rows) and a person (a block) when asked."""
+    def run(*_args):
+        bottom = np.zeros((60, 80), np.uint8)
+        bottom[40:] = 255
+        person = np.zeros((60, 80), np.uint8)
+        person[30:50, 30:40] = 255
+        return {"mask": sky_top(), "water": encode_raster(bottom) if water else None, "people": encode_raster(person) if people else None}
+    return run
+
+
+def test_the_recipe_names_the_newer_settings_only_when_they_are_used():
+    plain = sky_replace.for_recipe({"source": "/a.jpg", "amount": 80, "relight": 0})
+    assert not sky_replace.uses_newer(plain) and not set(sky_replace.NEWER) & set(plain)        # an older renderer still takes it
+    used = sky_replace.for_recipe({"source": "/a.jpg", "amount": 80, "horizon": -20, "closeGaps": 30, "haze": 10,
+                                   "water": sky_top(), "people": sky_top()})
+    assert used["horizon"] == -20 and used["closeGaps"] == 30 and used["haze"] == 10 and sky_replace.uses_newer(used)
+    assert "water" not in used and "people" not in used                    # nothing uses them: Reflection and the relights are 0
+    with_water = sky_replace.for_recipe({"source": "/a.jpg", "amount": 80, "reflection": 50, "relightHuman": 20,
+                                         "water": sky_top(), "people": sky_top()})
+    assert with_water["water"]["type"] == "raster" and with_water["people"]["type"] == "raster"
+    assert sky_replace.valid(with_water) and sky_replace.valid(used)
+    assert not sky_replace.valid({**with_water, "water": {"type": "raster", "w": 0, "h": 1, "data": ""}})
+    assert not sky_replace.valid({"reflection": 101}) and not sky_replace.valid({"relightSaturation": -1})
+    assert sky_replace.masks_wanted({"reflection": 10}) == ("water",) and sky_replace.masks_wanted({"relight": 5}) == ("people",)
+    assert sky_replace.normalized({})["relightSaturation"] == 50
+
+
+def test_reflection_brings_in_the_water_the_job_found_and_relight_brings_in_the_people(raw, qapp, tmp_path):
+    sky = raw.skyEditor
+    sky._runner = scene_maps()
+    sky.choose(str(sky_replace.import_sky(make_sky(tmp_path), sky._library_root)))
+    sky.flush()
+    wait(qapp, lambda: not sky.busy and sky.active)
+    recipe = raw._draft["sky"]
+    assert "people" in recipe and "water" not in recipe                    # a new sky starts with some relight, and no reflection
+    calls = []
+    sky._runner = lambda *a: calls.append(a) or scene_maps()()
+    sky.adjust("reflection", 60)
+    sky.adjust("waterBlur", 20)
+    sky.flush()
+    recipe = raw._draft["sky"]
+    assert recipe["reflection"] == 60 and recipe["waterBlur"] == 20 and recipe["water"]["type"] == "raster" and calls == []
+    assert not sky.noWater
+
+
+def test_a_photo_without_water_says_so_once_and_the_job_is_not_run_again(raw, qapp, tmp_path):
+    sky = raw.skyEditor
+    calls = []
+    run = scene_maps(water=False)
+    sky._runner = lambda *a: calls.append(a) or run()
+    sky.choose(str(sky_replace.import_sky(make_sky(tmp_path), sky._library_root)))
+    sky.flush()
+    wait(qapp, lambda: not sky.busy and sky.active)
+    sky.adjust("reflection", 50)
+    sky.flush()
+    pump(qapp, .1)
+    assert len(calls) == 1 and sky.noWater and "water" not in raw._draft["sky"] and raw._draft["sky"]["reflection"] == 50
+
+
+def test_a_saved_edit_without_the_water_finds_it_when_reflection_is_first_used(raw, qapp, tmp_path):
+    sky = raw.skyEditor
+    chosen = sky_replace.import_sky(make_sky(tmp_path), sky._library_root)
+    raw._set_values({"sky": {"source": str(chosen), "amount": 80.0, "mask": sky_top()}}, "an older edit")
+    calls = []
+    sky._runner = lambda *a: calls.append(a) or scene_maps()()
+    sky.adjust("reflection", 40)
+    sky.flush()
+    wait(qapp, lambda: not sky.busy)
+    assert len(calls) == 1 and raw._draft["sky"]["water"]["type"] == "raster"
+
+
+def test_the_new_settings_are_kept_and_pass_the_recipe_checks(raw, qapp, tmp_path):
+    sky = raw.skyEditor
+    sky._runner = scene_maps()
+    sky.choose(str(sky_replace.import_sky(make_sky(tmp_path), sky._library_root)))
+    sky.flush()
+    wait(qapp, lambda: not sky.busy and sky.active)
+    for key, value in (("horizon", -30), ("global", 40), ("closeGaps", 25), ("fixDetails", 60), ("relightSaturation", 80),
+                       ("relightHuman", 35), ("defocus", 15), ("grain", 10), ("haze", 45)):
+        sky.adjust(key, value)
+    sky.flush()
+    recipe = raw._draft["sky"]
+    assert sky_replace.valid(recipe) and (recipe["horizon"], recipe["haze"], recipe["relightHuman"]) == (-30, 45, 35)
+    assert bridge.recipe_problems({"sky": recipe}) == []
+    assert sky.settings["closeGaps"] == 25 and "water" not in sky.settings and "people" not in sky.settings
+
+
+def test_a_worker_without_the_full_set_refuses_the_newer_settings_instead_of_ignoring_them():
+    from pathlib import Path
+
+    from image_triage.qml_shell import raw_preview
+
+    source = open(raw_preview.__file__, encoding="utf-8").read()
+    assert "These Sky Replacement settings need the updated RAW preview worker." in source
+    worker = Path(raw_preview.__file__).parents[2] / "native" / "raw_preview" / "main.rs"
+    assert '"sky":2' in worker.read_text(encoding="utf-8")
+
+
+def test_the_scene_job_can_be_asked_for_the_water_and_the_people(tmp_path):
+    from types import SimpleNamespace
+
+    from image_triage import scene_mask_jobs
+
+    maps = {}
+    for name in ("sky", "water", "people", "trees"):
+        path = tmp_path / f"in-{name}.png"
+        Image.fromarray(np.full((20, 30), 255, np.uint8)).save(path)
+        maps[name] = path
+    out = tmp_path / "out"
+    found = lambda *a, **k: SimpleNamespace(mask_paths=maps)  # noqa: E731
+    payload = scene_mask_jobs.run_scene_masks(tmp_path / "x.png", out / "manifest.json", ensure=found,
+                                              labels={"sky": "Sky", "water": "Water", "people": "People"})
+    assert sorted(item["id"] for item in payload["categories"]) == ["people", "sky", "water"]
+    landscape = scene_mask_jobs.run_scene_masks(tmp_path / "x.png", out / "manifest.json", ensure=found)
+    assert "people" not in [item["id"] for item in landscape["categories"]]      # the Mask tab keeps its own list
+
+
+def test_the_advanced_groups_render_and_drive_the_settings(raw, qapp, tmp_path):
+    from pathlib import Path
+
+    from PySide6.QtCore import QUrl
+    from PySide6.QtQml import QQmlComponent, QQmlEngine
+
+    import image_triage.qml_shell as shell
+    from image_triage.qml_shell import raw_preview
+    from image_triage.qml_shell.theme import Theme
+
+    sky = raw.skyEditor
+    sky._runner = scene_maps()
+    sky.choose(str(sky_replace.import_sky(make_sky(tmp_path), sky._library_root)))
+    sky.flush()
+    wait(qapp, lambda: not sky.busy and sky.active)
+    engine = QQmlEngine()
+    raw_preview.install_images(engine)
+    engine.rootContext().setContextProperty("theme", Theme())
+    engine.rootContext().setContextProperty("rawModel", raw)
+    component = QQmlComponent(engine)
+    component.setData(b'import QtQuick\nItem { width: 320; height: 2400\n RawSkyPanel { objectName: "panel"; width: 300; advanced: true;'
+                      b' model: rawModel.skyEditor; raw: rawModel } }',
+                      QUrl.fromLocalFile(str(Path(shell.__file__).parent / "qml" / "SkyHarness.qml")))
+    item = component.create()
+    assert item is not None, component.errors()
+    try:
+        for name in ("skyOrientation", "skyMaskRefinement", "skyRelighting", "skyReflection", "skyAdjustments"):
+            assert item.findChild(QObject, name) is not None, name
+        for key in ("horizon", "offsetY", "offsetX", "scale", "global", "closeGaps", "fixDetails", "relight", "relightSaturation",
+                    "relightHuman", "reflection", "waterBlur", "defocus", "grain", "haze", "warmth", "brightness"):
+            assert item.findChild(QObject, f"sky_{key}_slider") is not None, key
+            assert len(item.findChildren(QObject, f"sky_{key}_slider")) == 1, key          # each control once: no duplicates
+        for key, value in (("horizon", -40), ("closeGaps", 30), ("reflection", 55), ("haze", 20)):
+            slider = item.findChild(QObject, f"sky_{key}_slider")
+            slider.setProperty("value", value)
+            slider.moved.emit()
+        sky.flush()
+        recipe = raw._draft["sky"]
+        assert (recipe["horizon"], recipe["closeGaps"], recipe["reflection"], recipe["haze"]) == (-40, 30, 55, 20)
+        assert recipe["water"]["type"] == "raster"
+    finally:
+        item.deleteLater()
+        pump(qapp, .05)

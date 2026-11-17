@@ -1,8 +1,9 @@
 """The Sky Replacement section of the RAW editor: pick a sky picture, find the photo's sky once, and set how it blends.
 
 The pixels are replaced by PhotoCraft's renderer (the recipe's ``sky`` setting, see ``image_triage.sky_replace``). This
-controller finds the sky matte with the landscape model, keeps it for the photo, and writes matte plus sliders into the
-draft as one undoable setting, throttled like Light Depth so a slider drag does not queue a render per mouse event.
+controller finds the sky matte with the landscape model (and, from the same run, the water and the people, for Reflection and
+the relight), keeps them for the photo, and writes them plus the sliders into the draft as one undoable setting, throttled like
+Light Depth so a slider drag does not queue a render per mouse event.
 """
 from __future__ import annotations
 
@@ -33,8 +34,12 @@ def _rgb(image):
     return rows[:, :converted.width() * 3].reshape(converted.height(), converted.width(), 3).astype(np.float32) / 255
 
 
+SCENE_LABELS = {"sky": "Sky", "water": "Water", "people": "People"}
+
+
 def run_sky_matte(image, on_progress, cancel):
-    """The raster matte (white = sky) of ``image``, the developed preview. Runs on a worker thread."""
+    """``{"mask", "water", "people"}`` for ``image``, the developed preview: the sky matte (white = sky) and the water and the people
+    as raster masks, each snapped to the photo's edges (``None`` when the photo has none). Runs on a worker thread."""
     import numpy as np
     from PIL import Image
 
@@ -46,11 +51,14 @@ def run_sky_matte(image, on_progress, cancel):
         source = root / "source.png"
         if not image.save(str(source), "PNG"):
             raise OSError("Could not prepare the photo for sky detection")
-        payload = run_scene_masks(source, root / "manifest.json", on_progress, cancel)
+        payload = run_scene_masks(source, root / "manifest.json", on_progress, cancel, labels=SCENE_LABELS)
         if cancel.is_set():
             raise Cancelled()
+        rgb = None
+        found = {"mask": None, "water": None, "people": None}
         for item in payload.get("categories", []):
-            if item.get("id") != "sky":
+            key = {"sky": "mask", "water": "water", "people": "people"}.get(item.get("id"))
+            if key is None:
                 continue
             path = (root / item["file"]).resolve()
             if path.parent != root.resolve():
@@ -60,14 +68,17 @@ def run_sky_matte(image, on_progress, cancel):
                     raise ValueError("The model mask does not match the photo's proportions")
                 picture = opened.convert("L")
                 if float((np.asarray(picture) >= 128).mean()) < .005:
-                    break
+                    continue
                 # The model's mask is soft and at a reduced size. Bring it to the photo's size and snap it to the photo's edges.
                 picture = picture.resize((image.width(), image.height()), Image.Resampling.BICUBIC)
-            matte = sky_replace.refine_matte(np.asarray(picture, dtype=np.float32) / 255, _rgb(image))
+            rgb = _rgb(image) if rgb is None else rgb
+            matte = sky_replace.refine_matte(np.asarray(picture, dtype=np.float32) / 255, rgb)
             refined = Image.fromarray(np.clip(np.rint(matte * 255), 0, 255).astype(np.uint8))
             refined.thumbnail((sky_replace.MATTE_SIDE, sky_replace.MATTE_SIDE), Image.Resampling.BOX)
-            return encode_raster(np.asarray(refined, dtype=np.uint8))
-    raise ValueError("No sky found in this photo.")
+            found[key] = encode_raster(np.asarray(refined, dtype=np.uint8))
+        if found["mask"] is None:
+            raise ValueError("No sky found in this photo.")
+        return found
 
 
 class RawSky(QObject):
@@ -79,7 +90,7 @@ class RawSky(QObject):
         super().__init__(raw)
         self.raw = raw
         self._path = ""
-        self._mattes = OrderedDict()   # photo path -> (file signature, matte)
+        self._mattes = OrderedDict()   # photo path -> (file signature, {"mask", "water", "people"} as the scene job found them)
         self._busy = self._waiting = False
         self._message = self._error = self._reason = ""
         self._ticket = 0
@@ -104,11 +115,22 @@ class RawSky(QObject):
     unavailable = Property(str, lambda self: self._reason, notify=changed)
     active = Property(bool, lambda self: sky_replace.active(self.raw._draft.get("sky")), notify=changed)
 
+    @Property(bool, notify=changed)
+    def noWater(self):
+        """The scene job looked and found no water: Reflection has nothing to reflect in."""
+        maps = self._maps() or {}
+        return "water" in maps and maps["water"] is None
+
+    @Property(bool, notify=changed)
+    def noPeople(self):
+        maps = self._maps() or {}
+        return "people" in maps and maps["people"] is None
+
     @Property("QVariantMap", notify=changed)
     def settings(self):
         """The sliders (never the matte: it is large and the panel has no use for it)."""
         current = self._queued if self._queued is not None else self.raw._draft.get("sky")
-        return {k: v for k, v in sky_replace.normalized(current).items() if k != "mask"}
+        return {k: v for k, v in sky_replace.normalized(current).items() if k not in ("mask", *sky_replace.EXTRA_MASKS)}
 
     @Property("QVariantList", notify=changed)
     def skies(self):
@@ -133,16 +155,23 @@ class RawSky(QObject):
             return
         self.changed.emit()
 
-    def _matte(self):
+    def _maps(self):
+        """The photo's matte and the other pictures known for it: what the scene job found this session, or else what the saved
+        edit holds (a key is missing when nobody has looked for that picture yet; it is None when the job found none)."""
         kept = self._mattes.get(self._path)
-        if kept is None:
-            sky = self.raw._draft.get("sky")
-            mask = sky.get("mask") if isinstance(sky, dict) else None
-            return mask       # a matte saved with the photo is as good as one found now
-        if kept[0] != bridge.file_signature(self._path):
-            del self._mattes[self._path]
+        if kept is not None:
+            if kept[0] != bridge.file_signature(self._path):
+                del self._mattes[self._path]
+            else:
+                return kept[1]
+        sky = self.raw._draft.get("sky")
+        if not isinstance(sky, dict) or sky.get("mask") is None:
             return None
-        return kept[1]
+        return {key: sky[key] for key in ("mask", *sky_replace.EXTRA_MASKS) if sky.get(key) is not None}
+
+    def _matte(self):
+        maps = self._maps()
+        return maps.get("mask") if maps else None
 
     @Slot()
     def refresh(self):
@@ -213,13 +242,14 @@ class RawSky(QObject):
             return
         if not settings.get("source"):
             return
-        matte = self._matte()
-        if matte is None:
-            self._pending = settings
+        maps = self._maps()
+        missing = maps is None or any(key not in maps for key in sky_replace.masks_wanted(settings))
+        if missing:
+            self._pending = settings          # the scene job finds the sky (and the water and people a setting needs)
             if not self._busy:
                 self._start(settings)
             return
-        sky = {**sky_replace.normalized(settings), "mask": matte}
+        sky = sky_replace.for_recipe({**sky_replace.normalized(settings), **{k: v for k, v in maps.items() if v is not None}})
         if not sky_replace.valid(sky):
             self._error = "Sky Replacement could not be applied to this photo."
             self.changed.emit()
@@ -325,7 +355,10 @@ class RawSky(QObject):
             self._error, self._message = error, ""
             self.changed.emit()
             return
-        self._mattes[self._path] = result
+        found = result[1] if isinstance(result[1], dict) and "mask" in result[1] else {"mask": result[1]}
+        # What the job did not find it looked for: a key it leaves out is None, so a setting wanting it does not run the job again.
+        found = {key: found.get(key) for key in ("mask", *sky_replace.EXTRA_MASKS)}
+        self._mattes[self._path] = (result[0], found)
         self._mattes.move_to_end(self._path)
         while len(self._mattes) > _KEPT_MATTES:
             self._mattes.popitem(last=False)
