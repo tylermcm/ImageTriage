@@ -39,7 +39,7 @@ def _values(recipe: WorkflowRecipe) -> dict:
     return {"name": recipe.name, "desc": recipe.description, "content": recipe.content_mode, "transfer": recipe.transfer_mode,
             "sub": recipe.destination_subfolder, "group": recipe.group_by_record_folder, "resize": recipe.resize_preset_key,
             "convert": recipe.convert_suffix, "strip": recipe.strip_metadata, "pre": recipe.rename_prefix, "suf": recipe.rename_suffix,
-            "arch": recipe.archive_after_export, "archFmt": recipe.archive_format}
+            "arch": recipe.archive_after_export, "archFmt": recipe.archive_format, "preset": recipe.export_preset}
 
 
 class HandoffModel(QObject):
@@ -131,6 +131,11 @@ class HandoffModel(QObject):
             return [{"value": "", "label": "Keep Original Format"}] + [{"value": f.suffix, "label": f.name} for f in convert_formats()]
         if key == "archFmt":
             return [{"value": f.key, "label": f.label} for f in ARCHIVE_FORMATS]
+        if key == "preset":
+            from ..export_presets import PresetStore
+
+            return ([{"value": "", "label": "This workflow's own settings"}]
+                    + [{"value": p["name"], "label": p["name"]} for p in PresetStore().presets()])
         return []
 
     @Slot(result="QVariantList")
@@ -148,7 +153,8 @@ class HandoffModel(QObject):
         return WorkflowRecipe(key=recipe_key_for_name(name) or "workflow_recipe", name=name, description=str(v["desc"]).strip(), content_mode=v["content"],
                               transfer_mode=v["transfer"], destination_subfolder=str(v["sub"]).strip(), group_by_record_folder=bool(v["group"]),
                               archive_after_export=bool(v["arch"]), archive_format=v["archFmt"] or "zip", resize_preset_key=v["resize"],
-                              convert_suffix=v["convert"], strip_metadata=bool(v["strip"]), rename_prefix=v["pre"], rename_suffix=v["suf"])
+                              convert_suffix=v["convert"], strip_metadata=bool(v["strip"]), rename_prefix=v["pre"], rename_suffix=v["suf"],
+                              export_preset=str(v.get("preset", "")))
 
     @property
     def _export(self) -> bool:
@@ -160,7 +166,9 @@ class HandoffModel(QObject):
         export = self._export
         if key == "transfer" or key == "group":
             return not export
-        if key in ("resize", "convert", "affixes", "strip", "arch"):
+        if key in ("resize", "convert", "strip"):
+            return export and not self._v.get("preset")      # an export preset decides size, format and metadata
+        if key in ("affixes", "arch", "preset"):
             return export
         if key == "archFmt":
             return (export and bool(self._v["arch"])) or not export

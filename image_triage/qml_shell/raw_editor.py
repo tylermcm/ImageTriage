@@ -162,6 +162,8 @@ class RawEditor(QObject):
         self._erase_editor = RawErase(self)
         from .raw_denoise import RawDenoise
         self._denoise_editor = RawDenoise(self)
+        from .raw_soft_proof import RawSoftProof
+        self._soft_proof = RawSoftProof(self, memory=memory)
         from .raw_sync import RawSync
         self._sync = RawSync(self)
         from .raw_point_color import RawPointColor
@@ -170,6 +172,7 @@ class RawEditor(QObject):
     pointColor = Property(QObject, lambda self: self._point_color, constant=True)
 
     denoiseEditor = Property(QObject, lambda self: self._denoise_editor, constant=True)
+    softProof = Property(QObject, lambda self: self._soft_proof, constant=True)
 
     sync = Property(QObject, lambda self: self._sync, constant=True)
 
@@ -234,6 +237,9 @@ class RawEditor(QObject):
             turn = raw_preview.turn_query(crop, quarter_only=self._crop_editing)
             if turn:
                 parts.append(turn)
+        proof = self._soft_proof.query() if hasattr(self, "_soft_proof") else ""
+        if proof:
+            parts.append(proof)            # the picture on screen only: frames read by the tools are not proofed
         return url + ("?" + "&".join(parts) if parts else "")
 
     preview = Property(str, lambda self: self._cropped_url(self._detail if self._detail_mode and self._detail else self._preview, self.previewClip), notify=changed)

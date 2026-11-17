@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 
 Rectangle {
     id: panel
@@ -38,6 +39,15 @@ Rectangle {
     ]
     color: surface
     clip: true
+    Loader {
+        id: proofPicker; active: false
+        sourceComponent: FileDialog {
+            title: "Proof profile"; nameFilters: ["ICC profiles (*.icc *.icm)"]
+            Component.onCompleted: open()
+            onAccepted: { panel.model.softProof.set("profileFile", decodeURIComponent(String(selectedFile).replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/"))); proofPicker.active = false }
+            onRejected: proofPicker.active = false
+        }
+    }
     Rectangle { width: 1; height: parent.height; color: panel.line }
     function refreshCapture() {
         if (capture) { metadata = capture; return }
@@ -200,6 +210,59 @@ Rectangle {
             Copy { text: "Adjustments"; font.pixelSize: 15; font.weight: Font.Bold; anchors.verticalCenter: parent.verticalCenter }
             Row {
                 anchors.right: parent.right; spacing: 8
+                Action {
+                    id: proofButton
+                    objectName: "rawSoftProof"; text: "Proof"
+                    selected: !!panel.model && panel.model.softProof.enabled
+                    enabled: !!panel.model && panel.model.loaded
+                    onClicked: proofMenu.opened ? proofMenu.close() : proofMenu.open()
+                    ToolTip.text: "Soft proof: see the photo as it will print or export"; ToolTip.visible: hovered
+                    Popover {
+                        id: proofMenu; objectName: "rawSoftProofMenu"; placement: 2; minWidth: 268
+                        readonly property var sp: panel.model ? panel.model.softProof : null
+                        Item {
+                            width: 268; height: 34
+                            Copy { x: 6; anchors.verticalCenter: parent.verticalCenter; text: "Soft proof"; color: theme.fg; font.weight: Font.DemiBold }
+                            SSwitch { objectName: "rawSoftProofOn"; x: parent.width - width - 6; anchors.verticalCenter: parent.verticalCenter
+                                      checked: !!proofMenu.sp && proofMenu.sp.enabled; onToggled: (v) => proofMenu.sp.set("enabled", v) }
+                        }
+                        Column {
+                            x: 6; width: 256; spacing: 6; bottomPadding: 6
+                            Copy { text: "Profile" }
+                            SSelect { objectName: "rawSoftProofProfile"; width: parent.width; menuMax: 260
+                                      options: proofMenu.sp ? proofMenu.sp.options("profile") : []
+                                      current: { void (proofMenu.sp && proofMenu.sp.revision); return proofMenu.sp ? proofMenu.sp.get("profile") : "" }
+                                      onPicked: (v) => proofMenu.sp.set("profile", v) }
+                            Row {
+                                visible: { void (proofMenu.sp && proofMenu.sp.revision); return !!proofMenu.sp && proofMenu.sp.get("profile") === "file" } spacing: 6
+                                FInput { id: proofFile; width: 256 - 6 - 78; placeholder: "Profile file (.icc)"
+                                         text: { void (proofMenu.sp && proofMenu.sp.revision); return proofMenu.sp ? proofMenu.sp.get("profileFile") : "" }
+                                         onEdited: (t) => proofMenu.sp.set("profileFile", t) }
+                                SButton { text: "Browse…"; variant: "ghost"; h: 32; hpad: 10; radius: 10; width: 78; onClicked: proofPicker.active = true }
+                            }
+                            Copy { text: "Rendering intent" }
+                            SSelect { width: parent.width; menuMax: 200
+                                      options: proofMenu.sp ? proofMenu.sp.options("intent") : []
+                                      current: { void (proofMenu.sp && proofMenu.sp.revision); return proofMenu.sp ? proofMenu.sp.get("intent") : "" }
+                                      onPicked: (v) => proofMenu.sp.set("intent", v) }
+                            Repeater {
+                                model: [["bpc", "Black point compensation"], ["paper", "Simulate paper and ink"], ["gamut", "Gamut warning"]]
+                                delegate: Item {
+                                    required property var modelData
+                                    width: 256; height: 30
+                                    Copy { anchors.verticalCenter: parent.verticalCenter; text: modelData[1] }
+                                    SSwitch { objectName: "rawSoftProof_" + modelData[0]; x: parent.width - width; anchors.verticalCenter: parent.verticalCenter
+                                              checked: { void (proofMenu.sp && proofMenu.sp.revision); return !!proofMenu.sp && proofMenu.sp.get(modelData[0]) }
+                                              onToggled: (v) => proofMenu.sp.set(modelData[0], v) }
+                                }
+                            }
+                            Copy { visible: !!proofMenu.sp && proofMenu.sp.problem !== ""; width: parent.width; wrapMode: Text.WordWrap
+                                   text: proofMenu.sp ? proofMenu.sp.problem : ""; color: theme.rej; font.pixelSize: 11 }
+                            Copy { width: parent.width; wrapMode: Text.WordWrap; font.pixelSize: 11; color: panel.subtle
+                                   text: "Only the picture on screen is proofed; the edit and exports are unchanged." }
+                        }
+                    }
+                }
                 Action {
                     objectName: "rawUndo"; text: "Undo"; width: 32; height: 32
                     glyph: "M8 5l-5 5 5 5m-5-5h12a5 5 0 0 1 0 10"

@@ -282,7 +282,7 @@ Rectangle {
         }
         RailButton { visible: rail.vis("preview"); icon: "eye"; tip: "Open preview"; onClicked: popout.open(rail.row) }
         RailButton { visible: rail.vis("rename"); icon: "tag"; tip: "Rename selection"; onClicked: UiState.batchMode = "rename" }
-        RailButton { visible: rail.vis("convert"); icon: "convert"; tip: "Resize and convert"; onClicked: UiState.batchMode = "resize" }
+        RailButton { visible: rail.vis("convert"); icon: "convert"; tip: "Export"; onClicked: UiState.batchMode = "resize" }
         RailButton {   // opens PocketDrop with the current photo added
             visible: rail.vis("share"); icon: "pocketdrop"; tip: "Share to phone"
             onClicked: { pocketDrop.refreshLibrary(rail.row); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
