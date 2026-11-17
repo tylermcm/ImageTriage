@@ -223,6 +223,12 @@ class RawEditor(QObject):
         from ..raw_crop import framed
         crop = self.values["hostCrop"]
         parts = []
+        if not self._source_view or self._crop_editing:
+            from ..raw_perspective import query as perspective_query
+
+            warp = perspective_query({**DEFAULT_CROP, **crop})      # masks and retouching are drawn on the picture as recorded
+            if warp:
+                parts.append(warp)
         if not self._crop_editing and clip["w"] > 0 and framed(crop):
             parts.append("crop=" + ",".join(str(clip[key]) for key in ("x", "y", "w", "h")))
         if not self._source_view or self._crop_editing:
@@ -263,7 +269,11 @@ class RawEditor(QObject):
         from ..raw_crop import view_to_frame, view_to_source
         crop = self.values["hostCrop"]
         if self._crop_editing:
-            return view_to_frame(x, y, crop, quarter_only=True)
+            from ..raw_perspective import warped_to_recorded
+
+            u, v = view_to_frame(x, y, crop, quarter_only=True)
+            shape = tuple(self._full_size) if min(self._full_size) > 0 else (1.0, 1.0)
+            return warped_to_recorded(u, v, {**DEFAULT_CROP, **crop}, shape)
         if self._source_view:
             return crop["x"] + x * crop["w"], crop["y"] + y * crop["h"]
         return view_to_source(x, y, crop, shape=tuple(self._full_size) if min(self._full_size) > 0 else (1.0, 1.0))
@@ -305,6 +315,26 @@ class RawEditor(QObject):
         angle = max(-MAX_ANGLE, min(MAX_ANGLE, round(angle, 2)))
         crop["angle"] = -angle if crop["flipH"] != crop["flipV"] else angle
         self._set_values({"hostCrop": crop}, "Straighten", render=False)
+
+    @Slot(str, float)
+    def setTransform(self, key, value):
+        """Crop > Transform: one of the perspective sliders (``raw_perspective``), or Constrain crop (1 or 0)."""
+        from ..raw_perspective import KEYS, RANGES
+        if key not in KEYS or not math.isfinite(value):
+            return
+        crop = self.values["hostCrop"]
+        if key == "constrain":
+            crop["constrain"] = bool(value)
+        else:
+            low, high = RANGES[key]
+            crop[key] = round(max(low, min(high, float(value))), 1)
+        self._set_values({"hostCrop": crop}, "Transform", render=False)
+
+    @Slot()
+    def resetTransform(self):
+        from ..raw_perspective import KEYS
+        crop = {k: v for k, v in self.values["hostCrop"].items() if k not in KEYS}
+        self._set_values({"hostCrop": crop}, "Reset transform", render=False)
 
     @Property("QVariantMap", notify=changed)
     def previewClip(self):
@@ -534,7 +564,9 @@ class RawEditor(QObject):
 
     @Slot()
     def resetCrop(self):
-        self._set_values({"hostCrop": dict(DEFAULT_CROP)}, "Reset crop", render=False)
+        from ..raw_perspective import KEYS
+        kept = {k: v for k, v in self.values["hostCrop"].items() if k in KEYS}      # Reset transform has its own button
+        self._set_values({"hostCrop": {**DEFAULT_CROP, **kept}}, "Reset crop", render=False)
 
     @Slot()
     def beginGesture(self):

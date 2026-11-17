@@ -384,9 +384,33 @@ Rectangle {
                 }
                 Copy { width: parent.width; topPadding: 6; text: "Straightening keeps the largest upright picture of the same shape inside the crop. Masks, retouching and red eye are placed on the picture before it is turned."; wrapMode: Text.WordWrap; color: panel.subtle; font.pixelSize: 11 }
                 Section {
+                    objectName: "rawTransform"
                     inset: 0; topPadding: 8
-                    title: "Geometry"; expanded: true
-                    Repeater { model: ["Projection", "Vertical", "Horizontal", "Rotate", "Aspect", "Scale", "Offset X", "Offset Y"]; delegate: Field { required property string modelData; label: modelData; low: label === "Scale" ? 50 : -100; high: label === "Scale" ? 150 : 100 } }
+                    title: "Transform"; expanded: true
+                    Copy { width: parent.width; text: "Correct converging lines: Vertical for buildings, Horizontal for walls seen at an angle."; wrapMode: Text.WordWrap; color: panel.muted; font.pixelSize: 12; bottomPadding: 6 }
+                    Repeater {
+                        model: [["vertical", "Vertical", -100, 100], ["horizontal", "Horizontal", -100, 100], ["aspect", "Aspect", -100, 100],
+                                ["scale", "Scale", 50, 150], ["offsetX", "Offset X", -100, 100], ["offsetY", "Offset Y", -100, 100]]
+                        delegate: RawColorSlider {
+                            required property var modelData
+                            objectName: "rawTransform_" + modelData[0]
+                            width: parent.width; controlHeight: 34
+                            label: modelData[1]; from: modelData[2]; to: modelData[3]
+                            enabled: panel.editable
+                            value: panel.model.values.hostCrop[modelData[0]] === undefined ? (modelData[0] === "scale" ? 100 : 0) : panel.model.values.hostCrop[modelData[0]]
+                            onCommitted: (next) => panel.model.setTransform(modelData[0], next)
+                            editModel: panel.model
+                            // as with Straighten: the finished picture, with a grid, while the slider is held
+                            onPressedChanged: panel.straightening = pressed
+                        }
+                    }
+                    Item {
+                        width: parent.width; height: 32
+                        Copy { anchors.verticalCenter: parent.verticalCenter; text: "Constrain crop"; color: panel.ink }
+                        SSwitch { objectName: "rawTransformConstrain"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                  checked: panel.model.values.hostCrop.constrain !== false; onToggled: (v) => panel.model.setTransform("constrain", v ? 1 : 0) }
+                    }
+                    Action { objectName: "rawTransformReset"; text: "Reset transform"; enabled: panel.editable; onClicked: panel.model.resetTransform() }
                 }
                 Section {
                     inset: 0; topPadding: 8; title: "Anamorphic"; Field { label: "Squeeze" } }
@@ -394,7 +418,7 @@ Rectangle {
                     inset: 0; topPadding: 8; title: "Generative Expand"; Pending {} }
                 Section {
                     inset: 0; topPadding: 8; title: "Trim"; Pending {} }
-                Copy { width: parent.width; text: "Crop, straighten, rotate and flip are ready. Geometry and expansion are not available yet."; wrapMode: Text.WordWrap; color: panel.subtle; font.pixelSize: 11; topPadding: 12 }
+                Copy { width: parent.width; text: "Crop, straighten, rotate, flip and transform are ready. Expansion is not available yet."; wrapMode: Text.WordWrap; color: panel.subtle; font.pixelSize: 11; topPadding: 12 }
             }
             Copy {
                 objectName: "rawSourceViewNote"
