@@ -3,6 +3,11 @@
 The settings are exactly the recipe's ``cameraRaw.sky`` (see PhotoCraft ``camera_raw/sky.rs``): the chosen sky picture's
 path, the sky matte as a raster mask, and the sliders. This module holds the arithmetic around them: ranges, the matte's
 encoding, and the library of sky pictures the user has imported.
+
+The controls follow Luminar's Sky AI (``docs/sky_replacement.md``): the blend (Amount, Fade and Shift Edge, Sky Brightness and
+Warmth, Match Colors, Relight Scene) and its Advanced Settings: Sky Orientation (Horizon, Vertical and Horizontal Position,
+Flip), Mask Refinement (Global, Close Gaps, Fix Details), Scene Relighting (Strength, Saturation, Human: people are a raster mask
+too), Reflection (Amount, Water Blur: water is a raster mask) and Sky Adjustments (Defocus, Grain, Atmospheric Haze).
 """
 from __future__ import annotations
 
@@ -12,9 +17,20 @@ import shutil
 from pathlib import Path
 
 DEFAULTS = {"source": "", "amount": 0.0, "shiftEdge": 0.0, "fadeEdge": 0.0, "brightness": 0.0, "warmth": 0.0,
-            "colorMatch": 0.0, "relight": 0.0, "scale": 100.0, "offsetX": 0.0, "offsetY": 0.0, "flip": False}
+            "colorMatch": 0.0, "relight": 0.0, "scale": 100.0, "offsetX": 0.0, "offsetY": 0.0, "flip": False,
+            "horizon": 0.0, "global": 0.0, "closeGaps": 0.0, "fixDetails": 0.0, "relightSaturation": 50.0, "relightHuman": 0.0,
+            "reflection": 0.0, "waterBlur": 0.0, "defocus": 0.0, "grain": 0.0, "haze": 0.0}
 RANGES = {"amount": (0, 100), "shiftEdge": (-100, 100), "fadeEdge": (0, 100), "brightness": (-100, 100), "warmth": (-100, 100),
-          "colorMatch": (0, 100), "relight": (0, 100), "scale": (25, 400), "offsetX": (-100, 100), "offsetY": (-100, 100)}
+          "colorMatch": (0, 100), "relight": (0, 100), "scale": (25, 400), "offsetX": (-100, 100), "offsetY": (-100, 100),
+          "horizon": (-100, 100), "global": (0, 100), "closeGaps": (0, 100), "fixDetails": (0, 100), "relightSaturation": (0, 100),
+          "relightHuman": (0, 100), "reflection": (0, 100), "waterBlur": (0, 100), "defocus": (0, 100), "grain": (0, 100),
+          "haze": (0, 100)}
+# The settings a renderer older than the full Sky AI set does not know (it refuses a recipe naming one): a recipe only names
+# them when they are not at their defaults (``for_recipe``), so a photo that does not use them still renders anywhere.
+NEWER = ("horizon", "global", "closeGaps", "fixDetails", "relightSaturation", "relightHuman", "reflection", "waterBlur", "defocus",
+         "grain", "haze")
+# The other pictures the renderer can be given beside the matte (white = water, white = person), as raster masks.
+EXTRA_MASKS = ("water", "people")
 FIRST_AMOUNT = 100                 # choosing a sky shows it
 FIRST_MATCH, FIRST_RELIGHT, FIRST_FADE = 35, 25, 3    # a believable start: the sky sits in the scene instead of on it
 MATTE_SIDE = 1536                  # the matte is authored at this long edge (the most a raster mask holds)
@@ -72,13 +88,16 @@ def valid(sky) -> bool:
     """Whether ``sky`` is something the recipe can hold: nothing at all, or settings in range and a raster matte."""
     if sky in (None, {}):
         return True
-    if not isinstance(sky, dict) or not set(sky) <= set(DEFAULTS) | {"mask"}:
+    if not isinstance(sky, dict) or not set(sky) <= set(DEFAULTS) | {"mask", *EXTRA_MASKS}:
         return False
     if not isinstance(sky.get("source", ""), str) or len(sky.get("source", "")) > 256 or not isinstance(sky.get("flip", False), bool):
         return False
     if any(key in sky and not (_number(sky[key]) and low <= sky[key] <= high) for key, (low, high) in RANGES.items()):
         return False
-    mask = sky.get("mask")
+    return all(_raster_ok(sky.get(key)) for key in ("mask", *EXTRA_MASKS))
+
+
+def _raster_ok(mask) -> bool:
     if mask is None:
         return True
     from .camera_raw_recipe_masks import MAX_RASTER_SIDE
@@ -104,9 +123,40 @@ def normalized(sky) -> dict:
         if isinstance(sky.get("source"), str):
             result["source"] = sky["source"][:256]
         result["flip"] = sky.get("flip") is True
-        if sky.get("mask") is not None:
-            result["mask"] = sky["mask"]
+        for key in ("mask", *EXTRA_MASKS):
+            if sky.get(key) is not None:
+                result[key] = sky[key]
     return result
+
+
+def for_recipe(sky) -> dict:
+    """``sky`` as the recipe holds it: the newer settings only when they are not at their defaults (see ``NEWER``), and the water
+    and people pictures only while a setting uses them (Reflection; Relight Scene or Relight Human)."""
+    result = normalized(sky)
+    for key in NEWER:
+        if result[key] == DEFAULTS[key]:
+            del result[key]
+    if result.get("reflection", 0) <= 0:
+        result.pop("water", None)
+    if result.get("relight", 0) <= 0 and result.get("relightHuman", 0) <= 0:
+        result.pop("people", None)
+    return result
+
+
+def uses_newer(sky) -> bool:
+    """Whether a recipe's sky names any setting only the full Sky AI renderer knows."""
+    return isinstance(sky, dict) and any(key in sky for key in (*NEWER, *EXTRA_MASKS))
+
+
+def masks_wanted(sky) -> tuple[str, ...]:
+    """Which of the extra pictures the settings use: water for Reflection, people for Relight Scene and Relight Human."""
+    settings = normalized(sky)
+    wanted = []
+    if settings["reflection"] > 0:
+        wanted.append("water")
+    if settings["relight"] > 0 or settings["relightHuman"] > 0:
+        wanted.append("people")
+    return tuple(wanted)
 
 
 def library_root() -> Path:

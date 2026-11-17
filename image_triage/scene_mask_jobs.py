@@ -82,8 +82,10 @@ def run_scene_masks(
     cancel: threading.Event | None = None,
     *,
     ensure=None,
+    labels: dict | None = None,
 ) -> dict:
-    """Label the picture and write one coverage map per landscape category found. Returns the manifest."""
+    """Label the picture and write one coverage map per landscape category found (``labels``: which ones, by default
+    ``LANDSCAPE_LABELS``). Returns the manifest."""
     if ensure is None:
         from .semantic_masks import ensure_semantic_masks as ensure
     _check(cancel)
@@ -96,7 +98,7 @@ def run_scene_masks(
         if Path(path).is_file():
             maps[category] = _gray(Path(path))
     entries = []
-    for key, label in LANDSCAPE_LABELS.items():
+    for key, label in (labels or LANDSCAPE_LABELS).items():
         parts = [maps[c] for c in (_VEGETATION if key == "vegetation" else (key,)) if c in maps]
         if not parts:
             continue

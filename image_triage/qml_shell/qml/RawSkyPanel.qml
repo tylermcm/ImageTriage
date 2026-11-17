@@ -142,30 +142,85 @@ Column {
         Accessible.role: Accessible.Button; Accessible.name: "Advanced Settings"
         Accessible.onPressAction: sky.advanced = !sky.advanced
     }
+    // Advanced Settings: Luminar's Sky AI groups, each folding away on its own.
+    component Group: Column {
+        id: group
+        property string title: ""
+        property bool open: true
+        default property alias contents: body.data
+        width: parent.width
+        Rectangle { width: parent.width; height: 1; color: theme.line; opacity: 0.6 }
+        Item {
+            width: parent.width; height: 34
+            activeFocusOnTab: true
+            Text { anchors.verticalCenter: parent.verticalCenter; text: group.title; color: theme.fg2; font.pixelSize: 12 }
+            Icon { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; size: 12; name: group.open ? "chevUp" : "chevDown"; color: theme.fg2 }
+            TapHandler { onTapped: group.open = !group.open }
+            HoverHandler { cursorShape: Qt.PointingHandCursor }
+            Keys.onReturnPressed: group.open = !group.open
+            Keys.onSpacePressed: group.open = !group.open
+            Accessible.role: Accessible.Button; Accessible.name: group.title
+            Accessible.onPressAction: group.open = !group.open
+        }
+        Column { id: body; visible: group.open; width: parent.width; spacing: 4; leftPadding: 0; bottomPadding: 6 }
+    }
+    component Knob: RawColorSlider {
+        property string key: ""
+        objectName: "sky_" + key
+        editModel: sky.raw; width: parent ? parent.width : 0; controlHeight: 32
+        value: sky.values[key]
+        onCommitted: (next) => sky.model.adjust(key, next)
+    }
     Column {
+        objectName: "skyAdvancedGroups"
         visible: sky.advanced
-        width: parent.width; spacing: 4
-        RawColorSlider {
-            objectName: "sky_scale"; editModel: sky.raw; width: parent.width; controlHeight: 32
-            label: "Sky Size"; from: 25; to: 400; value: sky.values.scale
-            onCommitted: (next) => sky.model.adjust("scale", next)
-        }
-        RawColorSlider {
-            objectName: "sky_offsetX"; editModel: sky.raw; width: parent.width; controlHeight: 32
-            label: "Sky Horizontal"; from: -100; to: 100; value: sky.values.offsetX
-            onCommitted: (next) => sky.model.adjust("offsetX", next)
-        }
-        RawColorSlider {
-            objectName: "sky_offsetY"; editModel: sky.raw; width: parent.width; controlHeight: 32
-            label: "Sky Vertical"; from: -100; to: 100; value: sky.values.offsetY
-            onCommitted: (next) => sky.model.adjust("offsetY", next)
-        }
-        Row {
-            spacing: 8
+        width: parent.width; spacing: 0
+        Group {
+            objectName: "skyOrientation"; title: "Sky Orientation"
+            Knob { key: "horizon"; label: "Horizon Position"; from: -100; to: 100 }
+            Knob { key: "offsetY"; label: "Vertical Position"; from: -100; to: 100 }
+            Knob { key: "offsetX"; label: "Horizontal Position"; from: -100; to: 100 }
+            Knob { key: "scale"; label: "Sky Size"; from: 25; to: 400 }
             CheckBox {
-                objectName: "sky_flip"; text: "Flip sky"; checked: sky.values.flip
+                objectName: "sky_flip"; text: "Flip"; checked: sky.values.flip
                 onToggled: sky.model.setFlip(checked)
             }
+        }
+        Group {
+            objectName: "skyMaskRefinement"; title: "Mask Refinement"
+            Knob { key: "global"; label: "Global"; from: 0; to: 100 }
+            Knob { key: "closeGaps"; label: "Close Gaps"; from: 0; to: 100 }
+            Knob { key: "fixDetails"; label: "Fix Details"; from: 0; to: 100 }
+        }
+        Group {
+            objectName: "skyRelighting"; title: "Scene Relighting"
+            Knob { key: "relight"; label: "Relight Strength"; from: 0; to: 100 }
+            Knob { key: "relightSaturation"; label: "Relight Saturation"; from: 0; to: 100 }
+            Knob { key: "relightHuman"; label: "Relight Human"; from: 0; to: 100 }
+            Text {
+                visible: sky.model.noPeople && sky.values.relightHuman > 0
+                width: parent.width; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 11
+                text: "No people were found in this photo."
+            }
+        }
+        Group {
+            objectName: "skyReflection"; title: "Reflection"
+            Knob { key: "reflection"; label: "Reflection Amount"; from: 0; to: 100 }
+            Knob { key: "waterBlur"; label: "Water Blur"; from: 0; to: 100 }
+            Text {
+                objectName: "skyNoWater"
+                visible: sky.model.noWater && sky.values.reflection > 0
+                width: parent.width; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 11
+                text: "No water was found in this photo, so there is nothing to reflect the sky in."
+            }
+        }
+        Group {
+            objectName: "skyAdjustments"; title: "Sky Adjustments"
+            Knob { key: "defocus"; label: "Defocus"; from: 0; to: 100 }
+            Knob { key: "grain"; label: "Grain"; from: 0; to: 100 }
+            Knob { key: "haze"; label: "Atmospheric Haze"; from: 0; to: 100 }
+            Knob { key: "warmth"; label: "Warmth"; from: -100; to: 100; colors: ["#608fc3", "#a7a7a0", "#d3bd64"] }
+            Knob { key: "brightness"; label: "Brightness"; from: -100; to: 100 }
         }
     }
 }

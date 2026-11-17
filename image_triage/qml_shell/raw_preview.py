@@ -161,6 +161,7 @@ class Connection:
                 raise RuntimeError("The RAW preview worker needs to be rebuilt.")
             self._red_eye_supported = type(hello.get("redEye")) is int and hello["redEye"] >= 1
             self._sky_supported = type(hello.get("sky")) is int and hello["sky"] >= 1
+            self._sky_full = type(hello.get("sky")) is int and hello["sky"] >= 2       # the full Sky AI set (``sky_replace.NEWER``)
             self._patch_supported = type(hello.get("patch")) is int and hello["patch"] >= 1
         except Exception:
             self.close()
@@ -174,6 +175,10 @@ class Connection:
             raise RuntimeError("Red Eye needs the updated RAW preview worker.")
         if (request.get("recipe", {}).get("cameraRaw", {}).get("sky") and not getattr(self, "_sky_supported", False)):
             raise RuntimeError("Sky Replacement needs the updated RAW preview worker.")
+        from .. import sky_replace
+        if (sky_replace.uses_newer(request.get("recipe", {}).get("cameraRaw", {}).get("sky"))
+                and not getattr(self, "_sky_full", False)):
+            raise RuntimeError("These Sky Replacement settings need the updated RAW preview worker.")
         if (any(s.get("kind") == "patch" for s in request.get("recipe", {}).get("cameraRaw", {}).get("retouch", []))
                 and not getattr(self, "_patch_supported", False)):
             raise RuntimeError("AI Erase needs the updated RAW preview worker.")
