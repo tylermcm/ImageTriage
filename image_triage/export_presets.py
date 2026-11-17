@@ -19,10 +19,12 @@ MAX_NAME = 60
 
 BUILTIN: tuple[tuple[str, dict], ...] = (
     ("Full size JPEG", {"sizeMode": "original", "format": "jpg", "quality": "92", "profile": "srgb", "meta": "all"}),
-    ("Web 2048 px", {"sizeMode": "long", "long": "2048", "format": "jpg", "quality": "85", "profile": "srgb", "meta": "copyright"}),
-    ("Email 1200 px", {"sizeMode": "long", "long": "1200", "format": "jpg", "quality": "80", "profile": "srgb", "meta": "none"}),
+    ("Web 2048 px", {"sizeMode": "long", "long": "2048", "format": "jpg", "quality": "85", "profile": "srgb", "meta": "copyright",
+                     "sharpen": "screen"}),
+    ("Email 1200 px", {"sizeMode": "long", "long": "1200", "format": "jpg", "quality": "80", "profile": "srgb", "meta": "none",
+                       "sharpen": "screen"}),
     ("Instagram portrait 1080 x 1350", {"sizeMode": "fit", "fitW": "1080", "fitH": "1350", "format": "jpg", "quality": "90",
-                                         "profile": "srgb", "meta": "copyright"}),
+                                         "profile": "srgb", "meta": "copyright", "sharpen": "screen"}),
     ("Print TIFF 16-bit Adobe RGB", {"sizeMode": "original", "format": "tif", "depth": "16", "profile": "adobergb", "meta": "all"}),
     ("Archive TIFF 16-bit ProPhoto", {"sizeMode": "original", "format": "tif", "depth": "16", "profile": "prophoto", "meta": "all"}),
 )

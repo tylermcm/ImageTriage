@@ -55,6 +55,10 @@ A medium preview pane beside the settings:
 
 ## Phases
 
+Done: 1 (2026-11-17, `export_pipeline.py`, `export_presets.py`, Batch window Rename + Export), 2 (sharpening: an unsharp mask on
+brightness at the output size, with a small threshold so flat areas and noise stay; the preview's **100%** button shows the middle of
+the export at its own size, where sharpening can be judged).
+
 1. Export pipeline + Export mode (size, format, colour, metadata, name, destination) replacing Resize/Convert, with the preview
    pane. Presets (save, load, built-ins).
 2. Output sharpening and watermark.

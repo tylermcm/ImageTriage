@@ -26,6 +26,8 @@ DEFAULTS: dict[str, object] = {
     "format": "jpg", "quality": "90", "depth": "8",
     "profile": "srgb", "intent": "perceptual",
     "meta": "all",
+    "sharpen": "none", "sharpenAmount": "standard",
+    "wm": "none", "wmText": "", "wmImage": "", "wmPos": "br", "wmSize": "4", "wmOpacity": "60", "wmInset": "3", "wmColor": "white",
     "xPrefix": "", "xSuffix": "",
     "dest": "subfolder", "sub": "Export", "folder": "", "exists": "unique",
 }
@@ -37,6 +39,15 @@ PROFILES = (("srgb", "sRGB"), ("p3", "Display P3"), ("adobergb", "Adobe RGB (199
             ("source", "Same as the photo"))
 INTENTS = (("perceptual", "Perceptual"), ("relative", "Relative colorimetric"))
 METADATA = (("all", "Keep all"), ("nogps", "All but location"), ("copyright", "Copyright and contact only"), ("none", "None"))
+SHARPEN = (("none", "No sharpening"), ("screen", "Screen"), ("matte", "Matte paper"), ("glossy", "Glossy paper"))
+SHARPEN_AMOUNTS = (("low", "Low"), ("standard", "Standard"), ("high", "High"))
+WATERMARKS = (("none", "None"), ("text", "Text"), ("image", "Picture"))
+POSITIONS = (("tl", "Top left"), ("t", "Top"), ("tr", "Top right"), ("l", "Left"), ("c", "Centre"), ("r", "Right"),
+             ("bl", "Bottom left"), ("b", "Bottom"), ("br", "Bottom right"))
+WM_COLORS = (("white", "White"), ("black", "Black"))
+# Output sharpening (Lightroom's set): an unsharp mask on brightness at the output size. Radius in output pixels, strength.
+_SHARPEN = {"screen": (0.6, 0.6), "glossy": (0.9, 0.9), "matte": (1.2, 1.25)}
+_SHARPEN_SCALE = {"low": 0.6, "standard": 1.0, "high": 1.5}
 DESTINATIONS = (("subfolder", "A folder next to the photos"), ("choose", "A folder I choose"))
 EXISTS = (("unique", "Add a number"), ("overwrite", "Overwrite"), ("skip", "Skip the photo"))
 
@@ -67,7 +78,8 @@ def normalized(values: dict | None) -> dict:
         else:
             result[key] = str(value)[:260]
     choices = {"sizeMode": SIZE_MODES, "profile": PROFILES, "intent": INTENTS, "meta": METADATA, "dest": DESTINATIONS,
-               "exists": EXISTS}
+               "exists": EXISTS, "sharpen": SHARPEN, "sharpenAmount": SHARPEN_AMOUNTS, "wm": WATERMARKS, "wmPos": POSITIONS,
+               "wmColor": WM_COLORS}
     for key, options in choices.items():
         if result[key] not in {v for v, _ in options}:
             result[key] = DEFAULTS[key]
@@ -124,6 +136,17 @@ def size_problem(values: dict) -> str:
         quality = _number(values["quality"], -1)
         if not 1 <= quality <= 100:
             return "Quality goes from 1 to 100."
+    if values["wm"] != "none":
+        if values["wm"] == "text" and not values["wmText"].strip():
+            return "Type the watermark's text."
+        if values["wm"] == "image" and not Path(values["wmImage"]).is_file():
+            return "Choose the watermark picture."
+        if not 0.5 <= _number(values["wmSize"], -1) <= 50:
+            return "Watermark size goes from 0.5 to 50%."
+        if not 1 <= _number(values["wmOpacity"], -1) <= 100:
+            return "Watermark opacity goes from 1 to 100%."
+        if not 0 <= _number(values["wmInset"], -1) <= 25:
+            return "Watermark margin goes from 0 to 25%."
     return ""
 
 
@@ -134,24 +157,135 @@ def target_space(values: dict, source_icc: bytes | None) -> QColorSpace:
     return QColorSpace(_NAMED_SPACES[values["profile"]])
 
 
-def prepare(image: QImage, source_icc: bytes | None, values: dict, *, size: tuple[int, int] | None = None) -> QImage:
-    """``image`` at the output size (or ``size``, for a preview of it) in the output profile, its colour space set to that profile.
-    A picture without a profile is taken to be sRGB."""
+def prepare(image: QImage, source_icc: bytes | None, values: dict, *, size: tuple[int, int] | None = None,
+            sharpen: bool | None = None) -> QImage:
+    """``image`` at the output size (or ``size``, for a preview of it), sharpened for its medium, watermarked, in the output profile,
+    its colour space set to that profile. A picture without a profile is taken to be sRGB. Sharpening is made for the output size,
+    so a reduced preview leaves it out unless ``sharpen`` asks for it."""
     if image.isNull():
         return image
     if not image.colorSpace().isValid():
         space = QColorSpace.fromIccProfile(source_icc) if source_icc else QColorSpace()
         image = QImage(image)
         image.setColorSpace(space if space.isValid() else QColorSpace(QColorSpace.NamedColorSpace.SRgb))
-    width, height = size or output_size(image.width(), image.height(), values)
+    full = output_size(image.width(), image.height(), values)
+    width, height = size or full
     if (width, height) != (image.width(), image.height()):
         image = image.scaled(width, height, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    if sharpen is None:
+        sharpen = (width, height) == full          # a reduced preview would not show it: the 100% view does
+    if sharpen:
+        image = sharpened(image, values)
+    image = watermarked(image, values)
     target = target_space(values, source_icc)
     if image.colorSpace() != target:
         if bit_depth(image) <= 8 and image.format() not in (QImage.Format.Format_RGB32, QImage.Format.Format_ARGB32):
             image = image.convertToFormat(QImage.Format.Format_ARGB32)
         image = image.convertedToColorSpace(target)
     return image
+
+
+def _gauss_kernel(sigma: float):
+    import numpy as np
+
+    radius = max(1, int(np.ceil(sigma * 3)))
+    x = np.arange(-radius, radius + 1, dtype=np.float32)
+    k = np.exp(-0.5 * (x / sigma) ** 2)
+    return k / k.sum()
+
+
+def _blur(plane, sigma: float):
+    import numpy as np
+
+    k = _gauss_kernel(sigma)
+    r = len(k) // 2
+    padded = np.pad(plane, ((0, 0), (r, r)), mode="edge")
+    out = np.zeros_like(plane)
+    for i, w in enumerate(k):
+        out += w * padded[:, i:i + plane.shape[1]]
+    padded = np.pad(out, ((r, r), (0, 0)), mode="edge")
+    result = np.zeros_like(plane)
+    for i, w in enumerate(k):
+        result += w * padded[i:i + plane.shape[0], :]
+    return result
+
+
+def sharpened(image: QImage, values: dict) -> QImage:
+    """Output sharpening: an unsharp mask on brightness only (colours do not fringe), small details below a threshold left alone
+    so noise is not raised. 16-bit pictures stay 16-bit."""
+    import numpy as np
+
+    if values["sharpen"] == "none" or image.isNull():
+        return image
+    radius, strength = _SHARPEN[values["sharpen"]]
+    strength *= _SHARPEN_SCALE[values["sharpenAmount"]]
+    deep = bit_depth(image) > 8
+    fmt = QImage.Format.Format_RGBA64 if deep else QImage.Format.Format_RGBA8888
+    space = image.colorSpace()
+    work = image.convertToFormat(fmt)
+    dtype, top = (np.uint16, 65535.0) if deep else (np.uint8, 255.0)
+    w, h = work.width(), work.height()
+    stride = work.bytesPerLine() // np.dtype(dtype).itemsize
+    raw = np.frombuffer(work.constBits(), dtype=dtype, count=stride * h).reshape(h, stride)[:, :w * 4].reshape(h, w, 4)
+    rgb = raw[:, :, :3].astype(np.float32) / top
+    lum = rgb @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+    detail = lum - _blur(lum, radius)
+    threshold = 0.004
+    detail = np.sign(detail) * np.maximum(np.abs(detail) - threshold, 0)
+    out = np.clip(rgb + (strength * detail)[:, :, None], 0, 1)
+    result = np.concatenate([np.rint(out * top).astype(dtype), raw[:, :, 3:]], axis=2)
+    data = np.ascontiguousarray(result)
+    sharp = QImage(data.data, w, h, w * 4 * np.dtype(dtype).itemsize, fmt).copy()
+    sharp.setColorSpace(space)
+    return sharp
+
+
+def watermarked(image: QImage, values: dict) -> QImage:
+    """``image`` with its watermark: text or a picture, sized as a share of the short edge, placed at one of nine positions with a
+    margin, at the chosen opacity. Sizes are shares of the picture, so a preview shows it where the export will have it."""
+    from PySide6.QtGui import QFont, QFontMetricsF, QPainter
+
+    if values["wm"] == "none" or image.isNull():
+        return image
+    short = min(image.width(), image.height())
+    size = max(1.0, short * _number(values["wmSize"], 4) / 100)
+    inset = short * _number(values["wmInset"], 3) / 100
+    opacity = max(0.0, min(1.0, _number(values["wmOpacity"], 60) / 100))
+    deep = bit_depth(image) > 8
+    out = image.convertToFormat(QImage.Format.Format_RGBA64 if deep else QImage.Format.Format_ARGB32)
+    out.setColorSpace(image.colorSpace())
+    painter = QPainter(out)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    painter.setOpacity(opacity)
+    if values["wm"] == "text":
+        font = QFont()
+        font.setPixelSize(max(1, round(size)))
+        painter.setFont(font)
+        box = QFontMetricsF(font).boundingRect(values["wmText"])
+        bw, bh = box.width(), box.height()
+    else:
+        mark = QImage(values["wmImage"])
+        if mark.isNull():
+            painter.end()
+            return out
+        scale = size / max(1, mark.height())
+        bw, bh = mark.width() * scale, size
+    pos = values["wmPos"]
+    x = inset if pos in ("tl", "l", "bl") else out.width() - inset - bw if pos in ("tr", "r", "br") else (out.width() - bw) / 2
+    y = inset if pos in ("tl", "t", "tr") else out.height() - inset - bh if pos in ("bl", "b", "br") else (out.height() - bh) / 2
+    from PySide6.QtCore import QRectF
+
+    if values["wm"] == "text":
+        from PySide6.QtGui import QColor
+
+        painter.setPen(QColor("#ffffff" if values["wmColor"] == "white" else "#000000"))
+        painter.drawText(QRectF(x, y, bw + 2, bh), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, values["wmText"])
+    else:
+        painter.drawImage(QRectF(x, y, bw, bh), mark)
+    painter.end()
+    return out
 
 
 def filtered_exif(exif_bytes: bytes | None, mode: str) -> bytes | None:
@@ -371,6 +505,26 @@ class Preview:
     width: int              # the written picture's size
     height: int
     estimated_bytes: int
+    detail: QImage | None = None   # the middle of the export at 100% (sharpening shows here), for display
+
+
+def detail_crop(image: QImage, icc: bytes | None, values: dict, side: int = 520) -> QImage:
+    """The middle of the export at its own size, at most ``side`` pixels square, made from just that part of the source."""
+    width, height = output_size(image.width(), image.height(), values)
+    cw, ch = min(side, width), min(side, height)
+    sx, sy = image.width() / width, image.height() / height
+    left, top = (width - cw) // 2, (height - ch) // 2
+    margin = 8                                           # so the blur at the crop's edge sees real neighbours
+    x0, y0 = max(0, left - margin), max(0, top - margin)
+    x1, y1 = min(width, left + cw + margin), min(height, top + ch + margin)
+    part = image.copy(int(x0 * sx), int(y0 * sy), max(1, round((x1 - x0) * sx)), max(1, round((y1 - y0) * sy)))
+    if image.colorSpace().isValid():
+        part.setColorSpace(image.colorSpace())
+    crop_values = {**values, "wm": "none"}
+    made = prepare(part, icc, crop_values, size=(x1 - x0, y1 - y0), sharpen=True)
+    made = made.copy(left - x0, top - y0, cw, ch)
+    srgb = QColorSpace(QColorSpace.NamedColorSpace.SRgb)
+    return made.convertedToColorSpace(srgb) if made.colorSpace().isValid() and made.colorSpace() != srgb else made
 
 
 def make_preview(image: QImage, icc: bytes | None, values: dict, side: int = PREVIEW_SIDE) -> Preview:
@@ -387,7 +541,7 @@ def make_preview(image: QImage, icc: bytes | None, values: dict, side: int = PRE
     before = image.scaled(shown[0], shown[1], Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
     if before.colorSpace().isValid() and before.colorSpace() != srgb:
         before = before.convertedToColorSpace(srgb)
-    return Preview(before, display, width, height, int(estimate))
+    return Preview(before, display, width, height, int(estimate), detail_crop(image, icc, values))
 
 
 def human_bytes(count: int) -> str:

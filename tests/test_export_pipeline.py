@@ -134,3 +134,65 @@ def test_presets_store(tmp_path):
     assert store.delete("Proofs") and store.get("Proofs") is None
     (tmp_path / "presets.json").write_text("not json")
     assert {p["name"] for p in store.presets()} == BUILTIN_NAMES                                    # a damaged file is ignored
+
+
+def edge_picture():
+    image = QImage(200, 120, QImage.Format.Format_RGB32)
+    image.fill(QColor(60, 60, 60))
+    for y in range(120):
+        for x in range(100, 200):
+            image.setPixelColor(x, y, QColor(190, 190, 190))
+    return image
+
+
+def contrast_at_edge(image):
+    return image.pixelColor(100, 60).red() - image.pixelColor(99, 60).red()
+
+
+def test_sharpening_raises_edge_contrast_by_medium_and_amount():
+    image = edge_picture()
+    plain = contrast_at_edge(ep.prepare(image, None, ep.normalized({})))
+    screen = contrast_at_edge(ep.prepare(image, None, ep.normalized({"sharpen": "screen"})))
+    high = contrast_at_edge(ep.prepare(image, None, ep.normalized({"sharpen": "matte", "sharpenAmount": "high"})))
+    assert plain < screen < high
+    flat = picture(50, 50, (120, 120, 120))
+    out = ep.prepare(flat, None, ep.normalized({"sharpen": "matte", "sharpenAmount": "high"}))
+    assert out.pixelColor(25, 25).red() == 120                       # flat areas (and their noise) are left alone
+
+
+def test_sixteen_bit_pictures_stay_sixteen_bit_when_sharpened():
+    deep = edge_picture().convertToFormat(QImage.Format.Format_RGBA64)
+    assert bit_depth(ep.sharpened(deep, ep.normalized({"sharpen": "glossy"}))) == 16
+
+
+def test_reduced_previews_leave_sharpening_to_the_100_percent_view():
+    image = edge_picture()
+    values = ep.normalized({"sharpen": "matte", "sharpenAmount": "high"})
+    small = ep.prepare(image, None, values, size=(100, 60))
+    assert small.pixelColor(10, 30).red() == 60
+    preview = ep.make_preview(image, None, values, side=100)
+    assert preview.detail.size().width() == 200 and contrast_at_edge(preview.detail) == contrast_at_edge(ep.prepare(image, None, values))
+
+
+def test_text_watermark_lands_in_its_corner_at_its_opacity():
+    image = picture(400, 300, (0, 0, 0))
+    values = ep.normalized({"wm": "text", "wmText": "WWWW", "wmPos": "br", "wmSize": "10", "wmOpacity": "100"})
+    out = ep.prepare(image, None, values)
+    corner = [out.pixelColor(x, y).red() for x in range(250, 400) for y in range(240, 300)]
+    other = [out.pixelColor(x, y).red() for x in range(0, 150) for y in range(0, 60)]
+    assert max(corner) > 200 and max(other) == 0
+    faint = ep.prepare(image, None, {**values, "wmOpacity": "30"})
+    assert max(faint.pixelColor(x, y).red() for x in range(250, 400) for y in range(240, 300)) < 120
+
+
+def test_picture_watermark_is_sized_by_the_short_edge(tmp_path):
+    mark = QImage(100, 50, QImage.Format.Format_ARGB32)
+    mark.fill(QColor(255, 255, 255))
+    mark.save(str(tmp_path / "logo.png"))
+    image = picture(400, 200, (0, 0, 0))
+    values = ep.normalized({"wm": "image", "wmImage": str(tmp_path / "logo.png"), "wmPos": "tl", "wmSize": "20",
+                            "wmInset": "0", "wmOpacity": "100"})
+    out = ep.prepare(image, None, values)
+    assert out.pixelColor(70, 30).red() == 255 and out.pixelColor(90, 30).red() == 0     # 40 px high, so 80 px wide
+    assert ep.size_problem(ep.normalized({"wm": "image", "wmImage": str(tmp_path / "none.png")})) == "Choose the watermark picture."
+    assert ep.size_problem(ep.normalized({"wm": "text"})) == "Type the watermark's text."

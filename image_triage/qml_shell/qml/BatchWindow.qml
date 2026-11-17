@@ -23,7 +23,9 @@ FocusScope {
     readonly property var rows: { void rev; return batch.rows() }
     readonly property var modes: [["rename", "Rename"], ["export", "Export"]]
     property bool showBefore: false
+    property bool showDetail: false
     property bool picking: false
+    property bool pickingMark: false
     property string presetError: ""
     readonly property var scopeParts: { void rev; return batch.scope(photos.folderName).split("|") }
     property string applied: ""
@@ -55,6 +57,15 @@ FocusScope {
             Component.onCompleted: open()
             onAccepted: { batch.set("folder", decodeURIComponent(String(selectedFolder).replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/"))); root.picking = false }
             onRejected: root.picking = false
+        }
+    }
+    Loader {
+        active: root.pickingMark
+        sourceComponent: FileDialog {
+            title: "Watermark picture"; nameFilters: ["Pictures (*.png *.jpg *.jpeg *.webp *.tif *.tiff)"]
+            Component.onCompleted: open()
+            onAccepted: { batch.set("wmImage", decodeURIComponent(String(selectedFile).replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/"))); root.pickingMark = false }
+            onRejected: root.pickingMark = false
         }
     }
     ShaderEffectSource { id: snap; anchors.fill: parent; sourceItem: root.sourceItem; live: true; visible: false }
@@ -207,6 +218,8 @@ FocusScope {
                             readonly property string format: { void root.rev; return batch.get("format") }
                             readonly property string dest: { void root.rev; return batch.get("dest") }
                             readonly property string preset: { void root.rev; return batch.get("xPreset") }
+                            readonly property string sharpen: { void root.rev; return batch.get("sharpen") }
+                            readonly property string wm: { void root.rev; return batch.get("wm") }
                             Gh { title: "PRESET" }
                             Gap {}
                             Pick { label: "Preset"; key: "xPreset"; custom: true; onChosen: (v) => { root.presetError = ""; if (v !== "") batch.usePreset(v) } }
@@ -250,6 +263,34 @@ FocusScope {
                             Pick { label: "Colour profile"; key: "profile" }
                             Gap {}
                             Pick { label: "Metadata"; key: "meta" }
+                            Gap { h: 22 }
+                            Gh { title: "OUTPUT SHARPENING" }
+                            Gap {}
+                            Pick { label: "Sharpen for"; key: "sharpen" }
+                            Gap { visible: parent.sharpen !== "none" }
+                            Pick { visible: parent.sharpen !== "none"; label: "Amount"; key: "sharpenAmount" }
+                            Gap { h: 8 }
+                            Note { text: parent.sharpen === "none" ? "No sharpening for the output." : "Made for the exported size. Use 100% in the preview to see it." }
+                            Gap { h: 22 }
+                            Gh { title: "WATERMARK" }
+                            Gap {}
+                            Pick { label: "Watermark"; key: "wm" }
+                            Gap { visible: parent.wm !== "none" }
+                            Field { visible: parent.wm === "text"; label: "Text"; key: "wmText"; placeholder: "© Your Name" }
+                            Row {
+                                visible: parent.wm === "image"; spacing: 8
+                                Field { width: 299 - 8 - 84; label: "Picture (PNG with transparency works best)"; key: "wmImage"; placeholder: "Choose a picture" }
+                                SButton { anchors.bottom: parent.bottom; text: "Browse…"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 84; onClicked: root.pickingMark = true }
+                            }
+                            Gap { visible: parent.wm !== "none" }
+                            Pick { visible: parent.wm !== "none"; label: "Position"; key: "wmPos" }
+                            Gap { visible: parent.wm !== "none" }
+                            Row { visible: parent.wm !== "none"; spacing: 8
+                                Field { width: 94; label: "Size"; key: "wmSize"; suffix: "%" }
+                                Field { width: 94; label: "Opacity"; key: "wmOpacity"; suffix: "%" }
+                                Field { width: 95; label: "Margin"; key: "wmInset"; suffix: "%" } }
+                            Gap { visible: parent.wm === "text" }
+                            Pick { visible: parent.wm === "text"; label: "Colour"; key: "wmColor" }
                             Gap { h: 22 }
                             Gh { title: "NAME AND PLACE" }
                             Gap {}
@@ -300,8 +341,11 @@ FocusScope {
                         id: shot
                         objectName: "batchPreviewImage"
                         anchors.fill: parent; anchors.margins: 10; anchors.bottomMargin: 34
-                        fillMode: Image.PreserveAspectFit; asynchronous: true; cache: false; smooth: true; mipmap: true
-                        source: root.showBefore || batch.mode === "rename" ? batch.previewBefore : batch.previewAfter
+                        asynchronous: true; cache: false; smooth: true; mipmap: true
+                        source: root.showBefore || batch.mode === "rename" ? batch.previewBefore
+                              : root.showDetail && batch.previewDetail !== "" ? batch.previewDetail : batch.previewAfter
+                        // 100%: one exported pixel per screen pixel, so sharpening and grain look as they will
+                        fillMode: root.showDetail && !root.showBefore ? Image.Pad : Image.PreserveAspectFit
                     }
                     Text {
                         anchors.centerIn: shot; width: shot.width - 40; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
@@ -326,6 +370,11 @@ FocusScope {
                         Row {
                             anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 10
                             Text { objectName: "batchPreviewInfo"; anchors.verticalCenter: parent.verticalCenter; text: batch.previewInfo; color: theme.fg3; font.pixelSize: 12 }
+                            SButton {
+                                objectName: "batchPreviewDetail"; visible: batch.mode === "export"
+                                text: "100%"; variant: root.showDetail ? "primary" : "ghost"; h: 24; hpad: 10; radius: 8
+                                onClicked: root.showDetail = !root.showDetail
+                            }
                             SButton {
                                 objectName: "batchPreviewBefore"; visible: batch.mode === "export"
                                 text: "Before"; variant: root.showBefore ? "primary" : "ghost"; h: 24; hpad: 10; radius: 8

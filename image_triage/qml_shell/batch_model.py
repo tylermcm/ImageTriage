@@ -78,7 +78,7 @@ class BatchModel(QObject):
         self._pindex = 0
         self._pgen = 0
         self._pbusy = False
-        self._before = self._after = ""
+        self._before = self._after = self._detail = ""
         self._pinfo = self._perror = ""
         self._sources: OrderedDict = OrderedDict()   # path -> (image, exif, icc), the last few photos previewed
         self._sources_lock = threading.Lock()
@@ -239,7 +239,9 @@ class BatchModel(QObject):
         if key == "case":
             return [{"label": m.value, "value": m.value} for m in RenameCaseMode]
         lists = {"sizeMode": pipeline.SIZE_MODES, "profile": pipeline.PROFILES, "intent": pipeline.INTENTS, "meta": pipeline.METADATA,
-                 "dest": pipeline.DESTINATIONS, "exists": pipeline.EXISTS, "depth": (("8", "8 bits per channel"), ("16", "16 bits per channel"))}
+                 "dest": pipeline.DESTINATIONS, "exists": pipeline.EXISTS, "depth": (("8", "8 bits per channel"), ("16", "16 bits per channel")),
+                 "sharpen": pipeline.SHARPEN, "sharpenAmount": pipeline.SHARPEN_AMOUNTS, "wm": pipeline.WATERMARKS, "wmPos": pipeline.POSITIONS,
+                 "wmColor": pipeline.WM_COLORS}
         if key in lists:
             return [{"label": label, "value": value} for value, label in lists[key]]
         if key == "format":
@@ -444,7 +446,7 @@ class BatchModel(QObject):
         self._pgen += 1
         entry = self._preview_entry()
         if entry is None or not self._active:
-            self._before = self._after = self._pinfo = self._perror = ""
+            self._before = self._after = self._detail = self._pinfo = self._perror = ""
             self._pbusy = False
             self.previewChanged.emit()
             return
@@ -486,10 +488,11 @@ class BatchModel(QObject):
         self._pbusy = False
         self._perror = error
         if result is None:
-            self._before = self._after = self._pinfo = ""
+            self._before = self._after = self._detail = self._pinfo = ""
         else:
             self._before = put_thumbnail(f"batch/{generation}/before", result.before)
             self._after = put_thumbnail(f"batch/{generation}/after", result.after)
+            self._detail = put_thumbnail(f"batch/{generation}/detail", result.detail) if result.detail is not None else ""
             self._pinfo = (f"{result.width} x {result.height} px  ·  about {pipeline.human_bytes(result.estimated_bytes)}"
                            if self._mode == "export" else "")
         self.previewChanged.emit()
@@ -507,6 +510,7 @@ class BatchModel(QObject):
     previewIndex = Property(int, lambda self: self._pindex, notify=previewChanged)
     previewBefore = Property(str, lambda self: self._before, notify=previewChanged)
     previewAfter = Property(str, lambda self: self._after, notify=previewChanged)
+    previewDetail = Property(str, lambda self: self._detail, notify=previewChanged)
     previewInfo = Property(str, lambda self: self._pinfo, notify=previewChanged)
     previewError = Property(str, lambda self: self._perror, notify=previewChanged)
     previewBusy = Property(bool, lambda self: self._pbusy, notify=previewChanged)
