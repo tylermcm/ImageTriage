@@ -226,3 +226,51 @@ def test_batch_window_opens_from_the_palette_and_switches_tools_in_qml(qapp, tmp
     window.close()
     engine.deleteLater()
     pump(qapp, 0.2)
+
+
+def test_a_large_batch_is_planned_off_the_ui_thread_and_only_the_newest_plan_is_kept(qapp, tmp_path):
+    from image_triage.qml_shell.batch_model import SYNC_LIMIT
+
+    model = PhotoModel(parent=qapp)
+    count = SYNC_LIMIT + 200
+    model.setRows([{"path": str(tmp_path / f"IMG_{i:05d}.jpg"), "name": f"IMG_{i:05d}.jpg", "ext": "JPG", "raw": False, "decision": "", "rating": 0,
+                    "ai": 70, "companions": ()} for i in range(count)], str(tmp_path))
+    batch = BatchModel(model, parent=qapp)
+    batch.begin("resize")
+    assert batch.property("checking") and not batch.property("canApply")             # nothing can be applied while it is being planned
+    assert "Checking" in batch.property("summary")
+    end = time.monotonic() + 10
+    while batch.property("checking") and time.monotonic() < end:
+        pump(qapp, 0.02)
+    assert not batch.property("checking") and batch.property("canApply") and f"{count} file(s)" in batch.property("summary")
+    generation = batch._cgen
+    for text in ("T", "Ty", "Tyl"):                                                   # typing: each change waits for the next
+        batch.set("wmText", text)
+    assert batch.property("checking") and batch._cgen == generation + 3
+    batch._plan_arrived(generation + 1, ("export", batch._plan(batch._batch_cache, dict(batch._v), "export")))
+    assert batch.property("checking")                                                  # an older plan arriving late is dropped
+    end = time.monotonic() + 10
+    while batch.property("checking") and time.monotonic() < end:
+        pump(qapp, 0.02)
+    assert batch.property("canApply") and batch._exec[0] == "export"
+    batch.setMode("rename")
+    assert batch.property("checking") and batch.rows() == []                          # the export rows are not shown under rename
+    end = time.monotonic() + 15
+    while batch.property("checking") and time.monotonic() < end:
+        pump(qapp, 0.02)
+    assert batch._exec[0] == "rename" and len(batch.rows()) > 0
+    batch.end()
+
+
+def test_the_export_planner_reads_each_folder_once_and_still_finds_names_already_there(tmp_path):
+    from image_triage import export_pipeline as pipeline
+
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "A.jpg").write_bytes(b"x")
+    (out / "a_1.JPG").write_bytes(b"x")                                                # a name in other case is the same name on Windows
+    sources = [pipeline.ExportSource(str(tmp_path / "A.png"), "A.png"), pipeline.ExportSource(str(tmp_path / "B.png"), "B.png")]
+    plan = pipeline.build_plan(sources, {**pipeline.DEFAULTS, "dest": "choose", "folder": str(out), "exists": "unique"})
+    assert [i.target_name for i in plan.items] == ["A_2.jpg", "B.jpg"]
+    skip = pipeline.build_plan(sources, {**pipeline.DEFAULTS, "dest": "choose", "folder": str(out), "exists": "skip"})
+    assert [i.status for i in skip.items] == ["Skip", "Export"]

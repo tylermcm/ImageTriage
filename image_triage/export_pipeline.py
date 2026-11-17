@@ -433,6 +433,19 @@ def build_plan(sources: list[ExportSource], values: dict) -> ExportPlan:
         general = "The folder name cannot hold < > : \" / \\ | ? *"
     reserved: set[str] = set()
     items: list[ExportItem] = []
+    listings: dict[str, set[str] | None] = {}      # folder -> the names in it (lower case), read once; None: the folder is not there
+
+    def present(path: Path) -> bool:
+        folder_key = os.path.normcase(os.path.abspath(path.parent))
+        if folder_key not in listings:
+            try:
+                with os.scandir(path.parent) as entries:
+                    listings[folder_key] = {os.path.normcase(e.name) for e in entries}
+            except OSError:
+                listings[folder_key] = None
+        names = listings[folder_key]
+        return names is not None and os.path.normcase(path.name) in names
+
     for source in sources:
         suffix = suffix_of(values, source.path)
         folder = destination_for(source.path, values)
@@ -441,10 +454,10 @@ def build_plan(sources: list[ExportSource], values: dict) -> ExportPlan:
             items.append(ExportItem(source, "", name, "Error", "No destination folder."))
             continue
         target = folder / name
-        key = os.path.normcase(str(target.resolve()) if target.parent.exists() else str(target))
+        key = os.path.normcase(os.path.abspath(target))
         status, message = "Export", ""
-        itself = os.path.normcase(os.path.abspath(target)) == os.path.normcase(os.path.abspath(source.path))
-        if itself or key in reserved or target.exists():
+        itself = key == os.path.normcase(os.path.abspath(source.path))
+        if itself or key in reserved or present(target):
             policy = "unique" if itself else values["exists"]       # a photo is never written over by its own export
             if policy == "skip" and key not in reserved:
                 status, message = "Skip", "A file with this name is already there."
@@ -454,8 +467,8 @@ def build_plan(sources: list[ExportSource], values: dict) -> ExportPlan:
                 stem, counter = Path(name).stem, 1
                 while True:
                     candidate = folder / f"{stem}_{counter}{suffix}"
-                    ckey = os.path.normcase(str(candidate))
-                    if ckey not in reserved and not candidate.exists():
+                    ckey = os.path.normcase(os.path.abspath(candidate))
+                    if ckey not in reserved and not present(candidate):
                         target, key, name = candidate, ckey, candidate.name
                         break
                     counter += 1

@@ -5,6 +5,11 @@ the metadata and names the files in one pass, with export presets (``export_pres
 The old ``resize`` and ``convert`` commands open Export with the size step (or the original size) filled in.
 
 
+Planning a batch looks at the disk for every photo (does the name exist, may it be used). A small batch is planned at once; a
+large one (more than ``SYNC_LIMIT`` photos: a whole folder or library can be tens of thousands) is planned on a worker thread a moment
+after the last change, so typing in a field or switching tabs never waits for it, and only the newest plan is kept. While it is being
+planned the summary says so and Apply waits.
+
 Rename uses the shared planner (`batch_rename.build_batch_rename_preview`). The scope is every photo the grid shows. **Applying is
 real** (not for the sample photos of `--mock`), on a worker thread with a toast that follows the progress. A rename moves the saved
 decisions with the files and can be undone (Ctrl+Z); an export writes new files and leaves the originals alone.
@@ -16,7 +21,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, Qt, QThreadPool, Signal, Slot
+from PySide6.QtCore import Property, QObject, Qt, QThreadPool, QTimer, Signal, Slot
 
 from ..batch_rename import BatchRenameRules, RenameCaseMode, build_batch_rename_preview
 import threading
@@ -32,6 +37,8 @@ TITLES = {"rename": "Batch rename", "export": "Batch export"}
 LABELS = {"rename": "Apply rename", "export": "Export"}
 PREVIEW_ROW_LIMIT = 1200          # the Widgets dialogs show the first 1200 rows and validate the whole batch
 SOURCE_LIMIT = 20000
+SYNC_LIMIT = 300                  # a batch this small is planned at once; a larger one on a worker thread
+CHECK_DELAY_MS = 150              # a burst of changes (typing) makes one plan, this long after the last of them
 _TONE = {"Rename": "g1", "Unchanged": "", "Error": "g4", "Copy": "g1", "Convert": "g2", "Export": "g1", "Skip": ""}
 
 _DEFAULTS = {
@@ -56,6 +63,7 @@ class BatchModel(QObject):
     previewChanged = Signal()
     applied = Signal(str, int)          # mode, how many items the plan would have touched
     _previewReady = Signal(int, object, str)
+    _planReady = Signal(int, object)
 
     def __init__(self, photos, memory: bool = False, parent: QObject | None = None, toasts=None) -> None:
         super().__init__(parent)
@@ -83,6 +91,14 @@ class BatchModel(QObject):
         self._sources: OrderedDict = OrderedDict()   # path -> (image, exif, icc), the last few photos previewed
         self._sources_lock = threading.Lock()
         self._previewReady.connect(self._preview_arrived)
+        self._cgen = 0                   # which plan is the newest asked for: an older one arriving late is dropped
+        self._checking = False
+        self._result_mode = ""
+        self._check_timer = QTimer(self)
+        self._check_timer.setSingleShot(True)
+        self._check_timer.setInterval(CHECK_DELAY_MS)
+        self._check_timer.timeout.connect(self._start_check)
+        self._planReady.connect(self._plan_arrived)
         photos.selectionChanged.connect(self._photos_changed)
         photos.countsChanged.connect(self._photos_changed)      # the folder finished loading, or a filter changed what is shown
 
@@ -119,10 +135,10 @@ class BatchModel(QObject):
                 out.append({"thumb": row["path"], "path": row["path"], "name": self._file_name(row), "companions": tuple(row.get("companions", ())), "record": row.get("record")})
         return out
 
-    def _compute(self) -> None:
-        batch = self._batch_cache = self._batch()
-        v = self._v
-        mode = self._mode
+    @classmethod
+    def _plan(cls, batch: list[dict], v: dict, mode: str) -> tuple[dict, tuple]:
+        """``(result, exec)`` for ``batch`` with the settings ``v`` in ``mode``: what the window shows and what Apply would run. Looks at
+        the disk and touches nothing of the model, so it can run on a worker thread."""
         rows: list[dict] = []
         if mode == "rename":
             # a real photo's own size and time: a saved decision is found again by them
@@ -134,14 +150,14 @@ class BatchModel(QObject):
                 sequence_start=int(v["start"]), sequence_step=int(v["step"]), sequence_padding=int(v["pad"]), sequence_separator=str(v["sep"]),
             )
             preview = build_batch_rename_preview(records, rules)
-            self._exec = ("rename", preview, None)
+            plan_exec = ("rename", preview, None)
             thumbs = {b["path"]: b["thumb"] for b in batch}
             for item in preview.items[:PREVIEW_ROW_LIMIT]:
                 pair = ""
                 if item.status == "Rename":
                     others = [Path(m.target_path).name for m in item.planned_moves if os.path.normcase(m.source_path) != os.path.normcase(item.record.path)]
                     pair = ", ".join(f"+ {name} follows" for name in others)
-                rows.append(self._row(thumbs.get(item.record.path, ""), item.source_name, item.target_name, item.status, item.message, pair))
+                rows.append(cls._row(thumbs.get(item.record.path, ""), item.source_name, item.target_name, item.status, item.message, pair))
             summary = f"{preview.renamed_count} rename(s) | {preview.unchanged_count} unchanged | {preview.error_count} error(s)"
             if preview.general_error:
                 summary = f"{summary} | {preview.general_error}"
@@ -151,11 +167,11 @@ class BatchModel(QObject):
             count = preview.renamed_count
         else:
             plan = pipeline.build_plan([pipeline.ExportSource(b["path"], b["name"]) for b in batch], {k: v[k] for k in _EXPORT_KEYS})
-            self._exec = ("export", plan, None)
+            plan_exec = ("export", plan, None)
             thumbs = {b["path"]: b["thumb"] for b in batch}
             for item in plan.items[:PREVIEW_ROW_LIMIT]:
                 where = str(Path(item.target_path).parent) if item.target_path else ""
-                rows.append(self._row(thumbs.get(item.source.path, ""), item.source.name, item.target_name, item.status,
+                rows.append(cls._row(thumbs.get(item.source.path, ""), item.source.name, item.target_name, item.status,
                                       item.message, "" if item.status == "Error" else where, overwrite_tone="g3"))
             errors, ok, count = plan.error_count, plan.can_apply, len(plan.executable)
             fmt = next(label for key, label, _ in pipeline.FORMATS if key == plan.values["format"])
@@ -172,7 +188,8 @@ class BatchModel(QObject):
             foot = (plan.general_error if plan.general_error
                     else f"Fix {errors} {'error' if errors == 1 else 'errors'} before exporting." if errors
                     else f"{count} will be exported." if count else "Nothing to export.")
-        self._result = {"rows": rows, "ok": bool(ok), "summary": summary, "foot": foot, "errors": int(errors), "count": int(count), "total": len(batch)}
+        result = {"rows": rows, "ok": bool(ok), "summary": summary, "foot": foot, "errors": int(errors), "count": int(count), "total": len(batch)}
+        return result, plan_exec
 
     @staticmethod
     def _row(thumb: str, current: str, target: str, status: str, message: str, pair: str, overwrite_tone: str = "g2") -> dict:
@@ -432,13 +449,50 @@ class BatchModel(QObject):
         return True
 
     busy = Property(bool, lambda self: self._busy, notify=revisionChanged)
+    checking = Property(bool, lambda self: self._checking, notify=revisionChanged)
     sampleNote = Property(str, lambda self: "Sample photos: no file will change." if self._memory else "", notify=revisionChanged)
 
     def _refresh(self) -> None:
-        self._compute()
+        batch = self._batch_cache = self._batch()
+        self._cgen += 1
+        if len(batch) <= SYNC_LIMIT:
+            self._check_timer.stop()
+            self._result, self._exec = self._plan(batch, dict(self._v), self._mode)
+            self._result_mode, self._checking = self._mode, False
+        else:
+            # Planned on a worker thread shortly: until then nothing can be applied, and another mode's rows are not shown.
+            rows = self._result["rows"] if self._result_mode == self._mode else []
+            self._result = {**self._result, "rows": rows, "ok": False, "summary": f"Checking {len(batch)} photos\u2026",
+                            "foot": "Checking the names and folders\u2026", "errors": 0}
+            self._exec, self._checking = (), True
+            self._check_timer.start()
         self._revision += 1
         self.revisionChanged.emit()
         self._render_preview()
+
+    def _start_check(self) -> None:
+        generation, batch, values, mode = self._cgen, list(self._batch_cache), dict(self._v), self._mode
+
+        def work():
+            try:
+                planned = self._plan(batch, values, mode)
+            except Exception as exc:          # a disk that went away: say so instead of leaving the window checking
+                message = str(exc) or exc.__class__.__name__
+                planned = ({"rows": [], "ok": False, "summary": message, "foot": message, "errors": 1, "count": 0, "total": len(batch)}, ())
+            try:
+                self._planReady.emit(generation, (mode, planned))
+            except RuntimeError:
+                pass                            # the window was closed meanwhile
+
+        threading.Thread(target=work, name="batch-plan", daemon=True).start()
+
+    def _plan_arrived(self, generation: int, payload) -> None:
+        if generation != self._cgen:
+            return                                # settings changed since: a newer plan is on its way
+        mode, (result, plan_exec) = payload
+        self._result, self._exec, self._result_mode, self._checking = result, plan_exec, mode, False
+        self._revision += 1
+        self.revisionChanged.emit()
 
     # -- the result preview --------------------------------------------------------------------------------------------------------
     def _preview_entry(self) -> dict | None:
