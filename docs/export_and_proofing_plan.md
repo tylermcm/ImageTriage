@@ -57,7 +57,10 @@ A medium preview pane beside the settings:
 
 Done: 1 (2026-11-17, `export_pipeline.py`, `export_presets.py`, Batch window Rename + Export), 2 (sharpening: an unsharp mask on
 brightness at the output size, with a small threshold so flat areas and noise stay; the preview's **100%** button shows the middle of
-the export at its own size, where sharpening can be judged).
+the export at its own size, where sharpening can be judged), 3 (`soft_proof.py`: ICC profile files as the output profile, converted
+by LittleCMS with the intent and black point compensation; the preview is always the proof of the export's profile, with *Simulate
+paper and ink* (absolute colorimetric to the screen) and a *Gamut warning* found by a round trip through the profile; only RGB
+profiles are taken, CMYK output is refused; a 16-bit export to an ICC profile file is written with 8 bits).
 
 1. Export pipeline + Export mode (size, format, colour, metadata, name, destination) replacing Resize/Convert, with the preview
    pane. Presets (save, load, built-ins).

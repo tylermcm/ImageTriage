@@ -24,7 +24,7 @@ DEFAULTS: dict[str, object] = {
     "sizeMode": "original", "long": "2048", "short": "1080", "fitW": "1920", "fitH": "1080", "mp": "12", "pct": "50",
     "noEnlarge": True,
     "format": "jpg", "quality": "90", "depth": "8",
-    "profile": "srgb", "intent": "perceptual",
+    "profile": "srgb", "profileFile": "", "intent": "perceptual", "bpc": True, "proofPaper": False, "proofGamut": False,
     "meta": "all",
     "sharpen": "none", "sharpenAmount": "standard",
     "wm": "none", "wmText": "", "wmImage": "", "wmPos": "br", "wmSize": "4", "wmOpacity": "60", "wmInset": "3", "wmColor": "white",
@@ -36,8 +36,8 @@ SIZE_MODES = (("original", "Original size"), ("long", "Long edge"), ("short", "S
               ("mp", "Megapixels"), ("pct", "Percentage"))
 FORMATS = (("jpg", "JPEG", ".jpg"), ("png", "PNG", ".png"), ("tif", "TIFF", ".tif"), ("webp", "WebP", ".webp"))
 PROFILES = (("srgb", "sRGB"), ("p3", "Display P3"), ("adobergb", "Adobe RGB (1998)"), ("prophoto", "ProPhoto RGB"),
-            ("source", "Same as the photo"))
-INTENTS = (("perceptual", "Perceptual"), ("relative", "Relative colorimetric"))
+            ("source", "Same as the photo"), ("file", "ICC profile file (printer and paper)"))
+INTENTS = (("perceptual", "Perceptual"), ("relative", "Relative colorimetric"), ("saturation", "Saturation"))
 METADATA = (("all", "Keep all"), ("nogps", "All but location"), ("copyright", "Copyright and contact only"), ("none", "None"))
 SHARPEN = (("none", "No sharpening"), ("screen", "Screen"), ("matte", "Matte paper"), ("glossy", "Glossy paper"))
 SHARPEN_AMOUNTS = (("low", "Low"), ("standard", "Standard"), ("high", "High"))
@@ -136,6 +136,12 @@ def size_problem(values: dict) -> str:
         quality = _number(values["quality"], -1)
         if not 1 <= quality <= 100:
             return "Quality goes from 1 to 100."
+    if values["profile"] == "file":
+        from .soft_proof import profile_problem
+
+        problem = profile_problem(values["profileFile"])
+        if problem:
+            return problem
     if values["wm"] != "none":
         if values["wm"] == "text" and not values["wmText"].strip():
             return "Type the watermark's text."
@@ -150,9 +156,17 @@ def size_problem(values: dict) -> str:
     return ""
 
 
+def output_icc(values: dict, source_icc: bytes | None) -> bytes:
+    """The output profile's ICC bytes (what the file embeds)."""
+    if values["profile"] == "file":
+        return Path(values["profileFile"]).read_bytes()
+    return bytes(target_space(values, source_icc).iccProfile())
+
+
 def target_space(values: dict, source_icc: bytes | None) -> QColorSpace:
-    if values["profile"] == "source":
-        space = QColorSpace.fromIccProfile(source_icc) if source_icc else QColorSpace()
+    if values["profile"] in ("source", "file"):
+        data = Path(values["profileFile"]).read_bytes() if values["profile"] == "file" else source_icc
+        space = QColorSpace.fromIccProfile(data) if data else QColorSpace()
         return space if space.isValid() else QColorSpace(QColorSpace.NamedColorSpace.SRgb)
     return QColorSpace(_NAMED_SPACES[values["profile"]])
 
@@ -177,6 +191,11 @@ def prepare(image: QImage, source_icc: bytes | None, values: dict, *, size: tupl
     if sharpen:
         image = sharpened(image, values)
     image = watermarked(image, values)
+    if values["profile"] == "file":
+        # Printer and paper profiles are lookup tables: LittleCMS converts them, with the intent and black point compensation.
+        from .soft_proof import convert
+
+        return convert(image, output_icc(values, source_icc), values["intent"], values["bpc"])
     target = target_space(values, source_icc)
     if image.colorSpace() != target:
         if bit_depth(image) <= 8 and image.format() not in (QImage.Format.Format_RGB32, QImage.Format.Format_ARGB32):
@@ -314,7 +333,12 @@ def filtered_exif(exif_bytes: bytes | None, mode: str) -> bytes | None:
 def encode(image: QImage, values: dict, exif_bytes: bytes | None) -> bytes:
     """The file's bytes for a prepared picture. JPEG and WebP are 8-bit; PNG and TIFF are 8- or 16-bit as asked."""
     fmt = values["format"]
-    icc = bytes(image.colorSpace().iccProfile()) if image.colorSpace().isValid() else None
+    if values["profile"] == "file":
+        icc = output_icc(values, None)            # Qt may not read a lookup-table profile back, so it is not taken from the picture
+        if bit_depth(image) <= 8 and fmt in _DEEP and values["depth"] == "16":
+            values = {**values, "depth": "8"}      # LittleCMS here converts 8-bit pictures
+    else:
+        icc = bytes(image.colorSpace().iccProfile()) if image.colorSpace().isValid() else None
     exif = filtered_exif(exif_bytes, values["meta"])
     if fmt in _DEEP and values["depth"] == "16":
         deep = image if bit_depth(image) > 8 else image.convertToFormat(QImage.Format.Format_RGBA64)
@@ -508,6 +532,23 @@ class Preview:
     detail: QImage | None = None   # the middle of the export at 100% (sharpening shows here), for display
 
 
+def to_display(made: QImage, source: QImage, source_icc: bytes | None, values: dict) -> QImage:
+    """A prepared picture as it looks on screen: through its output profile (paper and ink simulated when asked), with the gamut
+    warning over what the output cannot hold (``source`` is the picture before conversion, at the same size)."""
+    from . import soft_proof
+
+    icc = output_icc(values, source_icc)
+    display = soft_proof.to_display(made, icc, values["proofPaper"])
+    if values["proofGamut"]:
+        before = source
+        if not before.colorSpace().isValid():
+            before = QImage(before)
+            space = QColorSpace.fromIccProfile(source_icc) if source_icc else QColorSpace()
+            before.setColorSpace(space if space.isValid() else QColorSpace(QColorSpace.NamedColorSpace.SRgb))
+        display = soft_proof.with_gamut_warning(display, soft_proof.gamut_mask(before, icc))
+    return display
+
+
 def detail_crop(image: QImage, icc: bytes | None, values: dict, side: int = 520) -> QImage:
     """The middle of the export at its own size, at most ``side`` pixels square, made from just that part of the source."""
     width, height = output_size(image.width(), image.height(), values)
@@ -523,8 +564,11 @@ def detail_crop(image: QImage, icc: bytes | None, values: dict, side: int = 520)
     crop_values = {**values, "wm": "none"}
     made = prepare(part, icc, crop_values, size=(x1 - x0, y1 - y0), sharpen=True)
     made = made.copy(left - x0, top - y0, cw, ch)
-    srgb = QColorSpace(QColorSpace.NamedColorSpace.SRgb)
-    return made.convertedToColorSpace(srgb) if made.colorSpace().isValid() and made.colorSpace() != srgb else made
+    source = part.scaled(x1 - x0, y1 - y0, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    source = source.copy(left - x0, top - y0, cw, ch)
+    if part.colorSpace().isValid():
+        source.setColorSpace(part.colorSpace())
+    return to_display(made, source, icc, values)
 
 
 def make_preview(image: QImage, icc: bytes | None, values: dict, side: int = PREVIEW_SIDE) -> Preview:
@@ -537,8 +581,10 @@ def make_preview(image: QImage, icc: bytes | None, values: dict, side: int = PRE
     after = prepare(image, icc, values, size=shown)
     estimate = len(encode(after, values, None)) / (shown[0] * shown[1]) * (width * height)
     srgb = QColorSpace(QColorSpace.NamedColorSpace.SRgb)
-    display = after.convertedToColorSpace(srgb) if after.colorSpace().isValid() and after.colorSpace() != srgb else after
     before = image.scaled(shown[0], shown[1], Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    if image.colorSpace().isValid():
+        before.setColorSpace(image.colorSpace())
+    display = to_display(after, before, icc, values)
     if before.colorSpace().isValid() and before.colorSpace() != srgb:
         before = before.convertedToColorSpace(srgb)
     return Preview(before, display, width, height, int(estimate), detail_crop(image, icc, values))

@@ -159,7 +159,12 @@ class BatchModel(QObject):
                                       item.message, "" if item.status == "Error" else where, overwrite_tone="g3"))
             errors, ok, count = plan.error_count, plan.can_apply, len(plan.executable)
             fmt = next(label for key, label, _ in pipeline.FORMATS if key == plan.values["format"])
-            profile = next(label for key, label in pipeline.PROFILES if key == plan.values["profile"])
+            if plan.values["profile"] == "file" and plan.values["profileFile"]:
+                from ..soft_proof import profile_name
+
+                profile = profile_name(plan.values["profileFile"])
+            else:
+                profile = next(label for key, label in pipeline.PROFILES if key == plan.values["profile"])
             summary = (plan.general_error if plan.general_error
                        else f"{count} file(s) | {fmt} | {profile}" + (f" | {plan.skip_count} skipped" if plan.skip_count else "")
                        + (f" | {errors} error(s)" if errors else ""))

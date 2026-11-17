@@ -26,6 +26,7 @@ FocusScope {
     property bool showDetail: false
     property bool picking: false
     property bool pickingMark: false
+    property bool pickingProfile: false
     property string presetError: ""
     readonly property var scopeParts: { void rev; return batch.scope(photos.folderName).split("|") }
     property string applied: ""
@@ -66,6 +67,15 @@ FocusScope {
             Component.onCompleted: open()
             onAccepted: { batch.set("wmImage", decodeURIComponent(String(selectedFile).replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/"))); root.pickingMark = false }
             onRejected: root.pickingMark = false
+        }
+    }
+    Loader {
+        active: root.pickingProfile
+        sourceComponent: FileDialog {
+            title: "Output profile"; nameFilters: ["ICC profiles (*.icc *.icm)"]
+            Component.onCompleted: open()
+            onAccepted: { batch.set("profileFile", decodeURIComponent(String(selectedFile).replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/"))); root.pickingProfile = false }
+            onRejected: root.pickingProfile = false
         }
     }
     ShaderEffectSource { id: snap; anchors.fill: parent; sourceItem: root.sourceItem; live: true; visible: false }
@@ -219,6 +229,7 @@ FocusScope {
                             readonly property string dest: { void root.rev; return batch.get("dest") }
                             readonly property string preset: { void root.rev; return batch.get("xPreset") }
                             readonly property string sharpen: { void root.rev; return batch.get("sharpen") }
+                            readonly property string profile: { void root.rev; return batch.get("profile") }
                             readonly property string wm: { void root.rev; return batch.get("wm") }
                             Gh { title: "PRESET" }
                             Gap {}
@@ -261,8 +272,25 @@ FocusScope {
                             Pick { visible: parent.format === "png" || parent.format === "tif"; label: "Bit depth"; key: "depth" }
                             Gap {}
                             Pick { label: "Colour profile"; key: "profile" }
+                            Gap { visible: parent.profile === "file" }
+                            Row {
+                                visible: parent.profile === "file"; spacing: 8
+                                Field { width: 299 - 8 - 84; label: "Profile file (.icc, .icm)"; key: "profileFile"; placeholder: "Choose a profile" }
+                                SButton { anchors.bottom: parent.bottom; text: "Browse…"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 84; onClicked: root.pickingProfile = true }
+                            }
                             Gap {}
                             Pick { label: "Metadata"; key: "meta" }
+                            Gap { h: 22 }
+                            Gh { title: "SOFT PROOF" }
+                            Gap {}
+                            Pick { label: "Rendering intent"; key: "intent" }
+                            Gap { h: 6 }
+                            Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
+                            SwRow { label: "Black point compensation"; key: "bpc"; desc: "Keeps shadow detail when the output's black is lighter." }
+                            SwRow { label: "Simulate paper and ink"; key: "proofPaper"; desc: "The preview shows the paper's white and the ink's black." }
+                            SwRow { label: "Gamut warning"; key: "proofGamut"; desc: "Colours the profile cannot reproduce show in pink." }
+                            Gap { h: 8 }
+                            Note { text: "The preview is the proof of the export's own profile. Intent and black point compensation apply to ICC profile files." }
                             Gap { h: 22 }
                             Gh { title: "OUTPUT SHARPENING" }
                             Gap {}

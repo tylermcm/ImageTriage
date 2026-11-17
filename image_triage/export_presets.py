@@ -29,7 +29,7 @@ BUILTIN: tuple[tuple[str, dict], ...] = (
     ("Archive TIFF 16-bit ProPhoto", {"sizeMode": "original", "format": "tif", "depth": "16", "profile": "prophoto", "meta": "all"}),
 )
 BUILTIN_NAMES = frozenset(name for name, _ in BUILTIN)
-_PORTABLE = tuple(key for key in pipeline.DEFAULTS if key != "folder")
+_PORTABLE = tuple(key for key in pipeline.DEFAULTS if key not in ("folder", "profileFile"))
 
 
 def storage_path() -> Path:
@@ -43,6 +43,8 @@ def _portable(values: dict) -> dict:
     preset = {key: clean[key] for key in _PORTABLE}
     if preset["dest"] == "choose":
         preset["dest"] = "subfolder"
+    if preset["profile"] == "file":
+        preset["profileFile"] = clean["profileFile"]        # a print preset is about its profile: kept, and checked when used
     return preset
 
 

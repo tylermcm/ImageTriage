@@ -196,3 +196,51 @@ def test_picture_watermark_is_sized_by_the_short_edge(tmp_path):
     assert out.pixelColor(70, 30).red() == 255 and out.pixelColor(90, 30).red() == 0     # 40 px high, so 80 px wide
     assert ep.size_problem(ep.normalized({"wm": "image", "wmImage": str(tmp_path / "none.png")})) == "Choose the watermark picture."
     assert ep.size_problem(ep.normalized({"wm": "text"})) == "Type the watermark's text."
+
+
+def narrow_profile(tmp_path, white=(0.3127, 0.3290)):
+    """A small-gamut RGB profile standing in for a printer and paper (a warmer white stands in for the paper)."""
+    from PySide6.QtCore import QPointF
+
+    space = QColorSpace(QPointF(*white), QPointF(0.55, 0.36), QPointF(0.33, 0.50), QPointF(0.20, 0.17),
+                        QColorSpace.TransferFunction.Gamma, 2.2)
+    path = tmp_path / "printer.icc"
+    path.write_bytes(bytes(space.iccProfile()))
+    return str(path)
+
+
+def test_an_icc_file_is_the_output_profile_with_the_chosen_intent(tmp_path):
+    values = ep.normalized({"profile": "file", "profileFile": narrow_profile(tmp_path), "intent": "relative"})
+    assert ep.size_problem(values) == ""
+    data = ep.encode(ep.prepare(picture(color=(255, 0, 0)), None, values), values, None)
+    with Image.open(io.BytesIO(data)) as out:
+        assert out.info["icc_profile"] == open(values["profileFile"], "rb").read()
+    assert ep.size_problem(ep.normalized({"profile": "file", "profileFile": str(tmp_path / "x.icc")})) == "Choose an ICC profile file."
+    (tmp_path / "bad.icc").write_bytes(b"nope")
+    assert ep.size_problem(ep.normalized({"profile": "file", "profileFile": str(tmp_path / "bad.icc")})) == "That file is not an ICC profile."
+
+
+def test_gamut_warning_marks_only_colours_the_output_cannot_hold(tmp_path):
+    from image_triage import soft_proof
+
+    image = QImage(100, 50, QImage.Format.Format_RGB32)
+    image.fill(QColor(128, 128, 128))
+    for x in range(50, 100):
+        for y in range(50):
+            image.setPixelColor(x, y, QColor(255, 0, 0))
+    image.setColorSpace(QColorSpace(QColorSpace.NamedColorSpace.SRgb))
+    mask = soft_proof.gamut_mask(image, open(narrow_profile(tmp_path), "rb").read())
+    assert not mask[:, :50].any() and mask[:, 50:].all()
+    values = ep.normalized({"profile": "file", "profileFile": narrow_profile(tmp_path), "proofGamut": True})
+    preview = ep.make_preview(image, None, values)
+    assert preview.after.pixelColor(75, 25) == QColor(*soft_proof.GAMUT_COLOR) and preview.after.pixelColor(25, 25) != QColor(*soft_proof.GAMUT_COLOR)
+
+
+def test_paper_simulation_shows_the_papers_white(tmp_path):
+    warm = narrow_profile(tmp_path, white=(0.3457, 0.3585))          # a D50, warmer white
+    image = picture(100, 50, (255, 255, 255))
+    plain = ep.make_preview(image, None, ep.normalized({"profile": "file", "profileFile": warm}))
+    paper = ep.make_preview(image, None, ep.normalized({"profile": "file", "profileFile": warm, "proofPaper": True}))
+    white, shown = plain.after.pixelColor(50, 25), paper.after.pixelColor(50, 25)
+    assert (white.red(), white.green(), white.blue()) == (255, 255, 255)
+    assert shown.blue() < shown.red() - 10                          # the paper's warm white shows
