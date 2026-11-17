@@ -60,7 +60,10 @@ brightness at the output size, with a small threshold so flat areas and noise st
 the export at its own size, where sharpening can be judged), 3 (`soft_proof.py`: ICC profile files as the output profile, converted
 by LittleCMS with the intent and black point compensation; the preview is always the proof of the export's profile, with *Simulate
 paper and ink* (absolute colorimetric to the screen) and a *Gamut warning* found by a round trip through the profile; only RGB
-profiles are taken, CMYK output is refused; a 16-bit export to an ICC profile file is written with 8 bits).
+profiles are taken, CMYK output is refused; a 16-bit export to an ICC profile file is written with 8 bits), 4 (`raw_soft_proof.py`: a **Proof** button in the RAW editor's
+header opens the settings (profile or ICC file, intent, black point compensation, paper and ink, gamut warning) with an on/off
+switch; only the displayed picture is proofed, through the image provider (`proof=` in its address), so the render, the recipe and the
+frames the AI tools read are unchanged; the settings are remembered, proofing starts off each session).
 
 1. Export pipeline + Export mode (size, format, colour, metadata, name, destination) replacing Resize/Convert, with the preview
    pane. Presets (save, load, built-ins).

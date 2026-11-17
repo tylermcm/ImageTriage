@@ -44,9 +44,39 @@ class _Images(QQuickImageProvider):
                 pass
         if options.get("turn") and not image.isNull():
             image = _turned(image, options["turn"])
+        if options.get("proof") and not image.isNull():
+            image = _proofed(image, options["proof"])
         size.setWidth(image.width())
         size.setHeight(image.height())
         return image
+
+
+_proofs: dict[str, dict] = {}
+
+
+def proof_query(settings: dict) -> str:
+    """The part of a frame's address that shows it soft-proofed with ``settings`` (the proof is made when the frame is shown)."""
+    import hashlib
+
+    key = hashlib.sha1(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:12]
+    with _frame_lock:
+        _proofs[key] = dict(settings)
+        while len(_proofs) > 16:
+            _proofs.pop(next(iter(_proofs)))
+    return "proof=" + key
+
+
+def _proofed(image, key):
+    from ..soft_proof import proofed
+
+    with _frame_lock:
+        settings = _proofs.get(key)
+    if settings is None:
+        return image
+    try:
+        return proofed(image, settings)
+    except Exception:
+        return image          # a profile that went away: the frame is shown unproofed (the panel says why)
 
 
 def turn_query(crop, quarter_only=False):

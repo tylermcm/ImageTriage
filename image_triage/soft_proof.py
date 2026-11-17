@@ -127,3 +127,31 @@ def with_gamut_warning(display: QImage, mask) -> QImage:
     pixels = np.array(picture)
     pixels[m] = GAMUT_COLOR
     return from_pil(Image.fromarray(pixels), srgb_bytes())
+
+
+# ---- the RAW editor's Soft Proof view -------------------------------------------------------------------------------------------
+NAMED = {"srgb": QColorSpace.NamedColorSpace.SRgb, "p3": QColorSpace.NamedColorSpace.DisplayP3,
+         "adobergb": QColorSpace.NamedColorSpace.AdobeRgb, "prophoto": QColorSpace.NamedColorSpace.ProPhotoRgb}
+
+
+def proof_icc(settings: dict) -> bytes:
+    """The ICC bytes of a Soft Proof setting's profile (a named space, or an ICC file)."""
+    if settings.get("profile") == "file":
+        return Path(settings.get("profileFile", "")).read_bytes()
+    return bytes(QColorSpace(NAMED.get(settings.get("profile"), QColorSpace.NamedColorSpace.SRgb)).iccProfile())
+
+
+def proofed(frame: QImage, settings: dict) -> QImage:
+    """A displayed editor frame (sRGB) as it will look in the proof profile: converted there with the intent and black point
+    compensation, back to the screen (paper and ink simulated when asked), with the gamut warning when asked."""
+    if frame.isNull():
+        return frame
+    source = QImage(frame)
+    if not source.colorSpace().isValid():
+        source.setColorSpace(QColorSpace(QColorSpace.NamedColorSpace.SRgb))
+    icc = proof_icc(settings)
+    out = convert(source, icc, settings.get("intent", "perceptual"), bool(settings.get("bpc", True)))
+    display = to_display(out, icc, bool(settings.get("paper", False)))
+    if settings.get("gamut"):
+        display = with_gamut_warning(display, gamut_mask(source, icc))
+    return display
