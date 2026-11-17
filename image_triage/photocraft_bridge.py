@@ -178,7 +178,7 @@ RECIPE_ARRAYS = {"curveSplits": 3, "hslHue": 8, "hslSat": 8, "hslLum": 8, "calib
 RECIPE_CALIBRATION_FIELDS = frozenset(("calibShadowTint", "calibHue", "calibSat"))
 RECIPE_CURVES = ("pointCurve", "pointCurveRed", "pointCurveGreen", "pointCurveBlue")
 RECIPE_WHEELS = ("gradeShadows", "gradeMidtones", "gradeHighlights", "gradeGlobal")
-RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle", "glow", "pointColors", "superResolution", "masks", "hostCrop", "retouch", "redEye", "sky"}
+RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle", "glow", "pointColors", "superResolution", "masks", "hostCrop", "retouch", "redEye", "sky", "aiDenoise"}
 
 
 def _recipe_value_ok(value) -> bool:
@@ -262,6 +262,9 @@ def _setting_problem(name, value) -> str | None:
         valid = retouch_valid(value)
     elif name == "masks":
         valid = _masks_valid(value)
+    elif name == "aiDenoise":
+        from .ai_denoise import valid as denoise_valid
+        valid = denoise_valid(value)
     elif name == "superResolution":
         valid = isinstance(value, bool)
     elif name == "glow":
@@ -332,6 +335,8 @@ def classify_recipe(recipe) -> tuple[str, str]:
     identity = all(settings.get(name, 0) == 0 for name in RECIPE_ACTIVE_FIELDS)
     identity = identity and settings.get("glow", {}).get("amount", 0) == 0
     identity = identity and settings.get("superResolution") is not True
+    from .ai_denoise import wanted as denoise_wanted
+    identity = identity and not denoise_wanted(settings)
     from .raw_crop import active as crop_active
     identity = identity and not crop_active(settings.get("hostCrop"))
     identity = identity and not _masks_active(settings.get("masks", []))

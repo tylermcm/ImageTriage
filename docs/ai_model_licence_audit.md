@@ -31,6 +31,7 @@ Before shipping commercially, have a lawyer confirm the red and amber items.
 | BiRefNet | Subject matting for masks | `ZhengPeng7/BiRefNet` | MIT | Licence yes; training-data terms unclear | Amber |
 | SAM 2.1 Hiera-Tiny | Click-to-select masks | `facebook/sam2.1-hiera-tiny` | Apache-2.0 | Yes | Green |
 | Depth Anything V2 Small | Depth effects | `depth-anything/Depth-Anything-V2-Small-hf` | Apache-2.0 (Small only) | Yes | Green |
+| RawNIND UtNet2 Bayer (`rawnind_bayer.onnx`) | AI Denoise (Detail > Denoise) | authors' checkpoint (trougnouf/rawnind_jddc), converted by us | Weights dual licensed GPL-3 + CC-BY-4.0 (README, commit e80fb7b); used under CC-BY-4.0. Training data RawNIND is CC BY-SA 4.0 | Yes under CC-BY-4.0, with attribution | **Amber** (share-alike on the training data; ask the author to confirm in writing) |
 
 ## Findings
 

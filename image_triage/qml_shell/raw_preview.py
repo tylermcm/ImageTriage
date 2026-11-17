@@ -17,7 +17,7 @@ from PySide6.QtGui import QImage, QColorSpace
 from PySide6.QtQuick import QQuickImageProvider
 
 from .. import photocraft_bridge as bridge
-from .. import atmosphere, bokeh, host_effects, light_depth
+from .. import ai_denoise, atmosphere, bokeh, host_effects, light_depth
 from ..full_render import _without_host_settings
 
 _frames = OrderedDict()
@@ -319,10 +319,13 @@ class PreviewWorker(QObject):
                         self._connection = Connection(self._path, own)
                         source = None
                     request = {"revision": revision, "quality": quality, "backend": os.environ.get("IMAGE_TRIAGE_RAW_PREVIEW_BACKEND", "cpu")}
-                    source_key = (os.path.normcase(os.path.abspath(path)), signature, json.dumps(original, sort_keys=True))
+                    # Detail > Denoise: once the denoised raw is made, it is what the worker develops (its amount is in the file).
+                    developed = ai_denoise.render_source(path, draft)
+                    source_key = (os.path.normcase(os.path.abspath(path)), signature, json.dumps(original, sort_keys=True),
+                                  developed, bridge.file_signature(developed))
                     if source != source_key:
                         # Light Depth's masks are not kept in the draft: they are built here from its settings and the depth map.
-                        baseline = self._connection.call({**request, "quality": "settled", "op": "open", "path": path, "edge": 1800,
+                        baseline = self._connection.call({**request, "quality": "settled", "op": "open", "path": developed, "edge": 1800,
                             "recipe": _without_host_settings({"version": 1, "cameraRaw": host_effects.with_masks(original, path)})})
                         baseline = atmosphere.fogged_frame(baseline, path, original.get("atmosphere"))     # the saved fog is in "before"
                         baseline = bokeh.bokeh_frame(baseline, path, original.get("bokeh"))                # and the saved blur

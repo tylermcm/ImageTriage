@@ -10,7 +10,7 @@ import os
 import tempfile
 from pathlib import Path
 
-PHOTO_SPECIFIC = frozenset(("masks", "retouch", "redEye", "hostCrop", "lightDepth", "atmosphere", "bokeh", "sky", "superResolution", "seed"))
+PHOTO_SPECIFIC = frozenset(("masks", "retouch", "redEye", "hostCrop", "lightDepth", "atmosphere", "bokeh", "sky", "superResolution", "aiDenoise", "seed"))
 VERSION = 1
 MAX_PRESETS = 200
 MAX_NAME = 64

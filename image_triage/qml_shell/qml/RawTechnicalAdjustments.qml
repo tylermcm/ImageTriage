@@ -8,6 +8,7 @@ Item {
     property bool sharpeningOpen: false
     property bool noiseOpen: false
     readonly property bool editable: model.loaded && !model.saving
+    readonly property var denoise: model.denoiseEditor
     width: parent.width
     implicitHeight: content.implicitHeight
     clip: true
@@ -39,6 +40,7 @@ Item {
         property string label: ""
         property bool available: false
         property bool checked: false
+        property string tip: available ? "Export at twice the resolution." : "Not available yet."
         signal toggled(bool next)
         width: parent.width; height: 24
         CheckBox {
@@ -61,7 +63,7 @@ Item {
             Accessible.name: check.label
         }
         HoverHandler { id: hover }
-        ToolTip.text: available ? "Export at twice the resolution." : "Not available yet."
+        ToolTip.text: tip
         ToolTip.visible: hover.hovered
     }
     component EmptySlider: Item {
@@ -121,8 +123,47 @@ Item {
         Column {
             width: parent.width; spacing: 7
             Choice { label: "Demosaic"; value: "AHD (adaptive homogeneity)" }
-            Check { label: "Denoise" }
-            EmptySlider { label: ""; height: 30 }
+            Check {
+                objectName: "rawDenoise"
+                label: "Denoise"; available: !technical.denoise.unavailable
+                tip: technical.denoise.unavailable || "AI noise reduction on the raw data. Made once per photo, then kept."
+                checked: technical.model.values.aiDenoise.enabled
+                onToggled: (next) => technical.denoise.setEnabled(next)
+                Component.onCompleted: technical.denoise.refresh()
+            }
+            RawColorSlider {
+                objectName: "rawDenoiseAmount"
+                editModel: technical.model
+                width: parent.width; controlHeight: 32
+                visible: technical.model.values.aiDenoise.enabled
+                enabled: technical.editable
+                label: "Amount"; from: 0; to: 100
+                value: technical.denoise.settings.amount
+                onCommitted: (next) => technical.denoise.setAmount(next)
+            }
+            Item {
+                objectName: "rawDenoiseStatus"
+                visible: technical.model.values.aiDenoise.enabled && (technical.denoise.busy || !!technical.denoise.error)
+                width: parent.width; height: Math.max(22, statusText.implicitHeight)
+                Copy {
+                    id: statusText
+                    width: parent.width - (denoiseAction.visible ? denoiseAction.width + 8 : 0)
+                    wrapMode: Text.WordWrap; font.pixelSize: 11
+                    color: technical.denoise.error ? theme.rej : theme.fg3
+                    text: technical.denoise.error || technical.denoise.message
+                }
+                Copy {
+                    id: denoiseAction
+                    objectName: "rawDenoiseAction"
+                    anchors.right: parent.right
+                    visible: technical.denoise.busy || (!!technical.denoise.error && !technical.denoise.unavailable)
+                    text: technical.denoise.busy ? "Cancel" : "Try again"; color: theme.accentFg; font.pixelSize: 11
+                    TapHandler { onTapped: technical.denoise.busy ? technical.denoise.cancel() : technical.denoise.retry() }
+                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                    Accessible.role: Accessible.Button; Accessible.name: text
+                    Accessible.onPressAction: technical.denoise.busy ? technical.denoise.cancel() : technical.denoise.retry()
+                }
+            }
             Check { label: "Raw Details" }
             Check {
                 objectName: "rawSuperResolution"

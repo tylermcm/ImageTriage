@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import host_effects, light_depth, photocraft_bridge as bridge
+from . import ai_denoise, host_effects, light_depth, photocraft_bridge as bridge
 
 NO_EDITS_OUTCOME = "no_edits"
 RENDERED = "rendered"
@@ -105,7 +105,7 @@ def _described(path: Path, reply: dict, *, temporary: bool) -> RenderResult:
     )
 
 
-HOST_SETTINGS = ("superResolution", "hostCrop", "lightDepth", "atmosphere", "bokeh")
+HOST_SETTINGS = ("superResolution", "hostCrop", "lightDepth", "atmosphere", "bokeh", "aiDenoise")
 
 
 def _without_host_settings(recipe: dict) -> dict:
@@ -286,7 +286,17 @@ class FullRenderService:
                 if pending:
                     params["snapshot"] = proc.path_within_write_root(str(project))
             else:
-                source = proc.path_within_root(image_path)
+                developed = image_path
+                if ai_denoise.wanted(what["recipe"].get("cameraRaw")):
+                    # Detail > Denoise: develop the denoised raw (made now if the editor never made it, like Super Resolution).
+                    amount = ai_denoise.normalized(what["recipe"]["cameraRaw"].get(ai_denoise.KEY))["amount"]
+                    try:
+                        developed = str(ai_denoise.make(image_path, amount, cancel=self._cancel))
+                    except InterruptedError:
+                        raise RenderCancelled("cancelled")
+                    except Exception as error:
+                        return failed(f"AI Denoise could not run: {error}")
+                source = proc.path_within_root(developed)
                 if source is None:
                     return failed("the photo is outside the editor's folder")
                 params["source"] = source

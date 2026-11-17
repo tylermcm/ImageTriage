@@ -656,6 +656,26 @@ def lama_installation() -> "AIModelInstallation":
     )
 
 
+# AI Denoise: RawNIND UtNet2 Bayer (B. Brummer, C. De Vleeschouwer, 2025), weights dual licensed GPL-3 + CC-BY-4.0 and used under
+# CC-BY-4.0; converted to ONNX by scripts/export_rawnind_onnx.py from the authors' checkpoint (see docs/ai_denoise.md). Installed by
+# hand for now: put rawnind_bayer.onnx in the folder below.
+RAWNIND_MODEL_REPO_ID = "trougnouf/rawnind_jddc"
+RAWNIND_MODEL_FILE = "rawnind_bayer.onnx"
+RAWNIND_MODEL_SHA256 = "ab06173c225eb497660fa97241d21517445719de1cea2e97bad131c8a675f58e"
+RAWNIND_MODEL_SIZE_MB = 30
+
+
+def rawnind_installation() -> "AIModelInstallation":
+    """Where the AI Denoise model is and whether it is installed."""
+    return AIModelInstallation(
+        repo_id=RAWNIND_MODEL_REPO_ID,
+        revision="main",
+        install_dir=managed_model_dir("Editor", "RawNIND").expanduser().resolve(),
+        required_filenames=(RAWNIND_MODEL_FILE,),
+        expected_sha256={RAWNIND_MODEL_FILE: RAWNIND_MODEL_SHA256},
+    )
+
+
 def depth_variant_installation(variant: str) -> "AIModelInstallation":
     """Where the depth model ``variant`` ("small", "base", "large") is, and whether it is installed."""
     if variant not in DEPTH_VARIANT_REPOS:
