@@ -812,6 +812,19 @@ def test_red_eye_cursor_stays_photo_sized_before_the_raw_size_is_known(shell, qa
     assert cursor.width() == 0, "a hidden cursor takes no room at all"
 
 
+def test_the_raw_profile_choice_is_shown_as_unavailable(shell, qapp):
+    # The renderer has no profile setting yet: the choice must not look like a live control that does nothing.
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, model, popout, warnings = shell
+    popout.open(0)
+    popout.rawEditor.open("sample.NEF")
+    pump(qapp, 0.4)
+    choice = window.findChild(QQuickItem, "rawUnavailableChoice")
+    assert choice is not None and choice.isVisible() and not choice.isEnabled()
+    assert not [w for w in warnings if "RawEditorPanel.qml" in w], warnings
+
+
 def test_raw_reset_and_history_preserve_unexposed_recipe_settings(qapp):
     from image_triage.qml_shell.raw_editor import RawEditor
 

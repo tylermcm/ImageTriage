@@ -163,22 +163,29 @@ Rectangle {
         ToolTip.delay: 500
     }
     component Section: RawAdjustmentSection {}
+    // A choice the renderer has no setting for yet (the RAW profile): shown as unavailable, as the Technical panel's are, never as a
+    // live control that does nothing.
     component Choice: Row {
         id: choice
         property string label: ""
         property var choices: []
         width: parent.width; height: 35; spacing: label ? 8 : 0
-        Copy { id: choiceLabel; anchors.verticalCenter: parent.verticalCenter; text: parent.label; color: panel.ink }
+        Copy { id: choiceLabel; anchors.verticalCenter: parent.verticalCenter; text: parent.label; color: Qt.alpha(theme.fg3, 0.7) }
         ComboBox {
+            objectName: "rawUnavailableChoice"
             model: parent.choices
             enabled: false
             width: Math.min(160, choice.width - choiceLabel.implicitWidth - (choice.label ? choice.spacing : 0)); height: 30
             font.pixelSize: 12
-            contentItem: Copy { text: parent.displayText; leftPadding: 11; rightPadding: 22; verticalAlignment: Text.AlignVCenter }
-            indicator: Icon { x: parent.width - 20; anchors.verticalCenter: parent.verticalCenter; size: 12; path: "m6 9 6 6 6-6"; color: panel.ink }
-            background: Rectangle { color: panel.raised; radius: 8; border.color: panel.line }
-            opacity: 1
+            contentItem: Copy { text: parent.displayText; leftPadding: 11; rightPadding: 22; verticalAlignment: Text.AlignVCenter; color: Qt.alpha(theme.fg3, 0.7) }
+            indicator: Icon { x: parent.width - 20; anchors.verticalCenter: parent.verticalCenter; size: 12; path: "m6 9 6 6 6-6"; color: Qt.alpha(theme.fg3, 0.45) }
+            background: Rectangle { color: "transparent"; radius: 8; border.color: Qt.alpha(theme.fg3, 0.3) }
+            Accessible.name: (choice.label || "RAW profile") + ", unavailable"
         }
+        HoverHandler { id: choiceHover }
+        ToolTip.text: "Not available yet."
+        ToolTip.visible: choiceHover.hovered
+        ToolTip.delay: 500
     }
     component Check: Row {
         property string label: ""
