@@ -96,6 +96,7 @@ class RawEditor(QObject):
     _copied = None  # the look copied with Copy Settings, shared by every editor in the process
     saved = Signal(str, str)
     recipeSetAside = Signal(str, str)          # unreadable saved settings were set aside on load (the photo, what to say); once
+    saveFailed = Signal(str, str)              # a background save of an edit did not land (the photo, why); its draft is kept
     _finished = Signal(int, str, object, str)
 
     def __init__(self, *, memory=False, parent=None, drafts=None):
@@ -104,6 +105,13 @@ class RawEditor(QObject):
         # Unsaved drafts are also kept on disk so a crash or a restart does not lose them (never for the demo editor).
         from ..raw_drafts import DraftStore
         self._drafts = None if memory else drafts if drafts is not None else DraftStore()
+        # Edits are saved in the background, like a sidecar, when the photo is left or Done is pressed (edit_saves.py)
+        self._saves = None
+        self._submitted = set()                        # photos this editor handed to the queue whose saves have not all landed
+        if not memory:
+            from . import edit_saves
+            self._saves = edit_saves.instance()
+            self._saves.landed.connect(self._landed)
         self._notice = ""
         from ..raw_presets import PresetStore
         self._presets = PresetStore()
@@ -201,12 +209,55 @@ class RawEditor(QObject):
     loaded = Property(bool, lambda self: self._loaded, notify=changed)
     dirty = Property(bool, lambda self: self._draft != self._original, notify=changed)
 
+    @Slot()
+    def commit(self) -> None:
+        """Save the open photo's edit in the background (leaving it, closing the viewer, Done, Save, Export do this)."""
+        if self._saves is None or not self._loaded or not self._path or self._saving:
+            return
+        self._keep_draft()                             # on disk until the save lands
+        if self._saves.submit(self._path, self._original, self._draft):
+            self._submitted.add(self._path)
+            self.changed.emit()
+
+    photoPath = Property(str, lambda self: self._path, notify=changed)
+    autoSaving = Property(bool, lambda self: bool(self._saves is not None and self._path and self._saves.pending(self._path)), notify=changed)
+
+    def _landed(self, path, draft, result, error):
+        """A background save finished: the grid and the viewer get the new picture, and what is saved is the photo's new original."""
+        if path not in self._submitted:
+            return                                     # another editor's save: its drafts and photos are its own
+        if not self._saves.pending(path):
+            self._submitted.discard(path)
+        if error:
+            self.saveFailed.emit(path, error)
+            self.changed.emit()
+            return
+        if path == self._path and self._loaded:
+            self._original = deepcopy(draft)
+            self._keep_draft()                         # removed from the draft store once nothing is unsaved
+        elif path in self._sessions:
+            session = list(self._sessions[path])
+            session[0] = deepcopy(draft)
+            self._sessions[path] = tuple(session)
+            if session[1] == session[0] and self._drafts is not None:
+                self._drafts.discard(path)
+        elif self._drafts is not None and not self._saves.pending(path):
+            self._drafts.discard(path)                 # closed since: the last save of it landed
+        if result:
+            self.saved.emit(path, str(result))
+        self.changed.emit()
+
     def unsaved_names(self) -> list[str]:
         """The photos with RAW adjustments that were never saved with Done: the one open now and the ones stepped away from (their drafts are only in memory)."""
         import os
 
-        paths = [path for path, session in self._sessions.items() if session[1] != session[0]]
-        if self._path and self._loaded and self._draft != self._original:
+        def unsaved(path, original, draft):
+            if draft == original:
+                return False
+            return self._saves is None or (draft != self._saves.latest(path) and draft != self._saves.saved(path))
+
+        paths = [path for path, session in self._sessions.items() if unsaved(path, session[0], session[1])]
+        if self._path and self._loaded and unsaved(self._path, self._original, self._draft):
             paths.append(self._path)
         return [os.path.basename(path) for path in paths]
 
@@ -475,6 +526,7 @@ class RawEditor(QObject):
         if hasattr(self, "_proxy_request"):
             del self._proxy_request
         self._gesture = self._gesture_recorded = False
+        self.commit()                                  # the photo being left is saved in the background
         if self._path and self._loaded:
             self._sessions[self._path] = (
                 self._original, self._draft, self._preview, self._baseline,
@@ -942,6 +994,10 @@ class RawEditor(QObject):
         if self._draft == self._original or self._memory:
             self.cancel()
             return
+        if self._saves is not None:
+            self.commit()                              # saved in the background; the draft stays on disk until it lands
+            self._close(False)
+            return
         self._saving = True
         self._stop_detail()
         self._proxy_pending = False
@@ -1142,7 +1198,7 @@ class RawEditor(QObject):
         placed_blur = draft.get("bokeh")
         placed_blur = placed_blur if bokeh.normalized(placed_blur)["amount"] > 0 else None
         original, light_draft, draft = _without_light_depth(original), draft, _without_light_depth(draft)
-        if settings != original:
+        if settings != original and not (action != "save" and _saved_by_us(path, settings)):
             raise ValueError("The saved recipe changed. Reopen Edit RAW before applying more edits.")
         # What the renderer gets: the draft plus the masks Light Depth's settings make. They are built here, for every
         # preview and save, and are never stored (the saved recipe and the Mask tab only hold the person's own masks).
@@ -1247,7 +1303,11 @@ class RawEditor(QObject):
                 self._baseline = self._preview
                 self._draft = dict(self._original)
                 self._loaded = True
-                if recovered is not None:
+                saving = self._saves.latest(self._path) if self._saves is not None else None
+                if recovered is not None and saving is not None and light_depth.strip_legacy(recovered) == saving:
+                    # its background save has not landed yet: that edit is the photo's own, not something to recover
+                    self._original, self._draft = deepcopy(saving), deepcopy(saving)
+                elif recovered is not None:
                     # One undo step back to the saved edit, so bringing a draft back is never a trap.
                     self._undo.append(("Recovered unsaved edits", dict(self._original)))
                     self._draft = light_depth.strip_legacy(recovered)   # a stored draft may still hold an earlier Light Depth mask
@@ -1288,6 +1348,20 @@ class RawEditor(QObject):
             return
         if path and self._files and Path(path).parent == Path(self._files.name):
             Path(path).unlink(missing_ok=True)
+
+
+def _saved_by_us(path, settings):
+    """Whether the recipe on disk is one this app saved in the background (or is saving): the editor's own, not a change from
+    elsewhere."""
+    from . import edit_saves
+
+    queue = edit_saves._instance
+    if queue is None:
+        return False
+    if queue.pending(path):
+        return True
+    known = queue.saved(path)
+    return known is not None and _without_light_depth(known) == settings
 
 
 def _preview_dimensions(image):

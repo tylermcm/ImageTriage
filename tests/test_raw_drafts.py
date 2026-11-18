@@ -132,9 +132,11 @@ def test_cancel_and_done_both_forget_the_stored_draft(qapp, monkeypatch, tmp_pat
     wait(qapp, lambda: raw.loaded)
     assert not raw.dirty and not raw.notice
     raw.adjust("exposure", 2)
-    raw.done()
-    wait(qapp, lambda: not raw.active)
-    assert store.flush() and not store.file_for(photo).exists() and results["saved"] == {"exposure": 2}
+    raw.done()                                     # closes at once; the edit is saved in the background
+    assert not raw.active
+    wait(qapp, lambda: results["saved"] == {"exposure": 2} and not raw.autoSaving)
+    wait(qapp, lambda: store.flush() and not store.file_for(photo).exists())
+    assert results["saved"] == {"exposure": 2} and not store.file_for(photo).exists()
     raw.shutdown()
 
 
@@ -150,11 +152,13 @@ def test_undoing_back_to_the_saved_edit_removes_the_stored_draft(qapp, monkeypat
     raw.shutdown()
 
 
-def test_a_draft_for_a_photo_stepped_away_from_is_kept_while_another_is_cancelled(qapp, monkeypatch, tmp_path, photo):
+def test_a_photo_stepped_away_from_is_saved_while_another_is_cancelled(qapp, monkeypatch, tmp_path, photo):
     other = str(tmp_path / "photos" / "IMG_2.NEF")
     open(other, "wb").write(b"second")
     store = DraftStore(tmp_path / "drafts")
-    raw = editor(qapp, monkeypatch, store, {})
+    results = {}
+    raw = editor(qapp, monkeypatch, store, results)
+    saved = results["saved"]
     raw.open(photo)
     wait(qapp, lambda: raw.loaded)
     raw.adjust("exposure", 1)
@@ -162,8 +166,9 @@ def test_a_draft_for_a_photo_stepped_away_from_is_kept_while_another_is_cancelle
     wait(qapp, lambda: raw.loaded)
     raw.adjust("contrast", 5)
     raw.cancel()
-    assert store.flush()
-    assert store.file_for(photo).exists() and not store.file_for(other).exists()
+    wait(qapp, lambda: saved == {"exposure": 1})   # the photo left was saved in the background, like a sidecar
+    wait(qapp, lambda: store.flush() and not store.file_for(photo).exists())
+    assert saved == {"exposure": 1} and not store.file_for(photo).exists() and not store.file_for(other).exists()
     raw.shutdown()
 
 

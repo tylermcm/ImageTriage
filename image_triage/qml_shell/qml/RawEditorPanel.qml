@@ -677,7 +677,7 @@ Rectangle {
             x: 10; width: Math.max(0, actions.x - 17)
             anchors.verticalCenter: parent.verticalCenter
             font.pixelSize: 11; color: panel.model && panel.model.error ? theme.rej : panel.subtle
-            text: !panel.model ? "" : panel.model.error || panel.model.notice || (panel.model.saving ? "Saving edits\u2026" : panel.model.detailPending ? "Refining full-resolution detail\u2026" : panel.model.busy ? "Rendering preview\u2026" : panel.model.dirty ? "Unsaved edits" : "Original RAW")
+            text: !panel.model ? "" : panel.model.error || panel.model.notice || (panel.model.saving ? "Saving edits\u2026" : panel.model.detailPending ? "Refining full-resolution detail\u2026" : panel.model.busy ? "Rendering preview\u2026" : panel.model.autoSaving ? "Saving edits in the background\u2026" : panel.model.dirty ? "Edited \u00b7 saved when you leave the photo" : "Saved")
             elide: Text.ElideRight
             HoverHandler { id: statusHover }
             ToolTip.text: text; ToolTip.visible: statusHover.hovered
@@ -687,6 +687,9 @@ Rectangle {
             anchors.right: parent.right; anchors.rightMargin: 10
             anchors.verticalCenter: parent.verticalCenter; spacing: 7
             Action { text: "Cancel"; enabled: !!panel.model && !panel.model.saving; onClicked: panel.model.cancel() }
+            // Save: a new file with the edits applied (Batch Export for this photo), anywhere; the edit itself is kept as always
+            Action { objectName: "rawSaveCopy"; text: "Save…"; enabled: panel.editable
+                     onClicked: { var path = panel.model.photoPath; panel.model.commit(); UiState.batchOnly = path; UiState.batchMode = "export" } }
             Action { text: "Done"; primary: true; enabled: panel.editable; onClicked: panel.model.done() }
         }
     }

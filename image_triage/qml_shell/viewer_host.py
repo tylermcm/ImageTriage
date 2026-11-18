@@ -273,6 +273,7 @@ class ViewerHost(QObject):
     def close(self) -> None:
         if not self._open:
             return
+        self._raw_editor.commit()                    # an edit is saved in the background when the viewer closes
         self._open = False
         self._compare.close()
         self._preload_timer.stop()

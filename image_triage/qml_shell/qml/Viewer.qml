@@ -131,18 +131,16 @@ FocusScope {
     // Export this photo alone (Batch Export with "This photo"): its saved edit goes with it, so an unsaved one is saved first (Done)
     function exportThis() {
         if (curPath === "") return
-        if (rawEditing && (rawEditor.dirty || rawEditor.saving)) {
-            popout.notice("Press Done to save the edit first: the export uses the photo's saved edit.")
-            return
-        }
+        if (rawEditing) rawEditor.commit()            // saved in the background; the export waits for it
         UiState.batchOnly = curPath
         UiState.batchMode = "export"
     }
     function keepBest() { popout.keepBest(row); refocus() }      // this photo wins its burst, the rest are rejected (one undo step)
     function openEditor() {
         if (!popout.canEdit || UiState.vwScene === "noedit") return
-        if (rawEditing && (rawEditor.dirty || rawEditor.saving)) {
-            popout.notice("Finish or cancel the RAW edit before opening PhotoCraft.")
+        if (rawEditing && (rawEditor.dirty || rawEditor.saving || rawEditor.autoSaving)) {
+            rawEditor.commit()
+            popout.notice("Saving the RAW edit first. Open it in PhotoCraft again in a few seconds.")
             return
         }
         if (!editor.available) { popout.notice("PhotoCraft is not installed. Install it from Settings › Editor."); return }
@@ -166,6 +164,9 @@ FocusScope {
         target: v.rawEditor
         ignoreUnknownSignals: true
         function onRecipeSetAside(path, message) { v.offerRecipeRecovery(path, message) }
+        function onSaveFailed(path, message) {
+            popout.notice("The edit of " + path.split(/[\/]/).pop() + " could not be saved: " + message + " It is kept and comes back when you edit the photo again.")
+        }
     }
     // A photo's saved Camera Raw settings could not be read and were set aside: say so once, and offer to salvage them.
     function offerRecipeRecovery(path, message) {
@@ -872,7 +873,7 @@ FocusScope {
                     text: "Edit RAW"; variant: v.rawEditing ? "primary" : "ghost"; h: 38; hpad: 12
                     enabled: !v.opening && (!v.rawEditing || !v.rawEditor.saving)
                     onClicked: {
-                        if (v.rawEditing) v.rawEditor.cancel()
+                        if (v.rawEditing) v.rawEditor.done()        // closing the panel keeps the edit (saved in the background)
                         else { popout.compare.close(); v.rawEditor.open(v.curPath) }
                     }
                 }

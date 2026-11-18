@@ -539,6 +539,13 @@ class ExportApplyTask(QRunnable):
 
     def run(self) -> None:
         try:
+            # an edit still being saved in the background (the editor's Save, leaving a photo) is waited for: the file has the latest edit
+            from .qml_shell import edit_saves
+
+            paths = [item.source.path for item in self.plan.executable]
+            if edit_saves._instance is not None and any(edit_saves._instance.pending(p) for p in paths):
+                self.signals.progress.emit(0, max(1, len(paths)), "Waiting for the edits to be saved")
+                edit_saves.wait_for(paths)
             outcome = apply_plan(self.plan, lambda i, n, m: self.signals.progress.emit(i, n, m))
         except Exception as error:  # pragma: no cover - apply_plan reports per photo
             self.signals.failed.emit(str(error))
