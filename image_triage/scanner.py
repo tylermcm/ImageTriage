@@ -187,6 +187,27 @@ def format_scan_error(error: BaseException) -> str:
     return "The folder scan could not be completed."
 
 
+def has_child_folder(folder: str, *, include_hidden: bool = False) -> bool:
+    """Whether ``folder`` has a subfolder ``scan_child_folders`` would list. Stops at the first one, so a folder full of photos costs
+    one directory read; a folder that cannot be read counts as having none."""
+    try:
+        with os.scandir(normalize_filesystem_path(folder)) as entries:
+            for entry in entries:
+                if entry.name.casefold().endswith(EDITOR_ASSET_DIR_SUFFIX) or is_ignored_system_directory(entry.name) or is_app_recycle_directory(entry.name):
+                    continue
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                    if not include_hidden and _is_hidden_directory_entry(entry, entry.stat(follow_symlinks=False)):
+                        continue
+                except OSError:
+                    continue
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def scan_child_folders(folder: str, *, include_hidden: bool = False) -> list[ImageRecord]:
     folder = normalize_filesystem_path(folder)
     records: list[ImageRecord] = []

@@ -147,6 +147,7 @@ class LibraryNavModel(QObject):
     changed = Signal()
     positionRestored = Signal(int)                             # the grid should be on this row: the photo the person was on when they left this folder
     _listed = Signal(str, list)                                # a folder's child folders, from the worker thread
+    _probed = Signal(dict)                                     # for listed folders: whether each has subfolders (key -> bool)
     _searched = Signal(int, object)
 
     def __init__(self, photos, *, memory: bool = False, persist: bool = True, drives=None, drive_root=None, parent: QObject | None = None) -> None:
@@ -194,6 +195,8 @@ class LibraryNavModel(QObject):
             self._watcher.directoryChanged.connect(lambda _path: self._watch_timer.start())
             self._watch_timer.timeout.connect(self._watched_change)
         self._listed.connect(self._apply_listed)
+        self._probed.connect(self._apply_probed)
+        self._has_kids: dict[str, bool] = {}                   # a folder not opened yet: whether it has subfolders (its arrow)
         # what the page's Repeaters show (role names are not PanelRow's own property names: icon, text, count, current)
         self._fav_rows = _RowsModel({"folder": "path", "title": "name", "photos": "count", "here": "current"}, self)
         self._drv_rows = _RowsModel({"folder": "path", "title": "name", "detail": "detail", "ratio": "ratio"}, self)
@@ -304,11 +307,32 @@ class LibraryNavModel(QObject):
         def work() -> None:
             from ..scanner import scan_child_folders
 
+            from ..scanner import has_child_folder
+
             try:
                 found = [(record.name, record.path) for record in scan_child_folders(path, include_hidden=hidden)]
             except Exception:
                 found = []
-            self._listed.emit(path, found)
+            try:
+                self._listed.emit(path, found)
+            except RuntimeError:
+                return                                             # the window was closed meanwhile
+            # Then each child: does it have subfolders? A folder without any shows the plain folder icon at once, not an arrow
+            # that only turns into one when it is opened. After the listing, so the tree never waits for this.
+            probed: dict[str, bool] = {}
+            for _name, child in found:
+                probed[_key(child)] = has_child_folder(child, include_hidden=hidden)
+                if len(probed) >= 32:
+                    try:
+                        self._probed.emit(probed)
+                    except RuntimeError:
+                        return
+                    probed = {}
+            if probed:
+                try:
+                    self._probed.emit(probed)
+                except RuntimeError:
+                    return
 
         threading.Thread(target=work, name="qml-folders", daemon=True).start()
 
@@ -316,6 +340,10 @@ class LibraryNavModel(QObject):
         key = _key(path)
         self._requested.discard(key)
         self._children[key] = [(name, child) for name, child in found]
+        self.changed.emit()
+
+    def _apply_probed(self, probed: dict) -> None:
+        self._has_kids.update(probed)
         self.changed.emit()
 
     def _tree_rows(self) -> list[dict]:
@@ -342,7 +370,7 @@ class LibraryNavModel(QObject):
                 if query and query not in name.casefold() and not below:
                     continue
                 kids = self._children.get(key)
-                leaf = kids is not None and not kids
+                leaf = (not kids) if kids is not None else self._has_kids.get(key) is False
                 out.append({
                     "path": path, "name": name, "count": _count_text(self._counts.get(key)), "depth": depth,
                     "icon": "library" if leaf else ("chevDown" if expanded else "chevR"), "current": key == open_key, "expandable": not leaf,
@@ -684,6 +712,7 @@ class LibraryNavModel(QObject):
     def refresh(self) -> None:
         """Read the drives and every opened folder again."""
         self._children.clear()
+        self._has_kids.clear()
         self._requested.clear()
         if self._root:
             self._list(self._root)

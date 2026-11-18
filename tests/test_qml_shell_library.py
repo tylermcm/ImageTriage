@@ -81,9 +81,9 @@ def test_opening_a_folder_loads_it_and_opens_the_tree_down_to_it(qapp, nav, libr
     day1 = library / "2025" / "Trip" / "Day1"
     nav.openFolder(str(day1))
     until(qapp, lambda: not nav.photos.loading and any(r[3] for r in rows(nav)))
-    assert rows(nav) == [("2025", 0, "chevDown", False), ("Trip", 1, "chevDown", False), ("Day1", 2, "chevR", True), ("Day2", 2, "chevR", False),
-                         ("Wedding", 1, "chevR", False), ("2026", 0, "chevR", False)] or rows(nav)[:3] == [
-        ("2025", 0, "chevDown", False), ("Trip", 1, "chevDown", False), ("Day1", 2, "chevR", True)]
+    # folders without subfolders show the folder icon once they have been looked at (2026 has Georgia, so it keeps its arrow)
+    until(qapp, lambda: rows(nav) == [("2025", 0, "chevDown", False), ("Trip", 1, "chevDown", False), ("Day1", 2, "library", True),
+                                      ("Day2", 2, "library", False), ("Wedding", 1, "library", False), ("2026", 0, "chevR", False)])
     assert nav.photos.folderPath == str(day1) and nav.photos.total == 3
     assert nav.openPath == str(day1) and nav.treeStatus == ""
     assert next(r for r in nav.tree if r["name"] == "Day1")["count"] == "3"        # known once the folder has been read
@@ -200,14 +200,15 @@ def test_a_folder_the_person_has_left_is_not_refreshed_into_view(qapp, nav, libr
     photos_loaded(qapp, nav, 3)
 
 
-def test_a_folder_with_no_folders_in_it_gets_the_folder_icon(qapp, nav, library):
+def test_a_folder_with_no_folders_in_it_gets_the_folder_icon_without_being_opened(qapp, nav, library):
+    (library / "2025" / "Wedding" / "photo.jpg").write_bytes(b"x")          # files, but no folder: still a leaf
     nav.openFolder(str(library))
     until(qapp, lambda: len(nav.tree) == 2)
     nav.toggle(str(library / "2025"))
     until(qapp, lambda: any(r["name"] == "Wedding" for r in nav.tree))
-    nav.toggle(str(library / "2025" / "Wedding"))
-    until(qapp, lambda: next(r for r in nav.tree if r["name"] == "Wedding")["icon"] == "library")
+    until(qapp, lambda: next(r for r in nav.tree if r["name"] == "Wedding")["icon"] == "library")    # never opened
     assert next(r for r in nav.tree if r["name"] == "Wedding")["expandable"] is False
+    assert next(r for r in nav.tree if r["name"] == "Trip")["icon"] == "chevR"                     # Day1 and Day2 are in it
 
 
 def test_hidden_folders_follow_the_widgets_setting(qapp, nav, library):
