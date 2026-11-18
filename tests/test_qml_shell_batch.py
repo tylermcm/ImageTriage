@@ -274,3 +274,18 @@ def test_the_export_planner_reads_each_folder_once_and_still_finds_names_already
     assert [i.target_name for i in plan.items] == ["A_2.jpg", "B.jpg"]
     skip = pipeline.build_plan(sources, {**pipeline.DEFAULTS, "dest": "choose", "folder": str(out), "exists": "skip"})
     assert [i.status for i in skip.items] == ["Skip", "Export"]
+
+
+def test_one_photo_can_be_exported_alone_and_the_usual_scope_comes_back(qapp, folder):
+    """A plain click picks nothing, so the usual scope is every photo shown: "This photo" exports just one."""
+    batch = BatchModel(grid(qapp, folder), parent=qapp)
+    batch.setOnly(str(folder / "B1.jpg"))                       # as the viewer's Export does, before the window opens
+    batch.begin("export")
+    assert [r["next"] for r in batch.rows()] == ["B1.jpg"] and batch.canApply and batch.foot == "1 will be exported."
+    assert batch.only == str(folder / "B1.jpg")
+    batch.setOnly("")
+    assert len(batch.rows()) == 4
+    batch.setOnly(str(folder / "A2.NEF"))
+    batch.end()                                                 # closing forgets it: the next opening has the usual scope
+    batch.begin("export")
+    assert len(batch.rows()) == 4

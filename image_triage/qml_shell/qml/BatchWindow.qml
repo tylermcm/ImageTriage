@@ -36,14 +36,20 @@ FocusScope {
     property string applied: ""
 
     function open(mode) { UiState.batchMode = mode }
-    function close() { UiState.batchMode = ""; batch.end() }
+    function close() { UiState.batchMode = ""; UiState.batchOnly = ""; batch.end() }
+    // "This photo": the photo the viewer or the grid is on, taken alone (a plain click picks nothing, so the usual scope is every photo)
+    function currentPath() {
+        if (UiState.batchOnly !== "") return UiState.batchOnly
+        var row = UiState.selRow >= 0 ? photos.get(UiState.selRow) : null
+        return row && row.path ? row.path : ""
+    }
     // Resize and Convert have no undo, so writing over the originals asks first and says how many.
     function apply() {
         if (batch.mode === "export" && root.overwrites() > 0) { overwriteCard.open(); return }
         batch.apply(); close()
     }
     function overwrites() { var n = 0; for (var i = 0; i < rows.length; ++i) if (rows[i].status === "Overwrite") ++n; return n }
-    onShownChanged: if (shown) { batch.begin(UiState.batchMode); forceActiveFocus() }
+    onShownChanged: if (shown) { batch.setOnly(UiState.batchOnly); batch.begin(UiState.batchMode); forceActiveFocus() }
     ConfirmCard {
         id: overwriteCard; objectName: "batchOverwriteCard"; warn: true; cancelText: "Cancel"; confirmText: "Overwrite"
         title: "Write over the original files?"
@@ -357,6 +363,17 @@ FocusScope {
                 Item {
                     id: mh; width: parent.width; height: 44
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
+                    // which photos: the usual scope, or only the one the viewer or the grid is on
+                    Row {
+                        objectName: "batchScope"
+                        anchors.right: parent.right; anchors.rightMargin: 24; anchors.verticalCenter: parent.verticalCenter; spacing: 6
+                        visible: root.currentPath() !== "" || batch.only !== ""
+                        SButton { objectName: "batchScopeAll"; h: 26; hpad: 10; radius: 8
+                                  text: photos.picked > 0 ? "Picked (" + photos.picked + ")" : "All shown"
+                                  variant: batch.only === "" ? "primary" : "ghost"; onClicked: batch.setOnly("") }
+                        SButton { objectName: "batchScopeOne"; h: 26; hpad: 10; radius: 8; text: "This photo"
+                                  variant: batch.only !== "" ? "primary" : "ghost"; onClicked: batch.setOnly(root.currentPath()) }
+                    }
                     Row {
                         x: 24; spacing: 10; height: parent.height
                         Text { height: parent.height; verticalAlignment: Text.AlignVCenter; text: "Preview"; color: theme.fg; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: -0.14 }

@@ -128,6 +128,16 @@ FocusScope {
         else if (!opening) popout.compare.openFor(row)
         refocus()
     }
+    // Export this photo alone (Batch Export with "This photo"): its saved edit goes with it, so an unsaved one is saved first (Done)
+    function exportThis() {
+        if (curPath === "") return
+        if (rawEditing && (rawEditor.dirty || rawEditor.saving)) {
+            popout.notice("Press Done to save the edit first: the export uses the photo's saved edit.")
+            return
+        }
+        UiState.batchOnly = curPath
+        UiState.batchMode = "export"
+    }
     function keepBest() { popout.keepBest(row); refocus() }      // this photo wins its burst, the rest are rejected (one undo step)
     function openEditor() {
         if (!popout.canEdit || UiState.vwScene === "noedit") return
@@ -247,6 +257,7 @@ FocusScope {
         else if (k === Qt.Key_M) moveRequested(row)
         else if (k === Qt.Key_E) openEditor()
         else if (k === Qt.Key_C) toggleCompare()
+        else if (k === Qt.Key_X && !(e.modifiers & Qt.ControlModifier)) exportThis()
         else e.accepted = false
     }
 
@@ -823,6 +834,7 @@ FocusScope {
                     // Delete's key is the one Settings > Shortcuts has; the others are the viewer's own and cannot be changed
                     model: { void settings.shortcutRevision; var del = settings.seq("delete_selection")
                              return [{ id: "compare", k: "C", tip: "Compare side by side (C)", path: "M4 5h7v14H4zM13 5h7v14h-7z" },
+                            { id: "export", k: "X", tip: "Export this photo as a new file (X)", path: "M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19h14" },
                             { id: "focus", k: "F", tip: "Focus assist (F, Shift+F colour)", icon: "focusAssist" },
                             { id: "move", k: "M", tip: "Move to… (M)", icon: "movePhoto" },
                             { id: "coll", k: "B", tip: "Add to a collection (B)", icon: "addCollection" },
@@ -841,6 +853,7 @@ FocusScope {
                             onTapped: {
                                 var id = tb.modelData.id
                                 if (id === "compare") v.toggleCompare()
+                                else if (id === "export") v.exportThis()
                                 else if (id === "focus") popout.toggleAssist()
                                 else if (id === "move") v.moveRequested(v.row)
                                 else if (id === "coll") v.collOpen = !v.collOpen

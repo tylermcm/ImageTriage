@@ -113,7 +113,12 @@ class BatchModel(QObject):
 
     def _batch(self) -> list[dict]:
         """One entry per shown photo: its thumbnail path, the path the planners look at, its file name and companions."""
-        rows = self._photos.scope_rows()[:SOURCE_LIMIT]
+        only = getattr(self, "_only", "")
+        if only:                                   # "This photo": the one the grid or the viewer is on, even with nothing picked
+            key = os.path.normcase(os.path.abspath(only))
+            rows = [r for r in self._photos.all_rows() if os.path.normcase(os.path.abspath(r["path"])) == key][:1]
+        else:
+            rows = self._photos.scope_rows()[:SOURCE_LIMIT]
         out = []
         if self._memory:
             if not self._stage:
@@ -206,9 +211,23 @@ class BatchModel(QObject):
         self._pindex = 0
         self._refresh()
 
+    @Slot(str)
+    def setOnly(self, path: str) -> None:
+        """Take only the photo at ``path`` ("" for the usual scope: the picked photos, else every photo shown)."""
+        if path != getattr(self, "_only", ""):
+            self._only = path
+            self._pindex = 0
+            if self._active:
+                self._refresh()
+            else:
+                self.revisionChanged.emit()
+
+    only = Property(str, lambda self: getattr(self, "_only", ""), notify=revisionChanged)
+
     @Slot()
     def end(self) -> None:
         self._active = False
+        self._only = ""
         self._pgen += 1
         with self._sources_lock:
             self._sources.clear()

@@ -52,3 +52,23 @@ def test_each_ai_tool_names_itself(shell, qapp):
         working(tool, False)
         pump(qapp, .1)
         assert not overlay.property("active")
+
+
+def test_the_viewer_export_button_opens_batch_export_for_this_photo_alone(shell, qapp):
+    from PySide6.QtCore import QObject, QPointF
+    engine, window, photos, popout, warnings = shell
+    popout.open(1)
+    pump(qapp, .5)
+    def walk(item):
+        yield item
+        for child in item.childItems():
+            yield from walk(child)
+    button = next((i for i in walk(window.contentItem()) if i.objectName() == "viewerTool_export"), None)
+    assert button is not None and button.isVisible()
+    QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint())
+    pump(qapp, .6)
+    card = window.findChild(QObject, "batchWindow")
+    batch = engine.rootContext().contextProperty("batch")
+    assert card.property("shown") and card.property("mode") == "export"
+    assert batch.only == photos.get(1)["path"] and len(card.property("rows")) == 1
+    assert not [w for w in warnings if "ReferenceError" in w or "TypeError" in w], warnings

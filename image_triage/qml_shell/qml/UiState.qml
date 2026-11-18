@@ -46,6 +46,7 @@ QtObject {
     property string paletteContext: "main"   // "main", "preview" or "zen": which commands are offered and what the card is called
     property string paletteQuery: ""
     property int paletteSel: 0               // highlighted row (test hook; the keyboard moves it)
+    property string batchOnly: ""           // Batch Export opened for one photo (the viewer's Export): its path
     property int selRow: -1                  // the grid's current row (bound in Main), what "Selection" in PocketDrop's Library means
     // dragging a collection (or the selection) towards PocketDrop; pdFlow is the test hook that shows the mockup's still frames of it
     property bool pdDragging: false
