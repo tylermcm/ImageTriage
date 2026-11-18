@@ -211,6 +211,15 @@ def test_a_folder_with_no_folders_in_it_gets_the_folder_icon_without_being_opene
     assert next(r for r in nav.tree if r["name"] == "Trip")["icon"] == "chevR"                     # Day1 and Day2 are in it
 
 
+def test_the_top_level_keeps_an_arrow_on_every_folder(qapp, nav, library):
+    (library / "Scans").mkdir()                                              # no folders in it, at the top
+    nav.openFolder(str(library))
+    until(qapp, lambda: any(r["name"] == "Scans" for r in nav.tree))
+    nav.toggle(str(library / "2025"))
+    until(qapp, lambda: next((r for r in nav.tree if r["name"] == "Wedding"), {}).get("icon") == "library")   # a subfolder: the folder icon
+    assert next(r for r in nav.tree if r["name"] == "Scans")["icon"] == "chevR"
+
+
 def test_hidden_folders_follow_the_widgets_setting(qapp, nav, library):
     (library / ".private").mkdir()
     nav.openFolder(str(library))

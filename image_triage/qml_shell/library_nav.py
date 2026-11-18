@@ -370,7 +370,8 @@ class LibraryNavModel(QObject):
                 if query and query not in name.casefold() and not below:
                     continue
                 kids = self._children.get(key)
-                leaf = (not kids) if kids is not None else self._has_kids.get(key) is False
+                # a subfolder with no folders in it shows the folder icon; the top level keeps an arrow on every folder
+                leaf = depth > 0 and ((not kids) if kids is not None else self._has_kids.get(key) is False)
                 out.append({
                     "path": path, "name": name, "count": _count_text(self._counts.get(key)), "depth": depth,
                     "icon": "library" if leaf else ("chevDown" if expanded else "chevR"), "current": key == open_key, "expandable": not leaf,
