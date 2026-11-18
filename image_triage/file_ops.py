@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -398,6 +399,26 @@ def plan_rename_bundle_paths(
         plans.append(FileMove(source_path=str(source), target_path=str(source.with_name(target_name))))
     return tuple(plans)
 
+# Windows refuses to rename a file another program has open, even for a moment (a preview or thumbnail being read, antivirus,
+# Explorer's preview pane). Such a lock is usually gone within a fraction of a second, so a rename waits for it a little.
+_SHARING_VIOLATIONS = (32, 33)          # ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+_LOCK_WAIT_S = 3.0
+
+
+def _replace_patiently(source: str, target: str) -> None:
+    deadline = time.monotonic() + _LOCK_WAIT_S
+    pause = 0.02
+    while True:
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) not in _SHARING_VIOLATIONS or time.monotonic() >= deadline:
+                raise
+        time.sleep(pause)
+        pause = min(pause * 2, 0.25)
+
+
 def rename_paths(
     plans: tuple[FileMove, ...],
     *,
@@ -439,21 +460,21 @@ def rename_paths(
     try:
         for plan in normalized_plans:
             temp_path = _temporary_rename_path(plan.source_path)
-            os.replace(plan.source_path, temp_path)
+            _replace_patiently(plan.source_path, temp_path)
             temp_paths.append((plan, temp_path))
             emit_progress(f"Preparing {Path(plan.source_path).name}")
 
         for plan, temp_path in temp_paths:
-            os.replace(temp_path, plan.target_path)
+            _replace_patiently(temp_path, plan.target_path)
             finalized.append((plan, temp_path))
             emit_progress(f"Renaming {Path(plan.target_path).name}")
     except OSError as exc:
         for plan, temp_path in reversed(finalized):
             if os.path.exists(plan.target_path):
-                os.replace(plan.target_path, temp_path)
+                _replace_patiently(plan.target_path, temp_path)
         for plan, temp_path in reversed(temp_paths):
             if os.path.exists(temp_path):
-                os.replace(temp_path, plan.source_path)
+                _replace_patiently(temp_path, plan.source_path)
         raise exc
 
     return normalized_plans

@@ -8,6 +8,7 @@ Popup {
     property int placement: 0            // 0: above the button, 1: to the right of it, 2: below it, right edges aligned (dropdowns)
     property real shadowAlpha: 0.7
     property bool alignBottom: false     // placement 1 only: grow upward from the button's bottom edge
+    property bool flipUp: false          // placement 2 only: open above the field (no room below it)
     property string name: ""            // the id UiState.menu uses for this menu (one menu open at a time)
     readonly property bool wanted: name !== "" && UiState.menu === name
     onWantedChanged: { if (wanted) open(); else if (opened) close() }
@@ -28,7 +29,7 @@ Popup {
     property real originY: 0
     onAboutToShow: { var o = parent.mapToItem(null, 0, 0); originX = o.x; originY = o.y }
     x: sheet ? 12 - originX : (placement === 1 ? parent.width + 10 : (placement === 2 ? parent.width - width : 0))
-    y: sheet ? parent.Window.height - 76 - height - originY : (placement === 2 ? parent.height + 6 : (placement === 1 ? (alignBottom ? parent.height - height + 4 : -8) : -height - 12))
+    y: sheet ? parent.Window.height - 76 - height - originY : (placement === 2 ? (flipUp ? -height - 6 : parent.height + 6) : (placement === 1 ? (alignBottom ? parent.height - height + 4 : -8) : -height - 12))
 
     enter: Transition {
         ParallelAnimation {
@@ -49,6 +50,7 @@ Popup {
         shadowAlphaA: pop.shadowAlpha; shadowAlphaB: 0; shadowOffsetA: 24; shadowInset: 16
     }
     contentItem: Flickable {
+        id: flick
         implicitWidth: pop.sheet ? pop.parent.Window.width - 24 - 14 : Math.max(pop.minWidth, column.implicitWidth)
         implicitHeight: Math.min(pop.maxHeight, column.implicitHeight)
         contentHeight: column.implicitHeight
@@ -63,5 +65,11 @@ Popup {
             gesturePolicy: TapHandler.WithinBounds
         }
         Column { id: column; width: parent.width }
+        // a list longer than the menu: the bar always shows, so it is plain there is more to scroll to
+        ScrollBar.vertical: ScrollBar {
+            id: pbar; policy: flick.interactive ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+            contentItem: Rectangle { implicitWidth: 4; radius: 2; color: Qt.alpha(theme.fg, pbar.hovered || pbar.pressed ? 0.4 : 0.25) }
+            background: Item {}
+        }
     }
 }

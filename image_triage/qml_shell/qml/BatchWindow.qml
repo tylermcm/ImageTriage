@@ -18,6 +18,10 @@ FocusScope {
 
     readonly property real winW: Math.min(1180, width - 96)
     readonly property real winH: Math.min(780, height - 68 - 64)
+    readonly property real navW: Math.round(Math.min(480, Math.max(340, winW * 0.4)))
+    readonly property real colW: navW - 41              // the settings, 20px in from the left and clear of the scroll bar
+    readonly property real half: (colW - 12) / 2        // two settings side by side
+    readonly property real third: (colW - 16) / 3
     readonly property int rev: batch.revision
     readonly property string mode: batch.mode
     readonly property var rows: { void rev; return batch.rows() }
@@ -87,13 +91,13 @@ FocusScope {
     component Gh: Text { property alias title: g.text; id: g; width: 1; height: 13; verticalAlignment: Text.AlignVCenter
                          color: theme.fg3; font.pointSize: UiState.pt(10.5); font.weight: Font.DemiBold; font.letterSpacing: 0.84 }
     component Lbl: Text { height: 16.8; verticalAlignment: Text.AlignVCenter; color: theme.fg2; font.pixelSize: 12 }
-    component Note: Text { width: parent ? parent.width : 299; topPadding: 1.5; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 12; lineHeight: 17.4; lineHeightMode: Text.FixedHeight }
+    component Note: Text { width: parent ? parent.width : root.colW; topPadding: 1.5; wrapMode: Text.WordWrap; color: theme.fg3; font.pixelSize: 12; lineHeight: 17.4; lineHeightMode: Text.FixedHeight }
     // one labelled text field (label 16.8, 6, box 34)
     component Field: Column {
         id: fld
         property string label; property string key; property string placeholder; property string suffix
         objectName: "batchField_" + key
-        spacing: 6; width: 299
+        spacing: 6; width: root.colW
         Lbl { text: fld.label }
         FInput { width: parent.width; placeholder: fld.placeholder; suffix: fld.suffix; text: { void root.rev; return String(batch.get(fld.key)) }
                  onEdited: (t) => batch.set(fld.key, t) }
@@ -103,9 +107,9 @@ FocusScope {
         property string label; property string key; property bool custom: false
         signal chosen(var value)
         objectName: "batchPick_" + key
-        spacing: 6; width: 299
+        spacing: 6; width: root.colW
         Lbl { text: pk.label }
-        SSelect { width: parent.width; menuMax: 268; options: { void root.rev; return batch.options(pk.key) }
+        SSelect { width: parent.width; name: pk.label; options: { void root.rev; return batch.options(pk.key) }
                   current: { void root.rev; return batch.get(pk.key) }
                   onPicked: (v) => { if (pk.custom) pk.chosen(v); else batch.set(pk.key, v) } }
     }
@@ -113,7 +117,7 @@ FocusScope {
     component Num: Column {
         id: nm
         property string label; property string key; property int lo: 0; property int hi: 999999
-        spacing: 6; width: (299 - 16) / 3
+        spacing: 6; width: root.third
         Lbl { text: nm.label }
         SStepper { width: parent.width; text: { void root.rev; return String(batch.get(nm.key)) }
                    onDecrement: { batch.set(nm.key, Math.max(nm.lo, batch.get(nm.key) - 1)) }
@@ -123,12 +127,12 @@ FocusScope {
     component SwRow: Item {
         id: sr
         property string label; property string desc; property string key; property bool locked: false
-        width: 299
+        width: root.colW
         implicitHeight: Math.max(46, 8 + lt.height + (desc !== "" ? 2 + dt.height : 0) + 8 + 1)
         height: implicitHeight
         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
         Column {
-            x: 0; anchors.verticalCenter: parent.verticalCenter; anchors.verticalCenterOffset: 0.5; width: 247; spacing: 2
+            x: 0; anchors.verticalCenter: parent.verticalCenter; anchors.verticalCenterOffset: 0.5; width: sr.width - 52; spacing: 2
             Text { id: lt; width: parent.width; wrapMode: Text.WordWrap; text: sr.label; color: theme.fg; font.pixelSize: 13; lineHeight: 18.2; lineHeightMode: Text.FixedHeight }
             Text { id: dt; visible: sr.desc !== ""; width: parent.width; wrapMode: Text.WordWrap; text: sr.desc; color: theme.fg3; font.pointSize: UiState.pt(11.5)
                    lineHeight: 16.1; lineHeightMode: Text.FixedHeight }
@@ -173,10 +177,10 @@ FocusScope {
 
             // ---- options ------------------------------------------------------------------------------------------------
             Rectangle {
-                id: nav; x: 0; y: 40; width: 340; height: parent.height - 98; color: theme.s2
+                id: nav; x: 0; y: 40; width: root.navW; height: parent.height - 98; color: theme.s2
                 Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: theme.lineSoft }
                 Item {
-                    id: modeBox; x: 12; y: 12; width: 315; height: 32
+                    id: modeBox; x: 12; y: 12; width: parent.width - 25; height: 32
                     Seg { anchors.fill: parent; fill: true; showExtras: false; labels: ["Rename", "Export"]
                           current: { var i = 0; for (var k = 0; k < root.modes.length; ++k) if (root.modes[k][0] === root.mode) i = k; return i }
                           onActivated: (i) => { UiState.batchMode = root.modes[i][0]; batch.setMode(root.modes[i][0]) } }
@@ -189,7 +193,7 @@ FocusScope {
                     ScrollBar.vertical: ScrollBar { id: obar; policy: ScrollBar.AsNeeded; contentItem: Rectangle { implicitWidth: 6; radius: 3; color: Qt.alpha(theme.fg, 0.22); opacity: obar.active || obar.hovered ? 1 : 0; Behavior on opacity { NumberAnimation { duration: 300 } } } background: Item {} }
                     Column {
                         id: optCol
-                        x: 20; y: 24; width: 299
+                        x: 20; y: 24; width: root.colW
 
                         // ---- rename
                         Column {
@@ -198,11 +202,13 @@ FocusScope {
                             Item { width: 1; height: 12 }
                             Field { label: "New name"; key: "newName"; placeholder: "Optional base name (without extension)" }
                             Item { width: 1; height: 12 }
-                            Field { label: "Prefix"; key: "prefix"; placeholder: "Optional prefix" }
+                            Row { spacing: 12
+                                Field { width: root.half; label: "Prefix"; key: "prefix"; placeholder: "Optional prefix" }
+                                Field { width: root.half; label: "Suffix"; key: "suffix"; placeholder: "Optional suffix" } }
                             Item { width: 1; height: 12 }
-                            Field { label: "Suffix"; key: "suffix"; placeholder: "Optional suffix" }
-                            Item { width: 1; height: 12 }
-                            Pick { label: "Case"; key: "case" }
+                            Row { spacing: 12
+                                Pick { width: root.half; label: "Case"; key: "case" }
+                                Field { width: root.half; label: "Separator"; key: "sep"; placeholder: "_" } }
                             Item { width: 1; height: 12 }
                             Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
                             SwRow { label: "Collapse repeated spaces"; key: "collapse" }
@@ -216,8 +222,6 @@ FocusScope {
                                 Num { label: "Start"; key: "start"; lo: 0 }
                                 Num { label: "Step"; key: "step"; lo: 1 }
                                 Num { label: "Digits"; key: "pad"; lo: 0; hi: 8 } }
-                            Item { width: 1; height: 12 }
-                            Field { label: "Separator"; key: "sep"; placeholder: "_" }
                         }
 
                         // ---- export
@@ -237,7 +241,7 @@ FocusScope {
                             Gap { h: 8 }
                             Row {
                                 spacing: 8
-                                FInput { id: presetName; objectName: "batchPresetName"; width: 299 - 8 - 70 - (deleteBtn.visible ? 70 + 8 : 0); placeholder: "Save these settings as…" }
+                                FInput { id: presetName; objectName: "batchPresetName"; width: root.colW - 8 - 70 - (deleteBtn.visible ? 70 + 8 : 0); placeholder: "Save these settings as…" }
                                 SButton { text: "Save"; variant: "ghost"; h: 34; hpad: 14; radius: 10; width: 70
                                           onClicked: { root.presetError = batch.savePreset(presetName.text); if (root.presetError === "") presetName.text = "" } }
                                 SButton { id: deleteBtn; text: "Delete"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 70
@@ -248,15 +252,15 @@ FocusScope {
                             Gap { h: 22 }
                             Gh { title: "IMAGE SIZE" }
                             Gap {}
-                            Pick { label: "Size"; key: "sizeMode" }
-                            Gap { h: 8 }
-                            Field { visible: parent.sizeMode === "long"; label: "Long edge"; key: "long"; placeholder: "2048"; suffix: "px" }
-                            Field { visible: parent.sizeMode === "short"; label: "Short edge"; key: "short"; placeholder: "1080"; suffix: "px" }
-                            Row { visible: parent.sizeMode === "fit"; spacing: 8
-                                Field { width: 145.5; label: "Width"; key: "fitW"; placeholder: "1920"; suffix: "px" }
-                                Field { width: 145.5; label: "Height"; key: "fitH"; placeholder: "1080"; suffix: "px" } }
-                            Field { visible: parent.sizeMode === "mp"; label: "Megapixels"; key: "mp"; placeholder: "12"; suffix: "MP" }
-                            Field { visible: parent.sizeMode === "pct"; label: "Percentage"; key: "pct"; placeholder: "50"; suffix: "%" }
+                            Row { spacing: 12
+                                Pick { width: root.half; label: "Size"; key: "sizeMode" }
+                                Field { width: root.half; visible: parent.parent.sizeMode === "long"; label: "Long edge"; key: "long"; placeholder: "2048"; suffix: "px" }
+                                Field { width: root.half; visible: parent.parent.sizeMode === "short"; label: "Short edge"; key: "short"; placeholder: "1080"; suffix: "px" }
+                                Field { width: (root.half - 12) / 2; visible: parent.parent.sizeMode === "fit"; label: "Width"; key: "fitW"; placeholder: "1920"; suffix: "px" }
+                                Field { width: (root.half - 12) / 2; visible: parent.parent.sizeMode === "fit"; label: "Height"; key: "fitH"; placeholder: "1080"; suffix: "px" }
+                                Field { width: root.half; visible: parent.parent.sizeMode === "mp"; label: "Megapixels"; key: "mp"; placeholder: "12"; suffix: "MP" }
+                                Field { width: root.half; visible: parent.parent.sizeMode === "pct"; label: "Percentage"; key: "pct"; placeholder: "50"; suffix: "%" }
+                            }
                             Gap { h: 8 }
                             Note { text: { void root.rev; return batch.sizeDesc() } }
                             Gap { h: 6; visible: parent.sizeMode !== "original" }
@@ -265,25 +269,76 @@ FocusScope {
                             Gap { h: 22 }
                             Gh { title: "FILE" }
                             Gap {}
-                            Pick { label: "Format"; key: "format" }
-                            Gap { visible: parent.format === "jpg" || parent.format === "webp" }
-                            Field { visible: parent.format === "jpg" || parent.format === "webp"; label: "Quality (1–100)"; key: "quality"; placeholder: "90" }
-                            Gap { visible: parent.format === "png" || parent.format === "tif" }
-                            Pick { visible: parent.format === "png" || parent.format === "tif"; label: "Bit depth"; key: "depth" }
+                            Row { spacing: 12
+                                Pick { width: root.half; label: "Format"; key: "format" }
+                                Field { width: root.half; visible: parent.parent.format === "jpg" || parent.parent.format === "webp"; label: "Quality (1–100)"; key: "quality"; placeholder: "90" }
+                                Pick { width: root.half; visible: parent.parent.format === "png" || parent.parent.format === "tif"; label: "Bit depth"; key: "depth" }
+                            }
                             Gap {}
-                            Pick { label: "Colour profile"; key: "profile" }
+                            Row { spacing: 12
+                                Pick { width: root.half; label: "Colour profile"; key: "profile" }
+                                Pick { width: root.half; label: "Metadata"; key: "meta" }
+                            }
                             Gap { visible: parent.profile === "file" }
                             Row {
                                 visible: parent.profile === "file"; spacing: 8
-                                Field { width: 299 - 8 - 84; label: "Profile file (.icc, .icm)"; key: "profileFile"; placeholder: "Choose a profile" }
+                                Field { width: root.colW - 8 - 84; label: "Profile file (.icc, .icm)"; key: "profileFile"; placeholder: "Choose a profile" }
                                 SButton { anchors.bottom: parent.bottom; text: "Browse…"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 84; onClicked: root.pickingProfile = true }
                             }
+                            Gap { h: 22 }
+                            Gh { title: "WATERMARK" }
                             Gap {}
-                            Pick { label: "Metadata"; key: "meta" }
+                            Row { spacing: 12
+                                Pick { width: root.half; label: "Watermark"; key: "wm" }
+                                Pick { width: root.half; visible: parent.parent.wm !== "none"; label: "Position"; key: "wmPos" }
+                            }
+                            Gap { visible: parent.wm === "text" }
+                            Row { visible: parent.wm === "text"; spacing: 12
+                                Field { width: root.half; label: "Text"; key: "wmText"; placeholder: "© Your Name" }
+                                Pick { width: root.half; label: "Colour"; key: "wmColor" }
+                            }
+                            Gap { visible: parent.wm === "image" }
+                            Row {
+                                visible: parent.wm === "image"; spacing: 8
+                                Field { width: root.colW - 8 - 84; label: "Picture (PNG with transparency works best)"; key: "wmImage"; placeholder: "Choose a picture" }
+                                SButton { anchors.bottom: parent.bottom; text: "Browse…"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 84; onClicked: root.pickingMark = true }
+                            }
+                            Gap { visible: parent.wm !== "none" }
+                            Row { visible: parent.wm !== "none"; spacing: 8
+                                Field { width: root.third; label: "Size"; key: "wmSize"; suffix: "%" }
+                                Field { width: root.third; label: "Opacity"; key: "wmOpacity"; suffix: "%" }
+                                Field { width: root.third; label: "Margin"; key: "wmInset"; suffix: "%" } }
+                            Gap { h: 22 }
+                            Gh { title: "NAME AND PLACE" }
+                            Gap {}
+                            Row { spacing: 12
+                                Field { width: root.half; label: "Before the name"; key: "xPrefix"; placeholder: "Optional" }
+                                Field { width: root.half; label: "After the name"; key: "xSuffix"; placeholder: "Optional" } }
+                            Gap {}
+                            Row { spacing: 12
+                                Pick { width: root.half; label: "Export to"; key: "dest" }
+                                Pick { width: root.half; label: "When a file is already there"; key: "exists" }
+                            }
+                            Gap { visible: parent.dest === "subfolder" || parent.dest === "choose" }
+                            Field { visible: parent.dest === "subfolder"; label: "Folder name"; key: "sub"; placeholder: "Export" }
+                            Row {
+                                visible: parent.dest === "choose"; spacing: 8
+                                Field { width: root.colW - 8 - 84; label: "Folder"; key: "folder"; placeholder: "Choose a folder" }
+                                SButton { anchors.bottom: parent.bottom; text: "Browse…"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 84; onClicked: root.picking = true }
+                            }
+                            Gap { h: 22 }
+                            Gh { title: "OUTPUT SHARPENING" }
+                            Gap {}
+                            Row { spacing: 12
+                                Pick { width: root.half; label: "Sharpen for"; key: "sharpen" }
+                                Pick { width: root.half; visible: parent.parent.sharpen !== "none"; label: "Amount"; key: "sharpenAmount" }
+                            }
+                            Gap { h: 8 }
+                            Note { text: parent.sharpen === "none" ? "No sharpening for the output." : "Made for the exported size. Use 100% in the preview to see it." }
                             Gap { h: 22 }
                             Gh { title: "SOFT PROOF" }
                             Gap {}
-                            Pick { label: "Rendering intent"; key: "intent" }
+                            Pick { width: root.half; label: "Rendering intent"; key: "intent" }
                             Gap { h: 6 }
                             Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
                             SwRow { label: "Black point compensation"; key: "bpc"; desc: "Keeps shadow detail when the output's black is lighter." }
@@ -291,51 +346,6 @@ FocusScope {
                             SwRow { label: "Gamut warning"; key: "proofGamut"; desc: "Colours the profile cannot reproduce show in pink." }
                             Gap { h: 8 }
                             Note { text: "The preview is the proof of the export's own profile. Intent and black point compensation apply to ICC profile files." }
-                            Gap { h: 22 }
-                            Gh { title: "OUTPUT SHARPENING" }
-                            Gap {}
-                            Pick { label: "Sharpen for"; key: "sharpen" }
-                            Gap { visible: parent.sharpen !== "none" }
-                            Pick { visible: parent.sharpen !== "none"; label: "Amount"; key: "sharpenAmount" }
-                            Gap { h: 8 }
-                            Note { text: parent.sharpen === "none" ? "No sharpening for the output." : "Made for the exported size. Use 100% in the preview to see it." }
-                            Gap { h: 22 }
-                            Gh { title: "WATERMARK" }
-                            Gap {}
-                            Pick { label: "Watermark"; key: "wm" }
-                            Gap { visible: parent.wm !== "none" }
-                            Field { visible: parent.wm === "text"; label: "Text"; key: "wmText"; placeholder: "© Your Name" }
-                            Row {
-                                visible: parent.wm === "image"; spacing: 8
-                                Field { width: 299 - 8 - 84; label: "Picture (PNG with transparency works best)"; key: "wmImage"; placeholder: "Choose a picture" }
-                                SButton { anchors.bottom: parent.bottom; text: "Browse…"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 84; onClicked: root.pickingMark = true }
-                            }
-                            Gap { visible: parent.wm !== "none" }
-                            Pick { visible: parent.wm !== "none"; label: "Position"; key: "wmPos" }
-                            Gap { visible: parent.wm !== "none" }
-                            Row { visible: parent.wm !== "none"; spacing: 8
-                                Field { width: 94; label: "Size"; key: "wmSize"; suffix: "%" }
-                                Field { width: 94; label: "Opacity"; key: "wmOpacity"; suffix: "%" }
-                                Field { width: 95; label: "Margin"; key: "wmInset"; suffix: "%" } }
-                            Gap { visible: parent.wm === "text" }
-                            Pick { visible: parent.wm === "text"; label: "Colour"; key: "wmColor" }
-                            Gap { h: 22 }
-                            Gh { title: "NAME AND PLACE" }
-                            Gap {}
-                            Row { spacing: 8
-                                Field { width: 145.5; label: "Before the name"; key: "xPrefix"; placeholder: "Optional" }
-                                Field { width: 145.5; label: "After the name"; key: "xSuffix"; placeholder: "Optional" } }
-                            Gap {}
-                            Pick { label: "Export to"; key: "dest" }
-                            Gap {}
-                            Field { visible: parent.dest === "subfolder"; label: "Folder name"; key: "sub"; placeholder: "Export" }
-                            Row {
-                                visible: parent.dest === "choose"; spacing: 8
-                                Field { width: 299 - 8 - 84; label: "Folder"; key: "folder"; placeholder: "Choose a folder" }
-                                SButton { anchors.bottom: parent.bottom; text: "Browse…"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 84; onClicked: root.picking = true }
-                            }
-                            Gap {}
-                            Pick { label: "When a file is already there"; key: "exists" }
                         }
                     }
                 }
@@ -343,7 +353,7 @@ FocusScope {
 
             // ---- preview -------------------------------------------------------------------------------------------------
             Item {
-                id: main; x: 340; y: 40; width: parent.width - 340; height: parent.height - 98
+                id: main; x: root.navW; y: 40; width: parent.width - root.navW; height: parent.height - 98
                 Item {
                     id: mh; width: parent.width; height: 44
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }

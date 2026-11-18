@@ -33,7 +33,7 @@ Item {
     }
     Rectangle { visible: sel.activeFocus; anchors.fill: parent; anchors.margins: -3; radius: 13; color: "transparent"; border.width: 2; border.color: theme.accent }
     HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
-    TapHandler { onTapped: menu.opened ? menu.close() : menu.open() }
+    TapHandler { onTapped: menu.opened ? menu.close() : sel.openMenu() }
     // Reached with Tab. Up and Down choose the entry before or after the current one, Space or Return opens the list (Escape closes it).
     activeFocusOnTab: true
     function stepChoice(d) {
@@ -45,13 +45,29 @@ Item {
     Keys.onPressed: (e) => {
         if (e.key === Qt.Key_Up) stepChoice(-1)
         else if (e.key === Qt.Key_Down) stepChoice(1)
-        else if ((e.key === Qt.Key_Space || e.key === Qt.Key_Return || e.key === Qt.Key_Enter) && !e.isAutoRepeat) menu.open()
+        else if ((e.key === Qt.Key_Space || e.key === Qt.Key_Return || e.key === Qt.Key_Enter) && !e.isAutoRepeat) sel.openMenu()
         else return
         e.accepted = true
     }
 
+    // The whole list shows: below the field when it fits there, above it when it fits there instead, and only when neither does
+    // on the roomier side with a scroll bar.
+    property real room: 10000
+    function openMenu() {
+        var need = options.length * 32
+        var win = sel.Window.window
+        if (!win) { room = menuMax - 14; menu.flipUp = false; menu.open(); return }
+        var top = sel.mapToItem(null, 0, 0).y
+        var below = win.height - (top + sel.height + 6) - 12 - 14
+        var above = top - 6 - 12 - 14
+        var up = need > below && (need <= above || above > below)
+        menu.flipUp = up
+        room = Math.max(64, Math.min(menuMax - 14, up ? above : below))
+        menu.open()
+    }
+
     Popover {
-        id: menu; placement: 2; minWidth: sel.width - 14; maxHeight: sel.menuMax - 14
+        id: menu; placement: 2; minWidth: sel.width - 14; maxHeight: sel.room
         Repeater {
             model: sel.options
             delegate: Item {
