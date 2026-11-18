@@ -40,7 +40,7 @@ Window {
     nav = context.contextProperty("libraryNav")
     nav._dir_rows.set_rows([
         {"path": f"sample:{i}", "name": f"Photography folder {i:03}", "count": "", "depth": 0,
-         "icon": "chevR", "current": False, "expandable": True}
+         "icon": "library", "arrow": "chevR", "current": False, "expandable": True}
         for i in range(200)
     ])
     nav._drv_rows.set_rows([

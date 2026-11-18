@@ -200,7 +200,7 @@ class LibraryNavModel(QObject):
         # what the page's Repeaters show (role names are not PanelRow's own property names: icon, text, count, current)
         self._fav_rows = _RowsModel({"folder": "path", "title": "name", "photos": "count", "here": "current"}, self)
         self._drv_rows = _RowsModel({"folder": "path", "title": "name", "detail": "detail", "ratio": "ratio"}, self)
-        self._dir_rows = _RowsModel({"folder": "path", "title": "name", "photos": "count", "depth": "depth", "glyph": "icon", "here": "current", "canOpen": "expandable"}, self)
+        self._dir_rows = _RowsModel({"folder": "path", "title": "name", "photos": "count", "depth": "depth", "glyph": "icon", "arrow": "arrow", "here": "current", "canOpen": "expandable"}, self)
         self.changed.connect(self._publish)
         photos.loadingChanged.connect(self._note_count)
         photos.loadErrorChanged.connect(self._folder_came_back)
@@ -351,11 +351,13 @@ class LibraryNavModel(QObject):
             leaf = self._photos.leafName or "Kutaisi"
             sample = (("2025", "8,410", 0, "chevR", False), ("2026", "3,902", 0, "chevDown", False), ("January", "640", 1, "chevR", False),
                       ("Georgia trip", "1,284", 1, "chevDown", False), (leaf, str(self._photos.total), 2, "library", True), ("Tbilisi", "402", 2, "library", False))
-            return [{"path": f"sample:{name}", "name": name, "count": count, "depth": depth, "icon": icon, "current": current, "expandable": icon != "library"}
+            return [{"path": f"sample:{name}", "name": name, "count": count, "depth": depth, "icon": "library",
+                     "arrow": "" if icon == "library" else icon, "current": current, "expandable": icon != "library"}
                     for name, count, depth, icon, current in sample]
         if self._query and self._direct_matches is not None:
             return [{"path": path, "name": path, "count": _count_text(self._counts.get(_key(path))), "depth": 0,
-                     "icon": "chevR", "current": _key(path) == _key(self._open), "expandable": True} for path in self._direct_matches]
+                     "icon": "library", "arrow": "chevR", "current": _key(path) == _key(self._open), "expandable": True}
+                    for path in self._direct_matches]
         if not self._root:
             return []
         query = self._query.strip().casefold()
@@ -370,11 +372,13 @@ class LibraryNavModel(QObject):
                 if query and query not in name.casefold() and not below:
                     continue
                 kids = self._children.get(key)
-                # a subfolder with no folders in it shows the folder icon; the top level keeps an arrow on every folder
-                leaf = depth > 0 and ((not kids) if kids is not None else self._has_kids.get(key) is False)
+                # as File Explorer: every folder has the folder icon, and an arrow beside it when it has folders in it (an arrow until
+                # that is known, which takes a moment after the listing)
+                leaf = (not kids) if kids is not None else self._has_kids.get(key) is False
                 out.append({
                     "path": path, "name": name, "count": _count_text(self._counts.get(key)), "depth": depth,
-                    "icon": "library" if leaf else ("chevDown" if expanded else "chevR"), "current": key == open_key, "expandable": not leaf,
+                    "icon": "library", "arrow": "" if leaf else ("chevDown" if expanded else "chevR"), "current": key == open_key,
+                    "expandable": not leaf,
                 })
                 out.extend(below)
             return out

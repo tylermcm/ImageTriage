@@ -56,7 +56,8 @@ def until(qapp, condition, seconds=5.0):
 
 
 def rows(model):
-    return [(r["name"], r["depth"], r["icon"], r["current"]) for r in model.tree]
+    """Each folder row: its arrow when it has one ("chevR"/"chevDown"), else "library" (a folder with no folders in it)."""
+    return [(r["name"], r["depth"], r["arrow"] or r["icon"], r["current"]) for r in model.tree]
 
 
 # -- the mockup's sample, for --mock and the other windows' tests ----------------------------------------------------------------
@@ -206,18 +207,18 @@ def test_a_folder_with_no_folders_in_it_gets_the_folder_icon_without_being_opene
     until(qapp, lambda: len(nav.tree) == 2)
     nav.toggle(str(library / "2025"))
     until(qapp, lambda: any(r["name"] == "Wedding" for r in nav.tree))
-    until(qapp, lambda: next(r for r in nav.tree if r["name"] == "Wedding")["icon"] == "library")    # never opened
+    until(qapp, lambda: next(r for r in nav.tree if r["name"] == "Wedding")["arrow"] == "")      # never opened
     assert next(r for r in nav.tree if r["name"] == "Wedding")["expandable"] is False
-    assert next(r for r in nav.tree if r["name"] == "Trip")["icon"] == "chevR"                     # Day1 and Day2 are in it
+    assert next(r for r in nav.tree if r["name"] == "Trip")["arrow"] == "chevR"                    # Day1 and Day2 are in it
 
 
-def test_the_top_level_keeps_an_arrow_on_every_folder(qapp, nav, library):
-    (library / "Scans").mkdir()                                              # no folders in it, at the top
+def test_every_folder_has_the_folder_icon_and_an_arrow_only_when_it_has_folders_in_it(qapp, nav, library):
+    """As File Explorer: at the top level too."""
+    (library / "Scans").mkdir()
     nav.openFolder(str(library))
-    until(qapp, lambda: any(r["name"] == "Scans" for r in nav.tree))
-    nav.toggle(str(library / "2025"))
-    until(qapp, lambda: next((r for r in nav.tree if r["name"] == "Wedding"), {}).get("icon") == "library")   # a subfolder: the folder icon
-    assert next(r for r in nav.tree if r["name"] == "Scans")["icon"] == "chevR"
+    until(qapp, lambda: next((r for r in nav.tree if r["name"] == "Scans"), {}).get("arrow") == "")
+    assert all(r["icon"] == "library" for r in nav.tree)
+    assert next(r for r in nav.tree if r["name"] == "2025")["arrow"] == "chevR"
 
 
 def test_hidden_folders_follow_the_widgets_setting(qapp, nav, library):

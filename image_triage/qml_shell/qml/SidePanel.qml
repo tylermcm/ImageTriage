@@ -366,13 +366,14 @@ Item {
                             required property string photos
                             required property int depth
                             required property string glyph
+                            required property string arrow
                             required property bool here
                             required property bool canOpen
-                            icon: glyph; text: title; count: photos; indent: depth * 18; current: here
+                            icon: glyph; arrowColumn: true; chevron: fr.arrow; text: title; count: photos; indent: depth * 18; current: here
                             // the chevron opens or closes the folder in the tree, the rest of the row shows its photos
                             TapHandler {
-                                onTapped: (point) => { if (tapCount > 1) return; if (fr.canOpen && point.position.x < 16 + fr.indent + 24) libraryNav.toggle(fr.folder); else libraryNav.openFolder(fr.folder) }
-                                onDoubleTapped: (point) => { if (fr.canOpen && point.position.x >= 16 + fr.indent + 24) libraryNav.expand(fr.folder) }
+                                onTapped: (point) => { if (tapCount > 1) return; if (fr.canOpen && point.position.x < 8 + fr.indent + 18) libraryNav.toggle(fr.folder); else libraryNav.openFolder(fr.folder) }
+                                onDoubleTapped: (point) => { if (fr.canOpen && point.position.x >= 8 + fr.indent + 18) libraryNav.expand(fr.folder) }
                             }
                             TapHandler { acceptedButtons: Qt.RightButton; onTapped: libMenu.show(fr, fr.folder) }
                             Component.onCompleted: if (here) lib.reveal(fr)
