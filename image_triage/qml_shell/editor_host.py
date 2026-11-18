@@ -896,6 +896,10 @@ class EditorHost(QObject):
                     self.editSaved.emit(path)
             except Exception as error:
                 LOG.warning("Could not render %s with its Image Triage settings: %s", path, error)
+            except BaseException:
+                with self._host_render_lock:
+                    self._host_worker = None             # a later save starts the queue again
+                raise
 
     @staticmethod
     def _sweep_save_temps(folder, proc, beside: str = "") -> None:
@@ -1033,6 +1037,14 @@ class EditorHost(QObject):
             try:
                 with self._lock:
                     self._settle(proc)
+                    # What an older editor left out of the recipe is put back now: what the photo was opened with goes with the app.
+                    path = getattr(proc, "source_path", "")
+                    with self._host_render_lock:
+                        kept = self._kept.get(path)
+                    try:
+                        _restore_host_settings(path, kept)
+                    except Exception as error:
+                        LOG.warning("Could not check %s for its Image Triage settings: %s", path, error)
                 outcome.append("")
             except Exception as error:
                 outcome.append(str(error) or error.__class__.__name__)

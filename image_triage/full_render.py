@@ -117,6 +117,18 @@ def _described(path: Path, reply: dict, *, temporary: bool) -> RenderResult:
 HOST_SETTINGS = ("superResolution", "hostCrop", "lightDepth", "atmosphere", "bokeh", "aiDenoise")
 
 
+def _classify_for_render(recipe: dict) -> tuple[str, str]:
+    """``bridge.classify_recipe`` for a recipe made for an export (``host_effects.recipe_for_render``): the Atmosphere and Bokeh it
+    carries are laid over the render by the host, never stored in a recipe, so they are not recipe settings to check, and a photo
+    whose only edit is one of them is edited."""
+    settings = recipe.get("cameraRaw") if isinstance(recipe, dict) else None
+    laid = [key for key in host_effects.LAID_KEYS if isinstance(settings, dict) and key in settings]
+    if not laid:
+        return bridge.classify_recipe(recipe)
+    state, reason = bridge.classify_recipe({**recipe, "cameraRaw": {k: v for k, v in settings.items() if k not in laid}})
+    return (bridge.RECIPE_EDITED, reason) if state == bridge.RECIPE_IDENTITY else (state, reason)
+
+
 def _with_host_settings(image_path: str, dialog: dict) -> dict:
     """The open editor dialog's recipe as an export renders it: with Image Triage's own crop and AI Denoise from the saved recipe
     when the dialog's lacks them (a PhotoCraft build that does not carry them over), and with the host effects' masks and settings
@@ -195,7 +207,7 @@ class FullRenderService:
                     dialog = _with_host_settings(image_path, dialog)
                 except ValueError as error:
                     return failed(str(error))
-                state, reason = bridge.classify_recipe(dialog)
+                state, reason = _classify_for_render(dialog)
                 if state in (bridge.RECIPE_EDITED, bridge.RECIPE_IDENTITY):
                     return self._with_super_resolution(
                         image_path, dialog, lambda: self._render(image_path, {"recipe": dialog}, proc=live), progress, cancel
@@ -225,7 +237,7 @@ class FullRenderService:
             return failed(str(error))
         if lit is not recipe:
             recipe = lit
-            state, reason = bridge.classify_recipe(recipe)
+            state, reason = _classify_for_render(recipe)
             if state == bridge.RECIPE_INVALID:
                 return failed(reason)
         if state == bridge.RECIPE_EDITED:

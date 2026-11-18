@@ -671,3 +671,16 @@ def test_a_full_size_render_over_qts_default_limit_is_read(tmp_path, monkeypatch
         assert loaded.image.width() == 6000 and bit_depth(loaded.image) == 16
     finally:
         QImageReader.setAllocationLimit(previous)
+
+
+def test_an_export_with_atmosphere_or_bokeh_is_an_edit_not_an_invalid_recipe():
+    # host_effects.recipe_for_render lays these into the export's recipe; they are the host's, laid over the render, never checked
+    # as Camera Raw settings (they used to fail every export of a photo with Atmosphere or Bokeh).
+    from image_triage.full_render import _classify_for_render
+
+    laid = {"version": 1, "cameraRaw": {"atmosphere": {"amount": 50}}}
+    assert _classify_for_render(laid) == (bridge.RECIPE_EDITED, "")
+    both = {"version": 1, "cameraRaw": {"exposure": 0.5, "bokeh": {"amount": 30}}}
+    assert _classify_for_render(both)[0] == bridge.RECIPE_EDITED
+    assert _classify_for_render({"version": 1, "cameraRaw": {"atmosphere": {}, "futureSetting": 1}})[0] == bridge.RECIPE_INVALID
+    assert _classify_for_render({"version": 1, "cameraRaw": {}})[0] == bridge.RECIPE_IDENTITY

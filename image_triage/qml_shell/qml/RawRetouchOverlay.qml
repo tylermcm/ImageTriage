@@ -9,8 +9,20 @@ Item {
     property var points: []
     signal zoomWheel(real x, real y, real steps)
     property bool drawing: false
-    // The brush on screen, never larger than twice the photo (a crop of a sliver would make it enormous; see RawRedEyeOverlay).
-    readonly property real diameter: visible ? Math.min(2*Math.max(width, height), model.size/100*Math.min(width/Math.max(crop.w, 0.001), height/Math.max(crop.h, 0.001))) : 0
+    // The brush on screen, never larger than twice what can be seen (zoomed in, or on a crop of a sliver, it would be enormous, and
+    // Qt's software renderer keeps a picture of every rounded rectangle at its full size; see RawRedEyeOverlay).
+    readonly property real limit: 2*Math.max(viewport ? viewport.width : width, viewport ? viewport.height : height, 6)
+    readonly property real diameter: visible ? Math.min(limit, model.size/100*Math.min(width/Math.max(crop.w, 0.001), height/Math.max(crop.h, 0.001))) : 0
+    // The part of the photo that can be seen when a stroke starts: the stroke's canvas covers only that (the view cannot move during a
+    // stroke), not the whole zoomed photo, which at 300% of a 24 MP RAW is a canvas of gigabytes.
+    property rect strokeArea: Qt.rect(0, 0, 0, 0)
+    function seenArea() {
+        if (!viewport) return Qt.rect(0, 0, width, height)
+        var a = mapFromItem(viewport, 0, 0), b = mapFromItem(viewport, viewport.width, viewport.height)
+        var x0 = Math.max(0, Math.min(a.x, b.x)), y0 = Math.max(0, Math.min(a.y, b.y))
+        var x1 = Math.min(width, Math.max(a.x, b.x)), y1 = Math.min(height, Math.max(a.y, b.y))
+        return Qt.rect(Math.floor(x0), Math.floor(y0), Math.max(0, Math.ceil(x1 - x0)), Math.max(0, Math.ceil(y1 - y0)))
+    }
     function toView(p) { return Qt.point((p[0]-crop.x)/crop.w*width,(p[1]-crop.y)/crop.h*height) }
     function acceptsPoint(x, y) {
         if (x < 0 || y < 0 || x >= width || y >= height) return false
@@ -26,15 +38,19 @@ Item {
     onVisibleChanged: { if(!visible) {drawing=false;points=[];path.requestPaint()} }
     Canvas {
         id: path
-        width: overlay.visible ? overlay.width : 0
-        height: overlay.visible ? overlay.height : 0
+        objectName: "rawRetouchStroke"
+        x: overlay.strokeArea.x; y: overlay.strokeArea.y
+        width: overlay.visible && overlay.drawing ? overlay.strokeArea.width : 0
+        height: overlay.visible && overlay.drawing ? overlay.strokeArea.height : 0
         onPaint: {
             if (width < 1 || height < 1) return
             var ctx=getContext('2d');ctx.reset();ctx.clearRect(0,0,width,height)
             if(!overlay.drawing || !overlay.points.length)return
+            var w=overlay.width, h=overlay.height
+            ctx.translate(-x, -y)
             ctx.strokeStyle='#88589fff';ctx.lineWidth=overlay.diameter;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath()
-            for(var i=0;i<overlay.points.length;i++) { var p=overlay.points[i];if(i===0)ctx.moveTo(p[0]*width,p[1]*height);else ctx.lineTo(p[0]*width,p[1]*height) }
-            if(overlay.points.length===1) {var a=overlay.points[0];ctx.lineTo(a[0]*width+.01,a[1]*height)}
+            for(var i=0;i<overlay.points.length;i++) { var p=overlay.points[i];if(i===0)ctx.moveTo(p[0]*w,p[1]*h);else ctx.lineTo(p[0]*w,p[1]*h) }
+            if(overlay.points.length===1) {var a=overlay.points[0];ctx.lineTo(a[0]*w+.01,a[1]*h)}
             ctx.stroke()
         }
     }
@@ -55,7 +71,7 @@ Item {
             var p=point(event)
             if(overlay.model.kind==="erase") {overlay.raw.eraseEditor.select(p[0],p[1]);return}
             if(event.modifiers & Qt.AltModifier) {overlay.model.pick(p[0],p[1]);return}
-            overlay.points=[p];overlay.drawing=true;path.requestPaint()
+            overlay.strokeArea=overlay.seenArea();overlay.points=[p];overlay.drawing=true;path.requestPaint()
         }
         onPositionChanged: (event) => {
             if (overlay.drawing && pressed) {

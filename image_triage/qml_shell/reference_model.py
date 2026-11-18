@@ -239,6 +239,8 @@ class ReferenceModel(QObject):
         if check and self._upd in ("idle", "ok", "error"):
             self._upd_quiet = False
             self._start_check()
+        elif check and self._upd == "checking":
+            self._upd_quiet = False              # the startup check is now one the person asked for: a failure is shown
         self._emit()
 
     @Slot()
@@ -364,8 +366,9 @@ class ReferenceModel(QObject):
             self._emit()
 
     def _update_done(self, result, error: str) -> None:
-        if self._task is None:                   # cancelled meanwhile
-            return
+        sender = self.sender()
+        if self._task is None or (sender is not None and sender is not self._task.signals):
+            return                               # cancelled meanwhile, or a cancelled check finishing after a newer one started
         self._task = None
         quiet, self._upd_quiet = self._upd_quiet, False
         self._last_checked = datetime.now().strftime("%H:%M")

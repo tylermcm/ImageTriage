@@ -209,6 +209,40 @@ def test_the_menus_check_never_cancels_downloads_or_disarms(ref):
     assert ref._upd == "checking"
 
 
+def test_asking_during_the_startup_check_shows_its_failure(qapp, photos):
+    from types import SimpleNamespace
+
+    from image_triage.qml_shell.reference_model import ReferenceModel, _UpdateSignals
+
+    model = ReferenceModel(photos, None, memory=False, parent=qapp)
+    signals = _UpdateSignals()
+    signals.done.connect(model._update_done)
+    model._task, model._upd, model._upd_quiet = SimpleNamespace(signals=signals), "checking", True    # the quiet startup check
+    model.openAbout(True)                               # Help > Check for Updates while it runs
+    assert model._upd == "checking"
+    signals.done.emit(None, "offline")
+    pump(qapp, 0.05)
+    assert model._upd == "error" and model._upd_error == "offline"
+
+
+def test_a_cancelled_check_finishing_late_does_not_answer_for_the_newer_one(qapp, photos):
+    from types import SimpleNamespace
+
+    from image_triage.qml_shell.reference_model import ReferenceModel, _UpdateSignals
+
+    model = ReferenceModel(photos, None, memory=False, parent=qapp)
+    old, new = _UpdateSignals(), _UpdateSignals()
+    old.done.connect(model._update_done)
+    new.done.connect(model._update_done)
+    model._task, model._upd, model._upd_quiet = SimpleNamespace(signals=new), "checking", False
+    old.done.emit(None, "stale failure")
+    pump(qapp, 0.05)
+    assert model._upd == "checking", "the old check's answer is dropped"
+    new.done.emit(None, "fresh failure")
+    pump(qapp, 0.05)
+    assert model._upd == "error" and model._upd_error == "fresh failure"
+
+
 def test_the_sample_newer_version_downloads_nothing(ref):
     ref.scene("hlp-about-new")
     h = ref.view["help"]

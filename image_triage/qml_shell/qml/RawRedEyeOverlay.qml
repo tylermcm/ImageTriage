@@ -9,13 +9,13 @@ Item {
     readonly property var crop: raw.values.hostCrop
     readonly property real radius: 2*Math.max(8, 4+1.2*model.pupilSize)
     // The search area on screen. Until the photo's size is known (it is 0 while the RAW loads, and stays 0 if it cannot be read) the
-    // cursor keeps its smallest size, and it is never drawn larger than the photo: a cursor tens of thousands of pixels across costs
-    // gigabytes with Qt's software renderer.
+    // cursor keeps its smallest size, and it is never drawn larger than twice what can be seen (zoomed in for a small eye it would be
+    // tens of thousands of pixels across, which costs gigabytes with Qt's software renderer).
     readonly property real diameter: {
         if (!visible) return 0
         var span = crop && crop.w > 0 ? crop.w : 1
         var size = raw.originalWidth > 0 ? radius*width/raw.originalWidth/span : 0
-        return Math.min(Math.max(12, size), 2*Math.max(width, height, 6))
+        return Math.min(Math.max(12, size), 2*Math.max(viewport.width, viewport.height, 6))
     }
 
     function point(p) { return Qt.point((p[0]-crop.x)/crop.w*width, (p[1]-crop.y)/crop.h*height) }

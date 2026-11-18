@@ -10,6 +10,8 @@ from . import atmosphere, bokeh, light_depth
 
 # The draft keys that are the host's own: never part of a recipe the renderer or the saved file sees.
 KEYS = ("lightDepth", "atmosphere", "bokeh")
+# The ones laid over a finished render (``effects_result``), whose settings ride in an export's recipe (``recipe_for_render``).
+LAID_KEYS = ("atmosphere", "bokeh")
 
 
 def without_host(settings: dict) -> dict:

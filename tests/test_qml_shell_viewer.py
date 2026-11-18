@@ -812,6 +812,49 @@ def test_red_eye_cursor_stays_photo_sized_before_the_raw_size_is_known(shell, qa
     assert cursor.width() == 0, "a hidden cursor takes no room at all"
 
 
+def test_zoomed_in_brushes_are_never_larger_than_what_can_be_seen(shell, qapp):
+    # Zoomed in (to 6400%), the photo on screen is hundreds of thousands of pixels across: the brush cursors and the Remove stroke's
+    # canvas are bounded by the view instead, or Qt's software renderer needs gigabytes for them.
+    import resource
+
+    from PySide6.QtCore import Q_RETURN_ARG, QMetaObject
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, model, popout, warnings = shell
+    popout.open(0)
+    raw = popout.rawEditor
+    raw.open("sample.NEF")
+    pump(qapp, 0.4)
+    raw._full_size = [6000, 4000]
+    raw.changed.emit()
+    viewer = window.findChild(QObject, "viewer")
+    panel = window.findChild(QQuickItem, "viewerRawEditorPanel")
+    panel.setProperty("tool", "Red Eye")
+    viewer.setProperty("zoomed", True)
+    viewer.setProperty("zoomScale", 64.0)
+    pump(qapp, 0.3)
+    red = window.findChild(QQuickItem, "rawRedEyeOverlay")
+    stage = red.parentItem()
+    assert red.width() > 50 * stage.width(), "the photo is far larger than the view"
+    assert red.property("diameter") <= 2 * max(stage.width(), stage.height())
+    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    panel.setProperty("tool", "Remove")
+    pump(qapp, 0.3)
+    remove = window.findChild(QQuickItem, "rawRetouchOverlay")
+    stroke = window.findChild(QQuickItem, "rawRetouchStroke")
+    assert stroke.width() == 0, "no canvas until a stroke starts"
+    assert remove.property("diameter") <= 2 * max(stage.width(), stage.height())
+    seen = QMetaObject.invokeMethod(remove, "seenArea", Q_RETURN_ARG("QVariant"))
+    remove.setProperty("strokeArea", seen)                 # what pressing does, then the stroke is drawn on that much
+    remove.setProperty("points", [[0.5, 0.5]])
+    remove.setProperty("drawing", True)
+    pump(qapp, 0.1)
+    assert stroke.width() <= stage.width() + 1 and stroke.height() <= stage.height() + 1, "only the part in view"
+    remove.setProperty("drawing", False)
+    pump(qapp, 0.1)
+    assert (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) < 400 * 1024, "no picture the size of the zoomed photo"
+
+
 def test_the_raw_profile_choice_is_shown_as_unavailable(shell, qapp):
     # The renderer has no profile setting yet: the choice must not look like a live control that does nothing.
     from PySide6.QtQuick import QQuickItem

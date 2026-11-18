@@ -214,3 +214,10 @@ def test_an_export_from_the_open_dialog_keeps_image_triages_settings(folder, mon
     assert made["cameraRaw"] == {"exposure": 0.9, "hostCrop": CROP, "aiDenoise": DENOISE} and made["laid"]
     newer = {"version": 1, "cameraRaw": {"exposure": 0.9, "hostCrop": {**CROP, "x": 0.3}}}
     assert full_render._with_host_settings(path, newer)["cameraRaw"]["hostCrop"]["x"] == 0.3, "the dialog's own wins"
+
+
+def test_quitting_while_editing_puts_back_what_an_older_editor_left_out(qapp, folder, monkeypatch):
+    host, path, _spec = _open(qapp, folder, monkeypatch, {"version": 1, "cameraRaw": {"hostCrop": CROP}}, lambda photo: False)
+    file = _write_recipe(path, {"exposure": 0.4}, identity=True)       # what the older editor writes as the app quits
+    host.shutdown()
+    assert json.loads(file.read_text(encoding="utf-8"))["cameraRaw"] == {"exposure": 0.4, "hostCrop": CROP}
