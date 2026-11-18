@@ -70,10 +70,10 @@ def test_basic_save_publishes_completed_render_and_keeps_host_settings(save_job)
     draft = {"exposure": 1, "superResolution": False}
     result = RawEditor._work("save", str(raw), original, draft, "")
     assert bridge.load_recipe(str(raw))["cameraRaw"] == draft
-    assert bridge.full_render_path(str(raw)) == Path(result)
-    assert bridge.saved_render_path(str(raw)).exists()
+    assert bridge.full_render_path(str(raw)) is None                    # no full-size PNG is kept for a Camera Raw edit
+    assert bridge.saved_render_path(str(raw)) == Path(result) and Path(result).suffix == ".jpg"
     assert QImage(result).size().width() == 32
-    assert QImage(result).depth() > 32
+    assert not list(raw.parent.glob(".image_triage_edits/*.png"))
     assert raw.read_bytes() == b"original RAW"
     assert jobs[-1].stopped and not state.rendered.exists()
 

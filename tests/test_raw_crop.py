@@ -49,11 +49,12 @@ def test_saved_crop_is_current_grid_render_and_export_crops_once(tmp_path):
     image_file(source)
     signature = bridge.file_signature(str(raw))
     target = publish(str(raw), source, {"hostCrop": CROP}, signature)
-    assert bridge.full_render_path(str(raw)) == Path(target)
+    # no full-size picture is kept (an export renders one from the recipe): the edit is the recipe and a small 8-bit JPEG
+    assert bridge.full_render_path(str(raw)) is None
     manifest = bridge.current_render_manifest(str(raw), verify_project=True)
-    assert (manifest.outputs["png"].width, manifest.outputs["png"].height) == (50, 48)
-    # thumbnails and the viewer get a small 8-bit JPEG, not the full-size 16-bit PNG
+    assert set(manifest.outputs) == {"display"} and not list(tmp_path.glob(".image_triage_edits/*.png"))
     display = manifest.outputs["display"]
+    assert Path(target) == display.path
     assert bridge.saved_render_path(str(raw)) == display.path and display.path.name.endswith(".jpg")
     assert (display.format, display.width, display.height, display.depth) == ("jpeg", 50, 48, 8)
     shown = QImage(str(display.path))
@@ -123,3 +124,32 @@ def test_crop_draft_dimensions_history_and_navigation(qapp):
     raw.open("first.NEF")
     assert not raw.dirty
     raw.shutdown()
+
+
+def test_a_folder_sweep_drops_full_size_pngs_and_pictures_of_earlier_saves(tmp_path):
+    """Earlier versions kept a 16-bit full-size PNG beside each edit's JPEG (75-250 MB a photo), and pictures of saves made within
+    ten minutes of each other were never pruned."""
+    import json
+    import os
+    import time
+
+    raw, source = tmp_path / "sample.NEF", tmp_path / "develop.png"
+    raw.write_bytes(b"unchanged original raw")
+    image_file(source)
+    publish(str(raw), source, {"hostCrop": CROP}, bridge.file_signature(str(raw)))
+    edits = tmp_path / ".image_triage_edits"
+    manifest_path = bridge.render_manifest_path(str(raw))
+    data = json.loads(manifest_path.read_text())
+    old_png = edits / data["outputs"]["display"]["file"].replace(".display.", ".").replace(".jpg", ".png")
+    old_png.write_bytes(b"x" * 5000)                                         # as an earlier version published it
+    data["outputs"]["png"] = {"file": old_png.name, "format": "png", "width": 50, "height": 48, "depth": 16, "icc": True}
+    manifest_path.write_text(json.dumps(data))
+    stale = edits / "sample.NEF.photocraft.display.g1.jpg"                   # a picture of an earlier save
+    stale.write_bytes(b"y" * 3000)
+    os.utime(stale, (time.time() - 3600, time.time() - 3600))
+    recipe_before = bridge.recipe_path(str(raw)).read_bytes()
+    freed = bridge.slim_folder_edits(str(tmp_path))
+    assert freed >= 8000 and not old_png.exists() and not stale.exists()
+    manifest = bridge.current_render_manifest(str(raw), verify_project=False)
+    assert set(manifest.outputs) == {"display"} and bridge.saved_render_path(str(raw)).exists()
+    assert bridge.recipe_path(str(raw)).read_bytes() == recipe_before and raw.read_bytes() == b"unchanged original raw"

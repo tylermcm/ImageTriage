@@ -205,6 +205,15 @@ def crop_file(source, destination, crop):
 
 
 def _crop_to_file(source, destination, crop):
+    image = _cropped_image(source, crop)
+    output = QSaveFile(str(destination))
+    if not output.open(QIODevice.WriteOnly) or not image.save(output, "PNG") or not output.commit():
+        raise OSError("The cropped image could not be saved")
+    return image.width(), image.height(), (16 if image.depth() > 32 else 8), image.colorSpace().isValid(), image
+
+
+def _cropped_image(source, crop):
+    """The full-size render ``source`` with the crop (and its turn and perspective) applied, in memory."""
     if not valid(crop):
         raise ValueError("Invalid crop rectangle")
     # Camera-sized 16-bit RGB PNGs can exceed Qt's conservative default limit.
@@ -228,10 +237,7 @@ def _crop_to_file(source, destination, crop):
         image = image.copy(*bounds(crop, image.width(), image.height()))
     if turned(crop):
         image = turn(image, crop)
-    output = QSaveFile(str(destination))
-    if not output.open(QIODevice.WriteOnly) or not image.save(output, "PNG") or not output.commit():
-        raise OSError("The cropped image could not be saved")
-    return image.width(), image.height(), (16 if image.depth() > 32 else 8), image.colorSpace().isValid(), image
+    return image
 
 
 def write_display_jpeg(image, destination):
@@ -249,7 +255,9 @@ def write_display_jpeg(image, destination):
 
 
 def publish(image_path, rendered, settings, signature):
-    """Publish a full-size cropped render and recipe; the original RAW stays untouched."""
+    """Publish the edit: its recipe (the sidecar) and a screen-sized picture of it for the grid and the viewer. The original RAW stays
+    untouched, and no full-size picture is kept: a 16-bit full-size PNG is 75-250 MB a photo, and an export renders the photo at full
+    size from the recipe when it needs one (``full_render``). Returns the picture's path."""
     from . import photocraft_bridge as bridge
 
     if bridge.file_signature(image_path) != signature:
@@ -257,16 +265,14 @@ def publish(image_path, rendered, settings, signature):
     root = bridge.recipe_path(image_path).parent
     root.mkdir(parents=True, exist_ok=True)
     generation = time.time_ns()
-    target = root / f"{Path(image_path).name}.photocraft.g{generation}.png"
-    width, height, depth, icc, image = _crop_to_file(rendered, target, settings.get("hostCrop", DEFAULT_CROP))
-    outputs = {"png": {"file": target.name, "format": "png", "width": width, "height": height, "depth": depth, "icc": icc}}
+    image = _cropped_image(rendered, settings.get("hostCrop", DEFAULT_CROP))
     display = root / f"{Path(image_path).name}.photocraft.display.g{generation}.jpg"
     try:
         shown_width, shown_height, shown_icc = write_display_jpeg(image, display)
-        outputs["display"] = {"file": display.name, "format": "jpeg", "width": shown_width, "height": shown_height, "depth": 8, "icc": shown_icc}
     except OSError:
-        # Without it the full-size picture is still published; only reading it for a thumbnail is slower.
         display.unlink(missing_ok=True)
+        raise
+    outputs = {"display": {"file": display.name, "format": "jpeg", "width": shown_width, "height": shown_height, "depth": 8, "icc": shown_icc}}
     del image
     recipe = json.dumps({"version": bridge.RECIPE_VERSION, "cameraRaw": settings}, ensure_ascii=False).encode("utf-8")
     manifest = {"version": bridge.RENDER_MANIFEST_VERSION, "generation": generation, "kind": "recipe",
@@ -277,7 +283,7 @@ def publish(image_path, rendered, settings, signature):
     atomic_write(bridge.render_manifest_path(image_path), json.dumps(manifest).encode("utf-8"))
     # The manifest now names this generation, so the pictures of the ones before it can go (after their grace period).
     bridge.prune_render_generations(image_path)
-    return str(target)
+    return str(display)
 
 
 def apply_render(result, recipe):

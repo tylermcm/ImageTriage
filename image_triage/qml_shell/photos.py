@@ -30,6 +30,15 @@ CELL_PHOTO, CELL_FOLDER, CELL_HEADER, CELL_FILLER = range(4)
 _DECISIONS = ("", "keep", "win", "rej", "rev", "", "keep", "")  # weights by position
 
 
+def _slim_edits(folder: str) -> None:
+    try:
+        from ..photocraft_bridge import slim_folder_edits
+
+        slim_folder_edits(folder)
+    except Exception:                                  # space is only reclaimed: a share that went away changes nothing
+        pass
+
+
 def _title(row: dict) -> str:
     """The file name without its extension: the grid shows the format as a tag, so the name does not repeat it (R.bmp -> R)."""
     name, ext = row["name"], "." + str(row.get("ext", "")).lower()
@@ -255,6 +264,8 @@ class PhotoModel(QAbstractListModel):
                 self._found_folders[token] = []
             if dropped():
                 return
+            # the folder's RAW edits keep only what they need (no full-size PNGs, no pictures of earlier saves): on its own thread
+            threading.Thread(target=_slim_edits, args=(folder,), name="qml-slim-edits", daemon=True).start()
             try:
                 records = [r for r in scan_folder(folder) if not r.is_folder]
             except Exception as error:                 # an offline share or a folder we may not read: say so, do not show it as empty

@@ -880,6 +880,56 @@ def prune_render_generations(image_path: str, *, now: float | None = None) -> in
     return deleted
 
 
+def slim_folder_edits(folder: str) -> int:
+    """Free the space a folder's RAW edits do not need: a Camera Raw edit keeps its recipe and its screen-sized picture, not the
+    full-size 16-bit PNG earlier versions kept beside it (75-250 MB a photo; an export renders one from the recipe), and pictures of
+    earlier saves that the manifest no longer names are removed. Edits of the full PhotoCraft editor (``project``) are left as they
+    are. Never touches a recipe or a photo. Returns how many bytes were freed. Slow on a share: call it from a worker."""
+    root = edit_root_for(Path(folder))
+    suffix = ".photocraft.renders.json"
+    freed = 0
+    try:
+        names = [entry.name for entry in os.scandir(root) if entry.name.endswith(suffix)]
+    except OSError:
+        return 0
+    for name in names:
+        photo = str(Path(folder) / name[: -len(suffix)])
+        manifest = read_render_manifest(photo)
+        if manifest is None or manifest is INVALID_MANIFEST:
+            continue
+        png, display = manifest.outputs.get("png"), manifest.outputs.get("display")
+        if manifest.kind == "recipe" and png is not None and display is not None and display.path.is_file():
+            target = render_manifest_path(photo)
+            try:
+                data = json.loads(target.read_text(encoding="utf-8"))
+                data["outputs"].pop("png", None)
+                from .raw_crop import atomic_write
+
+                atomic_write(target, json.dumps(data).encode("utf-8"))        # the manifest first: it never names a missing picture
+                size = png.path.stat().st_size if png.path.exists() else 0
+                png.path.unlink(missing_ok=True)
+                freed += size
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        before = _generation_bytes(photo)
+        prune_render_generations(photo)
+        freed += max(0, before - _generation_bytes(photo))
+    return freed
+
+
+def _generation_bytes(image_path: str) -> int:
+    path = Path(image_path)
+    prefixes = (path.name + ".photocraft.g", path.name + ".photocraft.display.g")
+    total = 0
+    try:
+        for entry in os.scandir(edit_root_for(path.parent)):
+            if entry.name.startswith(prefixes):
+                total += entry.stat().st_size
+    except OSError:
+        pass
+    return total
+
+
 # Stash writes the display JPEG first and the PNG when the whole save lands, which takes seconds and
 # up to ~25 s under disk contention. A display JPEG much older than the PNG predates it.
 DISPLAY_STALE_AFTER_S = 120.0
