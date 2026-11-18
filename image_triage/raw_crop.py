@@ -254,7 +254,7 @@ def write_display_jpeg(image, destination):
     return image.width(), image.height(), image.colorSpace().isValid()
 
 
-def publish(image_path, rendered, settings, signature):
+def publish(image_path, rendered, settings, signature, *, recipe_on_disk=False):
     """Publish the edit: its recipe (the sidecar) and a screen-sized picture of it for the grid and the viewer. The original RAW stays
     untouched, and no full-size picture is kept: a 16-bit full-size PNG is 75-250 MB a photo, and an export renders the photo at full
     size from the recipe when it needs one (``full_render``). Returns the picture's path."""
@@ -274,12 +274,28 @@ def publish(image_path, rendered, settings, signature):
         raise
     outputs = {"display": {"file": display.name, "format": "jpeg", "width": shown_width, "height": shown_height, "depth": 8, "icc": shown_icc}}
     del image
-    recipe = json.dumps({"version": bridge.RECIPE_VERSION, "cameraRaw": settings}, ensure_ascii=False).encode("utf-8")
+    if recipe_on_disk:
+        # Only the picture: the recipe is the one on disk, read now. One that no longer holds ``settings`` was saved again while this
+        # rendered (the editor writes it), and is never written over; its own render follows.
+        from .light_depth import strip_legacy
+
+        try:
+            recipe = bridge.recipe_path(image_path).read_bytes()
+            on_disk = json.loads(recipe)["cameraRaw"]
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            display.unlink(missing_ok=True)
+            raise ValueError("The saved recipe could not be read") from error
+        if not isinstance(on_disk, dict) or strip_legacy(on_disk) != settings:
+            display.unlink(missing_ok=True)
+            raise ValueError("The saved recipe changed while the RAW was rendering")
+    else:
+        recipe = json.dumps({"version": bridge.RECIPE_VERSION, "cameraRaw": settings}, ensure_ascii=False).encode("utf-8")
     manifest = {"version": bridge.RENDER_MANIFEST_VERSION, "generation": generation, "kind": "recipe",
                 "source": signature, "renderer": {"algorithm": bridge.RENDER_ALGORITHM},
                 "recipe": {"sha256": hashlib.sha256(recipe).hexdigest()},
                 "outputs": outputs}
-    atomic_write(bridge.recipe_path(image_path), recipe)
+    if not recipe_on_disk:
+        atomic_write(bridge.recipe_path(image_path), recipe)
     atomic_write(bridge.render_manifest_path(image_path), json.dumps(manifest).encode("utf-8"))
     # The manifest now names this generation, so the pictures of the ones before it can go (after their grace period).
     bridge.prune_render_generations(image_path)

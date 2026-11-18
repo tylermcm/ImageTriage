@@ -117,6 +117,19 @@ def _described(path: Path, reply: dict, *, temporary: bool) -> RenderResult:
 HOST_SETTINGS = ("superResolution", "hostCrop", "lightDepth", "atmosphere", "bokeh", "aiDenoise")
 
 
+def _with_host_settings(image_path: str, dialog: dict) -> dict:
+    """The open editor dialog's recipe as an export renders it: with Image Triage's own crop and AI Denoise from the saved recipe
+    when the dialog's lacks them (a PhotoCraft build that does not carry them over), and with the host effects' masks and settings
+    (``host_effects.recipe_for_render``), as a saved recipe is exported. Raises ValueError when those cannot be made."""
+    settings = dict(dialog.get("cameraRaw") or {})
+    if any(key not in settings for key in bridge.HOST_ONLY_FIELDS):
+        state, saved, _reason = bridge.recipe_state(image_path)
+        if state != bridge.RECIPE_INVALID and saved is not None:
+            kept = saved["cameraRaw"]
+            settings.update({key: kept[key] for key in bridge.HOST_ONLY_FIELDS if key in kept and key not in settings})
+    return host_effects.recipe_for_render(image_path, {**dialog, "cameraRaw": settings})
+
+
 def _without_host_settings(recipe: dict) -> dict:
     """Only native development settings; the host applies crop and Super Resolution, and keeps Light Depth's own
     settings (the editor only ever sees the mask they produce)."""
@@ -178,6 +191,10 @@ class FullRenderService:
         if live is not None:
             dialog = self._open_dialog_recipe(live, image_path)
             if dialog is not None:
+                try:
+                    dialog = _with_host_settings(image_path, dialog)
+                except ValueError as error:
+                    return failed(str(error))
                 state, reason = bridge.classify_recipe(dialog)
                 if state in (bridge.RECIPE_EDITED, bridge.RECIPE_IDENTITY):
                     return self._with_super_resolution(

@@ -50,7 +50,7 @@ def _leave_picture_to_host(spec: dict, path: str, recipe: dict | None) -> dict:
 
     settings = (recipe or {}).get("cameraRaw")
     if not isinstance(settings, dict):
-        return {}
+        settings = {}                                    # no recipe: Light Depth, Atmosphere and Bokeh have files of their own
     if _host_owned(path, settings):
         spec.pop("displayPath", None)
         spec.pop("manifestPath", None)
@@ -76,6 +76,10 @@ def _restore_host_settings(path: str, kept: dict | None) -> bool:
     settings = recipe.get("cameraRaw") if isinstance(recipe, dict) else None
     if not isinstance(settings, dict) or recipe.get("version") != bridge.RECIPE_VERSION:
         return False
+    if "identity" not in recipe:
+        # Only PhotoCraft writes the flag (Image Triage's own saves never do, and this function drops it): a recipe without it was
+        # last written here, so a setting missing from it was removed on purpose (a crop taken off in Image Triage's RAW editor).
+        return False
     missing = {key: value for key, value in kept.items() if key not in settings}
     if not missing:
         return False
@@ -89,7 +93,7 @@ def _restore_host_settings(path: str, kept: dict | None) -> bool:
 
 def _render_with_host_settings(path: str) -> bool:
     """Renders and publishes the picture of a RAW the editor saved without one (`_leave_picture_to_host`), as Done in Image Triage's
-    RAW editor does. True when a picture was published; False when none was needed (not a RAW, a PhotoCraft project, no settings
+    RAW editor does, but never writes the recipe: one saved again meanwhile is left as it is. True when a picture was published; False when none was needed (not a RAW, a PhotoCraft project, no settings
     of Image Triage's own, or the picture is already current)."""
     from .. import host_effects, photocraft_bridge as bridge
 
@@ -105,7 +109,7 @@ def _render_with_host_settings(path: str) -> bool:
 
     settings, extras = host_effects.load_extras(bridge.recipe_path(path), settings)
     current = {**settings, **extras}
-    RawEditor._work("save", path, current, current, "")
+    RawEditor._work("picture", path, current, current, "")
     return True
 
 
@@ -206,8 +210,9 @@ class EditorHost(QObject):
         self._memory = memory
         # Renders a photo's picture with Image Triage's own settings once the editor has saved it (`_render_host_owned`).
         self._renderer = renderer if renderer is not None else (None if memory else _render_with_host_settings)
-        self._host_renders: dict[str, bool] = {}           # photo -> asked again while its render was running
-        self._kept: dict[str, dict] = {}                   # photo -> Image Triage's own recipe settings when it was opened
+        self._host_queue: list[str] = []                   # photos waiting for that render, oldest first, each once
+        self._host_worker: threading.Thread | None = None  # the one thread that renders them, one after another
+        self._kept: dict[str, dict] = {}                   # open photo -> Image Triage's own recipe settings when it was opened
         self._host_render_lock = threading.Lock()
         self._launcher = launcher
         self._detector = detector
@@ -493,7 +498,11 @@ class EditorHost(QObject):
                 raise _DocumentUncertain(error) from error
             if previous:
                 self.editSaved.emit(previous)
-                self._render_host_owned(previous)
+                if in_place:                         # the editor kept its recipe itself (otherwise `_saved` saw to it above)
+                    self._render_host_owned(previous)
+                if previous != path:
+                    with self._host_render_lock:
+                        self._kept.pop(previous, None)
             try:
                 proc.control.call("app.bind", binding)
             except Exception as error:
@@ -536,7 +545,9 @@ class EditorHost(QObject):
         try:
             if not previous or not proc.is_running():
                 raise RuntimeError("the editor is not running")
-            self._reopen(proc, previous)
+            kept = self._reopen(proc, previous)
+            with self._host_render_lock:
+                self._kept[previous] = kept
             return message
         except Exception as error:
             LOG.warning("The editor could not be put back on %s after a failed switch: %s", previous, error, exc_info=True)
@@ -544,8 +555,9 @@ class EditorHost(QObject):
             return message + " The editor was closed because it could not be returned to the previous photo; its saved edits are intact."
 
     @staticmethod
-    def _reopen(proc, path: str) -> None:
-        """Open and bind `path` again in the running editor, from what is saved for it."""
+    def _reopen(proc, path: str) -> dict:
+        """Open and bind `path` again in the running editor, from what is saved for it. Returns Image Triage's own settings it was
+        opened with (`_leave_picture_to_host`)."""
         from .. import photocraft_bridge
 
         is_raw = Path(path).suffix.lower() in photocraft_bridge.RAW_SUFFIXES
@@ -556,6 +568,7 @@ class EditorHost(QObject):
             raise RuntimeError("the previous photo is outside the folder PhotoCraft can read")
         signature = photocraft_bridge.file_signature(path) if getattr(proc.control, "render_manifest_supported", False) is True else None
         spec = None
+        kept = {}
         if is_raw:
             spec = {"recipePath": photocraft_bridge.recipe_path(path).name, "displayPath": photocraft_bridge.display_render_path(path).name}
             if signature:
@@ -565,7 +578,7 @@ class EditorHost(QObject):
                 raise RuntimeError("the previous photo's Camera Raw settings cannot be read")
             if recipe is not None:
                 spec["recipe"] = recipe
-            _leave_picture_to_host(spec, path, recipe)
+            kept = _leave_picture_to_host(spec, path, recipe)
             if sidecar.exists():
                 spec["continueFrom"] = sidecar.name
         opened = proc.control.app_open(relative, replace=True, **({"camera_raw": spec} if spec is not None else {}))
@@ -576,6 +589,7 @@ class EditorHost(QObject):
         proc.control.call("app.bind", binding)
         if getattr(proc, "camera_raw_first", False) and not (isinstance(opened, dict) and (opened.get("cameraRaw") or {}).get("dialog")):
             proc.control.call("ui.cameraRaw", {"open": True})
+        return kept
 
     # -- a set-aside recipe ---------------------------------------------------------------------------------------------------
     @Slot(str)
@@ -849,36 +863,39 @@ class EditorHost(QObject):
             self._render_host_owned(path)
 
     def _render_host_owned(self, path: str) -> None:
-        """After the editor saved a RAW whose picture it was not asked to make (`_leave_picture_to_host`): make it here, with Image
-        Triage's crop, AI Denoise and effects, on a thread of its own. A second save while it runs makes it run again afterwards."""
+        """The editor saved `path`. Puts back Image Triage's own settings an older editor left out of the recipe (now, under the
+        lock the save held), then, for a RAW whose picture the editor was not asked to make (`_leave_picture_to_host`), queues it to
+        be made here with Image Triage's crop, AI Denoise and effects: one photo at a time, each a full-size render, on one thread.
+        A photo saved again while it waits is rendered once; one saved again while it renders is rendered again after."""
+        with self._host_render_lock:
+            kept = self._kept.get(path)
+        try:
+            _restore_host_settings(path, kept)
+        except Exception as error:
+            LOG.warning("Could not check %s for its Image Triage settings: %s", path, error)
         renderer = self._renderer
         if renderer is None:
             return
         with self._host_render_lock:
-            kept = self._kept.pop(path, None)
-            if path in self._host_renders:
-                self._host_renders[path] = True
+            if path not in self._host_queue:
+                self._host_queue.append(path)
+            if self._host_worker is not None:
                 return
-            self._host_renders[path] = False
+            self._host_worker = threading.Thread(target=self._render_queue, args=(renderer,), name="editor-host-render", daemon=True)
+            self._host_worker.start()
 
-        def work() -> None:
+    def _render_queue(self, renderer) -> None:
+        while True:
+            with self._host_render_lock:
+                if not self._host_queue:
+                    self._host_worker = None
+                    return
+                path = self._host_queue.pop(0)
             try:
-                _restore_host_settings(path, kept)
+                if renderer(path):
+                    self.editSaved.emit(path)
             except Exception as error:
-                LOG.warning("Could not check %s for its Image Triage settings: %s", path, error)
-            while True:
-                try:
-                    if renderer(path):
-                        self.editSaved.emit(path)
-                except Exception as error:
-                    LOG.warning("Could not render %s with its Image Triage settings: %s", path, error)
-                with self._host_render_lock:
-                    if not self._host_renders.get(path):
-                        self._host_renders.pop(path, None)
-                        return
-                    self._host_renders[path] = False
-
-        threading.Thread(target=work, name="editor-host-render", daemon=True).start()
+                LOG.warning("Could not render %s with its Image Triage settings: %s", path, error)
 
     @staticmethod
     def _sweep_save_temps(folder, proc, beside: str = "") -> None:
@@ -931,6 +948,8 @@ class EditorHost(QObject):
         self._told = set()
         self._hide()
         path, self._path = self._path, ""
+        with self._host_render_lock:
+            self._kept.pop(path, None)                     # what it was opened with is no longer what anything will save
         self.pathChanged.emit()
         self._set(IDLE, "")
         self.closed.emit(path)
@@ -944,6 +963,8 @@ class EditorHost(QObject):
         try:
             self._settle(proc)
             self._saved(proc.source_path)
+            with self._host_render_lock:
+                self._kept.pop(proc.source_path, None)
         except Exception as error:
             LOG.warning("PhotoCraft did not save on close: %s", error, exc_info=True)
             self._done.emit("close-failed", None, "The edit could not be saved. " + str(error))

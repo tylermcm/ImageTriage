@@ -1198,13 +1198,15 @@ class RawEditor(QObject):
         placed_blur = draft.get("bokeh")
         placed_blur = placed_blur if bokeh.normalized(placed_blur)["amount"] > 0 else None
         original, light_draft, draft = _without_light_depth(original), draft, _without_light_depth(draft)
-        if settings != original and not (action != "save" and _saved_by_us(path, settings)):
+        if settings != original and not (action not in ("save", "picture") and _saved_by_us(path, settings)):
             raise ValueError("The saved recipe changed. Reopen Edit RAW before applying more edits.")
         # What the renderer gets: the draft plus the masks Light Depth's settings make. They are built here, for every
         # preview and save, and are never stored (the saved recipe and the Mask tab only hold the person's own masks).
         full = _recipe({} if action == "whiteBalance" else light_draft, path)
         folder = str(Path(path).parent)
-        saving = action == "save"
+        # "picture": render and publish only the picture of the recipe on disk, never writing the recipe (editor_host renders a photo
+        # the hosted editor saved this way).
+        saving = action in ("save", "picture")
         write_root = str(edit_storage.ensure_edit_root(folder)) if saving else directory
         proc = bridge.launch_photocraft(None, read_root=folder, write_root=write_root,
                                        extra_args=("--raw-workspace",) if saving else ())
@@ -1270,10 +1272,12 @@ class RawEditor(QObject):
                     raise ValueError("The saved recipe changed while the RAW was rendering")
                 laid, scratch = host_effects.effects_file(rendered, path, {"atmosphere": placed_air, "bokeh": placed_blur})
                 try:
-                    published = publish(path, laid, draft, signature)
+                    published = publish(path, laid, draft, signature, recipe_on_disk=action == "picture")
                 finally:
                     for stale in scratch:
                         stale.unlink(missing_ok=True)
+                if action == "picture":
+                    return published
                 try:
                     light_depth.write_sidecar(bridge.recipe_path(path), placed)
                     atmosphere.write_sidecar(bridge.recipe_path(path), placed_air)
