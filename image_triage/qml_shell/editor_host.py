@@ -28,6 +28,87 @@ HOST_JOB_POLL_S = 1.5        # how often the editor is asked for a mask or Super
 _DIGITS = re.compile(r"\d+")
 
 
+
+
+def _host_owned(path: str, settings: dict) -> bool:
+    """Whether a RAW's picture shows settings of Image Triage's own that PhotoCraft does not apply: a crop, straighten or perspective,
+    AI Denoise, Light Depth, Atmosphere or Bokeh. PhotoCraft keeps them in the recipe when it saves, but a picture it renders would
+    show the photo without them."""
+    from .. import ai_denoise, host_effects, photocraft_bridge, raw_crop
+
+    if raw_crop.active(settings.get("hostCrop")) or ai_denoise.wanted(settings):
+        return True
+    _settings, extras = host_effects.load_extras(photocraft_bridge.recipe_path(path), settings)
+    return bool(extras)
+
+
+def _leave_picture_to_host(spec: dict, path: str, recipe: dict | None) -> dict:
+    """For a RAW with settings PhotoCraft cannot show, the editor writes only the recipe: Image Triage renders the picture once it
+    is saved (`_render_with_host_settings`), so the grid never shows the photo without them. Returns the recipe's settings that
+    are Image Triage's own, for `_restore_host_settings`."""
+    from .. import photocraft_bridge
+
+    settings = (recipe or {}).get("cameraRaw")
+    if not isinstance(settings, dict):
+        return {}
+    if _host_owned(path, settings):
+        spec.pop("displayPath", None)
+        spec.pop("manifestPath", None)
+    return {key: settings[key] for key in photocraft_bridge.HOST_ONLY_FIELDS if key in settings}
+
+
+def _restore_host_settings(path: str, kept: dict | None) -> bool:
+    """Puts back Image Triage's own settings (``kept``, as the photo was opened with them) that the editor's save left out of the
+    recipe. A PhotoCraft build that carries them over (`raw_recipe::Targets::extra`) leaves nothing to do; an older one drops them.
+    True when the recipe was written."""
+    if not kept:
+        return False
+    import json
+
+    from .. import photocraft_bridge as bridge
+    from ..raw_crop import atomic_write
+
+    file = bridge.recipe_path(path)
+    try:
+        recipe = json.loads(file.read_bytes())
+    except (OSError, ValueError):
+        return False
+    settings = recipe.get("cameraRaw") if isinstance(recipe, dict) else None
+    if not isinstance(settings, dict) or recipe.get("version") != bridge.RECIPE_VERSION:
+        return False
+    missing = {key: value for key, value in kept.items() if key not in settings}
+    if not missing:
+        return False
+    LOG.warning("PhotoCraft's save left %s out of %s; putting them back (this PhotoCraft build is older than Image Triage)",
+                ", ".join(sorted(missing)), file.name)
+    recipe["cameraRaw"] = {**settings, **missing}
+    recipe.pop("identity", None)              # PhotoCraft's flag did not count them; the reader works it out (`classify_recipe`)
+    atomic_write(file, json.dumps(recipe, ensure_ascii=False).encode("utf-8"))
+    return True
+
+
+def _render_with_host_settings(path: str) -> bool:
+    """Renders and publishes the picture of a RAW the editor saved without one (`_leave_picture_to_host`), as Done in Image Triage's
+    RAW editor does. True when a picture was published; False when none was needed (not a RAW, a PhotoCraft project, no settings
+    of Image Triage's own, or the picture is already current)."""
+    from .. import host_effects, photocraft_bridge as bridge
+
+    if Path(path).suffix.lower() not in bridge.RAW_SUFFIXES or bridge.sidecar_pcraft_path(path).exists():
+        return False
+    state, recipe, _reason = bridge.recipe_state(path)
+    if state == bridge.RECIPE_INVALID or recipe is None:
+        return False
+    settings = dict(recipe["cameraRaw"])
+    if not _host_owned(path, settings) or bridge.current_render_manifest(path, verify_project=False) not in (None, False):
+        return False
+    from .raw_editor import RawEditor
+
+    settings, extras = host_effects.load_extras(bridge.recipe_path(path), settings)
+    current = {**settings, **extras}
+    RawEditor._work("save", path, current, current, "")
+    return True
+
+
 class _DocumentUncertain(Exception):
     """A switch failed at a point where the editor's document may already be the new photo while saves are still bound to
     the previous one (`error` is what went wrong)."""
@@ -119,9 +200,15 @@ class EditorHost(QObject):
     recipeRecovery = Signal(str, bool, str) # `recoverRecipe` finished: the photo, whether an edit was put back, what to say
     _done = Signal(str, object, str)        # worker -> main thread: (what finished, its result, an error message)
 
-    def __init__(self, *, memory: bool = False, launcher=None, detector=None, mover=None, host_jobs=None, parent=None) -> None:
+    def __init__(self, *, memory: bool = False, launcher=None, detector=None, mover=None, host_jobs=None, renderer=None,
+                 parent=None) -> None:
         super().__init__(parent)
         self._memory = memory
+        # Renders a photo's picture with Image Triage's own settings once the editor has saved it (`_render_host_owned`).
+        self._renderer = renderer if renderer is not None else (None if memory else _render_with_host_settings)
+        self._host_renders: dict[str, bool] = {}           # photo -> asked again while its render was running
+        self._kept: dict[str, dict] = {}                   # photo -> Image Triage's own recipe settings when it was opened
+        self._host_render_lock = threading.Lock()
         self._launcher = launcher
         self._detector = detector
         self._mover = mover if mover is not None else WindowMover()
@@ -386,6 +473,9 @@ class EditorHost(QObject):
                 elif photocraft_bridge.recipe_is_newer(path):
                     # Opening it without its settings would have the editor write this version's recipe over them.
                     raise RuntimeError("This photo's Camera Raw settings were saved by a newer version of Image Triage. Update Image Triage to edit it.")
+                kept = _leave_picture_to_host(spec, path, recipe)
+                with self._host_render_lock:
+                    self._kept[path] = kept
                 if sidecar.exists():
                     spec["continueFrom"] = sidecar.name
             previous = getattr(proc, "source_path", "")
@@ -403,6 +493,7 @@ class EditorHost(QObject):
                 raise _DocumentUncertain(error) from error
             if previous:
                 self.editSaved.emit(previous)
+                self._render_host_owned(previous)
             try:
                 proc.control.call("app.bind", binding)
             except Exception as error:
@@ -474,6 +565,7 @@ class EditorHost(QObject):
                 raise RuntimeError("the previous photo's Camera Raw settings cannot be read")
             if recipe is not None:
                 spec["recipe"] = recipe
+            _leave_picture_to_host(spec, path, recipe)
             if sidecar.exists():
                 spec["continueFrom"] = sidecar.name
         opened = proc.control.app_open(relative, replace=True, **({"camera_raw": spec} if spec is not None else {}))
@@ -753,6 +845,40 @@ class EditorHost(QObject):
             self._sweep_save_temps(None, self._proc, beside=path)
             self._forget(path)
         self.editSaved.emit(path)
+        if path:
+            self._render_host_owned(path)
+
+    def _render_host_owned(self, path: str) -> None:
+        """After the editor saved a RAW whose picture it was not asked to make (`_leave_picture_to_host`): make it here, with Image
+        Triage's crop, AI Denoise and effects, on a thread of its own. A second save while it runs makes it run again afterwards."""
+        renderer = self._renderer
+        if renderer is None:
+            return
+        with self._host_render_lock:
+            kept = self._kept.pop(path, None)
+            if path in self._host_renders:
+                self._host_renders[path] = True
+                return
+            self._host_renders[path] = False
+
+        def work() -> None:
+            try:
+                _restore_host_settings(path, kept)
+            except Exception as error:
+                LOG.warning("Could not check %s for its Image Triage settings: %s", path, error)
+            while True:
+                try:
+                    if renderer(path):
+                        self.editSaved.emit(path)
+                except Exception as error:
+                    LOG.warning("Could not render %s with its Image Triage settings: %s", path, error)
+                with self._host_render_lock:
+                    if not self._host_renders.get(path):
+                        self._host_renders.pop(path, None)
+                        return
+                    self._host_renders[path] = False
+
+        threading.Thread(target=work, name="editor-host-render", daemon=True).start()
 
     @staticmethod
     def _sweep_save_temps(folder, proc, beside: str = "") -> None:

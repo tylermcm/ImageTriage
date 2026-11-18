@@ -287,7 +287,7 @@ def test_host_recipe_schema_tracks_the_editor_schema():
         aliases = set(re.findall(r'alias = "([^"]+)"', attributes))
         names.add(next(iter(aliases & bridge.RECIPE_FIELDS), camel(name)))
     # Crop belongs to the host envelope and is replayed after native development.
-    assert names == bridge.RECIPE_FIELDS - {"hostCrop"}
+    assert names == bridge.RECIPE_FIELDS - set(bridge.HOST_ONLY_FIELDS)
 
 
 def test_live_edits_without_any_sidecar_reach_export(photo, monkeypatch):
