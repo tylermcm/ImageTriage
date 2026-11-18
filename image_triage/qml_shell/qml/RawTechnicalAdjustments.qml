@@ -171,6 +171,15 @@ Item {
                 checked: technical.model.values.superResolution
                 onToggled: (next) => technical.model.setSuperResolution(next)
             }
+            Copy {
+                objectName: "rawSuperResolutionStatus"
+                readonly property var sr: technical.model.superResEditor
+                visible: technical.model.values.superResolution
+                width: parent.width; wrapMode: Text.WordWrap; font.pixelSize: 11
+                color: sr.error ? theme.rej : theme.fg3
+                text: sr.error || sr.message || ("The photo is now " + technical.model.fullWidth + " × " + technical.model.fullHeight
+                      + ". Zoom in to see what Super Resolution adds; an export upscales the whole photo.")
+            }
             Divider {}
             ValueSlider {
                 objectName: "rawDetailSharpen"

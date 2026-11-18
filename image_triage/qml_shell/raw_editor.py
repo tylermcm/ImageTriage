@@ -162,6 +162,8 @@ class RawEditor(QObject):
         self._erase_editor = RawErase(self)
         from .raw_denoise import RawDenoise
         self._denoise_editor = RawDenoise(self)
+        from .raw_super_res import RawSuperRes
+        self._super_res = RawSuperRes(self)
         from .raw_soft_proof import RawSoftProof
         self._soft_proof = RawSoftProof(self, memory=memory)
         from .raw_sync import RawSync
@@ -172,6 +174,7 @@ class RawEditor(QObject):
     pointColor = Property(QObject, lambda self: self._point_color, constant=True)
 
     denoiseEditor = Property(QObject, lambda self: self._denoise_editor, constant=True)
+    superResEditor = Property(QObject, lambda self: self._super_res, constant=True)
     softProof = Property(QObject, lambda self: self._soft_proof, constant=True)
 
     sync = Property(QObject, lambda self: self._sync, constant=True)
@@ -259,7 +262,9 @@ class RawEditor(QObject):
         if self._crop_editing:
             return list(turned_size(crop, *self._full_size, quarter_only=True))
         size = crop_bounds(crop, *self._full_size)[2:]
-        return list(size) if self._source_view else list(turned_size(crop, *size))
+        size = list(size) if self._source_view else list(turned_size(crop, *size))
+        # Super Resolution makes the output twice the size: 100% is then one upscaled pixel per screen pixel (raw_super_res.py)
+        return [v * 2 for v in size] if self._draft.get("superResolution") is True else size
 
     fullWidth = Property(int, lambda self: self._display_size()[0], notify=changed)
     fullHeight = Property(int, lambda self: self._display_size()[1], notify=changed)

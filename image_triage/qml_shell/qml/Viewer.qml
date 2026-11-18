@@ -40,13 +40,16 @@ FocusScope {
     readonly property string curPath: cur.path || ""
     readonly property var rawEditor: popout.rawEditor || null
     readonly property bool rawEditing: rawEditor !== null && rawEditor.active
+    // what part of the photo is in view while zoomed: Super Resolution upscales that part
+    readonly property var superResView: [pan.viewLeft, pan.viewTop, pan.viewRight, pan.viewBottom, zoomed, rawEditing]
+    onSuperResViewChanged: if (rawEditor && rawEditing) rawEditor.superResEditor.setView(pan.viewLeft, pan.viewTop, pan.viewRight, pan.viewBottom, zoomed)
     // the editor's AI tool that is working now ({tool, title}), or null: its overlay sweeps over the photo until it is done
     readonly property var aiJob: {
         if (!rawEditing) return null
         var e = rawEditor
         var jobs = [[e.denoiseEditor, "AI Denoise"], [e.skyEditor, "Sky Replacement"], [e.eraseEditor, "AI Erase"],
                     [e.lightDepthEditor, "Light Depth"], [e.atmosphereEditor, "Atmosphere"], [e.bokehEditor, "Bokeh"],
-                    [e.maskEditor ? e.maskEditor.ai : null, "AI Masking"]]
+                    [e.maskEditor ? e.maskEditor.ai : null, "AI Masking"], [e.superResEditor, "Super Resolution"]]
         for (var i = 0; i < jobs.length; ++i)
             if (jobs[i][0] && jobs[i][0].busy) return {"tool": jobs[i][0], "title": jobs[i][1]}
         return null
@@ -418,6 +421,15 @@ FocusScope {
                         width: compareLabel.implicitWidth + 18; height: 26; radius: 6; color: v.cCard
                         Text { id: compareLabel; anchors.centerIn: parent; text: parent.modelData; color: v.cFg; font.pixelSize: 12 }
                     }
+                }
+                Image {   // Super Resolution: the part in view, upscaled by the model, over the picture (raw_super_res.py)
+                    objectName: "viewerSuperResPatch"
+                    readonly property var patch: v.rawEditing ? v.rawEditor.superResEditor.patch : ({})
+                    visible: v.rawEditing && v.zoomed && !!patch.url && !(rawPanel.visible && rawPanel.before)
+                    x: photoImg.x + (patch.l || 0) * photoImg.width; y: photoImg.y + (patch.t || 0) * photoImg.height
+                    width: ((patch.r || 0) - (patch.l || 0)) * photoImg.width; height: ((patch.b || 0) - (patch.t || 0)) * photoImg.height
+                    source: visible ? patch.url : ""
+                    asynchronous: true; cache: false; smooth: true; mipmap: true
                 }
                 Image {   // focus assist: the Widgets viewer's own edge map, shown in place of the photo
                     x: photoImg.x; y: photoImg.y; width: photoImg.width; height: photoImg.height
