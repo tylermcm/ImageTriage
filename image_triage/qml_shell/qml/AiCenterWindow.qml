@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Dialogs
 
 // AI Center: what the cull needs on this computer (runtime, graphics card, models), the defaults, and recent runs. Model: cull_model.py, which in the
 // app gets every state and every button's work from ai_center.py (what is really installed, and the Widgets app's own installers).
@@ -13,6 +14,7 @@ Backdrop {
     // a model row's button: cancel what is running, ask before deleting a ranker, otherwise install or repair
     function modelPressed(m) {
         if (m.busy) { cull.cancelSetup(); return }
+        if (m.pick) { modelFile.key = m.key; modelFile.open(); return }
         if (m.confirm) { var t = cull.removeText(m.key); removeCard.key = m.key; removeCard.title = t.title; removeCard.body = t.body; removeCard.open(); return }
         cull.modelAction(m.key)
     }
@@ -20,6 +22,12 @@ Backdrop {
     function runtimePressed() {
         if (c.rtInstalling) { cull.cancelSetup(); return }
         var p = cull.setupPlan(); setupCard.title = p.title; setupCard.body = p.body; setupCard.confirmText = p.confirm; setupCard.open()
+    }
+    // the editor's models have no download yet: their .onnx file is picked, recognised by its checksum and copied in
+    FileDialog {
+        id: modelFile; property string key
+        title: "Choose the model file"; nameFilters: ["ONNX models (*.onnx)"]
+        onAccepted: cull.installModelFile(key, decodeURIComponent(String(selectedFile).replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/")))
     }
     ConfirmCard { id: removeCard; objectName: "aiRemoveCard"; property string key; confirmText: "Remove"; cancelText: "Cancel"; onAccepted: cull.modelAction(removeCard.key) }
     ConfirmCard { id: setupCard; objectName: "aiSetupCard"; cancelText: "Cancel"; onAccepted: cull.setupRuntime() }

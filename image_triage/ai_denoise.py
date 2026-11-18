@@ -113,7 +113,7 @@ def unavailable_reason() -> str:
     if executable() is None:
         return "AI Denoise needs the RAW preview worker."
     if not model_installation().is_installed:
-        return "The AI Denoise model is not installed."
+        return "The AI Denoise model is not installed. Install it in AI > AI Center."
     return ""
 
 
@@ -180,7 +180,7 @@ def make(
     if engine is None:
         installation = model_installation()
         if not installation.is_installed:
-            raise RuntimeError("The AI Denoise model is not installed.")
+            raise RuntimeError("The AI Denoise model is not installed. Install it in AI > AI Center.")
         engine = _engine(installation.install_dir)
     source_signature = _signature(photo)
     with tempfile.TemporaryDirectory(prefix="image-triage-denoise-") as scratch:

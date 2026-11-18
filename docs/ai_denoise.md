@@ -12,7 +12,9 @@ at 50). AI noise reduction on the raw sensor data, before PhotoCraft demosaics a
   training code is not shipped. Training data: RawNIND (CC BY-SA 4.0); see `ai_model_licence_audit.md` (amber).
 - Checkpoint `DenoiserTrainingBayerToProfiledRGB_4ch_2024-02-21-bayer_ms-ssim_mgout_notrans_valeither_-4`, iteration 4350000 (the one
   darktable 5.6 ships), converted by `scripts/export_rawnind_onnx.py` (`rawnind_bayer.onnx`, 30 MB, sha256 in `ai_model.py`).
-- Installed by hand for now, like the AI Erase model: put `rawnind_bayer.onnx` in the managed `Editor/RawNIND` model folder.
+- Installed from the AI Center (AI > AI Center, **AI Denoise (RAW editor)** > Install from file…): the picked `.onnx` is recognised by
+  its SHA-256, copied into the managed `Editor/RawNIND` model folder and checked again (`editor_models.py`; Super Resolution's two
+  Real-ESRGAN files the same way).
 
 ## Choosing it (spike, 2026-11-17)
 
@@ -52,6 +54,6 @@ presets or copy/paste), and counts as an edit.
 
 - Non-Bayer sensors (Fujifilm X-Trans, Foveon, LinearRaw DNGs) and sensors with a linearization table are refused. The linear
   RawNIND variant could cover X-Trans after demosaic.
-- The model is installed by hand; no download yet.
+- No download yet: the converted `.onnx` is not hosted anywhere at a pinned revision, so it is installed from a file.
 - Before shipping commercially: ask Benoit Brummer for written confirmation that the CC-BY-4.0 option covers these checkpoints, and
   add the attribution to the About box and the licences file.

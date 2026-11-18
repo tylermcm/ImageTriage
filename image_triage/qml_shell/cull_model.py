@@ -885,7 +885,9 @@ class CullModel(QObject):
                 ("quality", "Quality ranker", "Scores technical quality (MANIQA)."),
                 ("appeal", "Appeal ranker", "Scores how appealing a frame is (Q-ReAlign). Best with a graphics card."),
                 ("search", "Search model (semantic search)", "Reads each photo once so the folder can be searched in plain words (TinyCLIP). People uses it too."),
-                ("people", "Face recognizer (People)", "Groups the faces found in a folder into people (AdaFace). Runs on the CPU.")):
+                ("people", "Face recognizer (People)", "Groups the faces found in a folder into people (AdaFace). Runs on the CPU."),
+                ("denoise", "AI Denoise (RAW editor)", "Detail > Denoise: removes noise from the raw sensor data (RawNIND). Runs on the CPU."),
+                ("superres", "Super Resolution (RAW editor)", "Detail > Super Resolution: doubles the size of a developed photo (Real-ESRGAN x2 and x4).")):
             m = a["models"].get(key)
             if m is None:
                 continue
@@ -897,18 +899,24 @@ class CullModel(QObject):
                 state, tone = "Failed", "bad"
             else:
                 state, tone = STATE_WORDS.get(m["state"], "Not installed"), "ok" if ready else ("warn" if m["state"] == "missing" else "bad")
-            text = desc + (f" {size}." if size and key == "face" else (f" {size}, downloaded when you install it." if size else ""))
+            editor = key in ("denoise", "superres")
+            if editor:
+                # No download yet: the file is converted from the authors' checkpoint and picked here (docs/ai_denoise.md)
+                text = desc + (f" {size}." if ready else f" {size}. No download yet: install it from the .onnx file.")
+            else:
+                text = desc + (f" {size}." if size and key == "face" else (f" {size}, downloaded when you install it." if size else ""))
             if m["error"]:
                 text = m["error"]
             elif not ready and m["state"] not in ("missing",) and m["problem"]:
-                text = m["problem"] + " Repair downloads it again."
+                text = m["problem"] + (" Install it again from the .onnx file." if editor else " Repair downloads it again.")
             elif key == "face" and rt != "ready" and ready:
                 text += " It runs once the AI runtime is set up."
             if m.get("kept") and not ready and not m["busy"]:
                 # Only said when the bytes are really on disk (`ai_model_store.bundle_partial_bytes`).
                 text += f" An interrupted download is kept ({format_mb(max(1, round(m['kept'] / 1e6)))} so far): the next try continues from there."
             models.append({"key": key, "name": name, "on": ready, "desc": text, "state": state, "tone": tone, "size": size,
-                           "btn": "Cancel" if m["busy"] else ("Try again" if m["error"] else ("Install" if m["state"] == "missing" else ("Repair" if (not ready or key == "face") else "Remove"))),
+                           "btn": "Cancel" if m["busy"] else ("Remove" if editor and ready else ("Install from file…" if editor else ("Try again" if m["error"] else ("Install" if m["state"] == "missing" else ("Repair" if (not ready or key == "face") else "Remove"))))),
+                           "pick": editor and not ready and not m["busy"],
                            "primary": not m["busy"] and (m["state"] == "missing" or bool(m["error"])), "busy": m["busy"], "pct": m["pct"], "step": m["step"],
                            "confirm": ready and key != "face" and not m["busy"], "locked": a["busy"] and not m["busy"]})
         return {"rtDot": rt_dot, "rtState": rt_state,
@@ -1526,6 +1534,12 @@ class CullModel(QObject):
         self._set(rt="installing", rtp=0.0)
         self._install.start()
 
+    @Slot(str, str)
+    def installModelFile(self, key: str, path: str) -> None:
+        """An editor model's "Install from file…", with the file the window's picker chose."""
+        if self._ai is not None and hasattr(self._ai, "installModelFile"):
+            self._ai.installModelFile(key, path)
+
     @Slot(str)
     def modelAction(self, key: str) -> None:
         """A model row's button: install, repair or remove (the real ones), or the mockup's scripted toggle."""
@@ -1537,7 +1551,7 @@ class CullModel(QObject):
     def _model_removal_text(self, key: str) -> dict:
         """What the confirm card says before a ranker's files are deleted."""
         row = next((m for m in self._view.get("center", {}).get("models", []) if m["key"] == key), None)
-        return {"title": f"Remove the {row['name'] if row else 'model'}?", "body": f"This deletes its files from this PC{' and frees ' + row['size'] if row and row.get('size') else ''}. Your photos are not touched, and you can install it again any time."}
+        return {"title": f"Remove the {row['name'] if row else 'model'}?", "body": f"This deletes its files from this PC{' and frees ' + row['size'] if row and row.get('size') else ''}. Your photos are not touched, and " + ("installing it again needs its .onnx file." if key in ("denoise", "superres") else "you can install it again any time.")}
 
     @Slot(str, result="QVariantMap")
     def removeText(self, key: str) -> dict:

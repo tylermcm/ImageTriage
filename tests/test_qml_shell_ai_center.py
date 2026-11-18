@@ -433,3 +433,33 @@ def test_dll_failures_keep_repair_action_without_claiming_registry_cause(cull, o
     assert cull.view['rt']['errVc']
     assert cull.view['rt']['errBody'] == message
     assert cull.view['rt']['errTitle'] == 'A Windows library failed to load'
+
+
+def test_the_editor_models_are_installed_from_a_file_and_removed(cull, ops, qapp):
+    ops.raw["models"]["denoise"] = {"state": "missing", "mb": 30, "problem": ""}
+    ops.raw["models"]["superres"] = {"state": "ready", "mb": 134, "problem": ""}
+
+    def install_editor_file(path):
+        ops.calls.append(("file", path))
+        ops.raw["models"]["denoise"]["state"] = "ready"
+
+    def remove_editor_model(key):
+        ops.calls.append(("remove editor", key))
+        ops.raw["models"][key]["state"] = "missing"
+
+    ops.install_editor_file, ops.remove_editor_model = install_editor_file, remove_editor_model
+    cull._ai.refresh()
+    until(qapp, lambda: any(m["key"] == "denoise" for m in cull.view["center"]["models"]))
+    rows = {m["key"]: m for m in cull.view["center"]["models"]}
+    assert rows["denoise"]["btn"] == "Install from file…" and rows["denoise"]["pick"] and ".onnx" in rows["denoise"]["desc"]
+    assert rows["superres"]["state"] == "Installed" and rows["superres"]["btn"] == "Remove" and rows["superres"]["confirm"]
+    cull.modelAction("denoise")                                          # not installed: the window asks for the file, nothing starts here
+    assert not cull._ai.busy and ops.calls == []
+    cull.installModelFile("denoise", r"C:\Downloads\rawnind_bayer.onnx")
+    settled(qapp, cull._ai)
+    assert ops.calls == [("file", r"C:\Downloads\rawnind_bayer.onnx")]
+    until(qapp, lambda: next(m for m in cull.view["center"]["models"] if m["key"] == "denoise")["btn"] == "Remove")
+    assert ".onnx file" in cull.removeText("superres")["body"]
+    cull.modelAction("superres")
+    settled(qapp, cull._ai)
+    assert ("remove editor", "superres") in ops.calls

@@ -31,6 +31,8 @@ from ..ai_setup_plan import format_mb
 # the models the cull shows, and the bundle each one is (cascade/rankers/bundles.py, ai_manifest.py). "search" is what semantic search and the
 # People pre-filter read photos with; "people" is the recognizer that groups faces. Both are installed here, never from inside a run.
 MODELS = {"face": "faces_blink", "quality": "maniqa", "appeal": "qrealign", "search": "tinyclip", "people": "faces_identity"}
+# the RAW editor's own models (editor_models.py): no download yet, so they are installed from a file the person picks, and removed
+EDITOR_MODELS = ("denoise", "superres")
 STATE_WORDS = {"ready": "Installed", "missing": "Not installed", "partial": "Incomplete", "corrupt": "Damaged", "stale": "Out of date"}
 
 
@@ -57,6 +59,13 @@ class RealOps:
             found = bundle_status(bundle)
             models[key] = {"state": found.state, "mb": MODEL_BUNDLES[bundle].approx_mb, "problem": "" if found.is_ready else found.describe(),
                            "kept": 0 if found.is_ready else bundle_partial_bytes(bundle)}     # bytes of an interrupted download, continued by the next try
+        from .. import editor_models
+
+        for key in EDITOR_MODELS:
+            try:
+                models[key] = {**editor_models.status(key), "kept": 0}
+            except Exception as exc:                # a model folder that cannot be read: shown as damaged, with why
+                models[key] = {"state": "corrupt", "mb": 0, "problem": str(exc) or type(exc).__name__, "kept": 0}
         try:
             from ..ai_health import runtime_identity
 
@@ -159,6 +168,16 @@ class RealOps:
         from ..ai_model_store import uninstall_bundle
 
         uninstall_bundle(MODELS.get(key, key))
+
+    def install_editor_file(self, path: str) -> tuple[str, str]:
+        from ..editor_models import install_file
+
+        return install_file(path)
+
+    def remove_editor_model(self, key: str) -> None:
+        from ..editor_models import remove
+
+        remove(key)
 
     def bundle_sizes(self, key: str) -> dict[str, int]:
         """File name -> bytes, for turning a download's progress into one fraction of the whole bundle."""
@@ -276,7 +295,7 @@ class AiCenterBackend(QObject):
         raw, job = self._raw, self._job
         if raw is None or "failed" in raw:
             checked = raw is not None
-            models = {key: {"state": "missing", "mb": 0, "problem": ""} for key in MODELS}
+            models = {key: {"state": "missing", "mb": 0, "problem": ""} for key in (*MODELS, *EDITOR_MODELS)}
             raw = {"installed": [], "torch": [], "gpuBuild": False, "gpu": "", "vc": "", "vcOld": False, "models": models, "python": f"{sys.version_info.major}.{sys.version_info.minor}"}
             failed = self._raw["failed"] if checked else ""
         else:
@@ -547,7 +566,10 @@ class AiCenterBackend(QObject):
         def work(job: dict) -> None:
             if action == "remove":
                 self._event.emit("progress", {"pct": 50, "step": "Removing the files…"})
-                self._ops.remove_bundle(key)
+                if key in EDITOR_MODELS:
+                    self._ops.remove_editor_model(key)
+                else:
+                    self._ops.remove_bundle(key)
                 return
             progress = SetupProgress(runtime_mb=0, bundles={key: self._ops.bundle_mb(key)})
             self._progress(progress, "Downloading")
@@ -574,13 +596,31 @@ class AiCenterBackend(QObject):
 
     @Slot(str)
     def removeModel(self, key: str) -> None:
-        if key in MODELS:
+        if key in MODELS or key in EDITOR_MODELS:
             self._model_job(key, "Removing", "remove")
+
+    @Slot(str, str)
+    def installModelFile(self, key: str, path: str) -> None:
+        """An editor model's "Install from file…": the picked file is recognised by its digest, copied in and checked again. A file of
+        the other editor model is installed as that one (the row of ``key`` only shows the work)."""
+        if key not in EDITOR_MODELS or not path:
+            return
+
+        def work(job: dict) -> None:
+            self._event.emit("progress", {"pct": 30, "step": "Checking the file…"})
+            self._ops.install_editor_file(path)
+            self._event.emit("progress", {"pct": 100, "step": "Installed"})
+
+        self._start("model", key, "Installing", work)
 
     @Slot(str)
     def modelAction(self, key: str) -> None:
         """The model row's button: install what is missing, repair what is damaged, and remove a ranker (the face model is only repaired)."""
         found = (self._raw or {}).get("models", {}).get(key, {}).get("state", "missing")
+        if key in EDITOR_MODELS:
+            if found == "ready":
+                self.removeModel(key)               # anything else is installed from a file the window asks for (installModelFile)
+            return
         if found == "ready":
             self.repairModel(key) if key == "face" else self.removeModel(key)
         elif found == "missing":
