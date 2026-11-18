@@ -5,6 +5,7 @@ import threading
 import time
 
 import numpy as np
+from pathlib import Path
 import pytest
 
 from image_triage import ai_denoise, photocraft_bridge as bridge, raw_denoise, raw_presets
@@ -103,7 +104,10 @@ def photo(tmp_path):
 def test_make_writes_the_denoised_raw_once_and_follows_the_amount(photo):
     target = ai_denoise.make(photo, 40, sensor_input=fake_input, engine=fake_engine)
     assert target == ai_denoise.denoised_path(photo) and ai_denoise.ready(photo)
-    assert target.read_bytes().startswith(open(photo, "rb").read())
+    # a companion beside the photo's edits: only the denoised samples, naming the raw they belong to (no copy of the raw)
+    original, amount, region, sensor, samples = raw_denoise.read_companion(target.read_bytes())
+    assert (Path(target.parent, original).resolve(), amount, region, sensor) == (Path(photo).resolve(), 40, (0, 0, 64, 40), (64, 40))
+    assert np.allclose(samples, 0.25, atol=2e-3) and b"pretend raw" not in target.read_bytes()
     assert raw_denoise.read_amount(target) == 40
     calls = []
     again = ai_denoise.make(photo, 40, sensor_input=lambda *a: calls.append(a), engine=fake_engine)
@@ -177,3 +181,27 @@ def test_the_host_worker_writes_float16_samples_for_its_region(tmp_path):
     assert result["region"] == [3, 0, 64, 40]
     samples = np.fromfile(out, dtype="<f2")
     assert samples.size == 64 * 40 and np.allclose(samples, 0.1, atol=1e-3)
+
+
+def test_a_companion_round_trips_within_its_precision_and_is_small():
+    rng = np.random.default_rng(5)
+    yy, xx = np.mgrid[0:120, 0:160]
+    samples = (0.02 + 0.6 * (xx / 160) * (yy / 120) + 0.01 * rng.standard_normal((120, 160))).clip(0, 1).astype(np.float32)
+    data = raw_denoise.companion_bytes("../../IMG.NEF", samples, (4, 2, 160, 120), (200, 140), 55.0)
+    original, amount, region, sensor, back = raw_denoise.read_companion(data)
+    assert (original, amount, region, sensor) == ("../../IMG.NEF", 55.0, (4, 2, 160, 120), (200, 140))
+    step = 2 * np.sqrt(samples) / ((1 << raw_denoise.COMPANION_BITS) - 1)      # one 10-bit step on the square-root scale
+    assert np.all(np.abs(back - samples) <= step * 0.51 + 1e-7)
+    assert len(data) < samples.size                                                  # well under one byte a sample
+
+
+def test_an_earlier_denoised_raw_copy_becomes_a_companion(photo):
+    target = ai_denoise.legacy_denoised_path(photo)
+    samples = np.full((40, 64), 0.3, np.float32)
+    raw_denoise.write_denoised(Path(photo), target, samples, (0, 0, 64, 40), (64, 40), 35.0)
+    ai_denoise._remember(photo, target)
+    freed = ai_denoise.migrate_folder(Path(photo).parent)
+    assert not target.exists() and ai_denoise.ready(photo) and freed > 0
+    companion = ai_denoise.denoised_path(photo)
+    assert raw_denoise.read_amount(companion) == pytest.approx(35.0)
+    assert ai_denoise.render_source(photo, {ai_denoise.KEY: {"enabled": True, "amount": 35.0}}) == str(companion)

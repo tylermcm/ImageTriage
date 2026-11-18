@@ -207,6 +207,7 @@ class Connection:
             self._sky_supported = type(hello.get("sky")) is int and hello["sky"] >= 1
             self._sky_full = type(hello.get("sky")) is int and hello["sky"] >= 2       # the full Sky AI set (``sky_replace.NEWER``)
             self._patch_supported = type(hello.get("patch")) is int and hello["patch"] >= 1
+            self._denoise_companion = type(hello.get("denoise")) is int and hello["denoise"] >= 2   # reads AI Denoise's companion file
         except Exception:
             self.close()
             raise
@@ -365,6 +366,8 @@ class PreviewWorker(QObject):
                     request = {"revision": revision, "quality": quality, "backend": os.environ.get("IMAGE_TRIAGE_RAW_PREVIEW_BACKEND", "cpu")}
                     # Detail > Denoise: once the denoised raw is made, it is what the worker develops (its amount is in the file).
                     developed = ai_denoise.render_source(path, draft)
+                    if developed != path and not getattr(self._connection, "_denoise_companion", False):
+                        raise RuntimeError("AI Denoise needs the updated RAW preview worker.")
                     source_key = (os.path.normcase(os.path.abspath(path)), signature, json.dumps(original, sort_keys=True),
                                   developed, bridge.file_signature(developed))
                     if source != source_key:

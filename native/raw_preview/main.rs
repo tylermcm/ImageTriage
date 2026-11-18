@@ -111,10 +111,23 @@ impl Gpu {
         })
     }
 }
+/// A source file's bytes. AI Denoise's companion file (`photocraft_raw::denoised`) is read as the original raw it names with the
+/// denoised samples appended, as the decoder reads them.
+fn read_source(path: &str) -> Result<Vec<u8>> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    match photocraft_raw::denoised::companion(&bytes)? {
+        Some(c) => {
+            let original = photocraft_raw::denoised::resolve_original(path, &c.original);
+            let raw = std::fs::read(&original).map_err(|e| format!("{original}: {e}"))?;
+            Ok(photocraft_raw::denoised::expand(&raw, &c.trailer))
+        }
+        None => Ok(bytes),
+    }
+}
 fn open(p: &Value, opens: u64) -> Result<Source> {
     let path = p["path"].as_str().ok_or("Missing source path")?;
     let edge = p["edge"].as_u64().unwrap_or(1200).clamp(256, 2400) as usize;
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let bytes = read_source(path)?;
     let limits = photocraft_raw::Limits {
         max_pixels: 128_000_000,
         max_alloc: 512 * 1024 * 1024,
@@ -373,7 +386,7 @@ fn run() -> Result<()> {
         let result = (|| -> Result<(Value, Vec<u8>)> {
             let request: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
             if request["op"] == "hello" {
-                Ok((json!({"ok":true,"protocol":2,"redEye":1,"sky":2,"patch":1,"denoise":1,"bytes":0}), vec![]))
+                Ok((json!({"ok":true,"protocol":2,"redEye":1,"sky":2,"patch":1,"denoise":2,"bytes":0}), vec![]))
             } else if request["op"] == "open" {
                 let start = Instant::now();
                 source = None;

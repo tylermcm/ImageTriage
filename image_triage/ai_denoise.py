@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import subprocess
 import tempfile
 import threading
@@ -55,6 +56,15 @@ def wanted(settings) -> bool:
 
 
 def denoised_path(photo: str | Path) -> Path:
+    """The photo's denoise companion (raw_denoise, "the companion file"): only the denoised samples, beside the photo's edits."""
+    from .edit_storage import edit_root_for
+
+    photo = Path(photo)
+    return edit_root_for(photo.parent) / FOLDER / f"{photo.name}.denoise"
+
+
+def legacy_denoised_path(photo: str | Path) -> Path:
+    """Where earlier versions kept a denoised copy of the whole raw (converted to a companion by ``migrate_folder``)."""
     from .edit_storage import edit_root_for
 
     photo = Path(photo)
@@ -62,7 +72,8 @@ def denoised_path(photo: str | Path) -> Path:
 
 
 def _record_path(photo: str | Path) -> Path:
-    return denoised_path(photo).with_suffix(".json")
+    photo = Path(photo)
+    return denoised_path(photo).with_name(f"{photo.stem}.denoised.json")
 
 
 def _signature(photo) -> str | None:
@@ -79,7 +90,7 @@ def ready(photo: str | Path) -> bool:
     except (OSError, ValueError):
         return False
     return (isinstance(record, dict) and record.get("source") == _signature(photo) and record.get("model") == MODEL_VERSION
-            and record.get("denoised") == _signature(target) and raw_denoise.has_trailer(target))
+            and record.get("denoised") == _signature(target) and raw_denoise.is_companion(target))
 
 
 def render_source(photo: str, settings) -> str:
@@ -129,7 +140,7 @@ def worker_input(photo: str, out: Path, *, executable: str | None = None) -> dic
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     try:
         hello = _exchange(proc, {"op": "hello"})
-        if type(hello.get("denoise")) is not int or hello["denoise"] < 1:
+        if type(hello.get("denoise")) is not int or hello["denoise"] < 2:      # 2: it reads the companion file this writes
             raise RuntimeError("AI Denoise needs the updated RAW preview worker.")
         reply = _exchange(proc, {"op": "denoiseInput", "path": photo, "out": str(out)})
         if not reply.get("ok"):
@@ -202,16 +213,81 @@ def make(
         if _signature(photo) != source_signature:
             raise RuntimeError("The photo changed while it was being denoised. Try again.")
         say("Saving…")
-        target = raw_denoise.write_denoised(Path(photo), denoised_path(photo), samples.reshape(h, w), (x, y, w, h),
-                                            meta["sensor"], amount)
+        target = raw_denoise.write_companion(Path(photo), denoised_path(photo), samples.reshape(h, w), (x, y, w, h),
+                                             meta["sensor"], amount)
     _remember(photo, target)
     return target
 
 
 def forget(photo: str | Path) -> None:
     """Delete the photo's denoised raw (the setting stays; it is made again when needed)."""
-    for path in (denoised_path(photo), _record_path(photo)):
+    for path in (denoised_path(photo), legacy_denoised_path(photo), _record_path(photo)):
         try:
             path.unlink()
         except OSError:
             pass
+
+
+def companions_readable(executable: str | None = None) -> bool:
+    """Whether the RAW preview worker reads denoise companions (``"denoise": 2`` in its hello). Earlier denoised raw copies are only
+    converted when it does, so a photo never loses its denoising to an older worker."""
+    if executable is None:
+        from .qml_shell.raw_preview import executable as find
+
+        executable = find()
+    if not executable:
+        return False
+    try:
+        proc = subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except OSError:
+        return False
+    try:
+        hello = _exchange(proc, {"op": "hello"})
+        return type(hello.get("denoise")) is int and hello["denoise"] >= 2
+    except Exception:
+        return False
+    finally:
+        try:
+            proc.stdin.close()
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+
+
+def migrate_folder(folder: str | Path) -> int:
+    """Turn the denoised raw copies earlier versions kept (``<name>.denoised.<ext>``: the whole raw with the samples appended, ~150 MB
+    for a 24 MP photo) into companions (~22 MB), keeping the amount and the record. Returns the bytes freed. Slow: a worker's job."""
+    import numpy as np
+
+    from .edit_storage import edit_root_for
+
+    root = edit_root_for(Path(folder)) / FOLDER
+    freed = 0
+    try:
+        entries = [entry for entry in os.scandir(root) if ".denoised." in entry.name and not entry.name.endswith((".json", ".partial"))]
+    except OSError:
+        return 0
+    for entry in entries:
+        old = Path(entry.path)
+        stem, _, suffix = old.name.partition(".denoised")
+        photo = Path(folder) / f"{stem}{suffix}"
+        if not photo.exists() or not raw_denoise.has_trailer(old):
+            continue
+        try:
+            record = json.loads(_record_path(photo).read_text(encoding="utf-8"))
+            data = old.read_bytes()
+            tl = raw_denoise.TRAILER_LEN
+            version, amount, x, y, w, h, sw, sh, length = raw_denoise.struct.unpack("<If6IQ", data[-tl:-8])
+            samples = np.frombuffer(data[-tl - length:-tl], "<f2").astype(np.float32).reshape(h, w)
+            del data
+            target = raw_denoise.write_companion(photo, denoised_path(photo), samples, (x, y, w, h), (sw, sh), amount)
+            if isinstance(record, dict) and record.get("denoised") == _signature(old):
+                record["denoised"] = _signature(target)            # still the photo's own denoising, now as a companion
+                _record_path(photo).write_text(json.dumps(record), encoding="utf-8")
+            size = old.stat().st_size
+            old.unlink()
+            freed += size - target.stat().st_size
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return freed

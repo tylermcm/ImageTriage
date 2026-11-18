@@ -32,11 +32,19 @@ NAFNet (MIT, smartphone training data) smears texture; RawNIND keeps it. A whole
 
 ## How it works
 
-The denoised photo is **the original raw file with the denoised sensor samples appended** (a trailer). Every TIFF-style raw reader
-ignores bytes past the structures it points at, so the file still identifies, previews and reads its metadata as the original; only
-PhotoCraft's raw decoder (`photocraft_raw::denoised`, fork branch `codex/ai-denoise`) reads the trailer and replaces the samples of
-the denoised region, blended with the originals by the amount written in the trailer. White balance, colour, look and every slider
-are the original's.
+The denoised samples are kept in a **companion file** beside the photo's edits (`<edits>/denoised/<name>.denoise`), as Camera Raw
+(17.4 and later) keeps its AI results in a `.acr` file beside the photo instead of the separate "Enhanced" DNG it used to write. The
+original raw is never copied or changed. The companion holds only the denoised samples of the crop, the amount and the original's
+path relative to the companion. A host passes the companion where it would pass the raw; PhotoCraft's `app.render` and the preview
+worker (`"denoise": 2` in its hello) read the original it names and decode the two together (`photocraft_raw::denoised::companion`,
+`expand`, fork branch `codex/denoise-companion`), so white balance, colour, look and every slider are the original's.
+
+The samples are stored on a square-root scale (how sensor noise grows with the signal) at 10 bits, split into the four CFA planes,
+predicted from their neighbours with lossless JPEG's median edge detector, and the differences zlib-compressed. On a 24 MP Nikon NEF
+that is 21.7 MB, against 150.5 MB for the denoised copy of the raw earlier versions wrote; the rounding is 2.6% of the noise Denoise
+removed (12 bits: 31.8 MB, 0.7%). Adobe reports about 6 MB a photo, which needs a real lossy image codec (JPEG XL; PhotoCraft can
+decode it, nothing here can encode it yet). Opening a folder converts earlier denoised raw copies to companions
+(`ai_denoise.migrate_folder`).
 
 1. The preview worker writes the crop's CFA samples, normalised 0 (black) .. 1 (white), with the CFA pattern and daylight white
    balance (`denoiseInput`; the worker answers `"denoise": 1` in its hello).
@@ -45,10 +53,10 @@ are the original's.
    undoes the white balance and keeps one channel per photosite. The network's output has a small bias that repeats every 2 x 2
    pixels, so read back at the photosites the two greens came apart (a maze after demosaic); each CFA site therefore gets back its own
    local level (the heavily blurred difference to the original is added to it). Photosites within 3% of white keep their own value.
-3. `ai_denoise.make` appends the result to a copy of the raw in the photo's edits folder
-   (`<edits>/denoised/<name>.denoised.<ext>`) and records what it was made from (photo signature, model version).
+3. `ai_denoise.make` writes the result as the photo's companion (`<edits>/denoised/<name>.denoise`) and records what it was made
+   from (photo signature, model version).
 4. When Denoise is on and that file is current, the preview worker, the hosted editor's renders and full-size exports develop it in the
-   photo's place (`ai_denoise.render_source`). Amount rewrites four bytes of the file. An export with Denoise on makes the file if the
+   photo's place (`ai_denoise.render_source`). Amount rewrites four bytes near the start of the companion. An export with Denoise on makes the file if the
    editor never did, as Super Resolution is applied at output.
 
 The setting is `aiDenoise: {"enabled", "amount"}` in the recipe, a host setting (never sent to PhotoCraft), photo-specific (not in

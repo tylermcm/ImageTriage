@@ -32,9 +32,16 @@ _DECISIONS = ("", "keep", "win", "rej", "rev", "", "keep", "")  # weights by pos
 
 def _slim_edits(folder: str) -> None:
     try:
+        from ..ai_denoise import migrate_folder
         from ..photocraft_bridge import slim_folder_edits
 
         slim_folder_edits(folder)
+        from ..ai_denoise import FOLDER, companions_readable
+        from ..edit_storage import edit_root_for
+
+        denoised = edit_root_for(folder) / FOLDER
+        if denoised.is_dir() and any(".denoised." in name and not name.endswith(".json") for name in os.listdir(denoised))                 and companions_readable():
+            migrate_folder(folder)                     # denoised raw copies become companions (once the worker reads them)
     except Exception:                                  # space is only reclaimed: a share that went away changes nothing
         pass
 

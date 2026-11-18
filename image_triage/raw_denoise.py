@@ -176,17 +176,135 @@ def has_trailer(path: Path) -> bool:
 
 
 def set_amount(path: Path, amount: float) -> None:
-    """Change how much of the denoised samples a file uses, in place (four bytes near its end)."""
+    """Change how much of the denoised samples a file uses, in place (four bytes: near the start of a companion, near the end of
+    a denoised raw copy)."""
+    value = struct.pack("<f", float(max(0.0, min(100.0, amount))))
+    if is_companion(path):
+        with open(path, "r+b") as f:
+            f.seek(COMPANION_AMOUNT_AT)
+            f.write(value)
+        return
     if not has_trailer(path):
         raise ValueError("Not a denoised raw file")
     with open(path, "r+b") as f:
         f.seek(-AMOUNT_FROM_END, os.SEEK_END)
-        f.write(struct.pack("<f", float(max(0.0, min(100.0, amount)))))
+        f.write(value)
 
 
 def read_amount(path: Path) -> float | None:
+    if is_companion(path):
+        with open(path, "rb") as f:
+            f.seek(COMPANION_AMOUNT_AT)
+            return struct.unpack("<f", f.read(4))[0]
     if not has_trailer(path):
         return None
     with open(path, "rb") as f:
         f.seek(-AMOUNT_FROM_END, os.SEEK_END)
         return struct.unpack("<f", f.read(4))[0]
+
+
+# ---- the companion file (photocraft_raw::denoised, "the companion file") -------------------------------------------------------
+# Only the denoised samples, kept beside the photo as Camera Raw keeps its AI results in a .acr file: no copy of the raw. A host
+# passes the companion where it would pass the raw; PhotoCraft and the preview worker read the original it names and the samples
+# together. The samples are on a square-root scale quantised to COMPANION_BITS, split into the four CFA planes, predicted from their
+# neighbours (lossless JPEG's median edge detector) and the differences zlib-compressed. At 10 bits the error is about 3% of the
+# noise Denoise removes; a 24 MP raw's companion is ~22 MB instead of a 150 MB denoised copy.
+COMPANION_MAGIC = b"PCDNCMP1"
+COMPANION_AMOUNT_AT = 12
+COMPANION_BITS = 10
+_ESCAPE = -128
+
+
+def _median_residuals(codes):
+    """``codes`` minus their median-edge prediction from the left, upper and upper-left neighbours (0 outside the plane)."""
+    import numpy as np
+
+    p = codes.astype(np.int32)
+    left = np.zeros_like(p); left[:, 1:] = p[:, :-1]
+    up = np.zeros_like(p); up[1:, :] = p[:-1, :]
+    corner = np.zeros_like(p); corner[1:, 1:] = p[:-1, :-1]
+    hi, lo = np.maximum(left, up), np.minimum(left, up)
+    return p - np.where(corner >= hi, lo, np.where(corner <= lo, hi, left + up - corner))
+
+
+def companion_bytes(original_name: str, samples, region, sensor, amount: float, bits: int = COMPANION_BITS) -> bytes:
+    """A companion for the raw at ``original_name`` (its path relative to the companion's folder, ``/``-separated)."""
+    import zlib
+
+    import numpy as np
+
+    x, y, w, h = (int(v) for v in region)
+    if w % 2 or h % 2:
+        raise ValueError("The denoised region must have even sides")
+    top = (1 << bits) - 1
+    codes = np.round(np.sqrt(np.clip(np.asarray(samples, np.float32).reshape(h, w), 0.0, 1.0)) * top).astype(np.int32)
+    residual = np.concatenate([_median_residuals(codes[sy::2, sx::2]).ravel() for sy in (0, 1) for sx in (0, 1)])
+    small = np.abs(residual) <= 127
+    stream = np.where(small, residual, _ESCAPE).astype(np.int8).tobytes()
+    escapes = residual[~small].astype("<i2").tobytes()
+    name = original_name.encode("utf-8")
+    head = COMPANION_MAGIC + struct.pack("<If6III", 1, float(amount), x, y, w, h, int(sensor[0]), int(sensor[1]), bits, len(name)) + name
+    parts = [zlib.compress(stream, 6), zlib.compress(escapes, 6)]
+    return head + b"".join(struct.pack("<Q", len(part)) + part for part in parts)
+
+
+def write_companion(original: Path, target: Path, samples, region, sensor, amount: float) -> Path:
+    """The companion of ``original``'s denoised samples at ``target``, written next to its final name and moved into place."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    relative = os.path.relpath(Path(original), Path(target).parent).replace(os.sep, "/")
+    partial = target.with_name(target.name + ".partial")
+    partial.write_bytes(companion_bytes(relative, samples, region, sensor, amount))
+    os.replace(partial, target)
+    return target
+
+
+def read_companion(data: bytes):
+    """``(original, amount, region, sensor, samples)`` of a companion (slow: tests and the migration's checks only)."""
+    import zlib
+
+    import numpy as np
+
+    if not data.startswith(COMPANION_MAGIC):
+        raise ValueError("Not a denoise companion")
+    version, amount, x, y, w, h, sw, sh, bits, name_len = struct.unpack_from("<If6III", data, 8)
+    at = 48
+    original = data[at:at + name_len].decode("utf-8")
+    at += name_len
+    parts = []
+    for _ in range(2):
+        (length,) = struct.unpack_from("<Q", data, at)
+        parts.append(zlib.decompress(data[at + 8:at + 8 + length]))
+        at += 8 + length
+    residual = np.frombuffer(parts[0], np.int8).astype(np.int32)
+    escapes = iter(np.frombuffer(parts[1], "<i2").astype(int))
+    top = (1 << bits) - 1
+    out = np.zeros((h, w), np.float32)
+    pw, ph = w // 2, h // 2
+    k = 0
+    for sy in (0, 1):
+        for sx in (0, 1):
+            codes = np.zeros((ph, pw), np.int64)
+            for py in range(ph):
+                for px in range(pw):
+                    left = codes[py, px - 1] if px else 0
+                    up = codes[py - 1, px] if py else 0
+                    corner = codes[py - 1, px - 1] if px and py else 0
+                    hi, lo = max(left, up), min(left, up)
+                    pred = lo if corner >= hi else hi if corner <= lo else left + up - corner
+                    r = int(residual[k]); k += 1
+                    codes[py, px] = pred + (next(escapes) if r == _ESCAPE else r)
+            out[sy::2, sx::2] = (codes / top) ** 2
+    return original, amount, (x, y, w, h), (sw, sh), out
+
+
+def is_companion(path: Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(8) == COMPANION_MAGIC
+    except OSError:
+        return False
+
+
+def is_denoised(path: Path) -> bool:
+    """A denoised raw: a companion, or (from earlier versions) a raw copy with the samples appended."""
+    return is_companion(path) or has_trailer(path)
