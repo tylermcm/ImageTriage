@@ -793,6 +793,25 @@ def test_raw_dock_meets_filmstrip_and_closes_to_full_width(shell, qapp):
     assert not [w for w in warnings if "RawEditorPanel.qml" in w], warnings
 
 
+def test_red_eye_cursor_stays_photo_sized_before_the_raw_size_is_known(shell, qapp):
+    # The photo's size is 0 until the RAW is read (and stays 0 if it cannot be). The search-area cursor was divided by it and came out
+    # tens of thousands of pixels across, which the software renderer turns into gigabytes.
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, model, popout, warnings = shell
+    popout.open(0)
+    popout.rawEditor.open("sample.NEF")
+    pump(qapp, 0.4)
+    assert popout.rawEditor.property("originalWidth") == 0
+    window.findChild(QQuickItem, "viewerRawEditorPanel").setProperty("tool", "Red Eye")
+    pump(qapp, 0.2)
+    overlay = window.findChild(QQuickItem, "rawRedEyeOverlay")
+    cursor = window.findChild(QQuickItem, "rawRedEyeCursor")
+    assert overlay.isVisible()
+    assert 12 <= overlay.property("diameter") <= 2 * max(overlay.width(), overlay.height())
+    assert cursor.width() == 0, "a hidden cursor takes no room at all"
+
+
 def test_raw_reset_and_history_preserve_unexposed_recipe_settings(qapp):
     from image_triage.qml_shell.raw_editor import RawEditor
 

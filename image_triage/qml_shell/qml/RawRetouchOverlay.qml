@@ -9,7 +9,8 @@ Item {
     property var points: []
     signal zoomWheel(real x, real y, real steps)
     property bool drawing: false
-    readonly property real diameter: visible ? model.size/100*Math.min(width/crop.w,height/crop.h) : 0
+    // The brush on screen, never larger than twice the photo (a crop of a sliver would make it enormous; see RawRedEyeOverlay).
+    readonly property real diameter: visible ? Math.min(2*Math.max(width, height), model.size/100*Math.min(width/Math.max(crop.w, 0.001), height/Math.max(crop.h, 0.001))) : 0
     function toView(p) { return Qt.point((p[0]-crop.x)/crop.w*width,(p[1]-crop.y)/crop.h*height) }
     function acceptsPoint(x, y) {
         if (x < 0 || y < 0 || x >= width || y >= height) return false
@@ -38,7 +39,7 @@ Item {
         }
     }
     Image { anchors.fill: parent; visible: overlay.model.kind==="erase" && source!==""; source: overlay.visible ? overlay.raw.eraseEditor.overlay : ""; fillMode: Image.Stretch; cache: false }
-    Rectangle { objectName: "rawRetouchCursor"; visible: overlay.model.kind!=="erase" && pointer.enabled && pointer.containsMouse && overlay.acceptsPoint(pointer.mouseX, pointer.mouseY); x: pointer.mouseX-width/2; y: pointer.mouseY-height/2; width: overlay.diameter; height: width; radius: width/2; color:'transparent'; border.color:'white' }
+    Rectangle { objectName: "rawRetouchCursor"; visible: overlay.model.kind!=="erase" && pointer.enabled && pointer.containsMouse && overlay.acceptsPoint(pointer.mouseX, pointer.mouseY); x: pointer.mouseX-width/2; y: pointer.mouseY-height/2; width: visible ? overlay.diameter : 0; height: width; radius: width/2; color:'transparent'; border.color:'white' }
     Rectangle {
         visible: overlay.model.source.length===2 && (overlay.model.kind==='clone' || overlay.model.kind==='heal')
         x: visible ? overlay.toView(overlay.model.source).x-6 : 0; y: visible ? overlay.toView(overlay.model.source).y-6 : 0

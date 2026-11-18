@@ -89,7 +89,7 @@ Item {
     Rectangle {
         objectName: "rawMaskBrushCursor"
         visible: overlay.model.showPins && input.containsMouse && overlay.model.tool === "brush"
-        width: overlay.visible && visible ? overlay.model.brushSize/100*Math.min(overlay.width/overlay.crop.w,overlay.height/overlay.crop.h) : 0
+        width: overlay.visible && visible ? Math.min(2*Math.max(overlay.width, overlay.height), overlay.model.brushSize/100*Math.min(overlay.width/Math.max(overlay.crop.w, 0.001), overlay.height/Math.max(overlay.crop.h, 0.001))) : 0
         height: width; radius: width/2
         x: input.mouseX-width/2; y: input.mouseY-height/2
         color: "transparent"; border.color: "white"; border.width: 1
