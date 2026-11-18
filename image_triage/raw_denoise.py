@@ -22,6 +22,7 @@ AMOUNT_FROM_END = TRAILER_LEN - 4
 TILE = 256          # packed pixels per tile side (the model's output is twice that)
 OVERLAP = 32        # packed pixels shared by neighbouring tiles, blended
 CLIP_KEEP = 0.97    # photosites this close to white keep their own value, so clipped highlights stay clipped
+LEVEL_RADIUS = 8    # half-width (photosites of one colour) of the box that each CFA site's own level is restored over
 OFFSETS = {"RGGB": (0, 0), "GRBG": (1, 0), "GBRG": (0, 1), "BGGR": (1, 1)}
 
 
@@ -108,9 +109,29 @@ def unpack(rgb, packed, multipliers, original):
     out[0::2, 1::2] = rgb[1, 0::2, 1::2]
     out[1::2, 0::2] = rgb[1, 1::2, 0::2]
     out[1::2, 1::2] = rgb[2, 1::2, 1::2] / multipliers[2]
+    # The network's full-resolution output carries a small bias that repeats every 2 x 2 pixels (its upsampling): read back at the
+    # photosites it differs per site, most visibly between the two greens (G1 and G2 apart by ~15% on a Nikon NEF), which a demosaic
+    # turns into a maze pattern. Each site gets back its own local level: the slowly varying part of (original - denoised), which is
+    # that bias and not noise, is added to it.
+    for sy in (0, 1):
+        for sx in (0, 1):
+            site = out[sy::2, sx::2]
+            site += _box_blur(_box_blur(original[sy::2, sx::2] - site, LEVEL_RADIUS), LEVEL_RADIUS)
     keep = original >= CLIP_KEEP
     out[keep] = original[keep]
     return out
+
+
+def _box_blur(image, radius):
+    """Mean over a (2 radius + 1)-square box, edges repeated (two passes approximate a Gaussian)."""
+    import numpy as np
+
+    k = 2 * radius + 1
+    padded = np.pad(image.astype(np.float64), radius, mode="edge")
+    rows = np.cumsum(np.pad(padded, ((1, 0), (0, 0))), axis=0)
+    padded = (rows[k:] - rows[:-k]) / k
+    cols = np.cumsum(np.pad(padded, ((0, 0), (1, 0))), axis=1)
+    return ((cols[:, k:] - cols[:, :-k]) / k).astype(np.float32)
 
 
 def denoise_plane(plane, region, pattern, multipliers, infer, cancel=None, progress=None):

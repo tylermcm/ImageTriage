@@ -42,6 +42,22 @@ def test_tiles_join_without_seams():
     assert np.allclose(tiled, whole, atol=1e-3)
 
 
+def test_a_bias_that_repeats_every_2x2_pixels_does_not_split_the_greens():
+    """The real network's output differs per 2x2 phase; read back at the photosites, G1 and G2 came apart (a maze after demosaic)."""
+    rng = np.random.default_rng(3)
+    plane = (0.2 + 0.02 * rng.standard_normal((256, 384))).astype(np.float32)        # flat grey with noise
+    bias = np.array([[1.0, 1.08], [0.9, 1.0]], np.float32)
+
+    def biased_smoothing_model(packed):
+        flat = np.full_like(identity_model(packed), float(identity_model(packed).mean()))   # all noise removed
+        return flat * np.tile(bias, (flat.shape[2] // 2, flat.shape[3] // 2))[None, None]
+
+    _, out = raw_denoise.denoise_plane(plane, (0, 0, 384, 256), "RGGB", [1.0, 1.0, 1.0], biased_smoothing_model)
+    g1, g2 = out[0::2, 1::2].mean(), out[1::2, 0::2].mean()
+    assert abs(g1 - g2) / g2 < 0.01                                             # 18% apart without the per-site levels
+    assert out.std() < plane.std() / 2                                         # and the noise is still gone
+
+
 def test_highlights_near_white_keep_their_own_value():
     plane = np.full((64, 64), 0.3, np.float32)
     plane[10, 10] = 1.02

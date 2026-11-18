@@ -10,6 +10,8 @@ at 50). AI noise reduction on the raw sensor data, before PhotoCraft demosaics a
 - The authors' README (commit e80fb7b, 2026-07-04, by Benoit Brummer): "The weights are dual licensed GPL3 + CC-BY-4.0". We use them
   under **CC-BY-4.0**: credit the authors and paper, link the licence, and say we changed them (converted to ONNX). The GPL-3
   training code is not shipped. Training data: RawNIND (CC BY-SA 4.0); see `ai_model_licence_audit.md` (amber).
+- The checkpoint is in the authors' Google Drive folder under `rawnind_denoise/<name below>/saved_models/iter_4350000.pt`.
+  The export script loads only `rawnind/models/raw_denoiser.py` from their code, so their training dependencies are not needed.
 - Checkpoint `DenoiserTrainingBayerToProfiledRGB_4ch_2024-02-21-bayer_ms-ssim_mgout_notrans_valeither_-4`, iteration 4350000 (the one
   darktable 5.6 ships), converted by `scripts/export_rawnind_onnx.py` (`rawnind_bayer.onnx`, 30 MB, sha256 in `ai_model.py`).
 - Installed from the AI Center (AI > AI Center, **AI Denoise (RAW editor)** > Install from file…): the picked `.onnx` is recognised by
@@ -40,7 +42,9 @@ are the original's.
    balance (`denoiseInput`; the worker answers `"denoise": 1` in its hello).
 2. The model runs on the warm AI host (`mask_engine_service.infer_denoise`, `denoise_worker.py`): `raw_denoise` packs the samples as
    R, G1, G2, B planes (white-balanced), runs 256 px tiles with a 32 px feathered overlap, matches the output's gain to the input,
-   undoes the white balance and keeps one channel per photosite. Photosites within 3% of white keep their own value.
+   undoes the white balance and keeps one channel per photosite. The network's output has a small bias that repeats every 2 x 2
+   pixels, so read back at the photosites the two greens came apart (a maze after demosaic); each CFA site therefore gets back its own
+   local level (the heavily blurred difference to the original is added to it). Photosites within 3% of white keep their own value.
 3. `ai_denoise.make` appends the result to a copy of the raw in the photo's edits folder
    (`<edits>/denoised/<name>.denoised.<ext>`) and records what it was made from (photo signature, model version).
 4. When Denoise is on and that file is current, the preview worker, the hosted editor's renders and full-size exports develop it in the

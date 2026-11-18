@@ -661,7 +661,10 @@ def lama_installation() -> "AIModelInstallation":
 # hand for now: put rawnind_bayer.onnx in the folder below.
 RAWNIND_MODEL_REPO_ID = "trougnouf/rawnind_jddc"
 RAWNIND_MODEL_FILE = "rawnind_bayer.onnx"
-RAWNIND_MODEL_SHA256 = "ab06173c225eb497660fa97241d21517445719de1cea2e97bad131c8a675f58e"
+# Converted with PyTorch 2.9.0 from iter_4350000.pt (sha256 c1f7de3de24cb12f4803ee65e11cfb467e9a5b80c3cb7126746ef026106c15e0,
+# 31,059,270 bytes, from the authors' Google Drive folder); ONNX against PyTorch: relative error 1.5e-6. Another PyTorch writes other
+# bytes for the same weights, so a reconversion updates this digest.
+RAWNIND_MODEL_SHA256 = "563d94cc30371c6d96ff240a7190eae72a0397b4327ef475ac568fd6ab312fc9"
 RAWNIND_MODEL_SIZE_MB = 30
 
 

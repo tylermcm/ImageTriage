@@ -15,20 +15,36 @@ import hashlib
 import sys
 
 
+def load_utnet2(code: str):
+    """The network class from ``rawnind/models/raw_denoiser.py`` alone. The ``rawnind`` package imports its whole training stack
+    (configargparse, datasets, ...) when it loads; the network file needs only ``rawnind.libs.rawproc``, and UtNet2 never calls it."""
+    import importlib.util
+    import types
+    from pathlib import Path
+
+    for name in ("rawnind", "rawnind.libs", "rawnind.libs.rawproc"):
+        sys.modules.setdefault(name, types.ModuleType(name))
+    sys.modules["rawnind"].libs = sys.modules["rawnind.libs"]
+    sys.modules["rawnind.libs"].rawproc = sys.modules["rawnind.libs.rawproc"]
+    spec = importlib.util.spec_from_file_location("raw_denoiser", Path(code) / "rawnind" / "models" / "raw_denoiser.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.UtNet2
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--code", required=True, help="rawnind_jddc/src")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--out", default="rawnind_bayer.onnx")
     args = parser.parse_args()
-    sys.path.insert(0, args.code)
     import numpy as np
     import onnxruntime as ort
     import torch
-    from rawnind.models.raw_denoiser import UtNet2
-
+    UtNet2 = load_utnet2(args.code)
     net = UtNet2(in_channels=4, funit=32)
-    net.load_state_dict(torch.load(args.checkpoint, map_location="cpu"))
+    # weights only: a checkpoint is a pickle, and nothing in it is run
+    net.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True))
     net.eval()
     torch.onnx.export(net, torch.rand(1, 4, 128, 160), args.out, input_names=["input"], output_names=["output"],
                       dynamic_axes={"input": {2: "h", 3: "w"}, "output": {2: "H", 3: "W"}}, opset_version=17, dynamo=False)
