@@ -40,6 +40,17 @@ FocusScope {
     readonly property string curPath: cur.path || ""
     readonly property var rawEditor: popout.rawEditor || null
     readonly property bool rawEditing: rawEditor !== null && rawEditor.active
+    // the editor's AI tool that is working now ({tool, title}), or null: its overlay sweeps over the photo until it is done
+    readonly property var aiJob: {
+        if (!rawEditing) return null
+        var e = rawEditor
+        var jobs = [[e.denoiseEditor, "AI Denoise"], [e.skyEditor, "Sky Replacement"], [e.eraseEditor, "AI Erase"],
+                    [e.lightDepthEditor, "Light Depth"], [e.atmosphereEditor, "Atmosphere"], [e.bokehEditor, "Bokeh"],
+                    [e.maskEditor ? e.maskEditor.ai : null, "AI Masking"]]
+        for (var i = 0; i < jobs.length; ++i)
+            if (jobs[i][0] && jobs[i][0].busy) return {"tool": jobs[i][0], "title": jobs[i][1]}
+        return null
+    }
     onRawEditingChanged: Qt.callLater(function() { if (v.rawEditor) v.rawEditor.setDetailMode(v.rawEditing && v.zoomed) })
     property bool rawOverlay: true
     // the row's name already is the file's name with its extension; only a name without one gets the extension added
@@ -455,6 +466,24 @@ FocusScope {
                 text: rawPanel.pointColorPicking ? "Click a color to adjust · Esc cancels" : rawPanel.lightDepthPicking ? "Click the photo to pick the depth · Esc cancels" : "Click a neutral area · Esc cancels"
                 color: v.cFg; font.pixelSize: 12
             }
+        }
+        // an editor AI tool at work: over the part of the photo that is in view
+        AiWorkingOverlay {
+            id: aiWorking
+            objectName: "aiWorkingOverlay"
+            readonly property real pl: pan.x - pan.contentX + photoImg.x + (photoImg.width - photoImg.paintedWidth) / 2
+            readonly property real pt: pan.y - pan.contentY + photoImg.y + (photoImg.height - photoImg.paintedHeight) / 2
+            x: Math.max(0, pl); y: Math.max(0, pt)
+            width: Math.max(0, Math.min(stage.width, pl + photoImg.paintedWidth) - x)
+            height: Math.max(0, Math.min(stage.height, pt + photoImg.paintedHeight) - y)
+            active: v.aiJob !== null && !v.comparing
+            property var job: null
+            onActiveChanged: if (active) job = v.aiJob          // kept while fading out, so the words do not vanish first
+            Connections { target: v; function onAiJobChanged() { if (v.aiJob !== null) aiWorking.job = v.aiJob } }
+            title: job ? job.title : ""
+            step: job && job.tool.message ? job.tool.message : ""
+            canCancel: job !== null && typeof job.tool.cancel === "function"
+            onCancelRequested: if (job) job.tool.cancel()
         }
         // loading spinner and note
         Item {
