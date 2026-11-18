@@ -569,12 +569,12 @@ Window {
         if (typeof inspectorTab === "number" && Number.isInteger(inspectorTab) && inspectorTab >= 0 && inspectorTab <= 2) insp.tab = inspectorTab
         var density = uiMemory.get("density", UiState.dens)
         if (["s", "m", "l"].indexOf(density) >= 0) UiState.dens = density
-        var railOrder = uiMemory.get("railOrder", []), barOrder = uiMemory.get("barOrder", [])
-        if (Array.isArray(railOrder) && railOrder.length) UiState.railOrder = railOrder      // none saved: the default order stays
-        if (Array.isArray(barOrder)) UiState.barOrder = barOrder
+        var railOrder = idList(uiMemory.get("railOrder", [])), barOrder = idList(uiMemory.get("barOrder", []))
+        if (railOrder !== null && railOrder.length) UiState.railOrder = railOrder      // none saved: the default order stays
+        if (barOrder !== null) UiState.barOrder = barOrder
         if (uiMemory.get("pinsLocked", false) === true) UiState.pinsLocked = true
-        var destOrder = uiMemory.get("destOrder", [])
-        if (Array.isArray(destOrder)) UiState.destOrder = destOrder
+        var destOrder = idList(uiMemory.get("destOrder", []))
+        if (destOrder !== null) UiState.destOrder = destOrder
         var columns = uiMemory.get("columns", UiState.cols)
         if (typeof columns === "number" && columns >= 0 && columns <= 9) UiState.cols = Math.floor(columns)
         var sort = uiMemory.get("sort", UiState.sort)
@@ -597,6 +597,14 @@ Window {
             UiState.pins = merged
         }
         interfaceRestored = true
+    }
+    // A saved order as a real array of button ids, or null when it is not one. A list read back from the settings reaches QML as a list-like
+    // object (it has a length and indexes, but Array.isArray says no), so it is copied rather than tested with Array.isArray.
+    function idList(value) {
+        if (value === null || value === undefined || typeof value !== "object" || typeof value.length !== "number") return null
+        var out = []
+        for (var i = 0; i < value.length; ++i) { if (typeof value[i] !== "string") return null; out.push(value[i]) }
+        return out
     }
     // not while zen mode has put the panels away, nor in a narrow window (its sheets start closed whatever was left open)
     function remember(name, value) { if (interfaceRestored && !UiState.zen && !UiState.compact) uiMemory.set(name, value) }

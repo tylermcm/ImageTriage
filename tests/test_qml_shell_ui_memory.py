@@ -162,3 +162,30 @@ def test_filters_and_the_new_orders_are_remembered_and_come_back(qapp, tmp_path)
     window.close()
     engine.deleteLater()
     pump(qapp, 0.2)
+
+
+def test_the_rail_order_dragged_into_comes_back_after_a_restart(qapp, tmp_path):
+    """A saved order reaches QML as a list-like object that Array.isArray rejects: it used to be ignored at every start."""
+    engine, window, warnings, memory = window_with(qapp, tmp_path)
+    memory.set("railOrder", ["palette", "convert", "openFolder", "undo", "view", "funnel", "sort", "columns", "editor"])
+    memory.set("destOrder", ["faces", "lib", "coll", "drop"])
+    memory.set("barOrder", ["reject", "accept"])
+    QMetaObject.invokeMethod(window, "restoreInterface")
+    pump(qapp, 0.5)
+
+    def walk(item):
+        yield item
+        for child in item.childItems():
+            yield from walk(child)
+
+    drawn = {}
+    for item in walk(window.contentItem()):
+        name = item.property("dragId")
+        if isinstance(name, str) and name and item.isVisible() and name not in drawn:
+            drawn[name] = item.mapToScene(item.boundingRect().topLeft()).y()
+    assert drawn["convert"] < drawn["openFolder"] < drawn["undo"]             # where the buttons are drawn, not only the saved list
+    assert drawn["faces"] < drawn["lib"]
+    assert not [w for w in warnings if "ReferenceError" in w or "TypeError" in w], warnings
+    window.close()
+    engine.deleteLater()
+    pump(qapp, 0.2)
