@@ -635,3 +635,39 @@ def test_export_without_the_depth_map_fails_and_says_why_instead_of_dropping_the
     live = editor(photo)
     result = render.FullRenderService(lambda: live).request(photo)
     assert result.outcome == render.FAILED and "depth map is missing" in result.reason and live.requests == []
+
+
+def test_without_a_registered_editor_an_edited_photo_starts_a_hidden_one(photo, monkeypatch):
+    """The QML window registers no editor: an export of an edited photo used to fail with "PhotoCraft is not running"."""
+    recipe(photo)
+    proc = editor(photo)
+    started = []
+    monkeypatch.setattr(render, "_service", None)
+    monkeypatch.setattr(bridge, "launch_photocraft", lambda initial, **kw: started.append(kw) or proc)
+    result = render.request_full_render(photo)
+    assert result.outcome == render.RENDERED, result.reason
+    assert started and started[0]["read_root"] == str(Path(photo).parent)
+    proc.shutdown.assert_called_once()                              # quit after the render
+    result.release()
+
+
+def test_a_full_size_render_over_qts_default_limit_is_read(tmp_path, monkeypatch):
+    """A 24 MP 16-bit render is ~360 MB as Qt holds it, over the 256 MB Qt allows by default: it came back as an empty picture."""
+    from PySide6.QtGui import QImageReader
+
+    from image_triage import edited_export
+
+    big = tmp_path / "render.png"
+    image = QImage(6000, 6000, QImage.Format.Format_RGBA64)          # 288 MB held
+    image.fill(QColor("gray"))
+    assert image.save(str(big), "PNG", 0)
+    previous = QImageReader.allocationLimit()
+    QImageReader.setAllocationLimit(256)
+    try:
+        assert QImage(str(big)).isNull()                              # what export got before
+        result = render.RenderResult(render.RENDERED, path=big, format="png", width=6000, height=6000, depth=16, icc=False)
+        monkeypatch.setattr("image_triage.full_render.request_full_render", lambda path: result)
+        loaded = edited_export.edited_image_for_export("photo.NEF")
+        assert loaded.image.width() == 6000 and bit_depth(loaded.image) == 16
+    finally:
+        QImageReader.setAllocationLimit(previous)

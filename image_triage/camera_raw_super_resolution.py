@@ -32,6 +32,9 @@ def _to_8bit_png(path: Path, out: Path) -> None:
     """A render of more than 8 bits (PIL cannot read 16-bit RGB) as an 8-bit PNG, through Qt; the colour profile is kept."""
     from PySide6.QtGui import QImage
 
+    from .edited_export import allow_full_size_pictures
+
+    allow_full_size_pictures()
     image = QImage(str(path))
     if image.isNull():
         raise RuntimeError(f"could not read the rendered picture {path.name}")

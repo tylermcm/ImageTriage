@@ -91,7 +91,16 @@ def request_full_render(image_path: str, *, progress=None, cancel: threading.Eve
         service = _service
     if service is not None:
         return service.request(image_path, progress=progress, cancel=cancel)
-    return FullRenderService(lambda: None).request(image_path, progress=progress, cancel=cancel)
+    # No editor registered one (the QML window has none open for this): a hidden PhotoCraft is started for the render and quit after it,
+    # as the RAW editor's saves do. Without it an edited photo could never be exported.
+    return FullRenderService(lambda: None, launch=_launch_hidden).request(image_path, progress=progress, cancel=cancel)
+
+
+def _launch_hidden(folder: str) -> "bridge.PhotoCraftProcess":
+    """A hidden PhotoCraft that may read ``folder`` and write to its edits folder (where renders are written)."""
+    from . import edit_storage
+
+    return bridge.launch_photocraft(None, read_root=folder, write_root=str(edit_storage.ensure_edit_root(folder)))
 
 
 def _described(path: Path, reply: dict, *, temporary: bool) -> RenderResult:

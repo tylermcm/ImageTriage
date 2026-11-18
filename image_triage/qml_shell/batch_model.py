@@ -58,6 +58,20 @@ def _int(text, default: int = 0) -> int:
         return default
 
 
+def _show_in_folder(path: str) -> None:
+    """Open Explorer (or the platform's file manager) at ``path``: a file is selected in its folder, a folder is opened."""
+    import subprocess
+    import sys
+
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+
+    if sys.platform == "win32" and os.path.isfile(path):
+        subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+    else:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path if os.path.isdir(path) else os.path.dirname(path)))
+
+
 class BatchModel(QObject):
     revisionChanged = Signal()
     previewChanged = Signal()
@@ -404,11 +418,15 @@ class BatchModel(QObject):
         written = len(outcome)
         failed = tuple(getattr(outcome, "failed", ()))
         if self._toasts is not None:
+            where = str(Path(outcome[0]).parent) if written else ""
+            # Show: the folder the files went to, in Explorer (the one written file selected when there is one)
+            show = (lambda: _show_in_folder(str(outcome[0]) if written == 1 else where)) if where else None
             if failed:
-                self._toasts.push("warn", f"{verb} {written}, left out {len(failed)}", f"{Path(failed[0][0]).name}: {failed[0][1]}")
+                self._toasts.push("warn", f"{verb} {written}, left out {len(failed)}", f"{Path(failed[0][0]).name}: {failed[0][1]}",
+                                  "Show" if show else "", show, seconds=12.0)
             else:
-                where = str(Path(outcome[0]).parent) if written else ""
-                self._toasts.push("success", f"{verb} {written} photo{'s' if written != 1 else ''}", f"The files are in {where}." if where else "")
+                self._toasts.push("success", f"{verb} {written} photo{'s' if written != 1 else ''}", f"The files are in {where}." if where else "",
+                                  "Show" if show else "", show, seconds=10.0)
         self._photos.reload()
 
     def _rename_done(self, preview, annotations: dict, moves) -> None:

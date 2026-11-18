@@ -65,6 +65,18 @@ def bit_depth(image: QImage) -> int:
     return 8
 
 
+# Qt refuses to decode a picture over 256 MB (its default), and a full-size render of a 24 MP raw is 16-bit RGB, which Qt holds at 8
+# bytes a pixel: 360 MB, more for larger sensors or Super Resolution. The reader is allowed this much instead.
+FULL_SIZE_ALLOCATION_MB = 4096
+
+
+def allow_full_size_pictures() -> None:
+    from PySide6.QtGui import QImageReader
+
+    if QImageReader.allocationLimit() and QImageReader.allocationLimit() < FULL_SIZE_ALLOCATION_MB:
+        QImageReader.setAllocationLimit(FULL_SIZE_ALLOCATION_MB)
+
+
 def edited_image_for_export(source_path: str) -> EditedImage | None:
     """The photo's edits at full size, decoded at the size they were rendered (never enlarged), with the render's own colour profile;
     ``None`` when the photo has no PhotoCraft edits. Raises ``EditedRenderFailed`` when it has edits that could not be rendered."""
@@ -75,6 +87,7 @@ def edited_image_for_export(source_path: str) -> EditedImage | None:
         raise EditedRenderFailed(source_path, result.reason)
     if result.outcome != RENDERED or result.path is None:
         return None
+    allow_full_size_pictures()
     try:
         image = QImage(str(result.path))
     finally:
