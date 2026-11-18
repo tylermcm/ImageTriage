@@ -102,7 +102,7 @@ def test_the_photo_menu_has_what_the_mockup_has(ctx):
     v = menu.view
     assert v["open"] and v["kind"] == "photo"
     assert [d["key"] for d in v["items"][0]["decs"]] == ["win", "keep", "rej"]
-    assert keys(v["items"]) == ["open", "edit", "with", "share", "coll-last", "coll", "mv", "rename", "resize", "convert", "cpath", "cname", "reveal", "del"]
+    assert keys(v["items"]) == ["open", "edit", "with", "share", "coll-last", "coll", "mv", "rename", "export", "cpath", "cname", "reveal", "del"]
     assert next(i for i in v["items"] if i.get("key") == "del")["danger"]
     menu.close()
     assert not menu.view["open"]
@@ -176,6 +176,30 @@ def test_last_collection_updates_after_rename_or_delete_and_disables_without_his
     assert "Renamed picks" in quick()["label"]
     collections.remove(first)
     assert quick()["off"] and quick()["label"] == "Add to last collection"
+
+
+def test_export_takes_the_photo_right_clicked_alone_or_the_pick_it_is_in(ctx):
+    menu, toasts, photos, collections, cull, requests = ctx
+    menu.openPhoto(2)
+    assert "resize" not in keys(menu.view["items"]) and "convert" not in keys(menu.view["items"])
+    menu.act("export")
+    assert requests[-1] == ("exportOne", photos.get(2)["path"])          # Batch Export with "This photo"
+    photos.toggleSelected(1, 2)                                           # two photos picked, this one among them
+    menu.openPhoto(2)
+    menu.act("export")
+    assert requests[-1] == ("batch", "export")
+
+
+def test_the_explorer_command_keeps_a_path_with_spaces_whole(monkeypatch):
+    from image_triage import shell_actions
+
+    started = []
+    monkeypatch.setattr(shell_actions.os, "name", "nt")
+    monkeypatch.setattr(shell_actions.subprocess, "Popen", lambda command, *a, **kw: started.append(command))
+    photo = r"\\192.168.1.200\Share\China '26\Raw Files\_DSC6941.NEF"
+    monkeypatch.setattr(shell_actions.os.path, "normpath", lambda p: p)      # as Windows leaves this path
+    shell_actions.reveal_in_file_explorer(photo)
+    assert started == ['explorer /select,"' + photo + '"']                  # one command line: the quoted path stays whole
 
 
 def test_what_only_the_window_can_do_is_requested(ctx):

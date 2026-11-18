@@ -177,7 +177,7 @@ class MenuModel(QObject):
                 "coll", off=not last or in_last, tick=in_last)
             items += [SEP, self._row_item("open", "Open", "open", kbd="Space"), self._row_item("edit", "Open in editor", "editor"), self._arrow("with", "Open with", "with"), SEP,
                       self._row_item("share", "Share to phone", "phone"), quick_collection, self._arrow("coll", "Collections", "coll"), self._arrow("mv", "Copy or move", "move"), SEP,
-                      self._row_item("rename", "Rename…", "rename", kbd="F2"), self._row_item("resize", "Resize…", "resize"), self._row_item("convert", "Convert…", "convert"), SEP,
+                      self._row_item("rename", "Rename…", "rename", kbd="F2"), self._row_item("export", "Export…", "convert"), SEP,
                       self._row_item("cpath", "Copy path", "link"), self._row_item("cname", "Copy file name", "text"), self._row_item("reveal", "Show in File Explorer", "folder"), SEP,
                       self._row_item("del", "Delete", "trash", kbd="Del", danger=True)]
             if self._sub == "with":
@@ -299,6 +299,12 @@ class MenuModel(QObject):
                 self._files.moveRows(many, recent[index])
         elif key in ("rename", "resize", "convert"):
             self.uiRequest.emit("batch", key)
+        elif key == "export":
+            # Batch Export: the picked photos when this one is among several, else this photo alone ("This photo")
+            if len(many) > 1:
+                self.uiRequest.emit("batch", "export")
+            else:
+                self.uiRequest.emit("exportOne", path)
         elif key == "coll:new":
             self.uiRequest.emit("newCollection", 0)
         elif key.startswith("coll:"):

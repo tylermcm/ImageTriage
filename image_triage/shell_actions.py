@@ -17,7 +17,9 @@ except ImportError:  # pragma: no cover - Windows only
 def reveal_in_file_explorer(path: str) -> None:
     normalized = os.path.normpath(path)
     if os.name == "nt":
-        subprocess.Popen(["explorer", f"/select,{normalized}"])
+        # One command line, the path in its own quotes: given "/select,<path>" as one argument, Python quotes the whole of it when the
+        # path has a space, Explorer does not read that, and opens its default folder (this program's) instead of the photo's.
+        subprocess.Popen(f'explorer /select,"{normalized}"')
         return
     _open_path(os.path.dirname(normalized) or normalized)
 

@@ -67,7 +67,9 @@ def _show_in_folder(path: str) -> None:
     from PySide6.QtGui import QDesktopServices
 
     if sys.platform == "win32" and os.path.isfile(path):
-        subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+        from ..shell_actions import reveal_in_file_explorer
+
+        reveal_in_file_explorer(path)
     else:
         QDesktopServices.openUrl(QUrl.fromLocalFile(path if os.path.isdir(path) else os.path.dirname(path)))
 

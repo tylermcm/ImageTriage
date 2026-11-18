@@ -368,6 +368,7 @@ Window {
             else if (what === "open") popout.open(arg)
             else if (what === "edit") win.openInEditor(Number(arg))
             else if (what === "batch" && arg === "rename") win.renameSelection(win.actionRows(grid.row))
+            else if (what === "exportOne") { UiState.batchOnly = arg; UiState.batchMode = "export" }
             else if (what === "batch") UiState.batchMode = arg
             else if (what === "newCollection") { UiState.collDlgId = ""; UiState.collDlg = "new" }
             else if (what === "review") cull.reviewFrame(arg)
