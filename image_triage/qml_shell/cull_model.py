@@ -915,10 +915,10 @@ class CullModel(QObject):
                 # Only said when the bytes are really on disk (`ai_model_store.bundle_partial_bytes`).
                 text += f" An interrupted download is kept ({format_mb(max(1, round(m['kept'] / 1e6)))} so far): the next try continues from there."
             models.append({"key": key, "name": name, "on": ready, "desc": text, "state": state, "tone": tone, "size": size,
-                           "btn": "Cancel" if m["busy"] else ("Remove" if editor and ready else ("Install from file…" if editor else ("Try again" if m["error"] else ("Install" if m["state"] == "missing" else ("Repair" if (not ready or key == "face") else "Remove"))))),
+                           "btn": "Cancel" if m["busy"] else ("Remove" if editor and ready else ("Install from file…" if editor else ("Try again" if m["error"] else ("Install" if m["state"] == "missing" else ("Repair" if not ready else "Remove"))))),
                            "pick": editor and not ready and not m["busy"],
                            "primary": not m["busy"] and (m["state"] == "missing" or bool(m["error"])), "busy": m["busy"], "pct": m["pct"], "step": m["step"],
-                           "confirm": ready and key != "face" and not m["busy"], "locked": a["busy"] and not m["busy"]})
+                           "confirm": ready and not m["busy"], "locked": a["busy"] and not m["busy"]})
         return {"rtDot": rt_dot, "rtState": rt_state,
                 "rtTestShow": rt == "ready" and can_test and (probing or not a["busy"]), "rtTesting": probing,
                 "rtTestBtn": "Cancel test" if probing else ("Test again" if probe is not None else "Test runtime"),
@@ -1551,6 +1551,9 @@ class CullModel(QObject):
     def _model_removal_text(self, key: str) -> dict:
         """What the confirm card says before a ranker's files are deleted."""
         row = next((m for m in self._view.get("center", {}).get("models", []) if m["key"] == key), None)
+        if key == "face":
+            return {"title": "Remove the face model?", "body": "This deletes its files from this PC. The cull's eyes-closed check needs it and is off until it is "
+                    "installed again (Set up AI or Install does that, a 4 MB download). Your photos are not touched."}
         return {"title": f"Remove the {row['name'] if row else 'model'}?", "body": f"This deletes its files from this PC{' and frees ' + row['size'] if row and row.get('size') else ''}. Your photos are not touched, and " + ("installing it again needs its .onnx file." if key in ("denoise", "superres") else "you can install it again any time.")}
 
     @Slot(str, result="QVariantMap")

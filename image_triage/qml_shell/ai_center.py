@@ -615,14 +615,14 @@ class AiCenterBackend(QObject):
 
     @Slot(str)
     def modelAction(self, key: str) -> None:
-        """The model row's button: install what is missing, repair what is damaged, and remove a ranker (the face model is only repaired)."""
+        """The model row's button: install what is missing, repair what is damaged, and remove what is installed (the window asks first)."""
         found = (self._raw or {}).get("models", {}).get(key, {}).get("state", "missing")
         if key in EDITOR_MODELS:
             if found == "ready":
                 self.removeModel(key)               # anything else is installed from a file the window asks for (installModelFile)
             return
         if found == "ready":
-            self.repairModel(key) if key == "face" else self.removeModel(key)
+            self.removeModel(key)
         elif found == "missing":
             self.installModel(key)
         else:

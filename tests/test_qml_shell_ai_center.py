@@ -219,7 +219,7 @@ def test_the_button_does_what_the_state_calls_for(qapp, backend, ops):
     for key in ("quality", "face", "appeal"):
         backend.modelAction(key)
         settled(qapp, backend)
-    assert ops.calls == [("remove", "quality"), ("repair", "face"), ("repair", "appeal")]      # a ranker is removed, the face model and a damaged one are repaired
+    assert ops.calls == [("remove", "quality"), ("remove", "face"), ("repair", "appeal")]      # an installed model is removed, a damaged one repaired
     assert backend.state()["models"]["quality"]["state"] == "missing" and backend.state()["models"]["appeal"]["state"] == "ready"
     backend.modelAction("quality")
     settled(qapp, backend)
@@ -463,3 +463,14 @@ def test_the_editor_models_are_installed_from_a_file_and_removed(cull, ops, qapp
     cull.modelAction("superres")
     settled(qapp, cull._ai)
     assert ("remove editor", "superres") in ops.calls
+
+
+def test_an_installed_model_offers_remove_and_only_a_damaged_one_offers_repair(cull, ops, qapp):
+    """A Repair on a model whose files are fine checks them and does nothing visible, so it is never offered then."""
+    ops.raw["models"]["face"]["state"] = "ready"
+    ops.raw["models"]["appeal"]["state"] = "corrupt"
+    cull._ai.refresh()
+    until(qapp, lambda: next(m for m in cull.view["center"]["models"] if m["key"] == "face")["btn"] == "Remove")
+    rows = {m["key"]: m for m in cull.view["center"]["models"]}
+    assert rows["face"]["confirm"] and rows["appeal"]["btn"] == "Repair" and not rows["appeal"]["confirm"]
+    assert "eyes-closed check" in cull.removeText("face")["body"]
