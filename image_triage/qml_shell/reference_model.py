@@ -229,12 +229,16 @@ class ReferenceModel(QObject):
         self._emit()
 
     @Slot()
+    @Slot(bool)
     def openAbout(self, check: bool = False) -> None:
+        """Help > About; with ``check`` (Help > Check for Updates) it also starts a check, unless one is under way or an update is
+        already found, downloading or waiting to install: the menu never cancels or skips past those as the About button does."""
         self._menu = False
         self._window = "help"
         self._topic = "about"
-        if check:
-            self.checkUpdates()
+        if check and self._upd in ("idle", "ok", "error"):
+            self._upd_quiet = False
+            self._start_check()
         self._emit()
 
     @Slot()

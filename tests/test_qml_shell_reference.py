@@ -197,6 +197,18 @@ def test_the_update_check_cycles_through_its_states(qapp, ref, monkeypatch):
     assert ref.view["help"]["upTitle"] == "You are up to date" and "Last checked today at" in ref.view["help"]["upBody"]
 
 
+def test_the_menus_check_never_cancels_downloads_or_disarms(ref):
+    ref.openAbout(True)
+    assert ref._upd == "checking"
+    for state in ("avail", "dlerror", "downloading", "ready", "armed"):
+        ref._upd = state
+        ref.openAbout(True)
+        assert ref._upd == state, f"Check for Updates must leave {state} alone"
+    ref._upd = "error"
+    ref.openAbout(True)
+    assert ref._upd == "checking"
+
+
 def test_the_sample_newer_version_downloads_nothing(ref):
     ref.scene("hlp-about-new")
     h = ref.view["help"]
