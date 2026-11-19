@@ -1,20 +1,22 @@
-"""Detail > Super Resolution in the editor: the photo counts as twice its size, and while zoomed the part in view is upscaled and laid
-over the picture. A stand-in replaces the model."""
+"""Detail > Super Resolution in the editor: the photo counts as twice its size, and while zoomed the photo is upscaled in tiles laid
+over the picture: the ones in view first, then a ring around them; tiles are kept, so panning back costs nothing. A stand-in replaces
+the model."""
 import threading
 
-import pytest
 from PySide6.QtCore import QObject
 from PySide6.QtGui import QColor, QImage
 
 from image_triage.qml_shell import raw_preview, raw_super_res
+from image_triage.qml_shell.raw_super_res import TILE
 from test_qml_shell_viewer import shell, qapp, pump  # noqa: F401
 
 
-def test_the_piece_is_the_view_and_a_margin_under_the_limit():
-    assert raw_super_res.piece((0.4, 0.4, 0.6, 0.6), 1000, 1000) == pytest.approx((0.35, 0.35, 0.65, 0.65))
-    l, t, r, b = raw_super_res.piece((0.0, 0.0, 1.0, 1.0), 8000, 5000)                 # the whole 40 MP picture in view
-    assert (r - l) * 8000 * (b - t) * 5000 <= raw_super_res.MAX_SOURCE_PIXELS * 1.01
-    assert raw_super_res.covers((0.3, 0.3, 0.7, 0.7), (0.4, 0.4, 0.6, 0.6)) and not raw_super_res.covers((0.3, 0.3, 0.5, 0.7), (0.4, 0.4, 0.6, 0.6))
+def test_the_tiles_of_a_view_and_the_ring_around_it():
+    w, h = 8 * TILE, 4 * TILE
+    assert raw_super_res.tiles_for((0.0, 0.0, 0.25, 0.5), w, h) == [(0, 0), (1, 0), (0, 1), (1, 1)]
+    ring = raw_super_res.tiles_for((0.0, 0.0, 0.25, 0.5), w, h, grow=1)
+    assert (2, 2) in ring and len(ring) == 9                                 # clipped at the picture's edge
+    assert raw_super_res.nearest([(0, 0), (5, 3), (1, 1)], (0.0, 0.0, 0.30, 0.6), w, h, limit=2) == [(1, 1), (0, 0)]
 
 
 def editing(shell, qapp):
@@ -30,7 +32,7 @@ def editing(shell, qapp):
     return window, raw, warnings
 
 
-def test_zoomed_in_the_part_in_view_is_upscaled_and_laid_over_the_photo(shell, qapp):
+def test_zoomed_in_the_photo_is_upscaled_in_tiles_that_are_kept(shell, qapp):
     window, raw, warnings = editing(shell, qapp)
     sr = raw.superResEditor
     gate, calls = threading.Event(), []
@@ -47,23 +49,40 @@ def test_zoomed_in_the_part_in_view_is_upscaled_and_laid_over_the_photo(shell, q
     raw.setSuperResolution(True)
     pump(qapp, .2)
     assert raw.fullWidth == width * 2                                       # 100% is now one upscaled pixel per screen pixel
-    status = window.findChild(QObject, "rawSuperResolutionStatus")
-    detail = QImage(8000, 5000, QImage.Format_RGB32)                         # the full-resolution picture of detail mode
-    detail.fill(QColor("#336699"))
-    raw._detail_mode, raw._detail = True, raw_preview.put_frame(f"{raw._owner}/test/detail", detail)
-    raw.changed.emit()
-    sr.setView(0.4, 0.4, 0.5, 0.5, True)
-    pump(qapp, .6)
-    assert sr.busy and calls and calls[0][0] < 8000                         # a piece, not the whole picture
-    overlay = window.findChild(QObject, "aiWorkingOverlay")
-    assert overlay.property("title") == "Super Resolution"
-    gate.set()
+    assert "Zoom in" in sr.status and "now" not in sr.status                # nothing is claimed before it is done
+    raw._detail_mode = True
+    sr.setView(0.40, 0.40, 0.46, 0.46, True)
     pump(qapp, .5)
-    assert not sr.busy and sr.patch["url"].startswith("image://rawpreview/") and sr.patch["l"] < 0.4 < 0.5 < sr.patch["r"]
-    sr.setView(0.42, 0.42, 0.52, 0.52, True)                                 # a small pan inside the piece: nothing new
+    assert sr.busy and "full-resolution picture" in sr.message              # the wait for the picture is shown as work
+    assert window.findChild(QObject, "aiWorkingOverlay").property("title") == "Super Resolution"
+    detail = QImage(8000, 5000, QImage.Format_RGB32)                        # the full-resolution picture of detail mode
+    detail.fill(QColor("#336699"))
+    raw._detail = raw_preview.put_frame(f"{raw._owner}/test/detail", detail)
+    raw.changed.emit()
+    pump(qapp, .5)
+    assert sr.busy and len(calls) == 1 and calls[0][0] < 8000                # the tiles in view, not the whole picture
+    gate.set()
+    for _ in range(40):                                                      # the view, then the ring around it (silently)
+        pump(qapp, .1)
+        if len(calls) >= 2 and not sr.busy:
+            break
+    assert not sr.busy and len(sr.patches) > 0 and all(p["url"].startswith("image://rawpreview/srtile/") for p in sr.patches)
+    assert len(calls) == 2, calls
+    done = len(calls)
+    sr.setView(0.41, 0.41, 0.47, 0.47, True)                                 # a small pan: inside what is already upscaled
     pump(qapp, .6)
-    assert len(calls) == 1
+    assert len(calls) == done and not sr.busy
+    sr.setView(0.80, 0.80, 0.86, 0.86, True)                                 # far away: new tiles
+    pump(qapp, 1.0)
+    for _ in range(40):
+        pump(qapp, .1)
+        if not sr.busy and len(calls) >= done + 2:
+            break
+    farther = len(calls)
+    sr.setView(0.40, 0.40, 0.46, 0.46, True)                                 # back again: the tiles were kept
+    pump(qapp, .6)
+    assert len(calls) == farther and not sr.busy and sr.patches
     raw.setSuperResolution(False)
     pump(qapp, .6)
-    assert not sr.patch and raw.fullWidth == width
+    assert not sr.patches and raw.fullWidth == width
     assert not [w for w in warnings if "SuperRes" in w or "superRes" in w], warnings
