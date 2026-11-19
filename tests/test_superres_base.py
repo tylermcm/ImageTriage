@@ -45,3 +45,11 @@ def test_the_base_companion_round_trips_within_its_precision():
     assert (original, scale, w, h, crop, bits) == ("../../IMG.NEF", 2, 56, 40, (4, 2, 28, 20), encode.BITS)
     step = 2 * np.sqrt(channels) / ((1 << encode.BITS) - 1)
     assert np.all(np.abs(back - channels) <= step * 0.51 + 1e-7)
+
+
+def test_rows_carried_between_blocks_decode_the_same(monkeypatch):
+    rng = np.random.default_rng(4)
+    channels = rng.random((30, 24, 3)).astype(np.float32)
+    whole = encode.encode_base("IMG.NEF", (0, 0, 12, 15), channels)
+    monkeypatch.setattr(encode, "BLOCK", 7)                     # 30 rows: blocks of 7, 7, 7, 7 and 2
+    assert decode(encode.encode_base("IMG.NEF", (0, 0, 12, 15), channels))[2].tolist() == decode(whole)[2].tolist()

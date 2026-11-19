@@ -330,6 +330,38 @@ def self_check_input(size: int = 96) -> np.ndarray:
     return np.clip(base + noise, 0.0, 1.0)[None].astype(np.float32)
 
 
+def half_model(source: Path | str, target: Path | str) -> Path:
+    """A float16 copy of the ONNX model at ``source`` written to ``target``, for a graphics card's tensor cores (2-3x the speed of
+    float32 there). Weights and float constants become float16, except the scales of a Resize (which must stay float32); a Cast
+    after the input and one before the output keep the model's float32 inputs and outputs, so callers do not change. Needs the
+    ``onnx`` package (the AI runtime has it)."""
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+
+    model = onnx.load(str(source))
+    graph = model.graph
+    keep = {n.input[2] for n in graph.node if n.op_type == "Resize" and len(n.input) > 2 and n.input[2]}
+    keep |= {n.input[1] for n in graph.node if n.op_type == "Resize" and len(n.input) > 1 and n.input[1]}
+    for i, init in enumerate(graph.initializer):
+        if init.data_type == TensorProto.FLOAT and init.name not in keep:
+            graph.initializer[i].CopyFrom(numpy_helper.from_array(numpy_helper.to_array(init).astype(np.float16), init.name))
+    for node in graph.node:
+        if node.op_type == "Constant" and node.output[0] not in keep:
+            for attr in node.attribute:
+                if attr.name == "value" and attr.t.data_type == TensorProto.FLOAT:
+                    attr.t.CopyFrom(numpy_helper.from_array(numpy_helper.to_array(attr.t).astype(np.float16), attr.t.name))
+    (inp,), (out,) = graph.input, graph.output
+    half_in, half_out = inp.name + "_fp16", out.name + "_fp16"
+    for node in graph.node:
+        node.input[:] = [half_in if x == inp.name else x for x in node.input]
+        node.output[:] = [half_out if x == out.name else x for x in node.output]
+    graph.node.insert(0, helper.make_node("Cast", [inp.name], [half_in], to=TensorProto.FLOAT16))
+    graph.node.append(helper.make_node("Cast", [half_out], [out.name], to=TensorProto.FLOAT))
+    del graph.value_info[:]
+    onnx.save(model, str(target))
+    return Path(target)
+
+
 def providers_agree(candidate: np.ndarray, reference: np.ndarray, tolerance: float = 5e-3) -> bool:
     if candidate.shape != reference.shape or not np.isfinite(candidate).all():
         return False
