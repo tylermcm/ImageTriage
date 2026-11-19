@@ -898,7 +898,9 @@ class EditorHost(QObject):
                 LOG.warning("Could not render %s with its Image Triage settings: %s", path, error)
             except BaseException:
                 with self._host_render_lock:
-                    self._host_worker = None             # a later save starts the queue again
+                    if path not in self._host_queue:
+                        self._host_queue.insert(0, path)    # not lost: the next save starts the queue again, with this one first
+                    self._host_worker = None
                 raise
 
     @staticmethod

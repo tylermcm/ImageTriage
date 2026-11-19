@@ -217,28 +217,32 @@ def test_asking_during_the_startup_check_shows_its_failure(qapp, photos):
     model = ReferenceModel(photos, None, memory=False, parent=qapp)
     signals = _UpdateSignals()
     signals.done.connect(model._update_done)
-    model._task, model._upd, model._upd_quiet = SimpleNamespace(signals=signals), "checking", True    # the quiet startup check
+    model._task, model._upd, model._upd_quiet = SimpleNamespace(token=1), "checking", True    # the quiet startup check
     model.openAbout(True)                               # Help > Check for Updates while it runs
     assert model._upd == "checking"
-    signals.done.emit(None, "offline")
+    signals.done.emit(1, None, "offline")
     pump(qapp, 0.05)
     assert model._upd == "error" and model._upd_error == "offline"
 
 
-def test_a_cancelled_check_finishing_late_does_not_answer_for_the_newer_one(qapp, photos):
-    from types import SimpleNamespace
+def test_a_cancelled_check_finishing_late_does_not_answer_for_the_newer_one(qapp, photos, monkeypatch):
+    from PySide6.QtCore import QThreadPool
 
-    from image_triage.qml_shell.reference_model import ReferenceModel, _UpdateSignals
+    from image_triage.qml_shell import reference_model
+    from image_triage.qml_shell.reference_model import ReferenceModel
 
+    started = []
+    monkeypatch.setattr(QThreadPool, "start", lambda pool, task: started.append(task))   # the checks finish when the test says
     model = ReferenceModel(photos, None, memory=False, parent=qapp)
-    old, new = _UpdateSignals(), _UpdateSignals()
-    old.done.connect(model._update_done)
-    new.done.connect(model._update_done)
-    model._task, model._upd, model._upd_quiet = SimpleNamespace(signals=new), "checking", False
-    old.done.emit(None, "stale failure")
+    model.openAbout(True)
+    model.checkUpdates()                                # cancel
+    model.openAbout(True)                               # and ask again
+    old, new = started
+    assert isinstance(old, reference_model._UpdateTask) and old.token != new.token
+    old.signals.done.emit(old.token, None, "stale failure")
     pump(qapp, 0.05)
-    assert model._upd == "checking", "the old check's answer is dropped"
-    new.done.emit(None, "fresh failure")
+    assert model._upd == "checking", "the cancelled check's answer is dropped"
+    new.signals.done.emit(new.token, None, "fresh failure")
     pump(qapp, 0.05)
     assert model._upd == "error" and model._upd_error == "fresh failure"
 

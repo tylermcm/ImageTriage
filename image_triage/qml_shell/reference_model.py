@@ -55,13 +55,16 @@ def _blocks_text(block: dict) -> str:
 
 
 class _UpdateSignals(QObject):
-    done = Signal(object, str)          # the UpdateCheckResult (or None), the error text
+    done = Signal(int, object, str)     # the check's token, the UpdateCheckResult (or None), the error text
 
 
 class _UpdateTask(QRunnable):
-    def __init__(self) -> None:
+    """Checks for a newer version. `token` says which check a signal belongs to, so a cancelled one is ignored."""
+
+    def __init__(self, token: int = 0) -> None:
         super().__init__()
         self.signals = _UpdateSignals()
+        self.token = token
         self.setAutoDelete(True)
 
     def run(self) -> None:
@@ -71,7 +74,7 @@ class _UpdateTask(QRunnable):
             result, error = check_for_update(), ""
         except Exception as exc:                                    # no feed, no network, a bad answer: the window says so
             result, error = None, str(exc) or exc.__class__.__name__
-        self.signals.done.emit(result, error)
+        self.signals.done.emit(self.token, result, error)
 
 
 class _DownloadSignals(QObject):
@@ -155,6 +158,7 @@ class ReferenceModel(QObject):
         self._upd_quiet = False                  # the check at startup: no window, a toast only when there is something newer
         self._download = 0                       # the running download's token; 0 when none is wanted
         self._download_serial = 0
+        self._check_serial = 0                   # the last update check's token (`_UpdateTask`)
         self._dl_progress = ""
         self._installer = ""                     # the verified installer, once downloaded
         self._publisher_notice = ""              # what could not be verified about who signed it ("" when the pinned publisher signed it)
@@ -354,7 +358,8 @@ class ReferenceModel(QObject):
         if self._memory:
             QTimer.singleShot(1200, self._memory_check_done)
             return
-        task = _UpdateTask()
+        self._check_serial += 1
+        task = _UpdateTask(self._check_serial)
         self._task = task
         task.signals.done.connect(self._update_done)
         QThreadPool.globalInstance().start(task)
@@ -365,9 +370,8 @@ class ReferenceModel(QObject):
             self._last_checked = datetime.now().strftime("%H:%M")
             self._emit()
 
-    def _update_done(self, result, error: str) -> None:
-        sender = self.sender()
-        if self._task is None or (sender is not None and sender is not self._task.signals):
+    def _update_done(self, token: int, result, error: str) -> None:
+        if self._task is None or token != self._task.token:
             return                               # cancelled meanwhile, or a cancelled check finishing after a newer one started
         self._task = None
         quiet, self._upd_quiet = self._upd_quiet, False

@@ -13,15 +13,33 @@ Item {
     // Qt's software renderer keeps a picture of every rounded rectangle at its full size; see RawRedEyeOverlay).
     readonly property real limit: 2*Math.max(viewport ? viewport.width : width, viewport ? viewport.height : height, 6)
     readonly property real diameter: visible ? Math.min(limit, model.size/100*Math.min(width/Math.max(crop.w, 0.001), height/Math.max(crop.h, 0.001))) : 0
-    // The part of the photo that can be seen when a stroke starts: the stroke's canvas covers only that (the view cannot move during a
-    // stroke), not the whole zoomed photo, which at 300% of a 24 MP RAW is a canvas of gigabytes.
+    // The part of the photo that can be seen: the stroke's canvas covers only that, not the whole zoomed photo, which at 300% of a 24 MP
+    // RAW is a canvas of gigabytes. Worked out when a stroke starts and again whenever the view changes during it (a key that zooms
+    // out, the bar or the panels put away, the window resized), so the stroke stays drawn where it is.
     property rect strokeArea: Qt.rect(0, 0, 0, 0)
     function seenArea() {
         if (!viewport) return Qt.rect(0, 0, width, height)
         var a = mapFromItem(viewport, 0, 0), b = mapFromItem(viewport, viewport.width, viewport.height)
-        var x0 = Math.max(0, Math.min(a.x, b.x)), y0 = Math.max(0, Math.min(a.y, b.y))
-        var x1 = Math.min(width, Math.max(a.x, b.x)), y1 = Math.min(height, Math.max(a.y, b.y))
-        return Qt.rect(Math.floor(x0), Math.floor(y0), Math.max(0, Math.ceil(x1 - x0)), Math.max(0, Math.ceil(y1 - y0)))
+        var x0 = Math.floor(Math.max(0, Math.min(a.x, b.x))), y0 = Math.floor(Math.max(0, Math.min(a.y, b.y)))
+        var x1 = Math.ceil(Math.min(width, Math.max(a.x, b.x))), y1 = Math.ceil(Math.min(height, Math.max(a.y, b.y)))
+        return Qt.rect(x0, y0, Math.max(0, x1 - x0), Math.max(0, y1 - y0))
+    }
+    function viewMoved() {
+        if (!drawing) return
+        strokeArea = seenArea()
+        path.requestPaint()
+    }
+    onXChanged: viewMoved()
+    onYChanged: viewMoved()
+    onWidthChanged: viewMoved()
+    onHeightChanged: viewMoved()
+    Connections {
+        target: overlay.viewport
+        enabled: overlay.drawing
+        function onWidthChanged() { overlay.viewMoved() }
+        function onHeightChanged() { overlay.viewMoved() }
+        function onXChanged() { overlay.viewMoved() }
+        function onYChanged() { overlay.viewMoved() }
     }
     function toView(p) { return Qt.point((p[0]-crop.x)/crop.w*width,(p[1]-crop.y)/crop.h*height) }
     function acceptsPoint(x, y) {

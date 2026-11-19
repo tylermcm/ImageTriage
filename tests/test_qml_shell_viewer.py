@@ -850,6 +850,11 @@ def test_zoomed_in_brushes_are_never_larger_than_what_can_be_seen(shell, qapp):
     remove.setProperty("drawing", True)
     pump(qapp, 0.1)
     assert stroke.width() <= stage.width() + 1 and stroke.height() <= stage.height() + 1, "only the part in view"
+    viewer.setProperty("zoomed", False)                  # "0" zooms out with the button still held
+    pump(qapp, 0.4)
+    assert remove.width() < stage.width() + 1, "the photo fits again"
+    assert stroke.width() == pytest.approx(remove.width(), abs=1) and stroke.height() == pytest.approx(remove.height(), abs=1), \
+        "the stroke's canvas follows the view, so the stroke stays drawn"
     remove.setProperty("drawing", False)
     pump(qapp, 0.1)
     assert (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) < 400 * 1024, "no picture the size of the zoomed photo"

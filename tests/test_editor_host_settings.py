@@ -221,3 +221,26 @@ def test_quitting_while_editing_puts_back_what_an_older_editor_left_out(qapp, fo
     file = _write_recipe(path, {"exposure": 0.4}, identity=True)       # what the older editor writes as the app quits
     host.shutdown()
     assert json.loads(file.read_text(encoding="utf-8"))["cameraRaw"] == {"exposure": 0.4, "hostCrop": CROP}
+
+
+def test_a_render_cut_short_is_not_lost(qapp, folder, monkeypatch):
+    host, path, _spec = _open(qapp, folder, monkeypatch, {"version": 1, "cameraRaw": {}})
+    calls = []
+
+    def renderer(photo):
+        calls.append(photo)
+        if len(calls) == 1:
+            raise KeyboardInterrupt                     # what only an interpreter going down raises
+        return False
+
+    host._renderer = renderer
+    with host._host_render_lock:
+        host._host_queue.append(path)
+    try:
+        host._render_queue(renderer)
+    except KeyboardInterrupt:
+        pass
+    assert host._host_queue == [path] and host._host_worker is None
+    host._render_host_owned(str(folder / "other.nef"))     # the next save starts the queue again, with it first
+    assert wait(qapp, lambda: host._host_worker is None and len(calls) == 3)
+    assert calls == [path, path, str(folder / "other.nef")]
