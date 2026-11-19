@@ -1,9 +1,9 @@
-"""Detail > Super Resolution in the editor: the photo counts as twice its size, and while zoomed the photo is upscaled in tiles laid
-over the picture: the ones in view first, then a ring around them; tiles are kept, so panning back costs nothing. A stand-in replaces
-the model."""
+"""Detail > Super Resolution in the editor: the photo counts as twice its size, and once the full-resolution picture is there the whole
+photo is upscaled in one run and shown all at once (as tiles the viewer loads from disk). A stand-in replaces the model."""
 import threading
+from pathlib import Path
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QUrl
 from PySide6.QtGui import QColor, QImage
 
 from image_triage.qml_shell import raw_preview, raw_super_res
@@ -11,12 +11,10 @@ from image_triage.qml_shell.raw_super_res import TILE
 from test_qml_shell_viewer import shell, qapp, pump  # noqa: F401
 
 
-def test_the_tiles_of_a_view_and_the_ring_around_it():
+def test_the_tiles_of_a_view():
     w, h = 8 * TILE, 4 * TILE
     assert raw_super_res.tiles_for((0.0, 0.0, 0.25, 0.5), w, h) == [(0, 0), (1, 0), (0, 1), (1, 1)]
-    ring = raw_super_res.tiles_for((0.0, 0.0, 0.25, 0.5), w, h, grow=1)
-    assert (2, 2) in ring and len(ring) == 9                                 # clipped at the picture's edge
-    assert raw_super_res.nearest([(0, 0), (5, 3), (1, 1)], (0.0, 0.0, 0.30, 0.6), w, h, limit=2) == [(1, 1), (0, 0)]
+    assert len(raw_super_res.tiles_for((0.0, 0.0, 0.25, 0.5), w, h, grow=1)) == 9          # clipped at the photo's edge
 
 
 def editing(shell, qapp):
@@ -32,57 +30,56 @@ def editing(shell, qapp):
     return window, raw, warnings
 
 
-def test_zoomed_in_the_photo_is_upscaled_in_tiles_that_are_kept(shell, qapp):
+def until(qapp, condition, seconds=5.0):
+    import time
+
+    end = time.monotonic() + seconds
+    while not condition() and time.monotonic() < end:
+        pump(qapp, 0.05)
+    return condition()
+
+
+def test_the_whole_photo_is_upscaled_in_one_run_and_shown_at_once(shell, qapp):
     window, raw, warnings = editing(shell, qapp)
     sr = raw.superResEditor
-    gate, calls = threading.Event(), []
+    gate, runs = threading.Event(), []
 
-    def fake_upscale(image, cancel, progress):
-        calls.append((image.width(), image.height()))
+    def fake_upscale(image, folder, cancel, progress):
+        runs.append((image.width(), image.height()))
         gate.wait(5)
-        big = QImage(image.width() * 2, image.height() * 2, QImage.Format_RGB32)
-        big.fill(QColor("#ff00ff"))
-        return big
+        folder.mkdir(parents=True, exist_ok=True)
+        w, h = image.width() * 2, image.height() * 2
+        for iy in range(-(-h // TILE)):
+            for ix in range(-(-w // TILE)):
+                (folder / f"{ix}_{iy}.jpg").write_bytes(b"jpeg")
+        return w, h
 
     sr.upscale = fake_upscale
     width = raw.fullWidth
     raw.setSuperResolution(True)
     pump(qapp, .2)
-    assert raw.fullWidth == width * 2                                       # 100% is now one upscaled pixel per screen pixel
-    assert "Zoom in" in sr.status and "now" not in sr.status                # nothing is claimed before it is done
+    assert raw.fullWidth == width * 2 and "Zoom in" in sr.status                # nothing is claimed before it is done
     raw._detail_mode = True
     sr.setView(0.40, 0.40, 0.46, 0.46, True)
     pump(qapp, .5)
-    assert sr.busy and "full-resolution picture" in sr.message              # the wait for the picture is shown as work
+    assert sr.busy and "full-resolution picture" in sr.message                  # the wait for the picture is shown as work
     assert window.findChild(QObject, "aiWorkingOverlay").property("title") == "Super Resolution"
-    detail = QImage(8000, 5000, QImage.Format_RGB32)                        # the full-resolution picture of detail mode
+    detail = QImage(3000, 2000, QImage.Format_RGB32)                            # the full-resolution picture of detail mode
     detail.fill(QColor("#336699"))
     raw._detail = raw_preview.put_frame(f"{raw._owner}/test/detail", detail)
     raw.changed.emit()
-    pump(qapp, .5)
-    assert sr.busy and len(calls) == 1 and calls[0][0] < 8000                # the tiles in view, not the whole picture
+    assert until(qapp, lambda: runs)
+    assert runs == [(3000, 2000)] and sr.busy and "whole photo" in sr.message   # the whole photo, in one run
+    assert sr.patches == []                                                     # nothing shown until all of it is done
     gate.set()
-    for _ in range(40):                                                      # the view, then the ring around it (silently)
-        pump(qapp, .1)
-        if len(calls) >= 2 and not sr.busy:
-            break
-    assert not sr.busy and len(sr.patches) > 0 and all(p["url"].startswith("image://rawpreview/srtile/") for p in sr.patches)
-    assert len(calls) == 2, calls
-    done = len(calls)
-    sr.setView(0.41, 0.41, 0.47, 0.47, True)                                 # a small pan: inside what is already upscaled
+    assert until(qapp, lambda: not sr.busy and sr.patches)
+    folder = Path(QUrl(sr.patches[0]["url"]).toLocalFile()).parent
+    assert len(list(folder.glob("*.jpg"))) == 6 * 4                            # every tile of the 6000 x 4000 photo
+    assert "whole photo" in sr.status
+    sr.setView(0.85, 0.85, 0.95, 0.95, True)                                    # anywhere else: already done
     pump(qapp, .6)
-    assert len(calls) == done and not sr.busy
-    sr.setView(0.80, 0.80, 0.86, 0.86, True)                                 # far away: new tiles
-    pump(qapp, 1.0)
-    for _ in range(40):
-        pump(qapp, .1)
-        if not sr.busy and len(calls) >= done + 2:
-            break
-    farther = len(calls)
-    sr.setView(0.40, 0.40, 0.46, 0.46, True)                                 # back again: the tiles were kept
-    pump(qapp, .6)
-    assert len(calls) == farther and not sr.busy and sr.patches
+    assert len(runs) == 1 and not sr.busy and sr.patches
     raw.setSuperResolution(False)
-    pump(qapp, .6)
-    assert not sr.patches and raw.fullWidth == width
+    assert until(qapp, lambda: not sr.patches)
+    assert not folder.exists() and raw.fullWidth == width                      # its tiles are deleted
     assert not [w for w in warnings if "SuperRes" in w or "superRes" in w], warnings

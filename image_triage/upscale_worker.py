@@ -182,6 +182,29 @@ def run_job(
 
     _say(emit, PROGRESS_PREFIX, {"stage": "save", "done": 0, "total": 1})
     t = time.perf_counter()
+    if job.get("tilesDir"):
+        # the result as tiles, straight from the array: never one picture of the whole (see UpscaleRequest.tiles_dir)
+        import numpy as np
+        from PIL import Image
+
+        folder, size = Path(job["tilesDir"]), max(16, int(job.get("tile", 1024)))
+        folder.mkdir(parents=True, exist_ok=True)
+        height, width = result.shape[:2]
+        for iy, y in enumerate(range(0, height, size)):
+            for ix, x in enumerate(range(0, width, size)):
+                piece = Image.fromarray(np.ascontiguousarray(result[y:y + size, x:x + size]), "RGB")
+                partial = folder / f"{ix}_{iy}.jpg.partial"
+                piece.save(partial, "JPEG", quality=int(job.get("jpegQuality", 95)))
+                os.replace(partial, folder / f"{ix}_{iy}.jpg")
+        save_s = time.perf_counter() - t
+        _say(emit, PROGRESS_PREFIX, {"stage": "save", "done": 1, "total": 1})
+        return {
+            "outputPath": str(folder), "modelKey": spec.key, "scale": spec.scale, "provider": session.provider,
+            "inputSize": [plan.in_width, plan.in_height], "outputSize": [width, height], "tiles": plan.tile_count,
+            "warnings": [*plan.warnings, *session.warnings],
+            "timings": {"load": round(load_s, 3), "session": round(session_s, 3), "inference": round(infer_s, 3),
+                        "save": round(save_s, 3), "total": round(time.perf_counter() - started, 3)},
+        }
     core.save_output(
         result,
         output,

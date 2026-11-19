@@ -1,37 +1,33 @@
 """Detail > Super Resolution, seen in the RAW editor.
 
-Super Resolution itself is applied at output: the export upsizes the whole finished photo 2x (``camera_raw_super_resolution``), which
-takes the better part of a minute for a 45 MP raw and gives a picture far too large to keep on screen. The editor shows what it does
-where it can be seen, at 100% and closer: with the box ticked the photo counts as twice its size (``RawEditor.fullWidth``), so 100% is
-one upscaled pixel per screen pixel, and the photo is upscaled by the same model in tiles laid over the picture.
+The editor shows the whole photo upscaled at once, as an export makes it: with the box ticked the photo counts as twice its size
+(``RawEditor.fullWidth``), so 100% is one upscaled pixel per screen pixel, and once the full-resolution picture is developed the whole
+of it is upscaled by the same model in one run (``camera_raw_super_resolution``'s model), under the AI working overlay with its
+progress. Nothing is laid over the picture until the run is done; then all of it is.
 
-The tiles are a fixed grid (``TILE`` pixels of the full-resolution picture each). The ones in view that are missing are upscaled
-together first, under the AI working overlay; then a ring of tiles around the view in the background, so a small pan needs nothing.
-Tiles are kept (up to ``BUDGET_BYTES``, the least recently seen go first), so going back to a part already seen is instant. An edit
-makes a new full-resolution picture, and with it new tiles. Before any of this the full-resolution picture itself has to be developed
-(about 10 s for 45 MP); that wait is shown as work too.
+A 2x 45 MP photo is 180 MP: too large for one texture (16384 px a side) and ~730 MB in memory. So the upscale worker writes the result
+straight from its array as JPEG tiles in a temporary folder (``UpscaleRequest.tiles_dir``), and the viewer loads the tiles on screen
+from there (``patches``). An edit makes a new full-resolution picture, and with it a new run; its tiles replace the old ones.
 """
 from __future__ import annotations
 
+import shutil
 import tempfile
 import threading
-from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 
 from . import raw_preview
 
-SETTLE_MS = 250           # a pan or zoom settles this long before tiles are asked for
-TILE = 512                # pixels of the full-resolution picture per tile side
-OVERLAP = 16              # pixels of context each side of a job, cut away after upscaling, so tiles meet without seams
-MAX_JOB_TILES = 16        # tiles upscaled in one run of the model (a run has ~3 s of start-up, so tiles are batched)
-BUDGET_BYTES = 384 * 1024 * 1024
+SETTLE_MS = 300           # edits settle this long before a new run is started
+TILE = 1024               # pixels of the upscaled photo per tile side (the worker writes them)
+SCALE = 2
 MODEL = "realesrgan-x2plus"
 
 
 def tiles_for(view, width, height, grow=0):
-    """The grid tiles ``(ix, iy)`` covering ``view`` (fractions) of a ``width`` x ``height`` picture, ``grow`` tiles wider each side."""
+    """The tiles ``(ix, iy)`` covering ``view`` (fractions) of an upscaled ``width`` x ``height`` photo, ``grow`` tiles wider each side."""
     left, top, right, bottom = view
     cols, rows = -(-width // TILE), -(-height // TILE)
     x0 = max(0, int(left * width) // TILE - grow)
@@ -41,14 +37,8 @@ def tiles_for(view, width, height, grow=0):
     return [(ix, iy) for iy in range(y0, y1 + 1) for ix in range(x0, x1 + 1)]
 
 
-def nearest(tiles, view, width, height, limit=MAX_JOB_TILES):
-    """At most ``limit`` of ``tiles``, the ones nearest the middle of ``view`` first."""
-    cx, cy = (view[0] + view[2]) / 2 * width / TILE, (view[1] + view[3]) / 2 * height / TILE
-    return sorted(tiles, key=lambda t: (t[0] + 0.5 - cx) ** 2 + (t[1] + 0.5 - cy) ** 2)[:limit]
-
-
-def _upscale(image, cancel, progress):
-    """``image`` (QImage) upscaled 2x by the Super Resolution model, as a QImage."""
+def _upscale_whole(image, folder: Path, cancel, progress):
+    """``image`` (QImage, the whole photo) upscaled by the model, written as tiles into ``folder``. Returns the upscaled size."""
     from PySide6.QtGui import QImage
 
     from .. import upscale_service as service
@@ -58,16 +48,16 @@ def _upscale(image, cancel, progress):
         raise RuntimeError(state.runtime_reason or "Super Resolution needs the AI runtime (AI > AI Center).")
     if state.models.get(MODEL):
         raise RuntimeError("The Super Resolution model is not installed. Install it in AI > AI Center.")
-    with tempfile.TemporaryDirectory(prefix="image-triage-sr-", ignore_cleanup_errors=True) as scratch:
-        source, out = Path(scratch) / "piece.png", Path(scratch) / "piece.2x.png"
-        if not image.convertToFormat(QImage.Format.Format_RGB888).save(str(source), "PNG"):
-            raise RuntimeError("The piece to upscale could not be written")
-        request = service.UpscaleRequest(input_path=source, model_key=MODEL, output_path=out, apply_orientation=False, keep_metadata=False)
-        service.run_upscale(request, progress, cancel)
-        result = QImage(str(out))
-        if result.isNull():
-            raise RuntimeError("The upscaled piece could not be read")
-        return result.copy()                       # detached from the file, which is deleted with the folder
+    source = folder.parent / "photo.png"
+    if not image.convertToFormat(QImage.Format.Format_RGB888).save(str(source), "PNG", 100):
+        raise RuntimeError("The photo to upscale could not be written")
+    try:
+        request = service.UpscaleRequest(input_path=source, model_key=MODEL, output_path=folder.parent / "unused.png",
+                                         apply_orientation=False, keep_metadata=False, tiles_dir=folder, tile=TILE)
+        result = service.run_upscale(request, progress, cancel)
+    finally:
+        source.unlink(missing_ok=True)
+    return tuple(result.output_size)
 
 
 class RawSuperRes(QObject):
@@ -79,16 +69,16 @@ class RawSuperRes(QObject):
         super().__init__(raw)
         self.raw = raw
         self._view = None                # (l, t, r, b) of the picture in view while zoomed, else None
-        self._source = ""                # the full-resolution picture the tiles were made from
-        self._frame = None               # that picture as displayed (QImage), cut from for each job
-        self._tiles: OrderedDict = OrderedDict()   # (ix, iy) -> (url, bytes), least recently seen first
-        self._job = None                 # (generation, tiles, foreground) while one runs
+        self._source = ""                # the full-resolution picture the tiles are of (or being made of)
+        self._folder = None              # the folder the run wrote the tiles into (inside its own temporary folder)
+        self._size = None                # the upscaled size, once the run is done
         self._gen = 0
+        self._running = False
         self._cancel = threading.Event()
-        self._paused = None              # (source, view) Cancel was pressed for: nothing more until either changes
+        self._paused = ""                # the picture Cancel was pressed for: no new run until the picture changes
         self._busy = False
         self._message = self._error = ""
-        self.upscale = _upscale          # tests replace it
+        self.upscale = _upscale_whole    # tests replace it
         self._timer = QTimer(self, singleShot=True, interval=SETTLE_MS)
         self._timer.timeout.connect(self._check)
         self._done.connect(self._arrived)
@@ -107,32 +97,25 @@ class RawSuperRes(QObject):
         if self._message:
             return self._message
         size = f"{self.raw.property('fullWidth')} × {self.raw.property('fullHeight')}"
-        if self._view is None:
-            return f"Zoom in to 100% or closer to preview it. An export upscales the whole photo to {size}."
-        return f"Shown where you look, as an export makes it ({size})."
+        if self._size is not None:
+            return f"Applied to the whole photo ({size}). Zoom in to 100% or closer to see it."
+        return f"Zoom in to 100% or closer to upscale the photo ({size}), as an export does."
 
     @Property("QVariantList", notify=changed)
     def patches(self):
-        """The tiles to lay over the picture: the ones in or next to the view (fractions of the picture)."""
-        if not self._tiles or self._view is None or self._frame is None:
+        """The upscaled tiles in and next to the view (fractions of the photo), once the whole photo is done."""
+        if self._size is None or self._view is None or self._folder is None:
             return []
-        w, h = self._frame.width(), self._frame.height()
-        near = set(tiles_for(self._view, w, h, grow=1))
+        w, h = self._size
         out = []
-        for (ix, iy), (url, _bytes) in self._tiles.items():
-            if (ix, iy) in near:
-                x0, y0 = ix * TILE, iy * TILE
-                x1, y1 = min(w, x0 + TILE), min(h, y0 + TILE)
-                out.append({"url": url, "l": x0 / w, "t": y0 / h, "r": x1 / w, "b": y1 / h})
+        for ix, iy in tiles_for(self._view, w, h, grow=1):
+            x0, y0 = ix * TILE, iy * TILE
+            x1, y1 = min(w, x0 + TILE), min(h, y0 + TILE)
+            path = self._folder / f"{ix}_{iy}.jpg"
+            out.append({"url": QUrl.fromLocalFile(str(path)).toString(), "l": x0 / w, "t": y0 / h, "r": x1 / w, "b": y1 / h})
         return out
 
-    # kept for callers of the single-piece version (the viewer test hooks)
     patch = Property("QVariantMap", lambda self: (self.patches[0] if self.patches else {}), notify=changed)
-
-    def _wanted(self):
-        raw = self.raw
-        return bool(raw.loaded and not raw.saving and raw._draft.get("superResolution") is True and raw._detail_mode
-                    and self._view is not None)
 
     @Slot(float, float, float, float, bool)
     def setView(self, left, top, right, bottom, zoomed):
@@ -142,160 +125,111 @@ class RawSuperRes(QObject):
 
     @Slot()
     def cancel(self):
-        """Stop the upscaling in progress (the overlay's Cancel); nothing more until the view or the picture changes."""
-        if self._job is not None:
+        """Stop the run in progress (the overlay's Cancel); no new run until the picture changes (an edit)."""
+        if self._running:
             self._cancel.set()
             self._gen += 1
-            self._job = None
-        self._paused = (self._source, self._view)
-        self._set(False, "")
-
-    def _set(self, busy, message):
-        if (busy, message) != (self._busy, self._message):
-            self._busy, self._message = busy, message
+            self._running = False
+        self._paused = self._source
+        self._busy, self._message = False, ""
         self.changed.emit()
 
-    def _clear(self):
-        if self._job is not None:
+    def _drop(self):
+        """Forget the tiles (and stop a run): their folder is deleted."""
+        if self._running:
             self._cancel.set()
             self._gen += 1
-            self._job = None
-        for url, _bytes in self._tiles.values():
-            raw_preview.discard_tile(url)
-        self._tiles.clear()
-        self._frame = None
-        self._source = ""
+            self._running = False
+        if self._folder is not None:
+            shutil.rmtree(self._folder.parent, ignore_errors=True)
+        self._folder, self._size, self._source = None, None, ""
+
+    def shutdown(self):
+        self._drop()
 
     def _check(self):
         raw = self.raw
-        if raw._draft.get("superResolution") is not True or not raw.loaded:
-            if self._tiles or self._job is not None:
-                self._clear()
-            self._error = ""
-            self._set(False, "")
+        if raw._draft.get("superResolution") is not True or not raw.loaded or raw.saving:
+            if self._folder is not None or self._running:
+                self._drop()
+            self._error, self._busy, self._message = "", False, ""
+            self.changed.emit()
             return
-        if not self._wanted():
-            if self._job is not None and self._job[2]:
-                self._cancel.set()
-                self._gen += 1
-                self._job = None
-            self._set(False, "")
+        if self._running:
+            self.changed.emit()
             return
-        if not raw._detail:
-            self._set(True, "Preparing the full-resolution picture…")          # developed first, then upscaled
+        if not raw._detail_mode or not raw._detail:
+            if self._view is not None and raw._detail_mode:
+                self._busy, self._message = True, "Preparing the full-resolution picture…"   # developed first, then upscaled
+            else:
+                self._busy, self._message = False, ""
+            self.changed.emit()
             return
         source = raw.property("preview")
-        if source != self._source:
-            self._clear()                          # an edit made a new picture: the tiles are of the old one
-            frame = raw_preview.displayed_frame(source, proof=False)
-            if frame.isNull():
-                self._set(False, "")
-                return
-            self._source, self._frame = source, frame
-        if self._paused == (self._source, self._view):
-            self._set(False, "")
+        if source == self._source and (self._size is not None or self._error):
+            self._busy, self._message = False, ""
+            self.changed.emit()
             return
-        self._paused = None
-        w, h = self._frame.width(), self._frame.height()
-        visible = tiles_for(self._view, w, h)
-        for key in visible:                        # seen now: kept longest
-            if key in self._tiles:
-                self._tiles.move_to_end(key)
-        missing = [t for t in visible if t not in self._tiles]
-        if self._job is not None:
-            if missing and not self._job[2]:       # the background ring is in the way of what is in view
-                self._cancel.set()
-                self._gen += 1
-                self._job = None
-            else:
-                self.changed.emit()
-                return
-        if missing:
-            self._start(nearest(missing, self._view, w, h), foreground=True)
+        if source == self._paused:
+            self._busy, self._message = False, ""
+            self.changed.emit()
             return
-        ring = [t for t in tiles_for(self._view, w, h, grow=1) if t not in self._tiles]
-        if ring and self._error == "":
-            self._start(nearest(ring, self._view, w, h), foreground=False)
-        self._set(False, "")
+        self._drop()                               # an edit made a new picture: its tiles are of the old one
+        self._start(source)
 
-    def _start(self, tiles, foreground):
-        self._cancel.set()
+    def _start(self, source):
+        frame = raw_preview.displayed_frame(source, proof=False)
+        if frame.isNull():
+            return
         self._gen += 1
         generation, cancel = self._gen, threading.Event()
-        self._cancel = cancel
-        frame = self._frame
-        w, h = frame.width(), frame.height()
-        bx0, by0 = min(t[0] for t in tiles) * TILE, min(t[1] for t in tiles) * TILE
-        bx1, by1 = min(w, (max(t[0] for t in tiles) + 1) * TILE), min(h, (max(t[1] for t in tiles) + 1) * TILE)
-        x0, y0, x1, y1 = max(0, bx0 - OVERLAP), max(0, by0 - OVERLAP), min(w, bx1 + OVERLAP), min(h, by1 + OVERLAP)
-        cut = frame.copy(x0, y0, x1 - x0, y1 - y0)
-        self._job = (generation, tiles, foreground)
-        if foreground:
-            self._set(True, "Upscaling the part in view…")
+        self._cancel, self._running, self._source, self._error, self._paused = cancel, True, source, "", ""
+        scratch = Path(tempfile.mkdtemp(prefix="image-triage-sr-"))
+        folder = scratch / "tiles"
+        self._busy, self._message = True, "Upscaling the whole photo…"
+        self.changed.emit()
         upscale = self.upscale
 
         def progress(update):
             fraction = getattr(update, "fraction", None)
-            if foreground and fraction is not None and not cancel.is_set():
+            if fraction is not None and not cancel.is_set():
                 try:
-                    self._step.emit(generation, f"Upscaling the part in view… {int(round(float(fraction) * 100))}%")
+                    self._step.emit(generation, f"Upscaling the whole photo… {int(round(float(fraction) * 100))}%")
                 except RuntimeError:
                     pass
 
         def work():
-            pieces, error = {}, ""
+            size, error = None, ""
             try:
-                big = upscale(cut, cancel, progress)
-                for ix, iy in tiles:
-                    tx0, ty0 = ix * TILE, iy * TILE
-                    tw, th = min(w, tx0 + TILE) - tx0, min(h, ty0 + TILE) - ty0
-                    pieces[(ix, iy)] = big.copy(2 * (tx0 - x0), 2 * (ty0 - y0), 2 * tw, 2 * th)
+                size = tuple(upscale(frame, folder, cancel, progress))
             except Exception as exc:
                 error = "Super Resolution was cancelled" if cancel.is_set() else (str(exc) or "Super Resolution failed")
             if cancel.is_set():
+                shutil.rmtree(scratch, ignore_errors=True)
                 return
             try:
-                self._done.emit(generation, pieces, error)
+                self._done.emit(generation, (scratch, size), error)
             except RuntimeError:
-                pass                               # the editor was closed meanwhile
+                shutil.rmtree(scratch, ignore_errors=True)           # the editor was closed meanwhile
 
         threading.Thread(target=work, name="qml-super-resolution", daemon=True).start()
 
     def _report(self, generation, text):
-        if self._job is not None and generation == self._job[0] and self._busy:
+        if self._running and generation == self._gen:
             self._message = text
             self.changed.emit()
 
-    def _arrived(self, generation, pieces, error):
-        if self._job is None or generation != self._job[0]:
+    def _arrived(self, generation, result, error):
+        scratch, size = result
+        if generation != self._gen:
+            shutil.rmtree(scratch, ignore_errors=True)
             return
-        self._job = None
+        self._running = False
+        self._busy, self._message = False, ""
         if error:
+            shutil.rmtree(scratch, ignore_errors=True)
             self._error = error
-            self._set(False, "")
-            return
-        self._error = ""
-        for (ix, iy), image in pieces.items():
-            old = self._tiles.pop((ix, iy), None)
-            if old is not None:
-                raw_preview.discard_tile(old[0])
-            url = raw_preview.put_tile(f"{self.raw._owner}/{generation}/{ix}_{iy}", image)
-            self._tiles[(ix, iy)] = (url, image.sizeInBytes())
-        self._evict()
-        self._message = ""
-        self._check()                              # the rest of the view, or the ring around it
-
-    def _evict(self):
-        """Keep the tiles within the budget: the least recently seen go, never one in view."""
-        if self._frame is None:
-            return
-        keep = set(tiles_for(self._view, self._frame.width(), self._frame.height(), grow=1)) if self._view else set()
-        total = sum(b for _url, b in self._tiles.values())
-        for key in list(self._tiles):
-            if total <= BUDGET_BYTES:
-                break
-            if key in keep:
-                continue
-            url, size = self._tiles.pop(key)
-            raw_preview.discard_tile(url)
-            total -= size
+        else:
+            self._folder, self._size, self._error = scratch / "tiles", size, ""
+        self.changed.emit()
+        self._timer.start()                        # an edit made while it ran wants a new run

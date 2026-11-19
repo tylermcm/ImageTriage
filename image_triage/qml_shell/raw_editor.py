@@ -1025,6 +1025,7 @@ class RawEditor(QObject):
 
     def shutdown(self):
         """The application is closing. Unsaved drafts stay on disk and come back when their photos are edited again."""
+        self._super_res.shutdown()                     # its upscaled tiles are temporary files
         self._sync.cancel()
         self._sessions.clear()
         self._close(False)

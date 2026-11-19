@@ -54,6 +54,10 @@ class UpscaleRequest:
     jpeg_quality: int = 95
     overwrite: bool = False
     model_dir: Path | None = None
+    # Instead of one picture, write the result as JPEG tiles of ``tile`` pixels (``<column>_<row>.jpg``) into this folder: a 2x
+    # 45 MP photo is 180 MP, too large for one texture and to read back whole (the editor's Super Resolution preview).
+    tiles_dir: Path | None = None
+    tile: int = 1024
 
 
 @dataclass(frozen=True)
@@ -165,6 +169,8 @@ def run_upscale(
         "jpegQuality": request.jpeg_quality,
         "overwrite": request.overwrite,
     }
+    if request.tiles_dir is not None:
+        job["tilesDir"], job["tile"] = str(request.tiles_dir), int(request.tile)
     fd, job_name = tempfile.mkstemp(prefix="upscale_job_", suffix=".json")
     job_path = Path(job_name)
     partial = output.with_name(output.name + ".partial")

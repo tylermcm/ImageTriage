@@ -43,8 +43,7 @@ def displayed_frame(key, proof=True):
     key, _, query = key.partition("?")
     options = dict(part.split("=", 1) for part in query.split("&") if "=" in part)
     with _frame_lock:
-        store = _thumbnails if key.startswith("thumb/") else _tiles if key.startswith(TILE_PREFIX) else _frames
-        image = store.get(key, QImage())
+        image = (_thumbnails if key.startswith("thumb/") else _frames).get(key, QImage())
     if options.get("persp") and not image.isNull():
         from ..raw_perspective import from_query, warp
 
@@ -121,23 +120,6 @@ def install_images(engine):
     if not engine.property("rawPreviewImagesInstalled"):
         engine.addImageProvider("rawpreview", _Images())
         engine.setProperty("rawPreviewImagesInstalled", True)
-
-
-# Super Resolution's upscaled tiles (raw_super_res.py): kept apart from the frames, whose budget a full-resolution picture
-# nearly fills on its own; the editor that made them decides which go (put_tile, discard_tile).
-TILE_PREFIX = "srtile/"
-_tiles = {}
-
-
-def put_tile(key, image):
-    with _frame_lock:
-        _tiles[TILE_PREFIX + key] = image
-    return "image://rawpreview/" + TILE_PREFIX + key
-
-
-def discard_tile(url):
-    with _frame_lock:
-        _tiles.pop(url.removeprefix("image://rawpreview/"), None)
 
 
 def put_frame(key, image):

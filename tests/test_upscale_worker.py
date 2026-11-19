@@ -59,6 +59,16 @@ def test_success_payload_progress_and_output(env):
     assert not list(tmp.glob("*.partial"))
 
 
+def test_the_result_can_be_written_as_tiles_instead_of_one_picture(env):
+    """The editor's Super Resolution preview: a 2x 45 MP photo is too large for one picture, so the worker writes it as tiles."""
+    job, factory, tmp = env
+    result, _lines = run({**job, "tilesDir": str(tmp / "tiles"), "tile": 32}, factory)
+    assert result["outputSize"] == [60, 40] and result["outputPath"] == str(tmp / "tiles")
+    sizes = {p.name: Image.open(p).size for p in (tmp / "tiles").glob("*.jpg")}
+    assert sizes == {"0_0.jpg": (32, 32), "1_0.jpg": (28, 32), "0_1.jpg": (32, 8), "1_1.jpg": (28, 8)}
+    assert not (tmp / "out.png").exists() and not list((tmp / "tiles").glob("*.partial"))
+
+
 @pytest.mark.parametrize(
     "edit, category",
     [
