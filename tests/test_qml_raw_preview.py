@@ -252,3 +252,40 @@ def test_white_balance_picker_uses_cached_preview_and_one_undo_step(qapp, monkey
     raw.undo()
     assert raw.values["temperature"] == raw.values["tint"] == 0
     raw.shutdown()
+
+
+def test_the_zoomed_in_detail_picture_keeps_the_fog_and_the_blur(qapp, monkeypatch, tmp_path):
+    """The full-resolution detail picture is PhotoCraft's render, which has no Atmosphere or Bokeh: they are laid over it as on the
+    preview worker's pictures. It used to arrive without the fog, which then vanished from the photo seconds after zooming in."""
+    import numpy as np
+
+    from image_triage import atmosphere
+
+    flat = tmp_path / "rendered.png"
+    image = QImage(320, 200, QImage.Format.Format_RGB888)
+    image.fill(QColor(60, 70, 80))
+    assert image.save(str(flat))
+
+    def work(action, path, original, draft, directory, sample=None):
+        target = tmp_path / f"{action}-{time.monotonic_ns()}.png"
+        target.write_bytes(flat.read_bytes())                    # PhotoCraft's develop: no fog
+        return str(target)
+
+    monkeypatch.setattr(RawEditor, "_work", staticmethod(work))
+    monkeypatch.setattr(raw_preview, "executable", lambda: None)
+    depth = np.tile(np.linspace(30, 220, 80, dtype=np.float32), (50, 1)).astype(np.uint8)
+    monkeypatch.setattr("image_triage.light_depth.load_depth", lambda path, model="small": depth)
+    raw = RawEditor()
+    try:
+        raw._path, raw._loaded, raw._original = str(tmp_path / "IMG.NEF"), True, {}
+        raw._draft = {"atmosphere": atmosphere.with_preset(atmosphere.DEFAULTS, 1)}
+        raw._detail_mode = True
+        raw._enqueue("detail")
+        end = time.monotonic() + 20
+        while not raw._detail and time.monotonic() < end:
+            pump(qapp, 0.05)
+        shown = raw_preview.displayed_frame(raw._detail.partition("?")[0]).convertToFormat(QImage.Format.Format_RGB888)
+        mean = float(np.frombuffer(bytes(shown.constBits()), np.uint8).reshape(shown.height(), shown.bytesPerLine())[:, :shown.width() * 3].mean())
+        assert mean > 70 + 10, f"the fog is laid over the detail picture (mean {mean:.1f}, the render alone is 70)"
+    finally:
+        raw.shutdown()

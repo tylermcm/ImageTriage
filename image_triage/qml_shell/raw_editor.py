@@ -1108,6 +1108,10 @@ class RawEditor(QObject):
                             raise ValueError("The full-resolution preview could not be decoded.")
                     finally:
                         Path(result).unlink(missing_ok=True)
+                    # PhotoCraft develops the photo; Atmosphere and Bokeh are the host's, laid over it as on the preview worker's
+                    # pictures. Without this, zooming in swapped the fogged picture for one without fog once the detail arrived.
+                    image = atmosphere.fogged_frame(({}, image), path, draft.get("atmosphere"))[1]
+                    image = bokeh.bokeh_frame(({}, image), path, draft.get("bokeh"))[1]
                     result = image
                 self._finished.emit(revision, action, result, "")
             except Exception as error:
