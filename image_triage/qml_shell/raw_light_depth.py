@@ -172,6 +172,8 @@ class RawLightDepth(QObject):
         return kept[1]
 
     busy = Property(bool, lambda self: self._busy, notify=changed)
+    # Made ahead with nothing waiting on it (the panel prepares the map when it loads): no AI overlay over the photo for that.
+    background = Property(bool, lambda self: self._busy and self._pending is None, notify=changed)
     message = Property(str, lambda self: self._message, notify=changed)
     waiting = Property(bool, lambda self: self._waiting, notify=changed)
     error = Property(str, lambda self: self._error, notify=changed)
@@ -431,6 +433,8 @@ class RawLightDepth(QObject):
             self._pending = settings
             if not self._busy:
                 self._start(settings)
+            else:
+                self.changed.emit()       # an edit now waits on the map being made: no longer a background run
             return
         if settings.get("depth") is None:
             settings = {**settings, "depth": light_depth.depth_at(depth, settings["x"], settings["y"])}

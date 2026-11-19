@@ -95,6 +95,9 @@ class RawEditor(QObject):
     changed = Signal()
     _copied = None  # the look copied with Copy Settings, shared by every editor in the process
     saved = Signal(str, str)
+    # Done: the finished picture as the editor shows it (the photo, its image:// address, its size), shown in the photo's place
+    # until the background save lands (``saved``) so the edits never seem to vanish meanwhile.
+    handedOver = Signal(str, str, int, int)
     recipeSetAside = Signal(str, str)          # unreadable saved settings were set aside on load (the photo, what to say); once
     saveFailed = Signal(str, str)              # a background save of an edit did not land (the photo, why); its draft is kept
     _finished = Signal(int, str, object, str)
@@ -995,6 +998,7 @@ class RawEditor(QObject):
             self.cancel()
             return
         if self._saves is not None:
+            self._hand_over()
             self.commit()                              # saved in the background; the draft stays on disk until it lands
             self._close(False)
             return
@@ -1008,6 +1012,25 @@ class RawEditor(QObject):
         self._error = ""
         self._enqueue("save")
         self.changed.emit()
+
+    def _hand_over(self):
+        """Give the viewer the finished picture as shown now (``handedOver``), kept apart from the editor's own frames."""
+        from PySide6.QtCore import Qt
+
+        url = self.property("preview")
+        if not url.startswith("image://rawpreview/") or not self._path:
+            return
+        image = raw_preview.displayed_frame(url, proof=False)
+        if image.isNull():
+            return
+        if max(image.width(), image.height()) > 4096:          # the full-resolution detail picture: a screen's worth is enough
+            image = image.scaled(4096, 4096, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self._handovers = getattr(self, "_handovers", 0) + 1
+        shown = raw_preview.put_thumbnail(f"done/{self._owner}/{self._handovers}", image)
+        width, height = self.property("fullWidth"), self.property("fullHeight")
+        if min(width, height) <= 0:
+            width, height = image.width(), image.height()
+        self.handedOver.emit(self._path, shown, width, height)
 
     def _clear_files(self):
         if self._files is not None:

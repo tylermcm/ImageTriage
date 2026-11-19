@@ -51,7 +51,7 @@ FocusScope {
                     [e.lightDepthEditor, "Light Depth"], [e.atmosphereEditor, "Atmosphere"], [e.bokehEditor, "Bokeh"],
                     [e.maskEditor ? e.maskEditor.ai : null, "AI Masking"], [e.superResEditor, "Super Resolution"]]
         for (var i = 0; i < jobs.length; ++i)
-            if (jobs[i][0] && jobs[i][0].busy) return {"tool": jobs[i][0], "title": jobs[i][1]}
+            if (jobs[i][0] && jobs[i][0].busy && !jobs[i][0].background) return {"tool": jobs[i][0], "title": jobs[i][1]}
         return null
     }
     onRawEditingChanged: Qt.callLater(function() { if (v.rawEditor) v.rawEditor.setDetailMode(v.rawEditing && v.zoomed) })
