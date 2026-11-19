@@ -148,6 +148,8 @@ def run_job(
     spec = core.get_spec(str(job.get("modelKey", "")))
     model_dir = Path(job["modelDir"])
     core.verify_model_file(model_dir, spec, deep=True)  # every job: weights are pinned by hash
+    if job.get("base"):
+        return run_base(job, spec, model_dir, session_factory, emit, started)
     source = Path(job["inputPath"])
     output = Path(job["outputPath"])
     overwrite = bool(job.get("overwrite", False))
@@ -234,6 +236,72 @@ def run_job(
             "save": round(save_s, 3),
             "total": round(time.perf_counter() - started, 3),
         },
+    }
+
+
+def run_base(job, spec, model_dir: Path, session_factory, emit: Emit, started: float) -> dict[str, Any]:
+    """Super Resolution's base (``superres_base_encode``): the photo's demosaiced linear camera RGB (half floats from the RAW preview
+    worker's ``superresInput``), upscaled once in float, written as the base companion. The model sees the photo as a photo: white-
+    balanced and gamma-encoded (2.2), undone after; nothing is rounded to 8 bits."""
+    import numpy as np
+
+    try:  # a sibling, like upscale_core
+        import superres_base_encode as encode
+    except ImportError:  # pragma: no cover - package import for tests
+        from image_triage import superres_base_encode as encode
+
+    base = job["base"]
+    w, h = int(base["width"]), int(base["height"])
+    mult = (1.0 / np.asarray(base["neutral"], np.float32)).astype(np.float32)
+    t = time.perf_counter()
+    linear = np.fromfile(base["linear"], "<f2").astype(np.float32).reshape(h, w, 3)
+    np.multiply(linear, mult, out=linear)
+    np.clip(linear, 0.0, 1.0, out=linear)
+    np.power(linear, 1 / 2.2, out=linear)
+    load_s = time.perf_counter() - t
+    t = time.perf_counter()
+    factory = session_factory or default_session_factory
+    session = factory(model_dir / spec.filename, str(job.get("device", "auto")), emit)
+    session_s = time.perf_counter() - t
+    scale = spec.scale
+    scratch = Path(base["target"]).with_name(Path(base["target"]).name + ".upscaled.npy")
+    last = {"t": 0.0}
+
+    def progress(done: int, total: int) -> None:
+        now = time.perf_counter()
+        if done == total or now - last["t"] >= 0.25:
+            last["t"] = now
+            _say(emit, PROGRESS_PREFIX, {"stage": "upscale", "done": done, "total": total})
+
+    try:
+        out = np.lib.format.open_memmap(scratch, mode="w+", dtype=np.float16, shape=(h * scale, w * scale, 3))
+        t = time.perf_counter()
+        core.upscale_array(linear, session.run, scale, progress=progress, out=out)
+        infer_s = time.perf_counter() - t
+        del linear
+        t = time.perf_counter()
+
+        def row(y):
+            v = out[y].astype(np.float32)
+            np.power(v, 2.2, out=v)
+            return np.clip(v / mult, 0.0, 1.0)
+
+        def saved(done, total):
+            _say(emit, PROGRESS_PREFIX, {"stage": "save", "done": done, "total": total})
+
+        encode.write_base(Path(base["target"]), str(base["original"]), base["crop"], row, h * scale, w * scale, progress=saved)
+        save_s = time.perf_counter() - t
+        del out
+    finally:
+        try:
+            scratch.unlink()
+        except OSError:
+            pass
+    return {
+        "outputPath": str(base["target"]), "modelKey": spec.key, "scale": scale, "provider": session.provider,
+        "inputSize": [w, h], "outputSize": [w * scale, h * scale], "tiles": 0, "warnings": list(session.warnings),
+        "timings": {"load": round(load_s, 3), "session": round(session_s, 3), "inference": round(infer_s, 3),
+                    "save": round(save_s, 3), "total": round(time.perf_counter() - started, 3)},
     }
 
 

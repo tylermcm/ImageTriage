@@ -195,6 +195,51 @@ def run_upscale(
                 pass
 
 
+def run_superres_base(
+    linear: Path, width: int, height: int, neutral, crop, original: str, target: Path,
+    progress_callback: Callable[[UpscaleProgress], None] | None = None,
+    cancel_event: threading.Event | None = None,
+    *,
+    model_key: str = "realesrgan-x2plus",
+    spawn: Callable[[list[str], dict[str, str]], Any] = _default_spawn,
+    runtime_resolver: Callable[..., Any] = select_runtime,
+    command_builder: Callable[[Path], list[str]] = _build_command,
+) -> UpscaleResult:
+    """Super Resolution's base (``superres_base_encode``): ``linear`` (half floats, ``height x width x 3``, the RAW preview worker's
+    ``superresInput``) upscaled once in float and written as the base companion at ``target``."""
+    spec = _spec_or_raise(model_key)
+    try:
+        selection = runtime_resolver("auto", require_torch=False)
+    except AIRuntimeUnavailable as exc:
+        raise UpscaleServiceError(exc.category, str(exc), exc.remediation) from exc
+    job = {
+        "protocolVersion": UPSCALE_PROTOCOL_VERSION, "modelKey": spec.key, "modelDir": str(upscale_model_dir()), "device": "auto",
+        "base": {"linear": str(linear), "width": int(width), "height": int(height), "neutral": [float(v) for v in neutral],
+                 "crop": [int(v) for v in crop], "original": original, "target": str(target)},
+    }
+    fd, job_name = tempfile.mkstemp(prefix="upscale_job_", suffix=".json")
+    job_path = Path(job_name)
+    partial = target.with_name(target.name + ".partial")
+    process = None
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(job, handle)
+        try:
+            command = command_builder(job_path)
+        except FileNotFoundError as exc:
+            raise UpscaleServiceError("worker_missing", f"Upscale worker unavailable: {exc}", "Reinstall Image Triage or run Set Up AI.") from exc
+        process = spawn(command, build_worker_env(selection, protocol_version=UPSCALE_PROTOCOL_VERSION))
+        return _stream(process, progress_callback, cancel_event, target, partial)
+    finally:
+        if process is not None and process.poll() is None:
+            _terminate(process)
+        for leftover in (job_path, partial):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
+
+
 def _spec_or_raise(key: str) -> core.UpscaleModelSpec:
     try:
         return core.get_spec(key)
