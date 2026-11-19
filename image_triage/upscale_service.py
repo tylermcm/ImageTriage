@@ -54,6 +54,10 @@ class UpscaleRequest:
     jpeg_quality: int = 95
     overwrite: bool = False
     model_dir: Path | None = None
+    # Instead of one picture, write the result as JPEG tiles of ``tile`` pixels (``<column>_<row>.jpg``) into this folder: a 2x
+    # 45 MP photo is 180 MP, too large for one texture and to read back whole (the editor's Super Resolution preview).
+    tiles_dir: Path | None = None
+    tile: int = 1024
 
 
 @dataclass(frozen=True)
@@ -165,6 +169,8 @@ def run_upscale(
         "jpegQuality": request.jpeg_quality,
         "overwrite": request.overwrite,
     }
+    if request.tiles_dir is not None:
+        job["tilesDir"], job["tile"] = str(request.tiles_dir), int(request.tile)
     fd, job_name = tempfile.mkstemp(prefix="upscale_job_", suffix=".json")
     job_path = Path(job_name)
     partial = output.with_name(output.name + ".partial")
@@ -179,6 +185,51 @@ def run_upscale(
         env = build_worker_env(selection, protocol_version=UPSCALE_PROTOCOL_VERSION)
         process = spawn(command, env)
         return _stream(process, progress_callback, cancel_event, output, partial)
+    finally:
+        if process is not None and process.poll() is None:
+            _terminate(process)
+        for leftover in (job_path, partial):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
+
+
+def run_superres_base(
+    linear: Path, width: int, height: int, neutral, crop, original: str, target: Path,
+    progress_callback: Callable[[UpscaleProgress], None] | None = None,
+    cancel_event: threading.Event | None = None,
+    *,
+    model_key: str = "realesrgan-x2plus",
+    spawn: Callable[[list[str], dict[str, str]], Any] = _default_spawn,
+    runtime_resolver: Callable[..., Any] = select_runtime,
+    command_builder: Callable[[Path], list[str]] = _build_command,
+) -> UpscaleResult:
+    """Super Resolution's base (``superres_base_encode``): ``linear`` (half floats, ``height x width x 3``, the RAW preview worker's
+    ``superresInput``) upscaled once in float and written as the base companion at ``target``."""
+    spec = _spec_or_raise(model_key)
+    try:
+        selection = runtime_resolver("auto", require_torch=False)
+    except AIRuntimeUnavailable as exc:
+        raise UpscaleServiceError(exc.category, str(exc), exc.remediation) from exc
+    job = {
+        "protocolVersion": UPSCALE_PROTOCOL_VERSION, "modelKey": spec.key, "modelDir": str(upscale_model_dir()), "device": "auto",
+        "base": {"linear": str(linear), "width": int(width), "height": int(height), "neutral": [float(v) for v in neutral],
+                 "crop": [int(v) for v in crop], "original": original, "target": str(target)},
+    }
+    fd, job_name = tempfile.mkstemp(prefix="upscale_job_", suffix=".json")
+    job_path = Path(job_name)
+    partial = target.with_name(target.name + ".partial")
+    process = None
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(job, handle)
+        try:
+            command = command_builder(job_path)
+        except FileNotFoundError as exc:
+            raise UpscaleServiceError("worker_missing", f"Upscale worker unavailable: {exc}", "Reinstall Image Triage or run Set Up AI.") from exc
+        process = spawn(command, build_worker_env(selection, protocol_version=UPSCALE_PROTOCOL_VERSION))
+        return _stream(process, progress_callback, cancel_event, target, partial)
     finally:
         if process is not None and process.poll() is None:
             _terminate(process)

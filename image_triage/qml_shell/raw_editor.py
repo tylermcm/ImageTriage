@@ -95,6 +95,9 @@ class RawEditor(QObject):
     changed = Signal()
     _copied = None  # the look copied with Copy Settings, shared by every editor in the process
     saved = Signal(str, str)
+    # Done: the finished picture as the editor shows it (the photo, its image:// address, its size), shown in the photo's place
+    # until the background save lands (``saved``) so the edits never seem to vanish meanwhile.
+    handedOver = Signal(str, str, int, int)
     recipeSetAside = Signal(str, str)          # unreadable saved settings were set aside on load (the photo, what to say); once
     saveFailed = Signal(str, str)              # a background save of an edit did not land (the photo, why); its draft is kept
     _finished = Signal(int, str, object, str)
@@ -995,6 +998,7 @@ class RawEditor(QObject):
             self.cancel()
             return
         if self._saves is not None:
+            self._hand_over()
             self.commit()                              # saved in the background; the draft stays on disk until it lands
             self._close(False)
             return
@@ -1008,6 +1012,25 @@ class RawEditor(QObject):
         self._error = ""
         self._enqueue("save")
         self.changed.emit()
+
+    def _hand_over(self):
+        """Give the viewer the finished picture as shown now (``handedOver``), kept apart from the editor's own frames."""
+        from PySide6.QtCore import Qt
+
+        url = self.property("preview")
+        if not url.startswith("image://rawpreview/") or not self._path:
+            return
+        image = raw_preview.displayed_frame(url, proof=False)
+        if image.isNull():
+            return
+        if max(image.width(), image.height()) > 4096:          # the full-resolution detail picture: a screen's worth is enough
+            image = image.scaled(4096, 4096, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self._handovers = getattr(self, "_handovers", 0) + 1
+        shown = raw_preview.put_thumbnail(f"done/{self._owner}/{self._handovers}", image)
+        width, height = self.property("fullWidth"), self.property("fullHeight")
+        if min(width, height) <= 0:
+            width, height = image.width(), image.height()
+        self.handedOver.emit(self._path, shown, width, height)
 
     def _clear_files(self):
         if self._files is not None:
@@ -1025,6 +1048,7 @@ class RawEditor(QObject):
 
     def shutdown(self):
         """The application is closing. Unsaved drafts stay on disk and come back when their photos are edited again."""
+        self._super_res.shutdown()                     # stops a base being made and the worker that develops the view
         self._sync.cancel()
         self._sessions.clear()
         self._close(False)
@@ -1108,6 +1132,10 @@ class RawEditor(QObject):
                             raise ValueError("The full-resolution preview could not be decoded.")
                     finally:
                         Path(result).unlink(missing_ok=True)
+                    # PhotoCraft develops the photo; Atmosphere and Bokeh are the host's, laid over it as on the preview worker's
+                    # pictures. Without this, zooming in swapped the fogged picture for one without fog once the detail arrived.
+                    image = atmosphere.fogged_frame(({}, image), path, draft.get("atmosphere"))[1]
+                    image = bokeh.bokeh_frame(({}, image), path, draft.get("bokeh"))[1]
                     result = image
                 self._finished.emit(revision, action, result, "")
             except Exception as error:
@@ -1198,13 +1226,15 @@ class RawEditor(QObject):
         placed_blur = draft.get("bokeh")
         placed_blur = placed_blur if bokeh.normalized(placed_blur)["amount"] > 0 else None
         original, light_draft, draft = _without_light_depth(original), draft, _without_light_depth(draft)
-        if settings != original and not (action != "save" and _saved_by_us(path, settings)):
+        if settings != original and not (action not in ("save", "picture") and _saved_by_us(path, settings)):
             raise ValueError("The saved recipe changed. Reopen Edit RAW before applying more edits.")
         # What the renderer gets: the draft plus the masks Light Depth's settings make. They are built here, for every
         # preview and save, and are never stored (the saved recipe and the Mask tab only hold the person's own masks).
         full = _recipe({} if action == "whiteBalance" else light_draft, path)
         folder = str(Path(path).parent)
-        saving = action == "save"
+        # "picture": render and publish only the picture of the recipe on disk, never writing the recipe (editor_host renders a photo
+        # the hosted editor saved this way).
+        saving = action in ("save", "picture")
         write_root = str(edit_storage.ensure_edit_root(folder)) if saving else directory
         proc = bridge.launch_photocraft(None, read_root=folder, write_root=write_root,
                                        extra_args=("--raw-workspace",) if saving else ())
@@ -1270,10 +1300,12 @@ class RawEditor(QObject):
                     raise ValueError("The saved recipe changed while the RAW was rendering")
                 laid, scratch = host_effects.effects_file(rendered, path, {"atmosphere": placed_air, "bokeh": placed_blur})
                 try:
-                    published = publish(path, laid, draft, signature)
+                    published = publish(path, laid, draft, signature, recipe_on_disk=action == "picture")
                 finally:
                     for stale in scratch:
                         stale.unlink(missing_ok=True)
+                if action == "picture":
+                    return published
                 try:
                     light_depth.write_sidecar(bridge.recipe_path(path), placed)
                     atmosphere.write_sidecar(bridge.recipe_path(path), placed_air)

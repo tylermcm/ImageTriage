@@ -1,20 +1,25 @@
-"""Detail > Super Resolution in the editor: the photo counts as twice its size, and while zoomed the part in view is upscaled and laid
-over the picture. A stand-in replaces the model."""
+"""Detail > Super Resolution in the editor, as Camera Raw does it: the photo is upscaled once into a base kept beside it, and every
+view and edit after that develops from the base (the RAW preview worker's ``regionRender``). Stand-ins replace the model and the
+worker."""
+import json
 import threading
 
-import pytest
 from PySide6.QtCore import QObject
 from PySide6.QtGui import QColor, QImage
 
-from image_triage.qml_shell import raw_preview, raw_super_res
+from image_triage.qml_shell import raw_super_res
+from image_triage.qml_shell.raw_super_res import source_rect, view_rect
 from test_qml_shell_viewer import shell, qapp, pump  # noqa: F401
 
 
-def test_the_piece_is_the_view_and_a_margin_under_the_limit():
-    assert raw_super_res.piece((0.4, 0.4, 0.6, 0.6), 1000, 1000) == pytest.approx((0.35, 0.35, 0.65, 0.65))
-    l, t, r, b = raw_super_res.piece((0.0, 0.0, 1.0, 1.0), 8000, 5000)                 # the whole 40 MP picture in view
-    assert (r - l) * 8000 * (b - t) * 5000 <= raw_super_res.MAX_SOURCE_PIXELS * 1.01
-    assert raw_super_res.covers((0.3, 0.3, 0.7, 0.7), (0.4, 0.4, 0.6, 0.6)) and not raw_super_res.covers((0.3, 0.3, 0.5, 0.7), (0.4, 0.4, 0.6, 0.6))
+def test_a_view_and_its_part_of_the_photo_as_recorded():
+    plain = {"x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6}
+    rect = source_rect((0.25, 0.5, 0.5, 1.0), plain)
+    assert rect == (0.1 + 0.25 * 0.8, 0.2 + 0.5 * 0.6, 0.1 + 0.5 * 0.8, 0.2 + 0.6)
+    for crop in (plain, {**plain, "rotate": 90}, {**plain, "rotate": 270, "flipH": True}, {**plain, "rotate": 180, "flipV": True}):
+        back = view_rect(source_rect((0.2, 0.3, 0.6, 0.7), crop), crop)
+        assert all(abs(a - b) < 1e-9 for a, b in zip(back, (0.2, 0.3, 0.6, 0.7))), crop
+    assert source_rect((0.2, 0.3, 0.6, 0.7), {**plain, "angle": 3.0}) is None        # straightened: not laid over the view
 
 
 def editing(shell, qapp):
@@ -30,40 +35,83 @@ def editing(shell, qapp):
     return window, raw, warnings
 
 
-def test_zoomed_in_the_part_in_view_is_upscaled_and_laid_over_the_photo(shell, qapp):
+def until(qapp, condition, seconds=5.0):
+    import time
+
+    end = time.monotonic() + seconds
+    while not condition() and time.monotonic() < end:
+        pump(qapp, 0.05)
+    return condition()
+
+
+def test_the_photo_is_upscaled_once_and_every_edit_develops_from_the_base(shell, qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(raw_super_res, "base_path", lambda photo, denoised=False: tmp_path / "superres" / "sample.NEF.superres")
     window, raw, warnings = editing(shell, qapp)
     sr = raw.superResEditor
-    gate, calls = threading.Event(), []
+    gate, made, asked = threading.Event(), [], []
 
-    def fake_upscale(image, cancel, progress):
-        calls.append((image.width(), image.height()))
+    def fake_make(source, target, cancel, progress):
+        made.append(source)
         gate.wait(5)
-        big = QImage(image.width() * 2, image.height() * 2, QImage.Format_RGB32)
-        big.fill(QColor("#ff00ff"))
-        return big
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"PCSRBAS1")
+        target.with_name(target.name + ".json").write_text(json.dumps({"source": None}), encoding="utf-8")
 
-    sr.upscale = fake_upscale
+    def fake_region(request):
+        asked.append(request)
+        l, t, r, b = request["rect"]
+        image = QImage(64, 40, QImage.Format_RGBA8888)
+        image.fill(QColor("#336699"))
+        return {"ok": True, "shown": [l, t, r, b], "fullSize": [16000, 10000]}, image
+
+    sr.make_base = fake_make
+    sr.regions.render = fake_region
     width = raw.fullWidth
     raw.setSuperResolution(True)
-    pump(qapp, .2)
-    assert raw.fullWidth == width * 2                                       # 100% is now one upscaled pixel per screen pixel
-    status = window.findChild(QObject, "rawSuperResolutionStatus")
-    detail = QImage(8000, 5000, QImage.Format_RGB32)                         # the full-resolution picture of detail mode
-    detail.fill(QColor("#336699"))
-    raw._detail_mode, raw._detail = True, raw_preview.put_frame(f"{raw._owner}/test/detail", detail)
-    raw.changed.emit()
-    sr.setView(0.4, 0.4, 0.5, 0.5, True)
-    pump(qapp, .6)
-    assert sr.busy and calls and calls[0][0] < 8000                         # a piece, not the whole picture
-    overlay = window.findChild(QObject, "aiWorkingOverlay")
-    assert overlay.property("title") == "Super Resolution"
-    gate.set()
+    assert until(qapp, lambda: made)
+    assert raw.fullWidth == width * 2 and sr.busy and "Upscaling" in sr.message   # made at once, under the AI overlay
+    assert window.findChild(QObject, "aiWorkingOverlay").property("title") == "Super Resolution"
+    assert "Applied" not in sr.status                                            # nothing is claimed before it is done
+    sr.setView(0.40, 0.40, 0.46, 0.46, True)
     pump(qapp, .5)
-    assert not sr.busy and sr.patch["url"].startswith("image://rawpreview/") and sr.patch["l"] < 0.4 < 0.5 < sr.patch["r"]
-    sr.setView(0.42, 0.42, 0.52, 0.52, True)                                 # a small pan inside the piece: nothing new
+    assert sr.patches == [] and not asked                                        # nothing developed before the base
+    gate.set()
+    assert until(qapp, lambda: sr.patches)
+    assert not sr.busy and "Applied" in sr.status and len(made) == 1
+    assert asked[-1]["op"] == "regionRender" and asked[-1]["path"].endswith("sample.NEF.superres")
+    patch = sr.patches[0]
+    assert patch["url"].startswith("image://rawpreview/")
+    assert patch["l"] <= 0.40 and patch["r"] >= 0.46                            # the view and some of what is around it
+    count = len(asked)
+    sr.setView(0.405, 0.405, 0.465, 0.465, True)                                 # a small pan: already developed
     pump(qapp, .6)
-    assert len(calls) == 1
+    assert len(asked) == count
+    raw.adjust("exposure", 1.0)                                                  # an edit: developed again from the base,
+    assert until(qapp, lambda: len(asked) > count and sr.patches and sr.patches[0]["url"] != patch["url"])
+    assert asked[-1]["recipe"]["cameraRaw"]["exposure"] == 1.0 and len(made) == 1  # never upscaled again
     raw.setSuperResolution(False)
-    pump(qapp, .6)
-    assert not sr.patch and raw.fullWidth == width
+    assert until(qapp, lambda: not sr.patches)
+    assert raw.fullWidth == width
     assert not [w for w in warnings if "SuperRes" in w or "superRes" in w], warnings
+
+
+def test_cancel_stops_the_upscale_until_the_photo_changes(shell, qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(raw_super_res, "base_path", lambda photo, denoised=False: tmp_path / "superres" / "sample.NEF.superres")
+    window, raw, warnings = editing(shell, qapp)
+    sr = raw.superResEditor
+    made = []
+
+    def fake_make(source, target, cancel, progress):
+        made.append(source)
+        cancel.wait(5)
+        raise InterruptedError("cancelled")
+
+    sr.make_base = fake_make
+    raw.setSuperResolution(True)
+    assert until(qapp, lambda: made and sr.busy)
+    sr.cancel()
+    pump(qapp, .8)
+    assert not sr.busy and len(made) == 1 and sr.patches == []
+    raw.adjust("exposure", 0.5)                                                  # an edit is not a new photo
+    pump(qapp, .8)
+    assert len(made) == 1

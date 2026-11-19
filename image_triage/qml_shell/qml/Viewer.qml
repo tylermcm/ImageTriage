@@ -51,7 +51,7 @@ FocusScope {
                     [e.lightDepthEditor, "Light Depth"], [e.atmosphereEditor, "Atmosphere"], [e.bokehEditor, "Bokeh"],
                     [e.maskEditor ? e.maskEditor.ai : null, "AI Masking"], [e.superResEditor, "Super Resolution"]]
         for (var i = 0; i < jobs.length; ++i)
-            if (jobs[i][0] && jobs[i][0].busy) return {"tool": jobs[i][0], "title": jobs[i][1]}
+            if (jobs[i][0] && jobs[i][0].busy && !jobs[i][0].background) return {"tool": jobs[i][0], "title": jobs[i][1]}
         return null
     }
     onRawEditingChanged: Qt.callLater(function() { if (v.rawEditor) v.rawEditor.setDetailMode(v.rawEditing && v.zoomed) })
@@ -434,14 +434,16 @@ FocusScope {
                         Text { id: compareLabel; anchors.centerIn: parent; text: parent.modelData; color: v.cFg; font.pixelSize: 12 }
                     }
                 }
-                Image {   // Super Resolution: the part in view, upscaled by the model, over the picture (raw_super_res.py)
-                    objectName: "viewerSuperResPatch"
-                    readonly property var patch: v.rawEditing ? v.rawEditor.superResEditor.patch : ({})
-                    visible: v.rawEditing && v.zoomed && !!patch.url && !(rawPanel.visible && rawPanel.before)
-                    x: photoImg.x + (patch.l || 0) * photoImg.width; y: photoImg.y + (patch.t || 0) * photoImg.height
-                    width: ((patch.r || 0) - (patch.l || 0)) * photoImg.width; height: ((patch.b || 0) - (patch.t || 0)) * photoImg.height
-                    source: visible ? patch.url : ""
-                    asynchronous: true; cache: false; smooth: true; mipmap: true
+                Repeater {   // Super Resolution: the upscaled tiles in and around the view, over the picture (raw_super_res.py)
+                    model: v.rawEditing && v.zoomed && !(rawPanel.visible && rawPanel.before) ? v.rawEditor.superResEditor.patches : []
+                    delegate: Image {
+                        required property var modelData
+                        objectName: "viewerSuperResTile"
+                        x: photoImg.x + modelData.l * photoImg.width; y: photoImg.y + modelData.t * photoImg.height
+                        width: (modelData.r - modelData.l) * photoImg.width; height: (modelData.b - modelData.t) * photoImg.height
+                        source: modelData.url
+                        asynchronous: true; cache: false; smooth: true; mipmap: true
+                    }
                 }
                 Image {   // focus assist: the Widgets viewer's own edge map, shown in place of the photo
                     x: photoImg.x; y: photoImg.y; width: photoImg.width; height: photoImg.height

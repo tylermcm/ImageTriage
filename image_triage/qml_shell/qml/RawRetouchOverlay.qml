@@ -9,7 +9,38 @@ Item {
     property var points: []
     signal zoomWheel(real x, real y, real steps)
     property bool drawing: false
-    readonly property real diameter: visible ? model.size/100*Math.min(width/crop.w,height/crop.h) : 0
+    // The brush on screen, never larger than twice what can be seen (zoomed in, or on a crop of a sliver, it would be enormous, and
+    // Qt's software renderer keeps a picture of every rounded rectangle at its full size; see RawRedEyeOverlay).
+    readonly property real limit: 2*Math.max(viewport ? viewport.width : width, viewport ? viewport.height : height, 6)
+    readonly property real diameter: visible ? Math.min(limit, model.size/100*Math.min(width/Math.max(crop.w, 0.001), height/Math.max(crop.h, 0.001))) : 0
+    // The part of the photo that can be seen: the stroke's canvas covers only that, not the whole zoomed photo, which at 300% of a 24 MP
+    // RAW is a canvas of gigabytes. Worked out when a stroke starts and again whenever the view changes during it (a key that zooms
+    // out, the bar or the panels put away, the window resized), so the stroke stays drawn where it is.
+    property rect strokeArea: Qt.rect(0, 0, 0, 0)
+    function seenArea() {
+        if (!viewport) return Qt.rect(0, 0, width, height)
+        var a = mapFromItem(viewport, 0, 0), b = mapFromItem(viewport, viewport.width, viewport.height)
+        var x0 = Math.floor(Math.max(0, Math.min(a.x, b.x))), y0 = Math.floor(Math.max(0, Math.min(a.y, b.y)))
+        var x1 = Math.ceil(Math.min(width, Math.max(a.x, b.x))), y1 = Math.ceil(Math.min(height, Math.max(a.y, b.y)))
+        return Qt.rect(x0, y0, Math.max(0, x1 - x0), Math.max(0, y1 - y0))
+    }
+    function viewMoved() {
+        if (!drawing) return
+        strokeArea = seenArea()
+        path.requestPaint()
+    }
+    onXChanged: viewMoved()
+    onYChanged: viewMoved()
+    onWidthChanged: viewMoved()
+    onHeightChanged: viewMoved()
+    Connections {
+        target: overlay.viewport
+        enabled: overlay.drawing
+        function onWidthChanged() { overlay.viewMoved() }
+        function onHeightChanged() { overlay.viewMoved() }
+        function onXChanged() { overlay.viewMoved() }
+        function onYChanged() { overlay.viewMoved() }
+    }
     function toView(p) { return Qt.point((p[0]-crop.x)/crop.w*width,(p[1]-crop.y)/crop.h*height) }
     function acceptsPoint(x, y) {
         if (x < 0 || y < 0 || x >= width || y >= height) return false
@@ -25,20 +56,24 @@ Item {
     onVisibleChanged: { if(!visible) {drawing=false;points=[];path.requestPaint()} }
     Canvas {
         id: path
-        width: overlay.visible ? overlay.width : 0
-        height: overlay.visible ? overlay.height : 0
+        objectName: "rawRetouchStroke"
+        x: overlay.strokeArea.x; y: overlay.strokeArea.y
+        width: overlay.visible && overlay.drawing ? overlay.strokeArea.width : 0
+        height: overlay.visible && overlay.drawing ? overlay.strokeArea.height : 0
         onPaint: {
             if (width < 1 || height < 1) return
             var ctx=getContext('2d');ctx.reset();ctx.clearRect(0,0,width,height)
             if(!overlay.drawing || !overlay.points.length)return
+            var w=overlay.width, h=overlay.height
+            ctx.translate(-x, -y)
             ctx.strokeStyle='#88589fff';ctx.lineWidth=overlay.diameter;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath()
-            for(var i=0;i<overlay.points.length;i++) { var p=overlay.points[i];if(i===0)ctx.moveTo(p[0]*width,p[1]*height);else ctx.lineTo(p[0]*width,p[1]*height) }
-            if(overlay.points.length===1) {var a=overlay.points[0];ctx.lineTo(a[0]*width+.01,a[1]*height)}
+            for(var i=0;i<overlay.points.length;i++) { var p=overlay.points[i];if(i===0)ctx.moveTo(p[0]*w,p[1]*h);else ctx.lineTo(p[0]*w,p[1]*h) }
+            if(overlay.points.length===1) {var a=overlay.points[0];ctx.lineTo(a[0]*w+.01,a[1]*h)}
             ctx.stroke()
         }
     }
     Image { anchors.fill: parent; visible: overlay.model.kind==="erase" && source!==""; source: overlay.visible ? overlay.raw.eraseEditor.overlay : ""; fillMode: Image.Stretch; cache: false }
-    Rectangle { objectName: "rawRetouchCursor"; visible: overlay.model.kind!=="erase" && pointer.enabled && pointer.containsMouse && overlay.acceptsPoint(pointer.mouseX, pointer.mouseY); x: pointer.mouseX-width/2; y: pointer.mouseY-height/2; width: overlay.diameter; height: width; radius: width/2; color:'transparent'; border.color:'white' }
+    Rectangle { objectName: "rawRetouchCursor"; visible: overlay.model.kind!=="erase" && pointer.enabled && pointer.containsMouse && overlay.acceptsPoint(pointer.mouseX, pointer.mouseY); x: pointer.mouseX-width/2; y: pointer.mouseY-height/2; width: visible ? overlay.diameter : 0; height: width; radius: width/2; color:'transparent'; border.color:'white' }
     Rectangle {
         visible: overlay.model.source.length===2 && (overlay.model.kind==='clone' || overlay.model.kind==='heal')
         x: visible ? overlay.toView(overlay.model.source).x-6 : 0; y: visible ? overlay.toView(overlay.model.source).y-6 : 0
@@ -54,7 +89,7 @@ Item {
             var p=point(event)
             if(overlay.model.kind==="erase") {overlay.raw.eraseEditor.select(p[0],p[1]);return}
             if(event.modifiers & Qt.AltModifier) {overlay.model.pick(p[0],p[1]);return}
-            overlay.points=[p];overlay.drawing=true;path.requestPaint()
+            overlay.strokeArea=overlay.seenArea();overlay.points=[p];overlay.drawing=true;path.requestPaint()
         }
         onPositionChanged: (event) => {
             if (overlay.drawing && pressed) {

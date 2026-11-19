@@ -178,6 +178,9 @@ RECIPE_ARRAYS = {"curveSplits": 3, "hslHue": 8, "hslSat": 8, "hslLum": 8, "calib
 RECIPE_CALIBRATION_FIELDS = frozenset(("calibShadowTint", "calibHue", "calibSat"))
 RECIPE_CURVES = ("pointCurve", "pointCurveRed", "pointCurveGreen", "pointCurveBlue")
 RECIPE_WHEELS = ("gradeShadows", "gradeMidtones", "gradeHighlights", "gradeGlobal")
+# Recipe settings Image Triage keeps for itself: PhotoCraft's CameraRaw has no such fields, and carries them over unchanged when it writes
+# a recipe (raw_recipe::Targets::extra).
+HOST_ONLY_FIELDS = ("hostCrop", "aiDenoise")
 RECIPE_FIELDS = RECIPE_SCALARS | frozenset(RECIPE_ARRAYS) | frozenset(RECIPE_CURVES) | frozenset(RECIPE_WHEELS) | {"seed", "vignetteStyle", "glow", "pointColors", "superResolution", "masks", "hostCrop", "retouch", "redEye", "sky", "aiDenoise"}
 
 

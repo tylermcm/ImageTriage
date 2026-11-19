@@ -77,6 +77,22 @@ def _preload_gpu_libraries(ort, emit: Emit) -> None:
         _say(emit, METRIC_PREFIX, {"event": "preload_dlls_failed", "warning": str(exc)})
 
 
+def _half_model_for(onnx_path: Path, emit: Emit) -> Path | None:
+    """The float16 copy of a (hash-verified) model for a graphics card, made once beside it (``core.half_model``): about 1.6x the
+    speed on tensor cores, within a fraction of a level of the float32 result. None when it cannot be made (the float32 model is
+    used then); the provider self-check below still compares it with the CPU's float32 result."""
+    half = onnx_path.with_name(onnx_path.stem + ".fp16.onnx")
+    try:
+        if not half.is_file() or half.stat().st_mtime < onnx_path.stat().st_mtime:
+            partial = half.with_name(half.name + ".partial")
+            core.half_model(onnx_path, partial)
+            os.replace(partial, half)
+        return half
+    except Exception as exc:  # no onnx package, a read-only folder...
+        _say(emit, METRIC_PREFIX, {"event": "half_model_skipped", "warning": f"float16 model not made ({exc}); float32 is used"})
+        return None
+
+
 def default_session_factory(onnx_path: Path, device: str, emit: Emit) -> _Session:
     """Try providers in order; a non-CPU provider must reproduce the CPU result on a test tile."""
     import onnxruntime as ort
@@ -93,7 +109,7 @@ def default_session_factory(onnx_path: Path, device: str, emit: Emit) -> _Sessio
         if provider == "CPUExecutionProvider":
             return _Session(cpu_run, provider, tuple(skipped))
         try:
-            run, active = _make_ort_session(onnx_path, provider)
+            run, active = _make_ort_session(_half_model_for(onnx_path, emit) or onnx_path, provider)
             if active != provider:
                 warning = f"{provider} could not be loaded (onnxruntime fell back to {active}), so it was skipped."
             else:
@@ -148,6 +164,8 @@ def run_job(
     spec = core.get_spec(str(job.get("modelKey", "")))
     model_dir = Path(job["modelDir"])
     core.verify_model_file(model_dir, spec, deep=True)  # every job: weights are pinned by hash
+    if job.get("base"):
+        return run_base(job, spec, model_dir, session_factory, emit, started)
     source = Path(job["inputPath"])
     output = Path(job["outputPath"])
     overwrite = bool(job.get("overwrite", False))
@@ -182,6 +200,29 @@ def run_job(
 
     _say(emit, PROGRESS_PREFIX, {"stage": "save", "done": 0, "total": 1})
     t = time.perf_counter()
+    if job.get("tilesDir"):
+        # the result as tiles, straight from the array: never one picture of the whole (see UpscaleRequest.tiles_dir)
+        import numpy as np
+        from PIL import Image
+
+        folder, size = Path(job["tilesDir"]), max(16, int(job.get("tile", 1024)))
+        folder.mkdir(parents=True, exist_ok=True)
+        height, width = result.shape[:2]
+        for iy, y in enumerate(range(0, height, size)):
+            for ix, x in enumerate(range(0, width, size)):
+                piece = Image.fromarray(np.ascontiguousarray(result[y:y + size, x:x + size]), "RGB")
+                partial = folder / f"{ix}_{iy}.jpg.partial"
+                piece.save(partial, "JPEG", quality=int(job.get("jpegQuality", 95)))
+                os.replace(partial, folder / f"{ix}_{iy}.jpg")
+        save_s = time.perf_counter() - t
+        _say(emit, PROGRESS_PREFIX, {"stage": "save", "done": 1, "total": 1})
+        return {
+            "outputPath": str(folder), "modelKey": spec.key, "scale": spec.scale, "provider": session.provider,
+            "inputSize": [plan.in_width, plan.in_height], "outputSize": [width, height], "tiles": plan.tile_count,
+            "warnings": [*plan.warnings, *session.warnings],
+            "timings": {"load": round(load_s, 3), "session": round(session_s, 3), "inference": round(infer_s, 3),
+                        "save": round(save_s, 3), "total": round(time.perf_counter() - started, 3)},
+        }
     core.save_output(
         result,
         output,
@@ -211,6 +252,72 @@ def run_job(
             "save": round(save_s, 3),
             "total": round(time.perf_counter() - started, 3),
         },
+    }
+
+
+def run_base(job, spec, model_dir: Path, session_factory, emit: Emit, started: float) -> dict[str, Any]:
+    """Super Resolution's base (``superres_base_encode``): the photo's demosaiced linear camera RGB (half floats from the RAW preview
+    worker's ``superresInput``), upscaled once in float, written as the base companion. The model sees the photo as a photo: white-
+    balanced and gamma-encoded (2.2), undone after; nothing is rounded to 8 bits."""
+    import numpy as np
+
+    try:  # a sibling, like upscale_core
+        import superres_base_encode as encode
+    except ImportError:  # pragma: no cover - package import for tests
+        from image_triage import superres_base_encode as encode
+
+    base = job["base"]
+    w, h = int(base["width"]), int(base["height"])
+    mult = (1.0 / np.asarray(base["neutral"], np.float32)).astype(np.float32)
+    t = time.perf_counter()
+    linear = np.fromfile(base["linear"], "<f2").astype(np.float32).reshape(h, w, 3)
+    np.multiply(linear, mult, out=linear)
+    np.clip(linear, 0.0, 1.0, out=linear)
+    np.power(linear, 1 / 2.2, out=linear)
+    load_s = time.perf_counter() - t
+    t = time.perf_counter()
+    factory = session_factory or default_session_factory
+    session = factory(model_dir / spec.filename, str(job.get("device", "auto")), emit)
+    session_s = time.perf_counter() - t
+    scale = spec.scale
+    scratch = Path(base["target"]).with_name(Path(base["target"]).name + ".upscaled.npy")
+    last = {"t": 0.0}
+
+    def progress(done: int, total: int) -> None:
+        now = time.perf_counter()
+        if done == total or now - last["t"] >= 0.25:
+            last["t"] = now
+            _say(emit, PROGRESS_PREFIX, {"stage": "upscale", "done": done, "total": total})
+
+    try:
+        out = np.lib.format.open_memmap(scratch, mode="w+", dtype=np.float16, shape=(h * scale, w * scale, 3))
+        t = time.perf_counter()
+        core.upscale_array(linear, session.run, scale, progress=progress, out=out)
+        infer_s = time.perf_counter() - t
+        del linear
+        t = time.perf_counter()
+
+        def row(y0, y1):
+            v = out[y0:y1].astype(np.float32)
+            np.power(v, 2.2, out=v)
+            return np.clip(v / mult, 0.0, 1.0)
+
+        def saved(done, total):
+            _say(emit, PROGRESS_PREFIX, {"stage": "save", "done": done, "total": total})
+
+        encode.write_base(Path(base["target"]), str(base["original"]), base["crop"], row, h * scale, w * scale, progress=saved)
+        save_s = time.perf_counter() - t
+        del out
+    finally:
+        try:
+            scratch.unlink()
+        except OSError:
+            pass
+    return {
+        "outputPath": str(base["target"]), "modelKey": spec.key, "scale": scale, "provider": session.provider,
+        "inputSize": [w, h], "outputSize": [w * scale, h * scale], "tiles": 0, "warnings": list(session.warnings),
+        "timings": {"load": round(load_s, 3), "session": round(session_s, 3), "inference": round(infer_s, 3),
+                    "save": round(save_s, 3), "total": round(time.perf_counter() - started, 3)},
     }
 
 

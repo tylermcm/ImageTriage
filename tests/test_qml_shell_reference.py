@@ -197,6 +197,56 @@ def test_the_update_check_cycles_through_its_states(qapp, ref, monkeypatch):
     assert ref.view["help"]["upTitle"] == "You are up to date" and "Last checked today at" in ref.view["help"]["upBody"]
 
 
+def test_the_menus_check_never_cancels_downloads_or_disarms(ref):
+    ref.openAbout(True)
+    assert ref._upd == "checking"
+    for state in ("avail", "dlerror", "downloading", "ready", "armed"):
+        ref._upd = state
+        ref.openAbout(True)
+        assert ref._upd == state, f"Check for Updates must leave {state} alone"
+    ref._upd = "error"
+    ref.openAbout(True)
+    assert ref._upd == "checking"
+
+
+def test_asking_during_the_startup_check_shows_its_failure(qapp, photos):
+    from types import SimpleNamespace
+
+    from image_triage.qml_shell.reference_model import ReferenceModel, _UpdateSignals
+
+    model = ReferenceModel(photos, None, memory=False, parent=qapp)
+    signals = _UpdateSignals()
+    signals.done.connect(model._update_done)
+    model._task, model._upd, model._upd_quiet = SimpleNamespace(token=1), "checking", True    # the quiet startup check
+    model.openAbout(True)                               # Help > Check for Updates while it runs
+    assert model._upd == "checking"
+    signals.done.emit(1, None, "offline")
+    pump(qapp, 0.05)
+    assert model._upd == "error" and model._upd_error == "offline"
+
+
+def test_a_cancelled_check_finishing_late_does_not_answer_for_the_newer_one(qapp, photos, monkeypatch):
+    from PySide6.QtCore import QThreadPool
+
+    from image_triage.qml_shell import reference_model
+    from image_triage.qml_shell.reference_model import ReferenceModel
+
+    started = []
+    monkeypatch.setattr(QThreadPool, "start", lambda pool, task: started.append(task))   # the checks finish when the test says
+    model = ReferenceModel(photos, None, memory=False, parent=qapp)
+    model.openAbout(True)
+    model.checkUpdates()                                # cancel
+    model.openAbout(True)                               # and ask again
+    old, new = started
+    assert isinstance(old, reference_model._UpdateTask) and old.token != new.token
+    old.signals.done.emit(old.token, None, "stale failure")
+    pump(qapp, 0.05)
+    assert model._upd == "checking", "the cancelled check's answer is dropped"
+    new.signals.done.emit(new.token, None, "fresh failure")
+    pump(qapp, 0.05)
+    assert model._upd == "error" and model._upd_error == "fresh failure"
+
+
 def test_the_sample_newer_version_downloads_nothing(ref):
     ref.scene("hlp-about-new")
     h = ref.view["help"]

@@ -225,14 +225,20 @@ def upscale_array(
     pad: int = DEFAULT_PAD,
     progress: ProgressFn | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    out: np.ndarray | None = None,
 ) -> np.ndarray:
     """Upscale an ``HxWx3`` uint8 array tile by tile.
 
     Every ``run_tile`` call receives the same float32 ``1x3xTxT`` shape (avoids provider recompiles);
     only each tile's centre is kept, so tile borders never reach the output.
+
+    A float32 array (0 … 1) is upscaled without rounding to 8 bits and gives float16 (Super Resolution's raw base, which
+    is developed after: 8 bits would band in the shadows). ``out`` (``H*scale x W*scale x 3`` of the output's type, a
+    memory map for a large photo) receives the result instead of a new array.
     """
-    if rgb.ndim != 3 or rgb.shape[2] != 3 or rgb.dtype != np.uint8:
-        raise UpscaleError("bad_image", "Expected an HxWx3 uint8 array.")
+    floating = rgb.dtype == np.float32
+    if rgb.ndim != 3 or rgb.shape[2] != 3 or not (rgb.dtype == np.uint8 or floating):
+        raise UpscaleError("bad_image", "Expected an HxWx3 uint8 (or float32) array.")
     core, pad, tile = choose_tile(core, pad)
     h, w = rgb.shape[:2]
     tiles_x, tiles_y = math.ceil(w / core), math.ceil(h / core)
@@ -240,8 +246,13 @@ def upscale_array(
     # Reflect-pad so every tile is a full ``tile`` square; NumPy needs pad <= dim-1 per pass, so loop.
     extra_b, extra_r = padded_h - h, padded_w - w
     canvas = _reflect_pad(rgb, pad, pad + extra_b, pad, pad + extra_r)
-    out = np.empty((h * scale, w * scale, 3), dtype=np.uint8)
-    full = np.empty((padded_h * scale, padded_w * scale, 3), dtype=np.uint8) if (extra_b or extra_r) else out
+    kind = np.float16 if floating else np.uint8
+    if out is None:
+        out = np.empty((h * scale, w * scale, 3), dtype=kind)
+    elif out.shape != (h * scale, w * scale, 3) or out.dtype != kind:
+        raise UpscaleError("bad_image", f"The output array must be {(h * scale, w * scale, 3)} of {np.dtype(kind).name}.")
+    # Without padding on the right or bottom, every tile's centre lands in `out` itself (no second full-size array).
+    full = None if (extra_b or extra_r) else out
     total = tiles_x * tiles_y
     done = 0
     for ty in range(tiles_y):
@@ -250,7 +261,9 @@ def upscale_array(
                 raise UpscaleError("cancelled", "Upscaling was cancelled.")
             y0, x0 = ty * core, tx * core
             patch = canvas[y0 : y0 + tile, x0 : x0 + tile]
-            tensor = np.ascontiguousarray(patch.transpose(2, 0, 1)[None], dtype=np.float32) / 255.0
+            tensor = np.ascontiguousarray(patch.transpose(2, 0, 1)[None], dtype=np.float32)
+            if not floating:
+                tensor /= 255.0
             result = run_tile(tensor)
             expect = (1, 3, tile * scale, tile * scale)
             if getattr(result, "shape", None) != expect:
@@ -258,13 +271,20 @@ def upscale_array(
             if not np.isfinite(result).all():
                 raise UpscaleError("bad_model_output", "Model returned non-finite values.")
             centre = result[0, :, pad * scale : (pad + core) * scale, pad * scale : (pad + core) * scale]
-            pixels = np.clip(np.rint(np.clip(centre, 0.0, 1.0) * 255.0), 0, 255).astype(np.uint8).transpose(1, 2, 0)
-            full[y0 * scale : (y0 + core) * scale, x0 * scale : (x0 + core) * scale] = pixels
+            if floating:
+                pixels = np.clip(centre, 0.0, 1.0).astype(np.float16).transpose(1, 2, 0)
+            else:
+                pixels = np.clip(np.rint(np.clip(centre, 0.0, 1.0) * 255.0), 0, 255).astype(np.uint8).transpose(1, 2, 0)
+            ys, xs = y0 * scale, x0 * scale
+            if full is not None:
+                full[ys : ys + core * scale, xs : xs + core * scale] = pixels
+            else:                                       # the right and bottom tiles reach past the photo: only their part
+                hh, ww = min(core * scale, h * scale - ys), min(core * scale, w * scale - xs)
+                if hh > 0 and ww > 0:
+                    out[ys : ys + hh, xs : xs + ww] = pixels[:hh, :ww]
             done += 1
             if progress is not None:
                 progress(done, total)
-    if full is not out:
-        out[:] = full[: h * scale, : w * scale]
     return out
 
 
@@ -308,6 +328,38 @@ def self_check_input(size: int = 96) -> np.ndarray:
     base = np.stack([xs, ys, (xs + ys) / 2.0])
     noise = rng.normal(0.0, 0.05, base.shape).astype(np.float32)
     return np.clip(base + noise, 0.0, 1.0)[None].astype(np.float32)
+
+
+def half_model(source: Path | str, target: Path | str) -> Path:
+    """A float16 copy of the ONNX model at ``source`` written to ``target``, for a graphics card's tensor cores (2-3x the speed of
+    float32 there). Weights and float constants become float16, except the scales of a Resize (which must stay float32); a Cast
+    after the input and one before the output keep the model's float32 inputs and outputs, so callers do not change. Needs the
+    ``onnx`` package (the AI runtime has it)."""
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+
+    model = onnx.load(str(source))
+    graph = model.graph
+    keep = {n.input[2] for n in graph.node if n.op_type == "Resize" and len(n.input) > 2 and n.input[2]}
+    keep |= {n.input[1] for n in graph.node if n.op_type == "Resize" and len(n.input) > 1 and n.input[1]}
+    for i, init in enumerate(graph.initializer):
+        if init.data_type == TensorProto.FLOAT and init.name not in keep:
+            graph.initializer[i].CopyFrom(numpy_helper.from_array(numpy_helper.to_array(init).astype(np.float16), init.name))
+    for node in graph.node:
+        if node.op_type == "Constant" and node.output[0] not in keep:
+            for attr in node.attribute:
+                if attr.name == "value" and attr.t.data_type == TensorProto.FLOAT:
+                    attr.t.CopyFrom(numpy_helper.from_array(numpy_helper.to_array(attr.t).astype(np.float16), attr.t.name))
+    (inp,), (out,) = graph.input, graph.output
+    half_in, half_out = inp.name + "_fp16", out.name + "_fp16"
+    for node in graph.node:
+        node.input[:] = [half_in if x == inp.name else x for x in node.input]
+        node.output[:] = [half_out if x == out.name else x for x in node.output]
+    graph.node.insert(0, helper.make_node("Cast", [inp.name], [half_in], to=TensorProto.FLOAT16))
+    graph.node.append(helper.make_node("Cast", [half_out], [out.name], to=TensorProto.FLOAT))
+    del graph.value_info[:]
+    onnx.save(model, str(target))
+    return Path(target)
 
 
 def providers_agree(candidate: np.ndarray, reference: np.ndarray, tolerance: float = 5e-3) -> bool:

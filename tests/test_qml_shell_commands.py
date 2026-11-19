@@ -50,6 +50,18 @@ def test_help_commands_open_the_help_windows(shell):
     assert reference.view["window"] == "lib"
 
 
+def test_check_for_updates_opens_about_and_starts_a_check(shell):
+    # Main.qml used to pass the flag to a slot declared without arguments, so the menu opened About and never checked.
+    window, context = shell
+    reference = context.contextProperty("reference")
+    run(context, "help.check_updates")
+    assert reference.view["window"] == "help" and reference.view["help"]["kind"] == "about"
+    assert reference.view["help"]["upTitle"] == "Checking for updates\u2026"
+    reference.close()
+    run(context, "help.check_updates")                                 # a second ask while it runs does not cancel it
+    assert reference.view["help"]["upTitle"] == "Checking for updates\u2026"
+
+
 def test_ai_commands_open_the_cull_and_ai_center_windows(shell):
     window, context = shell
     cull = context.contextProperty("cull")

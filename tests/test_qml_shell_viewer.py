@@ -793,6 +793,109 @@ def test_raw_dock_meets_filmstrip_and_closes_to_full_width(shell, qapp):
     assert not [w for w in warnings if "RawEditorPanel.qml" in w], warnings
 
 
+def test_red_eye_cursor_stays_photo_sized_before_the_raw_size_is_known(shell, qapp):
+    # The photo's size is 0 until the RAW is read (and stays 0 if it cannot be). The search-area cursor was divided by it and came out
+    # tens of thousands of pixels across, which the software renderer turns into gigabytes.
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, model, popout, warnings = shell
+    popout.open(0)
+    popout.rawEditor.open("sample.NEF")
+    pump(qapp, 0.4)
+    assert popout.rawEditor.property("originalWidth") == 0
+    window.findChild(QQuickItem, "viewerRawEditorPanel").setProperty("tool", "Red Eye")
+    pump(qapp, 0.2)
+    overlay = window.findChild(QQuickItem, "rawRedEyeOverlay")
+    cursor = window.findChild(QQuickItem, "rawRedEyeCursor")
+    assert overlay.isVisible()
+    assert 12 <= overlay.property("diameter") <= 2 * max(overlay.width(), overlay.height())
+    assert cursor.width() == 0, "a hidden cursor takes no room at all"
+
+
+def _peak_memory_kb() -> int:
+    """The process's peak memory so far, in KB: ru_maxrss where the resource module exists, the peak working set on Windows."""
+    try:
+        import resource
+    except ImportError:                                 # Windows
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD), ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t), ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPagedPoolUsage", ctypes.c_size_t), ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t), ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+
+        counters = Counters()
+        counters.cb = ctypes.sizeof(Counters)
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+        kernel32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
+        assert kernel32.K32GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb)
+        return counters.PeakWorkingSetSize // 1024
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+
+def test_zoomed_in_brushes_are_never_larger_than_what_can_be_seen(shell, qapp):
+    # Zoomed in (to 6400%), the photo on screen is hundreds of thousands of pixels across: the brush cursors and the Remove stroke's
+    # canvas are bounded by the view instead, or Qt's software renderer needs gigabytes for them.
+    from PySide6.QtCore import Q_RETURN_ARG, QMetaObject
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, model, popout, warnings = shell
+    popout.open(0)
+    raw = popout.rawEditor
+    raw.open("sample.NEF")
+    pump(qapp, 0.4)
+    raw._full_size = [6000, 4000]
+    raw.changed.emit()
+    viewer = window.findChild(QObject, "viewer")
+    panel = window.findChild(QQuickItem, "viewerRawEditorPanel")
+    panel.setProperty("tool", "Red Eye")
+    viewer.setProperty("zoomed", True)
+    viewer.setProperty("zoomScale", 64.0)
+    pump(qapp, 0.3)
+    red = window.findChild(QQuickItem, "rawRedEyeOverlay")
+    stage = red.parentItem()
+    assert red.width() > 50 * stage.width(), "the photo is far larger than the view"
+    assert red.property("diameter") <= 2 * max(stage.width(), stage.height())
+    before = _peak_memory_kb()
+    panel.setProperty("tool", "Remove")
+    pump(qapp, 0.3)
+    remove = window.findChild(QQuickItem, "rawRetouchOverlay")
+    stroke = window.findChild(QQuickItem, "rawRetouchStroke")
+    assert stroke.width() == 0, "no canvas until a stroke starts"
+    assert remove.property("diameter") <= 2 * max(stage.width(), stage.height())
+    seen = QMetaObject.invokeMethod(remove, "seenArea", Q_RETURN_ARG("QVariant"))
+    remove.setProperty("strokeArea", seen)                 # what pressing does, then the stroke is drawn on that much
+    remove.setProperty("points", [[0.5, 0.5]])
+    remove.setProperty("drawing", True)
+    pump(qapp, 0.1)
+    assert stroke.width() <= stage.width() + 1 and stroke.height() <= stage.height() + 1, "only the part in view"
+    viewer.setProperty("zoomed", False)                  # "0" zooms out with the button still held
+    pump(qapp, 0.4)
+    assert remove.width() < stage.width() + 1, "the photo fits again"
+    assert stroke.width() == pytest.approx(remove.width(), abs=1) and stroke.height() == pytest.approx(remove.height(), abs=1), \
+        "the stroke's canvas follows the view, so the stroke stays drawn"
+    remove.setProperty("drawing", False)
+    pump(qapp, 0.1)
+    assert (_peak_memory_kb() - before) < 400 * 1024, "no picture the size of the zoomed photo"
+
+
+def test_the_raw_profile_choice_is_shown_as_unavailable(shell, qapp):
+    # The renderer has no profile setting yet: the choice must not look like a live control that does nothing.
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, model, popout, warnings = shell
+    popout.open(0)
+    popout.rawEditor.open("sample.NEF")
+    pump(qapp, 0.4)
+    choice = window.findChild(QQuickItem, "rawUnavailableChoice")
+    assert choice is not None and choice.isVisible() and not choice.isEnabled()
+    assert not [w for w in warnings if "RawEditorPanel.qml" in w], warnings
+
+
 def test_raw_reset_and_history_preserve_unexposed_recipe_settings(qapp):
     from image_triage.qml_shell.raw_editor import RawEditor
 

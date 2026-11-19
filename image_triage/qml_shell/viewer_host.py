@@ -96,6 +96,8 @@ class ViewerHost(QObject):
         self._best_pending: tuple[str, dict[str, str]] | None = None      # what Keep best, reject rest asked about: the photo and the decisions
         self._raw_editor = RawEditor(memory=memory, parent=self)
         self._raw_editor.saved.connect(self._raw_saved)
+        self._raw_editor.handedOver.connect(self._raw_handed_over)
+        self._raw_editor.saveFailed.connect(self._raw_save_failed)
         self._saved_previews: dict[str, tuple[str, int, int]] = {}
         self._settings = None if memory else user_settings()
         self._raw_wanted = self._read_bool(RAW_EDITOR_OPEN_KEY, False)
@@ -336,6 +338,20 @@ class ViewerHost(QObject):
             refresh(path)
         if path == self._path:
             self.imageChanged.emit()
+
+    def _raw_handed_over(self, path: str, url: str, width: int, height: int) -> None:
+        """Done: the edited picture stands in for the photo until its save lands (``_raw_saved`` replaces it)."""
+        self._saved_previews[path] = (url, width, height)
+        if path == self._path:
+            self.imageChanged.emit()
+
+    def _raw_save_failed(self, path: str, error: str) -> None:
+        """A save that did not land: the photo shows what is on disk again, not edits that were not saved."""
+        held = self._saved_previews.get(path)
+        if held and held[0].startswith("image://"):
+            del self._saved_previews[path]
+            if path == self._path:
+                self.imageChanged.emit()
 
     def _photos_changed(self, *args) -> None:
         """Photos went away (deleted, moved) or the folder changed: stay on the same photo, or the one that took its place."""
