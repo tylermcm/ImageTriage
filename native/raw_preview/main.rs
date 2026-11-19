@@ -118,7 +118,8 @@ fn read_source(path: &str) -> Result<Vec<u8>> {
     // Super Resolution's base companion (`photocraft_raw::superres`): the original raw it names with the base appended.
     if let Some(head) = photocraft_raw::superres::base(&bytes)? {
         let original = photocraft_raw::denoised::resolve_original(path, &head.original);
-        let raw = std::fs::read(&original).map_err(|e| format!("{original}: {e}"))?;
+        // The raw it was made from may be AI Denoise's companion: read as the denoised raw.
+        let raw = read_source(&original).map_err(|e| format!("{original}: {e}"))?;
         return Ok(photocraft_raw::superres::expand(&raw, &bytes));
     }
     match photocraft_raw::denoised::companion(&bytes)? {
@@ -589,6 +590,7 @@ fn region_render(cache: &mut Option<RegionSource>, request: &Value, display: &Ar
     Ok((
         json!({"ok":true,"protocol":2,"width":w,"height":h,"bytes":bytes.len(),"fullSize":[fw,fh],
                "region":[rx, ry, region.width, region.height],"margin":m,
+               "shown":[ix as f64 / fw as f64, iy as f64 / fh as f64, (ix + w) as f64 / fw as f64, (iy + h) as f64 / fh as f64],
                "openMs":open_ms,"measureMs":measure_ms,"rawMs":raw_ms,"cameraRawMs":camera_ms,
                "workerMs":start.elapsed().as_secs_f64()*1000.0}),
         bytes,
@@ -617,7 +619,7 @@ fn run() -> Result<()> {
         let result = (|| -> Result<(Value, Vec<u8>)> {
             let request: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
             if request["op"] == "hello" {
-                Ok((json!({"ok":true,"protocol":2,"redEye":1,"sky":2,"patch":1,"denoise":2,"superres":1,"region":1,"bytes":0}), vec![]))
+                Ok((json!({"ok":true,"protocol":2,"redEye":1,"sky":2,"patch":1,"denoise":2,"superres":1,"region":2,"bytes":0}), vec![]))
             } else if request["op"] == "open" {
                 let start = Instant::now();
                 source = None;

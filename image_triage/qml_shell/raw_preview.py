@@ -208,6 +208,8 @@ class Connection:
             self._sky_full = type(hello.get("sky")) is int and hello["sky"] >= 2       # the full Sky AI set (``sky_replace.NEWER``)
             self._patch_supported = type(hello.get("patch")) is int and hello["patch"] >= 1
             self._denoise_companion = type(hello.get("denoise")) is int and hello["denoise"] >= 2   # reads AI Denoise's companion file
+            self._superres = type(hello.get("superres")) is int and hello["superres"] >= 1      # makes Super Resolution's base
+            self._region = type(hello.get("region")) is int and hello["region"] >= 2           # develops a part with the whole recipe
         except Exception:
             self.close()
             raise
