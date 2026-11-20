@@ -271,10 +271,35 @@ def test_the_face_index_shows_no_meter_without_a_fraction():
     assert 'Meter { visible: parent.info.pct !== ""' in text and "void people.revision; return people.indexInfo()" in text
 
 
-def test_the_floating_bar_sizes_are_the_thumbnail_sizes(shell):
+def test_the_floating_bar_buttons_show_that_many_photos_per_screen_and_right_click_picks_the_count(shell):
     window, context, app = shell
-    assert "[9, 4, 1]" not in source("FloatingBar.qml")
-    assert 'UiState.setDens(["s", "m", "l"][i])' in source("FloatingBar.qml")
+    buttons = window.findChild(QObject, "gridCountButtons")
+    grid = window.findChild(QObject, "photoGrid")
+    above_bar = grid.property("height") - 132                                   # the grid's bottomSpace: the bar floats over it
+
+    def shown():
+        cols = round(grid.property("width") / grid.property("cellWidth"))
+        return cols, round(above_bar / grid.property("cellHeight"))
+
+    for index, layout in enumerate([(3, 3), (2, 2), (1, 1)]):                  # 9, 4 and 1 photos per screen
+        QMetaObject.invokeMethod(buttons, "activated", Q_ARG(int, index))
+        pump(app, 0.2)
+        assert shown() == layout, index
+    QMetaObject.invokeMethod(buttons, "contextRequested", Q_ARG(int, 0), Q_ARG("double", 4.0), Q_ARG("double", 4.0))
+    pump(app, 0.5)
+    menu = next(m for m in window.findChildren(QObject) if m.property("name") == "fGridCount")
+    assert menu.property("opened")
+
+    def items(item):
+        yield item
+        for child in item.childItems():
+            yield from items(child)
+
+    twelve = next(item for item in items(menu.property("contentItem")) if item.property("label") == "12 photos per screen")
+    QMetaObject.invokeMethod(twelve, "clicked")
+    pump(app, 0.3)
+    cols, rows_ = shown()
+    assert cols * rows_ == 12 and {cols, rows_} == {3, 4}                        # the first button now shows 12 (laid out for the window)
 
 
 # -- the keyboard on the shared controls ----------------------------------------------------------------------------------------------

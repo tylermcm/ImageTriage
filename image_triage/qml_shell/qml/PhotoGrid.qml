@@ -100,10 +100,14 @@ Item {
         }
     }
     readonly property int minCell: UiState.dens === "s" ? 150 : UiState.dens === "m" ? 230 : 340
-    readonly property int cols: UiState.cols > 0 ? UiState.cols : Math.max(1, Math.floor(gv.width / (minCell + 2)))   // auto-fill: n tracks of min width plus (n-1) gaps
+    // N photos per screen (the bar's grid buttons): the cells fill the part of the grid above the bar, so one screen shows exactly that many
+    readonly property real screenHeight: Math.max(1, gv.height - bottomSpace)
+    readonly property var perScreen: UiState.perScreen > 0 ? UiState.screenGrid(UiState.perScreen, Math.max(1, gv.width), screenHeight) : null
+    readonly property int cols: perScreen ? perScreen[0] : UiState.cols > 0 ? UiState.cols : Math.max(1, Math.floor(gv.width / (minCell + 2)))   // auto-fill: n tracks of min width plus (n-1) gaps
     // One thumbnail size per density, not per cell width: opening a panel or resizing the window changes the cells' width, and a size that
     // followed it asked for a new set of thumbnails (decoded from the originals) for every card on screen each time.
-    readonly property int cellBucket: bucket(Math.ceil((UiState.cols > 0 ? Math.min(Screen.width, 2000) * 0.75 / UiState.cols : minCell * 1.5) * Screen.devicePixelRatio))
+    readonly property int cellBucket: bucket(Math.ceil((perScreen ? Math.min(Screen.width, 3000) / perScreen[0]
+                                                       : UiState.cols > 0 ? Math.min(Screen.width, 2000) * 0.75 / UiState.cols : minCell * 1.5) * Screen.devicePixelRatio))
     property int bottomSpace: 132
     property Item overlay                // something floating over the grid (the bar): taps inside it are not the grid's
     signal openRequested(int row)
@@ -285,7 +289,7 @@ Item {
         interactive: false
         model: gridModel
         cellWidth: width / root.cols
-        cellHeight: (cellWidth - 2) * 2 / 3 + 2   // a 3:2 card plus the 2px gutter
+        cellHeight: root.perScreen ? root.screenHeight / root.perScreen[1] : (cellWidth - 2) * 2 / 3 + 2   // a 3:2 card plus the 2px gutter
         cacheBuffer: cellHeight * 2
         bottomMargin: root.bottomSpace
         reuseItems: true

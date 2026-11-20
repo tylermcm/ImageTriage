@@ -6,6 +6,8 @@ Item {
     id: seg
     property var labels: []              // text per segment (empty string for an icon segment)
     property var icons: []               // icon name per segment (optional)
+    property var paths: []               // or a raw icon path per segment
+    signal contextRequested(int index, real x, real y)   // right-click on a segment
     property var extras: []              // small trailing text per segment (counts)
     property int current: 0
     property int padH: 12
@@ -65,12 +67,13 @@ Item {
         x: 2; y: 2
         Repeater {
             id: rep
-            model: Math.max(seg.labels.length, seg.icons.length)
+            model: Math.max(seg.labels.length, seg.icons.length, seg.paths.length)
             delegate: Item {
                 id: cell
                 required property int index
                 readonly property string text: seg.labels[index] || ""
                 readonly property string icon: seg.icons[index] || ""
+                readonly property string iconPath: seg.paths[index] || ""
                 readonly property string extra: seg.showExtras ? (seg.extras[index] || "") : ""
                 height: seg.height - 4
                 Component.onCompleted: seg.maxCell = Math.max(seg.maxCell, content.implicitWidth + seg.padH * 2)
@@ -80,12 +83,13 @@ Item {
                     id: content
                     anchors.centerIn: parent
                     spacing: 5
-                    Icon { visible: cell.icon !== ""; name: cell.icon; size: 16; color: seg.current === cell.index ? theme.fg : theme.fg2; anchors.verticalCenter: parent.verticalCenter }
+                    Icon { visible: cell.icon !== "" || cell.iconPath !== ""; name: cell.icon; path: cell.iconPath; size: 16; color: seg.current === cell.index ? theme.fg : theme.fg2; anchors.verticalCenter: parent.verticalCenter }
                     Text { visible: cell.text !== ""; text: cell.text; font.pixelSize: 13; color: seg.current === cell.index ? theme.fg : theme.fg2; anchors.verticalCenter: parent.verticalCenter }
                     Text { visible: cell.extra !== ""; text: cell.extra; font.pixelSize: 11; color: theme.fg3; anchors.verticalCenter: parent.verticalCenter }
                 }
                 HoverHandler { cursorShape: Qt.PointingHandCursor }
                 TapHandler { onTapped: seg.activated(cell.index) }
+                TapHandler { acceptedButtons: Qt.RightButton; onTapped: (point) => seg.contextRequested(cell.index, point.position.x, point.position.y) }
                 Accessible.role: Accessible.RadioButton; Accessible.checked: seg.current === cell.index
                 Accessible.name: cell.text !== "" ? cell.text : cell.icon
             }
