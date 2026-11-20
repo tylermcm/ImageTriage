@@ -230,7 +230,9 @@ class UpdaterTests(unittest.TestCase):
                 updater.verify_installer_checksum(installer, expected)
             with self.assertRaisesRegex(RuntimeError, "no valid SHA-256"):
                 updater.verify_installer_checksum(installer, "")
-            with patch.object(updater.sys, "platform", "win32"), patch.object(updater.subprocess, "Popen") as popen:
+            with patch.object(updater.sys, "platform", "win32"), patch.object(updater.subprocess, "Popen") as popen, patch.object(
+                updater, "_start_elevated", return_value=True
+            ) as elevated:
                 with self.assertRaisesRegex(RuntimeError, "changed after it was verified"):
                     updater.launch_update_installer(installer, expected_sha256=expected)
                 with self.assertRaisesRegex(RuntimeError, "changed after it was verified"):
@@ -238,12 +240,14 @@ class UpdaterTests(unittest.TestCase):
                         installer, app_executable=installer, current_pid=1, expected_sha256=expected
                     )
                 popen.assert_not_called()
+                elevated.assert_not_called()
                 installer.write_bytes(b"msi bytes")
                 updater.launch_update_installer_and_restart(
                     installer, app_executable=installer, current_pid=1, expected_sha256=expected,
                     signature_verifier=lambda path: updater.InstallerSignature(updater.SIGNATURE_UNSIGNED),
                 )
-                popen.assert_called_once()
+                elevated.assert_called_once()
+                popen.assert_not_called()
 
     # ---- the installer's signer (audit R6). Nothing here runs Windows' own check: the verifier is a fake. ----
     PIN = updater.InstallerSignerPin(subjects=("Example Publisher",), thumbprints=("AB" * 20,))
@@ -360,9 +364,15 @@ class UpdaterTests(unittest.TestCase):
             def started(command, **kwargs):
                 events.append(("start", " ".join(command)))
 
+            def started_elevated(program, parameters):
+                events.append(("start", _decoded_script(parameters)))
+                return True
+
             with patch.object(updater.sys, "platform", "win32"), patch.object(updater, "_sha256_file", hashing), patch.object(
                 updater.subprocess, "Popen", side_effect=started
-            ), patch.object(updater.urllib.request, "urlopen", side_effect=AssertionError("nothing is downloaded again")):
+            ), patch.object(updater, "_start_elevated", side_effect=started_elevated), patch.object(
+                updater.urllib.request, "urlopen", side_effect=AssertionError("nothing is downloaded again")
+            ):
                 updater.launch_update_installer(installer, expected_sha256=expected, signature_verifier=verifier, signer_pin=self.PIN)
                 updater.launch_update_installer_and_restart(
                     installer, app_executable=installer, current_pid=1, expected_sha256=expected,
@@ -383,7 +393,9 @@ class UpdaterTests(unittest.TestCase):
                 "broken": (updater.InstallerSignature(updater.SIGNATURE_INVALID), updater.InstallerSignerPin()),
                 "unsigned, pinned": (updater.InstallerSignature(updater.SIGNATURE_UNSIGNED), self.PIN),
             }
-            with patch.object(updater.sys, "platform", "win32"), patch.object(updater.subprocess, "Popen") as popen:
+            with patch.object(updater.sys, "platform", "win32"), patch.object(updater.subprocess, "Popen") as popen, patch.object(
+                updater, "_start_elevated", side_effect=AssertionError("nothing may start")
+            ):
                 for name, (signature, pin) in verdicts.items():
                     with self.subTest(name), self.assertRaises(updater.InstallerSignerError):
                         updater.launch_update_installer(
@@ -412,7 +424,7 @@ class UpdaterTests(unittest.TestCase):
                 )
                 popen.assert_called_once()
 
-    def test_update_handoff_command_waits_installs_silently_and_restarts(self) -> None:
+    def test_update_handoff_waits_installs_with_progress_and_restarts_the_app_as_the_user(self) -> None:
         command = updater._build_update_handoff_command(
             Path("C:/Users/Test User/Downloads/Image Triage 1.2.0.msi"),
             Path("C:/Program Files/Image Triage/ImageTriage.exe"),
@@ -420,13 +432,46 @@ class UpdaterTests(unittest.TestCase):
         )
 
         self.assertIn("Wait-Process -Id $imageTriagePid", command)
-        self.assertIn("/qn", command)
+        self.assertNotIn("/qn", command)                       # a silent install cannot ask for permission (error 1730)
+        self.assertIn("/passive", command)
         self.assertIn("/norestart", command)
-        self.assertIn("Start-Process -FilePath $app", command)
+        self.assertIn("/l*v", command)
+        self.assertIn("Start-Process -FilePath 'explorer.exe'", command)   # back as the user, not as administrator
         self.assertIn("Image Triage 1.2.0.msi", command)
+
+    def test_the_install_asks_for_administrator_rights_and_a_refusal_brings_the_app_back(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installer = Path(temp_dir) / "ImageTriage-1.2.0.msi"
+            installer.write_bytes(b"msi bytes")
+            asked, plain = [], []
+            unsigned = lambda path: updater.InstallerSignature(updater.SIGNATURE_UNSIGNED)
+            with patch.object(updater.sys, "platform", "win32"):
+                done = updater.launch_update_installer_and_restart(
+                    installer, app_executable=installer, current_pid=7, signature_verifier=unsigned,
+                    start_elevated=lambda program, parameters: asked.append((program, _decoded_script(parameters))) or True,
+                    start_plain=plain.append,
+                )
+                self.assertTrue(done)
+                self.assertEqual("powershell.exe", asked[0][0])
+                self.assertIn(str(installer), asked[0][1])
+                self.assertIn("$imageTriagePid = 7", asked[0][1])
+                self.assertEqual([], plain)
+                refused = updater.launch_update_installer_and_restart(
+                    installer, app_executable=installer, current_pid=7, signature_verifier=unsigned,
+                    start_elevated=lambda program, parameters: False, start_plain=plain.append,
+                )
+            self.assertFalse(refused)
+            self.assertEqual([[str(installer)]], plain)
 
     def test_powershell_quote_escapes_single_quotes(self) -> None:
         self.assertEqual("'C:/Bob''s App/ImageTriage.exe'", updater._powershell_quote("C:/Bob's App/ImageTriage.exe"))
+
+
+def _decoded_script(parameters: str) -> str:
+    """The PowerShell script of an elevated handoff (it is passed -EncodedCommand)."""
+    import base64
+
+    return base64.b64decode(parameters.rsplit(" ", 1)[-1]).decode("utf-16-le")
 
 
 if __name__ == "__main__":

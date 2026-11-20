@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import base64
 import os
 import re
 import subprocess
@@ -350,7 +351,13 @@ def launch_update_installer_and_restart(
     expected_sha256: str | None = None,
     signature_verifier: SignatureVerifier | None = None,
     signer_pin: InstallerSignerPin | None = None,
-) -> subprocess.Popen:
+    start_elevated: Callable[[str, str], bool] | None = None,
+    start_plain: Callable[[list[str]], object] | None = None,
+) -> bool:
+    """Hand the update over to an elevated PowerShell that waits for this app to exit, installs the MSI with Windows Installer's
+    progress bar, and starts the app again as the user who ran it. Image Triage is installed for every user, so replacing it
+    needs administrator rights: the permission is asked for here, while the app is still in front (a silent install cannot ask,
+    and failed with error 1730). Returns False when the permission was refused; the app is then started again unchanged."""
     path = Path(installer_path)
     if not path.exists():
         raise FileNotFoundError(f"Installer not found: {path}")
@@ -367,23 +374,33 @@ def launch_update_installer_and_restart(
     # the same file that was just hashed, and the one the handoff installs: nothing is fetched again in between
     check_installer_publisher(path, verifier=signature_verifier, pin=signer_pin)
 
-    command = [
-        "powershell.exe",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        _build_update_handoff_command(path, executable, int(current_pid or os.getpid())),
-    ]
+    script = _build_update_handoff_command(path, executable, int(current_pid or os.getpid()))
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    parameters = f"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand {encoded}"
+    if (start_elevated or _start_elevated)("powershell.exe", parameters):
+        return True
+    # the permission was refused: the app comes back as it was instead of just closing
     kwargs: dict[str, object] = {}
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    return subprocess.Popen(command, **kwargs)
+    if hasattr(subprocess, "DETACHED_PROCESS"):
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS
+    (start_plain or (lambda command: subprocess.Popen(command, **kwargs)))([str(executable)])
+    return False
+
+
+def _start_elevated(program: str, parameters: str) -> bool:
+    """Start `program` as administrator (the Windows permission prompt); False when it was refused or could not start."""
+    import ctypes
+
+    shell32 = ctypes.windll.shell32
+    shell32.ShellExecuteW.restype = ctypes.c_void_p
+    result = shell32.ShellExecuteW(None, "runas", program, parameters, None, 0)       # 0: no window
+    return int(result or 0) > 32
 
 
 def _build_update_handoff_command(installer_path: Path, app_executable: Path, current_pid: int) -> str:
     installer = _powershell_quote(str(installer_path))
     executable = _powershell_quote(str(app_executable))
+    log = _powershell_quote(str(installer_path.with_suffix(".install.log")))
     pid = max(0, int(current_pid))
     return "\n".join(
         [
@@ -391,12 +408,15 @@ def _build_update_handoff_command(installer_path: Path, app_executable: Path, cu
             f"$imageTriagePid = {pid}",
             f"$installer = {installer}",
             f"$app = {executable}",
+            f"$log = {log}",
             "if ($imageTriagePid -gt 0) {",
             "    try { Wait-Process -Id $imageTriagePid -Timeout 180 -ErrorAction SilentlyContinue } catch {}",
             "}",
-            "$msiArgs = @('/i', ('\"' + $installer + '\"'), '/qn', '/norestart') -join ' '",
+            # Windows Installer's own progress bar, and a log beside the download for when something goes wrong
+            "$msiArgs = @('/i', ('\"' + $installer + '\"'), '/passive', '/norestart', '/l*v', ('\"' + $log + '\"')) -join ' '",
             "$msi = Start-Process -FilePath 'msiexec.exe' -ArgumentList $msiArgs -Wait -PassThru",
-            "Start-Process -FilePath $app",
+            # started through Explorer: the app runs as the user again, not as administrator
+            "Start-Process -FilePath 'explorer.exe' -ArgumentList ('\"' + $app + '\"')",
             "exit $msi.ExitCode",
         ]
     )
