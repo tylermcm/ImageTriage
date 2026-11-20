@@ -10,6 +10,35 @@ Item {
     property point end: Qt.point(0,0)
     property var points: []
     property bool addSample: false
+    // ---- the brush, as Camera Raw's: the cursor shows Size (outer circle) and Feather (inner circle: the full-strength part, half
+    // the size at 100); right-drag sideways sizes it, Shift+right-drag sets its feather; Alt erases while held; Caps Lock leaves
+    // crosshairs only (nothing else changes).
+    property bool caps: false
+    property bool strokeErase: false        // the stroke being painted erases (Alt held, or the Erase button)
+    property bool resizing: false           // a right-drag is sizing the brush (or its feather, with Shift)
+    property bool resizeFeather: false
+    property point resizeAnchor: Qt.point(0, 0)
+    property real resizeFromX: 0
+    property real resizeFromSize: 0
+    property real resizeFromFeather: 0
+    readonly property real brushPixels: Math.min(width / Math.max(crop.w, 0.001), height / Math.max(crop.h, 0.001)) / 100   // view pixels per Size unit (of the diameter)
+    readonly property bool brushArmed: model.tool === "brush"
+    function syncKeys(modifiers) {
+        if (!brushArmed) return
+        model.setAltErase((modifiers & Qt.AltModifier) !== 0)
+        caps = model.capsLock()
+    }
+    Keys.onPressed: (event) => {
+        if (!overlay.brushArmed) return
+        if (event.key === Qt.Key_Alt) { overlay.model.setAltErase(true); event.accepted = true }
+        else if (event.key === Qt.Key_CapsLock) overlay.caps = overlay.model.capsLock()
+    }
+    Keys.onReleased: (event) => {
+        if (!overlay.brushArmed) return
+        if (event.key === Qt.Key_Alt) { overlay.model.setAltErase(false); event.accepted = true }
+        else if (event.key === Qt.Key_CapsLock) overlay.caps = overlay.model.capsLock()
+    }
+    onBrushArmedChanged: { if (!brushArmed) model.setAltErase(false); else caps = model.capsLock() }
     readonly property var current: model.current
     readonly property var crop: raw.values.hostCrop
     function toView(x,y) { return Qt.point((x-crop.x)/crop.w*width,(y-crop.y)/crop.h*height) }
@@ -19,7 +48,7 @@ Item {
     onHeightChanged: guides.requestPaint()
     onVisibleChanged: { if (!visible) { dragging=false; points=[];model.pointer(false) } }
     Keys.onEscapePressed: (event) => { dragging=false; points=[]; model.stop(); guides.requestPaint(); event.accepted=true }
-    Image { anchors.fill: parent; visible: overlay.showCoverage && !(overlay.model.autoOverlay && overlay.model.adjusting && !overlay.model.refining); source: overlay.visible ? overlay.model.overlay : ""; fillMode: Image.Stretch; asynchronous: true; cache: false }
+    Image { anchors.fill: parent; visible: overlay.showCoverage && !(overlay.model.autoOverlay && overlay.model.adjusting && !overlay.model.refining) && !overlay.gradientLive; source: overlay.visible ? overlay.model.overlay : ""; fillMode: Image.Stretch; asynchronous: true; cache: false }
 
     // ---- a linear gradient, as Photoshop draws one: three parallel lines (full effect, halfway, none) across the picture, the
     // stem between them with its handles, and a rotation handle below the last line. Editable whenever the gradient is selected.
@@ -27,9 +56,15 @@ Item {
     readonly property bool gradientEditable: model.showPins && !model.tool && gradient.x0 !== undefined
     readonly property real rotateReach: 34          // the rotation handle's distance past the bottom line, in pixels
     property string grab: ""                        // what a drag on the gradient holds (gradientInput)
+    // While a handle is dragged the gradient is drawn from the pointer at once (liveA, liveB); the model hears of it at most every
+    // 40 ms (and on release), so the photo keeps up without a backlog. A mask that is only this gradient is drawn live too.
+    property point liveA: Qt.point(0, 0)
+    property point liveB: Qt.point(0, 0)
+    readonly property bool gradientLive: grab !== "" && model.components.length === 1
     // The gradient's ends in view pixels: while one is being drawn, the drag; while one is edited, the live shape.
     function gradientEnds() {
         if (overlay.dragging && overlay.model.tool === "linear") return [overlay.start, overlay.end]
+        if (overlay.grab !== "") return [overlay.liveA, overlay.liveB]
         if (overlay.gradient.x0 === undefined) return null
         return [Qt.point(overlay.gradient.x0*width, overlay.gradient.y0*height), Qt.point(overlay.gradient.x1*width, overlay.gradient.y1*height)]
     }
@@ -44,7 +79,7 @@ Item {
         var fill=ctx.createLinearGradient(a.x,a.y,b.x,b.y)
         fill.addColorStop(0,invert ? "#00ff4d62" : "#55ff4d62")
         fill.addColorStop(1,invert ? "#55ff4d62" : "#00ff4d62")
-        if (overlay.dragging) { ctx.fillStyle=fill; ctx.fillRect(0,0,width,height) }
+        if (overlay.dragging || overlay.gradientLive) { ctx.fillStyle=fill; ctx.fillRect(0,0,width,height) }
         function line(p) {                                   // a line through p, across the picture
             ctx.beginPath(); ctx.moveTo(p.x-g.n.x*far, p.y-g.n.y*far); ctx.lineTo(p.x+g.n.x*far, p.y+g.n.y*far); ctx.stroke()
         }
@@ -107,7 +142,7 @@ Item {
                 return
             }
             if (overlay.dragging && overlay.model.tool==="brush") {
-                ctx.strokeStyle="#77ff4d62";ctx.lineWidth=overlay.model.brushSize/100*Math.min(width/overlay.crop.w,height/overlay.crop.h)
+                ctx.strokeStyle=overlay.strokeErase ? "#88111418" : "#77ff4d62";ctx.lineWidth=overlay.model.brushSize/100*Math.min(width/overlay.crop.w,height/overlay.crop.h)
                 ctx.lineCap="round";ctx.lineJoin="round";ctx.beginPath()
                 for(var i=0;i<overlay.points.length;i++) {var p=overlay.points[i]; if(i===0)ctx.moveTo(p[0]*width,p[1]*height);else ctx.lineTo(p[0]*width,p[1]*height)}
                 ctx.stroke();return
@@ -145,13 +180,38 @@ Item {
             ctx.lineWidth=1.5/Math.min(rx,ry);ctx.beginPath();ctx.arc(0,0,1,0,Math.PI*2);ctx.stroke();ctx.restore()
         }
     }
-    Rectangle {
+    Canvas {
+        id: brushCursor
         objectName: "rawMaskBrushCursor"
-        visible: overlay.model.showPins && input.containsMouse && overlay.model.tool === "brush"
-        width: overlay.visible && visible ? Math.min(2*Math.max(overlay.width, overlay.height), overlay.model.brushSize/100*Math.min(overlay.width/Math.max(overlay.crop.w, 0.001), overlay.height/Math.max(overlay.crop.h, 0.001))) : 0
-        height: width; radius: width/2
-        x: input.mouseX-width/2; y: input.mouseY-height/2
-        color: "transparent"; border.color: "white"; border.width: 1
+        visible: overlay.model.showPins && (input.containsMouse || overlay.resizing) && overlay.brushArmed
+        readonly property real outer: Math.min(2*Math.max(overlay.width, overlay.height), overlay.model.brushSize*overlay.brushPixels) / 2
+        readonly property real inner: outer * (1 - overlay.model.brushFeather / 200)
+        readonly property point centre: overlay.resizing ? overlay.resizeAnchor : Qt.point(input.mouseX, input.mouseY)
+        width: overlay.visible && visible ? 2*outer + 16 : 0; height: width
+        x: centre.x - width/2; y: centre.y - height/2
+        onOuterChanged: requestPaint()
+        onInnerChanged: requestPaint()
+        Connections { target: overlay; function onCapsChanged() { brushCursor.requestPaint() } }
+        Connections { target: overlay.model; function onChanged() { brushCursor.requestPaint() } }
+        onPaint: {
+            var ctx=getContext("2d"); ctx.reset(); ctx.clearRect(0,0,width,height)
+            var c=width/2, R=outer, tick=Math.max(4, Math.min(8, R*0.25)), erasing=overlay.model.erasing
+            function shapes(colour, lw) {
+                ctx.strokeStyle=colour; ctx.lineWidth=lw
+                if (!overlay.caps) {
+                    ctx.beginPath(); ctx.arc(c,c,R,0,Math.PI*2); ctx.stroke()
+                    if (inner > 0.5 && inner < R - 0.5) { ctx.beginPath(); ctx.arc(c,c,inner,0,Math.PI*2); ctx.stroke() }
+                }
+                ctx.beginPath()                                   // the ticks where the size circle crosses its axes
+                ctx.moveTo(c, c-R-tick/2); ctx.lineTo(c, c-R+tick/2); ctx.moveTo(c, c+R-tick/2); ctx.lineTo(c, c+R+tick/2)
+                ctx.moveTo(c-R-tick/2, c); ctx.lineTo(c-R+tick/2, c); ctx.moveTo(c+R-tick/2, c); ctx.lineTo(c+R+tick/2, c)
+                ctx.moveTo(c-4, c); ctx.lineTo(c+4, c)            // the centre: + to paint, minus to erase
+                if (!erasing) { ctx.moveTo(c, c-4); ctx.lineTo(c, c+4) }
+                ctx.stroke()
+            }
+            shapes("rgba(0,0,0,0.55)", 2.6)                       // a dark edge, so the cursor reads on light and dark
+            shapes("white", 1.1)
+        }
     }
     Repeater {
         model: overlay.model.showPins && !overlay.model.tool ? overlay.model.pins : []
@@ -170,30 +230,51 @@ Item {
     MouseArea {
         id: input
         objectName: "rawMaskInput"
-        anchors.fill: parent; enabled: !overlay.model.ai.busy; acceptedButtons: overlay.model.tool ? Qt.LeftButton : Qt.NoButton; preventStealing: true; hoverEnabled: true
-        onContainsMouseChanged: overlay.model.pointer(containsMouse)
-        cursorShape: Qt.CrossCursor
+        anchors.fill: parent; enabled: !overlay.model.ai.busy
+        acceptedButtons: overlay.brushArmed ? (Qt.LeftButton | Qt.RightButton) : overlay.model.tool ? Qt.LeftButton : Qt.NoButton
+        preventStealing: true; hoverEnabled: true
+        onContainsMouseChanged: {
+            overlay.model.pointer(containsMouse)
+            if (containsMouse && overlay.brushArmed) { overlay.forceActiveFocus(); overlay.caps = overlay.model.capsLock() }
+            else if (!containsMouse && !pressed) overlay.model.setAltErase(false)
+        }
+        cursorShape: overlay.brushArmed ? Qt.BlankCursor : Qt.CrossCursor
         function point(event) { return Qt.point(Math.max(0,Math.min(width,event.x)),Math.max(0,Math.min(height,event.y))) }
         onPressed: (event) => {
             if(overlay.model.tool === "object") {overlay.model.ai.click(event.x/width,event.y/height,(event.modifiers & Qt.ControlModifier)!==0);return}
+            if (overlay.brushArmed && event.button === Qt.RightButton) {        // sizing the brush, or its feather with Shift
+                overlay.resizing = true; overlay.resizeFeather = (event.modifiers & Qt.ShiftModifier) !== 0
+                overlay.resizeAnchor = Qt.point(event.x, event.y); overlay.resizeFromX = event.x
+                overlay.resizeFromSize = overlay.model.brushSize; overlay.resizeFromFeather = overlay.model.brushFeather
+                overlay.model.setRefining(true); return
+            }
+            overlay.strokeErase = overlay.brushArmed && ((event.modifiers & Qt.AltModifier) !== 0 || overlay.model.eraseButton)
             overlay.forceActiveFocus();overlay.dragging=true;overlay.start=point(event);overlay.end=overlay.start
             overlay.points=[[overlay.start.x/width,overlay.start.y/height]];overlay.addSample=(event.modifiers & Qt.ShiftModifier)!==0;guides.requestPaint()
         }
         onPositionChanged: (event) => {
+            if (overlay.resizing) {
+                var dx = event.x - overlay.resizeFromX
+                if (overlay.resizeFeather) overlay.model.setBrushValue("feather", overlay.resizeFromFeather + dx * 0.5)     // right: softer
+                else overlay.model.setBrushValue("size", (overlay.resizeFromSize * overlay.brushPixels + 2 * dx) / overlay.brushPixels)   // the edge follows the pointer
+                return
+            }
+            if (!pressed) overlay.syncKeys(event.modifiers)
             if(!pressed || !overlay.dragging)return
             overlay.end=point(event)
             if(overlay.points.length<4096)overlay.points=overlay.points.concat([[overlay.end.x/width,overlay.end.y/height]])
             guides.requestPaint()
         }
-        onReleased: {
+        onReleased: (event) => {
+            if (overlay.resizing) { overlay.resizing = false; overlay.model.setRefining(false); return }
             if(!overlay.dragging)return
             overlay.dragging=false
-            if(overlay.model.tool==="brush")overlay.model.stroke(overlay.points)
+            if(overlay.model.tool==="brush")overlay.model.strokeWith(overlay.points, overlay.strokeErase)
             else if(overlay.model.tool === "colorRange" || overlay.model.tool === "luminanceRange") overlay.model.sampleRange(overlay.start.x/width,overlay.start.y/height,overlay.end.x/width,overlay.end.y/height,overlay.addSample)
             else overlay.model.draw(overlay.start.x/width,overlay.start.y/height,overlay.end.x/width,overlay.end.y/height)
             overlay.points=[];guides.requestPaint()
         }
-        onCanceled: { overlay.dragging=false;overlay.points=[];guides.requestPaint() }
+        onCanceled: { if (overlay.resizing) { overlay.resizing=false; overlay.model.setRefining(false) } overlay.dragging=false;overlay.points=[];guides.requestPaint() }
     }
     // Editing a selected linear gradient (the overlay's own input is off while no tool is armed). A press that is not on the
     // gradient passes through to what is under it.
@@ -230,16 +311,27 @@ Item {
                 else { shift=Math.max(shift, 6-g.len); b=Qt.point(b0.x+g.u.x*shift, b0.y+g.u.y*shift) }
             } else if (overlay.grab === "move") { a=Qt.point(a0.x+d.x, a0.y+d.y); b=Qt.point(b0.x+d.x, b0.y+d.y) }
             if (Math.hypot(b.x-a.x, b.y-a.y) < 6) return
-            overlay.model.reshapeGradient(a.x/width, a.y/height, b.x/width, b.y/height)
+            overlay.liveA = a; overlay.liveB = b; guides.requestPaint()
+            if (!commitTimer.running) commitTimer.start()
+        }
+        Timer { id: commitTimer; interval: 40; onTriggered: gradientInput.commit() }
+        function commit() {
+            overlay.model.reshapeGradient(overlay.liveA.x/overlay.width, overlay.liveA.y/overlay.height, overlay.liveB.x/overlay.width, overlay.liveB.y/overlay.height)
+        }
+        function finish() {
+            if (overlay.grab === "") return
+            commitTimer.stop(); commit()
+            overlay.grab=""; overlay.model.setRefining(false); overlay.raw.endGesture(); guides.requestPaint()
         }
         onPressed: (event) => {
             var hit=overlay.hitGradient(Qt.point(event.x, event.y))
             if (hit === "") { event.accepted=false; return }
             var ends=overlay.gradientEnds()
-            a0=ends[0]; b0=ends[1]; press=Qt.point(event.x, event.y); overlay.grab=hit
+            a0=ends[0]; b0=ends[1]; press=Qt.point(event.x, event.y)
+            overlay.liveA=a0; overlay.liveB=b0; overlay.grab=hit
             overlay.model.setRefining(true); overlay.raw.beginGesture()
         }
-        onReleased: { if (overlay.grab !== "") { overlay.grab=""; overlay.model.setRefining(false); overlay.raw.endGesture() } }
-        onCanceled: { if (overlay.grab !== "") { overlay.grab=""; overlay.model.setRefining(false); overlay.raw.endGesture() } }
+        onReleased: finish()
+        onCanceled: finish()
     }
 }

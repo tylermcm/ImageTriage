@@ -135,12 +135,19 @@ Column {
         Copy { text: panel.model.tool === "brush" ? "Brush" : panel.shapeKind === "colorRange" || panel.model.tool === "colorRange" ? "Color Range" : panel.shapeKind === "luminanceRange" ? "Luminance Range" : panel.current.name || "Draw a mask"; color: theme.fg; font.pixelSize: 14; font.bold: true }
         Column {
             visible: panel.model.tool === "brush"; width: parent.width; spacing: 5
-            Row { spacing: 6; Action { text: "Paint"; selected: !panel.model.erasing; onClicked: panel.model.brushOptions(panel.model.brushSize,panel.model.brushFeather,false) } Action { text: "Erase"; selected: panel.model.erasing; onClicked: panel.model.brushOptions(panel.model.brushSize,panel.model.brushFeather,true) } }
-            ToolSlider { label: "Size"; minimum: 1; value: panel.model.brushSize; onEdited: (value) => panel.model.brushOptions(value,panel.model.brushFeather,panel.model.erasing) }
-            ToolSlider { label: "Feather"; value: panel.model.brushFeather; onEdited: (value) => panel.model.brushOptions(panel.model.brushSize,value,panel.model.erasing) }
-            ToolSlider { label: "Flow"; value: panel.model.brushFlow; onEdited: (value) => panel.model.brushDynamics(value,panel.model.brushDensity) }
-            ToolSlider { label: "Density"; value: panel.model.brushDensity; onEdited: (value) => panel.model.brushDynamics(panel.model.brushFlow,value) }
-            Copy { width: parent.width; text: "Paint on the photo. Erase removes coverage from this mask." }
+            Row { spacing: 6; Action { objectName: "maskBrushPaint"; text: "Paint"; selected: !panel.model.eraseButton; onClicked: panel.model.setErasing(false) } Action { objectName: "maskBrushErase"; text: "Erase"; selected: panel.model.eraseButton; onClicked: panel.model.setErasing(true) } }
+            // the values of the tool in use: the eraser keeps its own (no Density), and both are kept between sessions
+            ToolSlider { objectName: "maskBrushSize"; label: "Size"; minimum: 1; value: panel.model.brushSize; onEdited: (value) => panel.model.setBrushValue("size", value) }
+            ToolSlider { objectName: "maskBrushFeather"; label: "Feather"; value: panel.model.brushFeather; onEdited: (value) => panel.model.setBrushValue("feather", value) }
+            ToolSlider { objectName: "maskBrushFlow"; label: "Flow"; minimum: 1; value: panel.model.brushFlow; onEdited: (value) => panel.model.setBrushValue("flow", value) }
+            ToolSlider { objectName: "maskBrushDensity"; label: "Density"; minimum: 1; value: panel.model.brushDensity; enabled: !panel.model.erasing; opacity: enabled ? 1 : .45
+                         onEdited: (value) => panel.model.setBrushValue("density", value) }
+            CheckBox {
+                objectName: "maskBrushAutoMask"; text: "Auto Mask"; checked: panel.model.autoMask; padding: 0
+                onToggled: panel.model.setBrushValue("autoMask", checked)
+                contentItem: Text { leftPadding: parent.indicator.width + 6; text: parent.text; color: theme.fg; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter }
+            }
+            Copy { width: parent.width; text: "Paint on the photo; hold Alt to erase. Right-drag sideways sizes the brush, Shift+right-drag its feather. Caps Lock shows crosshairs only." }
         }
         Column {
             visible: panel.shapeKind === "colorRange" || panel.model.tool === "colorRange"; width: parent.width; spacing: 8

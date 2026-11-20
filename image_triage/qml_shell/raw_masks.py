@@ -96,8 +96,13 @@ class RawMasks(QObject):
         self._tool = ""
         self._replacing = False
         self._path = ""
-        self._size, self._feather, self._erase = 12., 50., False
-        self._flow, self._density = 100., 100.
+        # The brush and the eraser each keep their own settings (as Camera Raw's do), kept between sessions; the eraser has no Density.
+        self._brush = {"size": 12., "feather": 50., "flow": 100., "density": 100., "autoMask": False}
+        self._eraser = {"size": 12., "feather": 50., "flow": 100., "autoMask": False}
+        self._erase = False                   # the Erase button (for good)
+        self._alt_erase = False               # Alt held over the photo (only while held)
+        if not raw._memory:
+            self._load_brushes()
         self._range = 50.
         self._swatch = "#999999"
         self._overlay_key = None
@@ -258,11 +263,91 @@ class RawMasks(QObject):
     rows = Property("QVariantList", lambda self: deepcopy(self.raw._draft.get("masks", [])), notify=changed)
     selected = Property(int, lambda self: self._selected, notify=changed)
     tool = Property(str, lambda self: self._tool, notify=changed)
-    brushSize = Property(float, lambda self: self._size, notify=changed)
-    brushFeather = Property(float, lambda self: self._feather, notify=changed)
-    erasing = Property(bool, lambda self: self._erase, notify=changed)
-    brushFlow = Property(float, lambda self: self._flow, notify=changed)
-    brushDensity = Property(float, lambda self: self._density, notify=changed)
+    # ---- the brush (Size, Feather, Flow, Density, Auto Mask): the eraser's own values while it is in use ----
+    def _active(self):
+        return self._eraser if self._erase or self._alt_erase else self._brush
+
+    brushSize = Property(float, lambda self: self._active()["size"], notify=changed)
+    brushFeather = Property(float, lambda self: self._active()["feather"], notify=changed)
+    erasing = Property(bool, lambda self: self._erase or self._alt_erase, notify=changed)
+    eraseButton = Property(bool, lambda self: self._erase, notify=changed)
+    brushFlow = Property(float, lambda self: self._active()["flow"], notify=changed)
+    brushDensity = Property(float, lambda self: self._brush["density"], notify=changed)
+    autoMask = Property(bool, lambda self: self._active()["autoMask"], notify=changed)
+
+    _BRUSH_LIMITS = {"size": (1, 100), "feather": (0, 100), "flow": (1, 100), "density": (1, 100)}
+
+    def _load_brushes(self):
+        try:
+            from ..app_identity import user_settings
+
+            settings = user_settings()
+            for name, values in (("brush", self._brush), ("eraser", self._eraser)):
+                for key in values:
+                    stored = settings.value(f"masks/{name}/{key}", None)
+                    if stored is None:
+                        continue
+                    if key == "autoMask":
+                        values[key] = str(stored).lower() in ("true", "1")
+                    else:
+                        low, high = self._BRUSH_LIMITS[key]
+                        values[key] = max(low, min(high, float(stored)))
+        except Exception:                     # unreadable settings: the defaults
+            pass
+
+    def _save_brush(self, name, key, value):
+        if self.raw._memory:
+            return
+        try:
+            from ..app_identity import user_settings
+
+            user_settings().setValue(f"masks/{name}/{key}", value)
+        except Exception:
+            pass
+
+    @Slot(str, "QVariant")
+    def setBrushValue(self, key, value):
+        """Set Size, Feather, Flow, Density or Auto Mask of the brush in use (the eraser's while erasing; it has no Density)."""
+        values, name = (self._eraser, "eraser") if self._erase or self._alt_erase else (self._brush, "brush")
+        if key == "autoMask":
+            value = bool(value)
+        elif key in self._BRUSH_LIMITS and key in values and isinstance(value, (int, float)) and math.isfinite(value):
+            low, high = self._BRUSH_LIMITS[key]
+            value = max(low, min(high, float(value)))
+        else:
+            return
+        if values.get(key) != value:
+            values[key] = value
+            self._save_brush(name, key, value)
+            self.changed.emit()
+
+    @Slot(bool)
+    def setErasing(self, on):
+        """The Erase button: the eraser until it is switched off."""
+        if self._erase != bool(on):
+            self._erase = bool(on)
+            self.changed.emit()
+
+    @Slot(bool)
+    def setAltErase(self, on):
+        """Alt held over the photo: the eraser only while it is held."""
+        if self._alt_erase != bool(on):
+            self._alt_erase = bool(on)
+            self.changed.emit()
+
+    @Slot(result=bool)
+    def capsLock(self):
+        """Whether Caps Lock is on (the brush cursor is then crosshairs only, as in Camera Raw)."""
+        import sys
+
+        if sys.platform != "win32":
+            return False
+        try:
+            import ctypes
+
+            return bool(ctypes.windll.user32.GetKeyState(0x14) & 1)
+        except Exception:
+            return False
     sampleSwatch = Property(str, lambda self: self._swatch, notify=changed)
 
     @Property("QVariantMap", notify=changed)
@@ -362,7 +447,7 @@ class RawMasks(QObject):
         self._replacing = False
         self._brush_part=None
         if kind in ("brush", "linear", "radial"):
-            self._tool, self._erase = kind, False
+            self._tool = kind
             if kind != "brush" or self.current.get("shape", {}).get("type") != "raster":
                 self._selected = -1
             self.changed.emit()
@@ -391,8 +476,9 @@ class RawMasks(QObject):
     @Slot(float,float)
     def brushDynamics(self, flow, density):
         if all(math.isfinite(v) for v in (flow,density)):
-            self._flow,self._density = max(1,min(100,flow)),max(1,min(100,density))
-            self.changed.emit()
+            self.setBrushValue("flow", flow)
+            if not (self._erase or self._alt_erase):
+                self.setBrushValue("density", density)
 
     @Slot()
     def stop(self):
@@ -418,8 +504,9 @@ class RawMasks(QObject):
     @Slot(float, float, bool)
     def brushOptions(self, size, feather, erase):
         if math.isfinite(size) and math.isfinite(feather):
-            self._size, self._feather, self._erase = max(1, min(100, size)), max(0, min(100, feather)), erase
-            self.changed.emit()
+            self.setErasing(erase)
+            self.setBrushValue("size", size)
+            self.setBrushValue("feather", feather)
 
     def _commit(self, rows, label):
         if masks_valid(rows):
@@ -519,15 +606,47 @@ class RawMasks(QObject):
         elif self._tool == "radial":
             self._append({"type": "radial", "cx": (x0+x1)/2, "cy": (y0+y1)/2,
                           "rx": max(.001, abs(x1-x0)/2), "ry": max(.001, abs(y1-y0)/2),
-                          "angle": 0, "feather": self._feather}, "Radial gradient")
+                          "angle": 0, "feather": self._brush["feather"]}, "Radial gradient")
 
     @Slot("QVariantList")
     def stroke(self, points):
+        self.strokeWith(points, self._erase or self._alt_erase)
+
+    def _auto_mask_colours(self, w, h):
+        """The photo as the brush sees it, ``h x w x 3`` (0 … 1), for Auto Mask; None when there is no preview yet."""
+        import numpy as np
+
+        from . import raw_preview
+
+        url = getattr(self.raw, "_preview", "") or ""
+        if not url.startswith("image://"):
+            return None
+        image = raw_preview.frame_image(url)
+        if image.isNull():
+            return None
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QImage
+
+        image = image.convertToFormat(QImage.Format.Format_RGB888).scaled(w, h, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                                                          Qt.TransformationMode.SmoothTransformation)
+        rows = np.frombuffer(image.constBits(), np.uint8, image.sizeInBytes()).reshape(h, image.bytesPerLine())
+        return rows[:, :w * 3].reshape(h, w, 3).astype(np.float32) / 255
+
+    # Auto Mask: a colour this far (RGB distance, 0 … √3) from the one under the brush's centre is not painted; half as far is
+    # painted fully, with a smooth step between (Camera Raw keeps strokes to edges of similar colour the same way).
+    AUTO_MASK_TOLERANCE = 0.16
+
+    @Slot("QVariantList", bool)
+    def strokeWith(self, points, erase):
+        """One brush stroke through ``points`` (the shown picture's fractions), painting or (``erase``) erasing with that tool's own
+        Size, Feather, Flow, Density and Auto Mask. Feather is the soft part of the radius: none at 0, half of it at 100 (the
+        cursor's inner circle is where the full strength ends)."""
         import numpy as np
         if self._tool != "brush" or not points or len(points) > 4096:
             return
         if any(not isinstance(p, list) or len(p) != 2 or any(type(v) not in (int, float) or not math.isfinite(v) for v in p) for p in points):
             return
+        tool = self._eraser if erase else self._brush
         points = [self._source_point(*p) for p in points]
         rows = self.rows
         current = self.current
@@ -546,7 +665,12 @@ class RawMasks(QObject):
             scale = 768/max(1, w, h)
             raster = np.zeros((max(1, round(h*scale)), max(1, round(w*scale))), dtype=np.uint8)
         h, w = raster.shape
-        radius = max(1, min(w, h)*self._size/200)
+        radius = max(1, min(w, h)*tool["size"]/200)
+        soft = max(.001, tool["feather"]/200)              # the soft part, as a fraction of the radius
+        flow = tool["flow"]/100
+        density = 1.0 if erase else self._brush["density"]/100
+        colours = self._auto_mask_colours(w, h) if tool["autoMask"] else None
+        tolerance = self.AUTO_MASK_TOLERANCE
         last = points[0]
         for point in points:
             length = math.hypot((point[0]-last[0])*w, (point[1]-last[1])*h)
@@ -555,21 +679,27 @@ class RawMasks(QObject):
                 cx, cy = (last[0]+(point[0]-last[0])*t)*w, (last[1]+(point[1]-last[1])*t)*h
                 left, top = max(0, int(cx-radius)), max(0, int(cy-radius))
                 right, bottom = min(w, math.ceil(cx+radius+1)), min(h, math.ceil(cy+radius+1))
+                if right <= left or bottom <= top:
+                    continue
                 yy, xx = np.mgrid[top:bottom, left:right]
                 d = np.sqrt((xx+.5-cx)**2+(yy+.5-cy)**2)/radius
-                feather = max(.001, self._feather/100)
-                coverage = np.clip((1-d)/feather, 0, 1)
+                coverage = np.clip((1-d)/soft, 0, 1)
                 coverage = coverage*coverage*(3-2*coverage)
+                if colours is not None:
+                    centre = colours[min(h-1, max(0, int(cy))), min(w-1, max(0, int(cx)))]
+                    distance = np.sqrt(((colours[top:bottom, left:right]-centre)**2).sum(axis=2))
+                    near = np.clip((tolerance-distance)/(tolerance/2), 0, 1)
+                    coverage = coverage*near*near*(3-2*near)
                 region = raster[top:bottom, left:right]
-                ink = coverage*self._flow/100
-                raster[top:bottom, left:right] = (region*(1-ink*self._density/100)).astype(np.uint8) if self._erase else np.maximum(region,np.minimum(round(self._density*255/100),region+(255-region)*ink)).astype(np.uint8)
+                ink = coverage*flow
+                raster[top:bottom, left:right] = (region*(1-ink*density)).astype(np.uint8) if erase else np.maximum(region,np.minimum(round(density*255),region+(255-region)*ink)).astype(np.uint8)
             last = point
         shape = encode_raster(raster)
         if existing:
             if part:rows[self._selected]["parts"][part[1]]["shape"]=shape
             else:rows[self._selected]["shape"] = shape
             self._commit(rows, "Brush stroke")
-        elif not self._erase:
+        elif not erase:
             self._append(shape, "Brush")
         self._tool = "brush"
         self.changed.emit()
