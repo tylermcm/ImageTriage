@@ -12,7 +12,11 @@ Window {
     color: theme.base
     flags: Qt.Window | Qt.FramelessWindowHint      // no system title bar: TopBar is the title bar, WindowEdges the resize grips
 
-    readonly property bool wantsFullscreen: viewer.shown || editor.active || editor.state === "closing" || UiState.zen
+    // The viewer covers the library while it is docked in this window; detached (ViewerWindow) the two are used side by side, and
+    // commands follow whichever window is in use.
+    readonly property bool viewerCovers: viewer.shown && !UiState.viewerDetached
+    readonly property bool viewerInCharge: viewer.shown && (!UiState.viewerDetached || viewerWindow.active)
+    readonly property bool wantsFullscreen: viewerCovers || editor.active || editor.state === "closing" || UiState.zen
     property bool ownsFullscreen: false
     property int previousWindowMode: Window.Windowed
     property rect previousWindowGeometry: Qt.rect(0, 0, 1440, 900)
@@ -82,7 +86,7 @@ Window {
     }
     onModalInputBlockedChanged: if (!modalInputBlocked) Qt.callLater(function () {
         if (!win.modalInputBlocked) {
-            if (viewer.shown) viewer.refocus()
+            if (win.viewerInCharge) viewer.refocus()
             else grid.view.forceActiveFocus()
         }
     })
@@ -90,7 +94,7 @@ Window {
         id: appContent
         // Dialogs identify the app they cover through sourceItem. Disable its
         // input for the complete fade, including passive pointer handlers.
-        enabled: !win.modalInputBlocked && !viewer.visible
+        enabled: !win.modalInputBlocked && !(viewer.visible && !UiState.viewerDetached)
         anchors.fill: parent
         TopBar { id: top; objectName: "topBar"; width: parent.width; onSearchLeft: grid.view.forceActiveFocus() }
         StatusBar { id: status; width: parent.width; anchors.bottom: parent.bottom }
@@ -356,7 +360,9 @@ Window {
     LibraryWindow { id: libraryWindow; sourceItem: appContent }
     FileAssocWindow { id: fileAssocWindow; sourceItem: appContent }
     SafeTrashWindow { id: safeTrashWindow; sourceItem: appContent }
-    Viewer { id: viewer; enabled: !win.modalInputBlocked; onMoveRequested: (r) => win.chooseDestination("move", r) }
+    Viewer { id: viewer; enabled: !win.modalInputBlocked || UiState.viewerDetached; onMoveRequested: (r) => win.chooseDestination("move", r)
+             parent: UiState.viewerDetached ? viewerWindow.contentItem : win.contentItem }
+    ViewerWindow { id: viewerWindow; viewer: viewer; photoName: viewer.fileName }
     EditorStage { id: editorStage }
     ContextMenu { id: ctxHost }
     Toasts { }
@@ -395,11 +401,11 @@ Window {
     CommandPalette { id: commandPalette; sourceItem: appContent }
     Shortcut { sequence: "F1"; enabled: settingsWindow.recording === ""; onActivated: reference.toggleHelp() }
     Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; autoRepeat: false; enabled: editor.active || editor.state === "closing"; onActivated: editor.close() }
-    Shortcut { sequence: "Escape"; enabled: UiState.zen && !viewer.shown && !win.modalInputBlocked && !UiState.paletteOpen; onActivated: win.runCommand("view.zen_mode") }
+    Shortcut { sequence: "Escape"; enabled: UiState.zen && !win.viewerCovers && !win.modalInputBlocked && !UiState.paletteOpen; onActivated: win.runCommand("view.zen_mode") }
     Shortcut { sequence: "Ctrl+/"; enabled: settingsWindow.recording === ""; onActivated: reference.toggleKeys() }
     // C compares the photos picked in the grid (or the grid's photo and the next); in the viewer the key is the viewer's own
-    Shortcut { sequence: "C"; enabled: settingsWindow.recording === "" && !UiState.settingsOpen && !UiState.paletteOpen && !win.modalInputBlocked && !viewer.shown && !editor.active; onActivated: win.runCommand("review.compare") }
-    Shortcut { sequence: "Ctrl+F"; enabled: settingsWindow.recording === "" && !UiState.settingsOpen && !UiState.paletteOpen && !viewer.shown && !editor.active; onActivated: top.focusSearch() }
+    Shortcut { sequence: "C"; enabled: settingsWindow.recording === "" && !UiState.settingsOpen && !UiState.paletteOpen && !win.modalInputBlocked && !win.viewerCovers && !editor.active; onActivated: win.runCommand("review.compare") }
+    Shortcut { sequence: "Ctrl+F"; enabled: settingsWindow.recording === "" && !UiState.settingsOpen && !UiState.paletteOpen && !win.viewerCovers && !editor.active; onActivated: top.focusSearch() }
     Shortcut { sequence: { void settings.shortcutRevision; return settings.seq("open_command_palette") }
                enabled: settingsWindow.recording === "" && !UiState.settingsOpen
                onActivated: { if (UiState.paletteOpen) UiState.paletteOpen = false; else UiState.openPalette("main") } }
@@ -466,18 +472,18 @@ Window {
     // branch here, and an id nothing here knows says so in a toast.
     // The photo a command is about: the one the viewer shows while it is open (it covers the grid, whose own row may be another photo), else the
     // grid's row, or the photos picked there.
-    readonly property int commandRow: viewer.shown ? popout.row : grid.row
-    function commandRows() { return viewer.shown ? [popout.row] : photos.selectionRows(grid.row) }
+    readonly property int commandRow: viewerInCharge ? popout.row : grid.row
+    function commandRows() { return viewerInCharge ? [popout.row] : photos.selectionRows(grid.row) }
     // Open in editor from the grid, the rail or a menu: the editor is started from the viewer, on that photo.
     function openInEditor(row) { if (row < 0 || row >= photos.shown) return; if (!viewer.shown || popout.row !== row) popout.open(row); viewer.openEditor() }
     // [ and ]: to the first photo of the previous or next burst, in the viewer or the grid (popout.bursts, burst_model.py).
     function goBurst(direction) {
         var to = popout.bursts.target(win.commandRow, direction)
-        if (to < 0) { var why = popout.bursts.missing(direction); if (viewer.shown) popout.notice(why); else toasts.show("info", why, ""); return }
-        if (viewer.shown) viewer.go(to); else { grid.row = to; grid.showRow(to, GridView.Contain) }
+        if (to < 0) { var why = popout.bursts.missing(direction); if (win.viewerInCharge) popout.notice(why); else toasts.show("info", why, ""); return }
+        if (win.viewerInCharge) viewer.go(to); else { grid.row = to; grid.showRow(to, GridView.Contain) }
     }
     // Rename: one photo is renamed on its card in the grid; several open the batch rename window (and so does the viewer, which covers the grid).
-    function renameSelection(rows) { if (viewer.shown || rows.length !== 1 || !grid.beginRename(rows[0])) UiState.batchMode = "rename" }
+    function renameSelection(rows) { if (win.viewerInCharge || rows.length !== 1 || !grid.beginRename(rows[0])) UiState.batchMode = "rename" }
     function runCommand(id) {
         // Photos of several folders are shown together: what works on one folder has no folder to work on.
         if (photos.isVirtual && (id === "ai.analyze" || id === "ai.run_pipeline" || id === "file.reveal_folder")) { toasts.show("info", "Open a folder first", "Photos from several folders are shown; this works on one folder."); return }
@@ -487,7 +493,7 @@ Window {
         else if (id === "workflow.handoff_builder") UiState.handoffOpen = true
         else if (id === "workflow.best_of") UiState.bestOfOpen = true
         else if (id === "library.create_collection") { UiState.collDlgId = ""; UiState.collDlg = "new" }
-        else if (id === "library.add_selected_to_collection") { if (viewer.shown) viewer.collOpen = true; else grid.addToCollection() }
+        else if (id === "library.add_selected_to_collection") { if (win.viewerInCharge) viewer.collOpen = true; else grid.addToCollection() }
         else if (id === "ai.people") UiState.peopleOpen = true
         else if (id === "edit.rename_selection") win.renameSelection(win.commandRows())
         else if (id === "tools.batch_rename") UiState.batchMode = "rename"
@@ -535,8 +541,8 @@ Window {
         else if (id === "ai.workflow_center") cull.openCenter()
         else if (id === "ai.run_pipeline") cull.openCull()
         else if (id === "ai.apply_culling") cull.openReview()
-        else if (id === "ai.next_top_pick") { var tp = aiScores.nextTopPick(win.commandRow); if (tp >= 0) { if (viewer.shown) viewer.go(tp); else { grid.row = tp; grid.showRow(tp, GridView.Contain) } } else toasts.show("info", "No AI top picks in this view", "Run the AI analysis first, or clear the filters.") }
-        else if (id === "review.compare") { if (viewer.shown) viewer.toggleCompare(); else popout.compare.openRows(photos.selectionRows(grid.row), grid.row) }
+        else if (id === "ai.next_top_pick") { var tp = aiScores.nextTopPick(win.commandRow); if (tp >= 0) { if (win.viewerInCharge) viewer.go(tp); else { grid.row = tp; grid.showRow(tp, GridView.Contain) } } else toasts.show("info", "No AI top picks in this view", "Run the AI analysis first, or clear the filters.") }
+        else if (id === "review.compare") { if (win.viewerInCharge) viewer.toggleCompare(); else popout.compare.openRows(photos.selectionRows(grid.row), grid.row) }
         else if (id === "review.burst_previous") win.goBurst(-1)
         else if (id === "review.burst_next") win.goBurst(1)
         else if (id === "review.burst_keep_best") popout.keepBest(win.commandRow)
@@ -576,6 +582,7 @@ Window {
         if (uiMemory.get("pinsLocked", false) === true) UiState.pinsLocked = true
         var destOrder = idList(uiMemory.get("destOrder", []))
         if (destOrder !== null) UiState.destOrder = destOrder
+        if (uiMemory.get("viewerDetached", false) === true) UiState.viewerDetached = true
         var columns = uiMemory.get("columns", UiState.cols)
         if (typeof columns === "number" && columns >= 0 && columns <= 9) UiState.cols = Math.floor(columns)
         // the grid buttons' counts and the one chosen (a list from Python is copied into a real array, as idList does)
@@ -622,6 +629,7 @@ Window {
         function onInspChanged() { win.remember("inspector", UiState.insp) }
         function onDensChanged() { win.remember("density", UiState.dens) }
         function onColsChanged() { win.remember("columns", UiState.cols) }
+        function onViewerDetachedChanged() { uiMemory.set("viewerDetached", UiState.viewerDetached) }
         function onPerScreenChanged() { win.remember("perScreen", UiState.perScreen) }
         function onScreenCountsChanged() { win.remember("screenCounts", UiState.screenCounts) }
         function onSortChanged() { win.remember("sort", UiState.sort) }

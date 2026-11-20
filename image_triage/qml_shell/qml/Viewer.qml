@@ -714,6 +714,17 @@ FocusScope {
                         Accessible.role: Accessible.Button; Accessible.name: "Next photo" }
                 }
             }
+            Item {   // its own window (movable, resizable, beside the library, as Camera Raw beside Photoshop), or back over the library
+                objectName: "viewerDetachButton"
+                width: 34; height: 34
+                Rectangle { anchors.fill: parent; radius: 10; color: dh.hovered ? v.cHover : v.cGlass; border.color: v.cLineSoft }
+                Icon { anchors.centerIn: parent; size: 18; color: dh.hovered ? v.cFg : v.cFg2
+                       path: UiState.viewerDetached ? "M4 5h16v14H4zM4 9h16M9 13l3 3 3-3M12 16v-6"      // back into the main window
+                                                    : "M4 8V5h16v14h-6M4 12h7v7H4zM14 5l6 0M13 11l7-6" }   // out into a window of its own
+                HoverHandler { id: dh; cursorShape: Qt.PointingHandCursor }
+                TapHandler { gesturePolicy: TapHandler.WithinBounds; onTapped: UiState.viewerDetached = !UiState.viewerDetached }
+                Accessible.role: Accessible.Button; Accessible.name: UiState.viewerDetached ? "Back into the main window" : "Open in its own window"
+            }
             Item {   // hide the controls
                 objectName: "viewerToggleControlsButton"
                 width: 34; height: 34

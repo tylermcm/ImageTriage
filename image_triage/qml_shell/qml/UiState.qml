@@ -21,6 +21,7 @@ QtObject {
     property var railOrder: ["palette", "openFolder", "undo", "view", "funnel", "sort", "columns", "convert", "editor", "check", "accept", "reject", "tag", "pocketdrop", "eye", "keyboard"]   // the default order; the order the rail's pinned buttons and the floating bar's buttons are shown in (ids; DragReorder)
     property var barOrder: []
     property var destOrder: []            // the order of the four destinations at the top of the rail
+    property bool viewerDetached: false   // the viewer (and RAW editor) in a window of its own (ViewerWindow.qml), not over the library
     property int cols: 0                  // a fixed number of columns, 1 to 9; 0 lets the thumbnail size (dens) decide how many fit
     function setDens(d) { cols = 0; perScreen = 0; dens = d }
     // The floating bar's grid buttons: how many photos one screen of the grid shows (9 is three rows of three); right-click one to change it
