@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
 from . import memtrace
 from .fits_support import load_basic_fits_header
-from .formats import FITS_SUFFIXES, suffix_for_path
+from .formats import FITS_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .models import ImageRecord
 from .perf import perf_logger
 from .plugins import MetadataLoadRequest, register_metadata_provider, resolve_metadata_provider
@@ -162,6 +162,11 @@ def _load_exif_capture_metadata(path: str) -> CaptureMetadata:
     height_pixels = _coerce_dimension(height_value)
     if _orientation_swaps_dimensions(orientation_value):
         width_pixels, height_pixels = height_pixels, width_pixels
+    if suffix_for_path(path) in RAW_SUFFIXES:
+        # A raw's first image is often its embedded thumbnail (a NEF's is 160 x 120); the photo's size is the raw's own.
+        raw_size = _raw_dimensions(path)
+        if raw_size is not None:
+            width_pixels, height_pixels = raw_size
 
     return CaptureMetadata(
         path=path,
@@ -489,6 +494,22 @@ def _format_camera(make, model) -> str:
             return model_text
         return f"{make_text} {model_text}".strip()
     return make_text or model_text
+
+
+def _raw_dimensions(path: str) -> tuple[int, int] | None:
+    """The size a raw develops to, as shown (LibRaw's crop, turned by the camera's orientation); None when it cannot be read."""
+    try:
+        import rawpy
+
+        with rawpy.imread(path) as raw:
+            sizes = raw.sizes
+    except Exception:
+        return None
+    width = getattr(sizes, "crop_width", 0) or sizes.width
+    height = getattr(sizes, "crop_height", 0) or sizes.height
+    if width <= 0 or height <= 0:
+        return None
+    return (height, width) if sizes.flip in (5, 6) else (width, height)
 
 
 def _format_orientation(width: int, height: int) -> str:
