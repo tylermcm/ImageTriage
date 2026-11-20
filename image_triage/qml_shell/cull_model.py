@@ -245,6 +245,7 @@ class CullModel(QObject):
     @_flags.setter
     def _flags(self, value: dict[str, str]) -> None:
         self._flag_map = value
+        self._flag_decided = set()                # flagged frames decided since (see _decisions_changed)
         self._flags_rev += 1                      # the grid redraws its flags only when this (or what was restored) changes
 
     def _row_of(self, path: str) -> dict | None:
@@ -255,8 +256,25 @@ class CullModel(QObject):
         return next((r for r in self._photos.all_rows() if r["path"] == path), None)
 
     def _decisions_changed(self) -> None:
-        """A decision was made in the grid: a flagged frame that is now decided loses its flag there."""
+        """A decision was made in the grid: a flagged frame that is now decided loses its flag there. One that was decided and is then
+        undecided again (un-rejected, cleared, undone) was looked at and kept: it is restored, so it is not dimmed and flagged again."""
         if self._flag_map and self._s["done"]:
+            decided = getattr(self, "_flag_decided", set())
+            restored = dict(self._s["restored"])
+            for path in self._flag_map:
+                if restored.get(path):
+                    continue
+                row = self._row_of(path)
+                if row is None:
+                    continue
+                if row["decision"]:
+                    decided.add(path)
+                elif path in decided:
+                    decided.discard(path)
+                    restored[path] = True
+            self._flag_decided = decided
+            if restored != self._s["restored"]:
+                self._set(restored=restored)
             self._grid_rev += 1
             self.gridChanged.emit()
 

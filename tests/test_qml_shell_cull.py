@@ -155,6 +155,18 @@ def test_the_grid_flag_follows_the_review(qapp, photos, cull):
     assert cull.aiState == 2
 
 
+def test_an_unrejected_flagged_frame_stays_undimmed(qapp, photos, cull):
+    run_to_the_end(qapp, cull)
+    row = next(i for i, r in enumerate(photos.collect()) if r["name"] == "DSC_4210")
+    path = photos.collect()[row]["path"]
+    assert cull.gridFlag(path)                                  # flagged and dimmed
+    photos.setDecision(row, "rej")
+    assert cull.gridFlag(path) == {}
+    photos.setDecision(row, "rej")                              # un-rejected: looked at and kept, so not flagged again
+    assert photos.collect()[row]["decision"] == "" and cull.gridFlag(path) == {}
+    assert cull.view["det"] is not None
+
+
 def test_setting_up_the_runtime_is_scripted_and_the_vc_error_is_shown(qapp, cull):
     cull._s.update(rt="missing", vcOld=True)
     cull._rebuild()
