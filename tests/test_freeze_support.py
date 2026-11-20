@@ -150,3 +150,26 @@ class FreezeSupportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AiWorkerScriptsTests(unittest.TestCase):
+    """The installed app runs its AI workers as plain files from ``ai_workers/``: every script a service launches is bundled, and so is
+    every sibling module those scripts import as top-level scripts (a missing one only fails on the user's machine)."""
+
+    def test_the_launched_workers_and_everything_they_import_are_bundled(self) -> None:
+        import re
+
+        from freeze_support import AI_WORKER_SCRIPTS, ROOT
+
+        package = ROOT / "image_triage"
+        local = {path.stem for path in package.glob("*.py")}
+        launched = set()
+        for service in package.glob("*.py"):
+            launched.update(re.findall(r'"([a-z_]+_worker)\.py"', service.read_text(encoding="utf-8")))
+        self.assertTrue({"mask_engine_worker", "subject_mask_worker", "upscale_worker"} <= launched)
+        missing = sorted(launched - set(AI_WORKER_SCRIPTS))
+        self.assertEqual(missing, [], "launched but not bundled")
+        for name in AI_WORKER_SCRIPTS:
+            source = (package / f"{name}.py").read_text(encoding="utf-8")
+            imported = set(re.findall(r"^\s*import ([a-z_]+)\b", source, re.M)) & local
+            self.assertEqual(sorted(imported - set(AI_WORKER_SCRIPTS)), [], f"{name} imports modules that are not bundled")

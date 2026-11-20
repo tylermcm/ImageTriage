@@ -22,7 +22,22 @@ QtObject {
     property var barOrder: []
     property var destOrder: []            // the order of the four destinations at the top of the rail
     property int cols: 0                  // a fixed number of columns, 1 to 9; 0 lets the thumbnail size (dens) decide how many fit
-    function setDens(d) { cols = 0; dens = d }
+    function setDens(d) { cols = 0; perScreen = 0; dens = d }
+    // The floating bar's grid buttons: how many photos one screen of the grid shows (9 is three rows of three); right-click one to change it
+    property int perScreen: 0             // 0: the thumbnail size or column count decides
+    property var screenCounts: [9, 4, 1]
+    function setPerScreen(n) { cols = 0; perScreen = n }
+    onColsChanged: if (cols > 0) perScreen = 0
+    // columns x rows for `n` photos on a `w` x `h` screen of the grid: the layout whose cells are nearest the 3:2 of a photo
+    function screenGrid(n, w, h) {
+        var best = [n, 1], bestErr = 1e9
+        for (var c = 1; c <= n; ++c) {
+            if (n % c !== 0) continue
+            var r = n / c, err = Math.abs(Math.log((w / c) / Math.max(1, h / r) / 1.5))
+            if (err < bestErr) { best = [c, r]; bestErr = err }
+        }
+        return best
+    }
     property int minRate: 0
     property string fmt: "all"
     property string sort: "name"

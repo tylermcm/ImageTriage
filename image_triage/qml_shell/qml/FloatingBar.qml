@@ -76,10 +76,29 @@ Item {
         Rectangle { visible: bar.sizeSwitch; width: 1; height: 22; y: 7; color: theme.line }
         Seg {
             id: sizes
+            objectName: "gridCountButtons"
             visible: bar.sizeSwitch
-            icons: ["densS", "densM", "densL"]; padH: 9
-            current: UiState.cols === 0 ? ["s", "m", "l"].indexOf(UiState.dens) : -1      // small, medium, large thumbnails, as in the View menus; none while a column count is fixed
-            onActivated: (i) => UiState.setDens(["s", "m", "l"][i])
+            // how many photos one screen of the grid shows (9, 4, 1 unless changed); right-click a button to pick its count
+            paths: UiState.screenCounts.map(function (n) { var g = UiState.screenGrid(n, 3, 2); return Icons.grid(g[0], g[1]) }); padH: 9
+            current: UiState.screenCounts.indexOf(UiState.perScreen)
+            onActivated: (i) => UiState.setPerScreen(UiState.screenCounts[i])
+            onContextRequested: (i, x, y) => { countMenu.slot = i; UiState.setMenu("fGridCount") }
+            Popover {
+                id: countMenu; name: "fGridCount"
+                property int slot: 0
+                Repeater {
+                    model: [1, 2, 4, 6, 9, 12, 16, 20, 25]
+                    delegate: PopItem {
+                        required property int modelData
+                        label: modelData + (modelData === 1 ? " photo" : " photos") + " per screen"
+                        mode: "tick"; checked: UiState.screenCounts[countMenu.slot] === modelData
+                        onClicked: {
+                            var counts = UiState.screenCounts.slice(); counts[countMenu.slot] = modelData
+                            UiState.screenCounts = counts; UiState.setPerScreen(modelData); countMenu.close()
+                        }
+                    }
+                }
+            }
         }
         Rectangle { width: 1; height: 22; y: 7; color: theme.line }
         AiChip { id: ai }

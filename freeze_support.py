@@ -114,8 +114,7 @@ class FreezeAssetLayout:
             (str(ROOT / "image_triage" / "qml_shell" / "qml"), "lib/image_triage/qml_shell/qml"),
             *_pocketdrop_include_files(),
             (str(CLI_CULLER_PACKAGE_ROOT), "aiculler"),
-            (str(ROOT / "image_triage" / "upscale_worker.py"), "ai_workers/upscale_worker.py"),
-            (str(ROOT / "image_triage" / "upscale_core.py"), "ai_workers/upscale_core.py"),
+            *[(str(ROOT / "image_triage" / f"{name}.py"), f"ai_workers/{name}.py") for name in AI_WORKER_SCRIPTS],
             *cascade_worker_include_files(),
             *cli_culler_worker_include_files(),
             (str(self.ai_stdlib_stage_root), "ai_stdlib"),
@@ -125,6 +124,15 @@ class FreezeAssetLayout:
             include_files.append((str(self.ai_site_packages_stage_root), "ai_site_packages"))
         return include_files
 
+
+# The worker scripts the managed AI runtime runs as plain files beside the executable (``ai_workers/``), and the sibling modules they
+# import as top-level scripts. A service that launches one finds it there when frozen; tests check the list is closed under imports.
+AI_WORKER_SCRIPTS = (
+    "upscale_worker", "upscale_core", "superres_base_encode",            # Super Resolution
+    "mask_engine_worker", "birefnet_worker", "denoise_worker", "raw_denoise", "depth_worker", "inpaint_worker",
+    "oneformer_worker", "sam_worker",                                      # the MaskEngine host and its engines
+    "subject_mask_worker",
+)
 
 CASCADE_WORKER_MODULE = "image_triage.cascade.rankers.worker"
 # Plain-file tree the managed runtime's interpreter imports the cascade workers from (frozen builds keep the package in library.zip).

@@ -6,8 +6,12 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import inpaint_worker  # the worker modules import as top-level scripts, as the host does
-from image_triage import ai_model, mask_engine_service, scene_mask_jobs
+import sys
+
+# The worker modules import as top-level scripts from their own folder, as the host runs them.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "image_triage"))
+import inpaint_worker  # noqa: E402
+from image_triage import ai_model, mask_engine_service, scene_mask_jobs  # noqa: E402
 
 
 class FakeSession:

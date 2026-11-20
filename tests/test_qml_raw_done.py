@@ -57,3 +57,24 @@ def test_a_depth_map_made_ahead_does_not_show_the_ai_overlay(shell, qapp):
     assert not air.background and overlay.property("title") == "Atmosphere"
     air._busy, air._pending = False, None
     air.changed.emit()
+
+
+def test_an_ai_tools_error_shows_its_fix_beside_it(shell, qapp):
+    from test_qml_raw_crop import prepare
+
+    window, raw, dock, _, warnings = prepare(shell, qapp)
+    dock.setProperty("tool", "Remove")
+    raw.retouchEditor.choose("erase")
+    eraser = raw.eraseEditor
+    eraser._error = "MaskEngine host script is missing."
+    eraser.changed.emit()
+    pump(qapp, .4)
+    buttons = [b for b in window.findChildren(QObject, "aiFixButton") if b.property("visible") and b.property("text")]
+    assert [b.property("text") for b in buttons] == ["Repair Image Triage"]
+    eraser._error = "The fill model did not answer."                       # anything else from an AI tool: the AI Center
+    eraser.changed.emit()
+    pump(qapp, .3)
+    assert [b.property("text") for b in window.findChildren(QObject, "aiFixButton") if b.property("visible") and b.property("text")] == ["Fix in AI Center"]
+    eraser._error = ""
+    eraser.changed.emit()
+    assert not [w for w in warnings if "AiFixButton" in w], warnings

@@ -4,6 +4,14 @@ import QtQuick
 // Stroke icons on a 24 x 24 grid, the same geometry as the HTML mockup (compact SVG path data).
 QtObject {
     function circle(cx, cy, r) { return "M" + (cx - r) + " " + cy + "a" + r + " " + r + " 0 1 0 " + (2 * r) + " 0a" + r + " " + r + " 0 1 0 " + (-2 * r) + " 0"; }
+    // `c` x `r` squares in the 16 x 16 box the grid icons use (densS is 3 x 3)
+    function grid(c, r) {
+        var gap = c > 4 || r > 4 ? 1 : 2, w = (16 - gap * (c - 1)) / c, h = (16 - gap * (r - 1)) / r, out = ""
+        for (var y = 0; y < r; ++y)
+            for (var x = 0; x < c; ++x)
+                out += rect(4 + x * (w + gap), 4 + y * (h + gap), w, h)
+        return out
+    }
     function rect(x, y, w, h, r) {
         if (!r) return "M" + x + " " + y + "h" + w + "v" + h + "h" + (-w) + "z";
         return "M" + (x + r) + " " + y + "h" + (w - 2 * r) + "a" + r + " " + r + " 0 0 1 " + r + " " + r + "v" + (h - 2 * r)

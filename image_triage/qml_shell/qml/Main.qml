@@ -578,6 +578,13 @@ Window {
         if (destOrder !== null) UiState.destOrder = destOrder
         var columns = uiMemory.get("columns", UiState.cols)
         if (typeof columns === "number" && columns >= 0 && columns <= 9) UiState.cols = Math.floor(columns)
+        // the grid buttons' counts and the one chosen (a list from Python is copied into a real array, as idList does)
+        var counts = uiMemory.get("screenCounts", null), kept = []
+        if (counts !== null && counts !== undefined && typeof counts.length === "number" && counts.length === 3)
+            for (var c = 0; c < 3; ++c) if (typeof counts[c] === "number" && counts[c] >= 1 && counts[c] <= 25) kept.push(Math.floor(counts[c]))
+        if (kept.length === 3) UiState.screenCounts = kept
+        var perScreen = uiMemory.get("perScreen", 0)
+        if (typeof perScreen === "number" && perScreen >= 1 && perScreen <= 25 && UiState.cols === 0) UiState.perScreen = Math.floor(perScreen)
         var sort = uiMemory.get("sort", UiState.sort)
         if (photos.sortKeys.indexOf(sort) >= 0) { UiState.sort = sort; photos.setSort(sort) }
         // The filters the grid was left with come back too: what is shown, the minimum rating and the file type.
@@ -615,6 +622,8 @@ Window {
         function onInspChanged() { win.remember("inspector", UiState.insp) }
         function onDensChanged() { win.remember("density", UiState.dens) }
         function onColsChanged() { win.remember("columns", UiState.cols) }
+        function onPerScreenChanged() { win.remember("perScreen", UiState.perScreen) }
+        function onScreenCountsChanged() { win.remember("screenCounts", UiState.screenCounts) }
         function onSortChanged() { win.remember("sort", UiState.sort) }
         function onFilterChanged() { win.remember("filter", UiState.filter) }
         function onMinRateChanged() { win.remember("minRating", UiState.minRate) }

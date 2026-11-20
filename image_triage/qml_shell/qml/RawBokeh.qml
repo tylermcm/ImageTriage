@@ -191,6 +191,7 @@ Column {
             text: "Raise Blur to blur what is not in focus."; color: "#f4f4f4"; style: Text.Outline; styleColor: "#000000"; font.pixelSize: 11
         }
     }
+    AiFixButton { width: parent.width; raw: bk.raw; error: bk.model.error }
 
     RawColorSlider {
         objectName: "bokeh_focus"
