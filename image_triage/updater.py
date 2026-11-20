@@ -12,7 +12,6 @@ import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Callable
 from urllib.parse import unquote, urlparse
@@ -141,10 +140,10 @@ class UpdateCheckResult:
 
 
 def current_app_version() -> str:
-    try:
-        return importlib_metadata.version("image-triage")
-    except importlib_metadata.PackageNotFoundError:
-        return __version__
+    """The running app's version: ``_version.__version__`` (tests keep it equal to pyproject's). Not the package metadata: a frozen
+    build carries whatever ``image_triage-*.dist-info`` the build machine had installed, and a stale 2.4.0 one made every release
+    look newer than the app it was offered to."""
+    return __version__
 
 
 def resolve_update_feed_url(feed_url: str | None = None) -> str:

@@ -17,7 +17,7 @@ from image_triage.qml_shell.handoff_model import HandoffModel
 from image_triage.qml_shell.menu_model import ToastModel
 from image_triage.qml_shell.palette_model import PaletteModel
 from image_triage.qml_shell.photos import GridModel, PhotoModel
-from image_triage.qml_shell.reference_model import ReferenceModel, _ago, _keys
+from image_triage.qml_shell.reference_model import ReferenceModel, _ago, _keys, _version
 from image_triage.qml_shell.settings_model import SettingsModel
 from image_triage.qml_shell.theme import Theme
 from image_triage.qml_shell.thumbs import ThumbService
@@ -474,7 +474,9 @@ def test_the_startup_check_follows_the_setting_and_stays_quiet(qapp, photos, mon
     on.checkOnStartup()
     on.checkOnStartup()                                             # once per run
     pump(qapp, 0.6)
-    assert checks == [True] and on.toasts.items[-1]["title"] == "Version 9.9.9 is available" and on.window == ""
+    # no pop-up: the title bar's update button shows it
+    assert checks == [True] and on.toasts.items == [] and on.window == "" and on.updateButton == "available"
+    assert "9.9.9" in on.updateTip
     monkeypatch.setattr(updater, "check_for_update", lambda: (_ for _ in ()).throw(OSError("no network")))
     offline = model()
     offline.checkOnStartup()
@@ -777,7 +779,7 @@ def test_the_splash_shows_and_hides(ref):
     assert ref.view["splash"]["on"] is False
     ref.splashShow("Reading your folder\u2026", 56)
     s = ref.view["splash"]
-    assert (s["on"], s["p"], s["status"], s["preview"], s["version"]) == (True, 56, "Reading your folder\u2026", False, "2.4.0")
+    assert (s["on"], s["p"], s["status"], s["preview"], s["version"]) == (True, 56, "Reading your folder\u2026", False, _version())
     ref.splashShow("Ready", 250)
     assert ref.view["splash"]["p"] == 100
     ref.splashHide()
@@ -834,3 +836,44 @@ def test_the_splash_window_loads_on_its_own(qapp, photos):
     pump(qapp, 0.2)
     assert not engine.rootObjects()[0].isVisible()
     assert not [w for w in warnings if "Unable to assign" in w or "ReferenceError" in w], warnings
+
+
+def test_the_title_bar_button_downloads_then_restarts_into_the_update(qapp, photos, monkeypatch, tmp_path):
+    import image_triage.updater as updater
+
+    ref, info = _newer(photos, qapp, monkeypatch)
+    assert ref.updateButton == "available"
+    installer = tmp_path / "ImageTriage-9.9.9.msi"
+    gate = __import__("threading").Event()
+
+    def download(update, *, destination_dir=None, progress_callback=None):
+        progress_callback(5 * 1024 * 1024, 10 * 1024 * 1024, installer.name)
+        gate.wait(5)
+        installer.write_bytes(b"msi")
+        return installer
+
+    monkeypatch.setattr(updater, "download_update_installer", download)
+    monkeypatch.setattr(updater, "check_installer_publisher", lambda path, **k: updater.PublisherCheck(True, "", None), raising=False)
+    quits = []
+    monkeypatch.setattr(ReferenceModel, "_quit_app", staticmethod(lambda: quits.append(True)))
+    ref.updateButtonPressed()
+    pump(qapp, 0.4)
+    assert ref.updateButton == "downloading" and ref.updateProgress == 0.5
+    gate.set()
+    pump(qapp, 0.6)
+    assert ref.updateButton == "ready" and "restart" in ref.updateTip
+    ref.updateButtonPressed()
+    assert quits == [True]                                           # it installs as the app closes
+
+
+def test_the_running_version_is_the_apps_own_not_stale_package_metadata(monkeypatch):
+    import image_triage.updater as updater
+    from image_triage._version import __version__
+
+    assert updater.current_app_version() == __version__
+
+
+def test_release_notes_are_formatted_for_the_card():
+    from image_triage.qml_shell.reference_model import _notes_for_card
+
+    assert _notes_for_card("## Fixed\n- **It** works.") == "**Fixed**\n- **It** works."

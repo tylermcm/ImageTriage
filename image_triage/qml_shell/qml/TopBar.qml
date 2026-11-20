@@ -125,6 +125,39 @@ Rectangle {
     Row {
         id: rightRow
         anchors.right: winButtons.left; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter; anchors.verticalCenterOffset: -0.5; spacing: 2   // centred in the 41 px above the 1 px line
+        // An update, as Discord shows one: a green arrow to download it, a ring while it downloads, then a green arrow to restart
+        // into it. Shown only while there is an update; never a pop-up (reference_model.updateButton).
+        Item {
+            id: updateButton
+            objectName: "titleUpdateButton"
+            readonly property string state_: reference.updateButton
+            visible: state_ !== ""
+            width: visible ? 32 : 0; height: 32
+            Rectangle { anchors.fill: parent; radius: 9; color: Qt.alpha(theme.win, ub.hovered ? 0.16 : 0) }
+            Icon {
+                anchors.centerIn: parent; size: 18; color: theme.win
+                visible: updateButton.state_ !== "downloading"
+                name: updateButton.state_ === "ready" ? "updateRestart" : "updateDownload"
+            }
+            Canvas {   // the download's progress as a ring
+                id: ring
+                anchors.centerIn: parent; width: 20; height: 20
+                visible: updateButton.state_ === "downloading"
+                property real value: reference.updateProgress
+                onValueChanged: requestPaint()
+                onVisibleChanged: requestPaint()
+                onPaint: {
+                    var c = getContext("2d"); c.reset(); c.lineWidth = 2.2; c.lineCap = "round"
+                    c.strokeStyle = Qt.alpha(theme.win, 0.25); c.beginPath(); c.arc(10, 10, 8, 0, Math.PI * 2); c.stroke()
+                    c.strokeStyle = theme.win; c.beginPath()
+                    c.arc(10, 10, 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.max(0.04, value)); c.stroke()
+                }
+            }
+            HoverHandler { id: ub; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: reference.updateButtonPressed() }
+            ToolTip.visible: ub.hovered; ToolTip.text: reference.updateTip; ToolTip.delay: 300
+            Accessible.role: Accessible.Button; Accessible.name: reference.updateTip
+        }
         Repeater {
             model: [{ i: "sun", tip: "Switch light or dark theme" }, { i: "inspector", tip: "Show or hide the inspector" }]
             delegate: Item {

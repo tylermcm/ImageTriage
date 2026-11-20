@@ -155,11 +155,12 @@ class ReferenceModel(QObject):
         self._upd = "ok" if memory else "idle"
         self._upd_info = None                    # the real UpdateInfo of a newer version
         self._upd_error = ""
-        self._upd_quiet = False                  # the check at startup: no window, a toast only when there is something newer
+        self._upd_quiet = False                  # the check at startup: nothing is shown but the title bar's update button
         self._download = 0                       # the running download's token; 0 when none is wanted
         self._download_serial = 0
         self._check_serial = 0                   # the last update check's token (`_UpdateTask`)
         self._dl_progress = ""
+        self._dl_fraction = 0.0                  # the running download, 0 … 1 (0 while its size is not known)
         self._installer = ""                     # the verified installer, once downloaded
         self._publisher_notice = ""              # what could not be verified about who signed it ("" when the pinned publisher signed it)
         self._startup_checked = False
@@ -194,6 +195,36 @@ class ReferenceModel(QObject):
     window = Property(str, lambda self: self._window, notify=changed)
     menuOpen = Property(bool, lambda self: self._menu, notify=changed)
     version = Property(str, lambda self: _version(), notify=changed)
+
+    # ---- the title bar's update button (Discord-like): shown only while there is an update, never a pop-up ----
+    @Property(str, notify=changed)
+    def updateButton(self) -> str:
+        """"" (hidden), "available" (click to download), "downloading", or "ready" (click to restart and install)."""
+        return {"avail": "available", "dlerror": "available", "downloading": "downloading", "ready": "ready", "armed": "ready"}.get(self._upd, "")
+
+    updateProgress = Property(float, lambda self: self._dl_fraction, notify=changed)
+
+    @Property(str, notify=changed)
+    def updateTip(self) -> str:
+        newer = getattr(self._upd_info, "version", "") or "A new version"
+        return {"available": f"Image Triage {newer} is available. Click to download it.",
+                "downloading": f"Downloading Image Triage {newer}… {self._dl_progress}",
+                "ready": f"Image Triage {newer} is ready. Click to restart and install it.",
+                }.get(self.updateButton, "")
+
+    @Slot()
+    def updateButtonPressed(self) -> None:
+        """Download the update, or once it is downloaded restart into it; while it downloads, show the About page."""
+        state = self.updateButton
+        if state == "available":
+            self._start_download()
+        elif state == "ready":
+            if self._upd == "armed":
+                self._quit_app()
+            else:
+                self._arm_install()
+        elif state == "downloading":
+            self.openAbout()
 
     def _emit(self) -> None:
         self.changed.emit()
@@ -380,9 +411,8 @@ class ReferenceModel(QObject):
             # nobody asked for the startup check, so being offline is not worth an error on the About page
             self._upd, self._upd_error = ("idle", "") if quiet else ("error", error)
         elif result.update_available:
+            # no pop-up: the title bar's update button appears instead
             self._upd, self._upd_info = "avail", result.latest
-            if quiet and self._toasts is not None:
-                self._toasts.push("info", f"Version {result.latest.version} is available", "Help › About has the download.", "Show", self.openAbout)
         else:
             self._upd = "ok"
         self._emit()
@@ -407,6 +437,7 @@ class ReferenceModel(QObject):
         self._download = self._download_serial
         task = _DownloadTask(self._upd_info, self._download)
         self._dl_progress = "Starting…"
+        self._dl_fraction = 0.0
         self._upd, self._upd_error = "downloading", ""
         task.signals.progress.connect(self._download_progress)
         task.signals.done.connect(self._download_done)
@@ -418,8 +449,9 @@ class ReferenceModel(QObject):
             return
         mb = 1024 * 1024
         text = f"{int(done) / mb:.1f} of {int(total) / mb:.1f} MB" if total else f"{int(done) / mb:.1f} MB"
-        if text != self._dl_progress:
-            self._dl_progress = text
+        fraction = round(int(done) / int(total), 2) if total else 0.0
+        if text != self._dl_progress or fraction != self._dl_fraction:
+            self._dl_progress, self._dl_fraction = text, fraction
             self._emit()
 
     def _download_done(self, token: int, path: str, error: str, notice: str = "") -> None:
@@ -540,7 +572,7 @@ class ReferenceModel(QObject):
         if info is None:
             avail_body = "Sample data: nothing is downloaded."
         elif getattr(info, "summary", ""):
-            avail_body = info.summary
+            avail_body = _notes_for_card(info.summary)
         elif self._can_install():
             avail_body = "Download it here; it installs when Image Triage closes."
         else:
@@ -946,3 +978,10 @@ def _version() -> str:
     from .._version import __version__
 
     return __version__
+
+
+def _notes_for_card(notes: str) -> str:
+    """A release's notes (Markdown) for the About page's small card: headings become bold lines, the rest stays Markdown."""
+    import re
+
+    return re.sub(r"^#{1,6}\s*(.+?)\s*#*$", r"**\1**", notes.strip(), flags=re.M)

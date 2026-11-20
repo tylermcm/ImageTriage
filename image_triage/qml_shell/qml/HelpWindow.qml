@@ -124,7 +124,9 @@ Backdrop {
                                 Rectangle { x: 14; anchors.verticalCenter: parent.verticalCenter; width: 9; height: 9; radius: 5; color: root.dotColor(root.h.upColor) }
                                 Column { id: upc; x: 35; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 35 - 14 - upb.width - 12
                                     Text { width: parent.width; text: root.h.upTitle; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium; lineHeight: 20.15; lineHeightMode: Text.FixedHeight }
-                                    Text { width: parent.width; text: root.h.upBody; wrapMode: Text.WordWrap; color: theme.fg2; font.pixelSize: 13; lineHeight: 18; lineHeightMode: Text.FixedHeight } }
+                                    // the release notes are Markdown (bold, lists, links)
+                                    Text { width: parent.width; text: root.h.upBody; textFormat: Text.MarkdownText; wrapMode: Text.WordWrap; color: theme.fg2; font.pixelSize: 13
+                                           linkColor: theme.accentFg; onLinkActivated: (link) => Qt.openUrlExternally(link) } }
                                 SButton { id: upb; anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter; text: root.h.upBtn; variant: root.h.upPrimary ? "primary" : "normal"; h: 28; hpad: 11; radius: 9
                                           onClicked: reference.checkUpdates() }
                                 // the gap above, like margin: 18px auto 0

@@ -478,3 +478,19 @@ def test_a_file_changed_on_disk_is_read_again(host, tmp_path):
     viewer.go(1)
     viewer.go(2)
     assert viewer.pixelWidth == 0 and viewer.loading and not held.exists()
+
+
+def test_the_title_bar_shows_an_update_button_only_while_there_is_one(shell):
+    window, context, app = shell
+    reference = context.contextProperty("reference")
+    button = window.findChild(QObject, "titleUpdateButton")
+    assert not button.property("visible")                                     # nothing to update: no button
+    for state, shown in (("avail", "available"), ("downloading", "downloading"), ("ready", "ready")):
+        reference._upd = state
+        reference.changed.emit()
+        pump(app, 0.1)
+        assert button.property("visible") and reference.updateButton == shown, state
+    reference._upd = "ok"
+    reference.changed.emit()
+    pump(app, 0.1)
+    assert not button.property("visible")
