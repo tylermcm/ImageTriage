@@ -35,7 +35,10 @@ class ToastModel(QObject):
     still = Property(bool, lambda self: self._still, notify=changed)
 
     def push(self, kind: str, title: str, body: str = "", action: str = "", callback=None, seconds: float = 6.0) -> int:
-        """kind: success, info, warn or error. `callback` runs when the action button is pressed. At most three toasts show; the oldest leaves."""
+        """kind: success, info, warn or error. `callback` runs when the action button is pressed. At most three toasts show; the oldest leaves.
+        A warning or error about an AI tool that has no action of its own gets its fix (ai_fix.py) as the action."""
+        if kind in ("warn", "error") and not action and callback is None:
+            action, callback = self._ai_fix(f"{title} {body}")
         ident = self._next
         self._next += 1
         items = self._items + [{"id": ident, "kind": kind, "title": title, "body": body, "action": action}]
@@ -55,6 +58,22 @@ class ToastModel(QObject):
             self._timers[ident] = timer
         self.changed.emit()
         return ident
+
+    open_ai_center = None                # set by the app: opens the AI Center (CullModel.openCenter)
+
+    def _ai_fix(self, message: str):
+        from .. import ai_fix
+
+        fix = ai_fix.kind(message)
+        if fix == ai_fix.REPAIR_APP:
+            def repair():
+                why = ai_fix.repair_app()
+                self.push("info" if not why else "error", "Repairing Image Triage" if not why else "The repair did not start",
+                          why or "Windows is putting the missing files back. Restart Image Triage when it is done.", callback=lambda: None)
+            return ai_fix.LABELS[fix], repair
+        if fix == ai_fix.AI_CENTER and self.open_ai_center is not None:
+            return ai_fix.LABELS[fix], self.open_ai_center
+        return "", None
 
     @Slot(str, str, str, result=int)
     def show(self, kind: str, title: str, body: str = "") -> int:

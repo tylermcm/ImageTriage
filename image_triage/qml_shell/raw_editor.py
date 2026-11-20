@@ -250,6 +250,23 @@ class RawEditor(QObject):
             self.saved.emit(path, str(result))
         self.changed.emit()
 
+    # -- an AI tool's error and what fixes it (ai_fix.py): the panels show it as a button beside the error ------------------------
+    @Slot(str, result=str)
+    def fixKind(self, message):
+        from .. import ai_fix
+        return ai_fix.kind(message, ai_tool=True)
+
+    @Slot(str, result=str)
+    def fixLabel(self, message):
+        from .. import ai_fix
+        return ai_fix.LABELS.get(ai_fix.kind(message, ai_tool=True), "")
+
+    @Slot(result=str)
+    def repairApp(self):
+        """Put back the app's missing files (Windows Installer); "" once started, else why it could not be."""
+        from .. import ai_fix
+        return ai_fix.repair_app()
+
     def unsaved_names(self) -> list[str]:
         """The photos with RAW adjustments that were never saved with Done: the one open now and the ones stepped away from (their drafts are only in memory)."""
         import os

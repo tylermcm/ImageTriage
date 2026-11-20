@@ -47,6 +47,7 @@ Column {
             Text { text: erasePanel.eraser.message; color: theme.fg2; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
         }
         Text { visible: erasePanel.eraser.error.length>0; width: parent.width; wrapMode: Text.WordWrap; text: erasePanel.eraser.error; color: "#f36565"; font.pixelSize: 12 }
+        AiFixButton { width: parent.width; raw: panel.raw; error: erasePanel.eraser.error }
     }
     Repeater {
         visible: panel.model.kind!=="erase"

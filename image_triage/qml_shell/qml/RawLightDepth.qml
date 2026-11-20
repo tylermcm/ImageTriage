@@ -287,6 +287,7 @@ Column {
         width: parent.width; wrapMode: Text.WordWrap
         text: light.model.error; color: theme.rej; font.pixelSize: 11
     }
+    AiFixButton { width: parent.width; raw: light.raw; error: light.model.error }
 
     RawColorSlider {
         objectName: "lightDepth_softness"

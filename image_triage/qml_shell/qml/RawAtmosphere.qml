@@ -177,6 +177,7 @@ Column {
             text: "Raise Amount to add the fog."; color: "#f4f4f4"; style: Text.Outline; styleColor: "#000000"; font.pixelSize: 11
         }
     }
+    AiFixButton { width: parent.width; raw: air.raw; error: air.model.error }
 
     // Clouds Drift: slide the patches of fog about (the fog stays the same, it only lies elsewhere)
     Item {

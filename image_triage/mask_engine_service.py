@@ -14,6 +14,7 @@ import atexit
 import os
 import json
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -755,12 +756,16 @@ atexit.register(shutdown_mask_engine)
 
 
 def _mask_engine_worker_path(runtime: AIWorkflowRuntime) -> Path:
-    worker_path = Path(__file__).with_name("mask_engine_worker.py")
-    if not worker_path.is_file() and runtime.python_executable is not None:
-        worker_path = runtime.python_executable.parent / "ai_workers" / "mask_engine_worker.py"
-    if not worker_path.is_file():
-        raise FileNotFoundError("MaskEngine host script is missing.")
-    return worker_path
+    """Source tree: next to this module. Frozen app: ``ai_workers/`` beside the executable (``freeze_support.AI_WORKER_SCRIPTS``)."""
+    candidates = [Path(__file__).with_name("mask_engine_worker.py")]
+    if getattr(sys, "frozen", False):
+        candidates.insert(0, Path(sys.executable).resolve().parent / "ai_workers" / "mask_engine_worker.py")
+    if runtime.python_executable is not None:
+        candidates.append(runtime.python_executable.parent / "ai_workers" / "mask_engine_worker.py")
+    for worker_path in candidates:
+        if worker_path.is_file():
+            return worker_path
+    raise FileNotFoundError("MaskEngine host script is missing.")
 
 
 def _engine_worker_environment(selection: RuntimeSelection, metrics_enabled: bool) -> dict[str, str]:

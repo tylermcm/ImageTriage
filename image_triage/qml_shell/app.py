@@ -336,6 +336,7 @@ def _run(args, state: dict) -> int:
     context.setContextProperty("bestOf", best_of)
     context.setContextProperty("cull", cull)
     context.setContextProperty("toasts", toasts)
+    toasts.open_ai_center = cull.openCenter        # an AI error's toast offers its fix (ai_fix.py)
     context.setContextProperty("ctxMenu", menu)
     context.setContextProperty("fileActions", files)
     context.setContextProperty("safeTrash", safe_trash)

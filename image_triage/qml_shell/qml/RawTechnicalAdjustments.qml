@@ -164,6 +164,7 @@ Item {
                     Accessible.onPressAction: technical.denoise.busy ? technical.denoise.cancel() : technical.denoise.retry()
                 }
             }
+            AiFixButton { width: parent.width; raw: technical.model; error: technical.denoise.error }
             Check { label: "Raw Details" }
             Check {
                 objectName: "rawSuperResolution"
@@ -179,6 +180,7 @@ Item {
                 color: sr.error ? theme.rej : theme.fg3
                 text: sr.status
             }
+            AiFixButton { width: parent.width; raw: technical.model; error: technical.model.superResEditor.error }
             Divider {}
             ValueSlider {
                 objectName: "rawDetailSharpen"

@@ -85,6 +85,7 @@ Column {
         Action { text: "Cancel"; enabled: true; onClicked: panel.model.ai.cancel() }
     }
     Copy { visible: !!panel.model.ai.error; width: parent.width; text: panel.model.ai.error; color: theme.rej }
+    AiFixButton { width: parent.width; raw: panel.raw; error: panel.model.ai.error }
     RawMaskOptions { width: parent.width; model: panel.model.ai }
     Column {
         visible: panel.creating && !panel.model.ai.optionsOpen; width: parent.width; spacing: 8

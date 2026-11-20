@@ -87,6 +87,7 @@ Column {
         color: sky.model.error ? theme.rej : theme.fg3
         text: sky.model.error || sky.model.message
     }
+    AiFixButton { width: parent.width; raw: sky.raw; error: sky.model.error }
     Text {
         objectName: "skyHint"
         visible: !sky.model.active && !sky.model.busy && !sky.model.error && !sky.model.unavailable && sky.model.skies.length === 0
