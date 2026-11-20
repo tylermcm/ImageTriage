@@ -199,6 +199,8 @@ class RawMaskAI(QObject):
     def retryPeople(self):
         if self._people_scanning:return
         self._people_done=False;self._people_results=[]
+        from . import mask_people_cache as cache
+        cache.forget(self.raw._path,bridge.file_signature(self.raw._path))     # look again, not at what was kept
         self.refresh();self._maybe_people()
 
     @Slot()

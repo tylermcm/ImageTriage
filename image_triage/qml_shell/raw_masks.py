@@ -132,6 +132,15 @@ class RawMasks(QObject):
     component=Property(int,lambda self:self._component,notify=changed)
     combining=Property(str,lambda self:self._combine[1] if self._combine else "",notify=changed)
     adjusting=Property(bool,lambda self:self.raw._gesture,notify=changed)
+    # A refinement control (feather, range, smoothness, the brush, a gradient's handles) is held: the overlay stays, since what
+    # changes is the mask itself. Auto overlay hides it only while the mask's adjustments (Exposure ...) are dragged.
+    refining=Property(bool,lambda self:getattr(self,"_refining",False),notify=changed)
+
+    @Slot(bool)
+    def setRefining(self,on):
+        if getattr(self,"_refining",False)!=bool(on):
+            self._refining=bool(on)
+            self.changed.emit()
 
     @Property("QVariantList",notify=changed)
     def pins(self):
@@ -457,6 +466,45 @@ class RawMasks(QObject):
     def _source_point(self, x, y):
         c = self.raw.values["hostCrop"]
         return c["x"]+max(0, min(1, x))*c["w"], c["y"]+max(0, min(1, y))*c["h"]
+
+    # ---- a linear gradient's handles, after it is drawn (RawMaskOverlay): the selected mask's gradient, or its selected component's
+    def _gradient_target(self, rows):
+        if not 0 <= self._selected < len(rows):
+            return None
+        mask = rows[self._selected]
+        parts = mask.get("parts", [])
+        index = self._component if 0 <= self._component <= len(parts) else 0
+        target = mask if index == 0 else parts[index - 1]
+        return target if target.get("shape", {}).get("type") == "linear" else None
+
+    @Property("QVariantMap", notify=changed)
+    def gradient(self):
+        """The linear gradient the handles edit, in the shown picture's fractions ({} when the selection is not one): (x0, y0) is
+        where the effect is full, (x1, y1) where it is gone."""
+        target = self._gradient_target(self.rows)
+        if target is None:
+            return {}
+        s, c = target["shape"], self.raw.values["hostCrop"]
+        view = lambda x, y: ((x - c["x"]) / c["w"], (y - c["y"]) / c["h"])
+        (x0, y0), (x1, y1) = view(s["x0"], s["y0"]), view(s["x1"], s["y1"])
+        return {"x0": x0, "y0": y0, "x1": x1, "y1": y1, "invert": bool(target.get("invert", False))}
+
+    @Slot(float, float, float, float)
+    def reshapeGradient(self, x0, y0, x1, y1):
+        """Move the selected linear gradient's ends (the shown picture's fractions; they may lie outside it)."""
+        if not all(math.isfinite(v) for v in (x0, y0, x1, y1)) or self.raw.saving:
+            return
+        rows = self.rows
+        target = self._gradient_target(rows)
+        if target is None:
+            return
+        c = self.raw.values["hostCrop"]
+        source = lambda x, y: (max(-2.0, min(3.0, c["x"] + x * c["w"])), max(-2.0, min(3.0, c["y"] + y * c["h"])))
+        (sx0, sy0), (sx1, sy1) = source(x0, y0), source(x1, y1)
+        if abs(sx1 - sx0) + abs(sy1 - sy0) < .002:
+            return
+        target["shape"] = {"type": "linear", "x0": sx0, "y0": sy0, "x1": sx1, "y1": sy1}
+        self._commit(rows, "Linear gradient")
 
     @Slot(float, float, float, float)
     def draw(self, x0, y0, x1, y1):

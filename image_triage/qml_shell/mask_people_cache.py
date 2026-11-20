@@ -11,7 +11,9 @@ def cache_path(path, signature):
     from ..ai_paths import managed_cache_dir
     from ..ai_manifest import MODEL_BUNDLES
     versions = [MODEL_BUNDLES[k].revision for k in ("oneformer","sam","birefnet")]
-    key = json.dumps([os.path.normcase(os.path.abspath(path)),signature,versions,"people-v2-1536"])
+    # v3: silhouettes are found from the people region when SAM finds no one (people_instances._people_from_region); results
+    # cached by v2, empty ones above all, are made again
+    key = json.dumps([os.path.normcase(os.path.abspath(path)),signature,versions,"people-v3-1536"])
     return managed_cache_dir("editor_people")/(hashlib.sha256(key.encode()).hexdigest()+".json")
 
 
@@ -25,6 +27,13 @@ def load(path, signature):
         if any(not isinstance(r,dict) or not isinstance(r.get("label"),str) or not masks_valid([{"shape":r.get("shape")}]) for r in data):return None
         return data
     except (OSError,ValueError,TypeError):return None
+
+
+def forget(path, signature):
+    """Drop the kept result, so the people are looked for again (Check for people again)."""
+    if not signature:return
+    try:cache_path(path,signature).unlink(missing_ok=True)
+    except OSError:pass
 
 
 def save(path, signature, results):

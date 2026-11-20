@@ -273,3 +273,65 @@ def test_nothing_started_during_a_save_can_leave_the_editor_stuck_saving(qapp):
     raw._arrived(revision, "save", "", "")
     assert raw.saving is False                               # ... the save being over is never missed
     raw.shutdown()
+
+
+def test_a_drawn_linear_gradient_keeps_photoshops_handles(shell, qapp):
+    """After release the gradient stays editable: the ends rotate and extend about each other, the lines move their own side
+    (the middle stays halfway), the middle line and the lowest handle only rotate about the middle, the stem moves it, and the
+    stem's tail below the last line does nothing."""
+    import math
+
+    window, raw, dock, crop, warnings = prepare(shell, qapp)
+    dock.setProperty("tool", "Mask"); pump(qapp, .2)
+    overlay = window.findChild(QObject, "rawMaskOverlay")
+    W, H = overlay.width(), overlay.height()
+    at = lambda x, y: overlay.mapToScene(QPointF(x, y)).toPoint()
+
+    def drag(a, b):
+        QTest.mousePress(window, Qt.LeftButton, Qt.NoModifier, at(*a)); pump(qapp, .02)
+        QTest.mouseMove(window, at(*b), 20); pump(qapp, .02)
+        QTest.mouseRelease(window, Qt.LeftButton, Qt.NoModifier, at(*b)); pump(qapp, .08)
+        QTest.mouseMove(window, at(2, 2)); pump(qapp, 1.0)           # apart from the next press: not a double-click
+
+    raw.maskEditor.arm("linear"); pump(qapp, .08)
+    drag((W * .3, H * .45), (W * .3, H * .75))                    # top at 45%, bottom at 75%: a vertical stem (clear of the mask list)
+    model = raw.maskEditor
+    assert model.tool == "" and model.gradient["y0"] == pytest.approx(.45, abs=.01)
+
+    def ends():
+        g = model.gradient
+        return (g["x0"] * W, g["y0"] * H), (g["x1"] * W, g["y1"] * H)
+
+    (ax, ay), (bx, by) = ends()
+    drag((ax, ay), (ax + 40, ay))                                     # the top end, about the bottom one
+    (nax, nay), (nbx, nby) = ends()
+    assert (nax, nay) == pytest.approx((ax + 40, ay), abs=2) and (nbx, nby) == pytest.approx((bx, by), abs=1)
+    from PySide6.QtCore import QMetaObject, Q_RETURN_ARG, Q_ARG
+    drag((nax, nay), (ax, ay))                                        # back
+    (ax, ay), (bx, by) = ends()
+    mid = ((ax + bx) / 2, (ay + by) / 2)
+    drag((ax + 80, ay), (ax + 80, ay - 30))                           # the top line, away from the stem: only that side moves
+    (nax, nay), (nbx, nby) = ends()
+    assert nay == pytest.approx(ay - 30, abs=2) and (nbx, nby) == pytest.approx((bx, by), abs=1)
+    drag((ax + 80, nay), (ax + 80, ay))                               # back
+    (ax, ay), (bx, by) = ends()
+    drag((mid[0] - 100, mid[1]), (mid[0] - 100, mid[1] + 100))        # the middle line rotates about the middle
+    (nax, nay), (nbx, nby) = ends()
+    assert ((nax + nbx) / 2, (nay + nby) / 2) == pytest.approx(mid, abs=2)
+    assert math.hypot(nbx - nax, nby - nay) == pytest.approx(math.hypot(bx - ax, by - ay), abs=2) and abs(nax - ax) > 20
+    raw.undo(); pump(qapp, .1)                                        # one undo step per drag
+    (ax, ay), (bx, by) = ends()
+    rx, ry = bx, by + 34                                              # the rotation handle, past the bottom line
+    drag((rx, ry), (rx + 120, ry))
+    (nax, nay), (nbx, nby) = ends()
+    assert ((nax + nbx) / 2, (nay + nby) / 2) == pytest.approx(mid, abs=2)
+    assert math.hypot(nbx - nax, nby - nay) == pytest.approx(math.hypot(bx - ax, by - ay), abs=2)
+    raw.undo(); pump(qapp, .1)
+    (ax, ay), (bx, by) = ends()
+    drag((ax, ay + (by - ay) * .3), (ax + 50, ay + (by - ay) * .3 + 20))   # the stem moves the whole gradient
+    (nax, nay), (nbx, nby) = ends()
+    assert (nax - ax, nay - ay) == pytest.approx((50, 20), abs=2) and (nbx - bx, nby - by) == pytest.approx((50, 20), abs=2)
+    before = model.gradient
+    drag((nbx, nby + 20), (nbx + 60, nby + 20))                       # the stem's tail does nothing
+    assert model.gradient == before
+    assert not [w for w in warnings if "RawMask" in w], warnings

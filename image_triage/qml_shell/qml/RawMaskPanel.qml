@@ -13,10 +13,19 @@ Column {
     component Action: Button {
         id: action
         property bool selected: false
+        property string chevron: ""          // "right", "down" or "up": the same › turned, so every arrow in the panel matches
         enabled: panel.editable
         hoverEnabled: true
-        height: 35; implicitWidth: label.implicitWidth+22
-        contentItem: Text { id: label; text: action.text; color: action.selected ? theme.accentFg : theme.fg; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+        height: 35; implicitWidth: label.implicitWidth+22+(action.chevron !== "" ? 14 : 0)
+        contentItem: Item {
+            Row {
+                anchors.centerIn: parent; spacing: 6
+                Text { id: label; text: action.text; color: action.selected ? theme.accentFg : theme.fg; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                       width: Math.min(implicitWidth, action.width - 22 - (action.chevron !== "" ? 20 : 0)); anchors.verticalCenter: parent.verticalCenter }
+                Text { visible: action.chevron !== ""; text: "›"; color: label.color; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter
+                       rotation: action.chevron === "down" ? 90 : action.chevron === "up" ? -90 : 0 }
+            }
+        }
         background: Rectangle { radius: 8; color: action.selected ? Qt.alpha(theme.accent, 0.22) : action.hovered ? theme.s3 : "transparent"; border.color: action.selected ? Qt.alpha(theme.accent, 0.5) : (theme.line) }
         opacity: enabled ? 1 : .4
     }
@@ -48,6 +57,7 @@ Column {
         from: low; to: high; value: currentValue; decimals: step<1 ? 2 : 0
         colors: ["#606975","#606975"]
         onCommitted: (next) => panel.model.adjust(key,next)
+        onPressedChanged: if (key !== "amount") panel.model.setRefining(pressed)      // the mask's own shape: keep it in view
     }
     readonly property bool creating: model.selected < 0 && !model.tool
     readonly property string shapeKind: current.shape?.type || ""
@@ -59,6 +69,7 @@ Column {
         width: parent.width; controlHeight: 32; editModel: panel.raw
         from: minimum; to: 100; colors: ["#606975","#606975"]
         onCommitted: (next) => edited(next)
+        onPressedChanged: panel.model.setRefining(pressed)                          // brush size, feather, flow, density
     }
     component Hero: Button {
         id: hero
@@ -97,13 +108,13 @@ Column {
             Hero { title: "Background"; kind: "background"; iconPath: "M3 3h18v18H3zM5 19l5-7 4 5 3-3 4 5" }
         }
         Rectangle { width: parent.width; height: 1; color: theme.line }
-        Action { objectName: "aiMaskTool_scene"; width: parent.width; text: "Landscape  ›"; enabled: panel.editable && panel.model.ai.availability.scene === ""; onClicked: panel.model.ai.start("scene") }
-        Action { objectName: "aiMaskTool_people"; visible: panel.model.ai.peopleCount > 0; width: parent.width; text: "People · "+panel.model.ai.peopleCount+"  ›"; onClicked: panel.model.ai.start("people") }
+        Action { objectName: "aiMaskTool_scene"; width: parent.width; text: "Landscape"; chevron: "right"; enabled: panel.editable && panel.model.ai.availability.scene === ""; onClicked: panel.model.ai.start("scene") }
+        Action { objectName: "aiMaskTool_people"; visible: panel.model.ai.peopleCount > 0; width: parent.width; text: "People · "+panel.model.ai.peopleCount; chevron: "right"; onClicked: panel.model.ai.start("people") }
         Action { objectName: "aiMaskTool_object"; width: parent.width; text: "Objects"; enabled: panel.editable && panel.model.ai.availability.object === ""; onClicked: panel.model.ai.start("object") }
         Action { objectName: "maskTool_brush"; width: parent.width; text: "Brush"; onClicked: panel.model.arm("brush") }
         Action { objectName: "maskTool_linear"; width: parent.width; text: "Linear Gradient"; onClicked: panel.model.arm("linear") }
         Action { objectName: "maskTool_radial"; width: parent.width; text: "Radial Gradient"; onClicked: panel.model.arm("radial") }
-        Action { width: parent.width; text: "Range  ⌄"; onClicked: panel.rangeOpen=!panel.rangeOpen }
+        Action { objectName: "maskRangeToggle"; width: parent.width; text: "Range"; chevron: panel.rangeOpen ? "up" : "down"; onClicked: panel.rangeOpen=!panel.rangeOpen }
         Row {
             visible: panel.rangeOpen; width: parent.width; spacing: 6
             Action { width: (parent.width-6)/2; text: "Color Range"; onClicked: panel.model.arm("colorRange") }
@@ -148,8 +159,8 @@ Column {
                 first.value: panel.current.shape?.low ?? .25; second.value: panel.current.shape?.high ?? .75
                 first.onMoved: panel.model.adjust("low",first.value)
                 second.onMoved: panel.model.adjust("high",second.value)
-                first.onPressedChanged: { if(first.pressed) panel.raw.beginGesture(); else panel.raw.endGesture() }
-                second.onPressedChanged: { if(second.pressed) panel.raw.beginGesture(); else panel.raw.endGesture() }
+                first.onPressedChanged: { panel.model.setRefining(first.pressed); if(first.pressed) panel.raw.beginGesture(); else panel.raw.endGesture() }
+                second.onPressedChanged: { panel.model.setRefining(second.pressed); if(second.pressed) panel.raw.beginGesture(); else panel.raw.endGesture() }
                 background: Rectangle { y: luminance.height/2-4; width: parent.width; height: 8; radius: 3; gradient: Gradient { orientation: Gradient.Horizontal; GradientStop { position: 0; color: "#101112" } GradientStop { position: 1; color: "white" } } }
             }
             Field { label: "Smoothness"; key: "smooth"; low: 0; high: 100 }

@@ -360,6 +360,12 @@ def segment_people_instances(
 
     loop_ms = _ms_since(started)
     instances = _merge_body_parts(instances, preview_height)
+    if not instances:
+        # SAM found no one, yet the scene model sees people: a backlit silhouette is the same black as the ground it stands on,
+        # so SAM returns person and hill together and that fails the overlap test. Each part of the people region is a person.
+        instances = _people_from_region(people, frame_area)
+        if instances:
+            write_execution_log(f"people-instances: SAM found no one; {len(instances)} taken from the people region")
     total_ms = _ms_since(overall_started)
     other_seg_ms = segment_ms_total - first_call_ms
     rest_calls = max(0, batch_number - 1)
@@ -386,6 +392,38 @@ def segment_people_instances(
         f"preview={preview_width}x{preview_height}"
     )
     return instances
+
+
+# The region fallback: a part smaller than this fraction of the frame is a speck, not a person.
+REGION_MIN_AREA = 0.002
+
+
+def _people_from_region(people: np.ndarray, frame_area: float) -> list[PersonInstance]:
+    """The separate parts of the scene model's people region as people (gaps of a few pixels closed first, so a person's legs
+    and body stay one), largest first."""
+    from .semantic_masks import _load_opencv
+
+    height, width = people.shape
+    opencv = _load_opencv()
+    if opencv is None:
+        parts = [people]
+    else:
+        side = max(3, int(round(height * 0.02)) | 1)      # about 2% of the height
+        closed = opencv.morphologyEx(people.astype(np.uint8), opencv.MORPH_CLOSE, np.ones((side, side), np.uint8)) > 0
+        count, labels = opencv.connectedComponents(closed.astype(np.uint8), connectivity=8)
+        parts = [np.logical_and(labels == index, people) for index in range(1, count)]
+    found = []
+    for mask in parts:
+        area = int(mask.sum())
+        if area < REGION_MIN_AREA * frame_area:
+            continue
+        ys, xs = np.nonzero(mask)
+        # the seed: the part's pixel nearest its middle (a click there selects this person)
+        cy, cx = float(ys.mean()), float(xs.mean())
+        nearest = int(np.argmin((ys - cy) ** 2 + (xs - cx) ** 2))
+        sy, sx = int(ys[nearest]), int(xs[nearest])
+        found.append(PersonInstance(mask=mask, seed_norm=((sx + 0.5) / width, (sy + 0.5) / height), bounds=_bounds(mask), area=area))
+    return sorted(found, key=lambda person: -person.area)
 
 
 class PeopleInstanceSignals(QObject):
