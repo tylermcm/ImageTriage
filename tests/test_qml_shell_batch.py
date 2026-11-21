@@ -289,3 +289,71 @@ def test_one_photo_can_be_exported_alone_and_the_usual_scope_comes_back(qapp, fo
     batch.end()                                                 # closing forgets it: the next opening has the usual scope
     batch.begin("export")
     assert len(batch.rows()) == 4
+
+
+def test_export_can_name_its_copies_with_the_rename_rules(qapp, folder):
+    batch = BatchModel(grid(qapp, folder), parent=qapp)
+    batch.begin("export")
+    assert batch.get("xRename") is False
+    batch.set("newName", "trip")
+    assert [r["next"] for r in batch.rows()] == ["A1.jpg", "A2.jpg", "B1.jpg", "B2.jpg"]        # off: the photos' own names
+    batch.set("xRename", True)
+    rows = batch.rows()
+    assert [r["next"] for r in rows] == ["trip_001.jpg", "trip_002.jpg", "trip_003.jpg", "trip_004.jpg"]
+    assert [r["cur"] for r in rows] == ["A1.NEF", "A2.NEF", "B1.jpg", "B2.jpg"]                  # the originals keep theirs
+    batch.set("xPrefix", "web_")
+    assert batch.rows()[0]["next"] == "web_trip_001.jpg"
+
+
+def test_the_batch_window_folds_its_sections_and_its_numbers_can_be_typed(qapp, tmp_path):
+    from PySide6.QtCore import Qt
+    from PySide6.QtQml import QQmlApplicationEngine
+    from PySide6.QtTest import QTest
+    from image_triage.cache import DiskThumbnailCache
+    from image_triage.qml_shell.palette_model import PaletteModel
+    from image_triage.qml_shell.settings_model import SettingsModel
+    from image_triage.qml_shell.thumbs import ThumbService
+
+    folder = tmp_path / "f"
+    folder.mkdir()
+    for name in ("A1.NEF", "A1.JPG", "A2.NEF", "A2.JPG", "B1.jpg", "B2.jpg"):
+        (folder / name).write_bytes(b"x")
+    model = grid(qapp, folder)
+    batch = BatchModel(model, parent=qapp)
+    palette = PaletteModel(memory=True, parent=qapp)
+    engine = QQmlApplicationEngine()
+    warnings = []
+    engine.warnings.connect(lambda items: warnings.extend(str(i) for i in items))
+    for name, obj in (("theme", Theme(parent=qapp)), ("photos", model), ("settings", SettingsModel(memory=True, parent=qapp)), ("cmdPalette", palette),
+                      ("advFilters", FiltersModel(model, memory=True, parent=qapp)), ("batch", batch), *collection_models(model, qapp), ("handoff", HandoffModel(model, memory=True, parent=qapp)), ("transfers", TransferModel(model, memory=True, parent=qapp)),
+                      ("thumbs", ThumbService(DiskThumbnailCache(tmp_path / "c"), parent=qapp)), ("startup", "")):
+        engine.rootContext().setContextProperty(name, obj)
+    engine.addImportPath(str(shell_app.QML_DIR))
+    engine.load(QUrl.fromLocalFile(str(shell_app.QML_DIR / "Main.qml")))
+    window = engine.rootObjects()[0]
+    window.setWidth(1440); window.setHeight(1000); window.show(); pump(qapp, 0.4)
+    palette.run("tools.batch_resize"); pump(qapp, 0.5)
+    sections = {s.property("title"): s for s in window.findChildren(QObject) if (s.objectName() or "").startswith("batchSec_")}
+    assert {t for t, s in sections.items() if s.property("open")} == {"PRESET", "IMAGE SIZE", "FILE", "WATERMARK", "NAME AND PLACE"}
+    assert not sections["OUTPUT SHARPENING"].property("open") and not sections["SOFT PROOF"].property("open")
+    head = sections["SOFT PROOF"].childItems()[0]
+    options = window.findChild(QObject, "batchOptionsList")
+    options.setProperty("contentY", max(0, options.property("contentHeight") - options.property("height"))); pump(qapp, 0.2)
+    centre = head.mapToScene(head.boundingRect().center()).toPoint()
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre); pump(qapp, 0.3)
+    assert sections["SOFT PROOF"].property("open")
+    card = window.findChild(QObject, "batchWindow")
+    assert card.property("winH") > 780                                  # the window takes the height there is
+    batch.setMode("rename"); pump(qapp, 0.4)                              # the Rename tab
+    start = window.findChild(QObject, "batchNum_start").findChild(QObject, "stepperInput")
+    box = start.mapToScene(start.boundingRect().center()).toPoint()
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, box); pump(qapp, 0.1)
+    for key in (Qt.Key.Key_2, Qt.Key.Key_5): QTest.keyClick(window, key)
+    QTest.keyClick(window, Qt.Key.Key_Return); pump(qapp, 0.3)
+    assert batch.get("start") == 25 and batch.rows()[0]["next"].endswith("_025.NEF")
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, box); pump(qapp, 0.1)
+    for key in (Qt.Key.Key_1, Qt.Key.Key_2, Qt.Key.Key_3, Qt.Key.Key_4, Qt.Key.Key_5, Qt.Key.Key_6, Qt.Key.Key_7): QTest.keyClick(window, key)
+    QTest.keyClick(window, Qt.Key.Key_Return); pump(qapp, 0.3)
+    assert batch.get("start") == 999999                                 # more than the field takes: clamped by the model
+    assert not [w for w in warnings if "ReferenceError" in w or "TypeError" in w or "is not a type" in w or "unavailable" in w], warnings
+    window.close(); engine.deleteLater(); pump(qapp, 0.2)

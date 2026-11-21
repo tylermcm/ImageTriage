@@ -45,6 +45,8 @@ _DEFAULTS = {
     "newName": "", "prefix": "", "suffix": "", "case": RenameCaseMode.KEEP.value, "collapse": False, "seq": True,
     "start": 1, "step": 1, "pad": 3, "sep": "_",
     **pipeline.DEFAULTS, "xPreset": "",
+    # Export names the files with the Rename tab's rules (the originals keep theirs): rename and export in one go
+    "xRename": False,
 }
 _EXPORT_KEYS = tuple(pipeline.DEFAULTS)
 _KEPT_SOURCES = 3
@@ -162,15 +164,7 @@ class BatchModel(QObject):
         the disk and touches nothing of the model, so it can run on a worker thread."""
         rows: list[dict] = []
         if mode == "rename":
-            # a real photo's own size and time: a saved decision is found again by them
-            records = [ImageRecord(path=b["path"], name=b["name"], size=b["record"].size if b.get("record") else 0, modified_ns=b["record"].modified_ns if b.get("record") else 0,
-                                   companion_paths=b["companions"]) for b in batch]
-            rules = BatchRenameRules(
-                new_name=str(v["newName"]), prefix=str(v["prefix"]), suffix=str(v["suffix"]), case_mode=RenameCaseMode(v["case"]),
-                collapse_whitespace=bool(v["collapse"]), sequence_enabled=len(records) > 1 or bool(v["seq"]),
-                sequence_start=int(v["start"]), sequence_step=int(v["step"]), sequence_padding=int(v["pad"]), sequence_separator=str(v["sep"]),
-            )
-            preview = build_batch_rename_preview(records, rules)
+            preview = cls._rename_preview(batch, v)
             plan_exec = ("rename", preview, None)
             thumbs = {b["path"]: b["thumb"] for b in batch}
             for item in preview.items[:PREVIEW_ROW_LIMIT]:
@@ -187,12 +181,19 @@ class BatchModel(QObject):
                     else f"The preview is clean. {preview.renamed_count} will be renamed." if preview.renamed_count else "Nothing would change.")
             count = preview.renamed_count
         else:
-            plan = pipeline.build_plan([pipeline.ExportSource(b["path"], b["name"]) for b in batch], {k: v[k] for k in _EXPORT_KEYS})
+            names = {b["path"]: b["name"] for b in batch}
+            exported = dict(names)
+            if v.get("xRename"):
+                # the exported copies take the names the Rename tab would give (its sequence too); a photo the rules cannot name keeps its own
+                for item in cls._rename_preview(batch, v).items:
+                    if item.target_name and item.status != "Error":
+                        exported[item.record.path] = item.target_name
+            plan = pipeline.build_plan([pipeline.ExportSource(b["path"], exported[b["path"]]) for b in batch], {k: v[k] for k in _EXPORT_KEYS})
             plan_exec = ("export", plan, None)
             thumbs = {b["path"]: b["thumb"] for b in batch}
             for item in plan.items[:PREVIEW_ROW_LIMIT]:
                 where = str(Path(item.target_path).parent) if item.target_path else ""
-                rows.append(cls._row(thumbs.get(item.source.path, ""), item.source.name, item.target_name, item.status,
+                rows.append(cls._row(thumbs.get(item.source.path, ""), names.get(item.source.path, item.source.name), item.target_name, item.status,
                                       item.message, "" if item.status == "Error" else where, overwrite_tone="g3"))
             errors, ok, count = plan.error_count, plan.can_apply, len(plan.executable)
             fmt = next(label for key, label, _ in pipeline.FORMATS if key == plan.values["format"])
@@ -211,6 +212,18 @@ class BatchModel(QObject):
                     else f"{count} will be exported." if count else "Nothing to export.")
         result = {"rows": rows, "ok": bool(ok), "summary": summary, "foot": foot, "errors": int(errors), "count": int(count), "total": len(batch)}
         return result, plan_exec
+
+    @staticmethod
+    def _rename_preview(batch: list[dict], v: dict):
+        # a real photo's own size and time: a saved decision is found again by them
+        records = [ImageRecord(path=b["path"], name=b["name"], size=b["record"].size if b.get("record") else 0, modified_ns=b["record"].modified_ns if b.get("record") else 0,
+                               companion_paths=b["companions"]) for b in batch]
+        rules = BatchRenameRules(
+            new_name=str(v["newName"]), prefix=str(v["prefix"]), suffix=str(v["suffix"]), case_mode=RenameCaseMode(v["case"]),
+            collapse_whitespace=bool(v["collapse"]), sequence_enabled=len(records) > 1 or bool(v["seq"]),
+            sequence_start=int(v["start"]), sequence_step=int(v["step"]), sequence_padding=int(v["pad"]), sequence_separator=str(v["sep"]),
+        )
+        return build_batch_rename_preview(records, rules)
 
     @staticmethod
     def _row(thumb: str, current: str, target: str, status: str, message: str, pair: str, overwrite_tone: str = "g2") -> dict:

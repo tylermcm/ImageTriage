@@ -17,7 +17,7 @@ FocusScope {
     Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
 
     readonly property real winW: Math.min(1180, width - 96)
-    readonly property real winH: Math.min(780, height - 68 - 64)
+    readonly property real winH: Math.min(1240, height - 68 - 64)     // tall: the export settings are long
     readonly property real navW: Math.round(Math.min(480, Math.max(340, winW * 0.4)))
     readonly property real colW: navW - 41              // the settings, 20px in from the left and clear of the scroll bar
     readonly property real half: (colW - 12) / 2        // two settings side by side
@@ -120,12 +120,36 @@ FocusScope {
                   onPicked: (v) => { if (pk.custom) pk.chosen(v); else batch.set(pk.key, v) } }
     }
     component Gap: Item { property real h: 12; width: 1; height: h }
+    // a section of the export settings that folds away under its title; which are open is kept while the app runs
+    property var secOpen: ({})
+    component Sec: Column {
+        id: sec
+        property string title
+        property bool startOpen: true
+        default property alias body: secBody.data
+        readonly property bool open: { var o = root.secOpen[title]; return o === undefined ? startOpen : o }
+        objectName: "batchSec_" + title
+        width: root.colW
+        bottomPadding: open ? 22 : 10
+        Item {
+            width: parent.width; height: 24
+            Rectangle { x: -8; width: parent.width + 16; height: parent.height; radius: 6; color: Qt.alpha(theme.lift, sh.hovered ? 0.05 : 0) }
+            Gh { anchors.verticalCenter: parent.verticalCenter; title: sec.title }
+            Icon { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; size: 14; color: sh.hovered ? theme.fg : theme.fg3
+                   path: "M6 9l6 6 6-6"; rotation: sec.open ? 0 : -90; Behavior on rotation { NumberAnimation { duration: 140 } } }
+            HoverHandler { id: sh; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: { var m = Object.assign({}, root.secOpen); m[sec.title] = !sec.open; root.secOpen = m } }
+            Accessible.role: Accessible.Button; Accessible.name: (sec.open ? "Collapse " : "Expand ") + sec.title
+        }
+        Column { id: secBody; width: parent.width; visible: sec.open; topPadding: 8 }
+    }
     component Num: Column {
         id: nm
         property string label; property string key; property int lo: 0; property int hi: 999999
         spacing: 6; width: root.third
         Lbl { text: nm.label }
-        SStepper { width: parent.width; text: { void root.rev; return String(batch.get(nm.key)) }
+        SStepper { objectName: "batchNum_" + nm.key; width: parent.width; editable: true; text: { void root.rev; return String(batch.get(nm.key)) }
+                   onEdited: (typed) => batch.set(nm.key, typed)          // the model clamps it to the field's range
                    onDecrement: { batch.set(nm.key, Math.max(nm.lo, batch.get(nm.key) - 1)) }
                    onIncrement: { batch.set(nm.key, Math.min(nm.hi, batch.get(nm.key) + 1)) } }
     }
@@ -193,6 +217,7 @@ FocusScope {
                 }
                 Flickable {
                     id: opts
+                    objectName: "batchOptionsList"
                     y: 44; width: parent.width - 1; height: parent.height - 44
                     contentWidth: width; contentHeight: optCol.y + optCol.height + 24
                     clip: true; boundsBehavior: Flickable.StopAtBounds
@@ -228,10 +253,17 @@ FocusScope {
                                 Num { label: "Start"; key: "start"; lo: 0 }
                                 Num { label: "Step"; key: "step"; lo: 1 }
                                 Num { label: "Digits"; key: "pad"; lo: 0; hi: 8 } }
+                            Item { width: 1; height: 22 }
+                            Gh { title: "EXPORT" }
+                            Item { width: 1; height: 6 }
+                            Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
+                            SwRow { objectName: "batchRenameForExport"; label: "Use these names when exporting"; key: "xRename"
+                                    desc: "Exported copies get these names. The originals keep theirs." }
                         }
 
                         // ---- export
                         Column {
+                            id: ex
                             objectName: "batchExportOptions"
                             visible: root.mode === "export"; width: parent.width
                             readonly property string sizeMode: { void root.rev; return batch.get("sizeMode") }
@@ -241,117 +273,115 @@ FocusScope {
                             readonly property string sharpen: { void root.rev; return batch.get("sharpen") }
                             readonly property string profile: { void root.rev; return batch.get("profile") }
                             readonly property string wm: { void root.rev; return batch.get("wm") }
-                            Gh { title: "PRESET" }
-                            Gap {}
-                            Pick { label: "Preset"; key: "xPreset"; custom: true; onChosen: (v) => { root.presetError = ""; if (v !== "") batch.usePreset(v) } }
-                            Gap { h: 8 }
-                            Row {
-                                spacing: 8
-                                FInput { id: presetName; objectName: "batchPresetName"; width: root.colW - 8 - 70 - (deleteBtn.visible ? 70 + 8 : 0); placeholder: "Save these settings as…" }
-                                SButton { text: "Save"; variant: "ghost"; h: 34; hpad: 14; radius: 10; width: 70
-                                          onClicked: { root.presetError = batch.savePreset(presetName.text); if (root.presetError === "") presetName.text = "" } }
-                                SButton { id: deleteBtn; text: "Delete"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 70
-                                          visible: parent.parent.preset !== "" && !batch.presetIsBuiltin(parent.parent.preset)
-                                          onClicked: batch.deletePreset(parent.parent.preset) }
+                            Sec { title: "PRESET"; startOpen: true
+                                Pick { label: "Preset"; key: "xPreset"; custom: true; onChosen: (v) => { root.presetError = ""; if (v !== "") batch.usePreset(v) } }
+                                Gap { h: 8 }
+                                Row {
+                                    spacing: 8
+                                    FInput { id: presetName; objectName: "batchPresetName"; width: root.colW - 8 - 70 - (deleteBtn.visible ? 70 + 8 : 0); placeholder: "Save these settings as…" }
+                                    SButton { text: "Save"; variant: "ghost"; h: 34; hpad: 14; radius: 10; width: 70
+                                              onClicked: { root.presetError = batch.savePreset(presetName.text); if (root.presetError === "") presetName.text = "" } }
+                                    SButton { id: deleteBtn; text: "Delete"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 70
+                                              visible: ex.preset !== "" && !batch.presetIsBuiltin(ex.preset)
+                                              onClicked: batch.deletePreset(ex.preset) }
                             }
                             Note { visible: root.presetError !== ""; color: theme.rej; text: root.presetError }
-                            Gap { h: 22 }
-                            Gh { title: "IMAGE SIZE" }
-                            Gap {}
-                            Row { spacing: 12
-                                Pick { width: root.half; label: "Size"; key: "sizeMode" }
-                                Field { width: root.half; visible: parent.parent.sizeMode === "long"; label: "Long edge"; key: "long"; placeholder: "2048"; suffix: "px" }
-                                Field { width: root.half; visible: parent.parent.sizeMode === "short"; label: "Short edge"; key: "short"; placeholder: "1080"; suffix: "px" }
-                                Field { width: (root.half - 12) / 2; visible: parent.parent.sizeMode === "fit"; label: "Width"; key: "fitW"; placeholder: "1920"; suffix: "px" }
-                                Field { width: (root.half - 12) / 2; visible: parent.parent.sizeMode === "fit"; label: "Height"; key: "fitH"; placeholder: "1080"; suffix: "px" }
-                                Field { width: root.half; visible: parent.parent.sizeMode === "mp"; label: "Megapixels"; key: "mp"; placeholder: "12"; suffix: "MP" }
-                                Field { width: root.half; visible: parent.parent.sizeMode === "pct"; label: "Percentage"; key: "pct"; placeholder: "50"; suffix: "%" }
+                            }
+                            Sec { title: "IMAGE SIZE"; startOpen: true
+                                Row { spacing: 12
+                                    Pick { width: root.half; label: "Size"; key: "sizeMode" }
+                                    Field { width: root.half; visible: ex.sizeMode === "long"; label: "Long edge"; key: "long"; placeholder: "2048"; suffix: "px" }
+                                    Field { width: root.half; visible: ex.sizeMode === "short"; label: "Short edge"; key: "short"; placeholder: "1080"; suffix: "px" }
+                                    Field { width: (root.half - 12) / 2; visible: ex.sizeMode === "fit"; label: "Width"; key: "fitW"; placeholder: "1920"; suffix: "px" }
+                                    Field { width: (root.half - 12) / 2; visible: ex.sizeMode === "fit"; label: "Height"; key: "fitH"; placeholder: "1080"; suffix: "px" }
+                                    Field { width: root.half; visible: ex.sizeMode === "mp"; label: "Megapixels"; key: "mp"; placeholder: "12"; suffix: "MP" }
+                                    Field { width: root.half; visible: ex.sizeMode === "pct"; label: "Percentage"; key: "pct"; placeholder: "50"; suffix: "%" }
                             }
                             Gap { h: 8 }
                             Note { text: { void root.rev; return batch.sizeDesc() } }
-                            Gap { h: 6; visible: parent.sizeMode !== "original" }
-                            Rectangle { visible: parent.sizeMode !== "original"; width: parent.width; height: 1; color: theme.lineSoft }
-                            SwRow { visible: parent.sizeMode !== "original"; label: "Don’t enlarge smaller photos"; key: "noEnlarge" }
-                            Gap { h: 22 }
-                            Gh { title: "FILE" }
-                            Gap {}
-                            Row { spacing: 12
-                                Pick { width: root.half; label: "Format"; key: "format" }
-                                Field { width: root.half; visible: parent.parent.format === "jpg" || parent.parent.format === "webp"; label: "Quality (1–100)"; key: "quality"; placeholder: "90" }
-                                Pick { width: root.half; visible: parent.parent.format === "png" || parent.parent.format === "tif"; label: "Bit depth"; key: "depth" }
+                            Gap { h: 6; visible: ex.sizeMode !== "original" }
+                            Rectangle { visible: ex.sizeMode !== "original"; width: parent.width; height: 1; color: theme.lineSoft }
+                            SwRow { visible: ex.sizeMode !== "original"; label: "Don’t enlarge smaller photos"; key: "noEnlarge" }
+                            }
+                            Sec { title: "FILE"; startOpen: true
+                                Row { spacing: 12
+                                    Pick { width: root.half; label: "Format"; key: "format" }
+                                    Field { width: root.half; visible: ex.format === "jpg" || ex.format === "webp"; label: "Quality (1–100)"; key: "quality"; placeholder: "90" }
+                                    Pick { width: root.half; visible: ex.format === "png" || ex.format === "tif"; label: "Bit depth"; key: "depth" }
                             }
                             Gap {}
                             Row { spacing: 12
                                 Pick { width: root.half; label: "Colour profile"; key: "profile" }
                                 Pick { width: root.half; label: "Metadata"; key: "meta" }
                             }
-                            Gap { visible: parent.profile === "file" }
+                            Gap { visible: ex.profile === "file" }
                             Row {
-                                visible: parent.profile === "file"; spacing: 8
+                                visible: ex.profile === "file"; spacing: 8
                                 Field { width: root.colW - 8 - 84; label: "Profile file (.icc, .icm)"; key: "profileFile"; placeholder: "Choose a profile" }
                                 SButton { anchors.bottom: parent.bottom; text: "Browse…"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 84; onClicked: root.pickingProfile = true }
                             }
-                            Gap { h: 22 }
-                            Gh { title: "WATERMARK" }
-                            Gap {}
-                            Row { spacing: 12
-                                Pick { width: root.half; label: "Watermark"; key: "wm" }
-                                Pick { width: root.half; visible: parent.parent.wm !== "none"; label: "Position"; key: "wmPos" }
                             }
-                            Gap { visible: parent.wm === "text" }
-                            Row { visible: parent.wm === "text"; spacing: 12
+                            Sec { title: "WATERMARK"; startOpen: true
+                                Row { spacing: 12
+                                    Pick { width: root.half; label: "Watermark"; key: "wm" }
+                                    Pick { width: root.half; visible: ex.wm !== "none"; label: "Position"; key: "wmPos" }
+                            }
+                            Gap { visible: ex.wm === "text" }
+                            Row { visible: ex.wm === "text"; spacing: 12
                                 Field { width: root.half; label: "Text"; key: "wmText"; placeholder: "© Your Name" }
                                 Pick { width: root.half; label: "Colour"; key: "wmColor" }
                             }
-                            Gap { visible: parent.wm === "image" }
+                            Gap { visible: ex.wm === "image" }
                             Row {
-                                visible: parent.wm === "image"; spacing: 8
+                                visible: ex.wm === "image"; spacing: 8
                                 Field { width: root.colW - 8 - 84; label: "Picture (PNG with transparency works best)"; key: "wmImage"; placeholder: "Choose a picture" }
                                 SButton { anchors.bottom: parent.bottom; text: "Browse…"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 84; onClicked: root.pickingMark = true }
                             }
-                            Gap { visible: parent.wm !== "none" }
-                            Row { visible: parent.wm !== "none"; spacing: 8
+                            Gap { visible: ex.wm !== "none" }
+                            Row { visible: ex.wm !== "none"; spacing: 8
                                 Field { width: root.third; label: "Size"; key: "wmSize"; suffix: "%" }
                                 Field { width: root.third; label: "Opacity"; key: "wmOpacity"; suffix: "%" }
                                 Field { width: root.third; label: "Margin"; key: "wmInset"; suffix: "%" } }
-                            Gap { h: 22 }
-                            Gh { title: "NAME AND PLACE" }
-                            Gap {}
-                            Row { spacing: 12
-                                Field { width: root.half; label: "Before the name"; key: "xPrefix"; placeholder: "Optional" }
-                                Field { width: root.half; label: "After the name"; key: "xSuffix"; placeholder: "Optional" } }
-                            Gap {}
-                            Row { spacing: 12
-                                Pick { width: root.half; label: "Export to"; key: "dest" }
-                                Pick { width: root.half; label: "When a file is already there"; key: "exists" }
                             }
-                            Gap { visible: parent.dest === "subfolder" || parent.dest === "choose" }
-                            Field { visible: parent.dest === "subfolder"; label: "Folder name"; key: "sub"; placeholder: "Export" }
+                            Sec { title: "NAME AND PLACE"; startOpen: true
+                                Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
+                                SwRow { objectName: "batchExportRenamed"; label: "Name with the Rename tab's rules"; key: "xRename"
+                                        desc: "The exported copies get the names the Rename tab gives them." }
+                                Gap {}
+                                Row { spacing: 12
+                                    Field { width: root.half; label: "Before the name"; key: "xPrefix"; placeholder: "Optional" }
+                                    Field { width: root.half; label: "After the name"; key: "xSuffix"; placeholder: "Optional" } }
+                                Gap {}
+                                Row { spacing: 12
+                                    Pick { width: root.half; label: "Export to"; key: "dest" }
+                                    Pick { width: root.half; label: "When a file is already there"; key: "exists" }
+                            }
+                            Gap { visible: ex.dest === "subfolder" || ex.dest === "choose" }
+                            Field { visible: ex.dest === "subfolder"; label: "Folder name"; key: "sub"; placeholder: "Export" }
                             Row {
-                                visible: parent.dest === "choose"; spacing: 8
+                                visible: ex.dest === "choose"; spacing: 8
                                 Field { width: root.colW - 8 - 84; label: "Folder"; key: "folder"; placeholder: "Choose a folder" }
                                 SButton { anchors.bottom: parent.bottom; text: "Browse…"; variant: "ghost"; h: 34; hpad: 12; radius: 10; width: 84; onClicked: root.picking = true }
                             }
-                            Gap { h: 22 }
-                            Gh { title: "OUTPUT SHARPENING" }
-                            Gap {}
-                            Row { spacing: 12
-                                Pick { width: root.half; label: "Sharpen for"; key: "sharpen" }
-                                Pick { width: root.half; visible: parent.parent.sharpen !== "none"; label: "Amount"; key: "sharpenAmount" }
+                            }
+                            Sec { title: "OUTPUT SHARPENING"; startOpen: false
+                                Row { spacing: 12
+                                    Pick { width: root.half; label: "Sharpen for"; key: "sharpen" }
+                                    Pick { width: root.half; visible: ex.sharpen !== "none"; label: "Amount"; key: "sharpenAmount" }
                             }
                             Gap { h: 8 }
-                            Note { text: parent.sharpen === "none" ? "No sharpening for the output." : "Made for the exported size. Use 100% in the preview to see it." }
-                            Gap { h: 22 }
-                            Gh { title: "SOFT PROOF" }
-                            Gap {}
-                            Pick { width: root.half; label: "Rendering intent"; key: "intent" }
-                            Gap { h: 6 }
-                            Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
-                            SwRow { label: "Black point compensation"; key: "bpc"; desc: "Keeps shadow detail when the output's black is lighter." }
-                            SwRow { label: "Simulate paper and ink"; key: "proofPaper"; desc: "The preview shows the paper's white and the ink's black." }
-                            SwRow { label: "Gamut warning"; key: "proofGamut"; desc: "Colours the profile cannot reproduce show in pink." }
-                            Gap { h: 8 }
-                            Note { text: "The preview is the proof of the export's own profile. Intent and black point compensation apply to ICC profile files." }
+                            Note { text: ex.sharpen === "none" ? "No sharpening for the output." : "Made for the exported size. Use 100% in the preview to see it." }
+                            }
+                            Sec { title: "SOFT PROOF"; startOpen: false
+                                Pick { width: root.half; label: "Rendering intent"; key: "intent" }
+                                Gap { h: 6 }
+                                Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
+                                SwRow { label: "Black point compensation"; key: "bpc"; desc: "Keeps shadow detail when the output's black is lighter." }
+                                SwRow { label: "Simulate paper and ink"; key: "proofPaper"; desc: "The preview shows the paper's white and the ink's black." }
+                                SwRow { label: "Gamut warning"; key: "proofGamut"; desc: "Colours the profile cannot reproduce show in pink." }
+                                Gap { h: 8 }
+                                Note { text: "The preview is the proof of the export's own profile. Intent and black point compensation apply to ICC profile files." }
+                            }
                         }
                     }
                 }
