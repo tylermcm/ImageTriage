@@ -170,6 +170,7 @@ class FileActions(QObject):
     recentChanged = Signal()
     busyChanged = Signal()
     combined = Signal(str)                              # folders were combined into this one (the folder tree reloads, the folder opens)
+    foldersChanged = Signal(str, str)                   # a folder was made, renamed, moved or deleted: (where it was, where it is now or "")
 
     def __init__(self, photos, toasts, memory: bool = False, parent: QObject | None = None, jobs: FileJobs | None = None) -> None:
         super().__init__(parent)
@@ -549,6 +550,142 @@ class FileActions(QObject):
         self._remember(os.path.dirname(target) if not os.path.isdir(target) else target)
         body = f"{copied} file{'s' if copied != 1 else ''} to {_label(target)}." + (f" {skipped} already there were left as they are." if skipped else "")
         self._toast("success" if not failed else "warn", f"Copied {what}", body)
+
+    # ---------------- folders, as in File Explorer ----------------
+    @Slot(str, str, str, result=str)
+    def folderNameProblem(self, parent: str, name: str, current: str = "") -> str:
+        """Why ``name`` cannot be a folder in ``parent`` ("" when it can). ``current`` is the folder being renamed (its own name is fine)."""
+        return _folder_name_problem(parent, name, current)
+
+    @Slot(str, str, result=str)
+    def newFolder(self, parent: str, name: str) -> str:
+        """Make the folder ``name`` in ``parent``. Returns what went wrong, or ""."""
+        problem = _folder_name_problem(parent, name)
+        if problem:
+            return problem
+        target = os.path.join(parent, name.strip())
+        try:
+            os.mkdir(target)
+        except OSError as exc:
+            return str(exc.strerror or exc)
+        self.foldersChanged.emit("", target)
+        return ""
+
+    @Slot(str, str, result=str)
+    def renameFolder(self, path: str, name: str) -> str:
+        """Rename the folder at ``path`` to ``name`` (its photos' edits are inside it and go with it; decisions follow when it is next
+        opened). One Undo. Returns what went wrong, or ""."""
+        path = os.path.normpath(path)
+        problem = _folder_name_problem(os.path.dirname(path), name, path)
+        if problem:
+            return problem
+        target = os.path.join(os.path.dirname(path), name.strip())
+        if os.path.normcase(target) == os.path.normcase(path) and target == path:
+            return ""
+        try:
+            os.rename(path, target)
+        except OSError as exc:
+            return _in_use(exc)
+        self._after_folder_move(path, target, f"rename of {os.path.basename(path)}")
+        return ""
+
+    @Slot(str, str)
+    def moveFolder(self, path: str, destination: str) -> None:
+        """Move the folder at ``path`` into ``destination`` (a rename on the same drive; a copy then a delete across drives, as a job)."""
+        path, destination = os.path.normpath(path), os.path.normpath(destination)
+        name = os.path.basename(path.rstrip("\\/"))
+        target = os.path.join(destination, name)
+        key = lambda p: os.path.normcase(os.path.abspath(p))
+        if key(destination) == key(os.path.dirname(path)):
+            return
+        if key(destination) == key(path) or key(destination).startswith(key(path) + os.sep):
+            self._toast("warn", "A folder cannot be moved into itself", "Pick a folder outside it.")
+            return
+        if os.path.exists(target):
+            self._toast("warn", f"There is already a folder named {name} there", "Rename one of them first.")
+            return
+        self._start(f"Moving {name}", lambda ctx: _work_move_folder(ctx, path, target),
+                    lambda result: self._folder_moved(result, path, target), route=f"{path} \u2192 {destination}")
+
+    def _folder_moved(self, result: dict, path: str, target: str) -> None:
+        if result.get("error"):
+            self._toast("error", f"{os.path.basename(path)} was not moved", result["error"])
+            return
+        self._after_folder_move(path, target, f"move of {os.path.basename(path)}")
+        self._toast("success", f"Moved {os.path.basename(path)}", f"To {_label(os.path.dirname(target))}.")
+
+    def _after_folder_move(self, old: str, new: str, what: str) -> None:
+        self._rekey_collections(_paths_below_moved(old, new))
+        self._remember(os.path.dirname(new))
+
+        def back() -> bool:
+            if not os.path.isdir(new) or os.path.exists(old):
+                self._toast("error", f"Could not undo the {what}", "The folder is no longer where it was put, or its old place is taken.")
+                return False
+            try:
+                shutil.move(new, old)
+            except OSError as exc:
+                self._toast("error", f"Could not undo the {what}", _in_use(exc))
+                return False
+            self._rekey_collections(_paths_below_moved(new, old))
+            self.foldersChanged.emit(new, old)
+            return True
+
+        self._photos.push_undo(what, back)
+        self.foldersChanged.emit(old, new)
+
+    @Slot(str, result="QVariantMap")
+    def folderDeleteText(self, path: str) -> dict:
+        name = os.path.basename(os.path.normpath(path)) or path
+        files = sum(len(names) for _folder, _dirs, names in os.walk(path)) if os.path.isdir(path) else 0
+        return {"title": f"Move {name} to the Recycle Bin?",
+                "body": f"{name} and everything in it ({files} file{'s' if files != 1 else ''}) go to the Recycle Bin, where you can restore them.",
+                "confirm": "Move to Recycle Bin"}
+
+    @Slot(str)
+    def trashFolder(self, path: str) -> None:
+        """Send the folder at ``path`` to the system's Recycle Bin (restorable from there)."""
+        path = os.path.normpath(path)
+        name = os.path.basename(path) or path
+        if self._memory:
+            self._toast("info", f"Would delete {name}", "Not done while the sample data is on.")
+            return
+        handle = QFile(path)
+        if not handle.moveToTrash():
+            self._toast("error", f"{name} was not deleted", "It may be open in another program. Close it and try again.")
+            return
+        self._toast("success", f"Moved {name} to the Recycle Bin", "Restore it from the Recycle Bin if you need it back.")
+        self.foldersChanged.emit(path, "")
+
+    @Slot(str)
+    def copyFolderPath(self, path: str) -> None:
+        from PySide6.QtGui import QGuiApplication
+
+        QGuiApplication.clipboard().setText(os.path.normpath(path))
+        self._toast("success", "Copied the folder's path", os.path.normpath(path))
+
+    @Slot(str)
+    def folderProperties(self, path: str) -> None:
+        """Windows' own Properties window for the folder (size, sharing, security)."""
+        if os.name != "nt":
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        class SHELLEXECUTEINFOW(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("fMask", ctypes.c_ulong), ("hwnd", wintypes.HWND), ("lpVerb", wintypes.LPCWSTR),
+                        ("lpFile", wintypes.LPCWSTR), ("lpParameters", wintypes.LPCWSTR), ("lpDirectory", wintypes.LPCWSTR),
+                        ("nShow", ctypes.c_int), ("hInstApp", wintypes.HINSTANCE), ("lpIDList", ctypes.c_void_p),
+                        ("lpClass", wintypes.LPCWSTR), ("hkeyClass", wintypes.HKEY), ("dwHotKey", wintypes.DWORD),
+                        ("hIconOrMonitor", wintypes.HANDLE), ("hProcess", wintypes.HANDLE)]
+
+        info = SHELLEXECUTEINFOW()
+        info.cbSize = ctypes.sizeof(info)
+        info.fMask = 0x0000000C                           # SEE_MASK_INVOKEIDLIST: the "properties" verb
+        info.lpVerb = "properties"
+        info.lpFile = os.path.normpath(path)
+        info.nShow = 1
+        ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(info))
 
     # ---------------- combine folders ----------------
     @Slot(str, result="QVariant")
@@ -1102,6 +1239,53 @@ def _work_uncombine(ctx, done: list) -> dict:
             failed.append((os.path.basename(step.target), str(exc) or type(exc).__name__))
     carry_edits([(s.target, s.source) for s in back])
     return dict(back=back, failed=failed)
+
+
+def _folder_name_problem(parent: str, name: str, current: str = "") -> str:
+    from ..file_ops import _INVALID_NAME_CHARS, _WINDOWS_RESERVED_NAMES
+
+    name = (name or "").strip()
+    if not name:
+        return "Enter a folder name."
+    if any(ch in _INVALID_NAME_CHARS for ch in name) or any(ord(ch) < 32 for ch in name):
+        return 'Names cannot contain < > : " / \\ | ? *'
+    if name in (".", "..") or name.endswith("."):
+        return "A folder name cannot end with a dot."
+    if name.split(".")[0].upper() in _WINDOWS_RESERVED_NAMES:
+        return f"Windows reserves the name {name}."
+    target = os.path.join(parent, name)
+    if os.path.exists(target) and os.path.normcase(os.path.abspath(target)) != os.path.normcase(os.path.abspath(current or "")):
+        return f"There is already something named {name} here."
+    return ""
+
+
+def _in_use(exc: OSError) -> str:
+    if getattr(exc, "winerror", None) in (5, 32):
+        return "Something has a file in it open (Explorer, an editor, a sync app). Close it and try again."
+    return str(exc.strerror or exc)
+
+
+def _paths_below_moved(old: str, new: str) -> list[tuple[str, str]]:
+    """(old path, new path) for every file now below ``new`` that was below ``old``: collections hold photos by path."""
+    pairs = []
+    for folder, _dirs, names in os.walk(new):
+        for name in names:
+            now = os.path.join(folder, name)
+            pairs.append((os.path.join(old, os.path.relpath(now, new)), now))
+    return pairs
+
+
+def _work_move_folder(ctx, path: str, target: str) -> dict:
+    ctx.step(0, os.path.basename(path), 1)
+    try:
+        os.rename(path, target)                         # the same drive: instant, nothing is copied
+    except OSError:
+        try:
+            shutil.move(path, target)                   # another drive: copied, then the original deleted
+        except OSError as exc:
+            return {"error": _in_use(exc)}
+    ctx.step(1, "", 1)
+    return {}
 
 
 def _work_copy_folder(ctx, source: str, target: str, files: list[str]) -> dict:

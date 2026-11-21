@@ -398,11 +398,67 @@ Item {
                           onClicked: { folderCopy.source = libMenu.path; folderCopy.contents = true; libMenu.close(); folderCopy.open() } }
                 PopItem { objectName: "libMenuCombine"; label: "Combine folders\u2026"; icon: "collections"
                           onClicked: { var folder = libMenu.path; libMenu.close(); combineCard.openFor(folder) } }
+                Rectangle { width: parent ? parent.width : 0; height: 1; color: theme.lineSoft }
+                PopItem { objectName: "libMenuNewFolder"; label: "New folder\u2026"; icon: "newfolder"
+                          onClicked: { folderName.start("new", libMenu.path); libMenu.close() } }
+                PopItem { objectName: "libMenuRename"; label: "Rename\u2026"; icon: "tag"
+                          onClicked: { folderName.start("rename", libMenu.path); libMenu.close() } }
+                PopItem { objectName: "libMenuMove"; label: "Move to\u2026"; icon: "movePhoto"
+                          onClicked: { folderMove.source = libMenu.path; libMenu.close(); folderMove.open() } }
+                PopItem { objectName: "libMenuCopyPath"; label: "Copy path"; icon: "convert"
+                          onClicked: { fileActions.copyFolderPath(libMenu.path); libMenu.close() } }
+                PopItem { objectName: "libMenuDelete"; label: "Delete"; icon: "trash"
+                          onClicked: { var t = fileActions.folderDeleteText(libMenu.path); folderDelete.path = libMenu.path; folderDelete.title = t.title
+                                       folderDelete.body = t.body; folderDelete.confirmText = t.confirm; libMenu.close(); folderDelete.open() } }
+                PopItem { objectName: "libMenuProperties"; label: "Properties"; icon: "more"
+                          onClicked: { fileActions.folderProperties(libMenu.path); libMenu.close() } }
+            }
+            NamePromptCard {   // New folder (inside the one right-clicked) and Rename
+                id: folderName
+                property string mode: ""
+                property string path: ""
+                function lastPart(p) { var parts = String(p).split(/[\\/]/); while (parts.length > 1 && parts[parts.length - 1] === "") parts.pop(); return parts[parts.length - 1] }
+                function parentOf(p) { var s = String(p).replace(/[\\/]+$/, ""); var i = Math.max(s.lastIndexOf("\\"), s.lastIndexOf("/")); return i > 0 ? s.slice(0, i) : s }
+                function start(kind, folder) {
+                    mode = kind; path = folder
+                    if (kind === "new") ask("New folder in " + lastPart(folder), "New folder", "Create")
+                    else ask("Rename " + lastPart(folder), lastPart(folder), "Rename")
+                }
+                check: function(name) { return mode === "new" ? fileActions.folderNameProblem(path, name, "") : fileActions.folderNameProblem(parentOf(path), name, path) }
+                onAccepted: (name) => {
+                    var problem = mode === "new" ? fileActions.newFolder(path, name) : fileActions.renameFolder(path, name)
+                    if (problem === "") close(); else folderName.problem = problem
+                }
+            }
+            ConfirmCard {
+                id: folderDelete
+                objectName: "folderDeleteCard"
+                property string path: ""
+                warn: true; cancelText: "Cancel"
+                onAccepted: fileActions.trashFolder(path)
+            }
+            FolderDialog {   // where a folder is moved to
+                id: folderMove
+                property string source: ""
+                title: "Move the folder to"
+                onAccepted: fileActions.moveFolder(source, decodeURIComponent(String(selectedFolder).replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/")))
             }
             CombineFoldersCard { id: combineCard }
             Connections {   // combined (or undone): the tree shows the folders as they are now, and the combined folder opens
                 target: fileActions
                 function onCombined(folder) { libraryNav.refresh(); if (folder !== "") libraryNav.openFolder(folder) }
+                // made, renamed, moved or deleted: the tree shows it; the open folder (or one inside the one that changed) follows it
+                function onFoldersChanged(was, now) {
+                    libraryNav.refresh()
+                    var open = String(photos.folderPath || "")
+                    var norm = function(p) { return String(p).replace(/\//g, "\\").replace(/[\\]+$/, "").toLowerCase() }
+                    if (was === "" || open === "") return
+                    var o = norm(open), w = norm(was)
+                    if (o === w || o.indexOf(w + "\\") === 0) {
+                        if (now !== "") libraryNav.openFolder(now + String(open).replace(/\//g, "\\").slice(w.length))
+                        else libraryNav.openFolder(folderName.parentOf(was))
+                    }
+                }
             }
             FolderDialog {   // where a folder (or what is in it) is copied to
                 id: folderCopy

@@ -437,3 +437,35 @@ def test_folders_are_combined_with_their_numbering_continued_and_undo_puts_them_
     assert sorted(p.name for p in second.iterdir() if p.is_file()) == ["_DSC0001.JPG", "_DSC0001.NEF", "_DSC0002.NEF"]
     assert (second / ".image_triage_edits" / "_DSC0001.NEF.cameraraw.json").exists()
     assert sorted(p.name for p in first.iterdir() if p.is_file()) == ["_DSC1922.JPG", "_DSC1922.NEF", "_DSC1923.NEF"]
+
+
+def test_folders_can_be_made_renamed_moved_and_deleted_as_in_file_explorer(world, qapp, monkeypatch):
+    trip = world.tmp / "trip"
+    (trip / "day 1").mkdir(parents=True)
+    (trip / "day 1" / "a.jpg").write_bytes(b"a")
+    changed = []
+    world.files.foldersChanged.connect(lambda was, now: changed.append((was, now)))
+    assert world.files.folderNameProblem(str(trip), "day 1", "") .startswith("There is already")
+    assert "cannot contain" in world.files.folderNameProblem(str(trip), "a?b", "")
+    assert world.files.folderNameProblem(str(trip), "DAY 1", str(trip / "day 1")) == ""          # its own name, another case
+    assert world.files.newFolder(str(trip), "day 2") == "" and (trip / "day 2").is_dir()
+    assert world.files.renameFolder(str(trip / "day 1"), "Morning") == ""
+    assert (trip / "Morning" / "a.jpg").exists() and not (trip / "day 1").exists()
+    assert changed[-1] == (str(trip / "day 1"), str(trip / "Morning"))
+    assert world.photos.undo().startswith("rename of day 1") and (trip / "day 1" / "a.jpg").exists()   # one Undo puts it back
+    world.files.moveFolder(str(trip / "day 1"), str(trip / "day 2"))
+    assert wait_for(qapp, lambda: (trip / "day 2" / "day 1" / "a.jpg").exists())
+    world.files.moveFolder(str(trip / "day 2"), str(trip / "day 2" / "day 1"))                       # never into itself
+    assert any("cannot be moved into itself" in t for t in titles(world.toasts))
+    gone = world.tmp / "gone"
+    gone.mkdir()
+    import shutil as _shutil
+    from image_triage.qml_shell import file_actions as fa
+
+    class Bin:                                                          # not the real Recycle Bin: a test sends nothing there
+        def __init__(self, path): self.path = path
+        def moveToTrash(self): _shutil.rmtree(self.path); return True
+    monkeypatch.setattr(fa, "QFile", Bin)
+    world.files.trashFolder(str(gone))
+    assert not gone.exists() and changed[-1] == (str(gone), "")
+    assert "Recycle Bin" in world.files.folderDeleteText(str(trip))["title"]

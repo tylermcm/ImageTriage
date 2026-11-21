@@ -28,3 +28,19 @@ def test_the_card_offers_the_folders_and_previews_the_renumbering(qapp, tmp_path
     assert card.property("destPath").endswith("Portland 10-26/Portland") and window.findChild(QObject, "combineApply").property("enabled")
     card.close(); pump(qapp, .3)
     assert not [w for w in warnings if "Combine" in w or "SidePanel" in w], warnings
+
+
+def test_the_folder_menu_has_the_file_explorer_actions_and_a_name_card(qapp, tmp_path):
+    engine, window, warnings = _load_main(qapp, tmp_path / "app")
+    window.setWidth(1300); window.setHeight(900); window.show(); pump(qapp, .4)
+    for name in ("libMenuNewFolder", "libMenuRename", "libMenuMove", "libMenuCopyPath", "libMenuDelete", "libMenuProperties"):
+        assert window.findChild(QObject, name) is not None, name
+    card = window.findChild(QObject, "namePromptCard")
+    folder = tmp_path / "trip"
+    (folder / "day 1").mkdir(parents=True)
+    card.setProperty("mode", "new"); card.setProperty("path", str(folder))
+    card.ask("New folder in trip", "day 1", "Create"); pump(qapp, .3)
+    card.setProperty("text", "day 1"); card.submit(); pump(qapp, .1)
+    assert card.property("opened") and card.property("problem").startswith("There is already")   # stays open and says why
+    card.close(); pump(qapp, .3)
+    assert not [w for w in warnings if "NamePrompt" in w or "SidePanel" in w], warnings
