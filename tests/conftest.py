@@ -187,3 +187,13 @@ def _close_preview_workers(monkeypatch):
             worker.close()
         except Exception:
             pass
+
+
+@pytest.fixture(autouse=True)
+def _collect_on_the_main_thread():
+    """What a test leaves behind is collected after it, here on the main thread. Left for later, a collection that a worker thread
+    happens to start frees Qt objects there, and that ended the whole run with an access violation in an unrelated test."""
+    yield
+    import gc
+
+    gc.collect()

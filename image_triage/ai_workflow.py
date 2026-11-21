@@ -238,6 +238,15 @@ def _remove_path_if_present(path: Path) -> None:
     _unlink_with_retries(path)
 
 
+def _collect_if_main_thread() -> None:
+    """Let go of files Python objects still hold open, before a retry. Only on the main thread: a collection on a worker thread frees
+    Qt objects that belong to the main thread there, which crashed the app (an access violation while a folder's AI data was deleted)."""
+    import threading
+
+    if threading.current_thread() is threading.main_thread():
+        gc.collect()
+
+
 def _rmtree_with_retries(path: Path, *, attempts: int = 8, delay_seconds: float = 0.25) -> None:
     last_error: OSError | None = None
     for attempt in range(attempts):
@@ -246,7 +255,7 @@ def _rmtree_with_retries(path: Path, *, attempts: int = 8, delay_seconds: float 
             return
         except OSError as exc:
             last_error = exc
-            gc.collect()
+            _collect_if_main_thread()
             if attempt < attempts - 1:
                 time.sleep(delay_seconds * (attempt + 1))
     if last_error is not None:
@@ -261,7 +270,7 @@ def _unlink_with_retries(path: Path, *, attempts: int = 8, delay_seconds: float 
             return
         except OSError as exc:
             last_error = exc
-            gc.collect()
+            _collect_if_main_thread()
             if attempt < attempts - 1:
                 time.sleep(delay_seconds * (attempt + 1))
     if last_error is not None:
