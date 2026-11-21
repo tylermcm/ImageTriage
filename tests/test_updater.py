@@ -43,6 +43,10 @@ def _urlopen_returning(response: _FakeResponse):
 
 
 class UpdaterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        updater._handoff_started = False
+        self.addCleanup(setattr, updater, "_handoff_started", False)
+
     def test_default_update_feed_points_to_project_release_repo(self) -> None:
         self.assertEqual(
             "https://api.github.com/repos/tylermcm/ImageTriage/releases/latest",
@@ -456,12 +460,34 @@ class UpdaterTests(unittest.TestCase):
                 self.assertIn(str(installer), asked[0][1])
                 self.assertIn("$imageTriagePid = 7", asked[0][1])
                 self.assertEqual([], plain)
+                updater._handoff_started = False
                 refused = updater.launch_update_installer_and_restart(
                     installer, app_executable=installer, current_pid=7, signature_verifier=unsigned,
                     start_elevated=lambda program, parameters: False, start_plain=plain.append,
                 )
             self.assertFalse(refused)
             self.assertEqual([[str(installer)]], plain)
+
+    def test_the_update_is_handed_over_once_and_never_restarts_the_app_under_a_running_install(self) -> None:
+        # 3.0.4: two handoffs raced for Windows Installer, the loser got 1618 and started the app halfway through the install
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installer = Path(temp_dir) / "ImageTriage-1.2.0.msi"
+            installer.write_bytes(b"msi bytes")
+            asked = []
+            unsigned = lambda path: updater.InstallerSignature(updater.SIGNATURE_UNSIGNED)
+            with patch.object(updater.sys, "platform", "win32"):
+                for _ in range(2):
+                    self.assertTrue(updater.launch_update_installer_and_restart(
+                        installer, app_executable=installer, current_pid=7, signature_verifier=unsigned,
+                        start_elevated=lambda program, parameters: asked.append(_decoded_script(parameters)) or True,
+                        start_plain=lambda command: self.fail("the app was started again"),
+                    ))
+            self.assertEqual(1, len(asked))
+            script = asked[0]
+            self.assertIn("Global\ImageTriageUpdateHandoff", script)          # a second handoff (any process) exits at once
+            self.assertLess(script.index("if (-not $owned) { exit 0 }"), script.index("msiexec.exe"))
+            self.assertIn("-ne 1618", script)                                   # a busy Windows Installer is waited for
+            self.assertLess(script.index("} while"), script.index("explorer.exe"))  # the app starts only once the install is over
 
     def test_powershell_quote_escapes_single_quotes(self) -> None:
         self.assertEqual("'C:/Bob''s App/ImageTriage.exe'", updater._powershell_quote("C:/Bob's App/ImageTriage.exe"))

@@ -373,10 +373,16 @@ def launch_update_installer_and_restart(
     # the same file that was just hashed, and the one the handoff installs: nothing is fetched again in between
     check_installer_publisher(path, verifier=signature_verifier, pin=signer_pin)
 
+    global _handoff_started
+    if _handoff_started:
+        # one handoff per run: a second one raced the first for Windows Installer, lost with 1618 ("another installation is in
+        # progress") and started the app again halfway through the install
+        return True
     script = _build_update_handoff_command(path, executable, int(current_pid or os.getpid()))
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     parameters = f"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand {encoded}"
     if (start_elevated or _start_elevated)("powershell.exe", parameters):
+        _handoff_started = True
         return True
     # the permission was refused: the app comes back as it was instead of just closing
     kwargs: dict[str, object] = {}
@@ -384,6 +390,9 @@ def launch_update_installer_and_restart(
         kwargs["creationflags"] = subprocess.DETACHED_PROCESS
     (start_plain or (lambda command: subprocess.Popen(command, **kwargs)))([str(executable)])
     return False
+
+
+_handoff_started = False
 
 
 def _start_elevated(program: str, parameters: str) -> bool:
@@ -408,14 +417,25 @@ def _build_update_handoff_command(installer_path: Path, app_executable: Path, cu
             f"$installer = {installer}",
             f"$app = {executable}",
             f"$log = {log}",
+            # one handoff at a time, machine-wide: a second one exits without installing or starting the app
+            "$lock = New-Object System.Threading.Mutex($false, 'Global\\ImageTriageUpdateHandoff')",
+            "try { $owned = $lock.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $owned = $true }",
+            "if (-not $owned) { exit 0 }",
             "if ($imageTriagePid -gt 0) {",
             "    try { Wait-Process -Id $imageTriagePid -Timeout 180 -ErrorAction SilentlyContinue } catch {}",
             "}",
             # Windows Installer's own progress bar, and a log beside the download for when something goes wrong
             "$msiArgs = @('/i', ('\"' + $installer + '\"'), '/passive', '/norestart', '/l*v', ('\"' + $log + '\"')) -join ' '",
-            "$msi = Start-Process -FilePath 'msiexec.exe' -ArgumentList $msiArgs -Wait -PassThru",
-            # started through Explorer: the app runs as the user again, not as administrator
+            # 1618: another installation is in progress. Wait for it and try again, never start the app under a running install
+            "$deadline = (Get-Date).AddMinutes(15)",
+            "do {",
+            "    $msi = Start-Process -FilePath 'msiexec.exe' -ArgumentList $msiArgs -Wait -PassThru",
+            "    if ($msi.ExitCode -ne 1618) { break }",
+            "    Start-Sleep -Seconds 5",
+            "} while ((Get-Date) -lt $deadline)",
+            # started through Explorer once Windows Installer is done: the app runs as the user again, not as administrator
             "Start-Process -FilePath 'explorer.exe' -ArgumentList ('\"' + $app + '\"')",
+            "$lock.ReleaseMutex()",
             "exit $msi.ExitCode",
         ]
     )

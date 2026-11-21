@@ -498,6 +498,9 @@ class ReferenceModel(QObject):
     def _install_on_quit(self) -> None:
         if self._upd != "armed" or not self._installer or self._upd_info is None:
             return
+        # once only: a second handoff raced this one for Windows Installer and started the app again in the middle of the install
+        self._disarm_install()
+        self._upd = "installing"
         try:
             from ..updater import launch_update_installer_and_restart
 

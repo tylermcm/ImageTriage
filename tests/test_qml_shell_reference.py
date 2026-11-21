@@ -313,7 +313,8 @@ def test_download_verifies_then_installs_when_the_app_closes(qapp, photos, monke
     assert ref.view["help"]["upBtn"] == "Don\u2019t install"
     ref._install_on_quit()                                          # what aboutToQuit runs
     assert launched == [(str(installer), {"expected_sha256": "a" * 64})]
-    ref._disarm_install()
+    ref._install_on_quit()                                          # once only: a second handoff restarted the app mid-install
+    assert len(launched) == 1
 
 
 def _downloads(monkeypatch, installer):
