@@ -258,7 +258,8 @@ def test_the_window_names_what_is_shown_and_back_to_folder_returns(qapp, tmp_pat
     pump(qapp, 0.3)
     assert popout.isOpen and popout.row == 0
     popout.close()
-    pump(qapp, 0.3)
+    viewer = window.findChild(QObject, "viewer")
+    assert wait_for(qapp, lambda: not viewer.property("visible"))      # faded out: a click while it fades lands on the viewer
 
     back = window.findChild(QObject, "backToFolder")
     assert back.property("visible")
