@@ -87,11 +87,14 @@ def test_overlay_spins_inside_the_cull_window_while_applying(qapp, tmp_path):
     model._rebuild()
     pump(qapp, .4)
     model.apply()
+    # Pause the operation timer to inspect the animation without changing its code (before it can finish on a busy machine).
+    model._apply_timer.stop()
     overlay = window.findChild(QObject, "cullApplyOverlay")
     spinner = window.findChild(QObject, "cullApplySpinner")
+    end = time.monotonic() + 3
+    while not overlay.isVisible() and time.monotonic() < end:
+        pump(qapp, .02)
     assert overlay.isVisible() and spinner.property("spinning") and spinner.property("size") == 160
-    # Pause the operation timer to inspect the animation without changing its code.
-    model._apply_timer.stop()
     pump(qapp, .1)
     first = spinner.property("iris")
     pump(qapp, .15)
