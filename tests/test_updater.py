@@ -484,7 +484,7 @@ class UpdaterTests(unittest.TestCase):
                     ))
             self.assertEqual(1, len(asked))
             script = asked[0]
-            self.assertIn("Global\ImageTriageUpdateHandoff", script)          # a second handoff (any process) exits at once
+            self.assertIn(r"Global\ImageTriageUpdateHandoff", script)          # a second handoff (any process) exits at once
             self.assertLess(script.index("if (-not $owned) { exit 0 }"), script.index("msiexec.exe"))
             self.assertIn("-ne 1618", script)                                   # a busy Windows Installer is waited for
             self.assertLess(script.index("} while"), script.index("explorer.exe"))  # the app starts only once the install is over
