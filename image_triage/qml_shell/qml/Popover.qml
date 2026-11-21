@@ -27,9 +27,18 @@ Popup {
     readonly property bool sheet: UiState.compact && placement === 0
     property real originX: 0
     property real originY: 0
-    onAboutToShow: { var o = parent.mapToItem(null, 0, 0); originX = o.x; originY = o.y }
+    // placement 2 near the window's bottom (a folder low in the list, right-clicked): opens above instead, as there is no room below
+    property bool roomUp: false
+    onAboutToShow: {
+        var o = parent.mapToItem(null, 0, 0); originX = o.x; originY = o.y
+        var winH = parent.Window.height || 0
+        var below = winH - (o.y + parent.height + 6) - 8, above = o.y - 6 - 8
+        roomUp = placement === 2 && winH > 0 && implicitHeight > below && above > below
+    }
+    margins: 8                           // and whatever the placement, the menu stays inside the window
+
     x: sheet ? 12 - originX : (placement === 1 ? parent.width + 10 : (placement === 2 ? parent.width - width : 0))
-    y: sheet ? parent.Window.height - 76 - height - originY : (placement === 2 ? (flipUp ? -height - 6 : parent.height + 6) : (placement === 1 ? (alignBottom ? parent.height - height + 4 : -8) : -height - 12))
+    y: sheet ? parent.Window.height - 76 - height - originY : (placement === 2 ? (flipUp || roomUp ? -height - 6 : parent.height + 6) : (placement === 1 ? (alignBottom ? parent.height - height + 4 : -8) : -height - 12))
 
     enter: Transition {
         ParallelAnimation {

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 
 // The PocketDrop page of the side panel: PocketDrop's own screen (PocketDropView.qml, shared with the standalone app and vendored from
 // the PocketDrop repository by scripts/sync_pocketdrop.py), with what is particular to Image Triage added: the Library button and
@@ -28,7 +29,7 @@ Item {
         thumb: Component { ThumbImage { bucket: 160 } }
         extraButtons: PdButton {
             id: libBtn
-            height: 38; width: 96; label: "Library"; iconPath: "M12 4l8.5 4.5L12 13 3.5 8.5zM3.5 12.5L12 17l8.5-4.5"; lifted: library.opened
+            height: 38; width: page.width < 340 ? 38 : 96; label: "Library"; ToolTip.visible: compact && hovered; ToolTip.text: "Share from the library"; iconPath: "M12 4l8.5 4.5L12 13 3.5 8.5zM3.5 12.5L12 17l8.5-4.5"; lifted: library.opened
             onClicked: UiState.setMenu("pdlib")
             PocketDropLibrary { id: library; panel: page; panelW: page.width }
         }
