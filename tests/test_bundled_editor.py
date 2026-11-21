@@ -57,7 +57,18 @@ def test_the_bundled_editor_comes_before_a_development_checkout_and_the_path(ins
     assert Path(shell_actions.detect_photocraft_executable()) == installed.resolve()
 
 
-def test_a_named_editor_still_wins(installed, monkeypatch, tmp_path):
+def test_the_installed_program_ignores_a_named_editor_and_development_builds(installed, monkeypatch, tmp_path):
+    # IMAGE_TRIAGE_PHOTOCRAFT_EXE left pointing at an old debug build made the installed app save every edit with it (sunlit rock
+    # saved bright red while the preview showed it right): the installed program uses the editor it was built with, only that one
+    chosen = tmp_path / "old-debug-build.exe"
+    chosen.write_bytes(b"chosen")
+    monkeypatch.setenv("IMAGE_TRIAGE_PHOTOCRAFT_EXE", str(chosen))
+    assert Path(shell_actions.detect_photocraft_executable()) == installed.resolve()
+    assert shell_actions.companion_photocraft_executables() == []      # nor as a fallback when the editor will not start
+
+
+def test_running_from_source_a_named_editor_still_wins(monkeypatch, tmp_path):
+    monkeypatch.delattr(sys, "frozen", raising=False)
     chosen = tmp_path / "chosen.exe"
     chosen.write_bytes(b"chosen")
     monkeypatch.setenv("IMAGE_TRIAGE_PHOTOCRAFT_EXE", str(chosen))

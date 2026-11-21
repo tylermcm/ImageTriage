@@ -101,6 +101,13 @@ def bundled_photocraft_executable() -> str | None:
 
 @lru_cache(maxsize=1)
 def detect_photocraft_executable() -> str | None:
+    # The installed program carries its own editor, built from the same release: always that one. IMAGE_TRIAGE_PHOTOCRAFT_EXE is for
+    # running from source; left set on a machine, it made the installed app save every edit with an old debug build of the editor
+    # (whose colour fit turned sunlit rock bright red), while the preview worker showed the photo right.
+    bundled = bundled_photocraft_executable()
+    if bundled:
+        return bundled
+
     override = os.environ.get("IMAGE_TRIAGE_PHOTOCRAFT_EXE")
     if override and os.path.exists(override):
         checkout = Path(__file__).resolve().parents[2] / "photocraft"
@@ -110,11 +117,6 @@ def detect_photocraft_executable() -> str | None:
             if hosted:
                 return hosted[0]
         return override
-
-    # The installed program carries its own editor, built together with it: that one first, whatever else is on the machine.
-    bundled = bundled_photocraft_executable()
-    if bundled:
-        return bundled
 
     # The integration's companion build must precede unrelated installed/PATH
     # copies: those may implement app.open but lack hosted stash/restore.
@@ -140,6 +142,10 @@ def detect_photocraft_executable() -> str | None:
 
 
 def companion_photocraft_executables() -> list[str]:
+    """Editors built in a PhotoCraft checkout beside this one, newest first: for running from source. The installed program uses
+    its own editor only, never a development build that happens to be on the machine."""
+    if bundled_photocraft_executable():
+        return []
     checkouts = [Path(__file__).resolve().parents[2] / "photocraft", Path.home() / "Documents" / "photocraft"]
     hosted = [
         path
