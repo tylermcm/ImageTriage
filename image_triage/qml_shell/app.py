@@ -403,6 +403,9 @@ def _run(args, state: dict) -> int:
         diagnostics.report_fatal("Image Triage could not load its interface.", "\n".join(qml_problems), dialog=not (args.grab or args.mock))
         return 1
     window = roots[-1]
+    from . import win_snap
+
+    win_snap.enable(app, window)                      # Windows' snap preview and layouts for the frameless window
     pocket_drop.setWindowHandle(int(window.winId()))
     popout.setWindow(window)
     editor.setWindow(window)
