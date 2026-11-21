@@ -42,6 +42,8 @@ def test_groups_split_the_app_from_what_rarely_changes():
     assert up.group_of("image-triage-raw-preview.exe") == "raw-preview"
     assert up.group_of("lib/PySide6/Qt6Core.dll") == "qt"
     assert up.group_of("python313.dll") == "base"
+    # what changes with every release is the app's: its compiled modules and the AI workers' copies of its code
+    assert up.group_of("lib/library.zip") == "app" and up.group_of("ai_workers/py/image_triage/_version.py") == "app"
 
 
 def releases(tmp_path):

@@ -40,10 +40,12 @@ def group_of(rel: str) -> str:
         return "photocraft"
     if rel.casefold() == "image-triage-raw-preview.exe":
         return "raw-preview"
+    if head == "ai_workers":
+        return "app"            # the AI workers' scripts: this repository's own code (a copy of _version.py among them)
     if head == "lib" and len(parts) > 1:
         second = parts[1].casefold()
-        if second == "image_triage":
-            return "app"
+        if second == "image_triage" or second == "library.zip":
+            return "app"        # library.zip holds the app's compiled modules: it changes with every release
         if second == "pyside6" or second == "shiboken6":
             return "qt"
         if second == "onnxruntime":
