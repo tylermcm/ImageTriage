@@ -105,6 +105,10 @@ PSD_SUFFIXES = frozenset({".psb", ".psd"})
 MODEL_SUFFIXES = frozenset({".stl"})
 
 EDIT_SUFFIXES = frozenset((STANDARD_IMAGE_SUFFIXES | PSD_SUFFIXES | {".dng"}))
+# What the built-in editor edits: raws (Edit RAW: developed from the sensor data) and single-layer pictures (Edit: the same tools on the
+# picture's pixels, as Camera Raw edits a JPEG).
+PICTURE_EDITOR_SUFFIXES = frozenset({".jpg", ".jpeg", ".jpe", ".png", ".tif", ".tiff", ".webp"})
+EDITOR_SUFFIXES = frozenset(RAW_SUFFIXES | PICTURE_EDITOR_SUFFIXES)
 IMAGE_SUFFIXES = frozenset(STANDARD_IMAGE_SUFFIXES | FITS_SUFFIXES | RAW_SUFFIXES | PSD_SUFFIXES | MODEL_SUFFIXES)
 PILLOW_FALLBACK_SUFFIXES = frozenset(STANDARD_IMAGE_SUFFIXES | PSD_SUFFIXES)
 COMPOSITE_SUFFIXES = tuple(sorted((suffix for suffix in IMAGE_SUFFIXES if suffix.count(".") > 1), key=len, reverse=True))

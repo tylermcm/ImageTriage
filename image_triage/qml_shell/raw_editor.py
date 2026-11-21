@@ -11,6 +11,7 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 
 from .. import atmosphere, bokeh, edit_storage, host_effects, light_depth, photocraft_bridge as bridge
+from ..formats import EDITOR_SUFFIXES
 from .histograms import HistogramService
 from . import raw_preview
 from ..raw_crop import DEFAULT_CROP, RATIOS, bounds as crop_bounds, valid as crop_valid
@@ -223,6 +224,9 @@ class RawEditor(QObject):
             self.changed.emit()
 
     photoPath = Property(str, lambda self: self._path, notify=changed)
+    # A raw (developed from its sensor data: Edit RAW) or a picture (JPEG, TIFF, PNG ...: the same tools on its pixels, as Camera Raw
+    # edits one). Tools that need the raw data (AI Denoise, Demosaic, Super Resolution's base) are for raws only.
+    isRaw = Property(bool, lambda self: bool(self._path) and Path(self._path).suffix.lower() in bridge.RAW_SUFFIXES, notify=changed)
     autoSaving = Property(bool, lambda self: bool(self._saves is not None and self._path and self._saves.pending(self._path)), notify=changed)
 
     def _landed(self, path, draft, result, error):
@@ -576,9 +580,9 @@ class RawEditor(QObject):
             self._loaded = True
             if not self._memory and (self.dirty or raw_preview.executable()):
                 self._enqueue("preview")
-        elif Path(path).suffix.lower() not in bridge.RAW_SUFFIXES:
+        elif Path(path).suffix.lower() not in EDITOR_SUFFIXES:
             self._loaded = False
-            self._error = "Choose a RAW photo to use these adjustments."
+            self._error = "This kind of file cannot be edited here."
         elif not self._memory:
             self._enqueue("load", self._drafts)
         self.changed.emit()

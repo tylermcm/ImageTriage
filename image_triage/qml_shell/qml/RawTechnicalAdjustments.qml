@@ -122,11 +122,12 @@ Item {
         id: detailPage
         Column {
             width: parent.width; spacing: 7
-            Choice { label: "Demosaic"; value: "AHD (adaptive homogeneity)" }
+            Choice { visible: technical.model.isRaw; label: "Demosaic"; value: "AHD (adaptive homogeneity)" }
             Check {
                 objectName: "rawDenoise"
-                label: "Denoise"; available: !technical.denoise.unavailable
-                tip: technical.denoise.unavailable || "AI noise reduction on the raw data. Made once per photo, then kept."
+                label: "Denoise"; available: technical.model.isRaw && !technical.denoise.unavailable
+                tip: !technical.model.isRaw ? "AI Denoise works on raw photos only (it denoises the sensor data)."
+                     : technical.denoise.unavailable || "AI noise reduction on the raw data. Made once per photo, then kept."
                 checked: technical.model.values.aiDenoise.enabled
                 onToggled: (next) => technical.denoise.setEnabled(next)
                 Component.onCompleted: technical.denoise.refresh()
@@ -165,7 +166,7 @@ Item {
                 }
             }
             AiFixButton { width: parent.width; raw: technical.model; error: technical.denoise.error }
-            Check { label: "Raw Details" }
+            Check { visible: technical.model.isRaw; label: "Raw Details" }
             Check {
                 objectName: "rawSuperResolution"
                 label: "Super Resolution"; available: true

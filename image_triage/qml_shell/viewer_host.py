@@ -24,7 +24,7 @@ from PySide6.QtCore import Property, QObject, QRunnable, QSize, Qt, QThreadPool,
 from PySide6.QtGui import QImage, QImageIOHandler, QImageReader
 
 from ..app_identity import user_settings
-from ..formats import RAW_SUFFIXES, suffix_for_path
+from ..formats import EDITOR_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from ..preload_order import candidate_indexes
 from .settings_model import PRELOAD_DEFAULT, PRELOAD_MAX
 
@@ -307,7 +307,7 @@ class ViewerHost(QObject):
             return
         if ((self._raw_editor.active and item["path"] != self._raw_editor._path)
                 or (self._raw_wanted and not self._raw_editor.active and not self._compare.active
-                    and suffix_for_path(item["path"]) in RAW_SUFFIXES)):
+                    and suffix_for_path(item["path"]) in EDITOR_SUFFIXES)):
             self._raw_editor.open(item["path"])
         self._row = row
         self._path = item["path"]
@@ -443,7 +443,7 @@ class ViewerHost(QObject):
         from ..imaging import load_image_for_display, sanitize_display_error
         from ..photocraft_bridge import RAW_SUFFIXES, saved_render_path
 
-        render = saved_render_path(path) if Path(path).suffix.lower() in RAW_SUFFIXES else None
+        render = saved_render_path(path) if Path(path).suffix.lower() in EDITOR_SUFFIXES else None     # its saved edits, raw or not
         image, error = load_image_for_display(str(render or path), QSize(READ_LIMIT, READ_LIMIT), prefer_embedded=render is None)
         if image.isNull():
             return "", 0, 0, sanitize_display_error(error, path=path) or "The photo could not be read."

@@ -882,8 +882,10 @@ FocusScope {
                 Item { width: 11; height: 40; Rectangle { anchors.centerIn: parent; width: 1; height: 26; color: v.cLine } }
                 SButton {
                     objectName: "viewerEditRawButton"
-                    visible: v.rawEditor !== null && v.cur.raw === true
-                    text: "Edit RAW"; variant: v.rawEditing ? "primary" : "ghost"; h: 38; hpad: 12
+                    // Edit RAW for a raw (developed from its sensor data), Edit for a JPEG, TIFF, PNG or WebP (the same tools on its pixels)
+                    readonly property bool picture: ["JPG", "JPEG", "JPE", "PNG", "TIF", "TIFF", "WEBP"].indexOf(String(v.cur.ext || "").toUpperCase()) >= 0
+                    visible: v.rawEditor !== null && (v.cur.raw === true || picture)
+                    text: v.cur.raw === true ? "Edit RAW" : "Edit"; variant: v.rawEditing ? "primary" : "ghost"; h: 38; hpad: 12
                     enabled: !v.opening && (!v.rawEditing || !v.rawEditor.saving)
                     onClicked: {
                         if (v.rawEditing) v.rawEditor.done()        // closing the panel keeps the edit (saved in the background)

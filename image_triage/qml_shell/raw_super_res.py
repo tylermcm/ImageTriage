@@ -237,6 +237,8 @@ class RawSuperRes(QObject):
         if self._message:
             return self._message
         size = f"{self.raw.property('fullWidth')} × {self.raw.property('fullHeight')}"
+        if self._note and not self.raw.property("isRaw"):
+            return self._note
         if self._base is not None:
             return self._note or f"Applied to the whole photo ({size}). Zoom in to 100% or closer to see it."
         return f"The photo will be upscaled once ({size}), as Camera Raw does."
@@ -297,6 +299,13 @@ class RawSuperRes(QObject):
         if raw._draft.get("superResolution") is not True or not raw.loaded or raw.saving or not raw.property("photoPath"):
             self._stop()
             self._error, self._busy, self._message, self._note = "", False, "", ""
+            self.changed.emit()
+            return
+        if not raw.property("isRaw"):
+            # a picture that is not raw has no sensor data to make the base from: the export upscales the finished picture
+            self._stop()
+            self._error, self._busy, self._message = "", False, ""
+            self._note = "For a picture that is not raw, Super Resolution is applied when it is exported."
             self.changed.emit()
             return
         source, target = self._source()

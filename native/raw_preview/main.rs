@@ -15,7 +15,9 @@ use std::{
 
 type Result<T> = std::result::Result<T, String>;
 struct Source {
-    sensor: photocraft_raw::Sensor,
+    /// The raw's sensor; None for a picture that is not raw (JPEG, TIFF, PNG ...), which is edited as Camera Raw edits one: the
+    /// whole recipe in the Camera Raw stage, on its pixels.
+    sensor: Option<photocraft_raw::Sensor>,
     options: photocraft_raw::DevelopOptions,
     base: Raster,
     quick: Raster,
@@ -45,6 +47,47 @@ fn drag_frame(source: &Raster) -> Raster {
             .0
             .to_vec();
     Raster { px, size }
+}
+
+/// A picture that is not raw (JPEG, TIFF, PNG, WebP ...), upright, in the editor's working space (ProPhoto, gamma 1.8, as a raw is
+/// imported) from its own profile (sRGB when it has none), box-reduced so its longer side is at most `edge`; and its full size.
+fn picture_frame(bytes: &[u8], edge: usize) -> Result<(Raster, [u32; 2])> {
+    let image = photocraft_codecs::decode(bytes).map_err(|e| e.to_string())?;
+    let (w, h) = (image.width() as usize, image.height() as usize);
+    if w == 0 || h == 0 {
+        return Err("The picture is empty".into());
+    }
+    let samples = image.to_rgba_f32();
+    let own = image.icc.as_deref().and_then(|icc| photocraft_cms::Profile::parse(icc).ok());
+    let to_working = photocraft_cms::cached(own.as_ref().unwrap_or(Builtin::Srgb.profile()), Builtin::ProPhotoCompat.profile(),
+                                            TransformOptions { precise_float: false, ..Default::default() })
+        .map_err(|e| e.to_string())?;
+    let k = w.max(h).div_ceil(edge.max(1)).max(1);
+    let (sw, sh) = (w.div_ceil(k), h.div_ceil(k));
+    let mut reduced = vec![0.0f32; sw * sh * 4];
+    reduced.par_chunks_mut(sw * 4).enumerate().for_each(|(sy, row)| {
+        for sx in 0..sw {
+            let (x0, y0) = (sx * k, sy * k);
+            let (x1, y1) = ((x0 + k).min(w), (y0 + k).min(h));
+            let mut sum = [0.0f32; 4];
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = (y * w + x) * 4;
+                    for c in 0..4 {
+                        sum[c] += samples[i + c];
+                    }
+                }
+            }
+            let n = ((x1 - x0) * (y1 - y0)) as f32;
+            for c in 0..4 {
+                row[sx * 4 + c] = sum[c] / n;
+            }
+        }
+    });
+    let mut working = vec![0.0f32; reduced.len()];
+    working.par_chunks_mut(65536).zip(reduced.par_chunks(65536)).for_each(|(dst, src)| to_working.convert_f32(src, 4, dst, 4, true));
+    let px = working.chunks_exact(4).map(|q| [q[0], q[1], q[2], 1.0]).collect();
+    Ok((Raster { px, size: [sw, sh] }, [w as u32, h as u32]))
 }
 
 fn sensor_frame(
@@ -135,6 +178,20 @@ fn open(p: &Value, opens: u64) -> Result<Source> {
     let path = p["path"].as_str().ok_or("Missing source path")?;
     let edge = p["edge"].as_u64().unwrap_or(1200).clamp(256, 2400) as usize;
     let bytes = read_source(path)?;
+    let display = photocraft_cms::cached(
+        Builtin::ProPhotoCompat.profile(),
+        Builtin::Srgb.profile(),
+        TransformOptions {
+            precise_float: false,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    if !photocraft_io::raw::is_raw(&bytes) {
+        let (base, full) = picture_frame(&bytes, edge)?;
+        let quick = drag_frame(&base);
+        return Ok(Source { sensor: None, options: Default::default(), base, quick, tuned: None, edge, full, display, opens });
+    }
     let limits = photocraft_raw::Limits {
         max_pixels: 128_000_000,
         max_alloc: 512 * 1024 * 1024,
@@ -163,17 +220,8 @@ fn open(p: &Value, opens: u64) -> Result<Source> {
     let (base, full) = sensor_frame(&sensor, &options, edge)?;
     let quick = drag_frame(&base);
     // RAW import is ProPhoto-compatible, gamma 1.8, just like PhotoCraft's open-time proxy.
-    let display = photocraft_cms::cached(
-        Builtin::ProPhotoCompat.profile(),
-        Builtin::Srgb.profile(),
-        TransformOptions {
-            precise_float: false,
-            ..Default::default()
-        },
-    )
-    .map_err(|e| e.to_string())?;
     Ok(Source {
-        sensor,
+        sensor: Some(sensor),
         options,
         base,
         quick,
@@ -206,7 +254,8 @@ fn frame(source: &mut Source, request: &Value, gpu: &mut Option<Gpu>) -> Result<
         p.texture,
         p.dehaze,
     ];
-    let changed = raw_values.iter().any(|v| *v != 0.0);
+    // A picture that is not raw has no raw stage: these are developed with the rest, in the Camera Raw stage.
+    let changed = source.sensor.is_some() && raw_values.iter().any(|v| *v != 0.0);
     let key: Vec<u32> = raw_values.iter().map(|v| v.to_bits()).collect();
     if changed
         && source
@@ -223,7 +272,8 @@ fn frame(source: &mut Source, request: &Value, gpu: &mut Option<Gpu>) -> Result<
             texture: p.texture,
             dehaze: p.dehaze,
         };
-        if let Some(wb) = source.sensor.camera_wb {
+        let sensor = source.sensor.as_ref().ok_or("Missing sensor")?;
+        if let Some(wb) = sensor.camera_wb {
             let gains = photocraft_algo::camera_raw::white_balance_gains(p.temperature, p.tint);
             options.white_balance = photocraft_raw::WhiteBalance::Multipliers([
                 wb[0] * gains[0] as f64,
@@ -231,7 +281,7 @@ fn frame(source: &mut Source, request: &Value, gpu: &mut Option<Gpu>) -> Result<
                 wb[2] * gains[2] as f64,
             ]);
         }
-        let (raster, _) = sensor_frame(&source.sensor, &options, source.edge)?;
+        let (raster, _) = sensor_frame(sensor, &options, source.edge)?;
         let drag = drag_frame(&raster);
         source.tuned = Some((key, raster, drag));
     }
@@ -247,17 +297,20 @@ fn frame(source: &mut Source, request: &Value, gpu: &mut Option<Gpu>) -> Result<
     let mut px = raster.px.clone();
     p.encoding_gamma = 1.8;
     p.pixel_scale = w as f32 / source.full[0] as f32;
-    (
-        p.exposure,
-        p.shadows,
-        p.highlights,
-        p.clarity,
-        p.texture,
-        p.dehaze,
-    ) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-    if source.sensor.camera_wb.is_some() {
-        p.temperature = 0.0;
-        p.tint = 0.0;
+    if let Some(sensor) = &source.sensor {
+        // developed in the raw stage above
+        (
+            p.exposure,
+            p.shadows,
+            p.highlights,
+            p.clarity,
+            p.texture,
+            p.dehaze,
+        ) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        if sensor.camera_wb.is_some() {
+            p.temperature = 0.0;
+            p.tint = 0.0;
+        }
     }
     let tone_ms = start.elapsed().as_secs_f64() * 1000.0;
     let process = Instant::now();

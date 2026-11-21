@@ -12,6 +12,7 @@ path = "@SOURCE@/main.rs"
 
 [dependencies]
 photocraft-io = { path = "@PHOTOCRAFT@/crates/io" }
+photocraft-codecs = { path = "@PHOTOCRAFT@/crates/codecs" }
 photocraft-raw = { path = "@PHOTOCRAFT@/crates/raw" }
 photocraft-algo = { path = "@PHOTOCRAFT@/crates/algo" }
 photocraft-cms = { path = "@PHOTOCRAFT@/crates/cms" }
