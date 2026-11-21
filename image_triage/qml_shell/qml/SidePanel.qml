@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Shapes
 import QtQuick.Controls
+import QtQuick.Dialogs
 
 // The panel beside the rail: Library, Faces, Collections, PocketDrop. Opening animates the column's width (in Main); the contents
 // slide and fade with it, and each page's blocks rise in one after another when it becomes the current page.
@@ -391,6 +392,17 @@ Item {
                 PopItem { label: libMenu.fav ? "Remove from Favorites" : "Add to Favorites"; icon: "star"
                           onClicked: { if (libMenu.fav) libraryNav.removeFavorite(libMenu.path); else libraryNav.addFavorite(libMenu.path); libMenu.close() } }
                 PopItem { label: "Show in File Explorer"; icon: "library"; onClicked: { libraryNav.reveal(libMenu.path); libMenu.close() } }
+                PopItem { objectName: "libMenuCopyFolder"; label: "Copy folder to\u2026"; icon: "movePhoto"
+                          onClicked: { folderCopy.source = libMenu.path; folderCopy.contents = false; libMenu.close(); folderCopy.open() } }
+                PopItem { objectName: "libMenuCopyContents"; label: "Copy contents to\u2026"; icon: "newfolder"
+                          onClicked: { folderCopy.source = libMenu.path; folderCopy.contents = true; libMenu.close(); folderCopy.open() } }
+            }
+            FolderDialog {   // where a folder (or what is in it) is copied to
+                id: folderCopy
+                property string source: ""
+                property bool contents: false
+                title: contents ? "Copy the contents to" : "Copy the folder to"
+                onAccepted: fileActions.copyFolder(source, decodeURIComponent(String(selectedFolder).replace(/^file:\/\/\/?/, Qt.platform.os === "windows" ? "" : "/")), contents)
             }
         }
 

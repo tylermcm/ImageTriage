@@ -24,7 +24,7 @@ Item {
         showTitle: false            // the side panel has its own header
         handleRisk: false           // Main.qml asks before Anywhere
         autoStart: false
-        externalDrag: UiState.pdDragging
+        externalDrag: UiState.pdDragging || photoDrop.containsDrag
         thumb: Component { ThumbImage { bucket: 160 } }
         extraButtons: PdButton {
             id: libBtn
@@ -36,6 +36,20 @@ Item {
             popup: view.menuPopup
             label: "Save phone uploads in the open folder"; tick: true; stay: true; ticked: pocketDrop.receiveIntoFolder
             onActivated: pocketDrop.setReceiveIntoFolder(!pocketDrop.receiveIntoFolder)
+        }
+    }
+    DropArea {   // photos dragged from the grid (PhotoGrid's drag, with this page open): added to PocketDrop to share, all in one step
+        id: photoDrop
+        objectName: "pocketDropPhotoDrop"
+        anchors.fill: parent
+        enabled: page.on
+        keys: ["image-triage/photos"]
+        onDropped: (drop) => {
+            var rows = drop.source && drop.source.dragRows !== undefined ? drop.source.dragRows : [UiState.selRow]
+            var paths = []
+            for (var i = 0; i < rows.length; ++i) { var p = photos.get(rows[i]).path; if (p) paths.push(p) }
+            drop.accept()
+            if (paths.length) pocketDrop.addUrls(paths)
         }
     }
 }

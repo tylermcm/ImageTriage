@@ -197,6 +197,8 @@ Item {
     property point dragAt: Qt.point(0, 0)           // where the pointer is, in the window
     property string tabBeforeDrag: ""
     property bool dragOpenedTab: false
+    // PocketDrop open when the drag starts: the photos go to it (its page takes them), and Collections is not opened.
+    property bool dragToDrop: false
     readonly property var dragInfo: {
         if (!dragging) return ({ title: "", sub: "", thumbs: ["", "", ""] })
         void collections.revision
@@ -204,7 +206,7 @@ Item {
         var paths = []
         for (var i = 0; i < 3; ++i) paths.push(i < dragRows.length ? (photos.get(dragRows[i]).path || "") : "")
         return { title: dragRows.length === 1 ? (photos.get(dragRows[0]).name || "1 photo") : dragRows.length + " photos",
-                 sub: over !== "" ? "Add to " + over : "Drop on a collection", thumbs: paths }
+                 sub: dragToDrop ? "Drop on PocketDrop to share" : over !== "" ? "Add to " + over : "Drop on a collection", thumbs: paths }
     }
     function beginDrag(press) {
         if (root.blocked(press)) return
@@ -216,6 +218,7 @@ Item {
         dragRows = picked.indexOf(row) >= 0 ? picked : [row]
         dragAt = press
         dragCancelled = false; dragOpenedTab = false; tabBeforeDrag = UiState.tab
+        dragToDrop = UiState.tab === "drop"
         dragging = true
     }
     function endDrag(drop) {
@@ -226,7 +229,7 @@ Item {
         if (dragOpenedTab) tabBack.restart()
     }
     // The Collections page opens when the photos are carried off the grid towards the panel, and the page that was open comes back afterwards.
-    onDragAtChanged: if (dragging && !dragOpenedTab && UiState.tab !== "coll" && root.mapFromItem(null, dragAt.x, dragAt.y).x < 0) { dragOpenedTab = true; UiState.tab = "coll" }
+    onDragAtChanged: if (dragging && !dragToDrop && !dragOpenedTab && UiState.tab !== "coll" && root.mapFromItem(null, dragAt.x, dragAt.y).x < 0) { dragOpenedTab = true; UiState.tab = "coll" }
     Timer { id: tabBack; interval: 1400; onTriggered: if (UiState.tab === "coll" && !root.dragging) UiState.tab = root.tabBeforeDrag }
     Item {   // what is dragged: the thing the side panel's DropArea sees, and the badge that follows the pointer
         id: dragProxy

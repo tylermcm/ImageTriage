@@ -373,3 +373,26 @@ def test_a_copy_that_keeps_both_says_what_the_new_name_is(world, qapp, monkeypat
 def test_an_unknown_saved_policy_falls_back_to_keeping_both(world, monkeypatch):
     _policy(world, monkeypatch, "overwrite")
     assert world.files._collision_mode() == "rename"
+
+
+def test_a_folder_or_its_contents_is_copied_with_everything_below_it(world, qapp):
+    edits = world.shoot / ".image_triage_edits"
+    edits.mkdir()
+    (edits / "a.nef.cameraraw.json").write_text("{}", encoding="utf-8")
+    (world.shoot / "picks").mkdir()
+    (world.shoot / "picks" / "d.jpg").write_bytes(b"d")
+    out = world.tmp / "backup"
+    out.mkdir()
+    world.files.copyFolder(str(world.shoot), str(out), False)                     # the folder itself, by its own name
+    assert wait_for(qapp, lambda: (out / "shoot" / "picks" / "d.jpg").exists())
+    assert wait_for(qapp, lambda: (out / "shoot" / ".image_triage_edits" / "a.nef.cameraraw.json").exists())
+    assert sorted(p.name for p in (out / "shoot").iterdir()) == [".image_triage_edits", "a.jpg", "a.nef", "b.jpg", "c.jpg", "picks"]
+    loose = world.tmp / "loose"
+    loose.mkdir()
+    (loose / "a.jpg").write_bytes(b"already here")
+    world.files.copyFolder(str(world.shoot), str(loose), True)                      # only what is in it
+    assert wait_for(qapp, lambda: (loose / "picks" / "d.jpg").exists() and (loose / "c.jpg").exists())
+    assert (loose / "a.jpg").read_bytes() == b"already here" and not (loose / "shoot").exists()   # a file already there is kept
+    assert wait_for(qapp, lambda: any("Copied the contents of shoot" in t for t in titles(world.toasts)))
+    world.files.copyFolder(str(world.shoot), str(world.shoot / "picks"), False)    # never into itself
+    assert "A folder cannot be copied into itself" in titles(world.toasts)

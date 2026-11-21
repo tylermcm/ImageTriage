@@ -517,6 +517,38 @@ class FileActions(QObject):
             self._toast("success", f"Brought back {name}" if single else f"Brought back {_plural(count)}")
         return not moved
 
+    # ---------------- copying a folder (the folder list's right-click menu) ----------------
+    @Slot(str, str, bool)
+    def copyFolder(self, source: str, destination: str, contents: bool) -> None:
+        """Copy the folder ``source`` into ``destination`` (a folder of the same name there), or with ``contents`` only what is in it,
+        everything below it included (its edits too). A file already there is left as it is."""
+        source = os.path.normpath(source.strip()) if source.strip() else ""
+        destination = os.path.normpath(destination.strip()) if destination.strip() else ""
+        if not source or not destination or not os.path.isdir(source):
+            return
+        target = destination if contents else os.path.join(destination, os.path.basename(source.rstrip("\\/")) or "Folder")
+        same = lambda a, b: os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+        inside = os.path.normcase(os.path.abspath(target)).startswith(os.path.normcase(os.path.abspath(source)) + os.sep)
+        if same(source, target) or inside:
+            self._toast("warn", "A folder cannot be copied into itself", "Pick a folder outside it.")
+            return
+        name = os.path.basename(source.rstrip("\\/")) or source
+        files = [os.path.join(folder, file) for folder, _dirs, names in os.walk(source) for file in names]
+        what = f"the contents of {name}" if contents else name
+        self._start(f"Copying {what}", lambda ctx: _work_copy_folder(ctx, source, target, files),
+                    lambda result: self._folder_copied(result, what, target), route=f"{source} \u2192 {target}", total=len(files))
+
+    def _folder_copied(self, result: dict, what: str, target: str) -> None:
+        copied, skipped, failed = result["copied"], result["skipped"], result["failed"]
+        if failed:
+            self._toast("error", f"{len(failed)} file{'s' if len(failed) != 1 else ''} could not be copied", _named(failed, len(failed) == 1))
+        if result["cancelled"]:
+            self._toast("info", f"Stopped after copying {copied} file{'s' if copied != 1 else ''}", "What was copied stays there.")
+            return
+        self._remember(os.path.dirname(target) if not os.path.isdir(target) else target)
+        body = f"{copied} file{'s' if copied != 1 else ''} to {_label(target)}." + (f" {skipped} already there were left as they are." if skipped else "")
+        self._toast("success" if not failed else "warn", f"Copied {what}", body)
+
     # ---------------- move and copy ----------------
     @Slot(int, str)
     def moveRow(self, row: int, destination: str) -> None:
@@ -879,3 +911,28 @@ def _work_restore(ctx, entries: list, gone: str, *, recycle=None, carry_back: bo
         if recycle is not None and done:
             safe_trash_store.forget_files(recycle.recycle_root_for_folder(), [m.target_path for _record, moves, *_rest in done for m in moves])
     return _outcome(ctx, len(entries), done, failed, edits_left=edits_left)
+
+
+def _work_copy_folder(ctx, source: str, target: str, files: list[str]) -> dict:
+    """Copy ``files`` (all below ``source``) to the same places below ``target``; a file already there is skipped."""
+    copied, skipped, failed = 0, 0, []
+    total = len(files)
+    for index, path in enumerate(files):
+        if ctx.cancelled:
+            break
+        relative = os.path.relpath(path, source)
+        ctx.step(index, relative)
+        destination = os.path.join(target, relative)
+        try:
+            if os.path.exists(destination):
+                skipped += 1
+                continue
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            shutil.copy2(path, destination)
+            copied += 1
+        except OSError as exc:
+            failed.append((relative, str(exc)))
+    if not files:
+        os.makedirs(target, exist_ok=True)
+    ctx.step(total, "", total)
+    return dict(copied=copied, skipped=skipped, failed=failed, cancelled=bool(ctx.cancelled and copied + skipped + len(failed) < total))
