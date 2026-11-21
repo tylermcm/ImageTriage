@@ -118,6 +118,10 @@ class UpdateInfo:
     sha256: str = ""
     title: str = ""
     summary: str = ""
+    installer_size: int = 0
+    # the release's small-update manifest (update_patch.py): only the changed parts of the app are downloaded when it can be used
+    patch_manifest_url: str = ""
+    patch_manifest_sha256: str = ""
 
     @property
     def is_verifiable(self) -> bool:
@@ -247,6 +251,48 @@ def download_update_installer(
     return destination
 
 
+def prepare_update(
+    update: UpdateInfo,
+    *,
+    progress_callback: DownloadProgressCallback | None = None,
+    install_dir: str | Path | None = None,
+    destination_dir: str | Path | None = None,
+) -> tuple[Path, bool]:
+    """Download what installing ``update`` needs: only the changed parts of the app when the release has a small-update manifest
+    and this install matches its own (``update_patch``), the full MSI otherwise. Returns (the file the handoff installs, whether
+    it is a small update)."""
+    root = Path(destination_dir) if destination_dir is not None else Path(tempfile.gettempdir()) / "ImageTriageUpdates"
+    install = Path(install_dir) if install_dir is not None else (Path(sys.executable).parent if getattr(sys, "frozen", False) else None)
+    expected = _normalize_sha256(update.patch_manifest_sha256)
+    if install is not None and update.patch_manifest_url and _SHA256_PATTERN.fullmatch(expected):
+        from . import update_patch
+
+        try:
+            _require_https(update.patch_manifest_url, "The update manifest")
+            raw = _fetch_bytes(update.patch_manifest_url)
+            if hashlib.sha256(raw).hexdigest().casefold() != expected.casefold():
+                raise RuntimeError("The update manifest does not match its published checksum.")
+            remote = update_patch.validate_remote(json.loads(raw.decode("utf-8")))
+            plan = update_patch.plan_patch(remote, install, msi_size=update.installer_size)
+            if plan is not None and plan.groups:
+                root.mkdir(parents=True, exist_ok=True)
+                name = f"ImageTriage-{update.version}-update"
+                progress = (lambda done, total: progress_callback(done, total, name)) if progress_callback else None
+                return update_patch.download_patch(remote, plan, root, progress=progress), True
+        except Exception as exc:     # the small update is a shortcut: when it cannot be used, the MSI still can
+            import logging
+
+            logging.getLogger(__name__).warning("Small update not used, installing the full MSI: %s", exc)
+    return download_update_installer(update, destination_dir=root, progress_callback=progress_callback), False
+
+
+def _fetch_bytes(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": UPDATER_USER_AGENT})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        _require_https_response(response, "The update manifest")
+        return response.read(64 * 1024 * 1024)
+
+
 def verify_installer_checksum(installer_path: str | Path, expected_sha256: str) -> None:
     """Hash the installer again. Raises when it is not the file that was verified after the download.
 
@@ -360,7 +406,8 @@ def launch_update_installer_and_restart(
     path = Path(installer_path)
     if not path.exists():
         raise FileNotFoundError(f"Installer not found: {path}")
-    if path.suffix.casefold() != ".msi":
+    small = path.name == "patch.json"            # a staged small update (update_patch.py), not an MSI
+    if path.suffix.casefold() != ".msi" and not small:
         raise ValueError(f"Update installer must be an MSI file: {path}")
     if os.name != "nt" and sys.platform != "win32":
         raise OSError("MSI updates are only supported on Windows.")
@@ -368,17 +415,27 @@ def launch_update_installer_and_restart(
     executable = Path(app_executable) if app_executable is not None else Path(sys.executable)
     if not executable.exists():
         raise FileNotFoundError(f"Application executable not found: {executable}")
-    if expected_sha256 is not None:
-        verify_installer_checksum(path, expected_sha256)
-    # the same file that was just hashed, and the one the handoff installs: nothing is fetched again in between
-    check_installer_publisher(path, verifier=signature_verifier, pin=signer_pin)
+    if small:
+        from . import update_patch
+
+        update_patch.verify_staged(path)          # hashed again: the files have sat in a temporary folder since the download
+    else:
+        if expected_sha256 is not None:
+            verify_installer_checksum(path, expected_sha256)
+        # the same file that was just hashed, and the one the handoff installs: nothing is fetched again in between
+        check_installer_publisher(path, verifier=signature_verifier, pin=signer_pin)
 
     global _handoff_started
     if _handoff_started:
         # one handoff per run: a second one raced the first for Windows Installer, lost with 1618 ("another installation is in
         # progress") and started the app again halfway through the install
         return True
-    script = _build_update_handoff_command(path, executable, int(current_pid or os.getpid()))
+    if small:
+        from . import update_patch
+
+        script = update_patch.handoff_script(path, executable.parent, executable, int(current_pid or os.getpid()), _powershell_quote)
+    else:
+        script = _build_update_handoff_command(path, executable, int(current_pid or os.getpid()))
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     parameters = f"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand {encoded}"
     if (start_elevated or _start_elevated)("powershell.exe", parameters):
@@ -522,6 +579,11 @@ def _update_info_from_github_release(payload: dict[str, object]) -> UpdateInfo:
     installer_url = str(msi_asset.get("browser_download_url") or "").strip()
     if not installer_url:
         raise ValueError("GitHub release MSI asset is missing a download URL.")
+    patch = next((a for a in assets if isinstance(a, dict) and str(a.get("name") or "").casefold().endswith("-update.json")), None)
+    try:
+        size = int(msi_asset.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
     return UpdateInfo(
         version=version,
         installer_url=installer_url,
@@ -529,6 +591,9 @@ def _update_info_from_github_release(payload: dict[str, object]) -> UpdateInfo:
         sha256=_asset_sha256(msi_asset),
         title=str(payload.get("name") or "").strip(),
         summary=str(payload.get("body") or "").strip(),
+        installer_size=size,
+        patch_manifest_url=str((patch or {}).get("browser_download_url") or "").strip(),
+        patch_manifest_sha256=_asset_sha256(patch) if patch else "",
     )
 
 

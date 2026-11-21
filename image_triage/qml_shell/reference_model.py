@@ -94,9 +94,12 @@ class _DownloadTask(QRunnable):
 
     def run(self) -> None:
         try:
-            from ..updater import check_installer_publisher, download_update_installer
+            from ..updater import check_installer_publisher, prepare_update
 
-            path = download_update_installer(self.update, progress_callback=lambda done, total, _name: self.signals.progress.emit(self.token, done, total))
+            path, small = prepare_update(self.update, progress_callback=lambda done, total, _name: self.signals.progress.emit(self.token, done, total))
+            if small:                            # only the changed parts, verified file by file against the release's manifest
+                self.signals.done.emit(self.token, str(path), "", "")
+                return
             try:
                 # the signer, now that the checksum matched: a broken signature or the wrong publisher is not offered for installing
                 publisher = check_installer_publisher(path)

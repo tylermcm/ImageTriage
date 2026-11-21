@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from cx_Freeze import Executable, setup
+from cx_Freeze.command.build_exe import build_exe as _build_exe
 
 from freeze_support import (
     AI_FREEZE_EXCLUDES,
@@ -145,8 +146,19 @@ executables = [
     ),
 ]
 
+class build_exe_with_manifest(_build_exe):
+    """The frozen app, plus the list of its files that small updates compare against (image_triage/update_patch.py)."""
+
+    def run(self) -> None:
+        super().run()
+        from image_triage.update_patch import write_installed_manifest
+
+        write_installed_manifest(self.build_exe, read_project_version())
+
+
 if __name__ == "__main__":
     setup(
+        cmdclass={"build_exe": build_exe_with_manifest},
         name="ImageTriage",
         version=read_project_version(),
         description="Image Triage",
