@@ -260,7 +260,8 @@ def test_the_viewer_says_which_burst_and_the_bracket_keys_jump_between_them(shel
     label = window.findChild(QQuickItem, "viewerBurstLabel")
     chip = window.findChild(QQuickItem, "viewerBurstChip")
     assert wait_for(qapp, lambda: label.property("text") == "Burst 1 · 2 of 3")
-    assert chip.isVisible() and window.findChild(QQuickItem, "viewerBurstHint").isVisible()
+    # the viewer fades in (160 ms): the chip is shown once it has, which can be after the label has its text
+    assert wait_for(qapp, lambda: chip.isVisible()) and window.findChild(QQuickItem, "viewerBurstHint").isVisible()
     QTest.keyClick(window, Qt.Key.Key_BracketRight)
     pump(qapp, 0.2)
     assert popout.row == 5 and label.property("text") == "Burst 2 · 1 of 4"

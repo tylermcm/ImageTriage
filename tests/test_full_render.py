@@ -270,18 +270,35 @@ def test_malformed_settings_cannot_be_classified_as_identity(settings):
     assert bridge.classify_recipe({"version": 1, "cameraRaw": settings})[0] == bridge.RECIPE_INVALID
 
 
-def test_host_recipe_schema_tracks_the_editor_schema():
+def _pinned_camera_raw_schema() -> str | None:
+    """CameraRaw's source at the PhotoCraft commit this app bundles (packaging/photocraft_pin.txt), read with git from a PhotoCraft
+    checkout beside this one that has it. Not a checkout's working tree: an old one beside the repo made the test compare against a
+    schema the app no longer ships with."""
+    import subprocess
+
+    repo = Path(__file__).resolve().parents[1]
+    pin = (repo / "packaging" / "photocraft_pin.txt").read_text(encoding="utf-8").strip()
     candidate = os.environ.get("PHOTOCRAFT_SOURCE_ROOT")
-    root = Path(candidate) if candidate else Path(__file__).resolve().parents[2] / "photocraft"
-    source = root / "crates/algo/src/camera_raw.rs"
-    if not source.is_file():
-        if candidate:
-            pytest.fail("The requested PhotoCraft source checkout is missing its CameraRaw schema")
-        pytest.skip("companion checkout is not available")
-    body = re.search(r"pub struct CameraRaw \{(.*?)\n\}", source.read_text(), re.S).group(1)
+    roots = [Path(candidate)] if candidate else sorted(p for p in repo.parent.iterdir() if (p / "crates" / "algo").is_dir())
+    for root in roots:
+        shown = subprocess.run(["git", "-C", str(root), "show", f"{pin}:crates/algo/src/camera_raw.rs"], capture_output=True, text=True, encoding="utf-8")
+        if shown.returncode == 0:
+            return shown.stdout
+    if candidate:
+        pytest.fail(f"The requested PhotoCraft checkout does not have the pinned commit {pin}")
+    return None
+
+
+def test_host_recipe_schema_tracks_the_editor_schema():
+    source = _pinned_camera_raw_schema()
+    if source is None:
+        pytest.skip("no PhotoCraft checkout with the pinned commit is available")
+    body = re.search(r"pub struct CameraRaw \{(.*?)\n\}", source, re.S).group(1)
     camel = lambda name: name.split("_")[0] + "".join(word.title() for word in name.split("_")[1:])
     names = set()
     for attributes, name in re.findall(r"((?:\s*#\[[^\n]*\]\s*)*)pub (\w+):", body):
+        if re.search(r"serde\(\s*skip\s*\)", attributes):
+            continue                    # never written to a recipe (a render's window into a larger photo)
         # PhotoCraft's upstream calibration names retain the host's aliases.
         # raw_recipe.rs writes those legacy names back to the host sidecar.
         aliases = set(re.findall(r'alias = "([^"]+)"', attributes))

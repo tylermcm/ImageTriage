@@ -165,3 +165,25 @@ def _forbid_real_mask_engine_worker(monkeypatch):
     guarded_popen.__wrapped__ = real_popen
     monkeypatch.setattr(subprocess, "Popen", guarded_popen)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _close_preview_workers(monkeypatch):
+    """A RAW preview worker a test made and left open keeps its thread, waiting, for the rest of the run; a few of them later took
+    the whole run down with an access violation in an unrelated test. Each is closed when its test ends."""
+    from image_triage.qml_shell import raw_preview
+
+    made = []
+    original = raw_preview.PreviewWorker.__init__
+
+    def recording(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        made.append(self)
+
+    monkeypatch.setattr(raw_preview.PreviewWorker, "__init__", recording)
+    yield
+    for worker in made:
+        try:
+            worker.close()
+        except Exception:
+            pass

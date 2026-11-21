@@ -1,4 +1,6 @@
 """Handoff workflows export through Batch Export: with an export preset, or (older workflows) with their own fields mapped onto it."""
+from pathlib import Path
+
 import pytest
 from PIL import Image
 from PySide6.QtCore import QCoreApplication, QStandardPaths
@@ -40,7 +42,7 @@ def test_an_older_workflow_keeps_its_export(shoot, tmp_path):
     plan = build_workflow_export_plan(shoot, recipe, destination_dir=str(tmp_path / "out"))
     assert plan.can_apply and plan.output_label == "JPEG | fits 1920 x 1080"
     outcome = apply_workflow_export_plan(plan)
-    sizes = {p.split("/")[-1]: Image.open(p).size for p in outcome}
+    sizes = {Path(p).name: Image.open(p).size for p in outcome}
     assert sizes == {"proof_a.jpg": (1620, 1080), "proof_b.jpg": (800, 600)}         # not enlarged
 
 
@@ -54,7 +56,7 @@ def test_a_workflow_with_a_preset_exports_with_it(shoot, tmp_path):
     values = recipe_export_values(recipe)
     assert values["sizeMode"] == "long" and values["long"] == "2048" and values["sharpen"] == "screen" and values["xSuffix"] == "_web"
     outcome = apply_workflow_export_plan(build_workflow_export_plan(shoot, recipe, destination_dir=str(tmp_path / "out")))
-    assert {p.split("/")[-1]: Image.open(p).size for p in outcome} == {"a_web.jpg": (2048, 1365), "b_web.jpg": (800, 600)}
+    assert {Path(p).name: Image.open(p).size for p in outcome} == {"a_web.jpg": (2048, 1365), "b_web.jpg": (800, 600)}
     assert "with the Web 2048 px export preset" in recipe_summary_lines(recipe)[0]
 
 

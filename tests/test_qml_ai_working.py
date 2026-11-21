@@ -44,6 +44,8 @@ def test_the_overlay_covers_the_photo_while_denoise_works_and_cancel_stops_it(sh
 def test_each_ai_tool_names_itself(shell, qapp):
     window, raw, _ = editing(shell, qapp)
     overlay = window.findChild(QObject, "aiWorkingOverlay")
+    for depth_tool in (raw.lightDepthEditor, raw.bokehEditor):
+        depth_tool._pending = object()                 # an edit waits on the depth map: it is shown working, not in the background
     for tool, title in ((raw.skyEditor, "Sky Replacement"), (raw.eraseEditor, "AI Erase"), (raw.lightDepthEditor, "Light Depth"),
                         (raw.bokehEditor, "Bokeh"), (raw.maskEditor.ai, "AI Masking")):
         working(tool, True, "Working")
@@ -52,6 +54,18 @@ def test_each_ai_tool_names_itself(shell, qapp):
         working(tool, False)
         pump(qapp, .1)
         assert not overlay.property("active")
+
+
+def test_a_depth_map_made_in_the_background_shows_no_overlay(shell, qapp):
+    # the depth map is made when the photo opens, with nothing waiting on it: no sweep over the photo then, only once an edit waits
+    window, raw, _ = editing(shell, qapp)
+    overlay = window.findChild(QObject, "aiWorkingOverlay")
+    for tool in (raw.lightDepthEditor, raw.bokehEditor, raw.atmosphereEditor):
+        tool._pending = None
+        working(tool, True, "Making the depth map")
+        pump(qapp, .1)
+        assert tool.background and not overlay.property("active")
+        working(tool, False)
 
 
 def test_the_viewer_export_button_opens_batch_export_for_this_photo_alone(shell, qapp):

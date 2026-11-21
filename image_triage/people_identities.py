@@ -142,14 +142,23 @@ class IdentityStore:
 
     def clear(self) -> bool:
         """Forget everyone: the store's file is deleted. True when nothing of it is left."""
+        import time
+
         with self._lock:
             for path in (self.path, self.path.with_name(self.path.name + "-wal"), self.path.with_name(self.path.name + "-shm"), self.path.with_name(self.path.name + "-journal")):
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    return False
+                # Windows refuses to delete a file that is open for a moment: the AI Center's count being read, a virus scan of the
+                # freshly written file. Such a hold is gone within a few seconds, so the delete waits for it a little.
+                deadline = time.monotonic() + 5.0          # on the worker thread that forgets: the UI does not wait
+                while True:
+                    try:
+                        path.unlink()
+                        break
+                    except FileNotFoundError:
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            return False
+                        time.sleep(0.05)
             return not self.path.exists()
 
     # -- matching -----------------------------------------------------------------------------------------------------------------

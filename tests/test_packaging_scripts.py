@@ -69,12 +69,12 @@ class PackagingScriptTests(unittest.TestCase):
 
     def test_upscale_worker_and_its_core_are_packaged_as_external_ai_scripts(self) -> None:
         # The worker imports upscale_core as a sibling, so both must sit in ai_workers/.
-        constants = _string_constants(_read_tree("freeze_support.py"))
+        # (each name in AI_WORKER_SCRIPTS is shipped as ai_workers/<name>.py, from image_triage/<name>.py)
+        import freeze_support
 
-        self.assertIn("upscale_worker.py", constants)
-        self.assertIn("ai_workers/upscale_worker.py", constants)
-        self.assertIn("upscale_core.py", constants)
-        self.assertIn("ai_workers/upscale_core.py", constants)
+        self.assertIn("upscale_worker", freeze_support.AI_WORKER_SCRIPTS)
+        self.assertIn("upscale_core", freeze_support.AI_WORKER_SCRIPTS)
+        self.assertIn('f"ai_workers/{name}.py") for name in AI_WORKER_SCRIPTS', (ROOT / "freeze_support.py").read_text(encoding="utf-8"))
 
     def test_upscale_service_modules_are_named_explicitly_for_cx_freeze(self) -> None:
         constants = _string_constants(_read_tree("setup_msi.py"))

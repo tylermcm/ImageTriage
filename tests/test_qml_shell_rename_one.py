@@ -134,7 +134,8 @@ def test_the_name_rules_are_the_existing_ones_and_are_answered_without_the_disk(
     assert w.photos.renameCheck(row, "b")["same"] and w.photos.renameCheck(row, "b.jpg")["same"]
     assert w.photos.renameCheck(row, "new.name") == {"error": "", "warning": "", "same": False}
     monkeypatch.setattr(rename_one, "name_warning", lambda name, directory=None: "Windows could not read this name.")
-    assert w.photos.renameCheck(row, "what?")["warning"] == "Windows could not read this name."
+    assert w.photos.renameCheck(row, "what")["warning"] == "Windows could not read this name."
+    assert "cannot contain" in w.photos.renameCheck(row, "what?")["error"]             # a character Windows refuses is an error, not a warning
     assert w.files.renameRow(row, "sub/b") != "" and not w.files.busy, "a name that cannot be used starts nothing"
 
 
