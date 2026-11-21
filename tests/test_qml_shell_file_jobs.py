@@ -396,3 +396,44 @@ def test_a_folder_or_its_contents_is_copied_with_everything_below_it(world, qapp
     assert wait_for(qapp, lambda: any("Copied the contents of shoot" in t for t in titles(world.toasts)))
     world.files.copyFolder(str(world.shoot), str(world.shoot / "picks"), False)    # never into itself
     assert "A folder cannot be copied into itself" in titles(world.toasts)
+
+
+def test_folders_are_combined_with_their_numbering_continued_and_undo_puts_them_back(world, qapp):
+    trip = world.tmp / "Portland"
+    first, second = trip / "107NZ7_2", trip / "108NZ7_2"
+    for folder, names in ((first, ("_DSC1922.NEF", "_DSC1922.JPG", "_DSC1923.NEF")), (second, ("_DSC0001.NEF", "_DSC0001.JPG", "_DSC0002.NEF"))):
+        folder.mkdir(parents=True)
+        for name in names:
+            (folder / name).write_bytes(name.encode())
+    edits = second / ".image_triage_edits"
+    edits.mkdir()
+    (edits / "_DSC0001.NEF.cameraraw.json").write_text('{"version": 1, "cameraRaw": {"exposure": 1}}', encoding="utf-8")
+    from image_triage.models import ImageRecord, SessionAnnotation
+    from image_triage.qml_shell.decision_bridge import session_id
+
+    picked = second / "_DSC0002.NEF"
+    world.files._store().save_annotation(session_id(), ImageRecord(path=str(picked), name=picked.name, size=picked.stat().st_size,
+                                                                   modified_ns=picked.stat().st_mtime_ns), SessionAnnotation(winner=True, rating=4))
+    found = world.files.combineCandidates(str(trip))
+    assert found["parent"] == str(trip) and [f["name"] for f in found["folders"]] == ["107NZ7_2", "108NZ7_2"]
+    assert [f["count"] for f in found["folders"]] == [3, 3]
+    assert world.files.combineCandidates(str(second))["parent"] == str(trip)          # from one of them: it and the ones beside it
+    preview = world.files.combinePreview([str(first), str(second)], str(first), True)
+    assert preview["ok"] and "108NZ7_2/_DSC0001.JPG → _DSC1924.JPG" in preview["examples"]
+    combined = []
+    world.files.combined.connect(combined.append)
+    world.files.combineFolders([str(first), str(second)], str(first), True, True)
+    assert wait_for(qapp, lambda: combined == [str(first)])
+    assert sorted(p.name for p in first.iterdir() if p.is_file()) == ["_DSC1922.JPG", "_DSC1922.NEF", "_DSC1923.NEF", "_DSC1924.JPG", "_DSC1924.NEF", "_DSC1925.NEF"]
+    assert (first / "_DSC1924.NEF").read_bytes() == b"_DSC0001.NEF"
+    assert (first / ".image_triage_edits" / "_DSC1924.NEF.cameraraw.json").exists()           # the edit followed, renamed
+    assert not second.exists()                                                              # emptied: removed
+    moved = first / "_DSC1925.NEF"
+    kept = world.files._store().load_annotations_for_paths(session_id(), {str(moved): ImageRecord(path=str(moved), name=moved.name, size=moved.stat().st_size,
+                                                                                                  modified_ns=moved.stat().st_mtime_ns)}, [str(moved)])
+    assert kept[str(moved)].winner and kept[str(moved)].rating == 4                       # the keep and the stars followed the photo
+    assert any("Combined the folders" in t for t in titles(world.toasts))
+    assert world.photos.undo().startswith("combine into")
+    assert sorted(p.name for p in second.iterdir() if p.is_file()) == ["_DSC0001.JPG", "_DSC0001.NEF", "_DSC0002.NEF"]
+    assert (second / ".image_triage_edits" / "_DSC0001.NEF.cameraraw.json").exists()
+    assert sorted(p.name for p in first.iterdir() if p.is_file()) == ["_DSC1922.JPG", "_DSC1922.NEF", "_DSC1923.NEF"]

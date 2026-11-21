@@ -45,6 +45,7 @@ FChip 1.0 FChip.qml
 FiltersWindow 1.0 FiltersWindow.qml
 BatchWindow 1.0 BatchWindow.qml
 ConfirmCard 1.0 ConfirmCard.qml
+CombineFoldersCard 1.0 CombineFoldersCard.qml
 HandoffWindow 1.0 HandoffWindow.qml
 TransferCards 1.0 TransferCards.qml
 PocketDropLibrary 1.0 PocketDropLibrary.qml

@@ -169,6 +169,7 @@ class FileActions(QObject):
     confirmRequested = Signal(str, str, str, str)       # id, title, body, the confirm button's text
     recentChanged = Signal()
     busyChanged = Signal()
+    combined = Signal(str)                              # folders were combined into this one (the folder tree reloads, the folder opens)
 
     def __init__(self, photos, toasts, memory: bool = False, parent: QObject | None = None, jobs: FileJobs | None = None) -> None:
         super().__init__(parent)
@@ -549,6 +550,121 @@ class FileActions(QObject):
         body = f"{copied} file{'s' if copied != 1 else ''} to {_label(target)}." + (f" {skipped} already there were left as they are." if skipped else "")
         self._toast("success" if not failed else "warn", f"Copied {what}", body)
 
+    # ---------------- combine folders ----------------
+    @Slot(str, result="QVariant")
+    def combineCandidates(self, folder: str) -> dict:
+        """The folders a combine offers for ``folder``: its subfolders when it has some (a trip's folder holding its camera folders),
+        otherwise it and the folders beside it. Each with how many files it holds."""
+        from ..folder_combine import _files, _natural
+
+        folder = os.path.normpath(folder) if folder else ""
+        if not folder or not os.path.isdir(folder):
+            return {"parent": "", "folders": []}
+        def children(parent):
+            try:
+                return sorted((os.path.join(parent, e.name) for e in os.scandir(parent) if e.is_dir() and not e.name.startswith(".")
+                               and not _is_recycle_folder(os.path.join(parent, e.name))), key=lambda p: _natural(os.path.basename(p)))
+            except OSError:
+                return []
+        inside = children(folder)
+        parent = folder if inside else os.path.dirname(folder)
+        found = inside or children(parent)
+        rows = [{"path": path, "name": os.path.basename(path), "count": len(_files(path)[0]), "picked": True} for path in found]
+        return {"parent": parent, "parentName": os.path.basename(parent) or parent, "folders": rows}
+
+    @Slot("QVariantList", str, bool, result="QVariant")
+    def combinePreview(self, sources, destination: str, renumber: bool) -> dict:
+        """What combining would do, for the dialog: a summary, a few of the renames, and whether it can go ahead."""
+        from ..folder_combine import plan_combine
+
+        sources = [str(s) for s in sources or [] if str(s)]
+        if not sources or not destination:
+            return {"ok": False, "summary": "Tick the folders to combine.", "examples": [], "error": ""}
+        plan = plan_combine(sources, destination, renumber=renumber)
+        if plan.error:
+            return {"ok": False, "summary": "", "examples": [], "error": plan.error}
+        photos = plan.renamed + plan.kept
+        summary = (f"{len(plan.steps)} file{'s' if len(plan.steps) != 1 else ''} ({photos} photo{'s' if photos != 1 else ''}) move into "
+                   f"{os.path.basename(plan.destination) or plan.destination}. "
+                   + (f"{plan.renamed} take the next number{'s' if plan.renamed != 1 else ''}, {plan.kept} keep their name{'s' if plan.kept != 1 else ''}."
+                      if renumber else f"{plan.renamed} get a (1) because the name is taken." if plan.renamed else "Every name is free."))
+        seen, examples = set(), []
+        for step in plan.steps:
+            old, new = os.path.basename(step.source), os.path.basename(step.target)
+            base = old.split(".", 1)[0]
+            if old != new and base not in seen:
+                seen.add(base)
+                examples.append(f"{os.path.basename(os.path.dirname(step.source))}/{old} \u2192 {new}")
+            if len(examples) == 4:
+                break
+        left = [f"{os.path.basename(folder)} keeps {', '.join(names[:2])}{' and more' if len(names) > 2 else ''}" for folder, names in plan.left.items()]
+        return {"ok": plan.can_apply, "summary": summary, "examples": examples, "error": "", "left": left}
+
+    @Slot("QVariantList", str, bool, bool)
+    def combineFolders(self, sources, destination: str, renumber: bool, remove_empty: bool) -> None:
+        """Move the files of ``sources`` into ``destination`` (see ``folder_combine``), their edits and saved decisions with them, as one
+        step with one Undo; the emptied folders are removed when ``remove_empty``."""
+        sources = [os.path.normpath(str(s)) for s in sources or [] if str(s)]
+        destination = os.path.normpath(destination) if destination else ""
+        if not sources or not destination:
+            return
+        if self._memory:
+            self._toast("info", "Sample photos", "These photos are not files, so there is nothing to combine.")
+            return
+        name = os.path.basename(destination) or destination
+        records, annotations = _combine_decisions(self._store(), sources, destination, renumber)
+        self._start(f"Combining folders into {name}", lambda ctx: _work_combine(ctx, sources, destination, renumber, remove_empty, records, annotations),
+                    lambda result: self._combined(result, destination), route=f"\u2192 {destination}")
+
+    def _combined(self, result: dict, destination: str) -> None:
+        if result.get("error"):
+            self._toast("warn", "The folders were not combined", result["error"])
+            return
+        done, failed = result["done"], result["failed"]
+        if done:
+            self._rekey_collections([(s.source, s.target) for s in done])
+            self._rekey_decisions(result["decisions"])
+            self._photos.reload()                        # the open folder may be one that was emptied, or the one that was filled
+            state = {"done": list(done), "removed": list(result["removed"]), "undo_decisions": result["undo_decisions"]}
+            entry = {}
+            entry["id"] = self._photos.push_undo(f"combine into {os.path.basename(destination)}", lambda: self._undo_combine(state))
+            what = f"{len(done)} file{'s' if len(done) != 1 else ''}"
+            removed = len(result["removed"])
+            body = f"{what} into {_label(destination)}." + (f" {removed} emptied folder{'s were' if removed != 1 else ' was'} removed." if removed else "")
+            self._toast("success" if not failed else "warn", "Combined the folders", body, "Undo", lambda: self._photos.undo_entry(entry["id"]))
+        if result["edits_left"]:
+            left = result["edits_left"]
+            self._toast("warn", "Some edits did not move with their photos", ", ".join(left[:3]) + (f" and {len(left) - 3} more" if len(left) > 3 else ""))
+        if failed:
+            self._toast("error", f"{len(failed)} file{'s' if len(failed) != 1 else ''} could not be moved", _named(failed, len(failed) == 1))
+        if result["cancelled"]:
+            self._toast("info", f"Stopped after moving {len(done)} file{'s' if len(done) != 1 else ''}", "Undo moves them back.")
+        self.combined.emit(destination)
+
+    def _undo_combine(self, state: dict) -> bool:
+        done = state["done"]
+        if not done:
+            return True
+        result = self._run_and_wait("Moving the files back", lambda ctx: _work_uncombine(ctx, list(done)), total=len(done))
+        if result is None:
+            return False
+        back = result["back"]
+        if back:
+            self._rekey_collections([(s.target, s.source) for s in back])
+            returned = {os.path.normcase(s.source) for s in back}
+            # each saved decision back to its photo's old path: (where it is now, the photo as it was, the decision)
+            self._rekey_decisions([(new.path, original, annotation) for original, new, annotation in state["undo_decisions"]
+                                   if os.path.normcase(original.path) in returned])
+            self._photos.reload()
+        gone = {id(s) for s in back}
+        done[:] = [s for s in done if id(s) not in gone]
+        if result["failed"]:
+            self._toast("error", "Some files could not be moved back", _named(result["failed"], len(result["failed"]) == 1))
+        else:
+            self._toast("success", "Moved the files back", f"{len(back)} file{'s' if len(back) != 1 else ''} are in their folders again.")
+        self.combined.emit(os.path.dirname(back[0].source) if back else "")
+        return not done
+
     # ---------------- move and copy ----------------
     @Slot(int, str)
     def moveRow(self, row: int, destination: str) -> None:
@@ -911,6 +1027,81 @@ def _work_restore(ctx, entries: list, gone: str, *, recycle=None, carry_back: bo
         if recycle is not None and done:
             safe_trash_store.forget_files(recycle.recycle_root_for_folder(), [m.target_path for _record, moves, *_rest in done for m in moves])
     return _outcome(ctx, len(entries), done, failed, edits_left=edits_left)
+
+
+def _combine_decisions(store, sources: list[str], destination: str, renumber: bool) -> tuple[dict, dict]:
+    """The saved decisions of the photos a combine moves, read (on the UI thread, from the app's store) before anything moves: each
+    moved picture file as a record of its own, as a decision is kept under a photo's own path, whichever file of the pair that is."""
+    from ..folder_combine import plan_combine
+    from ..models import ImageRecord
+    from ..scanner import IMAGE_SUFFIXES
+
+    records = {}
+    for step in plan_combine(sources, destination, renumber=renumber).steps:
+        if os.path.splitext(step.source)[1].lower() in IMAGE_SUFFIXES:
+            try:
+                stat = os.stat(step.source)
+            except OSError:
+                continue
+            records[step.source] = ImageRecord(path=step.source, name=os.path.basename(step.source), size=stat.st_size, modified_ns=stat.st_mtime_ns)
+    if not records:
+        return records, {}
+    try:
+        return records, store.load_annotations_for_paths(session_id(), records, list(records))
+    except Exception:
+        return records, {}
+
+
+def _work_combine(ctx, sources: list[str], destination: str, renumber: bool, remove_empty: bool, records: dict, annotations: dict) -> dict:
+    """Plan and move (folder_combine), then the photos' edit data. The saved decisions (read before) are returned as ``(old path, the
+    record at its new path, annotation)`` for the UI thread to write."""
+    from ..folder_combine import apply_combine, plan_combine, remove_emptied
+
+    plan = plan_combine(sources, destination, renumber=renumber)
+    if plan.error:
+        return {"error": plan.error}
+    ctx.step(0, "", len(plan.steps))
+    done, failed = apply_combine(plan, step=ctx.step, cancelled=lambda: ctx.cancelled)
+    moved = {os.path.normcase(s.source): s.target for s in done}
+    edits_left = carry_edits([(s.source, s.target) for s in done])
+    decisions, undo_decisions = [], []
+    for path, annotation in annotations.items():
+        target = moved.get(os.path.normcase(path))
+        if target and annotation is not None and not annotation.is_empty and path in records:
+            record = records[path]
+            moves = tuple(FileMove(p, moved[os.path.normcase(p)]) for p in record_paths(record) if os.path.normcase(p) in moved)
+            after = record_after_moves(record, moves)
+            decisions.append((path, after, annotation))
+            undo_decisions.append((record, after, annotation))
+    removed = remove_emptied(plan.folders) if remove_empty and not ctx.cancelled and not failed else []
+    ctx.step(len(plan.steps), "", len(plan.steps))
+    return dict(done=done, failed=failed, edits_left=edits_left, decisions=decisions, undo_decisions=undo_decisions, removed=removed,
+                cancelled=bool(ctx.cancelled and len(done) < len(plan.steps)))
+
+
+def _work_uncombine(ctx, done: list) -> dict:
+    """Undo a combine: each file back to where it was (its folder made again if it was removed), its edits with it. A file that is
+    no longer where the combine put it, or whose old place is taken, stays."""
+    back, failed = [], []
+    for index, step in enumerate(reversed(done)):
+        if ctx.cancelled:
+            break
+        ctx.step(index, os.path.basename(step.target))
+        try:
+            if not os.path.lexists(step.target):
+                raise FileNotFoundError(f"{os.path.basename(step.target)} is no longer there")
+            if os.path.lexists(step.source):
+                raise FileExistsError(f"{os.path.basename(step.source)} is already back in its folder")
+            os.makedirs(os.path.dirname(step.source), exist_ok=True)
+            try:
+                os.rename(step.target, step.source)
+            except OSError:
+                shutil.move(step.target, step.source)
+            back.append(step)
+        except OSError as exc:
+            failed.append((os.path.basename(step.target), str(exc) or type(exc).__name__))
+    carry_edits([(s.target, s.source) for s in back])
+    return dict(back=back, failed=failed)
 
 
 def _work_copy_folder(ctx, source: str, target: str, files: list[str]) -> dict:

@@ -396,6 +396,13 @@ Item {
                           onClicked: { folderCopy.source = libMenu.path; folderCopy.contents = false; libMenu.close(); folderCopy.open() } }
                 PopItem { objectName: "libMenuCopyContents"; label: "Copy contents to\u2026"; icon: "newfolder"
                           onClicked: { folderCopy.source = libMenu.path; folderCopy.contents = true; libMenu.close(); folderCopy.open() } }
+                PopItem { objectName: "libMenuCombine"; label: "Combine folders\u2026"; icon: "collections"
+                          onClicked: { var folder = libMenu.path; libMenu.close(); combineCard.openFor(folder) } }
+            }
+            CombineFoldersCard { id: combineCard }
+            Connections {   // combined (or undone): the tree shows the folders as they are now, and the combined folder opens
+                target: fileActions
+                function onCombined(folder) { libraryNav.refresh(); if (folder !== "") libraryNav.openFolder(folder) }
             }
             FolderDialog {   // where a folder (or what is in it) is copied to
                 id: folderCopy
