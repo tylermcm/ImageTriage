@@ -204,7 +204,8 @@ class MenuModel(QObject):
             elif self._sub == "coll":
                 for c in self._collections.rows:
                     sub.append({"kind": "row", "key": "coll:" + c["id"], "label": c["name"], "tick": self._in_collection(c["id"], path), "color": c["color"], "iconPath": c["iconPath"], "mark": True})
-                sub += [SEP, self._row_item("coll:new", "New collection…", "plus")]
+                # the line parts the collections from New: with none, a line would open the menu on an empty strip
+                sub += ([SEP] if sub else []) + [self._row_item("coll:new", "New collection…", "plus")]
             elif self._sub == "mv":
                 sub = [self._row_item("mv:copy", "Copy to folder…", "move"), self._row_item("mv:move", "Move to folder…", "folder")]
                 recent = self._recent()

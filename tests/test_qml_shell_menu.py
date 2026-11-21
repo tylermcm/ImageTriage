@@ -315,3 +315,11 @@ def test_every_scene_loads_without_qml_errors(qapp, photos, scene):
     pump(qapp, 0.8)
     assert not [w for w in warnings if any(k in w for k in ("TypeError", "ReferenceError", "is not a type", "Unable to assign", "non-existent", "Binding loop"))], warnings
     window.close()
+
+
+def test_with_no_collections_the_submenu_is_only_new_collection(ctx, monkeypatch):
+    menu, toasts, photos, collections, *_ = ctx
+    monkeypatch.setattr(type(collections), "rows", property(lambda self: []))
+    menu.openPhoto(1)
+    menu.setSub("coll")
+    assert [i.get("key") or i.get("kind") for i in menu.view["subItems"]] == ["coll:new"]      # no line above it, nothing to part
