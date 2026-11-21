@@ -37,6 +37,36 @@ def overlay_image(mask, crop) -> QImage:
     return QImage(rgba.data, rgba.shape[1], rgba.shape[0], rgba.shape[1] * 4, QImage.Format.Format_RGBA8888).copy()
 
 
+# Zoomed in this far or more (the part on screen is at most this share of the photo's width or height), the object is looked for
+# in that part; less zoomed, in the whole photo as before.
+VIEW_SHARE = 0.75
+# How much of the photo around the part on screen the model sees too, as a share of that part's size: an object cut by the
+# screen's edge is still found whole, and the model has some of its surroundings to tell it from them.
+VIEW_MARGIN = 0.15
+# The smallest part the model is given, in pixels of the picture it selects on: it works at 1024 px, and a tiny crop is all blur.
+VIEW_MIN = 256
+
+
+def looked_at(view, click, size) -> tuple[int, int, int, int]:
+    """The pixel box of the picture (``size`` = width, height) the object is looked for in: the part on screen (``view``, fractions)
+    and a margin around it when zoomed in, the whole picture otherwise. Always holds the click."""
+    width, height = size
+    left, top, right, bottom = (float(v) for v in view)
+    if right - left > VIEW_SHARE and bottom - top > VIEW_SHARE:
+        return 0, 0, width, height
+    mx, my = (right - left) * VIEW_MARGIN, (bottom - top) * VIEW_MARGIN
+    x0, x1 = max(0.0, min(left - mx, click[0])), min(1.0, max(right + mx, click[0]))
+    y0, y1 = max(0.0, min(top - my, click[1])), min(1.0, max(bottom + my, click[1]))
+    box = [round(x0 * width), round(y0 * height), round(x1 * width), round(y1 * height)]
+    for lo, hi, full in ((0, 2, width), (1, 3, height)):         # at least VIEW_MIN across, grown around its centre
+        need = min(full, VIEW_MIN) - (box[hi] - box[lo])
+        if need > 0:
+            box[lo] = max(0, box[lo] - need // 2 - need % 2)
+            box[hi] = min(full, box[lo] + min(full, VIEW_MIN))
+            box[lo] = max(0, box[hi] - min(full, VIEW_MIN))
+    return box[0], box[1], box[2], box[3]
+
+
 class RawErase(QObject):
     changed = Signal()
     _done = Signal(int, object, str)       # serial, result, error
@@ -122,8 +152,16 @@ class RawErase(QObject):
     @Slot(float, float)
     def select(self, x: float, y: float) -> None:
         """Select the object at (x, y), as fractions of what the editor shows."""
+        self.selectIn(x, y, 0.0, 0.0, 1.0, 1.0)
+
+    @Slot(float, float, float, float, float, float)
+    def selectIn(self, x: float, y: float, left: float, top: float, right: float, bottom: float) -> None:
+        """Select the object at (x, y) within the part of the photo on screen ([left, top, right, bottom]); all as fractions of what
+        the editor shows. Zoomed in, the object is looked for in that part (and a margin around it), as it is seen."""
         if not all(math.isfinite(v) and 0 <= v <= 1 for v in (x, y)) or self._busy:
             return
+        if not all(math.isfinite(v) for v in (left, top, right, bottom)) or not (0 <= left < right <= 1 and 0 <= top < bottom <= 1):
+            left, top, right, bottom = 0.0, 0.0, 1.0, 1.0
         if not self.raw.loaded or self.raw.saving:
             return
         from . import raw_preview
@@ -134,6 +172,7 @@ class RawErase(QObject):
             return
         crop = self.raw.values["hostCrop"]
         self._click = [crop["x"] + x * crop["w"], crop["y"] + y * crop["h"]]
+        self._view = [crop["x"] + left * crop["w"], crop["y"] + top * crop["h"], crop["x"] + right * crop["w"], crop["y"] + bottom * crop["h"]]
         self._busy, self._error, self._message = True, "", "Rendering the photo..."
         self._cancel = threading.Event()
         self._serial += 1
@@ -145,25 +184,32 @@ class RawErase(QObject):
         if sample.get("serial") != self._serial or self._click is None:
             return
         serial, click, cancel = self._serial, list(self._click), self._cancel
+        view = list(getattr(self, "_view", None) or [0.0, 0.0, 1.0, 1.0])
         source = image_to_array(image)
         self._message = "Selecting the object..."
         self.changed.emit()
-        threading.Thread(target=self._select_job, args=(serial, source, click, cancel), daemon=True).start()
+        threading.Thread(target=self._select_job, args=(serial, source, click, cancel, view), daemon=True).start()
 
-    def _select_job(self, serial, source, click, cancel) -> None:
+    def _select_job(self, serial, source, click, cancel, view=(0.0, 0.0, 1.0, 1.0)) -> None:
         try:
             import numpy as np
             from PIL import Image
 
             from ..prompt_masks import ensure_prompt_mask
 
+            height, width = source.shape[:2]
+            x0, y0, x1, y1 = looked_at(view, click, (width, height))
+            part = np.ascontiguousarray(source[y0:y1, x0:x1])
+            point = [(click[0] * width - x0) / max(1, x1 - x0), (click[1] * height - y0) / max(1, y1 - y0)]
             with tempfile.TemporaryDirectory(prefix="erase-") as folder:
                 path = Path(folder) / "source.png"
-                Image.fromarray(source).save(path)
-                result = ensure_prompt_mask(path, points_norm=[click], labels=[1], progress_callback=None,
+                Image.fromarray(part).save(path)
+                result = ensure_prompt_mask(path, points_norm=[point], labels=[1], progress_callback=None,
                                             cache_root=Path(folder) / "sam")
                 with Image.open(result.mask_path) as opened:
-                    mask = np.asarray(opened.convert("L").resize((source.shape[1], source.shape[0]), Image.Resampling.BILINEAR))
+                    found = np.asarray(opened.convert("L").resize((x1 - x0, y1 - y0), Image.Resampling.BILINEAR))
+            mask = np.zeros((height, width), dtype=np.uint8)
+            mask[y0:y1, x0:x1] = found
             if float((mask > 127).mean()) < 0.00005:
                 raise ValueError("Nothing was found there. Click on the object.")
             self._done.emit(serial, ("select", source, mask), "")

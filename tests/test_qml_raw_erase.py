@@ -106,3 +106,42 @@ def test_grow_is_clamped_and_resets_with_the_photo(qapp):
     eraser.setGrow(float("nan"))
     assert eraser.grow == erase.max_grow((6000, 4000))
     raw.shutdown()
+
+
+def test_zoomed_in_the_object_is_looked_for_in_the_part_on_screen(qapp, monkeypatch, tmp_path):
+    """At 300% a person is a few pixels of the whole photo, and the model took the bridge they stood on: it is given the part on
+    screen (and a margin) instead, and the mask it finds goes back where that part is in the photo."""
+    from types import SimpleNamespace
+    from PIL import Image
+
+    seen = {}
+
+    def fake_sam(path, points_norm, labels, progress_callback, cache_root):
+        with Image.open(path) as opened:
+            seen["size"] = opened.size
+        seen["point"] = points_norm[0]
+        found = np.zeros((opened.size[1], opened.size[0]), np.uint8)
+        x, y = round(points_norm[0][0] * opened.size[0]), round(points_norm[0][1] * opened.size[1])
+        found[y - 15:y + 15, x - 10:x + 10] = 255                       # a small object around the click
+        out = tmp_path / "mask.png"
+        Image.fromarray(found).save(out)
+        return SimpleNamespace(mask_path=out)
+
+    monkeypatch.setattr("image_triage.prompt_masks.ensure_prompt_mask", fake_sam)
+    raw = RawEditor(memory=True)
+    raw.open("sample.NEF")
+    raw._full_size = [1200, 1800]
+    eraser = raw.eraseEditor
+    results = []
+    eraser._done.connect(lambda serial, result, error: results.append((result, error)))
+    source = np.full((1800, 1200, 3), 120, np.uint8)
+    eraser._select_job(1, source, [0.5, 0.45], threading.Event(), [0.4, 0.4, 0.6, 0.5])        # zoomed: a fifth of the width on screen
+    pump(qapp, 0.05)
+    (kind, picture, mask), error = results[-1]
+    assert not error and seen["size"] == (756 - 444, 938 - 682)                                 # the part on screen and a margin
+    ys, xs = np.nonzero(mask)
+    assert mask.shape == (1800, 1200) and abs(xs.mean() - 600) < 4 and abs(ys.mean() - 810) < 6   # back at the click in the photo
+    eraser._select_job(2, source, [0.5, 0.45], threading.Event(), [0.0, 0.0, 1.0, 1.0])        # the whole photo on screen: as before
+    pump(qapp, 0.05)
+    assert seen["size"] == (1200, 1800)
+    raw.shutdown()

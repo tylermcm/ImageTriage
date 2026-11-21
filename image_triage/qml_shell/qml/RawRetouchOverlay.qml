@@ -17,6 +17,13 @@ Item {
     // RAW is a canvas of gigabytes. Worked out when a stroke starts and again whenever the view changes during it (a key that zooms
     // out, the bar or the panels put away, the window resized), so the stroke stays drawn where it is.
     property rect strokeArea: Qt.rect(0, 0, 0, 0)
+    // The part of the photo on screen, as [left, top, right, bottom] fractions of the overlay (the cropped photo): zoomed in, AI Erase
+    // looks for the object there, not in the whole photo, where a person a few pixels tall is part of the bridge they stand on.
+    function shownArea() {
+        if (width <= 0 || height <= 0) return [0, 0, 1, 1]
+        var r = seenArea()
+        return [r.x / width, r.y / height, (r.x + r.width) / width, (r.y + r.height) / height]
+    }
     function seenArea() {
         if (!viewport) return Qt.rect(0, 0, width, height)
         var a = mapFromItem(viewport, 0, 0), b = mapFromItem(viewport, viewport.width, viewport.height)
@@ -87,7 +94,7 @@ Item {
         onPressed: (event) => {
             if (!overlay.acceptsPoint(event.x, event.y)) { event.accepted = false; return }
             var p=point(event)
-            if(overlay.model.kind==="erase") {overlay.raw.eraseEditor.select(p[0],p[1]);return}
+            if(overlay.model.kind==="erase") { var view = overlay.shownArea(); overlay.raw.eraseEditor.selectIn(p[0], p[1], view[0], view[1], view[2], view[3]); return }
             if(event.modifiers & Qt.AltModifier) {overlay.model.pick(p[0],p[1]);return}
             overlay.strokeArea=overlay.seenArea();overlay.points=[p];overlay.drawing=true;path.requestPaint()
         }
