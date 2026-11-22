@@ -210,7 +210,8 @@ class ReferenceModel(QObject):
     @Property(str, notify=changed)
     def updateTip(self) -> str:
         newer = getattr(self._upd_info, "version", "") or "A new version"
-        return {"available": f"Image Triage {newer} is available. Click to download it.",
+        available = "Click to download it." if _is_windows() else "Click to open its release page."
+        return {"available": f"Image Triage {newer} is available. {available}",
                 "downloading": f"Downloading Image Triage {newer}… {self._dl_progress}",
                 "ready": f"Image Triage {newer} is ready. Click to restart and install it.",
                 }.get(self.updateButton, "")

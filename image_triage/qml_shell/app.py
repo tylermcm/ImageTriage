@@ -208,6 +208,9 @@ def _run(args, state: dict) -> int:
 
     QCoreApplication.setOrganizationName("Image Triage")
     QCoreApplication.setApplicationName("Image Triage")
+    # On Linux the desktop finds the app's name and icon through its .desktop file (packaging/install_linux.sh writes
+    # image-triage.desktop); Wayland has no other way to tie the window to it, so without this the taskbar shows a blank icon.
+    QGuiApplication.setDesktopFileName("image-triage")
     from PySide6.QtCore import Qt
 
     # fractional scales (125%, 150%, 175%) are used as they are, not rounded to whole numbers, so the layout is the same size in

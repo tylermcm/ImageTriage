@@ -214,6 +214,11 @@ def _default_log_dir() -> Path:
             # Microsoft Store Python virtualizes writes to AppData\Local. LocalLow
             # remains visible to Explorer while keeping logs out of image folders.
             return Path(user_profile) / "AppData" / "LocalLow" / "ImageTriage" / "logs"
+    else:
+        # XDG's place for logs. Never the working folder: an AppImage starts there, and it is read-only.
+        state_home = os.environ.get("XDG_STATE_HOME") or (str(Path.home() / ".local" / "state") if Path.home() != Path("/") else "")
+        if state_home:
+            return Path(state_home) / "ImageTriage" / "logs"
     root = os.environ.get("LOCALAPPDATA")
     if root:
         return Path(root) / "ImageTriage" / "logs"

@@ -74,7 +74,8 @@ def storage_numbers(path: str) -> tuple[bool, str, float | None]:
             return False, "", None  # not ready (an empty card reader) or not answering
         label = buffer.value
     else:
-        label = ""
+        # A volume the desktop attached is mounted under its label (/media/<user>/<label>); "/" has none of its own.
+        label = os.path.basename(root.rstrip("/"))
     try:
         usage = shutil.disk_usage(root)
     except OSError:
@@ -266,7 +267,11 @@ class DriveListModel(QAbstractListModel):
         if entry is None:
             return None
         if role == Qt.ItemDataRole.DisplayRole:
+            if entry.path == "/":
+                return "File System (/)"
             label = entry.name or _DEFAULT_NAMES.get(entry.drive_type, "Drive")
+            if not (len(entry.path) >= 2 and entry.path[1] == ":"):
+                return label                  # a mount point is a path, not a letter: the label alone says which volume it is
             return f"{label} ({self._letter(entry)})"
         if role == self.PathRole:
             return entry.path

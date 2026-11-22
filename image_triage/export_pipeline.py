@@ -433,18 +433,30 @@ def build_plan(sources: list[ExportSource], values: dict) -> ExportPlan:
         general = "The folder name cannot hold < > : \" / \\ | ? *"
     reserved: set[str] = set()
     items: list[ExportItem] = []
-    listings: dict[str, set[str] | None] = {}      # folder -> the names in it (lower case), read once; None: the folder is not there
+    listings: dict[str, set[str] | None] = {}      # folder -> the names in it (as `name_key` gives them), read once; None: not there
+    folds: dict[str, bool] = {}                    # folder -> whether its file system takes A.jpg and a.JPG for one name
+
+    def key(path: Path) -> str:
+        """The name a file has as its folder's file system sees it: case folded where names differing only in case are one file
+        (Windows, macOS, and a FAT or exFAT card or a Windows share on Linux), as written elsewhere."""
+        text = os.path.normcase(os.path.abspath(path))
+        folder = os.path.dirname(text)
+        if folder not in folds:
+            from .path_policy import names_fold_case
+
+            folds[folder] = names_fold_case(folder)
+        return text.casefold() if folds[folder] else text
 
     def present(path: Path) -> bool:
         folder_key = os.path.normcase(os.path.abspath(path.parent))
         if folder_key not in listings:
             try:
                 with os.scandir(path.parent) as entries:
-                    listings[folder_key] = {os.path.normcase(e.name) for e in entries}
+                    listings[folder_key] = {key(path.parent / e.name) for e in entries}
             except OSError:
                 listings[folder_key] = None
         names = listings[folder_key]
-        return names is not None and os.path.normcase(path.name) in names
+        return names is not None and key(path) in names
 
     for source in sources:
         suffix = suffix_of(values, source.path)
@@ -454,25 +466,25 @@ def build_plan(sources: list[ExportSource], values: dict) -> ExportPlan:
             items.append(ExportItem(source, "", name, "Error", "No destination folder."))
             continue
         target = folder / name
-        key = os.path.normcase(os.path.abspath(target))
+        target_key = key(target)
         status, message = "Export", ""
-        itself = key == os.path.normcase(os.path.abspath(source.path))
-        if itself or key in reserved or present(target):
+        itself = target_key == key(Path(source.path))
+        if itself or target_key in reserved or present(target):
             policy = "unique" if itself else values["exists"]       # a photo is never written over by its own export
-            if policy == "skip" and key not in reserved:
+            if policy == "skip" and target_key not in reserved:
                 status, message = "Skip", "A file with this name is already there."
-            elif policy == "overwrite" and key not in reserved:
+            elif policy == "overwrite" and target_key not in reserved:
                 status, message = "Overwrite", "Replaces the file that is there."
             else:
                 stem, counter = Path(name).stem, 1
                 while True:
                     candidate = folder / f"{stem}_{counter}{suffix}"
-                    ckey = os.path.normcase(os.path.abspath(candidate))
+                    ckey = key(candidate)
                     if ckey not in reserved and not present(candidate):
-                        target, key, name = candidate, ckey, candidate.name
+                        target, target_key, name = candidate, ckey, candidate.name
                         break
                     counter += 1
-        reserved.add(key)
+        reserved.add(target_key)
         items.append(ExportItem(source, str(target), name, status, message))
     errors = sum(1 for i in items if i.status == "Error")
     skips = sum(1 for i in items if i.status == "Skip")

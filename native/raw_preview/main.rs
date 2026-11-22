@@ -128,10 +128,21 @@ struct Gpu {
 impl Gpu {
     fn new() -> Result<Self> {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        descriptor.backends = wgpu::Backends::DX12;
+        // The platform's own compute API, as the editor picks it (gpu_startup::backends): DX12 on Windows, Metal on macOS, Vulkan
+        // elsewhere. This worker has no window, so GL (which needs a display to make a context) is never worth trying.
+        descriptor.backends = if cfg!(windows) {
+            wgpu::Backends::DX12
+        } else if cfg!(target_os = "macos") {
+            wgpu::Backends::METAL
+        } else {
+            wgpu::Backends::VULKAN
+        };
         // Match PhotoCraft's safe fallback when no DXC is shipped beside the
         // executable; PATH can contain an incompatible dxcompiler.dll.
-        descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+        #[cfg(windows)]
+        {
+            descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+        }
         let instance = wgpu::Instance::new(descriptor);
         let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
             .map_err(|e| e.to_string())?;

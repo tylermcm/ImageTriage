@@ -39,7 +39,7 @@ Item {
             }
             return out.concat([
                 ms(), mr("Refresh Folder", "file.refresh_folder", "F5", "convert"),
-                mr("Show in File Explorer", "file.reveal_folder", "", "library"),
+                mr("Show in " + (Qt.platform.os === "windows" ? "File Explorer" : Qt.platform.os === "osx" ? "Finder" : "File Manager"), "file.reveal_folder", "", "library"),
                 ms(), mr("Browse Library…", "file.browse_library", "", "collections"),
                 mr("Safe Trash…", "file.safe_trash", "", "trash"),
                 mr("Batch Rename…", "tools.batch_rename", "Ctrl Shift R", "tag"), mr("Batch Export…", "tools.batch_resize", "Ctrl Shift E", "convert"),
@@ -56,7 +56,7 @@ Item {
                                      mr("4 stars", "review.rate.4", "4"), mr("5 stars", "review.rate.5", "5"), ms(), mr("No rating", "review.rate.0", "")]),
                 ms(), mr("Rename Selection…", "edit.rename_selection", "", "tag"), mr("Move…", "review.move_selection", "", "newfolder"), mr("Delete", "review.delete_selection", "Del", "x"),
                 ms(), mr("Add to Collection…", "library.add_selected_to_collection", "B", "collections"), mr("New Collection…", "library.create_collection", "", "plus"),
-                ms(), mr("Show in File Explorer", "review.reveal", "", "library"), mr("Open in Editor", "review.open_editor", "", "editor")]
+                ms(), mr("Show in " + (Qt.platform.os === "windows" ? "File Explorer" : Qt.platform.os === "osx" ? "Finder" : "File Manager"), "review.reveal", "", "library"), mr("Open in Editor", "review.open_editor", "", "editor")]
         }
         if (name === "view") {
             var themes = [], sizes = [["Small", "s"], ["Medium", "m"], ["Large", "l"]], sorts = photos.sortOptions.map(function (o) { return [o[1], o[0]] })

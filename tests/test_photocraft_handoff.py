@@ -2,6 +2,7 @@ from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
+import os
 
 import pytest
 from PySide6.QtCore import QObject, QSize
@@ -165,13 +166,13 @@ def test_file_errors_do_not_retry_another_editor(tmp_path, monkeypatch):
 def test_same_checkout_override_selects_host_without_launching_old_release(tmp_path, monkeypatch):
     from image_triage import shell_actions
     checkout = tmp_path / "photocraft"
-    hosted = checkout / "target" / "debug" / "photocraft-host.exe"
-    ordinary = checkout / "target" / "release" / "photocraft.exe"
+    suffix = ".exe" if os.name == "nt" else ""
+    hosted = checkout / "target" / "debug" / f"photocraft-host{suffix}"
+    ordinary = checkout / "target" / "release" / f"photocraft{suffix}"
     hosted.parent.mkdir(parents=True)
     ordinary.parent.mkdir(parents=True)
     hosted.touch()
     ordinary.touch()
-    import os
     os.utime(ordinary, (1_000_000, 1_000_000))  # the older build must lose to the newer one
     (checkout / "Cargo.toml").touch()
     monkeypatch.setattr(shell_actions, "__file__", str(tmp_path / "ImageTriage" / "image_triage" / "shell_actions.py"))

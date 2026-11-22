@@ -163,12 +163,16 @@ def discard_frame(url):
         _frames.pop(url.removeprefix("image://rawpreview/"), None)
 
 
+# The worker's file name beside the frozen app (freeze_support.RAW_PREVIEW_EXE_NAME puts it there).
+EXECUTABLE_NAME = "image-triage-raw-preview" + (".exe" if os.name == "nt" else "")
+
+
 def executable():
     override = os.environ.get("IMAGE_TRIAGE_RAW_PREVIEW_EXE")
     if override:
         return override if Path(override).is_file() else None
     if getattr(sys, "frozen", False):
-        candidate = Path(sys.executable).with_name("image-triage-raw-preview.exe")
+        candidate = Path(sys.executable).with_name(EXECUTABLE_NAME)
         return str(candidate) if candidate.is_file() else None
     return None
 

@@ -1204,6 +1204,8 @@ class PhotoCraftControl:
         self.render_manifest_supported = capabilities.get("renderManifest", 0) >= 1
         # ``app.render``: a photo's edits at full size, on request (``full_render``).
         self.full_render_supported = capabilities.get("fullRender", 0) >= 1
+        # ``--hosted-window`` and ``ui.hostWindow``: the editor in a window of its own (``EMBEDDED_WINDOW`` is False).
+        self.host_window_supported = capabilities.get("hostWindow", 0) >= 1
         for method, validation in (
             ("app.stash", "stash requires path and preview"),
             ("app.bind", "bind requires an open document, .pcraft path and .png preview"),
@@ -1221,6 +1223,11 @@ class PhotoCraftControl:
                     f"Compatibility check: {error}"
                 ) from error
             raise PhotoCraftCompatibilityError(f"PhotoCraft returned an unexpected response to the {method} compatibility check")
+
+    def host_window(self, visible: bool | None = None) -> dict:
+        """Show (``True``) or hide (``False``) an editor running in a window of its own, or only ask about it (``None``). Answers
+        ``{"visible": bool, "closeRequested": bool}``: whether the user closed the window since the last call (answered once)."""
+        return self.call("ui.hostWindow", {} if visible is None else {"visible": bool(visible)})
 
     def app_save(self, path: str | None = None) -> dict:
         return self.call("app.save", {"path": _automation_path(path)} if path else {})
@@ -1380,6 +1387,9 @@ class PhotoCraftProcess:
     # key of the one it reported ready: opening that photo costs the editor next to nothing, so nothing is waited for.
     prefetch_sent: tuple[str, str] | None = None
     prefetch_ready: str | None = None
+    # A window of its own (``--hosted-window``) that the window system cannot hide (Wayland without Xwayland), as the editor said in
+    # ``ui.hostWindow``: the host ends it when it is put away instead of keeping it hidden.
+    window_can_hide: bool = True
 
     def is_running(self) -> bool:
         return self.process.poll() is None
@@ -1693,6 +1703,11 @@ def _connect_with_retry(port: int, token: str, process: subprocess.Popen, *, tim
     raise PhotoCraftError(f"Timed out connecting to PhotoCraft's control channel: {last_error}")
 
 
+# Whether the editor's window goes inside Image Triage's (Windows), or the editor keeps a window of its own that Image Triage shows and
+# hides (``--hosted-window``): Linux and macOS cannot put another program's window inside a window.
+EMBEDDED_WINDOW = os.name == "nt"
+
+
 def _find_window_for_pid(pid: int, *, timeout: float = 10.0) -> int | None:
     user32 = ctypes.windll.user32
     user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
@@ -1811,6 +1826,7 @@ def _launch_photocraft_binary(
             args = [
                 exe,
                 "--hosted",
+                *(() if EMBEDDED_WINDOW else ("--hosted-window",)),
                 "--control", str(port),
                 "--control-token-file", str(token_file),
                 "--automation-read-root", read_root,
@@ -1850,12 +1866,18 @@ def _launch_photocraft_binary(
         timings["control_ready_ms"] = (time.perf_counter() - started) * 1000
         control.require_hosted_handoff()
         timings["capabilities_ready_ms"] = (time.perf_counter() - started) * 1000
-        hwnd = _find_window_for_pid(process.pid)
-        if hwnd is None:
-            raise PhotoCraftError("Could not find PhotoCraft's window")
-        user32 = ctypes.windll.user32
-        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
-        user32.ShowWindow(hwnd, 0)  # SW_HIDE until attached to the Qt host.
+        if EMBEDDED_WINDOW:
+            hwnd = _find_window_for_pid(process.pid)
+            if hwnd is None:
+                raise PhotoCraftError("Could not find PhotoCraft's window")
+            user32 = ctypes.windll.user32
+            user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+            user32.ShowWindow(hwnd, 0)  # SW_HIDE until attached to the Qt host.
+        else:
+            if not getattr(control, "host_window_supported", False):
+                raise PhotoCraftCompatibilityError(
+                    "This PhotoCraft build cannot run in a window of its own (it has no --hosted-window); update the editor")
+            hwnd = 0                  # a window of its own, which it shows and hides itself (`host_window`): nothing to find or move
         # Respect PhotoCraft's persisted theme; the filmstrip follows its colors.
         timings["shell_configured_ms"] = (time.perf_counter() - started) * 1000
         proc = PhotoCraftProcess(process=process, control=control, hwnd=hwnd, token_file=token_file,

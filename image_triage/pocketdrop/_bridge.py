@@ -109,6 +109,10 @@ def library_path() -> Path:
     return Path(__file__).resolve().parent / name
 
 
+# The script under native/pocketdrop that builds this platform's library (there is none for macOS yet).
+BUILD_SCRIPT = "build_windows.bat" if sys.platform == "win32" else "build_linux.sh"
+
+
 class NativeUnavailable(RuntimeError):
     pass
 
@@ -116,7 +120,7 @@ class NativeUnavailable(RuntimeError):
 def load_library() -> ctypes.CDLL:
     path = library_path()
     if not path.is_file():
-        raise NativeUnavailable(f"{path.name} is not built. Run native/pocketdrop/build_windows.bat.")
+        raise NativeUnavailable(f"{path.name} is not built. Run native/pocketdrop/{BUILD_SCRIPT}.")
     try:
         lib = ctypes.CDLL(str(path))
     except OSError as exc:
@@ -156,7 +160,7 @@ def load_library() -> ctypes.CDLL:
         lib.pd_remove_paths.argtypes = [host, POINTER(c_char_p), c_int]
         lib.pd_remove_paths.restype = None
     if lib.pd_abi_version() != ABI_VERSION:
-        raise NativeUnavailable(f"{path.name} is out of date. Rebuild it with native/pocketdrop/build_windows.bat.")
+        raise NativeUnavailable(f"{path.name} is out of date. Rebuild it with native/pocketdrop/{BUILD_SCRIPT}.")
     return lib
 
 

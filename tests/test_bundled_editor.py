@@ -2,6 +2,7 @@
 and the installed app uses that copy before any other."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -26,7 +27,7 @@ def installed(tmp_path, monkeypatch):
     """A frozen app in ``tmp_path`` with an editor beside it."""
     app = tmp_path / "ImageTriage.exe"
     app.write_bytes(b"app")
-    editor = tmp_path / "photocraft" / "photocraft.exe"
+    editor = tmp_path / "photocraft" / shell_actions.PHOTOCRAFT_EXE_NAME
     editor.parent.mkdir()
     editor.write_bytes(b"editor")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
@@ -90,7 +91,7 @@ def test_running_from_source_looks_where_it_always_did(monkeypatch, tmp_path):
 def checkout(tmp_path):
     """A PhotoCraft checkout with a release build and its licence files."""
     root = tmp_path / "photocraft"
-    exe = root / "target" / "release" / "photocraft.exe"
+    exe = root / "target" / "release" / freeze_support.PHOTOCRAFT_EXE_NAME
     exe.parent.mkdir(parents=True)
     exe.write_bytes(b"editor")
     for name in freeze_support.PHOTOCRAFT_LICENSE_FILES:
@@ -101,7 +102,7 @@ def checkout(tmp_path):
 def test_the_installer_gets_the_editor_and_its_licences(checkout, monkeypatch):
     monkeypatch.setenv(freeze_support.PHOTOCRAFT_BUNDLE_ENV, str(checkout))
     files = dict((destination, Path(source)) for source, destination in freeze_support.photocraft_bundle_files())
-    assert files["photocraft/photocraft.exe"] == checkout.resolve()
+    assert files[f"photocraft/{freeze_support.PHOTOCRAFT_EXE_NAME}"] == checkout.resolve()
     for name in freeze_support.PHOTOCRAFT_LICENSE_FILES:
         assert files[f"photocraft/{name}"].read_text() == name
 
@@ -110,7 +111,7 @@ def test_a_licence_missing_is_a_warning_and_not_the_end_of_the_build(checkout, m
     (checkout.parents[2] / "NOTICE").unlink()
     monkeypatch.setenv(freeze_support.PHOTOCRAFT_BUNDLE_ENV, str(checkout))
     destinations = {destination for _source, destination in freeze_support.photocraft_bundle_files()}
-    assert "photocraft/photocraft.exe" in destinations and "photocraft/NOTICE" not in destinations
+    assert f"photocraft/{freeze_support.PHOTOCRAFT_EXE_NAME}" in destinations and "photocraft/NOTICE" not in destinations
     assert "NOTICE was not found" in capsys.readouterr().out
 
 
@@ -144,17 +145,21 @@ def test_the_installer_script_includes_what_the_bundle_function_returns():
 
 
 def test_the_installer_gets_the_raw_preview_worker_beside_the_app(tmp_path, monkeypatch):
-    worker = tmp_path / "image-triage-raw-preview.exe"
+    worker = tmp_path / freeze_support.RAW_PREVIEW_EXE_NAME
     worker.write_bytes(b"worker")
     monkeypatch.setenv(freeze_support.RAW_PREVIEW_BUNDLE_ENV, str(worker))
     monkeypatch.delenv(freeze_support.RAW_PREVIEW_BUNDLE_SWITCH_ENV, raising=False)
     # beside ImageTriage.exe, under the name the app looks for
-    assert freeze_support.raw_preview_bundle_files() == [(str(worker.resolve()), "image-triage-raw-preview.exe")]
+    assert freeze_support.raw_preview_bundle_files() == [(str(worker.resolve()), freeze_support.RAW_PREVIEW_EXE_NAME)]
     text = (Path(freeze_support.__file__).parent / "setup_msi.py").read_text(encoding="utf-8")
     assert "+ raw_preview_bundle_files()" in text
     from image_triage.qml_shell import raw_preview
 
-    assert 'with_name("image-triage-raw-preview.exe")' in Path(raw_preview.__file__).read_text(encoding="utf-8")
+    assert raw_preview.EXECUTABLE_NAME == freeze_support.RAW_PREVIEW_EXE_NAME
+    assert "with_name(EXECUTABLE_NAME)" in Path(raw_preview.__file__).read_text(encoding="utf-8")
+    assert raw_preview.EXECUTABLE_NAME.endswith(".exe") == (os.name == "nt")
+    linux = (Path(freeze_support.__file__).parent / "setup_linux.py").read_text(encoding="utf-8")
+    assert "raw_preview_bundle_files()" in linux
 
 
 @pytest.mark.parametrize("named", [None, "nothing.exe"])

@@ -3,6 +3,7 @@ stands in for the managed model folders."""
 from __future__ import annotations
 
 import hashlib
+import os
 
 import pytest
 
@@ -49,7 +50,11 @@ def test_super_resolution_is_ready_only_with_both_files_and_a_changed_file_is_da
     assert state["state"] == "partial" and "x4.onnx" in state["problem"]
     editor_models.install_file(picked / "x4.onnx")
     assert editor_models.status("superres")["state"] == "ready"
-    (root / "ESRGAN" / "x4.onnx").write_bytes(b"x4 weights?")          # same size, other bytes
+    changed = root / "ESRGAN" / "x4.onnx"
+    changed.write_bytes(b"x4 weights?")                                # same size, other bytes
+    # A file changed after it was checked has a later time. Linux keeps file times in clock ticks of a few milliseconds, so a write this
+    # soon after the check can keep the same time: move it on, as any later change does.
+    os.utime(changed, ns=(changed.stat().st_atime_ns, changed.stat().st_mtime_ns + 1_000_000_000))
     assert editor_models.status("superres")["state"] == "corrupt"
 
 

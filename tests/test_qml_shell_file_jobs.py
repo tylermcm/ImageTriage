@@ -468,4 +468,5 @@ def test_folders_can_be_made_renamed_moved_and_deleted_as_in_file_explorer(world
     monkeypatch.setattr(fa, "QFile", Bin)
     world.files.trashFolder(str(gone))
     assert not gone.exists() and changed[-1] == (str(gone), "")
-    assert "Recycle Bin" in world.files.folderDeleteText(str(trip))["title"]
+    from image_triage.platform_names import TRASH
+    assert TRASH in world.files.folderDeleteText(str(trip))["title"]

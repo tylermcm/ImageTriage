@@ -391,7 +391,7 @@ Item {
                 PopItem { label: "Open"; icon: "openFolder"; onClicked: { libraryNav.openFolder(libMenu.path); libMenu.close() } }
                 PopItem { label: libMenu.fav ? "Remove from Favorites" : "Add to Favorites"; icon: "star"
                           onClicked: { if (libMenu.fav) libraryNav.removeFavorite(libMenu.path); else libraryNav.addFavorite(libMenu.path); libMenu.close() } }
-                PopItem { label: "Show in File Explorer"; icon: "library"; onClicked: { libraryNav.reveal(libMenu.path); libMenu.close() } }
+                PopItem { label: "Show in " + (Qt.platform.os === "windows" ? "File Explorer" : Qt.platform.os === "osx" ? "Finder" : "File Manager"); icon: "library"; onClicked: { libraryNav.reveal(libMenu.path); libMenu.close() } }
                 PopItem { objectName: "libMenuCopyFolder"; label: "Copy folder to\u2026"; icon: "movePhoto"
                           onClicked: { folderCopy.source = libMenu.path; folderCopy.contents = false; libMenu.close(); folderCopy.open() } }
                 PopItem { objectName: "libMenuCopyContents"; label: "Copy contents to\u2026"; icon: "newfolder"
@@ -410,7 +410,8 @@ Item {
                 PopItem { objectName: "libMenuDelete"; label: "Delete"; icon: "trash"
                           onClicked: { var t = fileActions.folderDeleteText(libMenu.path); folderDelete.path = libMenu.path; folderDelete.title = t.title
                                        folderDelete.body = t.body; folderDelete.confirmText = t.confirm; libMenu.close(); folderDelete.open() } }
-                PopItem { objectName: "libMenuProperties"; label: "Properties"; icon: "more"
+                // Windows' own Properties window: other systems have no window to hand a folder to.
+                PopItem { objectName: "libMenuProperties"; label: "Properties"; icon: "more"; visible: Qt.platform.os === "windows"
                           onClicked: { fileActions.folderProperties(libMenu.path); libMenu.close() } }
             }
             NamePromptCard {   // New folder (inside the one right-clicked) and Rename

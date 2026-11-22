@@ -141,7 +141,7 @@ class PocketDropModel(QObject):
 
             lib = bridge.load_library()
             if not bridge.has_model(lib):
-                self._reason = "pocketdrop.dll is older than the QML panel. Rebuild it with native/pocketdrop/build_windows.bat."
+                self._reason = "The PocketDrop library is older than the QML panel. Rebuild it with native/pocketdrop/" + bridge.BUILD_SCRIPT + "."
                 return
             self._host = PocketDropHost(lib, self._settings, parent=self)
             self._host.changed.connect(self._refresh)

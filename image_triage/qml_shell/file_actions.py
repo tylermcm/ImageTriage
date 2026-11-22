@@ -24,6 +24,7 @@ from PySide6.QtCore import Property, QFile, QObject, Signal, Slot
 from ..edit_carry import carry_edits, copy_edits, deletable_edit_paths
 from ..edit_storage import EDIT_STORAGE_ROOT_NAME
 from .. import safe_trash_store
+from ..platform_names import TRASH
 from ..file_ops import FileMove, bundle_destinations, copy_paths, move_paths, record_after_moves, record_paths
 from .decision_bridge import session_id
 from .file_jobs import FileJobs
@@ -638,9 +639,9 @@ class FileActions(QObject):
     def folderDeleteText(self, path: str) -> dict:
         name = os.path.basename(os.path.normpath(path)) or path
         files = sum(len(names) for _folder, _dirs, names in os.walk(path)) if os.path.isdir(path) else 0
-        return {"title": f"Move {name} to the Recycle Bin?",
-                "body": f"{name} and everything in it ({files} file{'s' if files != 1 else ''}) go to the Recycle Bin, where you can restore them.",
-                "confirm": "Move to Recycle Bin"}
+        return {"title": f"Move {name} to the {TRASH}?",
+                "body": f"{name} and everything in it ({files} file{'s' if files != 1 else ''}) go to the {TRASH}, where you can restore them.",
+                "confirm": f"Move to {TRASH}"}
 
     @Slot(str)
     def trashFolder(self, path: str) -> None:
@@ -654,7 +655,7 @@ class FileActions(QObject):
         if not handle.moveToTrash():
             self._toast("error", f"{name} was not deleted", "It may be open in another program. Close it and try again.")
             return
-        self._toast("success", f"Moved {name} to the Recycle Bin", "Restore it from the Recycle Bin if you need it back.")
+        self._toast("success", f"Moved {name} to the {TRASH}", f"Restore it from the {TRASH} if you need it back.")
         self.foldersChanged.emit(path, "")
 
     @Slot(str)
@@ -1261,7 +1262,7 @@ def _folder_name_problem(parent: str, name: str, current: str = "") -> str:
 
 def _in_use(exc: OSError) -> str:
     if getattr(exc, "winerror", None) in (5, 32):
-        return "Something has a file in it open (Explorer, an editor, a sync app). Close it and try again."
+        return "Something has a file in it open (a file manager, an editor, a sync app). Close it and try again."
     return str(exc.strerror or exc)
 
 

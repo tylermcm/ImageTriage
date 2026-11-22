@@ -6,6 +6,7 @@ table rows the real build would be given; whether Windows Installer runs them as
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -169,3 +170,32 @@ def test_what_uninstall_cleans_and_cannot_clean_is_documented():
     section = section[: section.index("\n---")]
     for phrase in ("HKEY_CURRENT_USER", "other users", "decisions", "image_triage_cleanup.exe"):
         assert phrase in section, phrase
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the XDG folders are the Linux path (pathlib cannot pretend to be POSIX on Windows)")
+def test_on_linux_the_tool_knows_the_xdg_folders_and_still_keeps_what_the_user_made(cleanup_tool, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    config, data, cache, state = home / ".config", home / ".local" / "share", home / ".cache", home / ".local" / "state"
+    kept = [home / "Pictures" / "trip" / "frame.nef", home / "Pictures" / "trip" / ".image_triage_edits" / "frame.nef.pcraft"]
+    ai_cache = cache / "image_triage_ai_cache" / "models" / "model.onnx"
+    owned = [
+        config / "Image Triage" / "Image Triage.conf",
+        data / "Image Triage" / "Image Triage" / "decisions.sqlite3",
+        data / "ImageTriage" / "AI" / "models" / "model.onnx",
+        cache / "Image Triage" / "Image Triage" / "thumb.bin",
+        state / "ImageTriage" / "logs" / "execution.log",
+    ]
+    for path in kept + owned + [ai_cache]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    for name in ("APPDATA", "LOCALAPPDATA", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cleanup_tool.tempfile, "gettempdir", lambda: str(tmp_path / "tmp"))
+
+    # an uninstall-style run removes the caches only
+    assert cleanup_tool.main(["--mode", "uninstall", "--yes", "--quiet"]) == 0
+    assert not ai_cache.exists() and all(path.exists() for path in owned + kept)
+    # asked for by hand, everything the app owns goes, and nothing the user made
+    assert cleanup_tool.main(["--mode", "manual", "--yes", "--quiet"]) == 0
+    assert [path for path in owned if path.exists()] == [] and all(path.exists() for path in kept)

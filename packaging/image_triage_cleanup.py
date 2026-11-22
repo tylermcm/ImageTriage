@@ -80,6 +80,17 @@ def _home_path() -> Path | None:
         return None
 
 
+def _xdg_roots() -> dict[str, Path]:
+    """The XDG base folders (config, data, cache, state), from their variables or their defaults under the home folder."""
+    home = _home_path() or Path("~").expanduser()
+    defaults = {"config": ".config", "data": ".local/share", "cache": ".cache", "state": ".local/state"}
+    roots = {}
+    for key, default in defaults.items():
+        value = os.environ.get(f"XDG_{key.upper()}_HOME", "").strip()
+        roots[key] = Path(value).expanduser() if value and Path(value).is_absolute() else home / default
+    return roots
+
+
 def _cleanup_paths(*, include_ai_cache: bool = True, registrations_only: bool = False) -> list[Path]:
     """The folders to remove. ``registrations_only`` (what the uninstaller asks for) leaves everything the user
     made or chose: the application data folders hold the decisions database, the catalog, the restore records of
@@ -89,14 +100,31 @@ def _cleanup_paths(*, include_ai_cache: bool = True, registrations_only: bool = 
     local_appdata = _env_path("LOCALAPPDATA")
     temp_root = Path(tempfile.gettempdir())
 
+    xdg = _xdg_roots() if os.name != "nt" else None
+
     if include_ai_cache:
         if local_appdata is not None:
             paths.append(local_appdata / "image_triage_ai_cache")
+        if xdg is not None:
+            paths.append(xdg["cache"] / "image_triage_ai_cache")
         paths.append(temp_root / "image_triage_ai_cache")
 
     if registrations_only:
         paths.append(temp_root / "image-triage-association-probes")
         return _dedupe_paths(paths)
+
+    if xdg is not None:
+        # Linux and the other XDG desktops: Qt's settings and data folders for the "Image Triage" organisation and application, the
+        # managed AI root (ai_paths: <data>/ImageTriage/AI) and the logs (perf: <state>/ImageTriage/logs).
+        paths.extend(
+            [
+                xdg["config"] / APP_NAME,
+                xdg["data"] / APP_NAME,
+                xdg["data"] / "ImageTriage",
+                xdg["cache"] / APP_NAME,
+                xdg["state"] / "ImageTriage",
+            ]
+        )
 
     if appdata is not None:
         paths.extend(

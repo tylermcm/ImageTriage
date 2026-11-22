@@ -4,6 +4,8 @@ from cx_Freeze import Executable, setup
 
 from freeze_support import (
     AI_FREEZE_EXCLUDES,
+    APP_FREEZE_EXCLUDES,
+    APP_FREEZE_INCLUDES,
     APP_ICON_WINDOWS_PATH,
     QT_WINDOWS_BINARY_EXCLUDES,
     photocraft_bundle_files,
@@ -20,59 +22,11 @@ build_exe_options = {
     # Qt 6.11 uses Windows' System32 ICU forwarders. Never freeze host ICU
     # binaries because tools such as Poppler may expose incompatible versions.
     "bin_excludes": list(QT_WINDOWS_BINARY_EXCLUDES),
-    "includes": [
-        "astropy",
-        "astropy.io.fits",
-        "astropy.visualization",
-        # The capability probe runs inside the frozen ai_runtime_installer.exe
-        # and is imported lazily, so name it (and the manifest it reads)
-        # explicitly rather than relying on static import analysis.
-        "aiculler.topiq_onnx",
-        "image_triage.ai_manifest",
-        "image_triage.ai_paths",
-        "image_triage.ai_probe",
-        "image_triage.upscale_core",
-        "image_triage.upscale_service",
-        # The QML shell is the application. Its modules are imported inside main(); its .qml files ship as data (freeze_support).
-        "image_triage.qml_shell",
-        "image_triage.qml_shell.app",
-        "PySide6.QtQml",
-        "PySide6.QtQuick",
-        # The vendored editor engine (formerly the separately-packaged
-        # cli_editor/photo_terminal). editor_render.py imports it lazily
-        # inside a function, so name it explicitly rather than relying on
-        # cx_Freeze's static import scan finding it.
-        "image_triage.photo_terminal",
-        "image_triage.photo_terminal.adjustments",
-        "image_triage.photo_terminal.cli",
-        "image_triage.photo_terminal.io",
-        "image_triage.photo_terminal.masks",
-        "image_triage.photo_terminal.preview",
-        "image_triage.photo_terminal.session",
-        "onnxruntime",
-        "PIL",
-        "pip",
-        "pip._internal",
-        "pillow_heif",
-        "uuid",
-    ],
+    "includes": list(APP_FREEZE_INCLUDES),
     # The editor is part of the program: <install dir>\photocraft\photocraft.exe, found there by shell_actions.bundled_photocraft_executable.
     # The RAW preview worker goes beside ImageTriage.exe, where qml_shell/raw_preview.executable looks for it.
     "include_files": [*freeze_assets.include_files, *photocraft_bundle_files()] + raw_preview_bundle_files(),
-    "excludes": [
-        # QML is the only desktop UI. Shared helpers remain, but neither
-        # retired Widgets application window is shipped in the frozen app.
-        "image_triage.window",
-        "image_triage.qml_shell.popout",
-        "tkinter",
-        "test",
-        "tests",
-        "unittest",
-        "benchmarks",
-        "setuptools",
-        "wheel",
-        *AI_FREEZE_EXCLUDES,
-    ],
+    "excludes": [*APP_FREEZE_EXCLUDES, *AI_FREEZE_EXCLUDES],
 }
 
 CLEANUP_EXE_NAME = "image_triage_cleanup.exe"

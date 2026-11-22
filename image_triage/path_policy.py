@@ -28,6 +28,7 @@ from __future__ import annotations
 import ctypes
 import os
 import posixpath
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -50,6 +51,9 @@ _REMOVABLE_MOUNT_PARENTS = ("/media/", "/run/media/")
 # File systems that enforce the Windows name rules themselves, and ones that take any POSIX name but are read by Windows.
 _FAT_FILESYSTEMS = frozenset({"vfat", "msdos", "fat", "exfat", "fuse.exfat", "exfat-fuse"})
 _WINDOWS_READ_FILESYSTEMS = frozenset({"ntfs", "ntfs3", "ntfs-3g", "fuse.ntfs-3g", "fuseblk", "cifs", "smb3", "smbfs"})
+# File systems where two names that differ only in case are one file, on a system whose own file systems keep them apart: memory
+# cards and USB disks (FAT, exFAT) and Windows shares.
+_CASE_FOLDING_FILESYSTEMS = _FAT_FILESYSTEMS | frozenset({"cifs", "smb3", "smbfs"})
 # Where volumes are attached, for a system whose mount table cannot be read.
 _UNREADABLE_TABLE_VOLUME_PARENTS = ("/Volumes/", "/media/", "/run/media/", "/mnt/", "/net/")
 
@@ -154,6 +158,15 @@ def posix_mount(path: str | None) -> tuple[str, str, str] | None:
     return mount_for_path(posixpath.abspath(text), _mounts()[0])
 
 
+def names_fold_case(folder: str | None) -> bool:
+    """Whether names that differ only in case (``A_1.jpg``, ``a_1.JPG``) are one file in ``folder``, so that a new file must not take
+    the one's name while the other is there. Always on Windows and macOS (whose usual file systems fold case); on Linux, on a memory
+    card, a USB disk formatted FAT or exFAT, or a Windows share (from the mount table, without touching the folder)."""
+    if os.name == "nt" or sys.platform == "darwin":
+        return True
+    return filesystem_type(folder) in _CASE_FOLDING_FILESYSTEMS
+
+
 def filesystem_type(path: str | None) -> str:
     """The file system ``path`` is on (``"ext4"``, ``"vfat"``, ``"nfs4"``), or ``""`` when it cannot be told."""
     if os.name == "nt":
@@ -245,16 +258,41 @@ def confirmed_missing(path: str | None) -> bool:
     return not os.path.isdir(path)
 
 
+_VOLUME_PARENTS = ("/media/", "/run/media/", "/mnt/")
+# Mounts under /mnt that are not volumes the user put there: WSL's own plumbing.
+_NOT_VOLUMES = ("/mnt/wsl", "/mnt/wslg")
+
+
+def posix_drive_roots(mounts: list[tuple[str, str, str]] | None = None) -> list[tuple[str, int]]:
+    """``/`` and the attached volumes (a card, a USB disk, a share mounted under ``/mnt``) as ``(mount point + "/", drive type)``,
+    in the order they were mounted. Read from the mount table (``mounts`` for tests), never from the volumes themselves."""
+    if mounts is None:
+        mounts = _mounts()[0]
+    roots: list[tuple[str, int]] = [("/", DRIVE_FIXED)]
+    seen = {"/"}
+    for mount in mounts:
+        point = posixpath.normpath(mount[0])
+        if not (point + "/").startswith(_VOLUME_PARENTS) or point in _NOT_VOLUMES or point.startswith(tuple(p + "/" for p in _NOT_VOLUMES)):
+            continue
+        root = point + "/"
+        if root in seen or any(root.startswith(other) for other in seen if other != "/"):
+            continue                                  # mounted over, or inside another volume: one row per volume
+        seen.add(root)
+        roots.append((root, DRIVE_REMOTE if mount[1].casefold() == "autofs" else classify_mount(mount)))
+    return roots
+
+
 def drive_roots() -> list[tuple[str, int]]:
     """The drives this machine has right now as ``("C:/", drive_type)``, from the drive-letter bitmask and
     ``GetDriveTypeW``: neither touches a drive, so an offline mapped drive costs nothing here. (Asking Windows *about* a
     dead network drive, by existence check, label, size or listing, is what blocks, for ~20 s, and a
     ``QFileSystemModel`` rooted at "all drives" does exactly that on its single worker thread.)
 
-    Off Windows there is one root, ``/``, and it counts as a plain local drive.
+    Off Windows: ``/``, then every volume attached where the desktop and the user attach them (``/media``, ``/run/media``,
+    ``/mnt``), from the mount table, which costs nothing either.
     """
     if os.name != "nt":
-        return [("/", DRIVE_FIXED)]
+        return posix_drive_roots()
     try:
         mask = int(ctypes.windll.kernel32.GetLogicalDrives())  # type: ignore[attr-defined]
     except Exception:

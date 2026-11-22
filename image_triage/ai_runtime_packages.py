@@ -598,7 +598,9 @@ def build_ai_runtime_pip_install_args(
         # acquire the CPU onnxruntime alongside onnxruntime-gpu.
         args.extend(["--no-deps", "--require-hashes", "--requirement", str(lock)])
         return args
-    release_requires_lock = bool(getattr(sys, "frozen", False) and os.name == "nt")
+    # Every installed build installs from a lock (Windows and Linux ship them, packaging/ai_runtime_locks); without one two machines could
+    # install different packages from the same release. Running from source may resolve the open ranges.
+    release_requires_lock = bool(getattr(sys, "frozen", False))
     if release_requires_lock or (
         os.environ.get(AI_RUNTIME_REQUIRE_LOCK_ENV, "") or ""
     ).strip() == "1":

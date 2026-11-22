@@ -91,11 +91,15 @@ def detect_photoshop_executable() -> str | None:
     return None
 
 
+# The editor's file name: photocraft.exe on Windows, photocraft elsewhere (freeze_support.PHOTOCRAFT_EXE_NAME bundles it so).
+PHOTOCRAFT_EXE_NAME = "photocraft" + (".exe" if os.name == "nt" else "")
+
+
 def bundled_photocraft_executable() -> str | None:
-    """The editor inside the installed program (``<install dir>\\photocraft\\photocraft.exe``). Only the frozen app has one."""
+    """The editor inside the installed program (``<install dir>/photocraft/photocraft[.exe]``). Only the frozen app has one."""
     if not getattr(sys, "frozen", False):
         return None
-    candidate = Path(sys.executable).resolve().parent / "photocraft" / "photocraft.exe"
+    candidate = Path(sys.executable).resolve().parent / "photocraft" / PHOTOCRAFT_EXE_NAME
     return str(candidate) if candidate.is_file() else None
 
 
@@ -111,7 +115,7 @@ def detect_photocraft_executable() -> str | None:
     override = os.environ.get("IMAGE_TRIAGE_PHOTOCRAFT_EXE")
     if override and os.path.exists(override):
         checkout = Path(__file__).resolve().parents[2] / "photocraft"
-        ordinary = [checkout / "target" / profile / "photocraft.exe" for profile in ("release", "debug")]
+        ordinary = [checkout / "target" / profile / PHOTOCRAFT_EXE_NAME for profile in ("release", "debug")]
         if Path(override).resolve() in [path.resolve() for path in ordinary]:
             hosted = companion_photocraft_executables()
             if hosted:
@@ -135,7 +139,7 @@ def detect_photocraft_executable() -> str | None:
     checkout = Path(__file__).resolve().parents[2] / "photocraft"
     if (checkout / "Cargo.toml").is_file():
         for profile in ("release", "debug"):
-            executable = checkout / "target" / profile / "photocraft.exe"
+            executable = checkout / "target" / profile / PHOTOCRAFT_EXE_NAME
             if executable.is_file():
                 return str(executable)
     return None
@@ -152,9 +156,10 @@ def companion_photocraft_executables() -> list[str]:
         for checkout in checkouts
         if (checkout / "Cargo.toml").is_file()
         for profile in ("release", "debug")
-        for pattern in ("photocraft.exe", "photocraft-host*.exe")
+        for pattern in (PHOTOCRAFT_EXE_NAME, "photocraft-host*" + (".exe" if os.name == "nt" else ""))
         for path in (checkout / "target" / profile).glob(pattern)
-        if path.is_file()
+        # Off Windows a program has no extension: `photocraft-host*` must not also find Cargo's `.d` dependency lists.
+        if path.is_file() and (os.name == "nt" or not path.suffix)
     ]
     return [str(path) for path in sorted(hosted, key=lambda path: path.stat().st_mtime_ns, reverse=True)]
 

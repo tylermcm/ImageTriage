@@ -232,7 +232,8 @@ def launch(tmp_path, monkeypatch):
     monkeypatch.setattr(bridge.subprocess, "Popen", FakeProcess)
     monkeypatch.setattr(bridge, "_open_editor_log", lambda: (bridge.subprocess.DEVNULL, None))
     monkeypatch.setattr(bridge, "_find_window_for_pid", lambda pid: 99)
-    monkeypatch.setattr(bridge.PhotoCraftControl, "require_hosted_handoff", lambda self: None)
+    # The handoff is not what is under test: an editor that has everything, including a window of its own (off Windows).
+    monkeypatch.setattr(bridge.PhotoCraftControl, "require_hosted_handoff", lambda self: setattr(self, "host_window_supported", True))
     monkeypatch.setattr(bridge.tempfile, "tempdir", str(tmp_path))
     if hasattr(bridge.ctypes, "windll"):
         monkeypatch.setattr(bridge.ctypes.windll.user32, "ShowWindow", Mock(), raising=False)

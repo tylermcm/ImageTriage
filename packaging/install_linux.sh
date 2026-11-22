@@ -7,7 +7,7 @@ INSTALL_DIR="${IMAGE_TRIAGE_LINUX_INSTALL_DIR:-$HOME/.local/opt/ImageTriage}"
 LAUNCHER_PATH="${IMAGE_TRIAGE_LINUX_LAUNCHER:-$HOME/.local/bin/image-triage}"
 APPLICATIONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICON_INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps"
-ICON_SOURCE_PATH="$ROOT_DIR/build_assets/icons/image_triage.png"
+ICON_SOURCE_PATH="$ROOT_DIR/build_assets/icons/image_triage-v5.png"
 APPIMAGE_PATH=""
 SKIP_BUILD=0
 NO_DESKTOP=0
@@ -28,6 +28,9 @@ Environment overrides:
   IMAGE_TRIAGE_AI_SITE_PACKAGES    Override the AI site-packages source path.
   IMAGE_TRIAGE_AI_STDLIB           Override the AI stdlib source path.
   IMAGE_TRIAGE_AI_DLLS             Override the AI binary modules source path.
+  IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW_EXE  The RAW preview worker to bundle. Default: the one
+                                   scripts/build_raw_preview.sh leaves in build/raw-preview.
+  IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW=0    Build without it (RAW editing is slow).
 EOF
 }
 
@@ -85,6 +88,11 @@ ensure_build_venv() {
 }
 
 build_appimage() {
+  # The RAW preview worker built by scripts/build_raw_preview.sh, unless another was named.
+  local worker="$ROOT_DIR/build/raw-preview/image-triage-raw-preview"
+  if [[ -z "${IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW_EXE:-}" && -x "$worker" ]]; then
+    export IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW_EXE="$worker"
+  fi
   "$VENV_DIR/bin/python" "$ROOT_DIR/setup_linux.py" bdist_appimage
 }
 
@@ -129,6 +137,7 @@ Comment=Browse, cull, and score large image folders
 Categories=Graphics;Photography;
 Terminal=false
 StartupNotify=true
+StartupWMClass=image-triage
 EOF
   fi
 

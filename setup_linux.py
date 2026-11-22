@@ -4,8 +4,12 @@ from cx_Freeze import Executable, setup
 
 from freeze_support import (
     AI_FREEZE_EXCLUDES,
+    APP_FREEZE_EXCLUDES,
+    APP_FREEZE_INCLUDES,
     APP_ICON_LINUX_PATH,
+    photocraft_bundle_files,
     prepare_ai_build_assets,
+    raw_preview_bundle_files,
     read_project_version,
 )
 
@@ -13,35 +17,12 @@ from freeze_support import (
 freeze_assets = prepare_ai_build_assets()
 
 build_exe_options = {
-    "includes": [
-        "astropy",
-        "astropy.io.fits",
-        "astropy.visualization",
-        # The capability probe runs inside the frozen ai_runtime_installer.exe
-        # and is imported lazily, so name it (and the manifest it reads)
-        # explicitly rather than relying on static import analysis.
-        "aiculler.topiq_onnx",
-        "image_triage.ai_manifest",
-        "image_triage.ai_paths",
-        "image_triage.ai_probe",
-        "onnxruntime",
-        "PIL",
-        "pip",
-        "pip._internal",
-        "pillow_heif",
-        "uuid",
-    ],
-    "include_files": freeze_assets.include_files,
-    "excludes": [
-        "tkinter",
-        "test",
-        "tests",
-        "unittest",
-        "benchmarks",
-        "setuptools",
-        "wheel",
-        *AI_FREEZE_EXCLUDES,
-    ],
+    "includes": list(APP_FREEZE_INCLUDES),
+    # The editor is part of the program: <AppDir>/photocraft/photocraft, found there by shell_actions.bundled_photocraft_executable. It
+    # runs in a window of its own on Linux (`--hosted-window`). The RAW preview worker goes beside ImageTriage, where
+    # qml_shell/raw_preview.executable looks for it.
+    "include_files": [*freeze_assets.include_files, *photocraft_bundle_files()] + raw_preview_bundle_files(),
+    "excludes": [*APP_FREEZE_EXCLUDES, *AI_FREEZE_EXCLUDES],
 }
 
 bdist_appimage_options = {
@@ -76,8 +57,41 @@ executables = [
     ),
 ]
 
+# The menu entry inside the AppImage, which AppImage integrators (Gear Lever, AppImageLauncher) install. cx_Freeze writes its own from a
+# template ("ImageTriage", filed under Development, an icon path the desktop cannot resolve); this one replaces it. StartupWMClass
+# matches the app's desktop file name (QGuiApplication.setDesktopFileName in qml_shell/app.py), which is how Wayland ties the window to it.
+DESKTOP_ENTRY = f"""[Desktop Entry]
+Type=Application
+Name=Image Triage
+GenericName=Photo Culling
+Comment=Browse, cull, and score large image folders
+Exec=ImageTriage %F
+Icon=ImageTriage
+Categories=Graphics;Photography;
+Keywords=photo;raw;cull;triage;
+Terminal=false
+StartupNotify=true
+StartupWMClass=image-triage
+X-AppImage-Name=ImageTriage
+X-AppImage-Version={read_project_version()}
+"""
+
+
+def bdist_appimage_with_desktop_entry():
+    from cx_Freeze.command.bdist_appimage import bdist_appimage
+
+    class BdistAppImage(bdist_appimage):
+        def save_as_file(self, data, outfile, mode="r"):
+            if str(outfile).endswith(".desktop"):
+                data = DESKTOP_ENTRY
+            return super().save_as_file(data, outfile, mode)
+
+    return BdistAppImage
+
+
 if __name__ == "__main__":
     setup(
+        cmdclass={"bdist_appimage": bdist_appimage_with_desktop_entry()},
         name="ImageTriage",
         version=read_project_version(),
         description="Image Triage",

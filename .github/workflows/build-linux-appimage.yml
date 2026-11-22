@@ -68,7 +68,17 @@ jobs:
             packaging/ai_runtime_installer.py \
             packaging/image_triage_cleanup.py
 
+      - name: Build the PocketDrop library
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libgdk-pixbuf-2.0-dev
+          bash native/pocketdrop/build_linux.sh
+
       - name: Build AppImage
+        # This workflow has no PhotoCraft checkout to build the RAW preview worker from (scripts/build_raw_preview.sh): its AppImage
+        # is a smoke build without it. Release AppImages are built locally, with the worker.
+        env:
+          IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW: "0"
         run: python setup_linux.py bdist_appimage
 
       - name: List build output

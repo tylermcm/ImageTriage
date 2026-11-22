@@ -47,11 +47,27 @@ from image_triage.ai_runtime_packages import (  # noqa: E402
 )
 
 
-def _resolve(variant: str, include_torch: bool) -> list[dict]:
-    """Run pip's resolver in report mode and return the resolved distributions."""
+def _constraints(lock: Path) -> str:
+    """``name==version`` for every distribution in another platform's lock (hashes dropped: they are per wheel, so per platform)."""
+    lines = []
+    for line in lock.read_text(encoding="utf-8").splitlines():
+        line = line.strip().rstrip("\\").strip()
+        if "==" in line and not line.startswith(("#", "--")):
+            lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+def _resolve(variant: str, include_torch: bool, match: Path | None = None) -> list[dict]:
+    """Run pip's resolver in report mode and return the resolved distributions. With ``match`` (another platform's lock for the
+    same variant), every distribution both platforms install is held to that lock's version."""
     requirements = _ai_runtime_pip_requirements_for_variant(variant, include_torch=include_torch)
     with tempfile.TemporaryDirectory() as temp_dir:
         report_path = Path(temp_dir) / "report.json"
+        constraint_args: list[str] = []
+        if match is not None:
+            constraints = Path(temp_dir) / "constraints.txt"
+            constraints.write_text(_constraints(match), encoding="utf-8")
+            constraint_args = ["--constraint", str(constraints)]
         command = [
             sys.executable,
             "-m",
@@ -65,6 +81,7 @@ def _resolve(variant: str, include_torch: bool) -> list[dict]:
             _torch_index_url_for_variant(variant),
             "--report",
             str(report_path),
+            *constraint_args,
             *requirements,
         ]
         print(f"  resolving {len(requirements)} requirement(s)...", file=sys.stderr, flush=True)
@@ -76,6 +93,24 @@ def _resolve(variant: str, include_torch: bool) -> list[dict]:
             )
         payload = json.loads(report_path.read_text(encoding="utf-8"))
     return list(payload.get("install", []))
+
+
+def _pypi_sha256(name: str, version: str, url: str) -> str:
+    """The SHA-256 PyPI publishes for the wheel ``url`` names (its file name), or "" when PyPI has no file of that name."""
+    import urllib.request
+
+    filename = url.rsplit("/", 1)[-1].split("#", 1)[0]
+    if not filename:
+        return ""
+    with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/{version}/json", timeout=30) as response:
+        release = json.load(response)
+    for file in release.get("urls", []):
+        if file.get("filename") == filename:
+            digest = str((file.get("digests") or {}).get("sha256") or "")
+            if digest:
+                print(f"  {filename}: no hash on its index, using PyPI's for the same file", file=sys.stderr)
+            return digest
+    return ""
 
 
 def _canonical(entry: dict) -> str:
@@ -121,6 +156,11 @@ def _render(entries: list[dict], variant: str, include_torch: bool) -> str:
             legacy = str(archive.get("hash") or "")
             if legacy.startswith("sha256="):
                 digest = legacy.partition("=")[2]
+        if not digest and name and version:
+            # The PyTorch index mirrors some PyPI wheels (Jinja2, for one) without a hash in its links. The file is the same one PyPI
+            # publishes, under the same name: take PyPI's hash for it. The install checks every file against the lock, so a mirror
+            # that served a different file would fail there, not be trusted.
+            digest = _pypi_sha256(name, version, str((entry.get("download_info") or {}).get("url") or ""))
         if not (name and version and digest):
             raise SystemExit(f"pip reported no usable hash for {name or '<unknown>'} {version}")
         rows.append((name, version, digest))
@@ -145,6 +185,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Only regenerate the full PyTorch locks.",
     )
+    parser.add_argument(
+        "--match-platform",
+        metavar="TAG",
+        help="Hold every distribution shared with another platform's locks (e.g. windows-amd64) to the versions they pin, so both "
+        "platforms run the set that was validated. Platform-only distributions resolve as usual.",
+    )
     args = parser.parse_args(argv)
 
     variants = tuple(args.variant) if args.variant else AI_RUNTIME_VARIANTS
@@ -163,8 +209,15 @@ def main(argv: list[str] | None = None) -> int:
         for include_torch in torch_choices:
             label = f"{variant} ({'pytorch' if include_torch else 'base'})"
             print(f"Resolving {label}...", file=sys.stderr, flush=True)
-            entries = _resolve(variant, include_torch)
             target = ROOT / lock_path_for(variant, include_torch=include_torch)
+            match = None
+            if args.match_platform:
+                tag = target.name.split("-")[0]                            # py313
+                match = target.with_name(target.name.replace(f"{tag}-{runtime_tag().split('-', 1)[1]}", f"{tag}-{args.match_platform}"))
+                if not match.is_file():
+                    raise SystemExit(f"--match-platform: there is no {match.name} to match")
+                print(f"  matching the versions in {match.name}", file=sys.stderr)
+            entries = _resolve(variant, include_torch, match)
             target.write_text(_render(entries, variant, include_torch), encoding="utf-8")
             print(f"  wrote {target.relative_to(ROOT)} ({len(entries)} distributions)", file=sys.stderr)
     return 0

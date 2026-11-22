@@ -132,8 +132,23 @@ def attach(app) -> None:
 
 
 def _message_box(title: str, text: str) -> None:
-    """A native message window. Only Windows has one that needs no toolkit; elsewhere the text on stderr is all there is."""
+    """A native message window, which needs no toolkit (Qt may be what failed). On Linux the desktop's own dialog tool when it has one
+    (zenity on GNOME and most others, kdialog on KDE): started from the menu there is no terminal to read stderr in."""
     if sys.platform != "win32":
+        import html
+        import shutil
+        import subprocess
+
+        # zenity reads its text as Pango markup: a traceback's "<module>" would otherwise end the text there.
+        for tool, args in (("zenity", ["--error", "--no-wrap", f"--title={title}", f"--text={html.escape(text, quote=False)}"]),
+                           ("kdialog", ["--title", title, "--error", text])):
+            program = shutil.which(tool)
+            if program:
+                try:
+                    subprocess.run([program, *args], check=False, timeout=600)
+                except Exception:
+                    pass
+                return
         return
     try:
         import ctypes

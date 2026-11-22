@@ -13,6 +13,7 @@ from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
+from ..platform_names import show_in_file_manager
 from .photos import SORTS
 
 DECISIONS = (("win", "Winner", "win", "#3ccf8e"), ("keep", "Keep", "keep", "#6aa6ff"), ("rej", "Reject", "rej", "#ef6856"))
@@ -197,7 +198,7 @@ class MenuModel(QObject):
             items += [SEP, self._row_item("open", "Open", "open", kbd="Space"), self._row_item("edit", "Open in editor", "editor"), self._arrow("with", "Open with", "with"), SEP,
                       self._row_item("share", "Share to phone", "phone"), quick_collection, self._arrow("coll", "Collections", "coll"), self._arrow("mv", "Copy or move", "move"), SEP,
                       self._row_item("rename", "Rename…", "rename", kbd="F2"), self._row_item("export", "Export…", "convert"), SEP,
-                      self._row_item("cpath", "Copy path", "link"), self._row_item("cname", "Copy file name", "text"), self._row_item("reveal", "Show in File Explorer", "folder"), SEP,
+                      self._row_item("cpath", "Copy path", "link"), self._row_item("cname", "Copy file name", "text"), self._row_item("reveal", show_in_file_manager(), "folder"), SEP,
                       self._row_item("del", "Delete", "trash", kbd="Del", danger=True)]
             if self._sub == "with":
                 sub = [self._row_item("with:default", "Default app", "open"), self._row_item("with:other", "Choose another app…", "with")]
@@ -215,7 +216,7 @@ class MenuModel(QObject):
             st = self._state
             items = [self._row_item("refresh", "Refresh folder", "refresh", kbd="F5"), self._row_item("clear", "Clear filters", "funnel", off=not st.get("filtered")), SEP,
                      self._arrow("view", "View", "view"), self._arrow("sort", "Sort by", "sort"), SEP,
-                     self._row_item("freveal", "Show folder in File Explorer", "folder"), self._row_item("fpath", "Copy folder path", "link")]
+                     self._row_item("freveal", show_in_file_manager("folder"), "folder"), self._row_item("fpath", "Copy folder path", "link")]
             if self._sub == "view":
                 sub = [{"kind": "row", "key": "view:names", "label": "Show file names", "tick": bool(st.get("names"))}, {"kind": "row", "key": "view:badges", "label": "Show badges", "tick": bool(st.get("badges"))}, SEP]
                 sub += [{"kind": "row", "key": "dens:" + k, "label": lab, "tick": st.get("dens") == k} for k, lab in (("s", "Small thumbnails"), ("m", "Medium thumbnails"), ("l", "Large thumbnails"))]

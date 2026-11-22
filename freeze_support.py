@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import sys
 import sysconfig
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,11 +24,14 @@ AI_BINARY_MODULES_ENV_NAMES = ("IMAGE_TRIAGE_AI_DLLS", "IMAGE_TRIAGE_AI_BINARY_M
 PHOTOCRAFT_BUNDLE_ENV = "IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT_EXE"
 PHOTOCRAFT_BUNDLE_SWITCH_ENV = "IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT"
 PHOTOCRAFT_BUNDLE_DIR = "photocraft"
+# Where shell_actions.bundled_photocraft_executable looks for it (shell_actions.PHOTOCRAFT_EXE_NAME).
+PHOTOCRAFT_EXE_NAME = "photocraft" + (".exe" if os.name == "nt" else "")
 # The RAW preview worker the in-app RAW editor draws its live preview with (native/raw_preview, built against the PhotoCraft
 # checkout). The application looks for it beside its own executable (qml_shell/raw_preview.executable).
 RAW_PREVIEW_BUNDLE_ENV = "IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW_EXE"
 RAW_PREVIEW_BUNDLE_SWITCH_ENV = "IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW"
-RAW_PREVIEW_EXE_NAME = "image-triage-raw-preview.exe"
+# Beside the app's own executable, where qml_shell/raw_preview.executable looks for it (raw_preview.EXECUTABLE_NAME).
+RAW_PREVIEW_EXE_NAME = "image-triage-raw-preview" + (".exe" if os.name == "nt" else "")
 PHOTOCRAFT_LICENSE_FILES = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "ATTRIBUTION.md")
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -125,6 +129,56 @@ class FreezeAssetLayout:
         return include_files
 
 
+# What every package of the app (the Windows MSI and the Linux AppImage) names for cx_Freeze. One list for both: the Linux build's
+# own copy fell behind (no QML shell, no editor engine) and froze an app that could not start.
+APP_FREEZE_INCLUDES = (
+    "astropy",
+    "astropy.io.fits",
+    "astropy.visualization",
+    # The capability probe runs inside the frozen AI runtime installer and is imported lazily, so name it (and the manifest it
+    # reads) explicitly rather than relying on static import analysis.
+    "aiculler.topiq_onnx",
+    "image_triage.ai_manifest",
+    "image_triage.ai_paths",
+    "image_triage.ai_probe",
+    "image_triage.upscale_core",
+    "image_triage.upscale_service",
+    # The QML shell is the application. Its modules are imported inside main(); its .qml files ship as data (`prepare_ai_build_assets`).
+    "image_triage.qml_shell",
+    "image_triage.qml_shell.app",
+    "PySide6.QtQml",
+    "PySide6.QtQuick",
+    # The vendored editor engine (formerly the separately-packaged cli_editor/photo_terminal). editor_render.py imports it lazily
+    # inside a function, so name it explicitly rather than relying on cx_Freeze's static import scan finding it.
+    "image_triage.photo_terminal",
+    "image_triage.photo_terminal.adjustments",
+    "image_triage.photo_terminal.cli",
+    "image_triage.photo_terminal.io",
+    "image_triage.photo_terminal.masks",
+    "image_triage.photo_terminal.preview",
+    "image_triage.photo_terminal.session",
+    "onnxruntime",
+    "PIL",
+    "pip",
+    "pip._internal",
+    "pillow_heif",
+    "uuid",
+)
+
+APP_FREEZE_EXCLUDES = (
+    # QML is the only desktop UI. Shared helpers remain, but neither retired Widgets application window is shipped in the frozen app.
+    "image_triage.window",
+    "image_triage.qml_shell.popout",
+    "tkinter",
+    "test",
+    "tests",
+    "unittest",
+    "benchmarks",
+    "setuptools",
+    "wheel",
+)
+
+
 # The worker scripts the managed AI runtime runs as plain files beside the executable (``ai_workers/``), and the sibling modules they
 # import as top-level scripts. A service that launches one finds it there when frozen; tests check the list is closed under imports.
 AI_WORKER_SCRIPTS = (
@@ -209,15 +263,15 @@ def cli_culler_worker_include_files(root: Path | None = None) -> list[tuple[str,
 
 
 def _pocketdrop_include_files() -> list[tuple[str, str]]:
-    """PocketDrop's native library, beside the package that loads it
-    (image_triage/pocketdrop/_bridge.py). Build it first with
-    native/pocketdrop/build_windows.bat."""
-    if os.name != "nt":
+    """PocketDrop's native library, beside the package that loads it (image_triage/pocketdrop/_bridge.py). Build it first with
+    native/pocketdrop/build_windows.bat (pocketdrop.dll) or native/pocketdrop/build_linux.sh (libpocketdrop.so). macOS has no build yet."""
+    if sys.platform == "darwin":
         return []
-    dll = ROOT / "image_triage" / "pocketdrop" / "pocketdrop.dll"
-    if not dll.is_file():
-        raise FileNotFoundError(f"{dll} is missing. Run native\\pocketdrop\\build_windows.bat before freezing.")
-    return [(str(dll), "lib/image_triage/pocketdrop/pocketdrop.dll")]
+    name, script = ("pocketdrop.dll", "build_windows.bat") if os.name == "nt" else ("libpocketdrop.so", "build_linux.sh")
+    library = ROOT / "image_triage" / "pocketdrop" / name
+    if not library.is_file():
+        raise FileNotFoundError(f"{library} is missing. Run native/pocketdrop/{script} before freezing.")
+    return [(str(library), f"lib/image_triage/pocketdrop/{name}")]
 
 
 def read_project_version() -> str:
@@ -266,7 +320,7 @@ def photocraft_bundle_source() -> Path | None:
     if configured is not None:
         return configured if configured.is_file() else None
     for checkout in (ROOT.parent / "photocraft", Path.home() / "Documents" / "photocraft"):
-        candidate = checkout / "target" / "release" / "photocraft.exe"
+        candidate = checkout / "target" / "release" / PHOTOCRAFT_EXE_NAME
         if candidate.is_file():
             return candidate
     return None
@@ -287,7 +341,7 @@ def photocraft_bundle_files() -> list[tuple[str, str]]:
             "The installer carries the PhotoCraft editor, and there is none to put in it. Build it (cargo build --release -p photocraft in the "
             f"companion checkout), or name it with {PHOTOCRAFT_BUNDLE_ENV}, or set {PHOTOCRAFT_BUNDLE_SWITCH_ENV}=0 for an installer without it."
         )
-    files = [(str(executable), f"{PHOTOCRAFT_BUNDLE_DIR}/photocraft.exe")]
+    files = [(str(executable), f"{PHOTOCRAFT_BUNDLE_DIR}/{PHOTOCRAFT_EXE_NAME}")]
     # The licences sit in the checkout the editor was built in (target/release/photocraft.exe is two folders below it), or beside the file.
     folders = [executable.parent, *([executable.parents[2]] if len(executable.parents) > 2 else [])]
     for name in PHOTOCRAFT_LICENSE_FILES:
@@ -312,7 +366,7 @@ def raw_preview_bundle_files() -> list[tuple[str, str]]:
     if executable is None or not executable.is_file():
         raise SystemExit(
             f"The installer carries the RAW preview worker ({RAW_PREVIEW_EXE_NAME}), and there is none to put in it. Build it "
-            f"(scripts/build_raw_preview.ps1) and name it with {RAW_PREVIEW_BUNDLE_ENV}, or set {RAW_PREVIEW_BUNDLE_SWITCH_ENV}=0 "
+            f"(scripts/build_raw_preview.ps1 on Windows, scripts/build_raw_preview.sh elsewhere) and name it with {RAW_PREVIEW_BUNDLE_ENV}, or set {RAW_PREVIEW_BUNDLE_SWITCH_ENV}=0 "
             "for an installer without it."
         )
     return [(str(executable), RAW_PREVIEW_EXE_NAME)]

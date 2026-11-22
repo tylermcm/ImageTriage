@@ -104,11 +104,26 @@ To use a custom feed instead of GitHub Releases, set `IMAGE_TRIAGE_UPDATE_FEED_U
 
 ## Linux AppImage
 
-Build and install a local AppImage from this repo with:
+The AppImage carries the RAW preview worker (the live preview of the RAW editor, AI Denoise, range masks). Build it first, against a
+PhotoCraft checkout at the commit in [packaging/photocraft_pin.txt](packaging/photocraft_pin.txt); it needs Rust (https://rustup.rs):
+
+```bash
+bash scripts/build_raw_preview.sh --photocraft ../photocraft --release
+```
+
+Then build and install a local AppImage from this repo with:
 
 ```bash
 bash packaging/install_linux.sh
 ```
+
+It picks up the worker from `build/raw-preview/`. Set `IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW=0` to build without one.
+
+The AppImage also carries the PhotoCraft editor, built in that checkout with `cargo build --release -p photocraft` (found at
+`../photocraft/target/release/photocraft`, or named with `IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT_EXE`; `IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT=0` builds
+without it). On Linux the editor cannot sit inside Image Triage's window as it does on Windows, so it opens in a window of its own
+(`--hosted-window`): Image Triage steps aside while it is up, and closing the editor's window saves the photo and brings Image Triage
+back. That needs a PhotoCraft build with `ui.hostWindow`; an older one is refused with a message saying to update it.
 
 That script will:
 

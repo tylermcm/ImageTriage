@@ -183,16 +183,39 @@ class AIRuntimePackageTests(unittest.TestCase):
                         variant=AI_RUNTIME_CPU_VARIANT, target_dir=Path("C:/temp/runtime")
                     )
 
-    def test_frozen_windows_build_cannot_install_without_a_lock(self) -> None:
-        with (
-            patch("image_triage.ai_runtime_packages.resolve_lock_file", return_value=None),
-            patch("image_triage.ai_runtime_packages.sys.frozen", True, create=True),
-            patch("image_triage.ai_runtime_packages.os.name", "nt"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "refresh_ai_runtime_lock"):
-                build_ai_runtime_pip_install_args(
-                    variant=AI_RUNTIME_CPU_VARIANT, target_dir=Path("C:/temp/runtime")
-                )
+    def test_a_frozen_build_cannot_install_without_a_lock_on_any_platform(self) -> None:
+        for os_name in ("nt", "posix"):
+            with (
+                self.subTest(os_name=os_name),
+                patch("image_triage.ai_runtime_packages.resolve_lock_file", return_value=None),
+                patch("image_triage.ai_runtime_packages.sys.frozen", True, create=True),
+                patch("image_triage.ai_runtime_packages.os.name", os_name),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "refresh_ai_runtime_lock"):
+                    build_ai_runtime_pip_install_args(
+                        variant=AI_RUNTIME_CPU_VARIANT, target_dir=Path("C:/temp/runtime")
+                    )
+
+    def test_every_platform_that_is_packaged_ships_its_locks(self) -> None:
+        # The MSI and the AppImage install the AI runtime from a lock (see the test above): each needs all four.
+        directory = Path(__file__).resolve().parents[1] / ai_runtime_packages.LOCK_DIRECTORY
+        for platform in ("windows-amd64", "linux-amd64"):
+            for name in ("cpu", "cpu-base", "gpu", "gpu-base"):
+                with self.subTest(platform=platform, lock=name):
+                    lock = directory / f"py313-{platform}-{name}.txt"
+                    self.assertTrue(lock.is_file(), lock)
+                    text = lock.read_text(encoding="utf-8")
+                    rows = [line for line in text.splitlines() if "==" in line and not line.startswith("#")]
+                    self.assertTrue(rows)
+                    lines = text.splitlines()
+                    for index, line in enumerate(lines):
+                        if "==" in line and not line.startswith("#"):
+                            self.assertIn("--hash=sha256:", lines[index + 1], f"{line}: every distribution is hashed")
+                    names = {row.split("==", 1)[0].strip().lower() for row in rows}
+                    self.assertNotIn("opencv-python", names)
+                    if name.startswith("gpu"):
+                        self.assertIn("onnxruntime-gpu", names)
+                        self.assertNotIn("onnxruntime", names)
 
     def test_default_pip_runner_uses_embedded_pip_when_frozen(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -135,7 +135,8 @@ def _document_kept(error: Exception) -> bool:
 
 
 class WindowMover:
-    """Puts PhotoCraft's native window inside the shell's window. Windows only; elsewhere nothing moves (and the editor is not offered)."""
+    """Puts PhotoCraft's native window inside the shell's window. Windows only; elsewhere the editor keeps a window of its own
+    (`SeparateWindow`)."""
 
     supported = sys.platform == "win32"
 
@@ -186,6 +187,45 @@ class WindowMover:
         return rect.left <= point.x < rect.right and rect.top <= point.y < rect.bottom
 
 
+class SeparateWindow:
+    """Linux and macOS: the editor keeps a window of its own (``--hosted-window``), since another program's window cannot be put inside
+    ours there. While it is up, Image Triage's window is hidden; closing the editor's window saves the photo, as leaving the embedded
+    editor does, and brings Image Triage back. The editor's window is shown and hidden over its control channel (``ui.hostWindow``),
+    on a thread of its own: the call must never be waited for on the interface thread."""
+
+    supported = sys.platform != "win32"
+    separate = True
+
+    def __init__(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        self._calls = ThreadPoolExecutor(max_workers=1, thread_name_prefix="editor-window")   # one at a time, in the order asked
+
+    def show(self, proc, visible: bool) -> None:
+        def call() -> None:
+            try:
+                SeparateWindow._note(proc, proc.fast_lane().host_window(visible))
+            except Exception:
+                LOG.warning("Could not %s the editor's window", "show" if visible else "hide", exc_info=True)
+
+        self._calls.submit(call)
+
+    @staticmethod
+    def close_requested(proc) -> bool:
+        """Whether the user closed the editor's window since the last time this was asked. Blocks on the control channel."""
+        return bool(SeparateWindow._note(proc, proc.fast_lane().host_window()).get("closeRequested"))
+
+    @staticmethod
+    def _note(proc, reply: dict) -> dict:
+        # Wayland without Xwayland cannot hide a window: such an editor is ended when it is put away, not kept hidden (`can_hide`).
+        proc.window_can_hide = reply.get("canHide", True) is not False
+        return reply
+
+    @staticmethod
+    def can_hide(proc) -> bool:
+        return getattr(proc, "window_can_hide", True)
+
+
 class EditorHost(QObject):
     stateChanged = Signal()
     pathChanged = Signal()
@@ -203,6 +243,7 @@ class EditorHost(QObject):
     recipeSetAside = Signal(str, str)
     recipeRecovery = Signal(str, bool, str) # `recoverRecipe` finished: the photo, whether an edit was put back, what to say
     _done = Signal(str, object, str)        # worker -> main thread: (what finished, its result, an error message)
+    _closed_by_user = Signal(object)        # poll thread -> main thread: the user closed the editor's own window (`SeparateWindow`)
 
     def __init__(self, *, memory: bool = False, launcher=None, detector=None, mover=None, host_jobs=None, renderer=None,
                  parent=None) -> None:
@@ -216,7 +257,21 @@ class EditorHost(QObject):
         self._host_render_lock = threading.Lock()
         self._launcher = launcher
         self._detector = detector
-        self._mover = mover if mover is not None else WindowMover()
+        if mover is None:
+            from .. import photocraft_bridge
+
+            mover = WindowMover() if photocraft_bridge.EMBEDDED_WINDOW else SeparateWindow()
+        self._mover = mover
+        # A window of its own (`SeparateWindow`): the shell's window is hidden while the editor is shown, and the editor is asked
+        # every so often whether the user closed it (or checked for having exited).
+        self._separate = bool(getattr(mover, "separate", False))
+        self._window = None
+        self._shell_hidden = False
+        self._close_poll = QTimer(self)
+        self._close_poll.setInterval(400)
+        self._close_poll.timeout.connect(self._poll_separate_window)
+        self._close_poll_busy = False
+        self._closed_by_user.connect(self._editor_window_closed, Qt.ConnectionType.QueuedConnection)
         self._state = IDLE
         self._path = ""
         self._error = ""
@@ -631,7 +686,8 @@ class EditorHost(QObject):
     # -- the editor is up: put its window in ours ---------------------------------------------------------------------------
     @Slot(object)
     def setWindow(self, window) -> None:
-        """The shell's main window: the native window the editor is placed inside."""
+        """The shell's main window: the native window the editor is placed inside (or, in a window of its own, hidden behind)."""
+        self._window = window
         try:
             self._parent_hwnd = int(window.winId())
         except Exception:
@@ -659,17 +715,7 @@ class EditorHost(QObject):
     def _follow_clicks(self) -> None:
         """A click inside the editor hands it the keyboard (Windows does not, for a window of another process placed inside ours)."""
         proc, wants = self._proc, getattr(self._mover, "wants_focus", None)
-        if proc is not None and self._state == EDITING and not proc.is_running():
-            # The editor was closed from its own window (its native exit button): back to the grid rather than an empty stage.
-            LOG.info("The hosted editor exited on its own")
-            path, self._path = self._path, ""
-            self._proc = None
-            self._wanted = None
-            self._shown_path = ""
-            self._told = set()
-            self.pathChanged.emit()
-            self._set(IDLE)
-            self.closed.emit(path)
+        if self._exited_on_its_own():
             return
         if proc is not None and wants is not None and self._state == EDITING and self._parent_hwnd and not self._presentation_blocked:
             try:
@@ -677,6 +723,89 @@ class EditorHost(QObject):
                     self._focus(proc.hwnd)
             except Exception:
                 LOG.debug("editor focus follow", exc_info=True)
+
+    def _exited_on_its_own(self) -> bool:
+        """The editor was closed from its own window (its native exit button) or ended: back to the grid rather than an empty stage."""
+        proc = self._proc
+        if proc is None or self._state != EDITING or self._running(proc):
+            return False
+        LOG.info("The hosted editor exited on its own")
+        path, self._path = self._path, ""
+        self._proc = None
+        self._wanted = None
+        self._shown_path = ""
+        self._told = set()
+        self._close_poll.stop()
+        self._show_shell()
+        self.pathChanged.emit()
+        self._set(IDLE)
+        self.closed.emit(path)
+        return True
+
+    # -- the editor in a window of its own (`SeparateWindow`) ---------------------------------------------------------------
+    def _hide_shell(self) -> None:
+        """The editor's window is up: Image Triage's is out of the way until it is put away (hidden, not minimized: on Wayland a
+        program cannot bring its own minimized window back)."""
+        window = self._window
+        if window is None or self._shell_hidden:
+            return
+        self._shell_hidden = True
+        try:
+            window.hide()
+        except Exception:
+            LOG.debug("could not hide the shell's window", exc_info=True)
+
+    def _show_shell(self) -> None:
+        window, hidden, self._shell_hidden = self._window, self._shell_hidden, False
+        if window is None or not hidden:
+            return
+        try:
+            window.show()                     # in the state it was hidden in (maximized stays maximized)
+            window.raise_()
+            window.requestActivate()
+        except Exception:
+            LOG.debug("could not show the shell's window", exc_info=True)
+
+    def _end_if_it_cannot_hide(self) -> None:
+        """An editor whose window cannot be hidden (Wayland without Xwayland) is ended once its photo is put away: kept, it would stay on
+        screen over the grid. The next photo starts a new one."""
+        proc, can_hide = self._proc, getattr(self._mover, "can_hide", None)
+        if not self._separate or proc is None or can_hide is None or can_hide(proc):
+            return
+        LOG.info("The editor's window cannot be hidden here (Wayland without Xwayland): ending the editor")
+        self._proc = None
+        threading.Thread(target=self._stop, args=(proc,), name="editor-stop", daemon=True).start()
+
+    def _poll_separate_window(self) -> None:
+        """Every so often while editing: did the user close the editor's window? The answer comes from the editor's control channel,
+        so it is asked on a thread; at most one question is out at a time."""
+        proc = self._proc
+        if self._exited_on_its_own() or proc is None or self._state != EDITING or self._close_poll_busy:
+            return
+        ask = getattr(self._mover, "close_requested", None)
+        if ask is None:
+            return
+        self._close_poll_busy = True
+
+        def work() -> None:
+            try:
+                if ask(proc):
+                    self._closed_by_user.emit(proc)
+            except Exception:
+                LOG.debug("could not ask the editor about its window", exc_info=True)
+            finally:
+                self._close_poll_busy = False
+
+        threading.Thread(target=work, name="editor-window-poll", daemon=True).start()
+
+    @Slot(object)
+    def _editor_window_closed(self, proc) -> None:
+        """The user closed the editor's window, which has hidden itself: put the editor away as Space or Done does (save the photo,
+        back to the grid)."""
+        if proc is not self._proc or self._state != EDITING:
+            return
+        LOG.info("The editor's window was closed: putting the editor away")
+        self.close()
 
     @Slot(int, int, int, int)
     def setGeometry(self, x: int, y: int, width: int, height: int) -> None:
@@ -687,6 +816,8 @@ class EditorHost(QObject):
             self._place(proc)
 
     def _place(self, proc) -> None:
+        if self._separate:
+            return                            # a window of its own: where it goes is the window manager's business
         try:
             self._mover.place(proc.hwnd, *self._geometry)
         except Exception:
@@ -699,6 +830,9 @@ class EditorHost(QObject):
         if blocked:
             self._hide()
         elif self._proc is not None and self._state == EDITING:
+            if self._separate:
+                self._show(self._proc)            # "Keep editing" on a card: back to the editor's window
+                return
             self._place(self._proc)
             self._mover.show(self._proc.hwnd, True)
 
@@ -746,6 +880,7 @@ class EditorHost(QObject):
             self._wanted = None
             self._told = set()
             self._hide()
+            self._end_if_it_cannot_hide()
             path, self._path = self._path, ""
             self._shown_path = ""
             self.pathChanged.emit()
@@ -753,6 +888,9 @@ class EditorHost(QObject):
             self.closed.emit(path)
         elif what == "close-failed":
             self._set(EDITING, error)
+            if self._separate:
+                self._close_poll.stop()           # the editor's window is hidden: the card in ours says what failed
+                self._show_shell()
             if self.isSignalConnected(QMetaMethod.fromSignal(self.closeFailed)):
                 self.closeFailed.emit(error)
             else:
@@ -774,6 +912,11 @@ class EditorHost(QObject):
             self._open_wanted(failed_for=result if isinstance(result, str) else "")
 
     def _show(self, proc) -> None:
+        if self._separate:
+            self._mover.show(proc, True)
+            self._hide_shell()
+            self._close_poll.start()
+            return
         try:
             if self._parent_hwnd and proc.attached_parent != self._parent_hwnd:
                 self._mover.attach(proc.hwnd, self._parent_hwnd)
@@ -953,6 +1096,7 @@ class EditorHost(QObject):
         self._shown_path = ""
         self._told = set()
         self._hide()
+        self._end_if_it_cannot_hide()
         path, self._path = self._path, ""
         with self._host_render_lock:
             self._kept.pop(path, None)                     # what it was opened with is no longer what anything will save
@@ -998,6 +1142,12 @@ class EditorHost(QObject):
 
     def _hide(self) -> None:
         proc = self._proc
+        if self._separate:
+            self._close_poll.stop()
+            if proc is not None:
+                self._mover.show(proc, False)
+            self._show_shell()
+            return
         if proc is not None:
             try:
                 self._mover.show(proc.hwnd, False)
@@ -1014,6 +1164,7 @@ class EditorHost(QObject):
     @Slot()
     def shutdown(self) -> None:
         self._host_job_stop.set()
+        self._close_poll.stop()
         if self._filmstrip is not None:
             self._filmstrip.stop()
         if self._space_shortcut is not None:

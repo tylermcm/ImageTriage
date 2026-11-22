@@ -188,3 +188,18 @@ def test_folders_and_renames_follow_the_destination(mounts, tmp_path, monkeypatc
         file_ops.resolve_primary_rename_name("/media/sam/CARD/DCIM/IMG_1.jpg", "con")
     assert file_ops.name_warning("2026: Tbilisi?", "/media/sam/EXT/x").startswith("Windows cannot read this name.")
     assert file_ops.name_warning("Tbilisi", "/media/sam/EXT/x") == ""
+
+
+def test_the_drives_list_is_root_and_the_attached_volumes(mounts):
+    extra = path_policy.parse_mountinfo(MOUNTINFO + """\
+37 22 0:43 / /mnt/wsl rw,relatime shared:9 - tmpfs none rw
+38 22 0:44 / /mnt/wslg rw,relatime shared:10 - tmpfs none rw
+39 31 0:45 / /media/sam/CARD/inner rw,relatime shared:11 - vfat /dev/sdf1 rw
+""")
+    roots = path_policy.posix_drive_roots(extra)
+    assert roots[0] == ("/", DRIVE_FIXED)
+    paths = [path for path, _kind in roots]
+    # the network mounts in the home folder and /net are folders inside "/", not volumes of their own; WSL's plumbing is left out,
+    # and a mount inside a volume is part of that volume's row
+    assert paths == ["/", "/media/sam/CARD/", "/media/sam/EXT/", "/mnt/win/", "/mnt/big card/"]
+    assert dict(roots)["/media/sam/CARD/"] == DRIVE_REMOVABLE

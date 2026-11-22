@@ -3,6 +3,7 @@ folders and what blocks Apply."""
 from __future__ import annotations
 
 import os
+import sys
 import time
 
 import pytest
@@ -271,7 +272,10 @@ def test_the_export_planner_reads_each_folder_once_and_still_finds_names_already
     (out / "a_1.JPG").write_bytes(b"x")                                                # a name in other case is the same name on Windows
     sources = [pipeline.ExportSource(str(tmp_path / "A.png"), "A.png"), pipeline.ExportSource(str(tmp_path / "B.png"), "B.png")]
     plan = pipeline.build_plan(sources, {**pipeline.DEFAULTS, "dest": "choose", "folder": str(out), "exists": "unique"})
-    assert [i.target_name for i in plan.items] == ["A_2.jpg", "B.jpg"]
+    from image_triage.path_policy import names_fold_case
+
+    # a_1.JPG takes the name A_1.jpg where names differing in case are one file (Windows, macOS, a FAT card on Linux), not on ext4
+    assert [i.target_name for i in plan.items] == (["A_2.jpg", "B.jpg"] if names_fold_case(str(out)) else ["A_1.jpg", "B.jpg"])
     skip = pipeline.build_plan(sources, {**pipeline.DEFAULTS, "dest": "choose", "folder": str(out), "exists": "skip"})
     assert [i.status for i in skip.items] == ["Skip", "Export"]
 
@@ -357,3 +361,20 @@ def test_the_batch_window_folds_its_sections_and_its_numbers_can_be_typed(qapp, 
     assert batch.get("start") == 999999                                 # more than the field takes: clamped by the model
     assert not [w for w in warnings if "ReferenceError" in w or "TypeError" in w or "is not a type" in w or "unavailable" in w], warnings
     window.close(); engine.deleteLater(); pump(qapp, 0.2)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows always folds case; this is about Linux's file systems")
+@pytest.mark.parametrize("filesystem, expected", [("ext4", "A_1.jpg"), ("vfat", "A_2.jpg"), ("exfat", "A_2.jpg"), ("cifs", "A_2.jpg")])
+def test_on_linux_an_export_to_a_card_does_not_take_a_name_that_differs_only_in_case(tmp_path, monkeypatch, filesystem, expected):
+    if sys.platform == "darwin":
+        pytest.skip("macOS folds case on its own disks too")
+    from image_triage import export_pipeline as pipeline, path_policy
+
+    monkeypatch.setattr(path_policy, "filesystem_type", lambda path: filesystem)
+    out = tmp_path / "card"
+    out.mkdir()
+    (out / "A.jpg").write_bytes(b"x")
+    (out / "a_1.JPG").write_bytes(b"x")
+    sources = [pipeline.ExportSource(str(tmp_path / "A.png"), "A.png")]
+    plan = pipeline.build_plan(sources, {**pipeline.DEFAULTS, "dest": "choose", "folder": str(out), "exists": "unique"})
+    assert [i.target_name for i in plan.items] == [expected]

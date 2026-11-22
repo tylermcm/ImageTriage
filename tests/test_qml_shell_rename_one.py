@@ -1,6 +1,7 @@
 """F2 with one photo: the name is edited on its card and the whole bundle is renamed off the UI thread, with undo."""
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -135,7 +136,13 @@ def test_the_name_rules_are_the_existing_ones_and_are_answered_without_the_disk(
     assert w.photos.renameCheck(row, "new.name") == {"error": "", "warning": "", "same": False}
     monkeypatch.setattr(rename_one, "name_warning", lambda name, directory=None: "Windows could not read this name.")
     assert w.photos.renameCheck(row, "what")["warning"] == "Windows could not read this name."
-    assert "cannot contain" in w.photos.renameCheck(row, "what?")["error"]             # a character Windows refuses is an error, not a warning
+    # a character the destination's file system refuses is an error, not a warning (the rules are the destination's: `?` is refused
+    # on Windows and on a FAT card, and is an ordinary character on ext4)
+    from image_triage import path_policy
+
+    refused = bool(path_policy.check_name("what?", str(w.shoot)).error)
+    assert refused == (os.name == "nt" or path_policy.filesystem_type(str(w.shoot)) in path_policy._FAT_FILESYSTEMS)
+    assert ("cannot contain" in w.photos.renameCheck(row, "what?")["error"]) == refused
     assert w.files.renameRow(row, "sub/b") != "" and not w.files.busy, "a name that cannot be used starts nothing"
 
 
