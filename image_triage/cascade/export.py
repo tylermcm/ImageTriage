@@ -66,6 +66,8 @@ STAGE_REPEAT = "repeat"            # followed by the check that folded it: "repe
 STAGE_QUALITY = "quality_ranker"
 STAGE_APPEAL = "appeal_ranker"
 STAGE_UNRANKED = "unranked"
+STAGE_SHARPNESS = "sharpness_ranker"   # the stack ranked by sharpness and exposure, without the AI rankers (CascadeSettings.rank_without_ai)
+SHARPNESS_RANKED = "no AI ranking on this computer"   # in the summary of every frame such a ranking decided (folder._outcome)
 
 # Folder-wide ordering for "AI Rank" sorting: picks first, flagged frames last.
 _ROLE_SCORE = {ROLE_PICK: 1.0, ROLE_FINAL: 0.8, ROLE_DUPLICATE: 0.5, ROLE_BRACKET: 0.5, ROLE_FLAGGED: 0.45, ROLE_CUT: 0.4, ROLE_NO_PICK: 0.3, ROLE_REJECTED: 0.1}
@@ -123,7 +125,9 @@ def decided_by(outcome: FrameOutcome, measures: Mapping[str, float] | None = Non
     if outcome.role == ROLE_CUT or outcome.rank is not None:
         if "aesthetic_score" in measures:
             return STAGE_APPEAL
-        return STAGE_QUALITY if "maniqa_score" in measures else ""
+        if "maniqa_score" in measures:
+            return STAGE_QUALITY
+        return STAGE_SHARPNESS if SHARPNESS_RANKED in outcome.summary else ""
     return STAGE_UNRANKED
 
 

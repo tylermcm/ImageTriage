@@ -152,8 +152,9 @@ def test_maniqa_is_not_called_when_it_could_not_cut_anything():
     assert maniqa_calls == []
 
 
-def test_without_rankers_every_representative_is_final_and_unranked():
-    result = run_cascade([frame(str(i), distance=i * 9) for i in range(4)])
+def test_without_rankers_and_without_ranking_by_sharpness_every_representative_is_final_and_unranked():
+    # rank_without_ai off: the cascade as it was before a GPU-less run ranked by sharpness (tests/test_cascade_cheap_ranking.py)
+    result = run_cascade([frame(str(i), distance=i * 9) for i in range(4)], CascadeSettings(rank_without_ai=False))
     assert all(d.role is FrameRole.FINAL and d.rank is None for d in result.decisions)
     assert result.scored_by_maniqa == result.scored_by_aesthetic == 0
 

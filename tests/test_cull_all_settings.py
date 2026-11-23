@@ -230,7 +230,7 @@ def test_every_cascade_setting_has_a_slider_or_a_control():
     assert cascade_controls.uncovered_fields() == []
     names = {field.name for field in fields(CascadeSettings)}
     assert set(cascade_controls.TUNED_FIELDS) | {control.key for control in cascade_controls.CONTROLS} == names
-    assert len(cascade_controls.CONTROLS) == 11 and len(TUNES) == 10
+    assert len(cascade_controls.CONTROLS) == 12 and len(TUNES) == 10
     assert all(control.label and control.help.endswith(".") for control in cascade_controls.CONTROLS)
 
 
@@ -259,7 +259,7 @@ def test_cascade_positions_become_real_settings_and_bad_ones_are_refused():
 def test_the_cull_window_sets_resets_and_runs_with_the_advanced_values(tmp_path):
     app = QApplication.instance() or QApplication([])
     cull = CullModel(PhotoModel(parent=app), memory=True, parent=app)
-    assert not cull.view["advOpen"] and not cull.view["advChanged"] and len(cull.view["advanced"]) == 11
+    assert not cull.view["advOpen"] and not cull.view["advChanged"] and len(cull.view["advanced"]) == 12
     cull.toggleAdvanced()
     cull.setAdvanced("final_keep", 3)
     cull.setAdvanced("linkage", "closest")

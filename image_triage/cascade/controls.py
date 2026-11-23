@@ -1,8 +1,8 @@
 """The cascade settings that the Cull window's ten Fine-tune sliders do not cover, as controls. No Qt.
 
-`CascadeSettings` (model.py) has 21 fields. Ten are the Fine-tune sliders (`cull_model.TUNES`: split_jump, duplicate_distance,
+`CascadeSettings` (model.py) has 22 fields. Ten are the Fine-tune sliders (`cull_model.TUNES`: split_jump, duplicate_distance,
 soft_ratio, clip_floor, blown_out, repeat_distance, ssim_threshold, repeat_window, repeat_rounds, and the eyes threshold, which is a
-run setting). The other eleven are here, each with a label, one plain line, the right kind of control and its range.
+run setting). The other twelve are here, each with a label, one plain line, the right kind of control and its range.
 
 `CascadeSettings` does not validate itself, so the ranges are what the code that reads each field can use: a picture-hash distance is
 0..64, a share is 0..1, a keep count is at least 1, `linkage` is one of the two names `stacking.complete_linkage` accepts. Three
@@ -54,6 +54,8 @@ CONTROLS = (
             "slider", 0.1, 1.0, 0.05, unit="%"),
     Control("maniqa_keep", "Quality ranker keeps", "How many frames of a stack the quality ranker passes on to the appeal ranker.", "slider", 1, 10, 1),
     Control("final_keep", "Kept per stack", "How many frames of a stack the last ranker keeps. The rest are cut.", "slider", 1, 5, 1),
+    Control("rank_without_ai", "Rank by sharpness without AI", "Without the AI rankers (no usable GPU), keep each stack's sharpest, best exposed frames, as many as Kept per stack.",
+            "switch"),
 )
 _BY_KEY = {control.key: control for control in CONTROLS}
 _DEFAULT = CascadeSettings()

@@ -62,6 +62,9 @@ class CascadeSettings:
     split_focal_ratio: float | None = None  # start a new stack if consecutive focal lengths differ by more than this ratio
     split_face_ratio: float | None = None  # the same for the largest-face area (both present and >= 0.01)
     all_flagged_skips_collapse: bool = False  # when every frame of a stack is rejecting-flagged, skip near-duplicate collapse
+    # Without either AI ranker (no usable GPU, or the models not installed), rank a stack by its frames' sharpness and exposure and keep
+    # final_keep of them, as the rankers would; off leaves every collapsed representative kept, unranked.
+    rank_without_ai: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -72,6 +75,7 @@ class FrameDecision:
     flags: tuple[str, ...] = ()
     rank: int | None = None  # 1-based, only for FINAL frames
     duplicate_of: str | None = None
+    ranked_by: str = ""  # "sharpness" when the stack was ranked without the AI rankers (CascadeSettings.rank_without_ai)
 
 
 @dataclass(slots=True, frozen=True)

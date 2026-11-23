@@ -161,8 +161,9 @@ def test_a_ranker_error_mid_run_falls_back_to_the_cheap_passes(folder):
     assert len(events["finished"]) == 1 and not events["failed"]
     summary = (paths.report_dir / "ranked_export_summary.json").read_text(encoding="utf-8")
     assert "Ranking skipped: weights missing" in summary and '"ranked_with": []' in summary
-    assert results["a1.jpg"].cascade_role == "final" and results["a2.jpg"].cascade_role == "final"  # unranked: both kept, no pick offered
-    assert ai_cull_bucket_for_result(results["a1.jpg"]) is AICullBucket.KEEPER
+    # no ranker: the stack of two is ranked by sharpness, so both are kept and the sharper is offered as the pick
+    assert sorted((results["a1.jpg"].cascade_role, results["a2.jpg"].cascade_role)) == ["final", "pick"]
+    assert {ai_cull_bucket_for_result(results[name]) for name in ("a1.jpg", "a2.jpg")} == {AICullBucket.AI_PICK, AICullBucket.KEEPER}
 
 
 def test_a_winner_the_person_already_marked_is_never_flagged(folder):

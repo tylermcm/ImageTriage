@@ -35,13 +35,13 @@ def decide_ranking(runtime_device: str | None, rank_on_cpu: bool, *, quality_ins
     if not decision.use_rankers:
         return decision
     if not (quality_installed or appeal_installed):
-        return decision.without_ranking("Ranking skipped: the Culling models are not installed. Set up AI can add them.")
+        return decision.without_ranking("Ranking skipped: the Culling models are not installed. Each stack kept its sharpest frames instead; Set up AI can add them.")
     return replace(decision, use_quality=quality_installed, use_appeal=appeal_installed)
 
 
 def _decide_device(runtime_device: str | None, rank_on_cpu: bool) -> RankingDecision:
     if runtime_device is None:
-        return RankingDecision(False, note="Ranking and the eyes-closed check skipped: the AI runtime is not installed. Cleanup ran without them; AI setup can add it.")
+        return RankingDecision(False, note="Ranking and the eyes-closed check skipped: the AI runtime is not installed. Each stack kept its sharpest frames instead; AI setup can add the AI ranking.")
     if runtime_device.strip().lower().startswith(("cuda", "gpu")):
         return RankingDecision(True, "gpu", use_blink=True)
     if rank_on_cpu:
@@ -57,7 +57,7 @@ def _decide_device(runtime_device: str | None, rank_on_cpu: bool) -> RankingDeci
                 "Rank on the CPU? Choose No to run the quick cleanup without ranking."
             ),
         )
-    return RankingDecision(False, use_blink=True, note="Ranking skipped: no usable GPU. Turn on ranking on the CPU in settings to include it (slow).")
+    return RankingDecision(False, use_blink=True, note="Ranking skipped: no usable GPU. Each stack kept its sharpest frames instead; turn on ranking on the CPU in settings for the AI ranking (slow).")
 
 
 def face_recognizer_missing() -> str:

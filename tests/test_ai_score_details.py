@@ -108,7 +108,7 @@ def test_scores_of_a_ranking_that_failed_part_way_are_not_kept(folder):
     results, bundle = roles(paths, records)
     assert any("Ranking skipped" in note for note in task.notes) and task.ranked_with == ()
     assert all(not {"maniqa_score", "aesthetic_score"} & set(dict(result.measures)) for result in results.values())
-    assert details_for_result(results["a2.jpg"], bundle.summary)["stage"] == "Cleanup passes only (no ranker compared it)"
+    assert details_for_result(results["a2.jpg"], bundle.summary)["stage"] == "Sharpness ranking (no AI ranker on this computer)"   # the fallback ranks by sharpness
 
 
 def test_an_older_report_still_loads_and_claims_nothing(folder):

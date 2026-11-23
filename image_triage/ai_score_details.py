@@ -35,6 +35,7 @@ _STAGES = {
     "quality_ranker": "Quality ranker (MANIQA)",
     "appeal_ranker": "Appeal ranker (Q-ReAlign)",
     "unranked": "Cleanup passes only (no ranker compared it)",
+    "sharpness_ranker": "Sharpness ranking (no AI ranker on this computer)",
 }
 # The native engine's score names (aiculler.decide / aiculler.scorers.models): label, unit, scale. The first four are always listed
 # (recorded or not); the others only when the engine recorded them. Anything else is shown under the engine's own name.

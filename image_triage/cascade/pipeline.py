@@ -20,6 +20,12 @@ from .stacking import complete_linkage, hamming, representative, split_into_stac
 Scorer = Callable[[Sequence[str]], Mapping[str, float]]
 
 
+def cheap_score(frame: FrameFeatures) -> float:
+    """How a stack is ranked without the AI rankers: the centre's sharpness (variance of the Laplacian), less the share of the picture
+    that is blown out or crushed to black. Within one stack the frames show one scene, so the sharper frame is nearly always the better."""
+    return max(0.0, frame.centre_sharpness) * (1.0 - min(0.5, max(0.0, frame.extremes)))
+
+
 def run_cascade(
     frames: Sequence[FrameFeatures],
     settings: CascadeSettings | None = None,
@@ -90,11 +96,19 @@ def run_cascade(
                 cut_roles[i] = FrameRole.CUT_BY_RANKING
             survivors = order[: settings.final_keep]
             ranked = True
+        ranked_by = ""
+        if maniqa is None and aesthetic is None and settings.rank_without_ai and len(survivors) > 1:
+            # No AI ranker: the sharpest, most evenly exposed frames, as many as the last ranker would keep (cheap_score).
+            order = sorted(survivors, key=lambda i: (-cheap_score(frames[i]), i))
+            for i in order[settings.final_keep:]:
+                cut_roles[i] = FrameRole.CUT_BY_RANKING
+            survivors = order[: settings.final_keep]
+            ranked, ranked_by = True, "sharpness"
 
         for position, i in enumerate(survivors, start=1):
-            decisions[i] = FrameDecision(keys[i], stack_index, FrameRole.FINAL, flags[i], rank=position if ranked else None)
+            decisions[i] = FrameDecision(keys[i], stack_index, FrameRole.FINAL, flags[i], rank=position if ranked else None, ranked_by=ranked_by)
         for i, role in cut_roles.items():
-            decisions[i] = FrameDecision(keys[i], stack_index, role, flags[i])
+            decisions[i] = FrameDecision(keys[i], stack_index, role, flags[i], ranked_by=ranked_by)
 
     ordered = tuple(decisions[i] for i in range(len(frames)))
     return CascadeResult(tuple(stack_results), ordered, scored_maniqa, scored_aesthetic, {d.key: d for d in ordered})

@@ -202,6 +202,11 @@ def _outcome(
             kind, text = ROLE_FLAGGED, f"Flagged: {why}. It is the only frame, so it is kept for you to decide."
         else:
             kind, text = ROLE_FLAGGED, f"Flagged: {why}. Kept because every frame in this stack was flagged, so none could be set aside."
+    elif role is FrameRole.FINAL and decision.ranked_by == "sharpness":
+        if decision.rank == 1:
+            kind, text = ROLE_PICK, f"Sharpest of this stack of {stack_size} (ranked by sharpness and exposure: no AI ranking on this computer)."
+        else:
+            kind, text = ROLE_FINAL, f"Kept: next sharpest in a stack of {stack_size} (no AI ranking on this computer)."
     elif role is FrameRole.FINAL:
         if decision.rank == 1 and stack_size > 1:
             kind, text = ROLE_PICK, f"Best of this stack of {stack_size} after the cleanup and ranking passes."
@@ -217,6 +222,8 @@ def _outcome(
         kind, text = ROLE_DUPLICATE, f"Near-duplicate of {name}, the frame kept for this group." if name else "Near-duplicate of the frame kept for this group."
     elif role is FrameRole.NO_PICK:
         kind, text = ROLE_NO_PICK, "Every frame in this stack is blown out, so no pick is offered."
+    elif decision.ranked_by == "sharpness":
+        kind, text = ROLE_CUT, "Less sharp than the kept frames in this stack (ranked by sharpness and exposure: no AI ranking on this computer)."
     else:
         kind, text = ROLE_CUT, "Ranked below the kept frames in this stack."
     return FrameOutcome(
