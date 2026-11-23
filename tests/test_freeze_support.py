@@ -173,3 +173,17 @@ class AiWorkerScriptsTests(unittest.TestCase):
             source = (package / f"{name}.py").read_text(encoding="utf-8")
             imported = set(re.findall(r"^\s*import ([a-z_]+)\b", source, re.M)) & local
             self.assertEqual(sorted(imported - set(AI_WORKER_SCRIPTS)), [], f"{name} imports modules that are not bundled")
+
+
+def test_the_frozen_app_carries_all_of_pip_for_the_ai_runtime_installer():
+    # pip imports some of its own modules by computed names (rich's unicode tables in pip 26), which cx_Freeze's scan cannot see:
+    # the whole package ships as files beside the compiled modules, or every AI runtime install fails.
+    from pathlib import Path
+
+    import pip
+
+    import freeze_support
+
+    files = dict((target, source) for source, target in freeze_support._pip_include_files())
+    assert Path(files["lib/pip"]) == Path(pip.__file__).resolve().parent
+    assert "*_pip_include_files()," in Path(freeze_support.__file__).read_text(encoding="utf-8")

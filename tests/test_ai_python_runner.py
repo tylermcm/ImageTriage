@@ -213,3 +213,38 @@ class ManagedRuntimeHardFailTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_frozen_runner_imports_the_worker_package_from_the_worker_tree(tmp_path, monkeypatch):
+    """A frozen app's own image_triage (lib/) has no workers, and the runtime resolver imports it first: the runner must switch the
+    package to ai_workers/py, or -m image_triage.cascade.rankers.worker fails on every machine but the one that built it."""
+    runner = _load_runner_module()
+    app = tmp_path / "app"
+    worker = app / "ai_workers" / "py" / "pkg_fx" / "sub"
+    worker.mkdir(parents=True)
+    (worker.parent / "__init__.py").write_text("", encoding="utf-8")
+    (worker / "__init__.py").write_text("", encoding="utf-8")
+    (worker / "worker.py").write_text("", encoding="utf-8")
+    frozen_copy = types.ModuleType("pkg_fx")
+    frozen_copy.__path__ = [str(tmp_path / "lib" / "pkg_fx")]
+    monkeypatch.setitem(sys.modules, "pkg_fx", frozen_copy)
+    monkeypatch.setitem(sys.modules, "pkg_fx.sub", types.ModuleType("pkg_fx.sub"))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(app / "ai_python_runner"))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+
+    runner._prefer_worker_tree("pkg_fx.sub.worker")
+
+    assert "pkg_fx" not in sys.modules and "pkg_fx.sub" not in sys.modules
+    assert runner._path_key(sys.path[0]) == runner._path_key(app / "ai_workers" / "py")
+
+
+def test_frozen_runner_leaves_modules_alone_when_the_tree_lacks_them(tmp_path, monkeypatch):
+    runner = _load_runner_module()
+    module = types.ModuleType("pkg_fy")
+    monkeypatch.setitem(sys.modules, "pkg_fy", module)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "ai_python_runner"))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    runner._prefer_worker_tree("pkg_fy.worker")
+    assert sys.modules["pkg_fy"] is module

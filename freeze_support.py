@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 APP_ICON_WINDOWS_PATH = ROOT / "build_assets" / "icons" / "image_triage-v5.ico"
 APP_ICON_LINUX_PATH = ROOT / "build_assets" / "icons" / "image_triage-v5.png"
+APP_ICON_MAC_PATH = ROOT / "build_assets" / "icons" / "image_triage-v5.icns"
 CLI_CULLER_PACKAGE_ROOT = ROOT / "aiculler"
 AI_SITE_PACKAGES_STAGE_ROOT = ROOT / "build_assets" / "ai_site_packages"
 AI_STDLIB_STAGE_ROOT = ROOT / "build_assets" / "ai_stdlib"
@@ -117,6 +118,7 @@ class FreezeAssetLayout:
             # The QML shell loads its .qml files from beside its modules (qml_shell.app.QML_DIR).
             (str(ROOT / "image_triage" / "qml_shell" / "qml"), "lib/image_triage/qml_shell/qml"),
             *_pocketdrop_include_files(),
+            *_pip_include_files(),
             (str(CLI_CULLER_PACKAGE_ROOT), "aiculler"),
             *[(str(ROOT / "image_triage" / f"{name}.py"), f"ai_workers/{name}.py") for name in AI_WORKER_SCRIPTS],
             *cascade_worker_include_files(),
@@ -262,12 +264,22 @@ def cli_culler_worker_include_files(root: Path | None = None) -> list[tuple[str,
     return files
 
 
+def _pip_include_files() -> list[tuple[str, str]]:
+    """pip as plain files too, beside the modules cx_Freeze compiles: the frozen AI runtime installer runs pip, and pip imports some of
+    its own modules by a name it works out at run time, which no import scan can find (pip 26's rich loads
+    ``pip._vendor.rich._unicode_data.unicode17-0-0``; without it every AI runtime install failed at once)."""
+    import pip
+
+    return [(str(Path(pip.__file__).resolve().parent), "lib/pip")]
+
+
 def _pocketdrop_include_files() -> list[tuple[str, str]]:
     """PocketDrop's native library, beside the package that loads it (image_triage/pocketdrop/_bridge.py). Build it first with
-    native/pocketdrop/build_windows.bat (pocketdrop.dll) or native/pocketdrop/build_linux.sh (libpocketdrop.so). macOS has no build yet."""
-    if sys.platform == "darwin":
-        return []
-    name, script = ("pocketdrop.dll", "build_windows.bat") if os.name == "nt" else ("libpocketdrop.so", "build_linux.sh")
+    native/pocketdrop/build_windows.bat (pocketdrop.dll), build_linux.sh (libpocketdrop.so) or build_macos.sh (libpocketdrop.dylib)."""
+    name, script = {
+        "win32": ("pocketdrop.dll", "build_windows.bat"),
+        "darwin": ("libpocketdrop.dylib", "build_macos.sh"),
+    }.get(sys.platform, ("libpocketdrop.so", "build_linux.sh"))
     library = ROOT / "image_triage" / "pocketdrop" / name
     if not library.is_file():
         raise FileNotFoundError(f"{library} is missing. Run native/pocketdrop/{script} before freezing.")

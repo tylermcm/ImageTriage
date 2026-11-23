@@ -188,7 +188,9 @@ def _fail_runtime(message: str) -> None:
 
 
 def _cached_runtime_site_packages(*, device: str) -> tuple[Path, ...]:
-    candidate_roots = [Path(__file__).resolve().parents[1]]
+    # From a checkout, the checkout holds image_triage. A frozen runner has its own copy in lib/; its __file__ is the path the
+    # build machine had, so adding that would put the build machine's checkout on sys.path wherever it happens to exist.
+    candidate_roots = [] if getattr(sys, "frozen", False) else [Path(__file__).resolve().parents[1]]
     for root in candidate_roots:
         root_text = str(root)
         if root_text not in sys.path:
@@ -297,6 +299,31 @@ def _find_module_file(module_name: str) -> Path | None:
     return None
 
 
+def _worker_tree() -> Path:
+    """The plain-file copy of the worker modules a frozen build ships (freeze_support.CASCADE_WORKER_TREE)."""
+    return Path(sys.executable).resolve().parent / "ai_workers" / "py"
+
+
+def _prefer_worker_tree(module_name: str) -> None:
+    """Import ``module_name``'s package from the frozen build's worker tree, not from the frozen app's own copy.
+
+    The frozen app's ``image_triage`` (lib/) leaves the workers out, and the runtime resolver has already imported it by now, so a
+    ``PYTHONPATH`` entry for the tree comes too late: the package's ``__path__`` is fixed. Forget that import and put the tree first;
+    it holds the worker's whole import closure, the resolver's modules included.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    tree = _worker_tree()
+    parts = module_name.split(".")
+    base = tree.joinpath(*parts)
+    if not (base.with_suffix(".py").is_file() or (base / "__main__.py").is_file()):
+        return
+    top = parts[0]
+    for name in [name for name in sys.modules if name == top or name.startswith(top + ".")]:
+        del sys.modules[name]
+    _prepend_path_entry(tree)
+
+
 def _run_module(argv: list[str]) -> int:
     """``ai_python_runner -m <module> [args...]``, with ``python -m`` semantics."""
     if len(argv) < 2 or not argv[1]:
@@ -308,6 +335,7 @@ def _run_module(argv: list[str]) -> int:
         _configure_runtime_environment(module_file)
     except ManagedRuntimeError:
         return 3
+    _prefer_worker_tree(module_name)
     # The module may only have become findable once the package roots were added.
     module_file = module_file or _find_module_file(module_name)
     if os.environ.get("IMAGE_TRIAGE_AI_TRACE_PATH") == "1":

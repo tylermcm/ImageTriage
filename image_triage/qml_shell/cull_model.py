@@ -23,7 +23,7 @@ from ..cascade.launch import CPU_SECONDS_PER_FRAME_FAST, CPU_SECONDS_PER_FRAME_L
 from ..cascade.model import CascadeSettings
 from ..cascade.rankers.spec import MANIQA, QREALIGN
 from ..cascade import controls as cascade_controls
-from .ai_center import STATE_WORDS, AiCenterBackend
+from .ai_center import STATE_WORDS, TORCH_MODELS, AiCenterBackend
 from .cull_real import CullRun, outcomes_from_bundle, outcomes_from_result, reason_of, stacks_of
 
 CPU_KEY = "ai/cascade_rank_on_cpu"
@@ -436,6 +436,7 @@ class CullModel(QObject):
         rt_ready = s["rt"] == "ready"
         eyes_on = rt_ready and s["faceOk"] and s["eyes"]
         rank_has = s["models"]["quality"] and s["models"]["appeal"]
+        rank_possible = self._ai_state is None or self._ai_state.get("torchSupported", True) is not False   # no PyTorch on Intel Macs
         secs = max(2, round(n * 0.25))
         v = s["vals"]
         page = s["page"]
@@ -452,6 +453,8 @@ class CullModel(QObject):
         rank_desc = ("Suggests the strongest one or two frames in each stack, using two AI models for quality and appeal. They are suggestions only: nothing is selected for you. "
                      if rank_has else "Suggests the strongest frames in each stack. The Appeal model is not installed yet. ") + \
                     ("Graphics card found: about 1 second per frame." if s["gpu"] else "No usable graphics card, so it is slow: 7 seconds to over a minute per frame.")
+        if not rank_possible:
+            rank_desc = "Ranking needs PyTorch, which has no build for Intel Macs, so it is not available on this Mac. The cleanup and stacks work."
         rt_desc = {"ready": "Finds the faces in each frame and checks whether anyone has their eyes closed, with a face model that runs on this PC, about 40 ms per frame. Cheap, so it runs whenever the AI runtime is set up.",
                    "missing": "Needs the AI runtime, a one-time download. The cleanup works without it.", "installing": "Setting up the AI runtime…",
                    "error": "The AI runtime could not be set up.", "checking": "Looking at what is installed…"}[s["rt"]]
@@ -462,7 +465,7 @@ class CullModel(QObject):
         rtp = round(s["rtp"] * 100)
         rt_step = (self._ai_state["step"] if self._ai_state is not None else
                    ("Downloading the Python runtime" if s["rtp"] < 0.3 else "Installing packages" if s["rtp"] < 0.75 else "Checking that it starts") + f" · {rtp}%")
-        est = secs + (2 if eyes_on else 0) + (round(n * (0.8 if s["gpu"] else 7) * 0.4) if s["rank"] and (s["gpu"] or s["cpuDefault"]) and rank_has else 0)
+        est = secs + (2 if eyes_on else 0) + (round(n * (0.8 if s["gpu"] else 7) * 0.4) if s["rank"] and (s["gpu"] or s["cpuDefault"]) and rank_has and rank_possible else 0)
         est_text = f"About {est} seconds for {n} photos" + (", eyes check included" if eyes_on else "") + ("" if s["rank"] else ". Ranking is off")
         stage_right = lambda i: "Done" if s["stage"] > i else (f"{round(s['p'] * n)} of {n}" if s["stage"] == i else ("Skipped" if i == 2 and not eyes_on else ""))
         stages = [{"label": lab, "right": stage_right(i), "state": "done" if s["stage"] > i else ("cur" if s["stage"] == i and s["running"] else ("skip" if i == 2 and not eyes_on else "")),
@@ -594,10 +597,11 @@ class CullModel(QObject):
                        "gpuDot": "ok" if s["gpu"] else "warn", "gpuState": "Found" if s["gpu"] else "Not found",
                        "gpuDesc": "NVIDIA GeForce RTX 4070. Ranking takes about 1 second per frame." if s["gpu"] else "Ranking would run on the CPU: 7 seconds to over a minute per frame. The cleanup and the eyes check do not need a graphics card.",
                        "vcShow": s["vcOld"], "vcFound": "Visual C++ 14.36 (2023)", "vcNeeded": "14.40",
-                       "models": [self._sample_model(k, name, on, desc) for k, name, on, desc in (
+                       "models": (sample := [self._sample_model(k, name, on, desc) for k, name, on, desc in (
                            ("face", "Face model (eyes-closed check)", rt_ready, "MediaPipe face landmarks. Runs on the CPU."),
                            ("quality", "Quality ranker", s["models"]["quality"], "Scores technical quality. Downloaded on first use."),
-                           ("appeal", "Appeal ranker", s["models"]["appeal"], "Scores how appealing a frame is. Downloaded on first use; best with a graphics card."))],
+                           ("appeal", "Appeal ranker", s["models"]["appeal"], "Scores how appealing a frame is. Downloaded on first use; best with a graphics card."))]),
+                       "groups": self._model_groups(sample),
                        "cpu": s["cpuDefault"], "defSens": s["sens"], "runs": self._runs(flagged, applied) if s["runs"] else [], "noRuns": not s["runs"]},
         }
         if self._native:
@@ -904,39 +908,47 @@ class CullModel(QObject):
                 ("appeal", "Appeal ranker", "Scores how appealing a frame is (Q-ReAlign). Best with a graphics card."),
                 ("search", "Search model (semantic search)", "Reads each photo once so the folder can be searched in plain words (TinyCLIP). People uses it too."),
                 ("people", "Face recognizer (People)", "Groups the faces found in a folder into people (AdaFace). Runs on the CPU."),
-                ("denoise", "AI Denoise (RAW editor)", "Detail > Denoise: removes noise from the raw sensor data (RawNIND). Runs on the CPU."),
-                ("superres", "Super Resolution (RAW editor)", "Detail > Super Resolution: doubles the size of a developed photo (Real-ESRGAN x2 and x4).")):
+                ("denoise", "AI Denoise", "Detail > Denoise: removes noise from the raw sensor data (RawNIND). Runs on the CPU."),
+                ("superres", "Super Resolution", "Detail > Super Resolution: doubles the size of a developed photo (Real-ESRGAN x2 and x4)."),
+                ("birefnet", "Subject masks", "Select Subject and Background, and the edges of People masks (BiRefNet)."),
+                ("sam", "Click select", "Selects the object you click, and splits People masks into persons (SAM 2.1)."),
+                ("depth", "Depth", "Depth for Lens Blur and depth masks (Depth Anything V2)."),
+                ("oneformer", "Scene regions", "Sky, landscape and people regions (OneFormer).")):
             m = a["models"].get(key)
             if m is None:
                 continue
+            if key in TORCH_MODELS[2:] and a.get("torchSupported", True) is False:
+                continue                            # an Intel Mac: no PyTorch, so these could be installed but never run
             size = format_mb(m["mb"]) if m["mb"] else ""
             ready = m["state"] == "ready"
+            queued = bool(m.get("queued"))
             if m["busy"]:
                 state, tone = m["verb"] + "…", "warn"
+            elif queued:
+                state, tone = "Waiting", "warn"
             elif m["error"]:
                 state, tone = "Failed", "bad"
             else:
                 state, tone = STATE_WORDS.get(m["state"], "Not installed"), "ok" if ready else ("warn" if m["state"] == "missing" else "bad")
-            editor = key in ("denoise", "superres")
-            if editor:
-                # No download yet: the file is converted from the authors' checkpoint and picked here (docs/ai_denoise.md)
-                text = desc + (f" {size}." if ready else f" {size}. No download yet: install it from the .onnx file.")
-            else:
-                text = desc + (f" {size}." if size and key == "face" else (f" {size}, downloaded when you install it." if size else ""))
+            # Denoise and Super Resolution download from Image Triage's own release (editor_models.DOWNLOAD_BASE) like the others.
+            text = desc + (f" {size}." if size and key == "face" else (f" {size}, downloaded when you install it." if size else ""))
             if m["error"]:
                 text = m["error"]
             elif not ready and m["state"] not in ("missing",) and m["problem"]:
-                text = m["problem"] + (" Install it again from the .onnx file." if editor else " Repair downloads it again.")
+                text = m["problem"] + " Repair downloads it again."
             elif key == "face" and rt != "ready" and ready:
                 text += " It runs once the AI runtime is set up."
+            if queued:
+                text += " Starts when the one before it is done."
             if m.get("kept") and not ready and not m["busy"]:
                 # Only said when the bytes are really on disk (`ai_model_store.bundle_partial_bytes`).
                 text += f" An interrupted download is kept ({format_mb(max(1, round(m['kept'] / 1e6)))} so far): the next try continues from there."
-            models.append({"key": key, "name": name, "on": ready, "desc": text, "state": state, "tone": tone, "size": size,
-                           "btn": "Cancel" if m["busy"] else ("Remove" if editor and ready else ("Install from file…" if editor else ("Try again" if m["error"] else ("Install" if m["state"] == "missing" else ("Repair" if not ready else "Remove"))))),
-                           "pick": editor and not ready and not m["busy"],
-                           "primary": not m["busy"] and (m["state"] == "missing" or bool(m["error"])), "busy": m["busy"], "pct": m["pct"], "step": m["step"],
-                           "confirm": ready and not m["busy"], "locked": a["busy"] and not m["busy"]})
+            models.append({"key": key, "name": name, "on": ready, "desc": text, "state": state, "tone": tone, "size": size, "mb": int(m["mb"] or 0),
+                           "btn": "Cancel" if m["busy"] or queued else ("Try again" if m["error"] else ("Install" if m["state"] == "missing" else ("Repair" if not ready else "Remove"))),
+                           "pick": False, "queued": queued, "error": bool(m["error"]),
+                           "primary": not m["busy"] and not queued and (m["state"] == "missing" or bool(m["error"])), "busy": m["busy"], "pct": m["pct"], "step": m["step"],
+                           # an install asked for while something runs waits its turn; a removal, and anything while the runtime is deleted, waits for nothing to run
+                           "confirm": ready and not m["busy"], "locked": a["busy"] and not m["busy"] and (ready or bool(a.get("removing")))})
         return {"rtDot": rt_dot, "rtState": rt_state,
                 "rtTestShow": rt == "ready" and can_test and (probing or not a["busy"]), "rtTesting": probing,
                 "rtTestBtn": "Cancel test" if probing else ("Test again" if probe is not None else "Test runtime"),
@@ -945,16 +957,56 @@ class CullModel(QObject):
                 "rtBtn": "Cancel" if rt == "installing" else ("Set up AI" if rt == "missing" else "Repair"), "rtPrimary": rt == "missing", "rtBtnShow": rt != "checking" and not (a["busy"] and rt != "installing"),
                 "gpuDot": "ok" if gpu_tone == "ok" else "warn", "gpuState": gpu_state, "gpuDesc": gpu_desc,
                 "vcShow": a["vcOld"], "vcFound": f"Visual C++ {a['vcFound']}", "vcNeeded": "14.40",
-                "models": models, "cpu": s["cpuDefault"], "defSens": s["sens"] if self._settings is None else str(self._settings.value(SENS_KEY, "balanced", str)),
+                "models": models, "groups": self._model_groups(models), "cpu": s["cpuDefault"], "defSens": s["sens"] if self._settings is None else str(self._settings.value(SENS_KEY, "balanced", str)),
                 "dataFolder": self._photos.folderName if self._photos.folder_dir() else "",
                 "peopleMemory": self._people_memory_view(),
                 "runs": self._runs(flagged, applied) if s["runs"] else [], "noRuns": not s["runs"] or not self._runs(flagged, applied)}
+
+    # The AI Center's model cards: each installs what it lacks with one button, and its dropdown lists the models to pick from.
+    MODEL_GROUPS = (
+        ("cull", "Culling", "The eyes-closed check, and the two rankers that pick the best frame of each group.", ("face", "quality", "appeal")),
+        ("search", "Search and People", "Searching a folder in plain words, and grouping the faces in it into people.", ("search", "people")),
+        ("editor", "RAW editor", "AI Denoise, Super Resolution, and the masks and depth the editor's tools use.",
+         ("denoise", "superres", "birefnet", "sam", "depth", "oneformer")),
+    )
+
+    @classmethod
+    def _model_groups(cls, models: list[dict]) -> list[dict]:
+        by_key = {m["key"]: m for m in models}
+        groups = []
+        for key, name, desc, keys in cls.MODEL_GROUPS:
+            rows = [by_key[k] for k in keys if k in by_key]
+            if not rows:
+                continue
+            ready = sum(1 for m in rows if m["on"])
+            busy = next((m for m in rows if m.get("busy")), None)
+            waiting = sum(1 for m in rows if m.get("queued"))
+            todo = [m for m in rows if not m["on"] and not m.get("busy") and not m.get("queued")]
+            todo_mb = sum(int(m.get("mb", 0) or 0) for m in todo)
+            if busy is not None or waiting:
+                state, tone = "Installing…", "warn"
+            elif ready == len(rows):
+                state, tone = "Installed", "ok"
+            elif any(m.get("error") for m in rows):
+                state, tone = "Failed", "bad"
+            else:
+                state, tone = ("Not installed" if ready == 0 else f"{ready} of {len(rows)} installed"), "warn"
+            text = desc + (f" {format_mb(todo_mb)} to download." if todo and todo_mb else "")
+            step = busy["step"] if busy is not None else ""
+            if waiting:
+                step = (step + " · " if step else "") + f"{waiting} more waiting"
+            groups.append({"key": key, "name": name, "desc": text, "state": state, "tone": tone, "rows": rows, "count": f"{ready} of {len(rows)}",
+                           "btn": "Cancel" if busy is not None or waiting else ("" if not todo else ("Install all" if ready == 0 else f"Install {len(todo)} more")),
+                           "todo": [m["key"] for m in todo], "primary": bool(todo) and busy is None and not waiting,
+                           "busy": busy is not None or bool(waiting), "pct": busy["pct"] if busy is not None else 0, "step": step})
+        return groups
 
     @staticmethod
     def _sample_model(key: str, name: str, on: bool, desc: str) -> dict:
         """A model row of the scripted AI Center, in the shape the real one has."""
         return {"key": key, "name": name, "on": on, "desc": desc, "state": "Installed" if on else "Not installed", "tone": "ok" if on else "warn",
-                "btn": ("Repair" if key == "face" else "Remove") if on else "Install", "primary": not on, "busy": False, "pct": 0, "step": "", "confirm": on and key != "face"}
+                "btn": ("Repair" if key == "face" else "Remove") if on else "Install", "primary": not on, "busy": False, "pct": 0, "step": "", "confirm": on and key != "face",
+                "queued": False, "error": False, "mb": 0, "locked": False}
 
     def _runs(self, flagged, applied) -> list[dict]:
         cur = {"folder": self._photos.folderName or "This folder", "when": "Today", "frames": len(self._rows()), "flagged": len(flagged) if self._s["done"] else 0,
@@ -1559,6 +1611,24 @@ class CullModel(QObject):
             self._ai.installModelFile(key, path)
 
     @Slot(str)
+    def installGroup(self, key: str) -> None:
+        """A model card's Install: every model of the group not installed yet, one after another."""
+        group = next((g for g in self._view.get("center", {}).get("groups", []) if g["key"] == key), None)
+        if group is None:
+            return
+        if self._ai is not None:
+            self._ai.installModels(list(group["todo"]))
+        else:
+            for k in group["todo"]:
+                self.toggleModel(k)
+
+    @Slot(str)
+    def cancelModel(self, key: str) -> None:
+        """A model's Cancel: a waiting one leaves the queue, the running one stops and the next starts."""
+        if self._ai is not None:
+            self._ai.cancelModel(key)
+
+    @Slot(str)
     def modelAction(self, key: str) -> None:
         """A model row's button: install, repair or remove (the real ones), or the mockup's scripted toggle."""
         if self._ai is not None:
@@ -1572,7 +1642,7 @@ class CullModel(QObject):
         if key == "face":
             return {"title": "Remove the face model?", "body": "This deletes its files from this PC. The cull's eyes-closed check needs it and is off until it is "
                     "installed again (Set up AI or Install does that, a 4 MB download). Your photos are not touched."}
-        return {"title": f"Remove the {row['name'] if row else 'model'}?", "body": f"This deletes its files from this PC{' and frees ' + row['size'] if row and row.get('size') else ''}. Your photos are not touched, and " + ("installing it again needs its .onnx file." if key in ("denoise", "superres") else "you can install it again any time.")}
+        return {"title": f"Remove the {row['name'] if row else 'model'}?", "body": f"This deletes its files from this PC{' and frees ' + row['size'] if row and row.get('size') else ''}. Your photos are not touched, and " + "you can install it again any time."}
 
     @Slot(str, result="QVariantMap")
     def removeText(self, key: str) -> dict:
@@ -1776,10 +1846,16 @@ class CullModel(QObject):
         a = self._ai_state or {}
         device = ("cuda" if s["gpu"] else "cpu") if s["rt"] == "ready" else None
         decision = decide_ranking(device, bool(s["rank"] and not s["gpu"]), quality_installed=bool(s["models"]["quality"]), appeal_installed=bool(s["models"]["appeal"]))
-        if not (s["rank"] and decision.use_rankers):
+        if self._ai_state is not None and self._ai_state.get("torchSupported", True) is False:
+            decision = decision.without_ranking("Ranking needs PyTorch, which has no build for Intel Macs.")
+        elif not (s["rank"] and decision.use_rankers):
             decision = decision.without_ranking(decision.note if s["rank"] else "")
         if not (s["eyes"] and s["faceOk"]):
             decision = replace(decision, use_blink=False)
+        from ..ai_runtime_packages import unavailable_modules
+
+        if "mediapipe" in unavailable_modules():
+            decision = replace(decision, use_blink=False)             # the eyes-closed check has no MediaPipe build here (Intel Macs)
         return replace(decision, ask_cpu_confirmation=False)          # this window asked already
 
     def _protected_paths(self) -> list[str]:

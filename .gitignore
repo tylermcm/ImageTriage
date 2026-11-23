@@ -23,6 +23,7 @@ build_assets/icons/*
 !build_assets/icons/*.ico
 !build_assets/icons/*.png
 !build_assets/icons/*.svg
+!build_assets/icons/*.icns
 .eggs/
 *.egg-info/
 pip-wheel-metadata/

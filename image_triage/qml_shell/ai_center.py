@@ -28,10 +28,24 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from ..ai_setup_plan import format_mb
 
+# What an Intel Mac cannot run: PyTorch (and MediaPipe) have no build there for this Python.
+INTEL_MAC_LIMITS = ("On an Intel Mac the AI runtime has no PyTorch, which has no build for Intel Macs: ranking and the AI masks are not "
+                    "available. Everything that runs on ONNX Runtime is.")
+
+
+def _torch_supported() -> bool:
+    from ..ai_runtime_packages import torch_supported
+
+    return torch_supported()
+
 # the models the cull shows, and the bundle each one is (cascade/rankers/bundles.py, ai_manifest.py). "search" is what semantic search and the
 # People pre-filter read photos with; "people" is the recognizer that groups faces. Both are installed here, never from inside a run.
-MODELS = {"face": "faces_blink", "quality": "maniqa", "appeal": "qrealign", "search": "tinyclip", "people": "faces_identity"}
-# the RAW editor's own models (editor_models.py): no download yet, so they are installed from a file the person picks, and removed
+MODELS = {"face": "faces_blink", "quality": "maniqa", "appeal": "qrealign", "search": "tinyclip", "people": "faces_identity",
+          # the editor's mask and depth tools (editor_tools.TOOLS): each is downloaded on its own, and each needs PyTorch
+          "birefnet": "birefnet", "sam": "sam", "depth": "depth", "oneformer": "oneformer"}
+# the models that run on PyTorch only, so an Intel Mac (no PyTorch) does not list them
+TORCH_MODELS = ("quality", "appeal", "birefnet", "sam", "depth", "oneformer")
+# the RAW editor's own models (editor_models.py): downloaded from Image Triage's own release (or installed from a file), and removed
 EDITOR_MODELS = ("denoise", "superres")
 STATE_WORDS = {"ready": "Installed", "missing": "Not installed", "partial": "Incomplete", "corrupt": "Damaged", "stale": "Out of date"}
 
@@ -155,11 +169,19 @@ class RealOps:
                 "remainingCount": report.remaining_count, "remainingBytes": report.remaining_bytes}
 
     def install_bundle(self, key: str, progress, cancelled) -> None:
+        if key in EDITOR_MODELS:
+            from ..editor_models import download
+
+            download(key, progress, cancelled)
+            return
         from ..ai_model_store import install_bundle
 
         install_bundle(MODELS.get(key, key), progress_callback=progress, cancel_check=cancelled)
 
     def repair_bundle(self, key: str, progress, cancelled) -> None:
+        if key in EDITOR_MODELS:                    # fetches again whatever is missing or damaged
+            self.install_bundle(key, progress, cancelled)
+            return
         from ..ai_model_store import repair_bundle
 
         repair_bundle(MODELS.get(key, key), progress_callback=progress, cancel_check=cancelled)
@@ -181,11 +203,19 @@ class RealOps:
 
     def bundle_sizes(self, key: str) -> dict[str, int]:
         """File name -> bytes, for turning a download's progress into one fraction of the whole bundle."""
+        if key in EDITOR_MODELS:
+            from ..editor_models import sizes
+
+            return sizes(key)
         from ..ai_manifest import bundle_digests
 
         return {name: digest.size for name, digest in bundle_digests(MODELS.get(key, key)).items()}
 
     def bundle_mb(self, key: str) -> int:
+        if key in EDITOR_MODELS:
+            from ..editor_models import models
+
+            return models()[key].mb
         from ..ai_manifest import MODEL_BUNDLES
 
         return MODEL_BUNDLES[MODELS.get(key, key)].approx_mb
@@ -222,6 +252,9 @@ class AiCenterBackend(QObject):
         self._after_probe: list = []                 # what waits for the test before a run
         self._raw: dict | None = None                # the last look at the machine
         self._job: dict | None = None                # the one install, repair or removal running now
+        # Model installs and repairs asked for while something runs: (key, verb, action), started one after another as each ends, so
+        # a whole group is one click. Downloads share one connection, so one at a time also finishes each model soonest.
+        self._queue: list[tuple[str, str, str]] = []
         self._errors: dict[str, str] = {}            # "runtime" or a model key -> why it failed, until the next try
         self._probe: dict | None = None              # what the last "Test runtime" of this session found, for the runtime it ran in
         self._pending_removed: dict | None = None
@@ -261,7 +294,7 @@ class AiCenterBackend(QObject):
 
     def _runtime_installed(self) -> bool:
         raw = self._raw
-        return (raw is not None and "failed" not in raw and bool(raw.get("installed")) and bool(raw.get("torch"))
+        return (raw is not None and "failed" not in raw and bool(raw.get("installed")) and (bool(raw.get("torch")) or not _torch_supported())
                 and not self._errors.get("runtime") and callable(getattr(self._ops, "probe_runtime", None)))
 
     def needs_test(self) -> bool:
@@ -312,7 +345,7 @@ class AiCenterBackend(QObject):
             rt, error = "error", f"Could not look at the AI runtime: {failed}"
         elif error:
             rt = "error"
-        elif installed and not torch:
+        elif installed and not torch and _torch_supported():
             rt, error = "error", "The runtime is installed without PyTorch, which ranking needs. Repair adds it."
         elif installed:
             # Registry age is advisory: it does not establish an import failure.
@@ -328,6 +361,7 @@ class AiCenterBackend(QObject):
         for key, found in raw["models"].items():
             working = job is not None and job["kind"] == "model" and job["key"] == key
             models[key] = {"state": found["state"], "mb": found["mb"], "problem": found.get("problem", ""), "kept": int(found.get("kept", 0) or 0), "busy": working,
+                           "queued": any(item[0] == key for item in self._queue),
                            "pct": job["pct"] if working else 0, "step": job["step"] if working else "", "verb": job["verb"] if working else "",
                            "error": self._errors.get(key, "")}
         return {
@@ -340,13 +374,19 @@ class AiCenterBackend(QObject):
             "removing": removing, "removeStep": job["step"] if removing else "", "removePct": job["pct"] if removing else 0,
             "runtimeBytes": int(raw.get("runtimeBytes", 0) or 0),
             "canRemove": bool(installed) and callable(getattr(self._ops, "remove_runtime", None)), "removed": self._removed,
+            # Intel Macs: PyTorch has no build there, so the runtime is the compact one and what needs PyTorch is not offered.
+            "torchSupported": _torch_supported(),
+            "limits": "" if _torch_supported() else INTEL_MAC_LIMITS,
         }
 
     # -- doing things ---------------------------------------------------------------------------------------------------------
     @Slot()
     def cancel(self) -> None:
-        """Stop what is running: the installer process is ended and a download stops at its next chunk. The part of a model that has
-        arrived is kept for the next try; the runtime's packages are not."""
+        """Stop what is running, and every model still waiting for its turn: the installer process is ended and a download stops at its
+        next chunk. The part of a model that has arrived is kept for the next try; the runtime's packages are not."""
+        if self._queue:
+            self._queue.clear()
+            self.changed.emit()
         if self._job is not None:
             if self._job["kind"] == "remove":
                 return                               # deleting is not stopped half way: a partly deleted runtime is of no use to anyone
@@ -388,6 +428,25 @@ class AiCenterBackend(QObject):
         threading.Thread(target=run, name=f"ai-center-{kind}", daemon=True).start()
         return True
 
+    @Slot(str)
+    def cancelModel(self, key: str) -> None:
+        """One model's Cancel: a waiting one leaves the queue; the running one is stopped and the next waiting one starts."""
+        if any(item[0] == key for item in self._queue):
+            self._queue = [item for item in self._queue if item[0] != key]
+            self.changed.emit()
+        elif self._job is not None and self._job["kind"] == "model" and self._job["key"] == key:
+            self._cancel.set()
+            self._job["step"] = "Stopping…"
+            self.changed.emit()
+
+    def queued(self) -> list[str]:
+        return [item[0] for item in self._queue]
+
+    def _start_next(self) -> None:
+        while self._queue and self._job is None:
+            key, verb, action = self._queue.pop(0)
+            self._model_job(key, verb, action)
+
     def _on_event(self, kind: str, payload: dict) -> None:
         job = self._job
         if kind == "progress" and job is not None:
@@ -412,6 +471,7 @@ class AiCenterBackend(QObject):
         if kind == "end":
             if job is not None and job["kind"] == "probe":
                 self._release_waiting()
+            self._start_next()
             self.refresh()
 
     def _progress(self, progress, word: str = "") -> None:
@@ -478,7 +538,7 @@ class AiCenterBackend(QObject):
 
         raw = self._raw or {}
         variant = self.variant(force)
-        runtime_missing = not raw.get("installed") or not raw.get("torch") or force
+        runtime_missing = not raw.get("installed") or (not raw.get("torch") and _torch_supported()) or force
         face_missing = (raw.get("models", {}).get("face", {}).get("state", "missing")) != "ready"
 
         def work(job: dict) -> None:
@@ -582,16 +642,41 @@ class AiCenterBackend(QObject):
             progress.finish()
             self._progress(progress, "Checking that it works")
 
+        if self._job is not None and action != "remove":
+            # something else runs: wait for it (a removal is not queued; its button is not offered while something runs)
+            running = self._job["kind"] == "model" and self._job["key"] == key
+            if not running and not any(item[0] == key for item in self._queue):
+                self._queue.append((key, verb, action))
+                self._errors.pop(key, None)
+                self.changed.emit()
+            return
         self._start("model", key, verb, work)
+
+    @Slot(list)
+    def installModels(self, keys) -> None:
+        """A group's Install: every model of ``keys`` that is not installed, missing ones installed and damaged ones repaired, one after
+        another."""
+        found = (self._raw or {}).get("models", {})
+        for key in keys:
+            key = str(key)
+            if key not in MODELS and key not in EDITOR_MODELS:
+                continue
+            state = found.get(key, {}).get("state", "missing")
+            if state == "ready":
+                continue
+            if state == "missing":
+                self.installModel(key)
+            else:
+                self.repairModel(key)
 
     @Slot(str)
     def installModel(self, key: str) -> None:
-        if key in MODELS:
+        if key in MODELS or key in EDITOR_MODELS:
             self._model_job(key, "Installing", "install")
 
     @Slot(str)
     def repairModel(self, key: str) -> None:
-        if key in MODELS:
+        if key in MODELS or key in EDITOR_MODELS:
             self._model_job(key, "Repairing", "repair")
 
     @Slot(str)
@@ -617,10 +702,6 @@ class AiCenterBackend(QObject):
     def modelAction(self, key: str) -> None:
         """The model row's button: install what is missing, repair what is damaged, and remove what is installed (the window asks first)."""
         found = (self._raw or {}).get("models", {}).get(key, {}).get("state", "missing")
-        if key in EDITOR_MODELS:
-            if found == "ready":
-                self.removeModel(key)               # anything else is installed from a file the window asks for (installModelFile)
-            return
         if found == "ready":
             self.removeModel(key)
         elif found == "missing":

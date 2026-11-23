@@ -1368,3 +1368,34 @@ def test_raw_completed_preview_replaces_the_displayed_photo(shell, qapp, tmp_pat
     assert not rendered.isNull()
     color = rendered.pixelColor(point)
     assert color.blue() > 200 and color.red() < 30, (color.getRgb(), warnings)
+
+
+def test_the_action_bar_keeps_its_row_when_the_raw_editor_narrows_it_and_never_covers_the_zoom_pill(shell, qapp):
+    """Editing a RAW takes the right of the viewer and adds Before / After to the zoom pill, as a smaller screen does: the key hints
+    and the zoom pill make room for the action bar, which stays centered in its row and is never lifted over the photo. (The viewer runs full
+    screen here, on the test's 800-pixel screen, so the RAW panel is what narrows it.)"""
+    from PySide6.QtCore import QRectF
+    from PySide6.QtQuick import QQuickItem
+
+    engine, window, model, popout, warnings = shell
+    popout.open(1)
+    pump(qapp, 0.5)
+    bar = window.findChild(QQuickItem, "viewerActionBar")
+    zoom = window.findChild(QQuickItem, "viewerZoomControls")
+    hints = window.findChild(QQuickItem, "viewerKeyboardHints")
+
+    def rect(item, scale=1.0):
+        top_left = item.mapToScene(QPointF(0, 0))
+        return QRectF(top_left.x(), top_left.y(), item.width() * scale, item.height() * scale)
+
+    row = round(rect(bar, bar.scale()).center().y())
+    popout.rawEditor.open("first.NEF")
+    pump(qapp, 0.6)
+    b = rect(bar, bar.scale())
+    assert round(b.center().y()) == row                                      # the same row: not lifted over the photo
+    area = bar.parentItem()
+    middle = area.mapToScene(QPointF(area.width() / 2, 0)).x()
+    assert abs(b.center().x() - middle) < 1                                  # and centered in the viewer beside the RAW panel
+    assert not b.intersects(rect(zoom))
+    assert not hints.isVisible() or not b.intersects(rect(hints))
+    assert b.right() <= window.width()

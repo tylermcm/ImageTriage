@@ -17,6 +17,7 @@ import json
 from collections import deque
 import os
 import shutil
+import sys
 import threading
 import time
 from pathlib import Path
@@ -67,6 +68,18 @@ _SAMPLE_DRIVES = (("Photos (D:)", "612 GB free of 2 TB", 0.70), ("Cards (E:)", "
 
 
 from ..scanner import APP_RECYCLE_DIRECTORY_NAME
+
+# The folders macOS guards: before an app may look inside one, macOS asks the person ("would like to access files in your Desktop
+# folder"). The tree only looks inside a folder the person opens, never inside these just to draw their arrows (`_guarded`).
+_MACOS_GUARDED = ("Desktop", "Documents", "Downloads")
+
+
+def _guarded(path: str) -> bool:
+    """Whether looking inside `path` would make macOS ask the person for access: one of the guarded folders of their home."""
+    if sys.platform != "darwin":
+        return False
+    home = Path.home()
+    return _key(path) in {_key(str(home / name)) for name in _MACOS_GUARDED}
 
 
 def _listing(folder: str):
@@ -321,6 +334,8 @@ class LibraryNavModel(QObject):
             # that only turns into one when it is opened. After the listing, so the tree never waits for this.
             probed: dict[str, bool] = {}
             for _name, child in found:
+                if _guarded(child):
+                    continue                                       # left with its arrow: macOS asks only when the person opens it
                 probed[_key(child)] = has_child_folder(child, include_hidden=hidden)
                 if len(probed) >= 32:
                     try:

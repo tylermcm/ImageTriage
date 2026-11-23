@@ -44,10 +44,10 @@ DRIVE_REMOTE = 4
 DRIVE_CDROM = 5
 
 _NETWORK_FILESYSTEMS = frozenset({
-    "nfs", "nfs4", "cifs", "smb3", "smbfs", "afs", "ceph", "glusterfs", "9p", "davfs", "ncpfs",
+    "nfs", "nfs4", "cifs", "smb3", "smbfs", "afs", "ceph", "glusterfs", "9p", "davfs", "ncpfs", "afpfs", "webdav",
     "fuse.sshfs", "fuse.rclone", "fuse.gvfsd-fuse", "fuse.davfs2",
 })
-_REMOVABLE_MOUNT_PARENTS = ("/media/", "/run/media/")
+_REMOVABLE_MOUNT_PARENTS = ("/media/", "/run/media/", "/Volumes/")    # macOS attaches every other disk under /Volumes
 # File systems that enforce the Windows name rules themselves, and ones that take any POSIX name but are read by Windows.
 _FAT_FILESYSTEMS = frozenset({"vfat", "msdos", "fat", "exfat", "fuse.exfat", "exfat-fuse"})
 _WINDOWS_READ_FILESYSTEMS = frozenset({"ntfs", "ntfs3", "ntfs-3g", "fuse.ntfs-3g", "fuseblk", "cifs", "smb3", "smbfs"})
@@ -121,7 +121,27 @@ def classify_mount(mount: tuple[str, str, str] | None, *, removable=None) -> int
     return DRIVE_FIXED
 
 
+def parse_macos_mount(text: str) -> list[tuple[str, str, str]]:
+    """``(mount point, file system type, source)`` from macOS's ``mount`` output (``/dev/disk4s1 on /Volumes/CARD (msdos, local, …)``)."""
+    mounts = []
+    for line in text.splitlines():
+        source, separator, rest = line.partition(" on ")
+        if not separator or " (" not in rest:
+            continue
+        point, _, options = rest.rpartition(" (")
+        mounts.append((point, options.split(",", 1)[0].strip().rstrip(")"), source))
+    return mounts
+
+
 def _read_mounts() -> list[tuple[str, str, str]]:
+    if sys.platform == "darwin":
+        # macOS has no /proc: its mount table is what `mount` prints (a local query of the kernel, no disk is touched).
+        import subprocess
+
+        try:
+            return parse_macos_mount(subprocess.run(["/sbin/mount"], capture_output=True, text=True, timeout=5).stdout)
+        except (OSError, subprocess.SubprocessError):
+            return []
     try:
         return parse_mountinfo(Path("/proc/self/mountinfo").read_text(encoding="utf-8", errors="replace"))
     except OSError:
@@ -258,7 +278,7 @@ def confirmed_missing(path: str | None) -> bool:
     return not os.path.isdir(path)
 
 
-_VOLUME_PARENTS = ("/media/", "/run/media/", "/mnt/")
+_VOLUME_PARENTS = ("/media/", "/run/media/", "/mnt/", "/Volumes/")
 # Mounts under /mnt that are not volumes the user put there: WSL's own plumbing.
 _NOT_VOLUMES = ("/mnt/wsl", "/mnt/wslg")
 

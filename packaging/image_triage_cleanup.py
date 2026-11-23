@@ -101,6 +101,7 @@ def _cleanup_paths(*, include_ai_cache: bool = True, registrations_only: bool = 
     temp_root = Path(tempfile.gettempdir())
 
     xdg = _xdg_roots() if os.name != "nt" else None
+    home = _home_path()
 
     if include_ai_cache:
         if local_appdata is not None:
@@ -113,8 +114,19 @@ def _cleanup_paths(*, include_ai_cache: bool = True, registrations_only: bool = 
         paths.append(temp_root / "image-triage-association-probes")
         return _dedupe_paths(paths)
 
+    if sys.platform == "darwin" and home is not None:
+        # macOS: Qt's folders for the "Image Triage" organization and application, and the logs (perf: ~/Library/Logs/ImageTriage).
+        library = home / "Library"
+        paths.extend(
+            [
+                library / "Application Support" / APP_NAME,
+                library / "Caches" / APP_NAME,
+                library / "Logs" / "ImageTriage",
+                *sorted((library / "Preferences").glob("com.image-triage.*.plist")),
+            ]
+        )
     if xdg is not None:
-        # Linux and the other XDG desktops: Qt's settings and data folders for the "Image Triage" organisation and application, the
+        # Linux and the other XDG desktops: Qt's settings and data folders for the "Image Triage" organization and application, the
         # managed AI root (ai_paths: <data>/ImageTriage/AI) and the logs (perf: <state>/ImageTriage/logs).
         paths.extend(
             [

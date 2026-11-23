@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Builds the RAW preview worker (native/raw_preview) on Linux and macOS, as scripts/build_raw_preview.ps1 does on Windows.
 #
-#   bash scripts/build_raw_preview.sh --photocraft ../photocraft [--release] [--build-root DIR] [--target-root DIR]
+#   bash scripts/build_raw_preview.sh --photocraft ../photocraft [--release] [--build-root DIR] [--target-root DIR] [--target TRIPLE]
+#
+# --target builds for another architecture of this system: x86_64-apple-darwin on an Apple Silicon Mac makes the Intel Macs' worker
+# (rustup target add x86_64-apple-darwin first).
 #
 # Prints the worker's path last. Freeze it into the AppImage with
 #   IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW_EXE=<that path> python setup_linux.py bdist_appimage
@@ -12,6 +15,7 @@ PHOTOCRAFT_ROOT=""
 BUILD_ROOT="${IMAGE_TRIAGE_RAW_PREVIEW_BUILD_ROOT:-$REPO_ROOT/build/raw-preview}"
 TARGET_ROOT=""
 PROFILE="debug"
+TARGET=""
 
 while (($#)); do
   case "$1" in
@@ -19,6 +23,7 @@ while (($#)); do
     --build-root) BUILD_ROOT="$2"; shift 2 ;;
     --target-root) TARGET_ROOT="$2"; shift 2 ;;
     --release) PROFILE="release"; shift ;;
+    --target) TARGET="$2"; shift 2 ;;
     -h|--help) sed -n '2,7p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
@@ -53,7 +58,16 @@ fi
 
 args=(build --manifest-path "$BUILD_ROOT/Cargo.toml")
 [[ "$PROFILE" == "release" ]] && args+=(--release)
+OUT_DIR="$TARGET_ROOT/$PROFILE"
+if [[ -n "$TARGET" ]]; then
+  args+=(--target "$TARGET")
+  OUT_DIR="$TARGET_ROOT/$TARGET/$PROFILE"
+fi
+# On a Mac: the oldest macOS the app runs on (setup_macos.py; PySide6 6.12 needs 14).
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
+fi
 CARGO_TARGET_DIR="$TARGET_ROOT" cargo "${args[@]}"
 
-cp "$TARGET_ROOT/$PROFILE/image-triage-raw-preview" "$BUILD_ROOT/image-triage-raw-preview"
+cp "$OUT_DIR/image-triage-raw-preview" "$BUILD_ROOT/image-triage-raw-preview"
 echo "Preview worker: $BUILD_ROOT/image-triage-raw-preview"

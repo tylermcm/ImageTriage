@@ -15,6 +15,10 @@ Rectangle {
 
     readonly property var win: Window.window
     readonly property bool maximized: win !== null && win.visibility === Window.Maximized
+    // macOS draws its own window buttons over the bar's left end (Main.qml's macTitleBar): the bar leaves them room and has none of its
+    // own. In full screen macOS hides them, and the room goes with them.
+    readonly property bool macButtons: Qt.platform.os === "osx" || Qt.platform.os === "macos"
+    readonly property real nativeButtonsW: macButtons && win !== null && win.visibility !== Window.FullScreen ? 74 : 0
     function onTitle(p) { var c = top.childAt(p.x, p.y); return c === null || c === brand }       // not over a menu, the search field or a button
     function windowAction(what) {
         if (what === "winMin") win.showMinimized()
@@ -27,25 +31,28 @@ Rectangle {
     }
     TapHandler { acceptedButtons: Qt.LeftButton; onDoubleTapped: (point) => { if (top.onTitle(point.position)) top.windowAction("winMax") } }
 
-    readonly property real brandW: UiState.topAligned ? 72 : 30
+    // On macOS the window's own buttons take the left end, so the logo sits in the right-hand corner instead, after the theme and
+    // inspector buttons.
+    readonly property real brandW: macButtons ? 44 : UiState.topAligned ? 72 : 30
     property real helpX: 205
     function setHelpX(v) { helpX = v }                  // where the Help menu opens: under the Help button
     function focusSearch() { searchInput.forceActiveFocus(); searchInput.selectAll() }
 
     Item {
         id: brand
+        x: top.macButtons ? top.width - width - 6 : 0
         width: top.brandW; height: parent.height
         Behavior on width { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
-        LogoMark { x: UiState.topAligned ? (parent.width - 28) / 2 : 6; anchors.verticalCenter: parent.verticalCenter; size: 28 }
+        LogoMark { x: UiState.topAligned || top.macButtons ? (parent.width - 28) / 2 : 6; anchors.verticalCenter: parent.verticalCenter; size: 28 }
         Accessible.name: "Image Triage"
         Accessible.role: Accessible.Graphic
     }
     Row {
         id: menus
-        x: UiState.topAligned ? brand.width + 14 : brand.width + 12
+        x: top.macButtons ? top.nativeButtonsW + 4 : (UiState.topAligned ? brand.width + 14 : brand.width + 12)
         Behavior on x { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
         anchors.verticalCenter: parent.verticalCenter; anchors.verticalCenterOffset: -0.6
-        visible: top.width > 900
+        visible: top.width > 900 && !top.macButtons      // macOS: in the menu bar at the top of the screen (MacMenuBar.qml)
         spacing: 2
         Repeater {
             model: ["File", "Review", "View", "AI", "Help"]
@@ -79,7 +86,7 @@ Rectangle {
     Rectangle {
         id: cmd
         // flex: 1, max 460, margin: 0 auto: the free space is shared by the two auto margins of the field and the one of the right group
-        readonly property real left0: (menus.visible ? menus.x + menus.width : brand.width) + 6
+        readonly property real left0: (menus.visible ? menus.x + menus.width : top.macButtons ? top.nativeButtonsW : brand.width) + 6
         readonly property real avail: rightRow.x - 6 - left0
         width: Math.max(0, Math.min(460, avail)); height: 28; radius: 9
         x: UiState.compact ? left0 : Math.max(left0, Math.min((parent.width - width) / 2, rightRow.x - 6 - width))      // centred on the window while there is room (the mockup's auto margins left it off-centre on wide screens); compact: margin 0
@@ -124,7 +131,7 @@ Rectangle {
     }
     Row {
         id: rightRow
-        anchors.right: winButtons.left; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter; anchors.verticalCenterOffset: -0.5; spacing: 2   // centred in the 41 px above the 1 px line
+        anchors.right: top.macButtons ? brand.left : winButtons.left; anchors.rightMargin: top.macButtons ? 4 : 16; anchors.verticalCenter: parent.verticalCenter; anchors.verticalCenterOffset: -0.5; spacing: 2   // centred in the 41 px above the 1 px line
         // An update, as Discord shows one: a green arrow to download it, a ring while it downloads, then a green arrow to restart
         // into it. Shown only while there is an update; never a pop-up (reference_model.updateButton).
         Item {
@@ -174,6 +181,7 @@ Rectangle {
     }
     Row {   // minimise, maximise or restore, close: flush with the window's corner, like a system title bar
         id: winButtons
+        visible: !top.macButtons                 // macOS has its own (see macButtons)
         anchors.right: parent.right; anchors.top: parent.top
         // Inside the delegates below `top` is the delegate's own anchor line, not this bar (a delegate's context looks at its item first), so they
         // reach the bar through these.

@@ -1743,9 +1743,14 @@ def launch_photocraft(
     extra_args: tuple[str, ...] = (),
     camera_raw: dict | None = None,
     idle: bool = False,
+    own_window: bool = False,
 ) -> PhotoCraftProcess:
     """Starts PhotoCraft rooted at ``read_root`` / ``write_root`` and opens ``initial_path`` in it. Without a path (``idle``
-    start-ups) nothing is opened: the editor waits, hidden, at below-normal priority, for the first photo."""
+    start-ups) nothing is opened: the editor waits, hidden, at below-normal priority, for the first photo.
+
+    ``own_window``: the editor the person edits in (the editor host's). Off Windows it then has a window of its own
+    (``--hosted-window``). Without it PhotoCraft is a render helper (the RAW editor's previews and saves, exports): never shown, and on
+    macOS a faceless app, with no Dock icon, that never takes the focus."""
     exe = executable or detect_photocraft_executable()
     if not exe:
         raise PhotoCraftError("PhotoCraft executable not found")
@@ -1759,7 +1764,7 @@ def launch_photocraft(
         try:
             proc = _launch_photocraft_binary(
                 initial_path, read_root=read_root, write_root=write_root, executable=candidate, on_window=on_window,
-                extra_args=extra_args, camera_raw=camera_raw, idle=idle,
+                extra_args=extra_args, camera_raw=camera_raw, idle=idle, own_window=own_window,
             )
             proc.executable = candidate
             logging.getLogger(__name__).info("Hosted PhotoCraft executable: %s", candidate)
@@ -1798,8 +1803,10 @@ def _launch_photocraft_binary(
     extra_args: tuple[str, ...] = (),
     camera_raw: dict | None = None,
     idle: bool = False,
+    own_window: bool = False,
 ) -> PhotoCraftProcess:
     exe = executable
+    separate_window = own_window and not EMBEDDED_WINDOW
     started = time.perf_counter()
     timings = {}
 
@@ -1826,7 +1833,7 @@ def _launch_photocraft_binary(
             args = [
                 exe,
                 "--hosted",
-                *(() if EMBEDDED_WINDOW else ("--hosted-window",)),
+                *(("--hosted-window",) if separate_window else ()),
                 "--control", str(port),
                 "--control-token-file", str(token_file),
                 "--automation-read-root", read_root,
@@ -1873,11 +1880,13 @@ def _launch_photocraft_binary(
             user32 = ctypes.windll.user32
             user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
             user32.ShowWindow(hwnd, 0)  # SW_HIDE until attached to the Qt host.
-        else:
+        elif separate_window:
             if not getattr(control, "host_window_supported", False):
                 raise PhotoCraftCompatibilityError(
                     "This PhotoCraft build cannot run in a window of its own (it has no --hosted-window); update the editor")
             hwnd = 0                  # a window of its own, which it shows and hides itself (`host_window`): nothing to find or move
+        else:
+            hwnd = 0                  # a render helper: never shown (PhotoCraft hides its first frame itself off Windows)
         # Respect PhotoCraft's persisted theme; the filmstrip follows its colors.
         timings["shell_configured_ms"] = (time.perf_counter() - started) * 1000
         proc = PhotoCraftProcess(process=process, control=control, hwnd=hwnd, token_file=token_file,

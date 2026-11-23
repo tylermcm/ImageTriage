@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime
 import json
 import os
+import sys
 from pathlib import Path
 import threading
 import time
@@ -214,6 +215,8 @@ def _default_log_dir() -> Path:
             # Microsoft Store Python virtualizes writes to AppData\Local. LocalLow
             # remains visible to Explorer while keeping logs out of image folders.
             return Path(user_profile) / "AppData" / "LocalLow" / "ImageTriage" / "logs"
+    elif sys.platform == "darwin":
+        return Path.home() / "Library" / "Logs" / "ImageTriage"     # where Console looks for an app's logs
     else:
         # XDG's place for logs. Never the working folder: an AppImage starts there, and it is read-only.
         state_home = os.environ.get("XDG_STATE_HOME") or (str(Path.home() / ".local" / "state") if Path.home() != Path("/") else "")

@@ -8,9 +8,15 @@ Window {
     visible: true
     width: 1440; height: 900
     minimumWidth: 640; minimumHeight: 520
-    title: "Image Triage"
+    // macOS draws the title in the middle of the title bar even with no title bar background, over TopBar's search: no title there
+    // (the menu bar and the Dock already name the app).
+    title: macTitleBar ? "" : "Image Triage"
     color: theme.base
-    flags: Qt.Window | Qt.FramelessWindowHint      // no system title bar: TopBar is the title bar, WindowEdges the resize grips
+    // No system title bar: TopBar is the title bar, WindowEdges the resize grips. On macOS the system keeps its own window buttons (red,
+    // yellow, green), drawn over TopBar's left end, and its own resizing: the window reaches under a title bar with no background
+    // (Qt 6.9's expanded client area), so it looks the same and behaves as every Mac window does.
+    readonly property bool macTitleBar: Qt.platform.os === "osx" || Qt.platform.os === "macos"
+    flags: macTitleBar ? (Qt.Window | Qt.ExpandedClientAreaHint | Qt.NoTitleBarBackgroundHint) : (Qt.Window | Qt.FramelessWindowHint)
 
     // The viewer covers the library while it is docked in this window; detached (ViewerWindow) the two are used side by side, and
     // commands follow whichever window is in use.
@@ -294,7 +300,7 @@ Window {
         }
     }
 
-    WindowEdges { z: 1000; anchors.fill: parent }
+    WindowEdges { z: 1000; anchors.fill: parent; visible: !win.macTitleBar }       // macOS resizes its own window
 
     // the drag ghost and its hint
     PocketDropGhost {
@@ -558,6 +564,8 @@ Window {
     }
     Connections { target: settings; function onShortcutsChanged() { win.refreshShortcutHints() } }
     TopMenus { id: topMenus; onRun: (id) => win.runCommand(id) }
+    // macOS: the same menus in the menu bar at the top of the screen (TopBar leaves its own titles out there).
+    Instantiator { active: win.macTitleBar; delegate: MacMenuBar { source: topMenus } }
     Connections { target: UiState; function onUndoRequested() { win.runCommand("edit.undo") } }
     // A step that could not be taken back says why itself (the file action's own toast) and stays on the history; "Nothing to undo" would be wrong.
     property bool undoFailed: false

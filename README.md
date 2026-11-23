@@ -102,6 +102,12 @@ To use a custom feed instead of GitHub Releases, set `IMAGE_TRIAGE_UPDATE_FEED_U
 }
 ```
 
+## macOS
+
+Built on a Mac, one disk image per architecture (Apple Silicon and Intel, macOS 14 or newer): `bash packaging/build_macos.sh --photocraft ../photocraft
+[--arch x86_64]`. Intel Macs get no PyTorch (none is built for them), so AI ranking and the eyes check are not available there. See
+[docs/macos.md](docs/macos.md) for what runs where, signing, and what is still to check on a Mac.
+
 ## Linux AppImage
 
 The AppImage carries the RAW preview worker (the live preview of the RAW editor, AI Denoise, range masks). Build it first, against a

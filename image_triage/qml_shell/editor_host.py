@@ -504,7 +504,7 @@ class EditorHost(QObject):
                 launch = self._launcher or photocraft_bridge.launch_photocraft
                 write_root = edit_storage.ensure_edit_root(directory)
                 extra_args = ("--raw-workspace",) if raw_workspace else ()
-                proc = launch(None, read_root=directory, write_root=str(write_root), idle=True, extra_args=extra_args)
+                proc = launch(None, read_root=directory, write_root=str(write_root), idle=True, extra_args=extra_args, own_window=True)
                 self._sweep_save_temps(write_root, proc)
             sidecar = photocraft_bridge.sidecar_pcraft_path(path)
             open_path = str(sidecar) if sidecar.exists() and not is_raw else path

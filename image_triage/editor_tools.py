@@ -70,7 +70,9 @@ def unavailable_message(kind: str, missing: Iterable[plan.OptionalModel]) -> str
     names = [item.label for item in missing]
     listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
     size = plan.format_mb(sum(plan.model_mb(item.key) for item in missing))
-    return f"{tool.label} need{'s' if not tool.label.endswith('s') else ''} {listed} ({size}). Open the AI chip, choose Set up AI and turn on Editor tools."
+    model_word = "model" if len(names) == 1 else "models"
+    return (f"{tool.label} need{'s' if not tool.label.endswith('s') else ''} the {listed} {model_word} ({size}). "
+            f"Install {'it' if len(names) == 1 else 'them'} in AI > AI Center.")
 
 
 def block_reason(kind: str, installed: Iterable[str] | None = None) -> str:

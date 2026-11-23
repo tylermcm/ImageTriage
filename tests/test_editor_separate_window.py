@@ -142,7 +142,7 @@ def test_the_default_window_follows_the_platform():
 # ---- starting the editor -----------------------------------------------------------------------------------------------------------
 
 
-def _start(tmp_path, monkeypatch, control):
+def _start(tmp_path, monkeypatch, control, own_window=True):
     seen = {}
 
     class FakeProcess:
@@ -159,7 +159,8 @@ def _start(tmp_path, monkeypatch, control):
     monkeypatch.setattr(bridge, "_connect_with_retry", lambda port, token, process: control)
     monkeypatch.setattr(bridge, "_find_window_for_pid", Mock(side_effect=AssertionError("there is no window to find")))
     monkeypatch.setattr(bridge, "_end_process", lambda process: None)
-    proc = bridge._launch_photocraft_binary(None, read_root=str(tmp_path), write_root=str(tmp_path), executable="photocraft", idle=True)
+    proc = bridge._launch_photocraft_binary(None, read_root=str(tmp_path), write_root=str(tmp_path), executable="photocraft", idle=True,
+                                            own_window=own_window)
     return proc, seen
 
 
@@ -171,6 +172,28 @@ def test_off_windows_the_editor_is_started_in_a_window_of_its_own(tmp_path, monk
         assert proc.hwnd == 0
     finally:
         proc.token_file.unlink(missing_ok=True)
+
+
+def test_a_render_helper_has_no_window_of_its_own(tmp_path, monkeypatch):
+    # The RAW editor's previews and saves and the exports start PhotoCraft as a helper: never shown (and on macOS faceless: no Dock
+    # icon, no focus taken). Started with a window, each one showed a Dock icon and a window, and the app dropped behind it.
+    control = Mock(host_window_supported=False)              # an older editor is fine for rendering
+    proc, seen = _start(tmp_path, monkeypatch, control, own_window=False)
+    try:
+        assert "--hosted" in seen["args"] and "--hosted-window" not in seen["args"]
+    finally:
+        proc.token_file.unlink(missing_ok=True)
+
+
+def test_only_the_editor_host_asks_for_a_window():
+    import inspect
+
+    from image_triage import full_render
+    from image_triage.qml_shell import editor_host, raw_editor
+
+    assert "own_window=True" in inspect.getsource(editor_host.EditorHost._open_locked)
+    assert "own_window" not in inspect.getsource(raw_editor.RawEditor._work)
+    assert "own_window" not in inspect.getsource(full_render._launch_hidden)
 
 
 def test_an_editor_without_a_window_of_its_own_is_refused(tmp_path, monkeypatch):

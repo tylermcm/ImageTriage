@@ -134,6 +134,16 @@ def attach(app) -> None:
 def _message_box(title: str, text: str) -> None:
     """A native message window, which needs no toolkit (Qt may be what failed). On Linux the desktop's own dialog tool when it has one
     (zenity on GNOME and most others, kdialog on KDE): started from the menu there is no terminal to read stderr in."""
+    if sys.platform == "darwin":
+        import subprocess
+
+        # AppleScript's own alert: no toolkit needed. The text goes in as arguments, never into the script, so nothing in it is code.
+        script = 'on run argv\ndisplay alert (item 1 of argv) message (item 2 of argv) as critical\nend run'
+        try:
+            subprocess.run(["/usr/bin/osascript", "-e", script, title, text], check=False, timeout=600)
+        except Exception:
+            pass
+        return
     if sys.platform != "win32":
         import html
         import shutil

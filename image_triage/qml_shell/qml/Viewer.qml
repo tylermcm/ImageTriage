@@ -311,8 +311,8 @@ FocusScope {
         anchors.leftMargin: v.photoPadding
         anchors.rightMargin: v.photoPadding + (rawPanel.visible ? rawPanel.width : 0)
         anchors.topMargin: (v.zen ? 0 : 52) + v.photoPadding
-        // comparing in a narrow window, the action bar sits a row higher (bar.overlapsControls): the panes' name rows stay clear of it
-        anchors.bottomMargin: v.zen ? v.photoPadding : v.fh + (v.barOff ? 30 : v.bh) + v.photoPadding + (v.comparing && !v.barOff && bar.overlapsControls ? 44 : 0)
+        // comparing in a narrow window, the zoom pill sits a row higher (bar.pillLifted): the panes' name rows stay clear of it
+        anchors.bottomMargin: v.zen ? v.photoPadding : v.fh + (v.barOff ? 30 : v.bh) + v.photoPadding + (v.comparing && bar.pillLifted ? 44 : 0)
         Behavior on anchors.leftMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         Behavior on anchors.rightMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         Behavior on anchors.topMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
@@ -785,16 +785,24 @@ FocusScope {
         // the action bar
         Item {
             id: bar
+            objectName: "viewerActionBar"
             opacity: v.barOff ? 0 : 1; enabled: !v.barOff
             Behavior on opacity { NumberAnimation { duration: 220 } }
             transform: Translate { y: v.barOff ? 14 : 0; Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } } }
             readonly property real availableWidth: parent.width
-            readonly property bool overlapsControls: x < zoomPill.x + zoomPill.width + 12 || x + width * scale > keyboardHints.x - 12
-            y: (height - height * scale) / 2 - (overlapsControls ? 44 : 0)
+            // The bar stays centered in its row at every width: it never climbs over the photo or moves aside. What is beside it
+            // makes room instead, in this order: the key hints go (they are only reminders), the zoom pill turns compact (no
+            // percentage, Before / After as an icon), and a window too narrow even for that lifts the zoom pill above the bar's
+            // row. The bar itself only shrinks when the viewer is narrower than it.
+            y: (height - height * scale) / 2
             height: 52; width: barRow.implicitWidth + 12
+            scale: Math.min(1, Math.max(1, availableWidth - 16) / width)
             x: (availableWidth - width * scale) / 2
-            scale: rawPanel.visible ? Math.min(1, Math.max(1, availableWidth - 16) / width) : 1
             transformOrigin: Item.TopLeft
+            readonly property real hintsEdge: availableWidth - 20 - keyboardHints.implicitWidth - 12
+            readonly property bool hintsFit: v.barOff || x + width * scale <= hintsEdge
+            readonly property bool pillCompact: !v.barOff && 20 + zoomPill.fullWidth + 12 > x
+            readonly property bool pillLifted: !v.barOff && 20 + zoomPill.compactWidth + 12 > x
             Glass { anchors.fill: parent; frosted: false; radius: 16; tint: v.cCard; shadowOffsetA: 14; shadowBlurA: 40; shadowAlphaA: 0.5; shadowInset: 6; shadowAlphaB: 0 }
             Rectangle { anchors.fill: parent; radius: 16; color: "transparent"; border.color: v.cLine }
             Row {
@@ -1067,11 +1075,15 @@ FocusScope {
     Item {
         id: zoomPill
         objectName: "viewerZoomControls"
-        x: 20; y: parent.height - (v.fh + 16) - height
+        x: 20; y: parent.height - (v.fh + 16) - height - (bar.pillLifted ? 44 : 0)
         width: zr.implicitWidth; height: 30; z: 5
+        // its two widths, whichever it shows (the action bar picks one from them: bar.pillCompact)
+        readonly property real fullWidth: zoomButtons.implicitWidth + 56 + (rawPanel.visible ? beforeAfter.implicitWidth : 0) + (overlayButton.visible ? overlayButton.implicitWidth : 0)
+        readonly property real compactWidth: zoomButtons.implicitWidth + (rawPanel.visible ? 34 : 0) + (overlayButton.visible ? overlayButton.implicitWidth : 0)
         opacity: v.zen ? 0 : 1; Behavior on opacity { NumberAnimation { duration: 300 } }
         Rectangle { anchors.fill: parent; radius: 9; color: v.cGlass; border.color: v.cLineSoft }
         Row { id: zr; height: parent.height
+            Row { id: zoomButtons; height: parent.height
             Repeater {
                 model: [{ t: "Fit", k: "0", z: false }, { t: "100%", k: "Z", z: true }]
                 delegate: Item {
@@ -1091,7 +1103,9 @@ FocusScope {
                     Accessible.role: Accessible.RadioButton; Accessible.checked: zb.on; Accessible.name: zb.modelData.t === "Fit" ? "Fit the photo" : "Show at 100%"
                 }
             }
+            }
             Item {
+                visible: !bar.pillCompact
                 width: 56; height: 30
                 Text {
                     objectName: "viewerZoomPercent"
@@ -1100,11 +1114,25 @@ FocusScope {
                 }
             }
             SButton {
-                visible: rawPanel.visible; text: "Before / After"
+                id: beforeAfter
+                visible: rawPanel.visible && !bar.pillCompact; text: "Before / After"
                 h: 30; hpad: 10; variant: rawPanel.before ? "primary" : "ghost"
                 onClicked: rawPanel.before = !rawPanel.before
             }
+            Item {   // Before / After in a narrow window: the same toggle as an icon
+                objectName: "viewerBeforeAfterIcon"
+                visible: rawPanel.visible && bar.pillCompact
+                width: 34; height: 30
+                Rectangle { anchors.fill: parent; anchors.margins: 2; radius: 8
+                            color: rawPanel.before ? theme.accent : baHover.hovered ? Qt.alpha(theme.lift, 0.08) : "transparent" }
+                Icon { anchors.centerIn: parent; size: 16; path: "M4 5h16v14H4zM12 5v14"; color: rawPanel.before ? theme.onAccent : baHover.hovered ? v.cFg : v.cFg2 }
+                HoverHandler { id: baHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: rawPanel.before = !rawPanel.before }
+                HoverTip { tip: "Before / After"; hovered: baHover.hovered }
+                Accessible.role: Accessible.Button; Accessible.checked: rawPanel.before; Accessible.name: "Before / After"
+            }
             SButton {
+                id: overlayButton
                 visible: rawPanel.visible && (rawPanel.tool === "Crop" || rawPanel.tool === "Remove" || rawPanel.tool === "Red Eye" || rawPanel.tool === "Mask"); text: "Overlay"
                 h: 30; hpad: 10; variant: v.rawOverlay ? "primary" : "ghost"
                 onClicked: v.rawOverlay = !v.rawOverlay
@@ -1118,6 +1146,7 @@ FocusScope {
         anchors.rightMargin: 20 + (rawPanel.visible ? rawPanel.width : 0)
         anchors.verticalCenter: zoomPill.verticalCenter
         z: 5; spacing: 10
+        visible: bar.hintsFit                                                    // a narrow window: the action bar has the room
         opacity: v.zen || v.comparing ? 0 : 1; Behavior on opacity { NumberAnimation { duration: 300 } }      // comparing, the panes' bar has the keys
         Row { spacing: 4; Kbd { text: "←" } Kbd { text: "→" } Text { text: "step"; color: v.cFg3; font.pointSize: UiState.pt(11.5); anchors.verticalCenter: parent.verticalCenter; leftPadding: 2 } }
         Row {

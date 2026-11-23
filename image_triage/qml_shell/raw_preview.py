@@ -173,6 +173,10 @@ def executable():
         return override if Path(override).is_file() else None
     if getattr(sys, "frozen", False):
         candidate = Path(sys.executable).with_name(EXECUTABLE_NAME)
+        if not candidate.is_file() and sys.platform == "darwin":
+            # A macOS app bundle keeps what was included beside the app in Contents/Resources; only the app's own programs are in
+            # Contents/MacOS (setup_macos.py).
+            candidate = Path(sys.executable).resolve().parent.parent / "Resources" / EXECUTABLE_NAME
         return str(candidate) if candidate.is_file() else None
     return None
 

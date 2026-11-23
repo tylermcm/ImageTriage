@@ -63,3 +63,33 @@ def test_remove_deletes_the_files(folders):
     editor_models.install_file(picked / "my denoise.onnx")
     editor_models.remove("denoise")
     assert editor_models.status("denoise")["state"] == "missing" and not (root / "RawNIND" / "rawnind_bayer.onnx").exists()
+
+
+def test_download_fetches_only_the_missing_files_from_the_release_with_their_size_and_digest(folders, monkeypatch):
+    root, picked = folders
+    editor_models.install_file(picked / "x2.onnx")
+    fetched = []
+
+    def fake_download(*, url, destination, label, progress_callback, cancel_check, resume):
+        fetched.append((url, label, resume.size, resume.sha256))
+        destination.write_bytes((picked / label).read_bytes())
+        return destination.stat().st_size
+
+    import image_triage.ai_model_store as store
+
+    monkeypatch.setattr(store, "_download_file", fake_download)
+    editor_models.download("superres")
+    model = editor_models.models()["superres"]
+    assert fetched == [(editor_models.DOWNLOAD_BASE + "x4.onnx", "x4.onnx", model.files[1].size, model.files[1].sha256)]
+    assert editor_models.status("superres")["state"] == "ready"
+
+
+def test_the_models_are_downloaded_over_https_from_a_release_never_the_latest_one():
+    assert editor_models.DOWNLOAD_BASE.startswith("https://github.com/") and "/releases/download/" in editor_models.DOWNLOAD_BASE
+    assert editor_models.DOWNLOAD_BASE.endswith("/") and "/latest/" not in editor_models.DOWNLOAD_BASE
+
+
+def test_every_real_model_file_has_a_known_size_for_the_download_progress():
+    for model in editor_models.models().values():
+        for file in model.files:
+            assert editor_models.file_size(file) > 0, file.filename

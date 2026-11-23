@@ -35,11 +35,11 @@ def test_any_subset_of_models_works_and_nothing_is_demanded_twice() -> None:
 
 def test_the_message_names_what_to_turn_on_and_its_size() -> None:
     assert tools.block_reason("subjectMask", ()) == (
-        "Subject and background masks need Subject masks (425 MB). Open the AI chip, choose Set up AI and turn on Editor tools."
+        "Subject and background masks need the Subject masks model (425 MB). Install it in AI > AI Center."
     )
-    assert tools.block_reason("clickSelect", ()) == "Click selection needs Click select (150 MB). Open the AI chip, choose Set up AI and turn on Editor tools."
+    assert tools.block_reason("clickSelect", ()) == "Click selection needs the Click select model (150 MB). Install it in AI > AI Center."
     people = tools.block_reason("peopleMasks", {"sam"})
-    assert people.startswith("People masks need Scene regions and Subject masks (621 MB).")
+    assert people.startswith("People masks need the Scene regions and Subject masks models (621 MB). Install them in AI > AI Center.")
     assert tools.block_reason("peopleMasks", plan.all_model_keys()) == ""
 
 
@@ -57,7 +57,7 @@ def test_a_mask_job_without_its_model_is_answered_at_once_and_the_window_is_told
     assert runner.poll(proc(lane)) is False
     assert lane.of("claim") == [9]
     finish = lane.of("finish")[0]
-    assert finish["id"] == 9 and finish["ok"] is False and "Subject masks" in finish["message"] and "Editor tools" in finish["message"]
+    assert finish["id"] == 9 and finish["ok"] is False and "Subject masks" in finish["message"] and "AI Center" in finish["message"]
     assert told and told[0][0] == "subjectMask"
     assert not runner.busy
 
@@ -131,3 +131,14 @@ def test_a_pending_job_still_arrives_and_runs_when_the_poll_carries_the_list() -
 
 def test_the_kinds_are_the_strings_the_editor_sends() -> None:
     assert {"subjectMask", "sceneMasks", "peopleMasks"} <= set(tools.EDITOR_KINDS)  # confirmed against photocraft's camera_raw_host_job_ui.rs
+
+
+def test_every_model_an_editor_tool_names_can_be_installed_in_the_ai_center() -> None:
+    """The tools' message sends the person to the AI Center, so each model it can name has a row there."""
+    from image_triage import ai_setup_plan as plan
+    from image_triage.qml_shell.ai_center import MODELS, TORCH_MODELS
+
+    for tool in tools.TOOLS:
+        for key in tool.models:
+            assert MODELS.get(key) == plan.model(key).bundle, key
+            assert key in TORCH_MODELS, key

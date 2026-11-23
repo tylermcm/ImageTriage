@@ -1,10 +1,12 @@
 """The RAW editor's own AI models, as the AI Center shows them: AI Denoise (RawNIND, ``ai_model.rawnind_installation``) and Super
 Resolution (Real-ESRGAN x2 and x4, ``upscale_core.MODEL_SPECS``).
 
-Neither has a download yet: both are converted to ONNX from the authors' checkpoints (``scripts/export_rawnind_onnx.py``,
-``scripts/export_realesrgan_onnx.py``) and are not hosted anywhere the app could fetch them from at a pinned revision. So they are
-installed from a file: the person picks the ``.onnx`` file, it is recognised by its SHA-256 (never by its name), copied into the
-managed model folder under a temporary name, checked again, and only then put in place. Remove deletes the files.
+Both are converted to ONNX from the authors' checkpoints (``scripts/export_rawnind_onnx.py``, ``scripts/export_realesrgan_onnx.py``)
+and hosted as the assets of one GitHub release of Image Triage (``DOWNLOAD_BASE``; the authors' credits and licenses are in its notes).
+``download`` fetches the files a model lacks through the model store's downloader (https only, resumable, and nothing is put in place
+until its size and SHA-256 match). A file can also be installed from disk (``install_file``): it is recognised by its SHA-256 (never by
+its name), copied into the managed model folder under a temporary name, checked again, and only then put in place. Remove deletes the
+files.
 
 A file's digest is remembered by its path, size and modification time, so looking at the models again does not read 170 MB again.
 """
@@ -54,6 +56,34 @@ def models() -> dict[str, EditorModel]:
 
 
 KEYS = ("denoise", "superres")
+
+# The release whose assets are the files, one per name. A new conversion is a new release (new digests), never a replaced asset.
+DOWNLOAD_BASE = "https://github.com/tylermcm/ImageTriage/releases/download/editor-models-1/"
+# Sizes the code that names a file does not give (ai_model.rawnind_installation knows only digests).
+_SIZES = {"rawnind_bayer.onnx": 31053428}
+
+
+def file_size(file: ModelFile) -> int:
+    return file.size or _SIZES.get(file.filename, 0)
+
+
+def sizes(key: str) -> dict[str, int]:
+    """File name -> bytes, for the AI Center's progress."""
+    return {file.filename: file_size(file) for file in models()[key].files}
+
+
+def download(key: str, progress_callback=None, cancel_check=None) -> None:
+    """Fetch every file of ``key`` that is missing or damaged. Raises the model store's ModelInstallError when one fails."""
+    from .ai_model_store import PARTIAL_SUFFIX, _download_file, _ResumePlan
+
+    for file in models()[key].files:
+        if not _file_ok(file):
+            continue
+        file.folder.mkdir(parents=True, exist_ok=True)
+        _download_file(url=DOWNLOAD_BASE + file.filename, destination=file.path, label=file.filename,
+                       progress_callback=progress_callback, cancel_check=cancel_check,
+                       resume=_ResumePlan(partial=file.path.with_name(file.filename + PARTIAL_SUFFIX + "dl"),
+                                          size=file_size(file), sha256=file.sha256))
 
 _digests: dict[tuple[str, int, int], str] = {}
 _lock = threading.Lock()
@@ -145,4 +175,5 @@ def install_file(path: str | Path) -> tuple[str, str]:
 def remove(key: str) -> None:
     for file in models()[key].files:
         file.path.unlink(missing_ok=True)
-        file.path.with_name(file.filename + ".part").unlink(missing_ok=True)
+        for suffix in (".part", ".partdl", ".partdl.json"):
+            file.path.with_name(file.filename + suffix).unlink(missing_ok=True)

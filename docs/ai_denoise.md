@@ -14,9 +14,10 @@ at 50). AI noise reduction on the raw sensor data, before PhotoCraft demosaics a
   The export script loads only `rawnind/models/raw_denoiser.py` from their code, so their training dependencies are not needed.
 - Checkpoint `DenoiserTrainingBayerToProfiledRGB_4ch_2024-02-21-bayer_ms-ssim_mgout_notrans_valeither_-4`, iteration 4350000 (the one
   darktable 5.6 ships), converted by `scripts/export_rawnind_onnx.py` (`rawnind_bayer.onnx`, 30 MB, sha256 in `ai_model.py`).
-- Installed from the AI Center (AI > AI Center, **AI Denoise (RAW editor)** > Install from file…): the picked `.onnx` is recognised by
-  its SHA-256, copied into the managed `Editor/RawNIND` model folder and checked again (`editor_models.py`; Super Resolution's two
-  Real-ESRGAN files the same way).
+- Installed from the AI Center (AI > AI Center, **AI Denoise (RAW editor)** > Install): downloaded from the assets of Image Triage's
+  `editor-models-1` prerelease (`editor_models.DOWNLOAD_BASE`; the credits and licenses are in its notes), resumable, and put in the
+  managed `Editor/RawNIND` model folder only once its size and SHA-256 match (Super Resolution's two Real-ESRGAN files the same way).
+  `editor_models.install_file` still installs a picked `.onnx`, recognised by its SHA-256.
 
 ## Choosing it (spike, 2026-11-17)
 
@@ -66,6 +67,7 @@ presets or copy/paste), and counts as an edit.
 
 - Non-Bayer sensors (Fujifilm X-Trans, Foveon, LinearRaw DNGs) and sensors with a linearization table are refused. The linear
   RawNIND variant could cover X-Trans after demosaic.
-- No download yet: the converted `.onnx` is not hosted anywhere at a pinned revision, so it is installed from a file.
+- The release is a prerelease so it is never `releases/latest`, which the updater reads. A new conversion is a new release
+  (`editor-models-2`), never a replaced asset.
 - Before shipping commercially: ask Benoit Brummer for written confirmation that the CC-BY-4.0 option covers these checkpoints, and
   add the attribution to the About box and the licences file.

@@ -303,7 +303,8 @@ def test_the_buttons_start_the_real_jobs_and_the_row_shows_the_progress(cull, op
     until(qapp, lambda: any(m["key"] == "quality" and m["busy"] and m["pct"] > 0 for m in cull.view["center"]["models"]))
     row = next(m for m in cull.view["center"]["models"] if m["key"] == "quality")
     assert row["btn"] == "Cancel" and row["state"] == "Installing…" and "Downloading" in row["step"]
-    assert next(m for m in cull.view["center"]["models"] if m["key"] == "appeal")["locked"]       # the others wait for it
+    appeal = next(m for m in cull.view["center"]["models"] if m["key"] == "appeal")
+    assert not appeal["locked"] and appeal["btn"] == "Install"                              # the others can be asked for: they wait their turn
     cull.cancelSetup()
     settled(qapp, cull._ai)
     assert next(m for m in cull.view["center"]["models"] if m["key"] == "quality")["btn"] == "Install"
@@ -378,6 +379,9 @@ def test_the_window_buttons_reach_the_back_end(qapp, tmp_path, ops):
     real.openCenter()
     pump(qapp, 0.9)
     ops.gate.clear()
+    assert find(window, "aiModelButton-quality") is None or not find(window, "aiModelButton-quality").isVisible()   # in the Culling card's list, closed
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre(window, "aiGroupChooser-cull"))
+    pump(qapp, 0.4)
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre(window, "aiModelButton-quality"))
     until(qapp, lambda: ai.busy and ("install", "quality") in ops.calls)
     pump(qapp, 0.4)
@@ -386,6 +390,8 @@ def test_the_window_buttons_reach_the_back_end(qapp, tmp_path, ops):
     settled(qapp, ai)
     assert ai.state()["models"]["quality"]["state"] == "missing"
     ops.gate.set()
+    find(window, "aiCenterBody").setProperty("contentY", 0)                                           # back up to the runtime
+    pump(qapp, 0.2)
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre(window, "aiRuntimeButton"))         # asks first: nothing downloads yet
     pump(qapp, 0.6)
     card = window.findChild(QObject, "aiSetupCard")
@@ -435,34 +441,54 @@ def test_dll_failures_keep_repair_action_without_claiming_registry_cause(cull, o
     assert cull.view['rt']['errTitle'] == 'A Windows library failed to load'
 
 
-def test_the_editor_models_are_installed_from_a_file_and_removed(cull, ops, qapp):
+def test_the_editor_models_are_downloaded_like_the_others_and_removed(cull, ops, qapp):
     ops.raw["models"]["denoise"] = {"state": "missing", "mb": 30, "problem": ""}
     ops.raw["models"]["superres"] = {"state": "ready", "mb": 134, "problem": ""}
-
-    def install_editor_file(path):
-        ops.calls.append(("file", path))
-        ops.raw["models"]["denoise"]["state"] = "ready"
+    ops.bundle_mb = lambda key: {"denoise": 30, "superres": 134}.get(key, 4)
 
     def remove_editor_model(key):
         ops.calls.append(("remove editor", key))
         ops.raw["models"][key]["state"] = "missing"
 
-    ops.install_editor_file, ops.remove_editor_model = install_editor_file, remove_editor_model
+    ops.remove_editor_model = remove_editor_model
     cull._ai.refresh()
     until(qapp, lambda: any(m["key"] == "denoise" for m in cull.view["center"]["models"]))
     rows = {m["key"]: m for m in cull.view["center"]["models"]}
-    assert rows["denoise"]["btn"] == "Install from file…" and rows["denoise"]["pick"] and ".onnx" in rows["denoise"]["desc"]
+    assert rows["denoise"]["btn"] == "Install" and not rows["denoise"]["pick"] and "downloaded when you install it" in rows["denoise"]["desc"]
     assert rows["superres"]["state"] == "Installed" and rows["superres"]["btn"] == "Remove" and rows["superres"]["confirm"]
-    cull.modelAction("denoise")                                          # not installed: the window asks for the file, nothing starts here
-    assert not cull._ai.busy and ops.calls == []
-    cull.installModelFile("denoise", r"C:\Downloads\rawnind_bayer.onnx")
+    cull.modelAction("denoise")
     settled(qapp, cull._ai)
-    assert ops.calls == [("file", r"C:\Downloads\rawnind_bayer.onnx")]
+    assert ops.calls == [("install", "denoise")]
     until(qapp, lambda: next(m for m in cull.view["center"]["models"] if m["key"] == "denoise")["btn"] == "Remove")
-    assert ".onnx file" in cull.removeText("superres")["body"]
+    assert "install it again any time" in cull.removeText("superres")["body"]
     cull.modelAction("superres")
     settled(qapp, cull._ai)
     assert ("remove editor", "superres") in ops.calls
+
+
+def test_the_editor_tool_models_are_listed_and_left_out_without_pytorch(cull, ops, qapp):
+    for key in ("birefnet", "sam", "depth", "oneformer"):
+        ops.raw["models"][key] = {"state": "missing", "mb": 100, "problem": ""}
+    cull._ai.refresh()
+    until(qapp, lambda: any(m["key"] == "sam" for m in cull.view["center"]["models"]))
+    rows = {m["key"]: m for m in cull.view["center"]["models"]}
+    assert {"birefnet", "sam", "depth", "oneformer"} <= set(rows) and rows["sam"]["btn"] == "Install"
+    assert rows["birefnet"]["name"] == "Subject masks"
+    editor = next(g for g in cull.view["center"]["groups"] if g["key"] == "editor")
+    assert {m["key"] for m in editor["rows"]} >= {"birefnet", "sam", "depth", "oneformer"}
+
+
+def test_an_intel_mac_does_not_list_the_editor_tool_models(cull, ops, qapp, monkeypatch):
+    from image_triage.qml_shell import ai_center
+
+    monkeypatch.setattr(ai_center, "_torch_supported", lambda: False)
+    for key in ("birefnet", "sam", "depth", "oneformer"):
+        ops.raw["models"][key] = {"state": "missing", "mb": 100, "problem": ""}
+    cull._ai.refresh()
+    until(qapp, lambda: any(m["key"] == "face" for m in cull.view["center"]["models"]))
+    settled(qapp, cull._ai)
+    keys = {m["key"] for m in cull.view["center"]["models"]}
+    assert not keys & {"birefnet", "sam", "depth", "oneformer"}
 
 
 def test_an_installed_model_offers_remove_and_only_a_damaged_one_offers_repair(cull, ops, qapp):
@@ -474,3 +500,55 @@ def test_an_installed_model_offers_remove_and_only_a_damaged_one_offers_repair(c
     rows = {m["key"]: m for m in cull.view["center"]["models"]}
     assert rows["face"]["confirm"] and rows["appeal"]["btn"] == "Repair" and not rows["appeal"]["confirm"]
     assert "eyes-closed check" in cull.removeText("face")["body"]
+
+
+def test_installs_asked_for_while_one_runs_wait_their_turn_and_run_one_after_another(cull, ops, qapp):
+    ops.gate.clear()
+    cull._ai.refresh()
+    until(qapp, lambda: cull._ai.state()["checked"])
+    cull._ai.installModel("quality")
+    until(qapp, lambda: ("install", "quality") in ops.calls)
+    cull._ai.installModel("appeal")
+    cull._ai.installModel("appeal")                                      # asked twice: waits once
+    cull._ai.installModel("quality")                                     # the one running is not queued again
+    assert cull._ai.queued() == ["appeal"]
+    state = cull._ai.state()["models"]
+    assert state["appeal"]["queued"] and state["quality"]["busy"]
+    rows = {m["key"]: m for m in cull.view["center"]["models"]}
+    until(qapp, lambda: next(m for m in cull.view["center"]["models"] if m["key"] == "appeal")["state"] == "Waiting")
+    rows = {m["key"]: m for m in cull.view["center"]["models"]}
+    assert rows["appeal"]["btn"] == "Cancel" and not rows["appeal"]["locked"]
+    ops.gate.set()
+    until(qapp, lambda: ("install", "appeal") in ops.calls)
+    settled(qapp, cull._ai)
+    assert ops.calls == [("install", "quality"), ("install", "appeal")] and cull._ai.queued() == []
+    until(qapp, lambda: cull._ai.state()["models"]["appeal"]["state"] == "ready")
+
+
+def test_a_waiting_install_can_be_cancelled_and_cancel_all_empties_the_queue(cull, ops, qapp):
+    ops.gate.clear()
+    cull._ai.refresh()
+    until(qapp, lambda: cull._ai.state()["checked"])
+    cull._ai.installModels(["face", "quality", "appeal"])
+    until(qapp, lambda: ("install", "face") in ops.calls)
+    assert cull._ai.queued() == ["quality", "appeal"]
+    cull.cancelModel("quality")
+    assert cull._ai.queued() == ["appeal"]
+    cull.cancelSetup()                                                   # the runtime card's Cancel: everything stops
+    settled(qapp, cull._ai)
+    assert cull._ai.queued() == [] and ("install", "appeal") not in ops.calls
+
+
+def test_a_group_card_installs_what_it_lacks_and_counts_what_is_installed(cull, ops, qapp):
+    ops.raw["models"]["face"]["state"] = "ready"
+    cull._ai.refresh()
+    until(qapp, lambda: any(g["key"] == "cull" and g["count"] == "1 of 3" for g in cull.view["center"].get("groups", [])))
+    group = next(g for g in cull.view["center"]["groups"] if g["key"] == "cull")
+    assert group["btn"] == "Install 2 more" and group["todo"] == ["quality", "appeal"] and group["state"] == "1 of 3 installed"
+    assert [m["key"] for m in group["rows"]] == ["face", "quality", "appeal"]
+    cull.installGroup("cull")
+    until(qapp, lambda: ("install", "appeal") in ops.calls)
+    settled(qapp, cull._ai)
+    assert ops.calls == [("install", "quality"), ("install", "appeal")]
+    until(qapp, lambda: next(g for g in cull.view["center"]["groups"] if g["key"] == "cull")["state"] == "Installed")
+    assert next(g for g in cull.view["center"]["groups"] if g["key"] == "cull")["btn"] == ""

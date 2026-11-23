@@ -657,8 +657,8 @@ def lama_installation() -> "AIModelInstallation":
 
 
 # AI Denoise: RawNIND UtNet2 Bayer (B. Brummer, C. De Vleeschouwer, 2025), weights dual licensed GPL-3 + CC-BY-4.0 and used under
-# CC-BY-4.0; converted to ONNX by scripts/export_rawnind_onnx.py from the authors' checkpoint (see docs/ai_denoise.md). Installed by
-# hand for now: put rawnind_bayer.onnx in the folder below.
+# CC-BY-4.0; converted to ONNX by scripts/export_rawnind_onnx.py from the authors' checkpoint (see docs/ai_denoise.md). The AI Center
+# downloads it from Image Triage's editor-models release (editor_models.DOWNLOAD_BASE) into the folder below.
 RAWNIND_MODEL_REPO_ID = "trougnouf/rawnind_jddc"
 RAWNIND_MODEL_FILE = "rawnind_bayer.onnx"
 # Converted with PyTorch 2.9.0 from iter_4350000.pt (sha256 c1f7de3de24cb12f4803ee65e11cfb467e9a5b80c3cb7126746ef026106c15e0,

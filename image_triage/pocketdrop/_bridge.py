@@ -109,8 +109,8 @@ def library_path() -> Path:
     return Path(__file__).resolve().parent / name
 
 
-# The script under native/pocketdrop that builds this platform's library (there is none for macOS yet).
-BUILD_SCRIPT = "build_windows.bat" if sys.platform == "win32" else "build_linux.sh"
+# The script under native/pocketdrop that builds this platform's library.
+BUILD_SCRIPT = {"win32": "build_windows.bat", "darwin": "build_macos.sh"}.get(sys.platform, "build_linux.sh")
 
 
 class NativeUnavailable(RuntimeError):

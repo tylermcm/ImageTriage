@@ -12,8 +12,14 @@ Backdrop {
     z: 107
     function dotColor(k) { return k === "ok" ? theme.win : k === "bad" ? theme.rej : theme.rev }
     // a model row's button: cancel what is running, ask before deleting a ranker, otherwise install or repair
+    // which model cards have their list of models open (closed when the window opens)
+    property var openGroups: ({})
+    onShownChanged: if (shown) openGroups = ({})
+    function toggleGroup(key) { var o = Object.assign({}, openGroups); o[key] = !o[key]; openGroups = o }
+    // a card's Cancel: stops its model that is downloading and takes its waiting ones out of the queue
+    function cancelGroup(g) { for (var i = 0; i < g.rows.length; ++i) if (g.rows[i].busy || g.rows[i].queued) cull.cancelModel(g.rows[i].key) }
     function modelPressed(m) {
-        if (m.busy) { cull.cancelSetup(); return }
+        if (m.busy || m.queued) { cull.cancelModel(m.key); return }
         if (m.pick) { modelFile.key = m.key; modelFile.open(); return }
         if (m.confirm) { var t = cull.removeText(m.key); removeCard.key = m.key; removeCard.title = t.title; removeCard.body = t.body; removeCard.open(); return }
         cull.modelAction(m.key)
@@ -23,7 +29,7 @@ Backdrop {
         if (c.rtInstalling) { cull.cancelSetup(); return }
         var p = cull.setupPlan(); setupCard.title = p.title; setupCard.body = p.body; setupCard.confirmText = p.confirm; setupCard.open()
     }
-    // the editor's models have no download yet: their .onnx file is picked, recognised by its checksum and copied in
+    // an editor model's .onnx file picked by hand (a row with "pick"; none offers it now that they download): recognised by its checksum and copied in
     FileDialog {
         id: modelFile; property string key
         title: "Choose the model file"; nameFilters: ["ONNX models (*.onnx)"]
@@ -77,7 +83,7 @@ Backdrop {
                 Text { width: Math.min(560, parent.width); topPadding: 5; wrapMode: Text.WordWrap; color: theme.fg3; font.pointSize: UiState.pt(12.5); lineHeight: 18.75; lineHeightMode: Text.FixedHeight
                        text: "What the cull needs to run on this computer, and the runs you have made. Nothing here uploads photos: every model runs on this PC." } }
             Flickable {
-                id: body
+                id: body; objectName: "aiCenterBody"
                 y: hd.y + hd.height + 6; width: parent.width; height: parent.height - y - 60
                 contentWidth: width; contentHeight: col.height + 18; clip: true; boundsBehavior: Flickable.StopAtBounds
                 Column { id: col; x: 26; width: body.width - 52; spacing: 0
@@ -100,12 +106,41 @@ Backdrop {
                     Item { width: 1; height: 16 }
                     H3 { text: "MODELS"; width: parent.width }
                     Item { width: 1; height: 9 }
-                    Repeater { model: root.c.models
-                        delegate: Item { required property var modelData; width: col.width; height: mr.height + 8
-                            Row2 { id: mr; iconPath: modelData.key === "face" ? "M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6zM12 14.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" : modelData.key === "quality" ? "M5 19V10M12 19V5M19 19v-7" : "M12 3.5l1.8 4.7 4.7 1.8-4.7 1.8L12 16.5l-1.8-4.7L5.5 10l4.7-1.8z"
-                                title: modelData.name; tone: modelData.tone; state: modelData.state; desc: modelData.desc; busy: modelData.busy; pct: modelData.pct; step: modelData.step
-                                SButton { objectName: "aiModelButton-" + modelData.key; text: modelData.btn; variant: modelData.primary ? "primary" : "normal"; enabled: !modelData.locked
-                                          h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: root.modelPressed(modelData) } } } }
+                    // One card per group of models: its button installs everything the group lacks (one after another), and the
+                    // chevron beside it opens the list of the group's models, each with its own button, to pick from.
+                    Repeater { model: root.c.groups || []
+                        delegate: Column {
+                            id: grp
+                            required property var modelData
+                            readonly property bool open: !!root.openGroups[modelData.key]
+                            width: col.width; spacing: 6; bottomPadding: 8
+                            // an opened list is scrolled into view, as far as it fits, its card staying at the top
+                            onOpenChanged: if (open) { var view = body, card = grp; Qt.callLater(function() {
+                                if (!view || !card) return             // the window closed first
+                                var bottom = card.y + card.height
+                                if (bottom > view.contentY + view.height)
+                                    view.contentY = Math.max(0, Math.min(card.y, bottom - view.height, view.contentHeight - view.height))
+                            }) }
+                            Row2 { iconPath: grp.modelData.key === "cull" ? "M5 19V10M12 19V5M19 19v-7" : grp.modelData.key === "search" ? "M11 18a7 7 0 100-14 7 7 0 000 14zM20 20l-4-4" : "M12 3.5l1.8 4.7 4.7 1.8-4.7 1.8L12 16.5l-1.8-4.7L5.5 10l4.7-1.8z"
+                                title: grp.modelData.name; tone: grp.modelData.tone; state: grp.modelData.state; desc: grp.modelData.desc; busy: grp.modelData.busy; pct: grp.modelData.pct; step: grp.modelData.step
+                                SButton { objectName: "aiGroupButton-" + grp.modelData.key; visible: grp.modelData.btn !== ""; text: grp.modelData.btn; variant: grp.modelData.primary ? "primary" : "normal"
+                                          h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter
+                                          onClicked: grp.modelData.busy ? root.cancelGroup(grp.modelData) : cull.installGroup(grp.modelData.key) }
+                                Rectangle {
+                                    objectName: "aiGroupChooser-" + grp.modelData.key
+                                    width: 28; height: 28; radius: 9; anchors.verticalCenter: parent.verticalCenter
+                                    color: chooseHover.hovered ? Qt.tint(theme.s3, Qt.alpha(theme.lift, 0.06)) : theme.s3; border.color: theme.lineSoft
+                                    Icon { anchors.centerIn: parent; path: "M6 9l6 6 6-6"; size: 15; color: theme.fg2; rotation: grp.open ? 180 : 0
+                                           Behavior on rotation { NumberAnimation { duration: 140 } } }
+                                    HoverHandler { id: chooseHover; cursorShape: Qt.PointingHandCursor }
+                                    TapHandler { onTapped: root.toggleGroup(grp.modelData.key) }
+                                    Accessible.role: Accessible.Button; Accessible.name: (grp.open ? "Hide the models of " : "Choose models of ") + grp.modelData.name } }
+                            Repeater { model: grp.open ? grp.modelData.rows : []
+                                delegate: Item { required property var modelData; x: 22; width: col.width - 22; height: mr.height
+                                    Rectangle { x: -12; y: -6; width: 2; height: parent.height + 6; radius: 1; color: theme.lineSoft }
+                                    Row2 { id: mr; iconPath: ""; title: modelData.name; tone: modelData.tone; state: modelData.state; desc: modelData.desc; busy: modelData.busy; pct: modelData.pct; step: modelData.step
+                                        SButton { objectName: "aiModelButton-" + modelData.key; text: modelData.btn; variant: modelData.primary ? "primary" : "normal"; enabled: !modelData.locked
+                                                  h: 28; hpad: 11; radius: 9; anchors.verticalCenter: parent.verticalCenter; onClicked: root.modelPressed(modelData) } } } } } }
                     Item { width: 1; height: 8 }
                     H3 { text: "DEFAULTS"; width: parent.width }
                     Item { width: 1; height: 9 }

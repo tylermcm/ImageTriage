@@ -79,6 +79,15 @@ AI_RUNTIME_TORCH_PIP_REQUIREMENTS = (
     "kornia==0.8.3",
 )
 AI_RUNTIME_PIP_REQUIREMENTS = AI_RUNTIME_BASE_PIP_REQUIREMENTS + AI_RUNTIME_TORCH_PIP_REQUIREMENTS
+# Platforms where a requirement above has no wheel, and what takes its place there (keyed like the locks: system-architecture); None:
+# nothing does, and what needs it is not available there. Intel Macs: ONNX Runtime's last macOS x86_64 wheel is 1.23.2, and MediaPipe
+# (the eyes-closed check) has none for Python 3.13.
+AI_RUNTIME_PLATFORM_REQUIREMENT_OVERRIDES: dict[str, dict[str, str | None]] = {
+    "darwin-amd64": {"onnxruntime": "onnxruntime==1.23.2", "mediapipe": None},
+}
+# Platforms PyTorch has no build for. Intel Macs: its last macOS x86_64 release (2.2) predates Python 3.13. The runtime there is the
+# compact one (AI_RUNTIME_BASE_PIP_REQUIREMENTS), and what needs PyTorch says it is not available on this Mac.
+AI_RUNTIME_PLATFORMS_WITHOUT_TORCH = frozenset({"darwin-amd64"})
 AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES = (
     "numpy",
     "onnx",
@@ -368,6 +377,7 @@ def install_ai_runtime(
     pip_runner: PipRunner | None = None,
     profile_validator: ProfileValidator | None = None,
 ) -> AIRuntimeInstallationStatus:
+    include_torch = include_torch and torch_supported()        # an Intel Mac installs the compact runtime whatever was asked
     normalized_choice = normalize_ai_runtime_variant(variant_choice, allow_both=True)
     target_variants = (
         AI_RUNTIME_VARIANTS if normalized_choice == AI_RUNTIME_BOTH_VARIANT else (normalized_choice,)
@@ -566,6 +576,7 @@ def build_ai_runtime_pip_install_args(
     include_torch: bool = True,
 ) -> list[str]:
     normalized = normalize_ai_runtime_variant(variant)
+    include_torch = include_torch and torch_supported()
     args = [
         "install",
         "--disable-pip-version-check",
@@ -613,9 +624,43 @@ def build_ai_runtime_pip_install_args(
     return args
 
 
-def _ai_runtime_pip_requirements_for_variant(variant: str, *, include_torch: bool = True) -> tuple[str, ...]:
+def runtime_platform() -> str:
+    """This machine as the locks name it: ``windows-amd64``, ``linux-amd64``, ``darwin-arm64``, ``darwin-amd64``."""
+    return runtime_tag().split("-", 1)[1]
+
+
+def unavailable_modules(platform: str | None = None) -> frozenset[str]:
+    """The runtime's modules that have no build for ``platform`` (this machine by default): never installed nor checked for there."""
+    overrides = AI_RUNTIME_PLATFORM_REQUIREMENT_OVERRIDES.get(platform or runtime_platform(), {})
+    return frozenset(name for name, replacement in overrides.items() if replacement is None)
+
+
+def _required_module_names(include_torch: bool) -> tuple[str, ...]:
+    unavailable = unavailable_modules()
+    names = AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES + (AI_RUNTIME_TORCH_REQUIRED_MODULE_NAMES if include_torch else ())
+    return tuple(name for name in names if name not in unavailable)
+
+
+def torch_supported(platform: str | None = None) -> bool:
+    """Whether PyTorch can be installed on ``platform`` (this machine by default). False on Intel Macs."""
+    return (platform or runtime_platform()) not in AI_RUNTIME_PLATFORMS_WITHOUT_TORCH
+
+
+def _ai_runtime_pip_requirements_for_variant(
+    variant: str, *, include_torch: bool = True, platform: str | None = None
+) -> tuple[str, ...]:
+    """The requirements of ``variant`` for ``platform`` (this machine by default; the lock generator asks for others)."""
     normalized = normalize_ai_runtime_variant(variant)
+    platform = platform or runtime_platform()
+    include_torch = include_torch and torch_supported(platform)
     requirements = AI_RUNTIME_PIP_REQUIREMENTS if include_torch else AI_RUNTIME_BASE_PIP_REQUIREMENTS
+    overrides = AI_RUNTIME_PLATFORM_REQUIREMENT_OVERRIDES.get(platform, {})
+    if overrides:
+        requirements = tuple(
+            replaced
+            for replaced in (overrides.get(_distribution_name(requirement), requirement) for requirement in requirements)
+            if replaced is not None
+        )
     if normalized == AI_RUNTIME_GPU_VARIANT:
         requirements = tuple(
             AI_RUNTIME_ONNX_GPU_REQUIREMENT
@@ -732,9 +777,7 @@ def _profile_status(
 ) -> AIRuntimeProfileStatus:
     target_dir = site_packages_dir or directories.site_packages_dir(variant)
     missing_items: list[str] = []
-    module_names = AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES + (
-        AI_RUNTIME_TORCH_REQUIRED_MODULE_NAMES if include_torch else ()
-    )
+    module_names = _required_module_names(include_torch)
     for module_name in module_names:
         if not _module_present(target_dir, module_name):
             missing_items.append(module_name)
@@ -1045,9 +1088,7 @@ def validate_ai_runtime_imports(
             if dll_dir.exists():
                 dll_handles.append(os.add_dll_directory(str(dll_dir)))
 
-    modules = AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES + (
-        AI_RUNTIME_TORCH_REQUIRED_MODULE_NAMES if include_torch else ()
-    )
+    modules = _required_module_names(include_torch)
     for module_name in modules:
         module = importlib.import_module(module_name)
         module_path = Path(getattr(module, "__file__", "") or "").resolve()

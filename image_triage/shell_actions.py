@@ -21,6 +21,9 @@ def reveal_in_file_explorer(path: str) -> None:
         # path has a space, Explorer does not read that, and opens its default folder (this program's) instead of the photo's.
         subprocess.Popen(f'explorer /select,"{normalized}"')
         return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", normalized])                 # Finder, with the file selected
+        return
     _open_path(os.path.dirname(normalized) or normalized)
 
 
