@@ -78,23 +78,23 @@ Item {
             id: sizes
             objectName: "gridCountButtons"
             visible: bar.sizeSwitch
-            // how many photos one screen of the grid shows (9, 4, 1 unless changed); right-click a button to pick its count
-            paths: UiState.screenCounts.map(function (n) { var g = UiState.screenGrid(n, 3, 2); return Icons.grid(g[0], g[1]) }); padH: 9
-            current: UiState.screenCounts.indexOf(UiState.perScreen)
-            onActivated: (i) => UiState.setPerScreen(UiState.screenCounts[i])
+            // how many columns the grid shows (9, 4, 1 unless changed); right-click a button to pick its count. The icons stay as they are.
+            paths: [Icons.grid(3, 3), Icons.grid(2, 2), Icons.grid(1, 1)]; padH: 9
+            current: UiState.perScreen > 0 ? -1 : UiState.columnCounts.indexOf(UiState.cols)
+            onActivated: (i) => { UiState.perScreen = 0; UiState.cols = UiState.columnCounts[i] }
             onContextRequested: (i, x, y) => { countMenu.slot = i; UiState.setMenu("fGridCount") }
             Popover {
                 id: countMenu; name: "fGridCount"
                 property int slot: 0
                 Repeater {
-                    model: [1, 2, 4, 6, 9, 12, 16, 20, 25]
+                    model: [1, 2, 3, 4, 5, 6, 7, 8, 9]
                     delegate: PopItem {
                         required property int modelData
-                        label: modelData + (modelData === 1 ? " photo" : " photos") + " per screen"
-                        mode: "tick"; checked: UiState.screenCounts[countMenu.slot] === modelData
+                        label: modelData + (modelData === 1 ? " column" : " columns")
+                        mode: "tick"; checked: UiState.columnCounts[countMenu.slot] === modelData
                         onClicked: {
-                            var counts = UiState.screenCounts.slice(); counts[countMenu.slot] = modelData
-                            UiState.screenCounts = counts; UiState.setPerScreen(modelData); countMenu.close()
+                            var counts = UiState.columnCounts.slice(); counts[countMenu.slot] = modelData
+                            UiState.columnCounts = counts; UiState.perScreen = 0; UiState.cols = modelData; countMenu.close()
                         }
                     }
                 }

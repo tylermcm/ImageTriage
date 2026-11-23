@@ -24,9 +24,10 @@ QtObject {
     property bool viewerDetached: false   // the viewer (and RAW editor) in a window of its own (ViewerWindow.qml), not over the library
     property int cols: 0                  // a fixed number of columns, 1 to 9; 0 lets the thumbnail size (dens) decide how many fit
     function setDens(d) { cols = 0; perScreen = 0; dens = d }
-    // The floating bar's grid buttons: how many photos one screen of the grid shows (9 is three rows of three); right-click one to change it
-    property int perScreen: 0             // 0: the thumbnail size or column count decides
-    property var screenCounts: [9, 4, 1]
+    // The floating bar's grid buttons: how many columns the grid shows (9, 4 and 1 unless changed; right-click one to change it). Each
+    // button keeps its own icon whatever its count.
+    property var columnCounts: [9, 4, 1]
+    property int perScreen: 0             // photos per screen (a fixed rows x columns layout); nothing sets it now, the buttons set columns
     function setPerScreen(n) { cols = 0; perScreen = n }
     onColsChanged: if (cols > 0) perScreen = 0
     // columns x rows for `n` photos on a `w` x `h` screen of the grid: the layout whose cells are nearest the 3:2 of a photo
