@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Shapes
 import QtQuick.Controls
 import QtQuick.Dialogs
+import "Wheel.js" as Wheel
 
 // The panel beside the rail: Library, Faces, Collections, PocketDrop. Opening animates the column's width (in Main); the contents
 // slide and fade with it, and each page's blocks rise in one after another when it becomes the current page.
@@ -227,7 +228,7 @@ Item {
                 libWheel.from = contentY; libWheel.to = Math.max(originY, Math.min(high, from - distance)); libWheel.start()
                 return true
             }
-            WheelHandler { target: null; onWheel: (e) => { e.accepted = lib.wheelScroll(e.angleDelta.y, e.pixelDelta.y, Date.now()) } }
+            WheelHandler { target: null; acceptedDevices: Wheel.devices; onWheel: (e) => { e.accepted = lib.wheelScroll(e.angleDelta.y, Wheel.pixels(e), Date.now()) } }
             opacity: on ? 1 : 0; visible: opacity > 0.01
             Behavior on opacity { NumberAnimation { duration: 250 } }
             // Scrolls the folder that was just opened into view, once per opened folder (its row may appear only when its parent has been listed).
@@ -322,12 +323,13 @@ Item {
                                 background: null
                             }
                             WheelHandler {
+                                acceptedDevices: Wheel.devices
                                 target: null
                                 onWheel: (e) => {
-                                    var delta = e.pixelDelta.y || e.angleDelta.y / 120 * 43.2
+                                    var delta = Wheel.pixels(e) || e.angleDelta.y / 120 * 43.2
                                     var to = Math.max(0, Math.min(Math.max(0, driveScroll.contentHeight - driveScroll.height), driveScroll.contentY - delta))
                                     if (to !== driveScroll.contentY) { driveScroll.cancelFlick(); driveScroll.contentY = to; e.accepted = true }
-                                    else e.accepted = !panel.drivesPinned && lib.wheelScroll(e.angleDelta.y, e.pixelDelta.y, Date.now())
+                                    else e.accepted = !panel.drivesPinned && lib.wheelScroll(e.angleDelta.y, Wheel.pixels(e), Date.now())
                                 }
                             }
                             Column {

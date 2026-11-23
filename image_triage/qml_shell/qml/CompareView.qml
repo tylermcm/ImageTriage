@@ -1,4 +1,5 @@
 import QtQuick
+import "Wheel.js" as Wheel
 
 // Compare: two to four photos side by side in the viewer's stage (compare_model.py, `popout.compare`). The panes share one zoom and one
 // place, both relative to the photo (zoom 1 fits each photo to its pane; the place is a fraction of the photo), so every pane shows the
@@ -182,7 +183,7 @@ Item {
                         onDoubleClicked: cmp.toggleActual()
                         onWheel: (w) => {
                             w.accepted = true
-                            var steps = w.pixelDelta.y !== 0 ? w.pixelDelta.y / 60 : w.angleDelta.y / 120
+                            var steps = Wheel.steps(w)
                             if (steps === 0) return
                             var ox = (w.x - view.width / 2) / pane.drawW, oy = (w.y - view.height / 2) / pane.drawH
                             cmp.zoomAbout(Math.pow(1.2, steps), pane.shownX + ox, pane.shownY + oy, ox, oy)

@@ -1,4 +1,5 @@
 import QtQuick
+import "Wheel.js" as Wheel
 
 Item {
     id: overlay
@@ -108,9 +109,10 @@ Item {
         onCanceled: {overlay.drawing=false;overlay.points=[];path.requestPaint()}
         // Erase only clicks, so the wheel may zoom (the viewer does the zooming)
         WheelHandler {
+            acceptedDevices: Wheel.devices
             target: null; enabled: overlay.model.kind==="erase"
             onWheel: (event) => {
-                var steps = event.pixelDelta.y !== 0 ? event.pixelDelta.y / 60 : event.angleDelta.y / 120
+                var steps = Wheel.steps(event)
                 if (steps !== 0) overlay.zoomWheel(event.x, event.y, steps)
                 event.accepted = true
             }

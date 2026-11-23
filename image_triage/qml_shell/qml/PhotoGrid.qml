@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Shapes
+import "Wheel.js" as Wheel
 
 // The photo grid: a virtualized GridView over the model, thumbnails from the disk cache (ThumbImage), edge-to-edge with a 2 px gutter.
 Item {
@@ -310,13 +311,15 @@ Item {
         NumberAnimation { id: wheelEase; target: gv; property: "contentY"; duration: 140; easing.type: Easing.OutCubic }
         WheelHandler {
             target: null
+            acceptedDevices: Wheel.devices
             onWheel: (e) => {
                 root.stopAutoScroll()
+                if (Wheel.empty(e)) { e.accepted = true; return }      // a trackpad gesture's begin or end: no distance, and no snap to a row
                 var notches = e.angleDelta.y / 120
                 var from = wheelEase.running ? wheelEase.to : gv.contentY
                 var low = gv.originY, high = Math.max(low, gv.originY + gv.contentHeight - gv.height + gv.bottomMargin)
                 var to
-                if (e.pixelDelta.y !== 0) to = from - e.pixelDelta.y
+                if (Wheel.continuous(e)) to = from - e.pixelDelta.y
                 else if (settings.value("smooth") === true) to = from - notches * Math.max(150, gv.cellHeight * 0.65)
                 else {
                     var rows = Math.round((from - low) / gv.cellHeight) - Math.sign(notches) * Math.max(1, Math.round(Math.abs(notches))) * (root.cols >= 7 ? 2 : 1)

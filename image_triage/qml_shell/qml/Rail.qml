@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Shapes
 import QtQuick.Effects
+import "Wheel.js" as Wheel
 
 // The left rail: four destinations with a sliding pill, then a hairline split, the pinned toolbar buttons, "+" to customise, settings.
 Rectangle {
@@ -69,6 +70,7 @@ Rectangle {
     readonly property real maxScroll: overflowing ? 0 : Math.max(0, lower.height - pinsAvail)
     onMaxScrollChanged: scrollY = Math.min(scrollY, maxScroll)
     WheelHandler {
+        acceptedDevices: Wheel.devices
         target: null; enabled: rail.maxScroll > 0
         onWheel: (event) => { rail.scrollY = Math.max(0, Math.min(rail.maxScroll, rail.scrollY - event.angleDelta.y / 2)) }
     }

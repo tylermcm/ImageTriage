@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Window
+import "Wheel.js" as Wheel
 
 // Wheel scrolling and Windows-style middle-button autoscroll for a Flickable.
 Item {
@@ -23,10 +24,12 @@ Item {
     NumberAnimation { id: ease; target: root.view; property: "contentY"; duration: 100; easing.type: Easing.OutCubic }
     WheelHandler {
         target: null
+        acceptedDevices: Wheel.devices
         onWheel: (event) => {
             root.stop()
+            if (Wheel.empty(event)) { event.accepted = true; return }
             var from = ease.running ? ease.to : root.view.contentY
-            var delta = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y / 120 * 200
+            var delta = Wheel.continuous(event) ? event.pixelDelta.y : event.angleDelta.y / 120 * 200
             ease.stop(); root.view.cancelFlick()
             ease.from = root.view.contentY; ease.to = root.clampY(from - delta); ease.start()
             event.accepted = true

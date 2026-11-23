@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Effects
 import QtQuick.Shapes
+import "Wheel.js" as Wheel
 
 // The popout: one photo at full size over the whole window, a floating action bar and a full-width filmstrip that keeps the photo you are on in
 // the middle (mockup: scripts/qml_parity/viewer.dc.html). The host is viewer_host.py (`popout`); the grid, the rail and the menus open it with
@@ -466,6 +467,7 @@ FocusScope {
             scrollGestureEnabled: true
             onWheel: (event) => { event.accepted = true }
             WheelHandler {
+                acceptedDevices: Wheel.devices
                 target: null
                 onWheel: (event) => {
                     event.accepted = true
@@ -477,7 +479,7 @@ FocusScope {
                             || point.y < top || point.y > top + photoImg.paintedHeight) {
                         return
                     }
-                    var steps = event.pixelDelta.y !== 0 ? event.pixelDelta.y / 60 : event.angleDelta.y / 120
+                    var steps = Wheel.steps(event)
                     if (steps !== 0) v.setZoom(pan.effectiveScale * Math.pow(1.2, steps), event.x, event.y)
                     event.accepted = true
                 }
