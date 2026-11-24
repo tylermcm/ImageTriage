@@ -88,14 +88,18 @@ def test_running_from_source_looks_where_it_always_did(monkeypatch, tmp_path):
 # --- putting it in the installer ------------------------------------------------------------------------------------
 
 @pytest.fixture
-def checkout(tmp_path):
-    """A PhotoCraft checkout with a release build and its licence files."""
+def checkout(tmp_path, monkeypatch):
+    """A PhotoCraft checkout with a release build and its licence files (and no real checkout beside this repository to fall back on)."""
     root = tmp_path / "photocraft"
     exe = root / "target" / "release" / freeze_support.PHOTOCRAFT_EXE_NAME
     exe.parent.mkdir(parents=True)
     exe.write_bytes(b"editor")
+    (root / "Cargo.toml").write_text("[workspace]\n")
     for name in freeze_support.PHOTOCRAFT_LICENSE_FILES:
         (root / name).write_text(name)
+    monkeypatch.setattr(freeze_support, "ROOT", tmp_path / "ImageTriage")
+    monkeypatch.setattr(freeze_support.Path, "home", staticmethod(lambda: tmp_path / "home"))
+    monkeypatch.delenv(freeze_support.PHOTOCRAFT_CHECKOUT_ENV, raising=False)
     return exe
 
 
@@ -107,12 +111,46 @@ def test_the_installer_gets_the_editor_and_its_licences(checkout, monkeypatch):
         assert files[f"photocraft/{name}"].read_text() == name
 
 
-def test_a_licence_missing_is_a_warning_and_not_the_end_of_the_build(checkout, monkeypatch, capsys):
+def test_a_licence_missing_stops_the_build(checkout, monkeypatch):
+    # An installer that carries the editor without its licences breaks them (the Mac build used to, with only a warning)
     (checkout.parents[2] / "NOTICE").unlink()
     monkeypatch.setenv(freeze_support.PHOTOCRAFT_BUNDLE_ENV, str(checkout))
-    destinations = {destination for _source, destination in freeze_support.photocraft_bundle_files()}
-    assert f"photocraft/{freeze_support.PHOTOCRAFT_EXE_NAME}" in destinations and "photocraft/NOTICE" not in destinations
-    assert "NOTICE was not found" in capsys.readouterr().out
+    with pytest.raises(SystemExit, match=freeze_support.PHOTOCRAFT_CHECKOUT_ENV):
+        freeze_support.photocraft_bundle_files()
+
+
+def test_an_editor_built_outside_its_checkout_gets_the_checkouts_licences(checkout, tmp_path, monkeypatch):
+    # The Mac build: CARGO_TARGET_DIR=$BUILD/photocraft-target, and build_macos.sh names the checkout
+    outside = tmp_path / "build" / "photocraft-target" / "aarch64-apple-darwin" / "release" / "photocraft"
+    outside.parent.mkdir(parents=True)
+    outside.write_bytes(b"editor")
+    monkeypatch.setenv(freeze_support.PHOTOCRAFT_BUNDLE_ENV, str(outside))
+    monkeypatch.setattr(freeze_support, "ROOT", tmp_path / "elsewhere" / "ImageTriage")   # no companion checkout beside it
+    with pytest.raises(SystemExit):
+        freeze_support.photocraft_bundle_files()
+    monkeypatch.setenv(freeze_support.PHOTOCRAFT_CHECKOUT_ENV, str(checkout.parents[2]))
+    files = dict((destination, Path(source)) for source, destination in freeze_support.photocraft_bundle_files())
+    for name in freeze_support.PHOTOCRAFT_LICENSE_FILES:
+        assert files[f"photocraft/{name}"].read_text() == name
+
+
+def test_the_licence_and_notices_ship_at_the_root_and_the_notices_are_written_for_the_build(checkout, monkeypatch):
+    calls = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        Path(command[command.index("--out") + 1]).write_text("notices")
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setenv(freeze_support.PHOTOCRAFT_BUNDLE_ENV, str(checkout))
+    monkeypatch.setattr("subprocess.run", run)
+    files = {destination: Path(source) for source, destination in freeze_support.licence_bundle_files()}
+    assert set(files) == {"LICENSE", "THIRD_PARTY_NOTICES.txt"} and files["THIRD_PARTY_NOTICES.txt"].read_text() == "notices"
+    assert calls[0][calls[0].index("--photocraft") + 1] == str(checkout.parents[2])
+    monkeypatch.setattr("subprocess.run", lambda command, **_k: type("Failed", (), {"returncode": 1})())
+    files["THIRD_PARTY_NOTICES.txt"].unlink()
+    with pytest.raises(SystemExit, match="notices"):
+        freeze_support.licence_bundle_files()
 
 
 def test_the_editor_is_found_in_the_companion_checkout_when_not_named(checkout, monkeypatch):

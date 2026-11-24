@@ -34,6 +34,7 @@ RAW_PREVIEW_BUNDLE_SWITCH_ENV = "IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW"
 # Beside the app's own executable, where qml_shell/raw_preview.executable looks for it (raw_preview.EXECUTABLE_NAME).
 RAW_PREVIEW_EXE_NAME = "image-triage-raw-preview" + (".exe" if os.name == "nt" else "")
 PHOTOCRAFT_LICENSE_FILES = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "ATTRIBUTION.md")
+PHOTOCRAFT_CHECKOUT_ENV = "IMAGE_TRIAGE_PHOTOCRAFT_CHECKOUT"
 
 def _env_flag(name: str, default: str = "0") -> bool:
     value = os.environ.get(name, default)
@@ -354,15 +355,53 @@ def photocraft_bundle_files() -> list[tuple[str, str]]:
             f"companion checkout), or name it with {PHOTOCRAFT_BUNDLE_ENV}, or set {PHOTOCRAFT_BUNDLE_SWITCH_ENV}=0 for an installer without it."
         )
     files = [(str(executable), f"{PHOTOCRAFT_BUNDLE_DIR}/{PHOTOCRAFT_EXE_NAME}")]
-    # The licences sit in the checkout the editor was built in (target/release/photocraft.exe is two folders below it), or beside the file.
-    folders = [executable.parent, *([executable.parents[2]] if len(executable.parents) > 2 else [])]
-    for name in PHOTOCRAFT_LICENSE_FILES:
-        source = next((folder / name for folder in folders if (folder / name).is_file()), None)
-        if source is None:
-            print(f"Warning: {name} was not found beside the PhotoCraft editor; it is not in the installer.")
-        else:
-            files.append((str(source), f"{PHOTOCRAFT_BUNDLE_DIR}/{name}"))
+    # The licences sit in the checkout the editor was built in. An installer that carries the editor without them breaks its licence,
+    # so a build that cannot find them stops (the Mac build used to leave them out with only a warning: its target folder is outside
+    # the checkout).
+    checkout = photocraft_checkout(executable)
+    if checkout is None:
+        raise SystemExit(
+            f"PhotoCraft's licence files ({', '.join(PHOTOCRAFT_LICENSE_FILES)}) were not found: name the checkout the editor was built from "
+            f"with {PHOTOCRAFT_CHECKOUT_ENV}."
+        )
+    files.extend((str(checkout / name), f"{PHOTOCRAFT_BUNDLE_DIR}/{name}") for name in PHOTOCRAFT_LICENSE_FILES)
     return files
+
+
+def photocraft_checkout(executable: Path | None = None) -> Path | None:
+    """The PhotoCraft checkout the editor was built from: ``IMAGE_TRIAGE_PHOTOCRAFT_CHECKOUT``, else the first folder above the editor that
+    holds PhotoCraft's Cargo.toml and licence files (``<checkout>/target/release/photocraft``), else the companion checkout."""
+    def is_checkout(folder: Path) -> bool:
+        return (folder / "Cargo.toml").is_file() and all((folder / name).is_file() for name in PHOTOCRAFT_LICENSE_FILES)
+
+    configured = _configured_path(PHOTOCRAFT_CHECKOUT_ENV)
+    if configured is not None:
+        return configured if is_checkout(configured) else None
+    candidates = [*(executable.parents if executable is not None else ()), ROOT.parent / "photocraft", Path.home() / "Documents" / "photocraft"]
+    return next((folder for folder in candidates if is_checkout(folder)), None)
+
+
+def licence_bundle_files() -> list[tuple[str, str]]:
+    """Image Triage's licence agreement and the third-party notices, at the root of the install, where Help > About opens them.
+
+    The notices are written for this build (``scripts/build_third_party_notices.py``: this interpreter's packages and the checkout the
+    editor comes from), so they list what this installer really holds. A build that cannot write them stops; one without the editor
+    (``IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT=0``) ships the copy in the repository.
+    """
+    files = [(str(ROOT / "LICENSE"), "LICENSE")]
+    if os.environ.get(PHOTOCRAFT_BUNDLE_SWITCH_ENV, "1").strip().lower() in {"0", "false", "no", "off"}:
+        return files + [(str(ROOT / "THIRD_PARTY_NOTICES.txt"), "THIRD_PARTY_NOTICES.txt")]
+    checkout = photocraft_checkout(photocraft_bundle_source())
+    if checkout is None:
+        raise SystemExit(f"The third-party notices need the PhotoCraft checkout the editor is built from: name it with {PHOTOCRAFT_CHECKOUT_ENV}.")
+    import subprocess
+
+    target = ROOT / "build" / "THIRD_PARTY_NOTICES.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run([sys.executable, str(ROOT / "scripts" / "build_third_party_notices.py"), "--photocraft", str(checkout), "--out", str(target)])
+    if result.returncode != 0 or not target.is_file():
+        raise SystemExit("The third-party notices could not be written; an installer without them breaks its components' licences.")
+    return files + [(str(target), "THIRD_PARTY_NOTICES.txt")]
 
 
 def raw_preview_bundle_files() -> list[tuple[str, str]]:

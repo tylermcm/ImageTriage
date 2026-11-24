@@ -13,6 +13,7 @@ from freeze_support import (
     APP_FREEZE_EXCLUDES,
     APP_FREEZE_INCLUDES,
     APP_ICON_MAC_PATH,
+    licence_bundle_files,
     photocraft_bundle_files,
     prepare_ai_build_assets,
     raw_preview_bundle_files,
@@ -30,7 +31,7 @@ build_exe_options = {
     # The editor (<bundle>/Contents/Resources/photocraft/photocraft, reached through the Contents/MacOS/photocraft link bdist_mac makes for
     # every folder) runs in a window of its own on macOS (--hosted-window). The RAW preview worker lands in Contents/Resources, where
     # qml_shell/raw_preview.executable looks for it on macOS.
-    "include_files": [*freeze_assets.include_files, *photocraft_bundle_files()] + raw_preview_bundle_files(),
+    "include_files": [*freeze_assets.include_files, *photocraft_bundle_files()] + raw_preview_bundle_files() + licence_bundle_files(),
     "excludes": [*APP_FREEZE_EXCLUDES, *AI_FREEZE_EXCLUDES],
 }
 

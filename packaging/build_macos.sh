@@ -94,7 +94,8 @@ if [[ -n "${IMAGE_TRIAGE_CODESIGN_IDENTITY:-}" ]]; then
   SIGN=(--codesign-identity="$IMAGE_TRIAGE_CODESIGN_IDENTITY" --codesign-deep=1 --codesign-options=runtime --codesign-timestamp
         --codesign-entitlements="$ROOT/packaging/macos.entitlements")
 fi
-IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT_EXE="$EDITOR" IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW_EXE="$WORKER" \
+# The editor is built outside its checkout ($BUILD/photocraft-target), so the checkout is named for its licences and the notices.
+IMAGE_TRIAGE_BUNDLE_PHOTOCRAFT_EXE="$EDITOR" IMAGE_TRIAGE_BUNDLE_RAW_PREVIEW_EXE="$WORKER" IMAGE_TRIAGE_PHOTOCRAFT_CHECKOUT="$PHOTOCRAFT" \
   run "$VENV/bin/python" setup_macos.py bdist_mac "${SIGN[@]}"
 
 # cx_Freeze makes the app's own programs from python.org's universal Python, so they hold both architectures while every library

@@ -531,24 +531,31 @@ class ReferenceModel(QObject):
                 folder = performance_log_dir()
                 folder.mkdir(parents=True, exist_ok=True)
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
-        elif link == "licences":
-            licence = self._licence_file()
+        elif link in ("licences", "notices"):
+            # The licence agreement, or the third-party notices: the licences and credits of every component, model and asset the app ships with
+            names = ("LICENSE", "LICENSE.txt", "LICENSE.md") if link == "licences" else ("THIRD_PARTY_NOTICES.txt",)
+            what = "LICENSE file" if link == "licences" else "list of open-source licences"
+            licence = self._licence_file(names)
             if licence is None:
-                self._toast("warn", "The LICENSE file was not found", "It is meant to sit next to the app.")
+                self._toast("warn", f"The {what} was not found", "It is meant to sit next to the app.")
             elif self._memory:
-                self._toast("info", "Opens the LICENSE file", "Not done while the sample data is on.")
+                self._toast("info", f"Opens the {what}", "Not done while the sample data is on.")
             else:
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(licence)))
 
     @staticmethod
-    def _licence_file():
-        """The LICENSE text that ships with the app: next to the package (a checkout or an installed copy), or in the frozen bundle."""
+    def _licence_file(names=("LICENSE", "LICENSE.txt", "LICENSE.md")):
+        """A licence text that ships with the app (the LICENSE, or THIRD_PARTY_NOTICES.txt): next to the package (a checkout or an installed
+        copy), or in the frozen bundle."""
         import sys
         from pathlib import Path
 
-        roots = [Path(__file__).resolve().parents[2], Path(getattr(sys, "_MEIPASS", "")) if getattr(sys, "_MEIPASS", "") else None, Path(sys.executable).parent]
+        executable = Path(sys.executable).parent
+        # a checkout or an installed copy; a PyInstaller bundle; the install folder (Windows, Linux); a Mac app's Contents/Resources
+        roots = [Path(__file__).resolve().parents[2], Path(getattr(sys, "_MEIPASS", "")) if getattr(sys, "_MEIPASS", "") else None, executable,
+                 executable.parent / "Resources"]
         for root in filter(None, roots):
-            for name in ("LICENSE", "LICENSE.txt", "LICENSE.md"):
+            for name in names:
                 if (root / name).is_file():
                     return root / name
         return None

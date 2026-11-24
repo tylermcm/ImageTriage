@@ -3,7 +3,8 @@ name = "image-triage"
 version = "3.1.1"
 description = "Image Triage"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "astropy>=7.1",
@@ -27,7 +28,7 @@ image-triage = "image_triage.main:main"
 photoedit = "image_triage.photo_terminal.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

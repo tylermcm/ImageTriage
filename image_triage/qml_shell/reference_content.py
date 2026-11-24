@@ -117,7 +117,8 @@ ABOUT_LINKS = (
     {"id": "notes", "t": "Release notes", "d": ICON["note"]},
     {"id": "report", "t": "Report a problem", "d": ICON["warn"]},
     {"id": "logs", "t": "Open the log folder", "d": ICON["folder"]},
-    {"id": "licences", "t": "Licences and credits", "d": ICON["shield"]},
+    {"id": "licences", "t": "Licence agreement", "d": ICON["shield"]},
+    {"id": "notices", "t": "Open-source licences and credits", "d": ICON["shield"]},
 )
 
 # the Help menu: (id, label, icon, key cap shown at the right); None is a divider

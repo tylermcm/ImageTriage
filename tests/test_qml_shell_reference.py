@@ -182,7 +182,7 @@ def test_a_topic_can_be_picked_and_about_has_no_article(ref):
     assert ref.view["help"]["title"] == "Finding photos to skip"
     ref.open("about")
     h = ref.view["help"]
-    assert h["kind"] == "about" and h["blocks"] == [] and [l["id"] for l in h["links"]] == ["notes", "report", "logs", "licences"]
+    assert h["kind"] == "about" and h["blocks"] == [] and [l["id"] for l in h["links"]] == ["notes", "report", "logs", "licences", "notices"]
 
 
 def test_the_update_check_cycles_through_its_states(qapp, ref, monkeypatch):
@@ -530,9 +530,13 @@ def test_links_open_the_right_places(qapp, ref, monkeypatch):
     ref._memory = False
     ref.openLink("licences")
     assert opened[-1].endswith("/LICENSE") and opened[-1].startswith("file:")
-    monkeypatch.setattr(type(ref), "_licence_file", staticmethod(lambda: None))
+    ref.openLink("notices")
+    assert opened[-1].endswith("/THIRD_PARTY_NOTICES.txt") and opened[-1].startswith("file:")
+    monkeypatch.setattr(type(ref), "_licence_file", staticmethod(lambda names=(): None))
     ref.openLink("licences")
     assert ref.toasts.items[-1]["title"] == "The LICENSE file was not found"
+    ref.openLink("notices")
+    assert ref.toasts.items[-1]["title"] == "The list of open-source licences was not found"
 
 
 # ---- the shortcuts guide --------------------------------------------------------------------------------------------------------

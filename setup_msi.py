@@ -8,6 +8,7 @@ from freeze_support import (
     APP_FREEZE_INCLUDES,
     APP_ICON_WINDOWS_PATH,
     QT_WINDOWS_BINARY_EXCLUDES,
+    licence_bundle_files,
     photocraft_bundle_files,
     prepare_ai_build_assets,
     raw_preview_bundle_files,
@@ -25,7 +26,7 @@ build_exe_options = {
     "includes": list(APP_FREEZE_INCLUDES),
     # The editor is part of the program: <install dir>\photocraft\photocraft.exe, found there by shell_actions.bundled_photocraft_executable.
     # The RAW preview worker goes beside ImageTriage.exe, where qml_shell/raw_preview.executable looks for it.
-    "include_files": [*freeze_assets.include_files, *photocraft_bundle_files()] + raw_preview_bundle_files(),
+    "include_files": [*freeze_assets.include_files, *photocraft_bundle_files()] + raw_preview_bundle_files() + licence_bundle_files(),
     "excludes": [*APP_FREEZE_EXCLUDES, *AI_FREEZE_EXCLUDES],
 }
 
