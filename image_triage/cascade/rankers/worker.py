@@ -251,7 +251,7 @@ def _overlap(a: tuple[float, float, float, float], b: tuple[float, float, float,
 
 
 class FacesEngine:
-    """Finds the prominent faces in a frame (landmarker) and embeds each (AdaFace). ``score`` is the face count; ``detail`` is what the People index stores.
+    """Finds the prominent faces in a frame (landmarker) and embeds each (AuraFace). ``score`` is the face count; ``detail`` is what the People index stores.
 
     ``model_dir`` holds the landmarker, ``aux_dir`` the recognizer. Boxes are fractions of the frame, so the caller can place them on any copy of the image."""
 

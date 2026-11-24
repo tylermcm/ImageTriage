@@ -907,7 +907,7 @@ class CullModel(QObject):
                 ("quality", "Quality ranker", "Scores technical quality (MANIQA)."),
                 ("appeal", "Appeal ranker", "Scores how appealing a frame is (Q-ReAlign). Best with a graphics card."),
                 ("search", "Search model (semantic search)", "Reads each photo once so the folder can be searched in plain words (TinyCLIP). People uses it too."),
-                ("people", "Face recognizer (People)", "Groups the faces found in a folder into people (AdaFace). Runs on the CPU."),
+                ("people", "Face recognizer (People)", "Groups the faces found in a folder into people (AuraFace). Runs on the CPU."),
                 ("denoise", "AI Denoise", "Detail > Denoise: removes noise from the raw sensor data (RawNIND). Runs on the CPU."),
                 ("superres", "Super Resolution", "Detail > Super Resolution: doubles the size of a developed photo (Real-ESRGAN x2 and x4)."),
                 ("birefnet", "Subject masks", "Select Subject and Background, and the edges of People masks (BiRefNet)."),

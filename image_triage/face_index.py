@@ -3,7 +3,7 @@
 Decoupled from the full AI workflow, and layered on top of the semantic index:
 it reuses the TinyCLIP image embeddings the semantic pass already stored to
 cheaply decide which photos likely contain a person (zero-shot), and only runs
-the heavier face finder (landmarker + AdaFace, see ``face_stack``) on that flagged
+the heavier face finder (landmarker + AuraFace, see ``face_stack``) on that flagged
 subset. A file the folder cascade or an earlier scan already analysed comes from the
 shared face cache and skips both the pre-filter and the models. Detected faces are
 persisted and clustered so the People panel can surface recurring people.
@@ -45,7 +45,8 @@ FACE_INDEX_SCHEMA_VERSION = 2
 # while skipping ~74% of the AuraFace work. Favor recall — a false positive just
 # costs one AuraFace call that finds no face; a false negative drops a person.
 PERSON_PRESENCE_THRESHOLD = 0.15
-# Clustering threshold for AdaFace IR-50 embeddings: on 88 faces of five people (portraits and a family trip) every value from 0.30 to 0.40 recovered the same
+# Clustering threshold, set for AdaFace IR-50 embeddings (People now uses AuraFace glintr100, whose earlier calibration in
+# people_search.cluster_face_identities found 0.40; recalibrate on a real library): on 88 faces of five people (portraits and a family trip) every value from 0.30 to 0.40 recovered the same
 # people as average-linkage at 0.35; below 0.25 two people merged and above 0.45 one person began to split. One library, so recalibrate if real ones disagree.
 FACE_CLUSTER_THRESHOLD = 0.35
 FACE_INDEX_COMMIT_BATCH = 16
@@ -240,7 +241,7 @@ class FaceIndexSignals(QObject):
 
 
 class FaceFolderIndexTask(QRunnable):
-    """Background person-filtered face pass (landmarker + AdaFace) + clustering for one folder."""
+    """Background person-filtered face pass (landmarker + AuraFace) + clustering for one folder."""
 
     def __init__(
         self,

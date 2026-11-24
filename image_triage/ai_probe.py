@@ -483,13 +483,13 @@ def probe_insightface(result: ProbeResult, model_dir: Path, requested_device: st
 
 
 def probe_face_stack(result: ProbeResult, landmarker_dir: Path, recognizer_dir: Path, requested_device: str) -> None:
-    """Load the face landmarker and the AdaFace recognizer and run both once.
+    """Load the face landmarker and the AuraFace recognizer and run both once.
 
     Duplicates the two file names from ``cascade.rankers.bundles`` on purpose: this module runs inside the managed runtime and must not import the
     application package.
     """
     landmarker_file = Path(landmarker_dir) / "face_landmarker.task"
-    recognizer_file = Path(recognizer_dir) / "adaface_ir_50.onnx"
+    recognizer_file = Path(recognizer_dir) / "glintr100.onnx"
     for path, what in ((landmarker_file, "face landmarker"), (recognizer_file, "face recognizer")):
         if not path.is_file():
             raise ProbeFailure(STAGE_MODEL, "model_missing", f"The {what} model is missing.", str(path))

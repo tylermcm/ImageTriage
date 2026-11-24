@@ -24,7 +24,7 @@ from image_triage.quality.store import upsert_faces
 
 def test_the_active_recognizer_is_the_new_one_and_the_old_tag_is_kept_for_migration():
     # The tag carries a suffix for how faces are found ("+tiles"), so only the recognizer part is pinned here.
-    assert active_face_identity_model() == FACE_MODEL_TAG and FACE_MODEL_TAG.split("+")[0] == "adaface:ir50"
+    assert active_face_identity_model() == FACE_MODEL_TAG and FACE_MODEL_TAG.split("+")[0] == "auraface:glintr100"
     assert LEGACY_FACE_IDENTITY_MODEL == "insightface:auraface" and LEGACY_FACE_IDENTITY_MODEL != FACE_MODEL_TAG
 
 

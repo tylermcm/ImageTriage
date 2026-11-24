@@ -1,4 +1,4 @@
-"""The People index's face analyzer: the shared face finder (landmarker + AdaFace in a worker process) behind the interface ``face_index`` already uses.
+"""The People index's face analyzer: the shared face finder (landmarker + AuraFace in a worker process) behind the interface ``face_index`` already uses.
 
 It replaces the InsightFace analyzer. A file's faces come from ``cascade.faces.FaceCache`` when the folder cascade or an earlier scan already analysed it; otherwise the
 worker reads the file (RAW through its embedded preview), finds the prominent faces and embeds them, and the result is cached. Boxes are stored as pixels of the preview

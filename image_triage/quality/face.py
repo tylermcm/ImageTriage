@@ -163,7 +163,7 @@ class FaceQualityAnalyzer:
             self.available = True
         except ImportError as exc:
             # The managed AI runtime no longer installs insightface (its model files are
-            # non-commercial and people grouping uses MediaPipe + AdaFace), so this is the
+            # non-commercial and people grouping uses MediaPipe + AuraFace glintr100), so this is the
             # normal state: say so plainly instead of surfacing a module-not-found error.
             self.initialization_error = (
                 "The legacy face-quality pass needs the insightface package, which is not part of "

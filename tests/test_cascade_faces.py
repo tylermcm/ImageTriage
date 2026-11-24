@@ -59,12 +59,13 @@ def test_five_points_come_from_the_expected_landmarks():
     assert np.allclose(points[2], [480, 275]) and np.allclose(points[3], [380, 350]) and np.allclose(points[4], [620, 350])
 
 
-def test_preprocessing_is_bgr_scaled_and_channels_first():
+def test_preprocessing_is_rgb_scaled_and_channels_first():
+    # AuraFace glintr100 takes RGB scaled to [-1, 1], as InsightFace feeds its ArcFace-family models (the graph has no scaling of its own)
     rgb = np.zeros((112, 112, 3), dtype=np.uint8)
     rgb[:, :, 0] = 255  # pure red
     out = preprocess(rgb)
     assert out.shape == (1, 3, 112, 112) and out.dtype == np.float32
-    assert out[0, 2].min() == pytest.approx(1.0) and out[0, 0].max() == pytest.approx(-1.0)  # red is the last channel in BGR order; blue and green are at -1
+    assert out[0, 0].min() == pytest.approx(1.0) and out[0, 2].max() == pytest.approx(-1.0)  # red is the first channel; blue and green are at -1
 
 
 def test_a_finding_survives_json():

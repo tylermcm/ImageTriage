@@ -1,7 +1,7 @@
 """Faces for the People index, found by the same landmarker the blink check uses. Pure logic: geometry, preprocessing and the per-file cache. No models, no Qt.
 
 One detector serves both jobs: the face landmarker finds each face and its 478 landmarks, the five alignment points (eye centres, nose tip, mouth corners)
-come from those landmarks by plain geometry, and an AdaFace recognizer turns the aligned 112 x 112 crop into a 512-number identity vector. A face smaller than
+come from those landmarks by plain geometry, and an AuraFace recognizer (glintr100) turns the aligned 112 x 112 crop into a 512-number identity vector. A face smaller than
 ``MIN_FACE_AREA`` of the frame is a background person and is skipped, exactly as it is for the blink check. ``rankers/worker.py`` runs the models; the folder
 cascade and the People index read and write ``FaceCache`` so a file is analysed once whichever of them reaches it first.
 """
@@ -26,7 +26,7 @@ ALIGNED_SIZE = 112
 EMBEDDING_DIM = 512
 # Names the recognizer for everything stored with its vectors (``image_faces.identity_model``, the cache). A different recognizer is a different space: change this
 # and every stored vector is ignored until the folder is scanned again.
-FACE_MODEL_TAG = "adaface:ir50+tiles"   # +tiles: small faces are found by looking at overlapping parts of the frame too (the first version missed them)
+FACE_MODEL_TAG = "auraface:glintr100+tiles"   # +tiles: small faces are found by looking at overlapping parts of the frame too (the first version missed them)
 # The People index keeps smaller faces than the blink check does: a couple standing a few metres away is the subject of the photo even when each face is half a percent
 # of the frame. Only a face under this share of the frame is a bystander.
 PEOPLE_MIN_FACE_AREA = 0.003
@@ -93,9 +93,10 @@ def align_crop(image, points: np.ndarray):
 
 
 def preprocess(rgb_crop: np.ndarray) -> np.ndarray:
-    """The recognizer's input for one crop: BGR channel order, scaled to [-1, 1], channels first, with a batch axis (1, 3, 112, 112)."""
-    bgr = np.asarray(rgb_crop, dtype=np.float32)[:, :, ::-1]
-    return np.ascontiguousarray(((bgr / 255.0 - 0.5) / 0.5).transpose(2, 0, 1)[None])
+    """The recognizer's input for one crop: RGB, scaled to [-1, 1] ((x - 127.5) / 127.5, as InsightFace feeds its ArcFace-family models, of
+    which AuraFace glintr100 is one: its graph has no scaling of its own), channels first, with a batch axis (1, 3, 112, 112)."""
+    rgb = np.asarray(rgb_crop, dtype=np.float32)
+    return np.ascontiguousarray(((rgb - 127.5) / 127.5).transpose(2, 0, 1)[None])
 
 
 @dataclass(frozen=True, slots=True)

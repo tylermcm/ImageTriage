@@ -30,12 +30,15 @@ BLINK_MODEL_FILE = "face_landmarker.task"
 # Google's MediaPipe Face Landmarker bundle (float16), https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task
 BLINK_DIGEST: tuple[int, str] = (3758596, "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff")
 
-# The face recognizer for the People index: AdaFace IR-50 (MIT code; the file is UniFace's ONNX export), from the UniFace weights repository at a pinned commit.
+# The face recognizer for the People index: AuraFace glintr100 (fal/AuraFace-v1, Apache-2.0; fal states it was trained on commercially
+# usable data), only that file, at a pinned commit. It replaced AdaFace IR-50, whose published weights were trained on WebFace data that is
+# licensed for non-commercial research only (docs/commercial_readiness_audit.md, R2). The other files in that repository (scrfd_10g_bnkps,
+# 2d106det, genderage) look like InsightFace's non-commercial models and are never downloaded for this bundle.
 FACES_IDENTITY_KEY = "faces_identity"
-FACES_IDENTITY_REPO = "yakhyo/uniface-weights"
-FACES_IDENTITY_REVISION = "bfcc7d48ea8412d55de406cecf96b65b3ca720b2"
-FACES_IDENTITY_FILE = "adaface_ir_50.onnx"
-FACES_IDENTITY_DIGEST: tuple[int, str] = (174396180, "9c0ae385d7362323c92d218de598d32e52a9130b78faac6a8a924091aca62c0b")
+FACES_IDENTITY_REPO = "fal/AuraFace-v1"
+FACES_IDENTITY_REVISION = "af6d057c9b0ec4071d4c49c80e3539258798b609"
+FACES_IDENTITY_FILE = "glintr100.onnx"
+FACES_IDENTITY_DIGEST: tuple[int, str] = (260694151, "a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60")
 
 QREALIGN_REPO = "q-future/Q-ReAlign-Mini-0.8B"
 QREALIGN_REVISION = "fe1f45a7574c9e9d908875af9f7e90cb946aa19f"
@@ -104,12 +107,12 @@ def register_bundles() -> None:
         FACES_IDENTITY_KEY,
         ModelBundle(
             key=FACES_IDENTITY_KEY,
-            name="Face recognizer for people grouping (AdaFace)",
+            name="Face recognizer for people grouping (AuraFace)",
             repo_id=FACES_IDENTITY_REPO,
             revision=FACES_IDENTITY_REVISION,
             filenames=(FACES_IDENTITY_FILE,),
-            install_parts=("Rankers", "AdaFace"),
-            approx_mb=166,
+            install_parts=("Rankers", "AuraFace"),
+            approx_mb=249,
             pinned_revision=True,
             dir_env="IMAGE_TRIAGE_FACES_MODEL_DIR",
             repo_env="IMAGE_TRIAGE_FACES_MODEL_REPO_ID",

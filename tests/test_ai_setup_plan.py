@@ -35,7 +35,7 @@ def test_group_sizes_match_what_the_setup_page_shows() -> None:
 
 
 def test_core_includes_the_runtime_with_pytorch_faces_and_search() -> None:
-    faces_and_search = 4 + 166 + 98
+    faces_and_search = 4 + 249 + 98                   # face landmarker, AuraFace glintr100, TinyCLIP
     assert plan.core_mb(AI_RUNTIME_CPU_VARIANT) == 2600 + faces_and_search
     assert plan.core_mb(AI_RUNTIME_GPU_VARIANT) == 6600 + faces_and_search
     assert set(plan.CORE_BUNDLES) <= set(MODEL_BUNDLES)
@@ -52,7 +52,7 @@ def test_download_size_counts_the_core_only_when_missing_and_skips_installed_mod
     everything = plan.all_model_keys()
     fresh = plan.download_mb(everything, variant=AI_RUNTIME_GPU_VARIANT, core_installed=False)
     assert fresh == plan.core_mb(AI_RUNTIME_GPU_VARIANT) + plan.group_mb(plan.GROUP_CULL) + plan.group_mb(plan.GROUP_EDIT)
-    assert plan.format_mb(fresh) == "10.4 GB"
+    assert plan.format_mb(fresh) == "10.5 GB"
     assert plan.download_mb(everything, variant=AI_RUNTIME_GPU_VARIANT, core_installed=True, installed=everything) == 0
     assert plan.download_mb({"sam"}, variant=AI_RUNTIME_CPU_VARIANT, core_installed=True) == 150
     assert plan.download_mb((), variant=AI_RUNTIME_CPU_VARIANT, core_installed=False) == plan.core_mb(AI_RUNTIME_CPU_VARIANT)

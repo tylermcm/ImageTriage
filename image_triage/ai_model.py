@@ -427,7 +427,7 @@ def default_aiculler_face_model_install_dir(*, repo_id: str = DEFAULT_AICULLER_F
 
 
 def active_face_identity_model() -> str:
-    """The ``identity_model`` tag stored with face embeddings from the active recognizer (AdaFace; the old AuraFace tag was ``insightface:auraface``).
+    """The ``identity_model`` tag stored with face embeddings from the active recognizer (AuraFace glintr100 in the landmarker pipeline; before it AdaFace, and before that InsightFace's AuraFace pack, ``insightface:auraface``).
 
     Use it to scope clustering to the current recognizer so embeddings written by a different (e.g. older) recognizer are never mixed into the same
     512-d space. ``LEGACY_FACE_IDENTITY_MODEL`` is what the previous recognizer wrote; those rows stay until a rescan replaces them."""
