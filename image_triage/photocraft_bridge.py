@@ -197,7 +197,7 @@ def require_finishing_support(camera_raw, supported: bool) -> None:
     recipe = camera_raw.get("recipe") if isinstance(camera_raw, dict) else None
     settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
     if isinstance(settings, dict) and ("glow" in settings or "pointColors" in settings) and not supported:
-        raise PhotoCraftCompatibilityError("This photo uses Glow or Point Color. Select the main-adjustments PhotoCraft test build to preserve those edits.")
+        raise PhotoCraftCompatibilityError("This photo uses Glow or Point Color. Select the main-adjustments editor test build to preserve those edits.")
 
 
 def require_calibration_support(camera_raw, supported: bool) -> None:
@@ -205,21 +205,21 @@ def require_calibration_support(camera_raw, supported: bool) -> None:
     recipe = camera_raw.get("recipe") if isinstance(camera_raw, dict) else None
     settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
     if isinstance(settings, dict) and RECIPE_CALIBRATION_FIELDS.intersection(settings) and not supported:
-        raise PhotoCraftCompatibilityError("This photo uses Calibration settings. Select a PhotoCraft build with Calibration support to preserve those edits.")
+        raise PhotoCraftCompatibilityError("This photo uses Calibration settings. Select an editor build with Calibration support to preserve those edits.")
 
 
 def require_red_eye_support(camera_raw, supported: bool) -> None:
     recipe = camera_raw.get("recipe") if isinstance(camera_raw, dict) else None
     settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
     if isinstance(settings, dict) and settings.get("redEye") and not supported:
-        raise PhotoCraftCompatibilityError("This photo uses Red Eye corrections. Select the updated PhotoCraft build to preserve them.")
+        raise PhotoCraftCompatibilityError("This photo uses Red Eye corrections. Select the updated editor build to preserve them.")
 
 
 def require_retouch_support(camera_raw, supported: bool) -> None:
     recipe = camera_raw.get("recipe") if isinstance(camera_raw, dict) else None
     settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
     if isinstance(settings,dict) and settings.get("retouch") and not supported:
-        raise PhotoCraftCompatibilityError("This photo uses RAW retouch strokes. Select the updated PhotoCraft build to preserve them.")
+        raise PhotoCraftCompatibilityError("This photo uses RAW retouch strokes. Select the updated editor build to preserve them.")
 
 
 def require_masks_support(camera_raw, supported: bool) -> None:
@@ -227,7 +227,7 @@ def require_masks_support(camera_raw, supported: bool) -> None:
     recipe = camera_raw.get("recipe") if isinstance(camera_raw, dict) else None
     settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
     if isinstance(settings, dict) and settings.get("masks") and not supported:
-        raise PhotoCraftCompatibilityError("This photo uses local masks. Select a PhotoCraft build with local mask support to preserve those edits.")
+        raise PhotoCraftCompatibilityError("This photo uses local masks. Select an editor build with local mask support to preserve those edits.")
 
 
 def require_super_resolution_support(camera_raw, supported: bool) -> None:
@@ -235,7 +235,7 @@ def require_super_resolution_support(camera_raw, supported: bool) -> None:
     recipe = camera_raw.get("recipe") if isinstance(camera_raw, dict) else None
     settings = recipe.get("cameraRaw", {}) if isinstance(recipe, dict) else {}
     if isinstance(settings, dict) and settings.get("superResolution") is True and not supported:
-        raise PhotoCraftCompatibilityError("This photo uses Super Resolution. Select a PhotoCraft build with Super Resolution support to preserve that setting.")
+        raise PhotoCraftCompatibilityError("This photo uses Super Resolution. Select an editor build with Super Resolution support to preserve that setting.")
 
 
 def _setting_problem(name, value) -> str | None:
@@ -1035,7 +1035,7 @@ def materialize_for_photocraft(path: str, cache_dir: Path) -> str:
     # selection always picks the full-resolution decode, not a half-size one.
     image, error = load_image_for_display(path, QSize(16384, 16384), prefer_embedded=False)
     if image.isNull():
-        raise PhotoCraftError(f"Could not decode {path!r} for PhotoCraft: {error}")
+        raise PhotoCraftError(f"Could not decode {path!r} for the editor: {error}")
     cache_dir.mkdir(parents=True, exist_ok=True)
     out_path = cache_dir / (Path(path).name + "__photocraft_source.tiff")
     if not image.save(str(out_path), "TIFF"):
@@ -1103,7 +1103,7 @@ class PhotoCraftControl:
         if lock is None:
             lock = self.__dict__.setdefault("_exchange_lock", threading.RLock())
         if not lock.acquire(timeout=getattr(self, "_timeout", 120.0)):
-            raise PhotoCraftError("PhotoCraft is still answering another request. No command was sent.")
+            raise PhotoCraftError("The editor is still answering another request. No command was sent.")
         try:
             try:
                 return self._exchange(method, params)
@@ -1183,9 +1183,9 @@ class PhotoCraftControl:
         except PhotoCraftError as error:
             if "unknown method" not in str(error):
                 raise
-            raise PhotoCraftCompatibilityError("This PhotoCraft build lacks persistent hosted document replacement") from error
+            raise PhotoCraftCompatibilityError("This editor build lacks persistent hosted document replacement") from error
         if capabilities.get("version", 0) < 2:
-            raise PhotoCraftCompatibilityError("This PhotoCraft build lacks persistent hosted document replacement")
+            raise PhotoCraftCompatibilityError("This editor build lacks persistent hosted document replacement")
         self.camera_raw_supported = capabilities.get("cameraRaw", 0) >= 1
         self.camera_raw_prefetch_supported = capabilities.get("cameraRawPrefetch", 0) >= 1
         self.camera_raw_switch_supported = capabilities.get("cameraRawSwitch", 0) >= 1
@@ -1222,7 +1222,7 @@ class PhotoCraftControl:
                     "Use the companion photocraft.exe build or update IMAGE_TRIAGE_PHOTOCRAFT_EXE. "
                     f"Compatibility check: {error}"
                 ) from error
-            raise PhotoCraftCompatibilityError(f"PhotoCraft returned an unexpected response to the {method} compatibility check")
+            raise PhotoCraftCompatibilityError(f"The editor returned an unexpected response to the {method} compatibility check")
 
     def host_window(self, visible: bool | None = None) -> dict:
         """Show (``True``) or hide (``False``) an editor running in a window of its own, or only ask about it (``None``). Answers
@@ -1753,7 +1753,7 @@ def launch_photocraft(
     macOS a faceless app, with no Dock icon, that never takes the focus."""
     exe = executable or detect_photocraft_executable()
     if not exe:
-        raise PhotoCraftError("PhotoCraft executable not found")
+        raise PhotoCraftError("The editor is not installed")
 
     # A launcher/dev restart may inherit an override for an older release.
     # Honor compatible overrides, but recover from protocol incompatibility
@@ -1772,7 +1772,7 @@ def launch_photocraft(
         except PhotoCraftCompatibilityError as error:
             last_error = error
             logging.getLogger(__name__).warning("Rejected incompatible PhotoCraft executable %s: %s", candidate, error)
-    raise PhotoCraftCompatibilityError(f"No compatible PhotoCraft build found. {last_error}")
+    raise PhotoCraftCompatibilityError(f"No compatible editor build found. {last_error}")
 
 
 EDITOR_LOGS_KEPT = 5

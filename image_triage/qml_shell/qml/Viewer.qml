@@ -141,10 +141,10 @@ FocusScope {
         if (!popout.canEdit || UiState.vwScene === "noedit") return
         if (rawEditing && (rawEditor.dirty || rawEditor.saving || rawEditor.autoSaving)) {
             rawEditor.commit()
-            popout.notice("Saving the RAW edit first. Open it in PhotoCraft again in a few seconds.")
+            popout.notice("Saving the RAW edit first. Open it in the editor again in a few seconds.")
             return
         }
-        if (!editor.available) { popout.notice("PhotoCraft is not installed. Install it from Settings › Editor."); return }
+        if (!editor.available) { popout.notice("The editor is not installed. Install it from Settings › Editor."); return }
         if (rawEditing) rawEditor.cancel()
         if (curPath !== "") { opening = true; editor.openFullEditor(curPath) }
     }
@@ -912,14 +912,14 @@ FocusScope {
                         border.color: edit.can ? Qt.tint(theme.accent, Qt.rgba(1, 1, 1, 0.25)) : v.cLineSoft }
                     Row { id: eRow; x: 12; anchors.verticalCenter: parent.verticalCenter; spacing: 8
                         Icon { anchors.verticalCenter: parent.verticalCenter; path: "M4 20l1-4.2L16.6 4.2a2 2 0 012.8 0l.4.4a2 2 0 010 2.8L8.2 19zM14.5 6.4l3.1 3.1"; size: 18; color: edit.can ? theme.onAccent : v.cFg3 }
-                        Text { anchors.verticalCenter: parent.verticalCenter; text: edit.can ? "Edit in PhotoCraft" : "Edit"; color: edit.can ? theme.onAccent : v.cFg3; font.pixelSize: 13; font.weight: Font.DemiBold }
+                        Text { anchors.verticalCenter: parent.verticalCenter; text: edit.can ? "Open in Editor" : "Edit"; color: edit.can ? theme.onAccent : v.cFg3; font.pixelSize: 13; font.weight: Font.DemiBold }
                         Item { id: ek; anchors.verticalCenter: parent.verticalCenter; width: ekt.implicitWidth + 12; height: 18
                             Rectangle { anchors.fill: parent; radius: 5; color: edit.can ? Qt.rgba(1, 1, 1, 0.28) : "transparent"; border.color: edit.can ? Qt.alpha(theme.onAccent, 0.35) : v.cLine }
                             Text { id: ekt; anchors.centerIn: parent; text: "E"; color: edit.can ? theme.onAccent : v.cFg3; font.pixelSize: 10; font.weight: Font.Medium } } }
                     HoverHandler { id: eh2; cursorShape: edit.can ? Qt.PointingHandCursor : Qt.ArrowCursor }
                     TapHandler { id: ep; onTapped: v.openEditor() }
-                    HoverTip { tip: edit.can ? "Open this photo in PhotoCraft (E)" : "PhotoCraft is not installed. Install it from Settings › Editor."; hovered: eh2.hovered }
-                    Accessible.role: Accessible.Button; Accessible.name: edit.can ? "Edit in PhotoCraft" : "Edit in PhotoCraft (not connected)"
+                    HoverTip { tip: edit.can ? "Open this photo in the editor (E)" : "The editor is not installed. Install it from Settings › Editor."; hovered: eh2.hovered }
+                    Accessible.role: Accessible.Button; Accessible.name: edit.can ? "Open in Editor" : "Open in Editor (not connected)"
                 }
                 Item { width: 11; height: 40; Rectangle { anchors.centerIn: parent; width: 1; height: 26; color: v.cLine } }
                 Item {   // put the bar away
@@ -1239,7 +1239,7 @@ FocusScope {
             Rectangle { anchors.horizontalCenter: parent.horizontalCenter; width: 62; height: 62; radius: 17
                 gradient: Gradient { GradientStop { position: 0; color: Qt.lighter(theme.accent, 1.12) } GradientStop { position: 1; color: Qt.darker(theme.accent, 1.9) } }
                 Icon { anchors.centerIn: parent; size: 32; strokeWidth: 1.7; color: "white"; path: "M12 3.5a8.5 8.5 0 100 17 8.5 8.5 0 000-17zM12 3.5l3 8.5M20.5 12l-8.5 3M12 20.5L9 12M3.5 12l8.5-3" } }
-            Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; text: "Opening " + v.fileName + " in PhotoCraft…"; color: v.cFg; font.pixelSize: 17; font.weight: Font.DemiBold }
+            Text { width: parent.width; horizontalAlignment: Text.AlignHCenter; text: "Opening " + v.fileName + " in the editor…"; color: v.cFg; font.pixelSize: 17; font.weight: Font.DemiBold }
             Text { width: parent.width; y: -10; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; text: "Your decisions here are saved. Closing the editor brings you back to this photo."; color: v.cFg3; font.pointSize: UiState.pt(12.5) }
             Item { anchors.horizontalCenter: parent.horizontalCenter; width: 220; height: 4; clip: true
                 Rectangle { anchors.fill: parent; radius: 2; color: v.cHover }

@@ -298,7 +298,7 @@ class FullRenderService:
         temporary = None
         if proc is None or not proc.is_running() or proc.path_within_root(image_path) is None:
             if self._launch is None:
-                return failed("PhotoCraft is not running, and the photo's edits need it to be rendered at full size")
+                return failed("the editor is not running, and the photo's edits need it to be rendered at full size")
             temporary = self._launch(folder)
             with self._state:
                 self._temporary[id(temporary)] = temporary
@@ -308,7 +308,7 @@ class FullRenderService:
             if self._closing:
                 raise RenderCancelled("closing")
             if getattr(proc.control, "full_render_supported", False) is not True:
-                return failed("this PhotoCraft build cannot render edits at full size")
+                return failed("this editor build cannot render edits at full size")
             params: dict = {"wait": False}
             name = Path(image_path).name
             out = proc.path_within_write_root(str(bridge.edit_root_for(Path(folder)) / f"{name}.photocraft.export-{uuid.uuid4().hex}"))

@@ -24,6 +24,17 @@ Image Triage can be sold as a closed-source app, but not as it ships today. Five
 Nothing found is unfixable. Everything in the Rust graph and in PhotoCraft's own code is permissive (MIT, Apache, BSD, ISC,
 Zlib, Unicode), and every red item has a permissive replacement or a simple packaging fix.
 
+## Status of the red items (fixed on `claude/commercial-audit`)
+
+| # | Done | Still yours to do |
+|---|---|---|
+| R1 | `LICENSE` is a draft end-user licence: commercial use allowed, with the LGPL relink and reverse-engineering carve-out. `pyproject.toml` says `LicenseRef-Proprietary`. | Have a lawyer review it, and set the price and seat terms. Copies already released stay under PolyForm. |
+| R2 | People uses AuraFace `glintr100` (Apache-2.0, pinned revision and SHA-256) in place of AdaFace. The cache tag changed, so existing People data is re-indexed, and names carry over by face position. | Ask fal in writing about glintr100's provenance (A1). |
+| R3 | The native culler loads TOPIQ only when `IMAGE_TRIAGE_AICULLER_TOPIQ` names a file. Setup never installed it, and an old download is no longer picked up. | Take down or mark the `Skulleton12/TOPIQ` mirror non-commercial. |
+| R4 | HEIC decoding uses `pi-heif` (decode-only, LGPL libheif and libde265, without x265). | HEVC patents (A7). |
+| R5 | `scripts/build_third_party_notices.py` writes `THIRD_PARTY_NOTICES.txt`: models, assets, the Python closure, and PhotoCraft's 720 crates with their licence texts. Every installer regenerates it for its build and ships it with `LICENSE` at the root, and Help > About opens both. A build missing the editor's licences now stops, and the Mac build names the checkout. | Rebuild one MSI and one DMG and check that both files are in them. |
+| R6 | In the fork (branch `imagetriage/brand`), the ArtCraft Discord, website and Discord button are removed. The editor shows itself as "Image Triage Editor", with "Based on PhotoCraft by the ArtCraft team" in its About, and the exe's CompanyName, ProductName and copyright are yours. In Image Triage, the messages and the button say "the editor" / "Open in Editor", and the website line is updated. | Upstream's kitsune icon (MIT/Apache, so allowed) and internal names such as `photocraft.exe` remain. Swap the icon if you want the editor fully your own. |
+
 ## Red: blocks a paid release
 
 | # | What | Evidence | Fix |

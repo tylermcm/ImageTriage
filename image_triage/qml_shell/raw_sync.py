@@ -32,7 +32,7 @@ def sync_look(paths, look, *, save, unsaved=lambda path: False, cancelled=lambda
                 skipped.append((name, "not a RAW photo"))
                 continue
             if bridge.sidecar_pcraft_path(path).exists():
-                skipped.append((name, "has a PhotoCraft project"))
+                skipped.append((name, "has an editor project"))
                 continue
             if unsaved(path):
                 skipped.append((name, "has unsaved edits of its own"))

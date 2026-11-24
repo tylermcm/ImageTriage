@@ -622,7 +622,7 @@ class SettingsModel(QObject):
         return {"title": "", "intro": ""}
 
     # -- properties ------------------------------------------------------------------------------------------------------------
-    appVersion = Property(str, lambda self: "2.4.0 · PhotoCraft 0.9.2" if self._memory else _app_version(), constant=True)
+    appVersion = Property(str, lambda self: "2.4.0 · Editor 0.9.2" if self._memory else _app_version(), constant=True)
     revision = Property(int, lambda self: self._revision, notify=revisionChanged)
     dirtyCount = Property(int, lambda self: sum(1 for k in self._vals if self._vals[k] != self._init.get(k)), notify=revisionChanged)
     saved = Property(bool, lambda self: self._saved, notify=revisionChanged)

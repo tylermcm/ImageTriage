@@ -452,7 +452,7 @@ class EditorHost(QObject):
             self._set(STARTING, "")
             return
         if not self._available():
-            self._fail(path, "PhotoCraft is not installed. Install it from Settings › Editor.")
+            self._fail(path, "The editor is not installed. Install it from Settings › Editor.")
             return
         switching = self._state == EDITING
         if switching and path == self._path:
@@ -510,7 +510,7 @@ class EditorHost(QObject):
             open_path = str(sidecar) if sidecar.exists() and not is_raw else path
             relative = proc.path_within_root(open_path)
             if relative is None:
-                raise RuntimeError("That photo is outside the folder PhotoCraft can read.")
+                raise RuntimeError("That photo is outside the folder the editor can read.")
             if proc.idle_priority:
                 from .. import photocraft_bridge
 
@@ -570,11 +570,11 @@ class EditorHost(QObject):
                 if isinstance(opened, dict) and (opened.get("cameraRaw") or {}).get("dialog"):
                     state = proc.control.call("ui.cameraRaw", {"commit": True})
                     if state.get("open") or not state.get("applied"):
-                        raise RuntimeError("PhotoCraft could not develop this RAW for the full editor.")
+                        raise RuntimeError("The editor could not develop this RAW.")
             elif not dialog:
                 raw_state = proc.control.call("ui.cameraRaw", {"open": True})
                 if raw_state.get("open") is not True:
-                    raise RuntimeError("PhotoCraft did not open Camera Raw for this photo.")
+                    raise RuntimeError("The editor did not open Camera Raw for this photo.")
             self._done.emit("open", proc, "")
         except Exception as error:               # a failed launch or open is shown to the person, never raised into the event loop
             uncertain = isinstance(error, _DocumentUncertain)
@@ -620,7 +620,7 @@ class EditorHost(QObject):
         open_path = str(sidecar) if sidecar.exists() and not is_raw else path
         relative = proc.path_within_root(open_path)
         if relative is None:
-            raise RuntimeError("the previous photo is outside the folder PhotoCraft can read")
+            raise RuntimeError("the previous photo is outside the folder the editor can read")
         signature = photocraft_bridge.file_signature(path) if getattr(proc.control, "render_manifest_supported", False) is True else None
         spec = None
         kept = {}

@@ -360,7 +360,7 @@ class PreviewWorker(QObject):
                 try:
                     signature = bridge.file_signature(path)
                     if not signature or bridge.sidecar_pcraft_path(path).exists():
-                        raise RuntimeError("The RAW changed or has a PhotoCraft project. Reopen the editor.")
+                        raise RuntimeError("The RAW changed or has an editor project. Reopen the editor.")
                     state, recipe, reason = bridge.recipe_state(path)
                     settings = light_depth.strip_legacy(dict(recipe["cameraRaw"]) if recipe else {})
                     # Light Depth's settings are the host's own (beside the recipe), not part of what the recipe holds.

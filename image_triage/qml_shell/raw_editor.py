@@ -1160,7 +1160,7 @@ class RawEditor(QObject):
                     result = image
                 self._finished.emit(revision, action, result, "")
             except Exception as error:
-                self._finished.emit(revision, action, None, str(error) or "PhotoCraft could not complete the RAW request.")
+                self._finished.emit(revision, action, None, str(error) or "The editor could not complete the RAW request.")
 
         threading.Thread(target=work, name="qml-raw-editor", daemon=True).start()
 
@@ -1230,7 +1230,7 @@ class RawEditor(QObject):
     @staticmethod
     def _work(action, path, original, draft, directory, sample=None):
         if bridge.sidecar_pcraft_path(path).exists():
-            raise ValueError("This photo already has a PhotoCraft project. Open it in PhotoCraft to edit it.")
+            raise ValueError("This photo already has an editor project. Open it in the editor to edit it.")
         state, recipe, reason = bridge.recipe_state(path, set_aside=action == "load")
         if state == bridge.RECIPE_INVALID:
             raise ValueError(reason)
@@ -1276,7 +1276,7 @@ class RawEditor(QObject):
             bridge.require_retouch_support({"recipe": full}, getattr(proc.control, "camera_raw_retouch_supported", False) is True)
             bridge.require_red_eye_support({"recipe": full}, getattr(proc.control, "camera_raw_red_eye_supported", False) is True)
             if not proc.control.full_render_supported:
-                raise ValueError("This PhotoCraft build cannot render RAW recipes.")
+                raise ValueError("This editor build cannot render RAW recipes.")
             if not saving:
                 # Keep non-interactive host features in the recipe for save, outside this preview job.
                 from ..full_render import _without_host_settings
@@ -1285,7 +1285,7 @@ class RawEditor(QObject):
                 reply = proc.control.call("app.render", {"source": source, "recipe": _without_host_settings(full), "out": out})
                 name = reply.get("out")
                 if name not in (out + ".png", out + ".tif", out + ".tiff"):
-                    raise ValueError("PhotoCraft returned an unexpected preview path.")
+                    raise ValueError("The editor returned an unexpected preview path.")
                 preview = Path(directory) / name
                 if action == "whiteBalance":
                     try:
@@ -1311,7 +1311,7 @@ class RawEditor(QObject):
             reply = proc.control.call("app.render", {"source": source, "recipe": _without_host_settings(full), "out": out})
             name = reply.get("out")
             if name not in (out + ".png", out + ".tif", out + ".tiff"):
-                raise ValueError("PhotoCraft returned an unexpected RAW render path")
+                raise ValueError("The editor returned an unexpected RAW render path")
             rendered = Path(write_root) / name
             try:
                 state, current, reason = bridge.recipe_state(path)

@@ -55,7 +55,7 @@ def test_photos_that_should_not_be_touched_are_left_alone_with_a_reason(tmp_path
     result = sync_look([jpeg, project, same, drafted, broken], {"exposure": 1.0}, defaults=DEFAULTS,
                        save=lambda *args: pytest.fail("nothing here should be saved"), unsaved=lambda path: path == drafted)
     reasons = dict(result["skipped"])
-    assert reasons["c.jpg"] == "not a RAW photo" and reasons["d.NEF"] == "has a PhotoCraft project"
+    assert reasons["c.jpg"] == "not a RAW photo" and reasons["d.NEF"] == "has an editor project"
     assert reasons["e.NEF"] == "already has these settings" and reasons["f.NEF"] == "has unsaved edits of its own"
     assert "g.NEF" in reasons and not result["saved"] and not result["failed"]
     assert bridge.recipe_path(broken).read_text() == "{not json"     # a damaged recipe is not set aside by a sync
