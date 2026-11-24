@@ -134,7 +134,7 @@ KEY_GROUPS = (
                 ("Clear the decision", "", "U"), ("Star rating", "", "1+–+5"), ("Open the large view", "open_preview", "Space"))),
     ("Collections", (("Add the photo you are on", "collect_at_cursor", "B"), ("Choose best photos", "best_of_set_auto_assembly", "Ctrl+Alt+B"), ("Deliver / Handoff Builder", "handoff_builder", "Ctrl+Alt+H"))),
     ("File", (("Open folder", "open_folder", "Ctrl+O"), ("Refresh folder", "refresh_folder", "F5"), ("Settings", "workflow_settings", "Ctrl+,"), ("Open in editor", "", "E"))),
-    ("Edit", (("Undo", "undo", "Ctrl+Z"), ("Rename", "rename_selection", "F2"), ("Batch rename", "batch_rename_selection", "Ctrl+Shift+R"), ("Batch resize", "batch_resize_selection", "Ctrl+Shift+E"), ("Batch convert", "batch_convert_selection", "Ctrl+Shift+C"))),
+    ("Edit", (("Undo", "undo", "Ctrl+Z"), ("Rename", "rename_selection", "F2"), ("Quick export", "quick_export", "Ctrl+E"), ("Batch rename", "batch_rename_selection", "Ctrl+Shift+R"), ("Batch resize", "batch_resize_selection", "Ctrl+Shift+E"), ("Batch convert", "batch_convert_selection", "Ctrl+Shift+C"))),
     ("View", (("Grid view", "grid_view", "Ctrl+1"), ("Details view", "details_view", "Ctrl+2"), ("Zen mode", "zen_mode", "F11"), ("Show or hide the inspector", "", "I"), ("Clear filters", "clear_filters", "Ctrl+Shift+X"))),
     ("Everywhere", (("Search or run a command", "open_command_palette", "Ctrl+K"), ("Help", "", "F1"), ("Keyboard shortcuts", "", "Ctrl+/"), ("Close a window", "", "Esc"))),
 )

@@ -22,6 +22,7 @@ from .formats import suffix_for_path
 
 DEFAULTS: dict[str, object] = {
     "sizeMode": "original", "long": "2048", "short": "1080", "fitW": "1920", "fitH": "1080", "mp": "12", "pct": "50",
+    "cropW": "1080", "cropH": "1350",
     "noEnlarge": True,
     "format": "jpg", "quality": "90", "depth": "8",
     "profile": "srgb", "profileFile": "", "intent": "perceptual", "bpc": True, "proofPaper": False, "proofGamut": False,
@@ -33,7 +34,7 @@ DEFAULTS: dict[str, object] = {
 }
 
 SIZE_MODES = (("original", "Original size"), ("long", "Long edge"), ("short", "Short edge"), ("fit", "Fit within"),
-              ("mp", "Megapixels"), ("pct", "Percentage"))
+              ("mp", "Megapixels"), ("pct", "Percentage"), ("crop", "Crop to size"))
 FORMATS = (("jpg", "JPEG", ".jpg"), ("png", "PNG", ".png"), ("tif", "TIFF", ".tif"), ("webp", "WebP", ".webp"),
            ("original", "Same as the photo", ""))
 _FORMAT_OF_SUFFIX = {".jpg": "jpg", ".jpeg": "jpg", ".jpe": "jpg", ".jfif": "jpg", ".png": "png", ".tif": "tif", ".tiff": "tif",
@@ -106,11 +107,47 @@ def suffix_of(values: dict, source_path: str = "") -> str:
     return next(s for f, _, s in FORMATS if f == fmt)
 
 
+def crop_box(width: int, height: int, values: dict) -> tuple[int, int, int, int] | None:
+    """For "Crop to size": the middle of a ``width`` x ``height`` picture with the shape asked for (an Instagram post, 1080 x 1350),
+    as ``(x, y, w, h)``; None for the other size modes, or when the picture already has that shape."""
+    if values["sizeMode"] != "crop" or width <= 0 or height <= 0:
+        return None
+    aspect = _number(values["cropW"], 1080) / max(1e-9, _number(values["cropH"], 1350))
+    if aspect <= 0:
+        return None
+    if width / height > aspect:
+        w, h = max(1, round(height * aspect)), height
+    else:
+        w, h = width, max(1, round(width / aspect))
+    if abs(w - width) <= 1 and abs(h - height) <= 1:
+        return None
+    return (width - w) // 2, (height - h) // 2, w, h
+
+
+def cropped(image: QImage, values: dict) -> QImage:
+    """``image`` cut to the shape "Crop to size" asks for (its middle), keeping its colour space; other modes leave it as it is."""
+    box = crop_box(image.width(), image.height(), values)
+    if box is None:
+        return image
+    part = image.copy(*box)
+    if image.colorSpace().isValid():
+        part.setColorSpace(image.colorSpace())
+    return part
+
+
 def output_size(width: int, height: int, values: dict) -> tuple[int, int]:
-    """The written picture's size for a ``width`` x ``height`` source."""
+    """The written picture's size for a ``width`` x ``height`` source (before or after "Crop to size" cuts it: the same either way)."""
     if width <= 0 or height <= 0:
         return max(1, width), max(1, height)
     mode = values["sizeMode"]
+    if mode == "crop":
+        box = crop_box(width, height, values)
+        if box is not None:
+            width, height = box[2], box[3]
+        target = max(1, round(_number(values["cropW"], 1080))), max(1, round(_number(values["cropH"], 1350)))
+        if values["noEnlarge"] and target[0] > width:
+            return width, height                 # a small photo keeps its pixels, in the shape asked for
+        return target
     if mode == "long":
         scale = _number(values["long"], 2048) / max(width, height)
     elif mode == "short":
@@ -133,12 +170,13 @@ def output_size(width: int, height: int, values: dict) -> tuple[int, int]:
 def size_problem(values: dict) -> str:
     """Why the size settings cannot be used, or ""."""
     mode = values["sizeMode"]
-    keys = {"long": ("long",), "short": ("short",), "fit": ("fitW", "fitH"), "mp": ("mp",), "pct": ("pct",)}.get(mode, ())
+    keys = {"long": ("long",), "short": ("short",), "fit": ("fitW", "fitH"), "mp": ("mp",), "pct": ("pct",),
+            "crop": ("cropW", "cropH")}.get(mode, ())
     for key in keys:
         number = _number(values[key], -1)
         if number <= 0:
             return "Enter a size above zero."
-        if mode in ("long", "short", "fit") and number > 65000:
+        if mode in ("long", "short", "fit", "crop") and number > 65000:
             return "That size is larger than any format can hold."
         if mode == "pct" and number > 1000:
             return "Enter a percentage up to 1000."
@@ -194,6 +232,7 @@ def prepare(image: QImage, source_icc: bytes | None, values: dict, *, size: tupl
         space = QColorSpace.fromIccProfile(source_icc) if source_icc else QColorSpace()
         image = QImage(image)
         image.setColorSpace(space if space.isValid() else QColorSpace(QColorSpace.NamedColorSpace.SRgb))
+    image = cropped(image, values)
     full = output_size(image.width(), image.height(), values)
     width, height = size or full
     if (width, height) != (image.width(), image.height()):
@@ -608,7 +647,7 @@ def detail_crop(image: QImage, icc: bytes | None, values: dict, side: int = 520)
     part = image.copy(int(x0 * sx), int(y0 * sy), max(1, round((x1 - x0) * sx)), max(1, round((y1 - y0) * sy)))
     if image.colorSpace().isValid():
         part.setColorSpace(image.colorSpace())
-    crop_values = {**values, "wm": "none"}
+    crop_values = {**values, "wm": "none", **({"sizeMode": "original"} if values["sizeMode"] == "crop" else {})}   # ``image`` is cut already
     made = prepare(part, icc, crop_values, size=(x1 - x0, y1 - y0), sharpen=True)
     made = made.copy(left - x0, top - y0, cw, ch)
     source = part.scaled(x1 - x0, y1 - y0, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
@@ -622,6 +661,7 @@ def make_preview(image: QImage, icc: bytes | None, values: dict, side: int = PRE
     """What the export of ``image`` looks like, at most ``side`` pixels on its long edge, with its final size and an estimate of the
     file's size (the preview encoded the same way, scaled by the pixel count)."""
     values = normalized(values)
+    image = cropped(image, values)              # the preview, its "before" and the 100% detail all show the part that is kept
     width, height = output_size(image.width(), image.height(), values)
     scale = min(1.0, side / max(width, height))
     shown = (max(1, round(width * scale)), max(1, round(height * scale)))

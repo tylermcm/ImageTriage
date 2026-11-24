@@ -129,12 +129,12 @@ FocusScope {
         else if (!opening) popout.compare.openFor(row)
         refocus()
     }
-    // Export this photo alone (Batch Export with "This photo"): its saved edit goes with it, so an unsaved one is saved first (Done)
+    // Export this photo alone (Quick Export): its saved edit goes with it, so an unsaved one is saved first (Done)
     function exportThis() {
         if (curPath === "") return
         if (rawEditing) rawEditor.commit()            // saved in the background; the export waits for it
-        UiState.batchOnly = curPath
-        UiState.batchMode = "export"
+        UiState.quickOnly = curPath
+        UiState.quickExportOpen = true
     }
     function keepBest() { popout.keepBest(row); refocus() }      // this photo wins its burst, the rest are rejected (one undo step)
     function openEditor() {

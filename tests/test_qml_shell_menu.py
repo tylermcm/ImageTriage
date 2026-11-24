@@ -183,11 +183,11 @@ def test_export_takes_the_photo_right_clicked_alone_or_the_pick_it_is_in(ctx):
     menu.openPhoto(2)
     assert "resize" not in keys(menu.view["items"]) and "convert" not in keys(menu.view["items"])
     menu.act("export")
-    assert requests[-1] == ("exportOne", photos.get(2)["path"])          # Batch Export with "This photo"
+    assert requests[-1] == ("quickExport", photos.get(2)["path"])        # Quick Export of this photo alone
     photos.toggleSelected(1, 2)                                           # two photos picked, this one among them
     menu.openPhoto(2)
     menu.act("export")
-    assert requests[-1] == ("batch", "export")
+    assert requests[-1] == ("quickExport", "")                            # the picked photos
 
 
 def test_the_explorer_command_keeps_a_path_with_spaces_whole(monkeypatch):

@@ -17,17 +17,30 @@ VERSION = 1
 MAX_PRESETS = 100
 MAX_NAME = 60
 
-BUILTIN: tuple[tuple[str, dict], ...] = (
-    ("Full size JPEG", {"sizeMode": "original", "format": "jpg", "quality": "92", "profile": "srgb", "meta": "all"}),
+_SOCIAL = {"format": "jpg", "quality": "90", "profile": "srgb", "meta": "copyright", "sharpen": "screen"}
+
+# (name, settings, the group Quick Export lists it under). The Instagram shapes are cut from the middle of the photo to the exact size
+# (Instagram's own sizes; a photo of another shape would be cropped by Instagram anyway).
+BUILTIN_GROUPED: tuple[tuple[str, dict, str], ...] = (
+    ("Instagram portrait 1080 x 1350", {"sizeMode": "crop", "cropW": "1080", "cropH": "1350", **_SOCIAL}, "Social"),
+    ("Instagram square 1080 x 1080", {"sizeMode": "crop", "cropW": "1080", "cropH": "1080", **_SOCIAL}, "Social"),
+    ("Instagram landscape 1080 x 566", {"sizeMode": "crop", "cropW": "1080", "cropH": "566", **_SOCIAL}, "Social"),
+    ("Instagram story 1080 x 1920", {"sizeMode": "crop", "cropW": "1080", "cropH": "1920", **_SOCIAL}, "Social"),
     ("Web 2048 px", {"sizeMode": "long", "long": "2048", "format": "jpg", "quality": "85", "profile": "srgb", "meta": "copyright",
-                     "sharpen": "screen"}),
+                     "sharpen": "screen"}, "Smaller copies"),
     ("Email 1200 px", {"sizeMode": "long", "long": "1200", "format": "jpg", "quality": "80", "profile": "srgb", "meta": "none",
-                       "sharpen": "screen"}),
-    ("Instagram portrait 1080 x 1350", {"sizeMode": "fit", "fitW": "1080", "fitH": "1350", "format": "jpg", "quality": "90",
-                                         "profile": "srgb", "meta": "copyright", "sharpen": "screen"}),
-    ("Print TIFF 16-bit Adobe RGB", {"sizeMode": "original", "format": "tif", "depth": "16", "profile": "adobergb", "meta": "all"}),
-    ("Archive TIFF 16-bit ProPhoto", {"sizeMode": "original", "format": "tif", "depth": "16", "profile": "prophoto", "meta": "all"}),
+                       "sharpen": "screen"}, "Smaller copies"),
+    ("Small 800 px", {"sizeMode": "long", "long": "800", "format": "jpg", "quality": "80", "profile": "srgb", "meta": "none",
+                      "sharpen": "screen"}, "Smaller copies"),
+    ("WebP 2048 px", {"sizeMode": "long", "long": "2048", "format": "webp", "quality": "80", "profile": "srgb", "meta": "copyright",
+                      "sharpen": "screen"}, "Smaller copies"),
+    ("Full size JPEG", {"sizeMode": "original", "format": "jpg", "quality": "92", "profile": "srgb", "meta": "all"}, "Full size"),
+    ("Full size PNG", {"sizeMode": "original", "format": "png", "depth": "8", "profile": "srgb", "meta": "all"}, "Full size"),
+    ("Print TIFF 16-bit Adobe RGB", {"sizeMode": "original", "format": "tif", "depth": "16", "profile": "adobergb", "meta": "all"}, "Full size"),
+    ("Archive TIFF 16-bit ProPhoto", {"sizeMode": "original", "format": "tif", "depth": "16", "profile": "prophoto", "meta": "all"}, "Full size"),
 )
+BUILTIN: tuple[tuple[str, dict], ...] = tuple((name, values) for name, values, _group in BUILTIN_GROUPED)
+BUILTIN_GROUPS = {name: group for name, _values, group in BUILTIN_GROUPED}
 BUILTIN_NAMES = frozenset(name for name, _ in BUILTIN)
 _PORTABLE = tuple(key for key in pipeline.DEFAULTS if key not in ("folder", "profileFile"))
 

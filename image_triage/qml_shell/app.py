@@ -292,6 +292,9 @@ def _run(args, state: dict) -> int:
     app.aboutToQuit.connect(lambda: stop_background(runner, (), stoppable))
     menu = MenuModel(photos, collections, cull, toasts, memory=bool(args.mock), parent=app, files=files)
     pocket_drop = PocketDropModel(photos, memory=bool(args.mock), parent=app, collections=collections)
+    from .quick_export_model import QuickExportModel
+
+    quick_export = QuickExportModel(photos, memory=bool(args.mock), parent=app, toasts=toasts, pocket_drop=pocket_drop)
     reference = ReferenceModel(photos, toasts, memory=bool(args.mock), parent=app)
     if not args.mock:
         from .decision_bridge import DecisionBridge
@@ -334,6 +337,7 @@ def _run(args, state: dict) -> int:
     context.setContextProperty("advFilters", adv_filters)
     context.setContextProperty("batch", batch)
     context.setContextProperty("pocketDrop", pocket_drop)
+    context.setContextProperty("quickExport", quick_export)
     context.setContextProperty("collections", collections)
     context.setContextProperty("people", people)
     context.setContextProperty("bestOf", best_of)

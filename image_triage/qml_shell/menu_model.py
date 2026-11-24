@@ -321,11 +321,8 @@ class MenuModel(QObject):
         elif key in ("rename", "resize", "convert"):
             self.uiRequest.emit("batch", key)
         elif key == "export":
-            # Batch Export: the picked photos when this one is among several, else this photo alone ("This photo")
-            if len(many) > 1:
-                self.uiRequest.emit("batch", "export")
-            else:
-                self.uiRequest.emit("exportOne", path)
+            # Quick Export: the picked photos when this one is among several, else this photo alone
+            self.uiRequest.emit("quickExport", "" if len(many) > 1 else path)
         elif key == "coll:new":
             self.uiRequest.emit("newCollection", 0)
         elif key.startswith("coll:"):

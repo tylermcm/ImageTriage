@@ -3,8 +3,10 @@ import QtQuick.Controls
 import QtQuick.Effects
 import QtQuick.Dialogs
 
-// Batch rename and export (Export replaced resize and convert; their commands open it): one window over the dimmed and blurred application (the same overlay as settings and filters). Layout,
-// sizes and colours follow the HTML mockup; the plans are the Widgets app's own, built by `batch` (batch_model.py).
+// Batch Rename, or Batch Export with every setting (Export replaced resize and convert; their commands open it), over the dimmed and blurred
+// application (the same overlay as settings and filters). Each opens on its own, with no tabs between them: Rename in a smaller window,
+// as it needs less. Quick Export (QuickExportDialog.qml) is the everyday export; its "More options…" opens this one. The plans are built
+// by `batch` (batch_model.py).
 FocusScope {
     id: root
     objectName: "batchWindow"
@@ -16,8 +18,9 @@ FocusScope {
     z: 106
     Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
 
-    readonly property real winW: Math.min(1180, width - 96)
-    readonly property real winH: Math.min(1240, height - 68 - 64)     // tall: the export settings are long
+    readonly property bool renaming: UiState.batchMode === "rename"
+    readonly property real winW: Math.min(renaming ? 900 : 1180, width - 96)
+    readonly property real winH: Math.min(renaming ? 680 : 1240, height - 68 - 64)     // tall for Export: its settings are long
     readonly property real navW: Math.round(Math.min(480, Math.max(340, winW * 0.4)))
     readonly property real colW: navW - 41              // the settings, 20px in from the left and clear of the scroll bar
     readonly property real half: (colW - 12) / 2        // two settings side by side
@@ -209,16 +212,10 @@ FocusScope {
             Rectangle {
                 id: nav; x: 0; y: 40; width: root.navW; height: parent.height - 98; color: theme.s2
                 Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: theme.lineSoft }
-                Item {
-                    id: modeBox; x: 12; y: 12; width: parent.width - 25; height: 32
-                    Seg { anchors.fill: parent; fill: true; showExtras: false; labels: ["Rename", "Export"]
-                          current: { var i = 0; for (var k = 0; k < root.modes.length; ++k) if (root.modes[k][0] === root.mode) i = k; return i }
-                          onActivated: (i) => { UiState.batchMode = root.modes[i][0]; batch.setMode(root.modes[i][0]) } }
-                }
                 Flickable {
                     id: opts
                     objectName: "batchOptionsList"
-                    y: 44; width: parent.width - 1; height: parent.height - 44
+                    y: 0; width: parent.width - 1; height: parent.height
                     contentWidth: width; contentHeight: optCol.y + optCol.height + 24
                     clip: true; boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ScrollBar { id: obar; policy: ScrollBar.AsNeeded; contentItem: Rectangle { implicitWidth: 6; radius: 3; color: Qt.alpha(theme.fg, 0.22); opacity: obar.active || obar.hovered ? 1 : 0; Behavior on opacity { NumberAnimation { duration: 300 } } } background: Item {} }
@@ -253,12 +250,6 @@ FocusScope {
                                 Num { label: "Start"; key: "start"; lo: 0 }
                                 Num { label: "Step"; key: "step"; lo: 1 }
                                 Num { label: "Digits"; key: "pad"; lo: 0; hi: 8 } }
-                            Item { width: 1; height: 22 }
-                            Gh { title: "EXPORT" }
-                            Item { width: 1; height: 6 }
-                            Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
-                            SwRow { objectName: "batchRenameForExport"; label: "Use these names when exporting"; key: "xRename"
-                                    desc: "Exported copies get these names. The originals keep theirs." }
                         }
 
                         // ---- export
@@ -294,6 +285,8 @@ FocusScope {
                                     Field { width: root.half; visible: ex.sizeMode === "short"; label: "Short edge"; key: "short"; placeholder: "1080"; suffix: "px" }
                                     Field { width: (root.half - 12) / 2; visible: ex.sizeMode === "fit"; label: "Width"; key: "fitW"; placeholder: "1920"; suffix: "px" }
                                     Field { width: (root.half - 12) / 2; visible: ex.sizeMode === "fit"; label: "Height"; key: "fitH"; placeholder: "1080"; suffix: "px" }
+                                    Field { width: (root.half - 12) / 2; visible: ex.sizeMode === "crop"; label: "Width"; key: "cropW"; placeholder: "1080"; suffix: "px" }
+                                    Field { width: (root.half - 12) / 2; visible: ex.sizeMode === "crop"; label: "Height"; key: "cropH"; placeholder: "1350"; suffix: "px" }
                                     Field { width: root.half; visible: ex.sizeMode === "mp"; label: "Megapixels"; key: "mp"; placeholder: "12"; suffix: "MP" }
                                     Field { width: root.half; visible: ex.sizeMode === "pct"; label: "Percentage"; key: "pct"; placeholder: "50"; suffix: "%" }
                             }
@@ -345,8 +338,8 @@ FocusScope {
                             }
                             Sec { title: "NAME AND PLACE"; startOpen: true
                                 Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
-                                SwRow { objectName: "batchExportRenamed"; label: "Name with the Rename tab's rules"; key: "xRename"
-                                        desc: "The exported copies get the names the Rename tab gives them." }
+                                SwRow { objectName: "batchExportRenamed"; label: "Name with Batch Rename's rules"; key: "xRename"
+                                        desc: "The exported copies get the names Batch Rename's last rules give them. The originals keep theirs." }
                                 Gap {}
                                 Row { spacing: 12
                                     Field { width: root.half; label: "Before the name"; key: "xPrefix"; placeholder: "Optional" }
@@ -395,6 +388,7 @@ FocusScope {
                     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.lineSoft }
                     // which photos: the usual scope, or only the one the viewer or the grid is on
                     Row {
+                        id: scopeRow
                         objectName: "batchScope"
                         anchors.right: parent.right; anchors.rightMargin: 24; anchors.verticalCenter: parent.verticalCenter; spacing: 6
                         visible: root.currentPath() !== "" || batch.only !== ""
@@ -405,15 +399,20 @@ FocusScope {
                                   variant: batch.only !== "" ? "primary" : "ghost"; onClicked: batch.setOnly(root.currentPath()) }
                     }
                     Row {
+                        id: headRow
+                        // what is left beside the scope buttons: the summary gives way first (it elides), then the "New names" label goes
+                        readonly property real room: mh.width - 24 - (scopeRow.visible ? scopeRow.width + 24 + 16 : 24)
                         x: 24; spacing: 10; height: parent.height
-                        Text { height: parent.height; verticalAlignment: Text.AlignVCenter; text: "Preview"; color: theme.fg; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: -0.14 }
-                        Text { height: parent.height; verticalAlignment: Text.AlignVCenter; text: root.mode === "rename" ? "New names" : "Output files"; color: theme.fg3; font.pixelSize: 13 }
+                        Text { id: headTitle; height: parent.height; verticalAlignment: Text.AlignVCenter; text: "Preview"; color: theme.fg; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: -0.14 }
+                        Text { id: headSub; height: parent.height; verticalAlignment: Text.AlignVCenter; text: root.mode === "rename" ? "New names" : "Output files"; color: theme.fg3; font.pixelSize: 13
+                               visible: headRow.room - headTitle.width - 10 - pt.implicitWidth - 31 - 10 >= implicitWidth }
                         Rectangle {
-                            height: 24; width: pt.implicitWidth + 31; radius: 12; color: theme.s2; border.color: theme.lineSoft; border.width: 1
+                            height: 24; radius: 12; color: theme.s2; border.color: theme.lineSoft; border.width: 1
+                            width: Math.max(60, Math.min(pt.implicitWidth + 31, headRow.room - headTitle.width - 10 - (headSub.visible ? headSub.width + 10 : 0)))
                             anchors.verticalCenter: parent.verticalCenter
                             Row { anchors.centerIn: parent; spacing: 6
                                 Rectangle { width: 7; height: 7; radius: 4; color: batch.errorCount > 0 ? theme.rej : theme.accent; anchors.verticalCenter: parent.verticalCenter }
-                                Text { id: pt; text: batch.summary; color: theme.fg2; font.pointSize: UiState.pt(11.5) } }
+                                Text { id: pt; width: Math.min(implicitWidth, parent.parent.width - 31); elide: Text.ElideRight; text: batch.summary; color: theme.fg2; font.pointSize: UiState.pt(11.5) } }
                         }
                     }
                 }

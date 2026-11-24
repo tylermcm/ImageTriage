@@ -21,7 +21,7 @@ KEYPAD_MODIFIER = 0x20000000        # Qt.KeypadModifier: set for a key on the nu
 # defaults, or what Settings > Shortcuts saved) are bound live; the grid's and the viewer's own keys ask `keyIs` instead.
 BOUND_ACTIONS = (
     ("open_folder", "file.open_folder"), ("refresh_folder", "file.refresh_folder"), ("workflow_settings", "file.workflow_settings"),
-    ("undo", "edit.undo"), ("rename_selection", "edit.rename_selection"), ("batch_rename_selection", "tools.batch_rename"),
+    ("undo", "edit.undo"), ("rename_selection", "edit.rename_selection"), ("quick_export", "file.quick_export"), ("batch_rename_selection", "tools.batch_rename"),
     ("batch_resize_selection", "tools.batch_resize"), ("batch_convert_selection", "tools.batch_convert"), ("handoff_builder", "workflow.handoff_builder"),
     ("share_to_phone", "workflow.share_to_phone"), ("best_of_set_auto_assembly", "workflow.best_of"), ("delete_selection", "review.delete_selection"),
     ("move_selection", "review.move_selection"), ("clear_filters", "search.clear_filters"), ("open_ai_workflow_center", "ai.workflow_center"),

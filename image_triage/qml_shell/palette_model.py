@@ -19,6 +19,7 @@ _COMMANDS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     ("tools.batch_resize", "Tools", "Batch Export", "batch_resize_selection", ("batch export", "export presets", "batch resize tool", "resize many", "convert size", "soft proof", "watermark")),
     ("tools.batch_convert", "Tools", "Batch Export (convert format)", "batch_convert_selection", ("batch convert tool", "convert format", "png jpg webp")),
     ("tools.performance_logging", "Tools", "Performance Logging", "", ("diagnostics", "profiler", "performance log", "speed")),
+    ("file.quick_export", "Export", "Quick Export", "quick_export", ("export", "instagram", "resize", "smaller copy", "web", "email", "jpeg", "webp", "png", "pocketdrop")),
     ("workflow.handoff_builder", "Export", "Deliver / Handoff Builder", "handoff_builder", ("delivery", "handoff", "export workflow")),
     ("workflow.share_to_phone", "Export", "Send to PocketDrop", "share_to_phone", ("phone", "qr", "pocketdrop", "share", "transfer", "send")),
     ("workflow.best_of", "Export", "Choose best photos", "best_of_set_auto_assembly", ("best of", "shortlist", "auto assembly", "picks")),
@@ -74,7 +75,7 @@ _SECTION_ICON = {
 _DEMO_RECENT = ("file.open_folder", "review.accept_selection", "tools.batch_rename")
 _DEMO_SHORTCUTS = {
     "open_folder": "Ctrl+O", "refresh_folder": "F5", "workflow_settings": "Ctrl+,", "undo": "Ctrl+Z",
-    "rename_selection": "F2", "batch_rename_selection": "Ctrl+Shift+R", "batch_resize_selection": "Ctrl+Shift+E",
+    "rename_selection": "F2", "quick_export": "Ctrl+E", "batch_rename_selection": "Ctrl+Shift+R", "batch_resize_selection": "Ctrl+Shift+E",
     "batch_convert_selection": "Ctrl+Shift+C", "handoff_builder": "Ctrl+Alt+H", "share_to_phone": "Ctrl+Alt+P",
     "best_of_set_auto_assembly": "Ctrl+Alt+B", "collect_at_cursor": "B", "open_preview": "Space",
     "accept_selection": "W", "reject_selection": "R", "keep_at_cursor": "K",

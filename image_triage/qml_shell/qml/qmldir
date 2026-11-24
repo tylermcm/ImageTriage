@@ -58,6 +58,7 @@ Backdrop 1.0 Backdrop.qml
 CollectionDialog 1.0 CollectionDialog.qml
 CollectionPicker 1.0 CollectionPicker.qml
 BestOfDialog 1.0 BestOfDialog.qml
+QuickExportDialog 1.0 QuickExportDialog.qml
 TagPeopleWindow 1.0 TagPeopleWindow.qml
 FaceDisc 1.0 FaceDisc.qml
 DialogCard 1.0 DialogCard.qml
