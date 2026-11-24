@@ -163,7 +163,7 @@ APP_FREEZE_INCLUDES = (
     "PIL",
     "pip",
     "pip._internal",
-    "pillow_heif",
+    "pi_heif",
     "uuid",
 )
 

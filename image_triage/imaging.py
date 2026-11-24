@@ -43,12 +43,14 @@ except ImportError:  # pragma: no cover - depends on local environment
     Image = None
     ImageOps = None
 else:  # pragma: no cover - plugin registration depends on local environment
+    # HEIC through pi-heif: pillow-heif's decode-only build. pillow-heif's own wheels bundle the x265 encoder, which makes them GPLv2 as a
+    # whole; pi-heif carries only libheif and libde265 (LGPLv3) and reads HEIC/HEIF the same way (docs/commercial_readiness_audit.md, R4).
     try:
-        import pillow_heif
+        import pi_heif as heif
     except ImportError:
-        pillow_heif = None
+        heif = None
     else:
-        pillow_heif.register_heif_opener()
+        heif.register_heif_opener()
 
 try:
     from psd_tools import PSDImage

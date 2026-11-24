@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import plistlib
+import shutil
 import struct
 import tempfile
 import unittest
 from pathlib import Path
 
-from PIL import Image
 from PySide6.QtCore import QSize
 
 import image_triage.imaging as imaging
@@ -31,12 +31,13 @@ def _write_appledouble(path: Path) -> None:
 
 
 class MacMediaTests(unittest.TestCase):
-    def test_heic_image_decodes_through_pillow_heif(self) -> None:
-        if imaging.pillow_heif is None:
-            self.skipTest("pillow-heif is not installed")
+    def test_heic_image_decodes_through_pi_heif(self) -> None:
+        if imaging.heif is None:
+            self.skipTest("pi-heif is not installed")
         with tempfile.TemporaryDirectory(prefix="image_triage_heic_") as temp_dir:
+            # pi-heif only decodes, so the HEIC comes from a fixture (96 x 64, solid (24, 96, 180)), not from saving one
             image_path = Path(temp_dir) / "IMG_0001.HEIC"
-            Image.new("RGB", (96, 64), (24, 96, 180)).save(image_path, format="HEIF")
+            shutil.copyfile(Path(__file__).parent / "fixtures" / "IMG_0001.HEIC", image_path)
 
             decoded, error = imaging.load_image_for_display(
                 str(image_path),
