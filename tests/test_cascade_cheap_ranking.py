@@ -64,3 +64,15 @@ def test_the_review_says_the_stack_was_ranked_by_sharpness():
     assert outcomes["f3.nef"].summary.startswith("Kept: next sharpest")
     assert outcomes["f0.nef"].summary.startswith("Less sharp than the kept frames")
     assert outcomes["f1.nef"].rank == 1
+
+
+def test_the_review_footer_says_the_first_choices_came_from_sharpness():
+    from types import SimpleNamespace
+
+    from image_triage.qml_shell.cull_model import CullModel
+
+    footer = CullModel._review_footer
+    model = SimpleNamespace(_real=True, _picks={"a.jpg"}, _run_notes=[], _run_device="")
+    assert footer(model, {"ranked": False}).startswith("1st choice is the sharpest")
+    model._picks = set()
+    assert footer(model, {"ranked": False}).startswith("Cleanup only")

@@ -662,6 +662,9 @@ class CullModel(QObject):
     def _review_footer(self, s: dict) -> str:
         if s["ranked"]:
             return "Ranking suggestions are marked 1st choice. Nothing is selected for you." + (f" Ranking ran on {self._run_device}." if self._run_device and self._real else "")
+        if self._real and self._picks:
+            # No AI ranker ran, but each stack was ranked by sharpness (CascadeSettings.rank_without_ai): its picks are the 1st choices.
+            return "1st choice is the sharpest, best exposed frame of its stack: the AI ranking did not run. Nothing is selected for you."
         if self._real and any(note.startswith("Ranking skipped") for note in self._run_notes):
             return "Ranking did not run; the reason is above the results. These are the cleanup's results only."
         return "Cleanup only. Turn on ranking in Run again to get suggestions."
