@@ -142,6 +142,9 @@ class AICullerWorkflowTests(unittest.TestCase):
             (clip_root / "onnx").mkdir(parents=True)
             (clip_root / "onnx" / "model.onnx").write_bytes(b"model")
             (clip_root / "tokenizer.json").write_text("{}", encoding="utf-8")
+            # An earlier version's TOPIQ download is ignored: its weights are non-commercial (docs/commercial_readiness_audit.md, R3).
+            (model_root / "TOPIQ").mkdir(parents=True)
+            (model_root / "TOPIQ" / "topiq_nr.onnx").write_bytes(b"model")
 
             saved_env = {
                 name: os.environ.get(name)

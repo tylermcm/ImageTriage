@@ -1060,11 +1060,9 @@ def default_aiculler_runtime(
             else None
         ),
         clip_model_variant=resolved_clip_variant,
-        topiq_model=(
-            topiq_path.expanduser().resolve()
-            if configured_topiq or topiq_path.exists()
-            else None
-        ),
+        # TOPIQ only when someone names a model (IMAGE_TRIAGE_AICULLER_TOPIQ), never because an earlier version downloaded one: its weights
+        # come from IQA-PyTorch, which is PolyForm Noncommercial (docs/commercial_readiness_audit.md, R3), and setup no longer installs it.
+        topiq_model=topiq_path.expanduser().resolve() if configured_topiq else None,
         face_quality_enabled=face_quality_enabled,
         categories_csv=categories_path.expanduser().resolve() if categories_path.exists() else None,
         tag_penalties_csv=tag_penalties_path.expanduser().resolve() if tag_penalties_path.exists() else None,
