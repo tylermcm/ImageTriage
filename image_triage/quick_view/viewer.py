@@ -12,7 +12,7 @@ from PySide6.QtCore import Property, QObject, QSize, QTimer, Signal, Slot
 from PySide6.QtGui import QImage
 from PySide6.QtQuick import QQuickImageProvider
 
-from . import FULL_APP_WAIT_S, decode, full_app_command, mark
+from . import FULL_APP_WAIT_S, can_edit, decode, full_app_command, mark
 
 CACHE_SIZE = 5                     # decoded pictures kept: this one and two either side
 
@@ -56,6 +56,7 @@ class QuickViewer(QObject):
         self._listed = False
         self._pending_step = 0                 # arrows pressed before the folder was read: taken once it is
         self._library = ""                     # "", "starting" (the library is being started) or "failed"
+        self._going_to = ""                    # what the library was asked for: "library" or "edit" (the button that says it is starting)
         self._launcher = launcher              # tests: called instead of starting a process
         self._process = None
         self._window = None
@@ -221,27 +222,41 @@ class QuickViewer(QObject):
                 QTimer.singleShot(int(os.environ.get("IMAGE_TRIAGE_QUICK_VIEW_GRAB_WAIT", "600")), save)
 
     # -- the library -----------------------------------------------------------------------------------------------------------------------
+    editable = Property(bool, lambda self: can_edit(self._photos[self._index]), notify=changed)
+    goingTo = Property(str, lambda self: self._going_to, notify=changed)
+
     @Slot()
     def openLibrary(self) -> None:
         """The full app on this photo. A running one takes it at once; otherwise it is started and this window closes when it is up."""
+        self._hand_over(edit=False)
+
+    @Slot()
+    def openEditor(self) -> None:
+        """The library's viewer on this photo with Edit open: the editor loads only now, in the full app, never with this window."""
+        if can_edit(self._photos[self._index]):
+            self._hand_over(edit=True)
+
+    def _hand_over(self, edit: bool) -> None:
         if self._library == "starting":
             return
         photo = self._photos[self._index]
         from ..qml_shell.single_instance import send_to_running
 
-        if send_to_running({"folder": os.path.dirname(photo), "select": photo}, timeout_ms=1500):
+        if send_to_running({"folder": os.path.dirname(photo), "select": photo, "edit": edit}, timeout_ms=1500):
             self._close()
             return
         self._library = "starting"
+        self._going_to = "edit" if edit else "library"
         self.changed.emit()
+        command = full_app_command(photo, edit=edit)
         try:
             if self._launcher is not None:
-                self._launcher(full_app_command(photo))
+                self._launcher(command)
             else:
                 import subprocess
 
                 flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-                self._process = subprocess.Popen(full_app_command(photo), close_fds=True, creationflags=flags,
+                self._process = subprocess.Popen(command, close_fds=True, creationflags=flags,
                                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError:
             self._library = "failed"

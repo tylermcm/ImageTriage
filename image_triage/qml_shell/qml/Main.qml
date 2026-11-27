@@ -457,7 +457,26 @@ Window {
     function savePositionNow() { if (photos.scopeKind !== "") return; var d = photos.get(grid.row); if (d && d.path) libraryNav.savePosition(d.path) }
     Timer { id: positionTimer; interval: 700; onTriggered: win.savePositionNow() }
     Connections { target: grid.view; function onCurrentIndexChanged() { positionTimer.restart() } }
-    Connections { target: libraryNav; function onPositionRestored(row) { grid.row = row; grid.showRow(row, GridView.Center) } }
+    Connections {
+        target: libraryNav
+        function onPositionRestored(row) { grid.row = row; grid.showRow(row, GridView.Center) }
+        function onEditRequested(row) { win.editPhoto(row) }
+    }
+    // The quick viewer's Edit: the photo in the viewer, then Edit opened on it as soon as the viewer shows it
+    property string pendingEdit: ""
+    function editPhoto(row) {
+        if (row < 0 || row >= photos.shown) return
+        if (!viewer.shown || popout.row !== row) popout.open(row)
+        pendingEdit = photos.get(row).path
+        editTry.tries = 0
+        editTry.restart()
+    }
+    Timer {
+        id: editTry
+        property int tries: 0
+        interval: 100; repeat: true
+        onTriggered: if (viewer.startEdit(win.pendingEdit) || ++tries > 100) { stop(); win.pendingEdit = "" }
+    }
     // Closing the window must not silently drop edits: RAW adjustments never saved with Done are kept only as drafts, and the hosted editor is shut
     // down without saving what is open in it. Ask once; "Quit anyway" closes for real.
     property bool quitConfirmed: false

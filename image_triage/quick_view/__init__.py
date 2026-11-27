@@ -3,7 +3,8 @@
 Starting the whole app for one photo took 2-3 seconds: every model, the full QML shell and a read of the folder. This window loads one
 small QML file and decodes the photo at screen size on a worker thread while the window is being made, so the photo is up in a fraction
 of that. The arrow keys go through the folder's other photos (read after the first is shown, the neighbours decoded ahead); Library
-opens the full app on the photo and this window steps aside once it is up.
+opens the full app on the photo and this window steps aside once it is up; Edit does the same with the photo opened in the library's
+viewer, Edit open (the editor is loaded only then, never with the quick viewer).
 
 ``main.py`` routes a launch here when it names one photo, the viewer is on (Settings > Browsing, or ``IMAGE_TRIAGE_QUICK_VIEW=0``
 to switch it off) and the library is not already running: a running app gets the photo as before, being already up. Nothing of the
@@ -48,12 +49,23 @@ def enabled() -> bool:
     return str(value).strip().lower() not in ("0", "false", "no", "off")
 
 
-def full_app_command(photo: str) -> list[str]:
-    """How to start the library on ``photo``: the same executable, told the folder and the photo (``main.py`` then starts the library)."""
+EDITABLE_SUFFIXES = frozenset({".jpg", ".jpeg", ".jpe", ".png", ".tif", ".tiff", ".webp"})   # and RAW: what the viewer's Edit takes
+
+
+def can_edit(photo: str) -> bool:
+    """Whether the library's Edit takes ``photo``: a RAW, or a JPEG, TIFF, PNG or WebP (Viewer.qml's Edit RAW / Edit button)."""
+    from ..formats import RAW_SUFFIXES, suffix_for_path
+
+    suffix = suffix_for_path(photo)
+    return suffix in RAW_SUFFIXES or suffix in EDITABLE_SUFFIXES
+
+
+def full_app_command(photo: str, edit: bool = False) -> list[str]:
+    """How to start the library on ``photo``: the same executable, told the folder and the photo (``main.py`` then starts the library);
+    with ``edit``, the photo opens in the library's viewer with Edit open."""
     folder = os.path.dirname(photo)
-    if getattr(sys, "frozen", False):
-        return [sys.executable, "--folder", folder, "--select", photo]
-    return [sys.executable, "-m", "image_triage", "--folder", folder, "--select", photo]
+    head = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, "-m", "image_triage"]
+    return [*head, "--folder", folder, "--select", photo, *(["--edit"] if edit else [])]
 
 
 def run(photo: str) -> int | None:

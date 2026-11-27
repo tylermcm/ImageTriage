@@ -5,7 +5,7 @@ import QtQuick.Window
 // follows the library's viewer (its dark stage and glass bars). In a window the bar sits above the photo; full screen hides it until the
 // pointer moves. The photo fits the window (never enlarged); the wheel zooms about the
 // pointer, a double-click swaps fit and 100%, a drag moves a zoomed photo. Left and Right (and Space, Backspace, the mouse's side buttons)
-// go through the folder; Library (L) opens the full app on the photo; F or F11 is full screen; Esc leaves full screen, then closes.
+// go through the folder; Library (L) opens the full app on the photo, Edit (E) opens it there with the editor (loaded only then); F or F11 is full screen; Esc leaves full screen, then closes.
 Window {
     id: win
     objectName: "quickViewWindow"
@@ -126,6 +126,7 @@ Window {
             else if (k === Qt.Key_F || k === Qt.Key_F11 || k === Qt.Key_Return || k === Qt.Key_Enter) win.toggleFull()
             else if (k === Qt.Key_Escape) { if (win.full) win.toggleFull(); else win.close() }
             else if (k === Qt.Key_L) viewer.openLibrary()
+            else if (k === Qt.Key_E) viewer.openEditor()
             else if (k === Qt.Key_Plus || k === Qt.Key_Equal) win.zoomAt(win.scale * 1.25, stage.width / 2, stage.height / 2)
             else if (k === Qt.Key_Minus) win.zoomAt(win.scale / 1.25, stage.width / 2, stage.height / 2)
             else if (k === Qt.Key_0 || k === Qt.Key_Z) { if (win.zoom > 0) { win.zoom = 0; win.panX = 0; win.panY = 0 } else win.zoomAt(1, stage.width / 2, stage.height / 2) }
@@ -160,10 +161,17 @@ Window {
             Text { anchors.verticalCenter: parent.verticalCenter; text: Math.round(win.scale * 100) + "%"; color: win.cFg3; font.pixelSize: 12; rightPadding: 6 }
             Btn { label: win.full ? "Exit full screen" : "Full screen"; onClicked: win.toggleFull() }
             Btn {
+                objectName: "quickViewEdit"
+                visible: viewer.editable
+                label: viewer.library === "starting" && viewer.goingTo === "edit" ? "Opening the editor…" : "Edit"
+                onClicked: viewer.openEditor()
+            }
+            Btn {
                 id: libBtn
                 objectName: "quickViewLibrary"
                 primary: true
-                label: viewer.library === "starting" ? "Opening the library…" : viewer.library === "failed" ? "Library did not open: try again" : "Open in Library"
+                label: viewer.library === "starting" && viewer.goingTo === "library" ? "Opening the library…"
+                     : viewer.library === "failed" ? "Did not open: try again" : "Open in Library"
                 onClicked: viewer.openLibrary()
             }
         }

@@ -136,6 +136,17 @@ FocusScope {
         UiState.quickOnly = curPath
         UiState.quickExportOpen = true
     }
+    // Edit open on `path` once the viewer shows it (the quick viewer's Edit): true when that is done or there is nothing to edit, false to try again.
+    // The same as the Edit RAW (Edit) button: a RAW, or a JPEG, TIFF, PNG or WebP.
+    function startEdit(path) {
+        if (!shown || opening || curPath === "" || curPath !== path || rawEditor === null) return false
+        if (rawEditing) return true
+        var picture = ["JPG", "JPEG", "JPE", "PNG", "TIF", "TIFF", "WEBP"].indexOf(String(cur.ext || "").toUpperCase()) >= 0
+        if (cur.raw !== true && !picture) return true
+        popout.compare.close()
+        rawEditor.open(curPath)
+        return true
+    }
     function keepBest() { popout.keepBest(row); refocus() }      // this photo wins its burst, the rest are rejected (one undo step)
     function openEditor() {
         if (!popout.canEdit || UiState.vwScene === "noedit") return

@@ -159,6 +159,7 @@ class _RowsModel(QAbstractListModel):
 class LibraryNavModel(QObject):
     changed = Signal()
     positionRestored = Signal(int)                             # the grid should be on this row: the photo the person was on when they left this folder
+    editRequested = Signal(int)                                # and that photo should open in the viewer with Edit open (the quick viewer's Edit)
     _listed = Signal(str, list)                                # a folder's child folders, from the worker thread
     _probed = Signal(dict)                                     # for listed folders: whether each has subfolders (key -> bool)
     _searched = Signal(int, object)
@@ -169,6 +170,7 @@ class LibraryNavModel(QObject):
         self._memory = memory
         self._persist = persist and not memory                 # headless checks (--grab) and the sample page never write the person's settings
         self._pending_current = ""                             # the saved photo of the folder just opened, until the grid has it
+        self._pending_edit = ""                                # the photo of `open_file(..., edit=True)`, until it has been put on
         self.saved: tuple[str, str] | None = None              # (folder, photo) of the last position saved in memory mode, for the tests
         self._drive_root = drive_root or path_policy.drive_root         # the drive (or share) a folder is on; a test hands in its own
         self._settings = None if memory else user_settings(self)
@@ -623,14 +625,16 @@ class LibraryNavModel(QObject):
         rows = self._photos.all_rows()
         return bool(rows) and _key(self._photos.folder_dir()) == _key(self._open) and parent == _key(os.path.dirname(rows[0]["path"]))
 
-    def open_file(self, photo: str) -> None:
-        """Open the folder `photo` is in and put the grid on it once the folder has been read (a photo opened from the file manager)."""
+    def open_file(self, photo: str, edit: bool = False) -> None:
+        """Open the folder `photo` is in and put the grid on it once the folder has been read (a photo opened from the file manager).
+        With ``edit`` (the quick viewer's Edit) the photo then opens in the viewer with Edit open (``editRequested``)."""
         photo = os.path.normpath(photo.strip()) if photo and photo.strip() else ""
         if not photo:
             return
         self.openFolder(os.path.dirname(photo))
         if self._open and _key(self._open) == _key(os.path.dirname(photo)):
             self._pending_current = photo                      # instead of the photo saved for the folder: this one was asked for
+            self._pending_edit = photo if edit else ""
 
     @Slot(str)
     def savePosition(self, photo: str) -> None:
@@ -845,10 +849,13 @@ class LibraryNavModel(QObject):
             if _key(self._photos.folderPath) == _key(self._open):
                 self._counts[_key(self._open)] = self._photos.total
                 pending, self._pending_current = self._pending_current, ""
+                edit, self._pending_edit = self._pending_edit, ""
                 if pending:
                     row = self._row_of(pending)
                     if row >= 0:
                         self.positionRestored.emit(row)
+                        if edit and _key(edit) == _key(pending):
+                            self.editRequested.emit(row)
             self.changed.emit()
 
     def _recent_view(self, limit: int = 5) -> list[dict]:

@@ -166,6 +166,12 @@ def test_library_starts_the_same_program_on_the_folder_and_photo(monkeypatch):
     assert quick_view.full_app_command("/shoot/a.jpg") == ["/opt/image-triage/ImageTriage", "--folder", "/shoot", "--select", "/shoot/a.jpg"]
     monkeypatch.setattr(sys, "frozen", False, raising=False)
     assert quick_view.full_app_command("/shoot/a.jpg")[1:3] == ["-m", "image_triage"]
+    assert quick_view.full_app_command("/shoot/a.NEF", edit=True)[-1] == "--edit"
+
+
+def test_edit_is_offered_for_what_the_library_can_edit():
+    assert quick_view.can_edit("/s/a.NEF") and quick_view.can_edit("/s/a.jpg") and quick_view.can_edit("/s/a.tiff")
+    assert not quick_view.can_edit("/s/a.heic") and not quick_view.can_edit("/s/a.gif")
 
 
 # ---- the window -----------------------------------------------------------------------------------------------------------------------
@@ -277,3 +283,25 @@ def test_an_arrow_pressed_before_the_folder_is_read_waits_for_it(qapp, tmp_path,
     viewer._take_list(decode.folder_photos(str(tmp_path / "a.jpg")))
     assert viewer.name == "b.jpg"
     viewer.shutdown()
+
+
+def test_edit_starts_the_library_with_the_editor_open(qapp, window):
+    viewer, win, shoot, launched, warnings = window
+    assert wait_for(qapp, lambda: not viewer.loading)
+    assert viewer.editable
+    viewer.openEditor()
+    assert viewer.library == "starting" and viewer.goingTo == "edit"
+    assert launched[0][-3:] == ["--select", str(shoot / "IMG_2.jpg"), "--edit"]
+    edit = win.findChild(QObject, "quickViewEdit")
+    assert wait_for(qapp, lambda: edit.property("label") == "Opening the editor\u2026")
+
+
+def test_a_running_library_is_asked_to_edit(qapp, window, monkeypatch):
+    from image_triage.qml_shell import single_instance
+
+    viewer, win, shoot, launched, warnings = window
+    sent = []
+    monkeypatch.setattr(single_instance, "send_to_running", lambda message, **_: sent.append(message) or True)
+    viewer._close = lambda: None
+    viewer.openEditor()
+    assert sent[0] == {"folder": str(shoot), "select": str(shoot / "IMG_2.jpg"), "edit": True} and launched == []
