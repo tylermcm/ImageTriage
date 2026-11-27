@@ -147,6 +147,10 @@ def build_schema(shortcut_registry=()) -> tuple:
     browsing = Section("browsing", "Browsing", "M3.5 7a2.5 2.5 0 012.5-2.5h12A2.5 2.5 0 0120.5 7v10a2.5 2.5 0 01-2.5 2.5H6A2.5 2.5 0 013.5 17zM9.5 4.5v15",
         "How the grid scrolls, how previews load, and how review moves between photos.", (
         Group("Navigation and preview", "How browsing feels", (
+            _t("quickViewer", "Open photos from the file manager in the quick viewer",
+               "A photo opened from File Explorer or Finder shows at once in a light viewer of its own, and Open in Library starts the full app "
+               "on it. When off, opening a photo starts the full app with the grid on it. A running Image Triage always takes the photo itself.",
+               "browse/quick_viewer", True),
             _t("smooth", "Use free smooth scrolling", "Scrolls pixel by pixel instead of snapping by rows.", "view/free_smooth_scroll", False),
             F("preload", "step", "Preview preload", "Nearby images to preload while using the popout preview. Higher values can speed up rapid navigation but use more CPU and memory.",
               key="preview/preload_batch_size", kind="int", default=PRELOAD_DEFAULT, lo=0, hi=PRELOAD_MAX, step=2, fmt="images", zero="Off"),

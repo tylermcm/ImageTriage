@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -56,7 +57,14 @@ def qml_argv_from_launch(argv: Sequence[str]) -> list[str]:
 
 
 def main() -> int:
-    """Start the QML application."""
+    """Start the QML application, or the quick viewer for a photo opened from the file manager (``image_triage.quick_view``)."""
+    target = launch_target_from_argv(sys.argv)
+    if len(sys.argv) == 2 and not target.startswith("-") and is_quick_view_launch_target(target):
+        from image_triage.quick_view import run as quick_view
+
+        code = quick_view(os.path.abspath(target))
+        if code is not None:
+            return code
     from image_triage.qml_shell.app import main as qml_main
 
     return qml_main(qml_argv_from_launch(sys.argv))
