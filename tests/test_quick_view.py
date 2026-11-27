@@ -210,10 +210,16 @@ def test_the_photo_shows_then_the_folder_follows_and_arrows_go_through_it(qapp, 
     assert photo.property("sourceSize").width() == 1200, "decoded at the screen's size, not the photo's"
     viewer.go(1)
     assert wait_for(qapp, lambda: viewer.name == "IMG_3.jpg" and not viewer.loading)
+    edges = []
+    viewer.edge.connect(edges.append)
     viewer.go(5)
-    assert viewer.index == 2, "it stops at the last photo"
+    assert viewer.index == 2 and edges == ["end"], "on the last photo, going on says so, without moving or wrapping round"
+    toast = win.findChild(QObject, "quickViewToast")
+    assert wait_for(qapp, lambda: toast.property("text") == "Last photo in the folder" and toast.property("opacity") > 0.5)
     viewer.goTo(0)
     assert wait_for(qapp, lambda: viewer.name == "IMG_1.jpg" and not viewer.loading)
+    viewer.go(-1)
+    assert edges[-1] == "start" and viewer.index == 0
     assert not [w for w in warnings if "QuickView" in w], warnings
 
 
@@ -256,3 +262,18 @@ def test_warming_reads_the_library_files_within_its_budget(tmp_path):
     from image_triage.quick_view.viewer import warm_library_files
 
     assert 0 < warm_library_files(budget=2 * 1024 * 1024) <= 3 * 1024 * 1024
+
+
+def test_an_arrow_pressed_before_the_folder_is_read_waits_for_it(qapp, tmp_path, monkeypatch):
+    from image_triage.quick_view.viewer import QuickViewer
+
+    for name in ("a.jpg", "b.jpg", "c.jpg"):
+        jpeg(tmp_path / name, 40, 30)
+    viewer = QuickViewer(str(tmp_path / "a.jpg"), None, longest=100)
+    edges = []
+    viewer.edge.connect(edges.append)
+    viewer.go(1)                                   # before the list: no "end of folder", the step is kept
+    assert viewer.index == 0 and edges == []
+    viewer._take_list(decode.folder_photos(str(tmp_path / "a.jpg")))
+    assert viewer.name == "b.jpg"
+    viewer.shutdown()

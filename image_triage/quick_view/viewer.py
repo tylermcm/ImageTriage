@@ -37,6 +37,7 @@ class QuickViewer(QObject):
     changed = Signal()
     _ready = Signal(str)                       # a token whose picture is decoded (from a worker thread)
     _list_arrived = Signal(list)               # the folder's photos (from a worker thread)
+    edge = Signal(str)                         # an arrow went past the folder's end: "end" or "start" (the window says so in a toast)
 
     def __init__(self, photo: str, app=None, longest: int | None = None, launcher=None) -> None:
         super().__init__()
@@ -53,6 +54,7 @@ class QuickViewer(QObject):
         self._shown_token = ""                 # the token `_shown` is the picture of
         self._full = False                     # the shown picture is the full-size one (asked for when zooming past the screen size)
         self._listed = False
+        self._pending_step = 0                 # arrows pressed before the folder was read: taken once it is
         self._library = ""                     # "", "starting" (the library is being started) or "failed"
         self._launcher = launcher              # tests: called instead of starting a process
         self._process = None
@@ -135,6 +137,9 @@ class QuickViewer(QObject):
         self._index = next((i for i, p in enumerate(self._photos) if os.path.normcase(p) == key), 0)
         self._listed = True
         self.changed.emit()
+        step, self._pending_step = self._pending_step, 0
+        if step:
+            self.go(step)
         self._prefetch()
 
     def _prefetch(self) -> None:
@@ -171,10 +176,16 @@ class QuickViewer(QObject):
 
     @Slot(int)
     def go(self, step: int) -> None:
-        """``step`` photos on (negative: back), stopping at the ends."""
+        """``step`` photos on (negative: back), stopping at the ends; going past one says so (``edge``) rather than wrapping round
+        or asking where to go next. Before the folder has been read, the step waits for it."""
+        if not self._listed:
+            self._pending_step += step
+            return
         target = max(0, min(len(self._photos) - 1, self._index + step))
         if target != self._index:
             self._show(target)
+        elif step:
+            self.edge.emit("end" if step > 0 else "start")
 
     @Slot(int)
     def goTo(self, index: int) -> None:

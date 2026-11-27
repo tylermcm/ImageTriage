@@ -169,9 +169,25 @@ Window {
         }
     }
 
+    // ---- the end of the folder: a toast, not a question ------------------------------------------------------------------------------------
+    Connections { target: viewer; function onEdge(which) { toast.say(which === "end" ? "Last photo in the folder" : "First photo in the folder") } }
+    Rectangle {
+        id: toast
+        objectName: "quickViewToast"
+        property string text: ""
+        function say(t) { text = t; opacity = 1; toastTimer.restart() }
+        anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 40
+        width: toastText.implicitWidth + 36; height: 38; radius: 19
+        color: win.cGlass; border.color: win.cLine
+        opacity: 0; visible: opacity > 0.01
+        Behavior on opacity { NumberAnimation { duration: 220 } }
+        Text { id: toastText; anchors.centerIn: parent; text: toast.text; color: win.cFg; font.pixelSize: 13; font.weight: Font.Medium }
+        Timer { id: toastTimer; interval: 1400; onTriggered: toast.opacity = 0 }
+    }
+
     // ---- previous and next, at the sides ----------------------------------------------------------------------------------------------------
-    Side { anchors.left: parent.left; step: -1; shown: viewer.index > 0 }
-    Side { anchors.right: parent.right; step: 1; shown: viewer.index < viewer.count - 1 }
+    Side { anchors.left: parent.left; step: -1; shown: viewer.index > 0 || !viewer.listed }
+    Side { anchors.right: parent.right; step: 1; shown: viewer.index < viewer.count - 1 || !viewer.listed }
 
     component Btn: Rectangle {
         id: b
