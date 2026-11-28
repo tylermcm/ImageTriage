@@ -23,6 +23,7 @@ from pathlib import Path
 ENV_SWITCH = "IMAGE_TRIAGE_QUICK_VIEW"
 TIMING_ENV = "IMAGE_TRIAGE_QUICK_VIEW_TIMING"
 SETTING_KEY = "browse/quick_viewer"
+RAW_EDITOR_SETTING_KEY = "browse/raw_opens_in_editor"      # a RAW opened from the file manager goes straight to the RAW editor
 QML_FILE = Path(__file__).resolve().with_name("QuickView.qml")
 FULL_APP_WAIT_S = 45.0             # how long the window waits for the library to come up before it gives up on it
 _T0 = float(os.environ.get("IMAGE_TRIAGE_T0") or 0) or time.time()
@@ -33,6 +34,16 @@ def mark(step: str) -> None:
         print(f"quick-view {step}: {(time.time() - _T0) * 1000:.0f} ms", file=sys.stderr, flush=True)
 
 
+def _setting(key: str, default: bool) -> bool:
+    try:
+        from ..app_identity import user_settings
+
+        value = user_settings().value(key, default)
+    except Exception:
+        return default
+    return str(value).strip().lower() not in ("0", "false", "no", "off")
+
+
 def enabled() -> bool:
     """Whether a photo opened from the file manager goes to the quick viewer: the setting, unless the environment says otherwise."""
     switch = os.environ.get(ENV_SWITCH, "").strip().lower()
@@ -40,13 +51,19 @@ def enabled() -> bool:
         return False
     if switch in ("1", "true", "yes", "on"):
         return True
-    try:
-        from ..app_identity import user_settings
+    return _setting(SETTING_KEY, True)
 
-        value = user_settings().value(SETTING_KEY, True)
-    except Exception:
-        return True
-    return str(value).strip().lower() not in ("0", "false", "no", "off")
+
+def opens_in_editor(photo: str) -> bool:
+    """Whether ``photo`` goes straight to the RAW editor: it is a RAW and Settings > Browsing says RAWs open there.
+
+    The quick viewer still comes up first, with the camera's embedded preview, and presses its own Edit at once: the library starts
+    behind it without the splash, opens the photo with Edit open and comes forward when it is ready, so the person sees the photo
+    the whole time rather than a splash. Switching the quick viewer off does not switch this off; the viewer is only the stand-in.
+    """
+    from ..formats import RAW_SUFFIXES, suffix_for_path
+
+    return suffix_for_path(photo) in RAW_SUFFIXES and _setting(RAW_EDITOR_SETTING_KEY, False)
 
 
 EDITABLE_SUFFIXES = frozenset({".jpg", ".jpeg", ".jpe", ".png", ".tif", ".tiff", ".webp"})   # and RAW: what the viewer's Edit takes
@@ -85,8 +102,10 @@ def application():
 
 
 def run(photo: str) -> int | None:
-    """Show ``photo`` in the quick viewer and return the exit code; None when the library should start instead (the viewer is off)."""
-    if not enabled():
+    """Show ``photo`` in the quick viewer and return the exit code; None when the library should start instead (the viewer is off).
+    A RAW goes on to the editor by itself when Settings asks for that (``opens_in_editor``)."""
+    edit = opens_in_editor(photo)
+    if not edit and not enabled():
         return None
     mark("start")
     from PySide6.QtGui import QIcon
@@ -96,12 +115,13 @@ def run(photo: str) -> int | None:
     # the library already running takes the photo (it is up, so that is quick too), as a launch always did
     from ..qml_shell.single_instance import send_to_running
 
-    if send_to_running({"folder": os.path.dirname(photo), "select": photo}, timeout_ms=1500):
+    message = {"folder": os.path.dirname(photo), "select": photo, **({"edit": True} if edit else {})}
+    if send_to_running(message, timeout_ms=1500):
         mark("handed to the running library")
         return 0
     from .viewer import QuickViewer
 
-    viewer = QuickViewer(photo, app)
+    viewer = QuickViewer(photo, app, edit_on_open=edit)
     viewer.start()                                        # the decode runs while the window is being made
     mark("decode started")
     from PySide6.QtQml import QQmlApplicationEngine

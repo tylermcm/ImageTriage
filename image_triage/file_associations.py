@@ -36,6 +36,8 @@ OAIF_ALLOW_REGISTRATION = 0x00000001
 OAIF_REGISTER_EXT = 0x00000002              # never passed (see above); named for the test that says so
 _OUR_PROGIDS = {APP_PROG_ID.casefold(), rf"Applications\{APP_EXE_NAME}".casefold()}
 _INDIRECT_STRING_BUFFER_SIZE = 2048
+_ASSOCF_INIT_IGNOREUNKNOWN = 0x00000400
+_ASSOCSTR_PROGID = 20
 _PRIORITIZED_ASSOCIATION_SUFFIXES = (
     ".jpg",
     ".jpeg",
@@ -374,17 +376,49 @@ def _extension_has_progid(suffix: str) -> bool:
 
 
 def _default_progid_for_extension(suffix: str) -> str:
+    """What opens ``suffix`` now: Windows' own answer, and the registry read only when Windows cannot be asked."""
+    return _shell_default_progid(suffix) or _registry_default_progid(suffix)
+
+
+def _shell_default_progid(suffix: str) -> str:
+    """The ProgID Windows itself resolves for ``suffix`` (AssocQueryString), "" when it has none or cannot be asked.
+
+    Windows is asked because where it keeps the choice changes: since 2025 a default picked in Settings or in "Select an app" is
+    written to ``UserChoiceLatest``, and the older ``UserChoice`` beside it keeps naming the previous app (3.1.6 showed
+    "Opens in IrfanView" for types Settings listed under Image Triage).
+    """
+    if os.name != "nt" or not suffix:
+        return ""
+    try:
+        from ctypes import wintypes
+
+        query = ctypes.windll.shlwapi.AssocQueryStringW  # type: ignore[attr-defined]
+        query.argtypes = [
+            ctypes.c_uint, ctypes.c_uint, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)
+        ]
+        query.restype = ctypes.c_long
+        size = wintypes.DWORD(_INDIRECT_STRING_BUFFER_SIZE)
+        buffer = ctypes.create_unicode_buffer(_INDIRECT_STRING_BUFFER_SIZE)
+        # A type with no handler answers with nothing, not with the "Unknown" class every unregistered type falls back to
+        if query(_ASSOCF_INIT_IGNOREUNKNOWN, _ASSOCSTR_PROGID, suffix, None, buffer, ctypes.byref(size)) != 0:
+            return ""
+        return buffer.value.strip()
+    except Exception:
+        return ""
+
+
+def _registry_default_progid(suffix: str) -> str:
     if winreg is None:
         return ""
-    user_choice_key = rf"{_FILE_EXTS_ROOT}\{suffix}\UserChoice"
-    for root, key_path in (
-        (winreg.HKEY_CURRENT_USER, user_choice_key),
-        (winreg.HKEY_CURRENT_USER, rf"{_CLASSES_ROOT}\{suffix}"),
-        (winreg.HKEY_CLASSES_ROOT, suffix),
+    file_ext_key = rf"{_FILE_EXTS_ROOT}\{suffix}"
+    for root, key_path, value_name in (
+        (winreg.HKEY_CURRENT_USER, rf"{file_ext_key}\UserChoiceLatest\ProgId", "ProgId"),
+        (winreg.HKEY_CURRENT_USER, rf"{file_ext_key}\UserChoice", "ProgId"),
+        (winreg.HKEY_CURRENT_USER, rf"{_CLASSES_ROOT}\{suffix}", None),
+        (winreg.HKEY_CLASSES_ROOT, suffix, None),
     ):
         try:
             with winreg.OpenKey(root, key_path) as key:
-                value_name = "ProgId" if key_path.endswith("UserChoice") else None
                 value, _ = winreg.QueryValueEx(key, value_name)
         except OSError:
             continue

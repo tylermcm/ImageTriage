@@ -67,6 +67,51 @@ class FileAssociationTests(unittest.TestCase):
         self.assertFalse(jpg_state.is_default)
         self.assertEqual(jpg_state.default_progid, "Other.App")
 
+    def test_the_default_is_what_windows_answers_not_what_an_old_registry_key_says(self) -> None:
+        from image_triage import file_associations as fa
+
+        with patch.object(fa, "_shell_default_progid", lambda suffix: "ImageTriage.SupportedImage"), patch.object(
+            fa, "_registry_default_progid", lambda suffix: "IrfanView.tif"
+        ):
+            self.assertEqual(fa._default_progid_for_extension(".tif"), "ImageTriage.SupportedImage")
+        with patch.object(fa, "_shell_default_progid", lambda suffix: ""), patch.object(
+            fa, "_registry_default_progid", lambda suffix: "IrfanView.tif"
+        ):
+            self.assertEqual(fa._default_progid_for_extension(".tif"), "IrfanView.tif")
+
+    def test_the_registry_read_prefers_the_newer_user_choice_key(self) -> None:
+        """Windows writes a default picked since 2025 to UserChoiceLatest and leaves the previous app in UserChoice."""
+        from image_triage import file_associations as fa
+
+        values = {
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.tif\UserChoiceLatest\ProgId": "ImageTriage.SupportedImage",
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.tif\UserChoice": "IrfanView.tif",
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.png\UserChoice": "Photos.png",
+        }
+
+        class Key:
+            def __init__(self, path: str) -> None:
+                self.path = path
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc) -> bool:
+                return False
+
+        def open_key(root, path):
+            if path not in values:
+                raise OSError(path)
+            return Key(path)
+
+        registry = SimpleNamespace(
+            HKEY_CURRENT_USER=1, HKEY_CLASSES_ROOT=2, OpenKey=open_key, QueryValueEx=lambda key, name: (values[key.path], 1)
+        )
+        with patch.object(fa, "winreg", registry):
+            self.assertEqual(fa._registry_default_progid(".tif"), "ImageTriage.SupportedImage")
+            self.assertEqual(fa._registry_default_progid(".png"), "Photos.png")
+            self.assertEqual(fa._registry_default_progid(".bmp"), "")
+
     @unittest.skipUnless(os.name == "nt", "patches os.name to 'nt', and pathlib cannot build a WindowsPath off Windows")
     def test_open_windows_file_association_chooser_creates_probe_and_opens_dialog(self) -> None:
         with TemporaryDirectory() as temp_dir:

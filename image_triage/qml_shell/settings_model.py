@@ -151,6 +151,10 @@ def build_schema(shortcut_registry=()) -> tuple:
                "A photo opened from File Explorer or Finder shows at once in a light viewer of its own, and Open in Library starts the full app "
                "on it. When off, opening a photo starts the full app with the grid on it. A running Image Triage always takes the photo itself.",
                "browse/quick_viewer", True),
+            _t("rawInEditor", "Open RAW files from the file manager in the RAW editor",
+               "A RAW file (NEF, CR3, ARW, DNG and the rest) opened from File Explorer or Finder goes straight to the RAW editor. Its preview "
+               "shows at once while the editor opens behind it, without the splash screen. Other photos still open as set above.",
+               "browse/raw_opens_in_editor", False),
             _t("smooth", "Use free smooth scrolling", "Scrolls pixel by pixel instead of snapping by rows.", "view/free_smooth_scroll", False),
             F("preload", "step", "Preview preload", "Nearby images to preload while using the popout preview. Higher values can speed up rapid navigation but use more CPU and memory.",
               key="preview/preload_batch_size", kind="int", default=PRELOAD_DEFAULT, lo=0, hi=PRELOAD_MAX, step=2, fmt="images", zero="Off"),

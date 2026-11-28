@@ -309,6 +309,56 @@ def test_a_running_library_is_asked_to_edit(qapp, window, monkeypatch):
     assert sent[0] == {"folder": str(shoot), "select": str(shoot / "IMG_2.jpg"), "edit": True} and launched == []
 
 
+class _Settings:
+    def __init__(self, values):
+        self.values = values
+
+    def value(self, key, default):
+        return self.values.get(key, default)
+
+
+def test_only_a_raw_opens_in_the_editor_and_only_when_settings_say_so(monkeypatch):
+    from image_triage import app_identity
+
+    monkeypatch.setattr(app_identity, "user_settings", lambda: _Settings({}))
+    assert not quick_view.opens_in_editor("/s/a.NEF"), "off unless it is asked for"
+    monkeypatch.setattr(app_identity, "user_settings", lambda: _Settings({quick_view.RAW_EDITOR_SETTING_KEY: "true"}))
+    assert quick_view.opens_in_editor("/s/a.NEF") and quick_view.opens_in_editor("/s/a.cr3") and quick_view.opens_in_editor("/s/a.dng")
+    assert not quick_view.opens_in_editor("/s/a.jpg") and not quick_view.opens_in_editor("/s/a.tif"), "other photos still go to the viewer"
+
+
+def test_a_raw_set_to_open_in_the_editor_shows_and_then_starts_the_editor(qapp, tmp_path, monkeypatch):
+    from image_triage.qml_shell import single_instance
+    from image_triage.quick_view.viewer import QuickViewer
+
+    monkeypatch.setattr(single_instance, "server_name", lambda: "it-quick-view-test-" + tmp_path.name)
+    monkeypatch.setattr("image_triage.quick_view.viewer.warm_library_files", lambda *a: 0)
+    raw = fake_raw(tmp_path / "DSC_1.NEF")
+    launched = []
+    viewer = QuickViewer(str(raw), None, longest=600, launcher=launched.append, edit_on_open=True)
+    viewer.start()
+    assert wait_for(qapp, lambda: launched)
+    assert not viewer.loading, "the preview is up before the editor is asked for"
+    assert launched[0][-4:] == ["--select", str(raw), "--edit", "--from-viewer"], "the library's editor, without its splash"
+    assert viewer.goingTo == "edit" and viewer.library == "starting"
+    viewer.shutdown()
+
+
+def test_a_raw_for_the_editor_opens_with_the_viewer_off_and_a_running_library_is_asked_to_edit(qapp, tmp_path, monkeypatch):
+    from image_triage import app_identity
+    from image_triage.qml_shell import single_instance
+
+    raw = fake_raw(tmp_path / "DSC_2.NEF")
+    monkeypatch.setattr(app_identity, "user_settings",
+                        lambda: _Settings({quick_view.SETTING_KEY: "false", quick_view.RAW_EDITOR_SETTING_KEY: "true"}))
+    monkeypatch.delenv(quick_view.ENV_SWITCH, raising=False)
+    sent = []
+    monkeypatch.setattr(single_instance, "send_to_running", lambda message, **_: sent.append(message) or True)
+    assert quick_view.run(str(raw)) == 0
+    assert sent == [{"folder": str(tmp_path), "select": str(raw), "edit": True}]
+    assert quick_view.run(str(jpeg(tmp_path / "p.jpg", 40, 30))) is None, "the viewer is off: a JPEG still starts the library"
+
+
 def test_the_window_sits_on_one_monitor():
     # a monitor 1920 wide to the right of another: the window is 78% of that one, centred on it, never spread over both
     assert quick_view.window_rect((1920, 0, 1920, 1040)) == (1920 + 211, 93, 1498, 853)

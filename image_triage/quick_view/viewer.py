@@ -39,8 +39,9 @@ class QuickViewer(QObject):
     _list_arrived = Signal(list)               # the folder's photos (from a worker thread)
     edge = Signal(str)                         # an arrow went past the folder's end: "end" or "start" (the window says so in a toast)
 
-    def __init__(self, photo: str, app=None, longest: int | None = None, launcher=None) -> None:
+    def __init__(self, photo: str, app=None, longest: int | None = None, launcher=None, edit_on_open: bool = False) -> None:
         super().__init__()
+        self._edit_on_open = edit_on_open      # a RAW opened with "Open RAW files in the editor" on: Edit is pressed once it is shown
         self._app = app
         self._photos: list[str] = [os.path.abspath(photo)]
         self._index = 0
@@ -123,8 +124,13 @@ class QuickViewer(QObject):
             self._prefetch()
 
     def _after_first(self) -> None:
-        """Once the first photo is up: the folder's other photos, the neighbours decoded ahead, then the library's files warmed."""
+        """Once the first photo is up: the folder's other photos, the neighbours decoded ahead, then the library's files warmed. Or, for
+        a RAW that opens in the editor, the library started on it at once (it reads its own files, so nothing is warmed for it)."""
         self._list_folder()
+        if self._edit_on_open:
+            mark("editor asked for")
+            self.openEditor()
+            return
         QTimer.singleShot(2500, lambda: threading.Thread(target=warm_library_files, name="quick-view-warm", daemon=True).start())
 
     def _list_folder(self) -> None:
@@ -295,7 +301,8 @@ class QuickViewer(QObject):
         from ..qml_shell.single_instance import _allow_foreground, library_ready
 
         if library_ready(timeout_ms=400):
-            _allow_foreground()                        # Windows: let the library keep the front once this window is gone
+            mark("library ready")
+            _allow_foreground()                      # Windows: let the library keep the front once this window is gone
             self._close()
             return
         ended = self._process is not None and self._process.poll() is not None
