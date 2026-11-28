@@ -1172,11 +1172,12 @@ def _combine_decisions(store, sources: list[str], destination: str, renumber: bo
     moved picture file as a record of its own, as a decision is kept under a photo's own path, whichever file of the pair that is."""
     from ..folder_combine import plan_combine
     from ..models import ImageRecord
+    from ..formats import VIDEO_SUFFIXES
     from ..scanner import IMAGE_SUFFIXES
 
     records = {}
     for step in plan_combine(sources, destination, renumber=renumber).steps:
-        if os.path.splitext(step.source)[1].lower() in IMAGE_SUFFIXES:
+        if os.path.splitext(step.source)[1].lower() in IMAGE_SUFFIXES or os.path.splitext(step.source)[1].lower() in VIDEO_SUFFIXES:
             try:
                 stat = os.stat(step.source)
             except OSError:

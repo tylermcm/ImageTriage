@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
 from . import memtrace
 from .fits_support import load_basic_fits_header
-from .formats import FITS_SUFFIXES, RAW_SUFFIXES, suffix_for_path
+from .formats import FITS_SUFFIXES, RAW_SUFFIXES, VIDEO_SUFFIXES, suffix_for_path
 from .models import ImageRecord
 from .perf import perf_logger
 from .plugins import MetadataLoadRequest, register_metadata_provider, resolve_metadata_provider
@@ -76,6 +76,8 @@ class MetadataKey:
 def load_capture_metadata(path: str) -> CaptureMetadata:
     if not path:
         return EMPTY_METADATA
+    if suffix_for_path(path) in VIDEO_SUFFIXES:          # a clip has no Exif to read (its details come from video.py)
+        return CaptureMetadata(path=path)
     request = MetadataLoadRequest(path=path, suffix=suffix_for_path(path))
     _ensure_builtin_metadata_providers()
     provider = resolve_metadata_provider(request)

@@ -262,7 +262,8 @@ class HandoffModel(QObject):
         """Hand the recipe to the transfer cards (which ask first when it moves files)."""
         if not self.hasRoot:
             return
-        records = [r["record"] for r in self._photos.scope_rows() if r.get("record") is not None]
+        records = [r["record"] for r in self._photos.scope_rows() if r.get("record") is not None
+                   and not (r.get("video") and self._v["content"] == RECIPE_CONTENT_EXPORT)]   # an export makes pictures: clips are only copied or moved
         if records and not self._memory:
             self.jobPrepared.emit({"recipe": self._recipe(), "records": records, "root": self._root.strip(), "folder": self._photos.folder_dir()})
         else:

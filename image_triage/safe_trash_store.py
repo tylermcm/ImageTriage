@@ -179,7 +179,9 @@ def _tree_size(path: str) -> int:
 
 
 def _is_primary(path: str) -> bool:
-    return Path(path).suffix.casefold() in IMAGE_SUFFIXES
+    from .formats import VIDEO_SUFFIXES
+
+    return Path(path).suffix.casefold() in IMAGE_SUFFIXES or Path(path).suffix.casefold() in VIDEO_SUFFIXES
 
 
 def list_entries(root: str | Path) -> list[TrashEntry]:

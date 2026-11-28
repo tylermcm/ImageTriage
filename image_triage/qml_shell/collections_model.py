@@ -16,7 +16,7 @@ from pathlib import Path
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from ..app_identity import user_settings
-from ..formats import IMAGE_SUFFIXES
+from ..formats import IMAGE_SUFFIXES, VIDEO_SUFFIXES
 from .photos import member_key
 
 ACTIVE_KEY = "collections/also_add_to"          # catalog_controller.ACTIVE_COLLECTION_KEY
@@ -131,7 +131,7 @@ class CollectionsModel(QObject):
         for path in store.recent_collection_paths(cid):
             image = Path(path)
             key = member_key(str(image.with_suffix("")))
-            if image.suffix.lower() not in IMAGE_SUFFIXES or key in seen:
+            if (image.suffix.lower() not in IMAGE_SUFFIXES and image.suffix.lower() not in VIDEO_SUFFIXES) or key in seen:
                 continue
             seen.add(key)
             preview.append(path)

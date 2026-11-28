@@ -44,6 +44,10 @@ def parse_capture_time(stamp, subsecond="", offset="") -> float | None:
 
 def read_capture_time(path) -> float | None:
     """The capture time of the file at ``path`` from its Exif data, or None when it has none that can be read."""
+    from .formats import VIDEO_SUFFIXES, suffix_for_path
+
+    if suffix_for_path(str(path)) in VIDEO_SUFFIXES:     # not parsed as a photo (an MP4 can look like a HEIF): sorted by modified time
+        return None
     try:
         import exifread
 

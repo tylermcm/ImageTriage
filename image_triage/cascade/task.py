@@ -18,6 +18,7 @@ from PySide6.QtCore import QObject, QRunnable, Signal
 
 from ..ai_workflow import AIWorkflowPaths
 from ..brackets import BracketDetector
+from ..formats import is_video_file_candidate
 from ..metadata import load_capture_metadata
 from ..models import ImageRecord
 from .blink import BLINK_THRESHOLD, BlinkScoreCache, is_blink
@@ -105,7 +106,8 @@ class CascadeRunTask(QRunnable):
     ) -> None:
         super().__init__()
         self.folder = folder
-        self.records = tuple(record for record in records if not record.is_folder)
+        # folders, and video clips (the cascade reads pictures), are left out whoever calls it
+        self.records = tuple(record for record in records if not record.is_folder and not is_video_file_candidate(record.path))
         self.paths = paths
         self.settings = settings or CascadeRunSettings()
         self.scorer_factory = scorer_factory

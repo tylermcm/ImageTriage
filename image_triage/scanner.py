@@ -18,6 +18,7 @@ from .formats import (
     IMAGE_SUFFIXES,
     JPEG_SUFFIXES,
     MEDIA_SUFFIXES,
+    VIDEO_SUFFIXES,
     RAW_SUFFIXES,
     ROOT_PRIMARY_PRIORITY,
     is_appledouble_path,
@@ -365,6 +366,10 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
     # Export layouts commonly place JPEGs and camera originals in sibling
     # folders (for example ``jpg`` and ``Raw Files``). Treat matching sibling
     # RAWs as the canonical records when the JPEG folder itself is opened.
+    # Video clips stand on their own: never grouped with a photo of the same name as its edit or variant (GOPR0001.MP4 beside
+    # GOPR0001.JPG, IMG_1234.MOV beside IMG_1234.HEIC), which took the clip's row and could show it as the photo's picture
+    clips = [item for item in root_files if item.suffix in VIDEO_SUFFIXES]
+    root_files = [item for item in root_files if item.suffix not in VIDEO_SUFFIXES]
     jpeg_stems = {item.stem_key for item in root_files if item.suffix in JPEG_SUFFIXES}
     root_files.extend(
         item
@@ -513,6 +518,9 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
                 primary_modified_ns=primary.modified_ns,
             )
         )
+    for clip in clips:
+        records.append(ImageRecord(path=clip.path, name=clip.name, size=clip.size, modified_ns=clip.modified_ns,
+                                   primary_size=clip.size, primary_modified_ns=clip.modified_ns))
     return records
 
 

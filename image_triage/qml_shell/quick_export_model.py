@@ -156,7 +156,8 @@ class QuickExportModel(QObject):
         if self._only:
             key = os.path.normcase(os.path.abspath(self._only))
             return [r for r in self._photos.all_rows() if os.path.normcase(os.path.abspath(r["path"])) == key][:1]
-        return self._photos.scope_rows()[:SOURCE_LIMIT]
+        # photos: a video clip is not exported as a picture (it is copied or trimmed from the clip's own tools)
+        return [r for r in self._photos.scope_rows()[:SOURCE_LIMIT] if not r.get("video")]
 
     presets = Property("QVariantList", _presets, notify=changed)
     preset = Property(str, _current, notify=changed)

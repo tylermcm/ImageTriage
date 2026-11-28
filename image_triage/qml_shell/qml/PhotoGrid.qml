@@ -419,6 +419,7 @@ Item {
             required property string title
             required property string ext
             required property bool isRaw
+            required property bool isVideo              // a video clip: a play badge with its length (clips.py), not a photo
             required property string decision
             required property int rating
             required property int ai
@@ -537,10 +538,25 @@ Item {
                         }
                         Rectangle {
                             visible: UiState.showBadges
-                            width: fmt.implicitWidth + 13.5; height: 15.5; radius: 5.5; color: cell.isRaw ? Qt.alpha(theme.accent, 0.7) : Qt.rgba(1, 1, 1, 0.18)
+                            width: fmt.implicitWidth + 13.5; height: 15.5; radius: 5.5; color: cell.isRaw || cell.isVideo ? Qt.alpha(theme.accent, 0.7) : Qt.rgba(1, 1, 1, 0.18)
                             Text { id: fmt; anchors.centerIn: parent; text: cell.ext; color: "white"; font.pointSize: UiState.pt(11); font.weight: Font.DemiBold; font.letterSpacing: 0.44 }
                         }
                     }
+                }
+                Rectangle {   // a video clip: a play mark and its length, bottom left (the hover strip takes the place while it shows)
+                    objectName: "gridVideoBadge"
+                    visible: cell.isPhoto && cell.isVideo
+                    opacity: cell.hot ? 0 : 1
+                    Behavior on opacity { NumberAnimation { duration: 200 } }
+                    x: 8; y: parent.height - height - 8; height: 20; radius: 6; color: Qt.rgba(10 / 255, 12 / 255, 16 / 255, 0.78)
+                    width: vidRow.implicitWidth + 14
+                    Row { id: vidRow; x: 7; anchors.verticalCenter: parent.verticalCenter; spacing: 5
+                        Canvas {   // a filled play triangle (no icon font needed)
+                            width: 8; height: 9; anchors.verticalCenter: parent.verticalCenter
+                            onPaint: { var c = getContext("2d"); c.reset(); c.fillStyle = "white"; c.beginPath(); c.moveTo(0, 0); c.lineTo(8, 4.5); c.lineTo(0, 9); c.closePath(); c.fill() }
+                        }
+                        Text { anchors.verticalCenter: parent.verticalCenter; color: "white"; font.pointSize: UiState.pt(11); font.weight: Font.Medium
+                               text: { if (!cell.isVideo) return ""; void clips.revision; return clips.duration(cell.path) || "Video" } } }
                 }
                 Rectangle {   // what the cull flagged this frame for (it is dimmed, never hidden)
                     visible: UiState.showBadges && cell.flag.label !== undefined

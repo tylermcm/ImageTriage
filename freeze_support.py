@@ -160,6 +160,10 @@ APP_FREEZE_INCLUDES = (
     "image_triage.document_types",
     "PySide6.QtQml",
     "PySide6.QtQuick",
+    # Video clips (video.py): frames, lengths and playback through Qt Multimedia and its FFmpeg plugin (imported inside functions)
+    "PySide6.QtMultimedia",
+    "image_triage.video",
+    "image_triage.qml_shell.clips",
     # The vendored editor engine (formerly the separately-packaged cli_editor/photo_terminal). editor_render.py imports it lazily
     # inside a function, so name it explicitly rather than relying on cx_Freeze's static import scan finding it.
     "image_triage.photo_terminal",

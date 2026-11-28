@@ -439,6 +439,10 @@ class EditorHost(QObject):
     def _open_path(self, path: str, *, full_editor: bool) -> None:
         if not path or self._state == CLOSING:
             return
+        from ..formats import is_video_file_candidate
+
+        if is_video_file_candidate(path):          # the editor edits pictures; a clip has its own trim and frame tools
+            return
         if self._state == STARTING:
             # One open at a time. The newest request made meanwhile is kept and started when this one is over, so the
             # editor ends on the photo that was asked for last and never on one the selection has already left.

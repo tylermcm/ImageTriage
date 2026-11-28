@@ -20,7 +20,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from .formats import is_appledouble_path, is_image_file_candidate
+from .formats import is_appledouble_path, is_image_file_candidate, is_media_file_candidate
 from . import path_policy
 from .models import ImageRecord, ImageVariant
 from .scan_cache import app_data_root
@@ -1199,7 +1199,7 @@ def _iter_catalog_candidate_folders(root_path: str):
         if is_editor_asset_path(current_dir) or is_ignored_system_directory(current_dir) or is_app_recycle_directory(current_dir):
             continue
         lower_dirs = {name.casefold() for name in dirnames}
-        if any(is_image_file_candidate(name) for name in filenames) or lower_dirs.intersection(JPEG_PAIR_DIRECTORIES | EDIT_DIRECTORIES):
+        if any(is_media_file_candidate(name) for name in filenames) or lower_dirs.intersection(JPEG_PAIR_DIRECTORIES | EDIT_DIRECTORIES):
             yield normalize_filesystem_path(current_dir)
 
 
@@ -1232,7 +1232,7 @@ def _deserialize_record_json(raw: str) -> ImageRecord | None:
         return None
     try:
         record_path = str(payload["path"])
-        if not is_image_file_candidate(record_path):
+        if not is_media_file_candidate(record_path):         # photos and video clips, as the scanner writes them
             return None
         return ImageRecord(
             path=record_path,

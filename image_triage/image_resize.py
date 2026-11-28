@@ -382,6 +382,10 @@ def _apply_builtin_edits(source_path: str, loaded: _LoadedResizeImage) -> _Loade
 
 def load_image_for_export(source_path: str, *, target_size: QSize, ignore_orientation: bool, strip_metadata: bool) -> _LoadedResizeImage:
     """Resolve edit authority before decoding the original; only metadata needs the original when the editor rendered it."""
+    from .formats import VIDEO_SUFFIXES, suffix_for_path
+
+    if suffix_for_path(source_path) in VIDEO_SUFFIXES:
+        raise OSError("A video clip is not exported as a picture.")
     edited = edited_image_for_export(source_path)
     try:
         loaded = _load_resize_image(source_path, target_size=target_size, ignore_orientation=ignore_orientation, strip_metadata=strip_metadata)

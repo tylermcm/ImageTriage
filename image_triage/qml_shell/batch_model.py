@@ -137,6 +137,8 @@ class BatchModel(QObject):
             rows = [r for r in self._photos.all_rows() if os.path.normcase(os.path.abspath(r["path"])) == key][:1]
         else:
             rows = self._photos.scope_rows()[:SOURCE_LIMIT]
+        if self._mode == "export":                 # Rename takes video clips too; Export makes pictures, so it leaves them out
+            rows = [r for r in rows if not r.get("video")]
         out = []
         if self._memory:
             if not self._stage:

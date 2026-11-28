@@ -305,7 +305,9 @@ class ViewerHost(QObject):
         item = self._photos.row_at(row)
         if item is None:
             return
-        if ((self._raw_editor.active and item["path"] != self._raw_editor._path)
+        if self._raw_editor.active and suffix_for_path(item["path"]) not in EDITOR_SUFFIXES:
+            self._raw_editor.done()                # onto a clip (or another file it cannot edit): the panel closes, its edit kept
+        elif ((self._raw_editor.active and item["path"] != self._raw_editor._path)
                 or (self._raw_wanted and not self._raw_editor.active and not self._compare.active
                     and suffix_for_path(item["path"]) in EDITOR_SUFFIXES)):
             self._raw_editor.open(item["path"])

@@ -25,6 +25,7 @@ from .formats import (
     PILLOW_FALLBACK_SUFFIXES,
     PSD_SUFFIXES,
     RAW_SUFFIXES,
+    VIDEO_SUFFIXES,
     is_appledouble_path,
     suffix_for_path,
 )
@@ -227,6 +228,13 @@ def load_image_for_display(
 ):
     if is_appledouble_path(path):
         return QImage(), "macOS metadata sidecar; not an image file."
+    if suffix_for_path(path) in VIDEO_SUFFIXES:
+        # a video clip: its first frame (the viewer, histograms and inspection show it; thumbnails ask for the poster themselves)
+        from .video import grab_frame
+
+        longest = max(target_size.width(), target_size.height()) if target_size.isValid() else 0
+        grabbed = grab_frame(path, 0, longest=longest)
+        return grabbed.image, grabbed.info.error
     request = DisplayLoadRequest(
         path=path,
         suffix=suffix_for_path(path),

@@ -216,7 +216,7 @@ class BestOfModel(QObject):
     def build(self, strategy: str, size: int) -> None:
         p = self._photos
         rows = [p.get(i) for i in range(p.shown)]
-        rows = [r for r in rows if r]
+        rows = [r for r in rows if r and not r.get("video")]          # a best-of set is photos
         records = [ImageRecord(path=r["path"], name=r["name"], size=0, modified_ns=0, companion_paths=tuple(r.get("companions", ()))) for r in rows]
         annotations = {r["path"]: SessionAnnotation(winner=True) for r in rows if r["decision"] == "win"}
         plan = build_best_of_set_plan(records, ai_bundle=None, review_bundle=None, burst_recommendations={}, annotations_by_path=annotations,

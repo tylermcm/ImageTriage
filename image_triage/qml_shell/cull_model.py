@@ -1913,7 +1913,8 @@ class CullModel(QObject):
         cascade = CascadeSettings(split_jump=v["split"], duplicate_distance=v["dup"], soft_ratio=v["soft"] / 100, clip_floor=v["clip"] / 100, blown_out=v["blown"] / 100,
                                    repeat_distance=v["rdist"], ssim_threshold=v["ssim"] / 100, repeat_window=v["rwin"], repeat_rounds=v["rounds"],
                                    **cascade_controls.settings_kwargs(s["adv"]))
-        records = [r["record"] for r in self._photos.all_rows() if r.get("record") is not None]
+        # photos only: video clips are culled by hand (the AI reads pictures; a clip would only come back unread)
+        records = [r["record"] for r in self._photos.all_rows() if r.get("record") is not None and not r.get("video")]
         decision = self._ranking_decision()
         self._real, self._outcomes, self._picks, self._flags, self._stacks = True, {}, set(), {}, []
         self._token += 1
