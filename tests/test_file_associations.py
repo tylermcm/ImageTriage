@@ -119,7 +119,8 @@ class FileAssociationTests(unittest.TestCase):
             fa, "_notify_windows_shell_of_association_change", lambda: None
         ):
             fa._choose_default_app("probe.nef")
-        self.assertEqual(calls, [fa.OAIF_ALLOW_REGISTRATION | fa.OAIF_REGISTER_EXT], "the dialog offers Always; the old one is not opened")
+        self.assertEqual(calls, [fa.OAIF_ALLOW_REGISTRATION], "the dialog offers Always; the old one is not opened")
+        self.assertFalse(calls[0] & fa.OAIF_REGISTER_EXT, "asking to register the choice brings up Windows' 'go to Settings' refusal")
 
     def test_registration_lists_the_app_for_windows_default_apps(self) -> None:
         from image_triage import file_associations as fa

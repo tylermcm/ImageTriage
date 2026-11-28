@@ -29,10 +29,11 @@ _ASSOCIATION_CHANGED = 0x08000000
 # Windows' list of apps that can be defaults (Settings > Apps > Default apps): the app's own page lists every type it registered.
 _CAPABILITIES_KEY = r"Software\ImageTriage\Capabilities"
 _REGISTERED_APPLICATIONS_KEY = r"Software\RegisteredApplications"
-# SHOpenWithDialog: let the choice be kept (the dialog's "Always"), and register it for the extension. No OAIF_EXEC: the probe file
-# that stands for the type must not be opened.
+# SHOpenWithDialog: let the choice be kept (the dialog's "Always", recorded by Windows itself, as "Open with > Choose another app"
+# does). Not OAIF_REGISTER_EXT: an app asking to register the choice is refused since Windows 8 ("To change your default apps, go to
+# Settings > Apps > Default apps", 3.1.4). No OAIF_EXEC: the probe file that stands for the type must not be opened.
 OAIF_ALLOW_REGISTRATION = 0x00000001
-OAIF_REGISTER_EXT = 0x00000002
+OAIF_REGISTER_EXT = 0x00000002              # never passed (see above); named for the test that says so
 _OUR_PROGIDS = {APP_PROG_ID.casefold(), rf"Applications\{APP_EXE_NAME}".casefold()}
 _INDIRECT_STRING_BUFFER_SIZE = 2048
 _PRIORITIZED_ASSOCIATION_SUFFIXES = (
@@ -313,7 +314,7 @@ def _choose_default_app(path: str, on_closed=None) -> None:
         try:
             shell32.SHOpenWithDialog.argtypes = [wintypes.HWND, ctypes.POINTER(OPENASINFO)]
             shell32.SHOpenWithDialog.restype = ctypes.c_long
-            info = OPENASINFO(path, None, OAIF_ALLOW_REGISTRATION | OAIF_REGISTER_EXT)
+            info = OPENASINFO(path, None, OAIF_ALLOW_REGISTRATION)
             result = shell32.SHOpenWithDialog(None, ctypes.byref(info))
         finally:
             ole32.CoUninitialize()
