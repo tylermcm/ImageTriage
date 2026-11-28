@@ -140,9 +140,11 @@ class ReferenceModel(QObject):
     changed = Signal()
     closedWindow = Signal()                      # a window was closed
     uiRequest = Signal(str)                      # the window wants something only the main window can do: settings, coll, faces, drop, cull, showGrid
+    _faChooserClosed = Signal()                  # Windows' "Select an app" was closed (from its own thread): the types are looked at again
 
     def __init__(self, photos=None, toasts=None, memory: bool = False, parent: QObject | None = None) -> None:
         super().__init__(parent)
+        self._faChooserClosed.connect(self._fa_recheck)
         self._photos = photos
         self._toasts = toasts
         self._memory = memory
@@ -897,11 +899,11 @@ class ReferenceModel(QObject):
         try:
             from ..file_associations import open_windows_file_association_chooser
 
-            open_windows_file_association_chooser(suffix)
+            open_windows_file_association_chooser(suffix, on_closed=self._faChooserClosed.emit)
         except Exception as exc:
             self._toast("error", "Could not open the Windows chooser", str(exc))
             return
-        QTimer.singleShot(4000, self._fa_recheck)       # the choice is made in Windows; look again afterwards
+        QTimer.singleShot(4000, self._fa_recheck)       # the choice is made in Windows; look again afterwards, and when it closes
 
     def _fa_recheck(self) -> None:
         self._fa_cache = None

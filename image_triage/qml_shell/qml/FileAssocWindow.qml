@@ -104,7 +104,7 @@ Backdrop {
                     Item { width: 1; height: 14 }
                     Rectangle { width: parent.width; height: noteT.implicitHeight + 24; radius: 12; color: theme.s1; border.color: theme.lineSoft
                         Text { id: noteT; x: 14; y: 12; width: parent.width - 28; wrapMode: Text.WordWrap; color: theme.fg3; font.pointSize: UiState.pt(12.5); lineHeight: 19.4; lineHeightMode: Text.FixedHeight
-                               text: "Windows decides the default app, so we can only ask: “Make default” opens the Windows chooser for that type. “Open with” always lists Image Triage once a type is available." } }
+                               text: "Windows decides the default app, so we can only ask: “Make default” opens the Windows chooser for that type; pick Image Triage, then Always. “Windows Default Apps…” opens Image Triage’s own page there, with every type on it. “Open with” always lists Image Triage once a type is available." } }
                 }
                 Column {
                     id: unsup

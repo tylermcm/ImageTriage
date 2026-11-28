@@ -26,6 +26,13 @@ _PROG_ID_KEY = rf"{_CLASSES_ROOT}\{APP_PROG_ID}"
 _OPEN_COMMAND_KEYS = (rf"{_APPLICATIONS_KEY}\shell\open\command", rf"{_PROG_ID_KEY}\shell\open\command")
 _FILE_EXTS_ROOT = r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts"
 _ASSOCIATION_CHANGED = 0x08000000
+# Windows' list of apps that can be defaults (Settings > Apps > Default apps): the app's own page lists every type it registered.
+_CAPABILITIES_KEY = r"Software\ImageTriage\Capabilities"
+_REGISTERED_APPLICATIONS_KEY = r"Software\RegisteredApplications"
+# SHOpenWithDialog: let the choice be kept (the dialog's "Always"), and register it for the extension. No OAIF_EXEC: the probe file
+# that stands for the type must not be opened.
+OAIF_ALLOW_REGISTRATION = 0x00000001
+OAIF_REGISTER_EXT = 0x00000002
 _OUR_PROGIDS = {APP_PROG_ID.casefold(), rf"Applications\{APP_EXE_NAME}".casefold()}
 _INDIRECT_STRING_BUFFER_SIZE = 2048
 _PRIORITIZED_ASSOCIATION_SUFFIXES = (
@@ -226,6 +233,14 @@ def register_windows_file_associations(suffixes: tuple[str, ...] | list[str] | s
     for suffix in requested_suffixes:
         _set_string_value(winreg.HKEY_CURRENT_USER, rf"{_CLASSES_ROOT}\{suffix}\OpenWithProgids", APP_PROG_ID, "")
 
+    # Registered as a default-capable app, so Settings > Default apps has an Image Triage page with all of its types on it
+    _set_string_value(winreg.HKEY_CURRENT_USER, _CAPABILITIES_KEY, "ApplicationName", APP_FRIENDLY_NAME)
+    _set_string_value(winreg.HKEY_CURRENT_USER, _CAPABILITIES_KEY, "ApplicationDescription", "Cull, edit and export photos.")
+    _set_string_value(winreg.HKEY_CURRENT_USER, _CAPABILITIES_KEY, "ApplicationIcon", f"{executable_path},0")
+    for suffix in requested_suffixes:
+        _set_string_value(winreg.HKEY_CURRENT_USER, rf"{_CAPABILITIES_KEY}\FileAssociations", suffix, APP_PROG_ID)
+    _set_string_value(winreg.HKEY_CURRENT_USER, _REGISTERED_APPLICATIONS_KEY, APP_FRIENDLY_NAME, _CAPABILITIES_KEY)
+
     _notify_windows_shell_of_association_change()
     return query_windows_file_association_status()
 
@@ -237,21 +252,37 @@ def remove_windows_file_associations(suffixes: tuple[str, ...] | list[str] | set
     for suffix in requested_suffixes:
         _delete_value(winreg.HKEY_CURRENT_USER, rf"{_CLASSES_ROOT}\{suffix}\OpenWithProgids", APP_PROG_ID)
         _delete_value(winreg.HKEY_CURRENT_USER, rf"{_APPLICATIONS_KEY}\SupportedTypes", suffix)
+        _delete_value(winreg.HKEY_CURRENT_USER, rf"{_CAPABILITIES_KEY}\FileAssociations", suffix)
     remaining = tuple(state.suffix for state in query_windows_file_association_states() if state.registered)
     if not remaining:
         _delete_registry_tree(winreg.HKEY_CURRENT_USER, _PROG_ID_KEY)
         _delete_registry_tree(winreg.HKEY_CURRENT_USER, _APPLICATIONS_KEY)
+        _delete_value(winreg.HKEY_CURRENT_USER, _REGISTERED_APPLICATIONS_KEY, APP_FRIENDLY_NAME)
+        _delete_registry_tree(winreg.HKEY_CURRENT_USER, _CAPABILITIES_KEY)
     _notify_windows_shell_of_association_change()
     return query_windows_file_association_status()
+
+
+def default_apps_settings_uri() -> str:
+    """Image Triage's own page in Settings > Default apps (every type it registered, each one click), where it is registered;
+    the general page otherwise."""
+    from urllib.parse import quote
+
+    if winreg is not None and _registry_key_exists(winreg.HKEY_CURRENT_USER, _CAPABILITIES_KEY):
+        return "ms-settings:defaultapps?registeredAppUser=" + quote(APP_FRIENDLY_NAME)
+    return "ms-settings:defaultapps"
 
 
 def open_windows_default_apps_settings() -> None:
     if os.name != "nt":
         raise OSError("Windows Default Apps is only available on Windows.")
-    os.startfile("ms-settings:defaultapps")
+    os.startfile(default_apps_settings_uri())
 
 
-def open_windows_file_association_chooser(suffix: str) -> str:
+def open_windows_file_association_chooser(suffix: str, on_closed=None) -> str:
+    """Windows' "Select an app" for ``suffix``, with "Always" (SHOpenWithDialog, the choice allowed to be kept). The rundll32
+    OpenAs_RunDLL entry point it replaces offers only "Just once" on Windows 11, so Image Triage could never become the default.
+    The dialog runs on its own thread; ``on_closed`` is called (on that thread) once it is closed."""
     normalized = _normalize_suffix(suffix)
     if os.name != "nt":
         raise OSError("Windows file association chooser is only available on Windows.")
@@ -262,8 +293,38 @@ def open_windows_file_association_chooser(suffix: str) -> str:
     probe_dir.mkdir(parents=True, exist_ok=True)
     probe_path = probe_dir / f"image_triage_probe{normalized}"
     probe_path.write_text("Image Triage file association probe.\n", encoding="utf-8")
-    open_with_dialog(str(probe_path))
+    import threading
+
+    threading.Thread(target=_choose_default_app, args=(str(probe_path), on_closed), name="windows-open-with", daemon=True).start()
     return str(probe_path)
+
+
+def _choose_default_app(path: str, on_closed=None) -> None:
+    """SHOpenWithDialog on this (new) thread, in a COM apartment of its own; the old chooser if it cannot be called."""
+    try:
+        from ctypes import wintypes
+
+        class OPENASINFO(ctypes.Structure):
+            _fields_ = [("pcszFile", ctypes.c_wchar_p), ("pcszClass", ctypes.c_wchar_p), ("oaifInFlags", ctypes.c_uint)]
+
+        ole32 = ctypes.windll.ole32  # type: ignore[attr-defined]
+        shell32 = ctypes.windll.shell32  # type: ignore[attr-defined]
+        ole32.CoInitializeEx(None, 0x2)                       # COINIT_APARTMENTTHREADED
+        try:
+            shell32.SHOpenWithDialog.argtypes = [wintypes.HWND, ctypes.POINTER(OPENASINFO)]
+            shell32.SHOpenWithDialog.restype = ctypes.c_long
+            info = OPENASINFO(path, None, OAIF_ALLOW_REGISTRATION | OAIF_REGISTER_EXT)
+            result = shell32.SHOpenWithDialog(None, ctypes.byref(info))
+        finally:
+            ole32.CoUninitialize()
+        if result < 0 and (result & 0xFFFFFFFF) != 0x800704C7:   # failed (other than "cancelled"): the old chooser at least opens
+            open_with_dialog(path)
+    except Exception:
+        open_with_dialog(path)
+    finally:
+        _notify_windows_shell_of_association_change()
+        if on_closed is not None:
+            on_closed()
 
 
 def describe_windows_default_handler(state: ExtensionAssociationState) -> str:

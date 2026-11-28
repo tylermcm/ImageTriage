@@ -76,13 +76,70 @@ class FileAssociationTests(unittest.TestCase):
                 "image_triage.file_associations.tempfile.gettempdir",
                 return_value=temp_dir,
             ), patch(
-                "image_triage.file_associations.open_with_dialog",
-            ) as open_dialog:
+                "image_triage.file_associations._choose_default_app",
+            ) as choose:
                 probe_path = open_windows_file_association_chooser(".fits")
                 self.assertTrue(Path(probe_path).exists())
+                import time
+
+                for _ in range(100):
+                    if choose.called:
+                        break
+                    time.sleep(0.01)
         register_associations.assert_called_once_with([".fits"])
-        open_dialog.assert_called_once_with(probe_path)
+        choose.assert_called_once_with(probe_path, None)
         self.assertTrue(probe_path.endswith(".fits"))
+
+    def test_the_chooser_falls_back_to_the_old_dialog_and_always_reports_closing(self) -> None:
+        from image_triage import file_associations as fa
+
+        closed, opened = [], []
+        with patch.object(fa, "open_with_dialog", lambda path: opened.append(path)), patch.object(
+            fa, "_notify_windows_shell_of_association_change", lambda: None
+        ), patch.object(fa.ctypes, "windll", None, create=True):
+            fa._choose_default_app("probe.nef", lambda: closed.append(True))
+        self.assertEqual(opened, ["probe.nef"], "no SHOpenWithDialog to call: the old chooser at least opens")
+        self.assertEqual(closed, [True])
+
+    def test_the_chooser_asks_windows_to_allow_keeping_the_choice(self) -> None:
+        from image_triage import file_associations as fa
+
+        calls = []
+
+        class Shell32:
+            class SHOpenWithDialog:
+                argtypes = restype = None
+
+                def __new__(cls, hwnd, info):
+                    calls.append(info._obj.oaifInFlags)
+                    return 0
+
+        windll = SimpleNamespace(shell32=Shell32, ole32=SimpleNamespace(CoInitializeEx=lambda *a: 0, CoUninitialize=lambda: None))
+        with patch.object(fa.ctypes, "windll", windll, create=True), patch.object(fa, "open_with_dialog", lambda path: calls.append("old")), patch.object(
+            fa, "_notify_windows_shell_of_association_change", lambda: None
+        ):
+            fa._choose_default_app("probe.nef")
+        self.assertEqual(calls, [fa.OAIF_ALLOW_REGISTRATION | fa.OAIF_REGISTER_EXT], "the dialog offers Always; the old one is not opened")
+
+    def test_registration_lists_the_app_for_windows_default_apps(self) -> None:
+        from image_triage import file_associations as fa
+
+        values: dict[tuple[str, str], str] = {}
+        with patch.object(fa.os, "name", "nt"), patch.object(fa, "winreg", SimpleNamespace(HKEY_CURRENT_USER=1)), patch.object(
+            fa, "_set_default_value", lambda root, key, value: values.__setitem__((key, ""), value)
+        ), patch.object(fa, "_set_string_value", lambda root, key, name, value: values.__setitem__((key, name), value)), patch.object(
+            fa, "_notify_windows_shell_of_association_change", lambda: None
+        ), patch.object(fa, "query_windows_file_association_status", lambda: None), patch.object(
+            fa, "Path", lambda value: SimpleNamespace(resolve=lambda: value)                 # no WindowsPath off Windows
+        ), patch.object(fa, "current_file_association_command", lambda: '"X:\\ImageTriage.exe" "%1"'):
+            fa.register_windows_file_associations([".nef", ".jpg"])
+        self.assertEqual(values[(fa._REGISTERED_APPLICATIONS_KEY, APP_FRIENDLY_NAME)], fa._CAPABILITIES_KEY)
+        self.assertEqual(values[(rf"{fa._CAPABILITIES_KEY}\FileAssociations", ".nef")], fa.APP_PROG_ID)
+        self.assertEqual(values[(fa._CAPABILITIES_KEY, "ApplicationName")], APP_FRIENDLY_NAME)
+        with patch.object(fa, "winreg", SimpleNamespace(HKEY_CURRENT_USER=1)), patch.object(fa, "_registry_key_exists", lambda root, key: True):
+            self.assertEqual(fa.default_apps_settings_uri(), "ms-settings:defaultapps?registeredAppUser=Image%20Triage")
+        with patch.object(fa, "winreg", None):
+            self.assertEqual(fa.default_apps_settings_uri(), "ms-settings:defaultapps")
 
     def test_a_registered_command_is_stale_only_when_its_program_is_gone(self) -> None:
         from image_triage import file_associations as fa
