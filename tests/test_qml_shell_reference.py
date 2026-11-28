@@ -748,7 +748,7 @@ def test_make_default_asks_windows_for_a_real_type(qapp, photos, monkeypatch):
     import image_triage.file_associations as fa
 
     asked = []
-    monkeypatch.setattr(fa, "open_windows_file_association_chooser", lambda suffix: asked.append(suffix) or "")
+    monkeypatch.setattr(fa, "open_windows_file_association_chooser", lambda suffix, **_: asked.append(suffix) or "")
     monkeypatch.setattr(fa, "open_windows_default_apps_settings", lambda: asked.append("apps"))
     ref = ReferenceModel(photos, ToastModel(parent=qapp), memory=False, parent=qapp)
     ref._fa_os = True
