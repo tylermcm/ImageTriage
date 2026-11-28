@@ -218,7 +218,7 @@ Rectangle {
                 PopDivider {}
                 PopHeader { caption: "Format" }
                 Repeater {
-                    model: [["all", "RAW and JPG"], ["raw", "RAW only"], ["jpg", "JPG only"]]
+                    model: [["all", "Photos and videos"], ["raw", "RAW only"], ["jpg", "JPG and other photos"], ["video", "Videos only"]]
                     delegate: PopItem {
                         required property var modelData
                         label: modelData[1]; mode: "tick"; checked: UiState.fmt === modelData[0]

@@ -14,9 +14,9 @@ from pathlib import Path
 from PySide6.QtCore import Property, QAbstractListModel, QObject, QByteArray, QModelIndex, Qt, QTimer, Signal, Slot
 
 from ..capture_times import natural_key
-from ..formats import RAW_SUFFIXES
+from ..formats import RAW_SUFFIXES, VIDEO_SUFFIXES
 from ..grid_sections import FILLER, layout, sections_for
-from ..formats import is_image_file_candidate
+from ..formats import is_image_file_candidate, is_video_file_candidate
 from ..path_keys import name_key, path_key
 from ..scanner import format_scan_error, normalized_path_key, scan_child_folders, scan_folder
 from .inspector_sample import sample_ai, sample_measured
@@ -25,6 +25,7 @@ PathRole, NameRole, ExtRole, RawRole, DecisionRole, RatingRole, AiRole, TitleRol
 # What the grid adds to a cell: what kind it is, the photo row it shows, and a section header's words.
 KindRole, PhotoRowRole, SectionDetailRole, SectionCountRole, SectionStartRole = (Qt.ItemDataRole.UserRole + n for n in range(11, 16))
 FolderNameRole = Qt.ItemDataRole.UserRole + 16      # the name of the folder a photo is in (shown on its card when photos of several folders are together)
+VideoRole = Qt.ItemDataRole.UserRole + 17           # a video clip, not a photo (video.py): its card shows a play badge and the clip's length
 CELL_PHOTO, CELL_FOLDER, CELL_HEADER, CELL_FILLER = range(4)
 
 _DECISIONS = ("", "keep", "win", "rej", "rev", "", "keep", "")  # weights by position
@@ -44,6 +45,18 @@ def _slim_edits(folder: str) -> None:
             migrate_folder(folder)                     # denoised raw copies become companions (once the worker reads them)
     except Exception:                                  # space is only reclaimed: a share that went away changes nothing
         pass
+
+
+def _format_ok(row: dict, fmt: str) -> bool:
+    """The grid's file filter: "all", "raw" (RAW photos), "jpg" (the other photos) or "video" (video clips)."""
+    video = bool(row.get("video"))
+    if fmt == "video":
+        return video
+    if fmt == "raw":
+        return bool(row["raw"]) and not video
+    if fmt == "jpg":
+        return not row["raw"] and not video
+    return True
 
 
 def _title(row: dict) -> str:
@@ -207,7 +220,7 @@ class PhotoModel(QAbstractListModel):
         return {
             PathRole: QByteArray(b"path"), NameRole: QByteArray(b"name"), ExtRole: QByteArray(b"ext"), RawRole: QByteArray(b"isRaw"),
             DecisionRole: QByteArray(b"decision"), RatingRole: QByteArray(b"rating"), AiRole: QByteArray(b"ai"), TitleRole: QByteArray(b"title"), SelectedRole: QByteArray(b"selected"),
-            FolderNameRole: QByteArray(b"folderName"),
+            FolderNameRole: QByteArray(b"folderName"), VideoRole: QByteArray(b"isVideo"),
         }
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -227,6 +240,8 @@ class PhotoModel(QAbstractListModel):
             return row["ext"]
         if role == RawRole:
             return row["raw"]
+        if role == VideoRole:
+            return row.get("video", False)
         if role == DecisionRole:
             return row["decision"]
         if role == RatingRole:
@@ -305,7 +320,7 @@ class PhotoModel(QAbstractListModel):
             decision, rating, ai = mine.get("decision", ""), mine.get("rating", 0), -1
             rows.append({
                 "path": record.path, "name": record.name, "ext": suffix.lstrip(".").upper() or "FILE",
-                "raw": suffix in RAW_SUFFIXES, "decision": decision, "rating": rating, "ai": ai,
+                "raw": suffix in RAW_SUFFIXES, "video": suffix in VIDEO_SUFFIXES, "decision": decision, "rating": rating, "ai": ai,
                 "companions": tuple(record.companion_paths), "record": record, "annotation": mine.get("annotation"),
                 "key": member_key(record.path),
             })
@@ -516,7 +531,7 @@ class PhotoModel(QAbstractListModel):
             r for r in self._scoped()
             if self._filter_ok(r["decision"])
             and r["rating"] >= self._min_rate
-            and (self._fmt == "all" or (r["raw"] if self._fmt == "raw" else not r["raw"]))
+            and _format_ok(r, self._fmt)
             and self._advanced_ok(r, self._adv)
             and self._search_ok(r)
         ]
@@ -726,7 +741,7 @@ class PhotoModel(QAbstractListModel):
         self._summaries[path] = ""
 
         def count() -> None:
-            photos = folders = 0
+            photos = folders = clips = 0
             try:
                 with os.scandir(path) as entries:
                     for entry in entries:
@@ -735,13 +750,17 @@ class PhotoModel(QAbstractListModel):
                                 folders += 1
                             elif is_image_file_candidate(entry.name):
                                 photos += 1
+                            elif is_video_file_candidate(entry.name):
+                                clips += 1
                         except OSError:
                             continue
             except OSError:
                 self._summaries[path] = "Unavailable"
                 self.folderSummaryReady.emit(path)
                 return
-            parts = [f"{photos} photo{'s' if photos != 1 else ''}"] if photos or not folders else []
+            parts = [f"{photos} photo{'s' if photos != 1 else ''}"] if photos or not (folders or clips) else []
+            if clips:
+                parts.append(f"{clips} video{'s' if clips != 1 else ''}")
             if folders:
                 parts.append(f"{folders} folder{'s' if folders != 1 else ''}")
             self._summaries[path] = ", ".join(parts)
@@ -1195,7 +1214,7 @@ class GridModel(QAbstractListModel):
             return row - self._n
         return self._cells[row - self._n] if row - self._n < len(self._cells) else FILLER
 
-    _BLANK = {PathRole: "", NameRole: "", TitleRole: "", ExtRole: "", RawRole: False, DecisionRole: "", RatingRole: 0, AiRole: -1, SelectedRole: False,
+    _BLANK = {PathRole: "", NameRole: "", TitleRole: "", ExtRole: "", RawRole: False, VideoRole: False, DecisionRole: "", RatingRole: 0, AiRole: -1, SelectedRole: False,
               FolderRole: False, FolderNameRole: "", PhotoRowRole: -1, SectionDetailRole: "", SectionCountRole: 0, SectionStartRole: -1}
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):

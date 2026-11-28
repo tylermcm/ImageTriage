@@ -24,6 +24,7 @@ from PySide6.QtGui import QImage
 
 from .. import memtrace
 from ..cache import DiskThumbnailCache, EditStateMemo, ThumbnailKey
+from ..formats import is_video_file_candidate
 from ..imaging import load_image_for_display
 from ..perf import perf_logger
 from ..photocraft_bridge import saved_render_path
@@ -232,7 +233,14 @@ class ThumbService(QObject):
                 wanted = key.path in self._wanted and not self._closing
             if wanted and not self.disk._file_path(key).exists():
                 size = QSize(key.width, key.height)
-                if key.edit_state == FIT_TAG:
+                if is_video_file_candidate(key.path):
+                    # a clip: its poster frame (a tenth of the way in), grabbed by Qt Multimedia on this worker
+                    from ..video import grab_frame, info_cache
+
+                    grabbed = grab_frame(key.path, -1, longest=max(key.width, key.height))
+                    image = grabbed.image
+                    info_cache().put(key.path, grabbed.info)          # its length comes with it: the card shows it (clips.py)
+                elif key.edit_state == FIT_TAG:
                     image, _error = load_image_for_display(key.path, size, prefer_embedded=True)
                 else:
                     render = saved_render_path(key.path)

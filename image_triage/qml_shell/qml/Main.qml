@@ -630,7 +630,7 @@ Window {
         var minRate = uiMemory.get("minRating", UiState.minRate)
         if (typeof minRate === "number" && minRate >= 0 && minRate <= 5) { UiState.minRate = Math.floor(minRate); photos.setMinRating(UiState.minRate) }
         var fmt = uiMemory.get("format", UiState.fmt)
-        if (["all", "raw", "jpg"].indexOf(fmt) >= 0) { UiState.fmt = fmt; photos.setFormat(fmt) }
+        if (["all", "raw", "jpg", "video"].indexOf(fmt) >= 0) { UiState.fmt = fmt; photos.setFormat(fmt) }
         var names = uiMemory.get("names", UiState.showNames)
         if (typeof names === "boolean") UiState.showNames = names
         var badges = uiMemory.get("badges", UiState.showBadges)

@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..formats import is_image_file_candidate
+from ..formats import is_image_file_candidate, is_media_file_candidate
 from ..models import ImageRecord, ImageVariant
 from ..path_keys import path_key
 from ..perf import perf_logger
@@ -234,7 +234,7 @@ class CatalogRepository:
         records: list[ImageRecord] = []
         for row in record_rows:
             record_path = str(row["record_path"])
-            if not is_image_file_candidate(record_path):
+            if not is_media_file_candidate(record_path):       # photos and video clips
                 continue
             companion_rows = member_paths.get((record_path, "companion"), [])
             edit_rows = member_paths.get((record_path, "edit"), [])
@@ -313,7 +313,7 @@ class CatalogRepository:
         start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         folder_key = _normalized_path_key(folder_path)
-        records = [record for record in records if is_image_file_candidate(record.path)]
+        records = [record for record in records if is_media_file_candidate(record.path)]
         try:
             with closing(connect_catalog_db(self.db_path)) as connection:
                 apply_catalog_migrations(connection)

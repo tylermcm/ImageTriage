@@ -110,6 +110,10 @@ EDIT_SUFFIXES = frozenset((STANDARD_IMAGE_SUFFIXES | PSD_SUFFIXES | {".dng"}))
 PICTURE_EDITOR_SUFFIXES = frozenset({".jpg", ".jpeg", ".jpe", ".png", ".tif", ".tiff", ".webp"})
 EDITOR_SUFFIXES = frozenset(RAW_SUFFIXES | PICTURE_EDITOR_SUFFIXES)
 IMAGE_SUFFIXES = frozenset(STANDARD_IMAGE_SUFFIXES | FITS_SUFFIXES | RAW_SUFFIXES | PSD_SUFFIXES | MODEL_SUFFIXES)
+# Video clips: shown and culled beside the photos (thumbnail, playback, frames, trim); never decoded as pictures (``video.py``). Camera
+# and phone containers Qt Multimedia's FFmpeg backend reads on Windows, macOS and Linux.
+VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".m4v", ".mts", ".m2ts", ".mkv", ".avi", ".webm", ".mxf", ".3gp"})
+MEDIA_SUFFIXES = frozenset(IMAGE_SUFFIXES | VIDEO_SUFFIXES)
 PILLOW_FALLBACK_SUFFIXES = frozenset(STANDARD_IMAGE_SUFFIXES | PSD_SUFFIXES)
 COMPOSITE_SUFFIXES = tuple(sorted((suffix for suffix in IMAGE_SUFFIXES if suffix.count(".") > 1), key=len, reverse=True))
 
@@ -206,3 +210,17 @@ def is_image_file_candidate(path: str | os.PathLike[str]) -> bool:
 
     raw_path = os.fspath(path)
     return not is_appledouble_path(raw_path) and suffix_for_path(raw_path) in IMAGE_SUFFIXES
+
+
+def is_video_file_candidate(path: str | os.PathLike[str]) -> bool:
+    """Return whether a filename is a video clip the grid shows beside the photos."""
+
+    raw_path = os.fspath(path)
+    return not is_appledouble_path(raw_path) and suffix_for_path(raw_path) in VIDEO_SUFFIXES
+
+
+def is_media_file_candidate(path: str | os.PathLike[str]) -> bool:
+    """A photo or a video clip: what the grid and the viewers show."""
+
+    raw_path = os.fspath(path)
+    return not is_appledouble_path(raw_path) and suffix_for_path(raw_path) in MEDIA_SUFFIXES

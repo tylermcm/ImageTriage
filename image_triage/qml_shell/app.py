@@ -341,6 +341,11 @@ def _run(args, state: dict) -> int:
     context.setContextProperty("batch", batch)
     context.setContextProperty("pocketDrop", pocket_drop)
     context.setContextProperty("quickExport", quick_export)
+    from .clips import ClipService
+
+    clips = ClipService(parent=app, memory=bool(args.mock))
+    app.aboutToQuit.connect(clips.flush)
+    context.setContextProperty("clips", clips)
     context.setContextProperty("collections", collections)
     context.setContextProperty("people", people)
     context.setContextProperty("bestOf", best_of)

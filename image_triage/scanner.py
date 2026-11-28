@@ -17,10 +17,12 @@ from .formats import (
     EDIT_SUFFIXES,
     IMAGE_SUFFIXES,
     JPEG_SUFFIXES,
+    MEDIA_SUFFIXES,
     RAW_SUFFIXES,
     ROOT_PRIMARY_PRIORITY,
     is_appledouble_path,
     is_image_file_candidate,
+    is_media_file_candidate,
     suffix_for_path,
 )
 from .models import ImageRecord, ImageVariant, SortMode, sort_records
@@ -322,9 +324,9 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
         for entry in entries:
             if entry.name.casefold().endswith(".edit.json"):
                 hints.legacy.add(entry.name.casefold())
-            if is_image_file_candidate(entry.name):
+            if is_media_file_candidate(entry.name):            # photos, and video clips (shown beside them, video.py)
                 try:
-                    scanned = to_scanned_file(entry, IMAGE_SUFFIXES, include_stat=include_stat, parent_folder=folder)
+                    scanned = to_scanned_file(entry, MEDIA_SUFFIXES, include_stat=include_stat, parent_folder=folder)
                 except OSError:
                     continue
                 if scanned is not None:
