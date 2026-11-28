@@ -3982,3 +3982,10 @@ of that branch: the worker answers `"sky": 1` in its hello, and refuses a recipe
 - Only pictures in the sky library (`<app data>/skies`) can be chosen; imports are copied there as JPEG.
 - The setting is photo-specific (excluded from presets and copy/paste), and counts as an edit in `classify_recipe`.
 - The "Creative" tab holds it. Light Depth stays in Adjust until its rework merges.
+
+## 2026-11-27: Image Triage 3.1.2 Windows and Linux editor pin
+
+- The release pin advances from `ec8ad2865` to `64f7ec084` on the PhotoCraft fork's `codex/imagetriage-3.1.2` branch. The intermediate branding commit `008ce9fa8` names the bundled app Image Triage Editor. The pin also fixes Paste Edit Settings, which rejected valid recipes after Sky Replacement added a structured `sky` field. The existing `CameraRaw::validate_changes` still rejects invalid sky settings.
+- The upstream fetch advanced `9125564b7` to `c65b6ada0`, with `v0.24.0-rc.2` the newest upstream tag. The integration branch is 86 commits ahead and 8,444 behind upstream main. The dry run found 61 conflicting files, including Camera Raw algorithm and preview files, the editor dialogs, startup, control dispatch, and services. Upstream integration is deferred. This release is based on the fork commit already pinned by 3.1.1.
+- The Linux release uses the local AppImage build to include both the editor and the RAW preview worker. The Windows update groups and the MSI come from the same frozen tree.
+- The final native builds passed live handoff checks on Windows and Linux for hidden startup, persistent filmstrip switching, stash and restore, native Save, grid refresh, theme, closed-tab reopen, and shutdown without leftover processes. The Windows check also exercised embedded resizing and fullscreen. Both preview workers passed protocol negotiation, and both packages passed startup checks. Three focused clipboard regressions passed. The dependency layer and WebAssembly checks passed. The broader native checks reproduced three missing CJK glyph failures on the earlier editor, and strict Clippy stops in the unchanged CMS crate.
