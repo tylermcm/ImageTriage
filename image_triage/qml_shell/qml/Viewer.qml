@@ -129,12 +129,23 @@ FocusScope {
         else if (!opening) popout.compare.openFor(row)
         refocus()
     }
-    // Export this photo alone (Batch Export with "This photo"): its saved edit goes with it, so an unsaved one is saved first (Done)
+    // Export this photo alone (Quick Export): its saved edit goes with it, so an unsaved one is saved first (Done)
     function exportThis() {
         if (curPath === "") return
         if (rawEditing) rawEditor.commit()            // saved in the background; the export waits for it
-        UiState.batchOnly = curPath
-        UiState.batchMode = "export"
+        UiState.quickOnly = curPath
+        UiState.quickExportOpen = true
+    }
+    // Edit open on `path` once the viewer shows it (the quick viewer's Edit): true when that is done or there is nothing to edit, false to try again.
+    // The same as the Edit RAW (Edit) button: a RAW, or a JPEG, TIFF, PNG or WebP.
+    function startEdit(path) {
+        if (!shown || opening || curPath === "" || curPath !== path || rawEditor === null) return false
+        if (rawEditing) return true
+        var picture = ["JPG", "JPEG", "JPE", "PNG", "TIF", "TIFF", "WEBP"].indexOf(String(cur.ext || "").toUpperCase()) >= 0
+        if (cur.raw !== true && !picture) return true
+        popout.compare.close()
+        rawEditor.open(curPath)
+        return true
     }
     function keepBest() { popout.keepBest(row); refocus() }      // this photo wins its burst, the rest are rejected (one undo step)
     function openEditor() {

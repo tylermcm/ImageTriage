@@ -696,7 +696,7 @@ Rectangle {
             Action { text: "Cancel"; enabled: !!panel.model && !panel.model.saving; onClicked: panel.model.cancel() }
             // Save: a new file with the edits applied (Batch Export for this photo), anywhere; the edit itself is kept as always
             Action { objectName: "rawSaveCopy"; text: "Save…"; enabled: panel.editable
-                     onClicked: { var path = panel.model.photoPath; panel.model.commit(); UiState.batchOnly = path; UiState.batchMode = "export" } }
+                     onClicked: { var path = panel.model.photoPath; panel.model.commit(); UiState.quickOnly = path; UiState.quickExportOpen = true } }
             Action { text: "Done"; primary: true; enabled: panel.editable; onClicked: panel.model.done() }
         }
     }

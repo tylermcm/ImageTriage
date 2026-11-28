@@ -28,6 +28,7 @@ SHORTCUT_REGISTRY: tuple[tuple[str, str, str, str], ...] = (
     # Edit
     ("undo", "Edit", "Ctrl+Z", "Undo"),
     ("rename_selection", "Edit", "F2", "Rename Image..."),
+    ("quick_export", "Edit", "Ctrl+E", "Quick Export..."),
     ("batch_rename_selection", "Edit", "Ctrl+Shift+R", "Batch Rename..."),
     ("batch_resize_selection", "Edit", "Ctrl+Shift+E", "Batch Export..."),
     ("batch_convert_selection", "Edit", "Ctrl+Shift+C", "Batch Export (convert format)..."),

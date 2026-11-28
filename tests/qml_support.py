@@ -6,6 +6,7 @@ from image_triage.qml_shell.file_actions import FileActions
 from image_triage.qml_shell.safe_trash_model import SafeTrashModel
 from image_triage.qml_shell.menu_model import MenuModel, ToastModel
 from image_triage.qml_shell.pocketdrop_model import PocketDropModel
+from image_triage.qml_shell.quick_export_model import QuickExportModel
 from image_triage.qml_shell.people_model import PeopleModel
 from image_triage.qml_shell.ai_scores import AiScores
 from image_triage.qml_shell.capture import CaptureService
@@ -51,9 +52,10 @@ def collection_models(photos, qapp):
     cull = CullModel(photos, memory=True, parent=qapp)
     toasts = ToastModel(parent=qapp)
     files = FileActions(photos, toasts, memory=True, parent=qapp)
+    pocket_drop = PocketDropModel(photos, memory=True, parent=qapp, collections=collections)
     popout = ViewerHost(photos, NoThumbs(parent=qapp), collections, files=files, cull=cull, toasts=toasts, memory=True, parent=qapp)
     return (("gridModel", GridModel(photos, parent=qapp)), ("reference", ReferenceModel(photos, toasts, memory=True, parent=qapp)), ("collections", collections), ("people", PeopleModel(photos, memory=True, parent=qapp)), ("bestOf", BestOfModel(photos, parent=qapp)), ("cull", cull), ("toasts", toasts), ("fileActions", files), ("safeTrash", SafeTrashModel(photos, toasts, files.jobs, memory=True, parent=qapp)), ("ctxMenu", MenuModel(photos, collections, cull, toasts, memory=True, parent=qapp, files=files)),
-            ("pocketDrop", PocketDropModel(photos, memory=True, parent=qapp, collections=collections)), ("popout", popout), ("editor", EditorHost(memory=True, parent=qapp)),
+            ("pocketDrop", pocket_drop), ("quickExport", QuickExportModel(photos, memory=True, parent=qapp, toasts=toasts, pocket_drop=pocket_drop)), ("popout", popout), ("editor", EditorHost(memory=True, parent=qapp)),
             ("libraryNav", LibraryNavModel(photos, memory=True, parent=qapp)), ("histograms", HistogramService(loader=lambda path: None, parent=qapp)),
             ("inspection", InspectionService(loader=lambda path: None, parent=qapp)), ("captureData", CaptureService(loader=lambda path: None, parent=qapp)), ("aiScores", AiScores(photos, memory=True, parent=qapp)),
             ("uiMemory", UiMemory(memory=True, parent=qapp)), ("nativeScrollCursor", ScrollCursor(parent=qapp)))

@@ -60,7 +60,7 @@ Rectangle {
         else if (k === "shortcuts") reference.toggleKeys()
         else if (k === "preview") popout.open(row)
         else if (k === "rename") UiState.batchMode = "rename"
-        else if (k === "convert") UiState.batchMode = "resize"
+        else if (k === "convert") { UiState.quickOnly = ""; UiState.quickExportOpen = true }
         else if (k === "share") { pocketDrop.refreshLibrary(row); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }
         else if (k === "palette") UiState.openPalette("main")
         else if (UiState.pins[k] !== undefined && ["review", "view", "filters", "sort", "columns"].indexOf(k) >= 0) UiState.menu = k      // its own menu, opened beside the "..." button
@@ -284,7 +284,7 @@ Rectangle {
         }
         RailButton { visible: rail.vis("preview"); icon: "eye"; tip: "Open preview"; onClicked: popout.open(rail.row) }
         RailButton { visible: rail.vis("rename"); icon: "tag"; tip: "Rename selection"; onClicked: UiState.batchMode = "rename" }
-        RailButton { visible: rail.vis("convert"); icon: "convert"; tip: "Export"; onClicked: UiState.batchMode = "resize" }
+        RailButton { visible: rail.vis("convert"); icon: "convert"; tip: "Export"; onClicked: { UiState.quickOnly = ""; UiState.quickExportOpen = true } }
         RailButton {   // opens PocketDrop with the current photo added
             visible: rail.vis("share"); icon: "pocketdrop"; tip: "Share to phone"
             onClicked: { pocketDrop.refreshLibrary(rail.row); pocketDrop.addLibrary("sel"); UiState.tab = "drop" }

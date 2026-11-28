@@ -21,7 +21,7 @@ KEYPAD_MODIFIER = 0x20000000        # Qt.KeypadModifier: set for a key on the nu
 # defaults, or what Settings > Shortcuts saved) are bound live; the grid's and the viewer's own keys ask `keyIs` instead.
 BOUND_ACTIONS = (
     ("open_folder", "file.open_folder"), ("refresh_folder", "file.refresh_folder"), ("workflow_settings", "file.workflow_settings"),
-    ("undo", "edit.undo"), ("rename_selection", "edit.rename_selection"), ("batch_rename_selection", "tools.batch_rename"),
+    ("undo", "edit.undo"), ("rename_selection", "edit.rename_selection"), ("quick_export", "file.quick_export"), ("batch_rename_selection", "tools.batch_rename"),
     ("batch_resize_selection", "tools.batch_resize"), ("batch_convert_selection", "tools.batch_convert"), ("handoff_builder", "workflow.handoff_builder"),
     ("share_to_phone", "workflow.share_to_phone"), ("best_of_set_auto_assembly", "workflow.best_of"), ("delete_selection", "review.delete_selection"),
     ("move_selection", "review.move_selection"), ("clear_filters", "search.clear_filters"), ("open_ai_workflow_center", "ai.workflow_center"),
@@ -147,6 +147,10 @@ def build_schema(shortcut_registry=()) -> tuple:
     browsing = Section("browsing", "Browsing", "M3.5 7a2.5 2.5 0 012.5-2.5h12A2.5 2.5 0 0120.5 7v10a2.5 2.5 0 01-2.5 2.5H6A2.5 2.5 0 013.5 17zM9.5 4.5v15",
         "How the grid scrolls, how previews load, and how review moves between photos.", (
         Group("Navigation and preview", "How browsing feels", (
+            _t("quickViewer", "Open photos from the file manager in the quick viewer",
+               "A photo opened from File Explorer or Finder shows at once in a light viewer of its own, and Open in Library starts the full app "
+               "on it. When off, opening a photo starts the full app with the grid on it. A running Image Triage always takes the photo itself.",
+               "browse/quick_viewer", True),
             _t("smooth", "Use free smooth scrolling", "Scrolls pixel by pixel instead of snapping by rows.", "view/free_smooth_scroll", False),
             F("preload", "step", "Preview preload", "Nearby images to preload while using the popout preview. Higher values can speed up rapid navigation but use more CPU and memory.",
               key="preview/preload_batch_size", kind="int", default=PRELOAD_DEFAULT, lo=0, hi=PRELOAD_MAX, step=2, fmt="images", zero="Off"),

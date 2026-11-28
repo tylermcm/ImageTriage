@@ -376,7 +376,8 @@ class BatchModel(QObject):
         enlarge = "" if v["noEnlarge"] else " Smaller photos are enlarged."
         return {"long": "The longer side becomes this many pixels.", "short": "The shorter side becomes this many pixels.",
                 "fit": "Fits inside this box, keeping its shape.", "mp": "About this many million pixels.",
-                "pct": "This share of the photo's size."}[mode] + enlarge
+                "pct": "This share of the photo's size.",
+                "crop": "The middle of the photo, cut to exactly this size."}[mode] + enlarge
 
     @Slot()
     def apply(self) -> None:

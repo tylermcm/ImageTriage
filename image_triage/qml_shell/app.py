@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m image_triage.qml_shell", description=__doc__)
     parser.add_argument("--folder", help="photo folder to open")
     parser.add_argument("--select", default="", help="a photo of that folder to put the grid on once it has been read (a photo opened from the file manager)")
+    parser.add_argument("--edit", action="store_true", help="with --select: open that photo in the viewer with Edit open (the quick viewer's Edit)")
     parser.add_argument("--mock", metavar="DIR", help="open p01..p12.jpg from DIR with the HTML mockup's exact data (for pixel comparison)")
     parser.add_argument("--light", action="store_true", help="start in the light theme")
     parser.add_argument("--size", default="", help="window size in device-independent pixels (default: 1440x900, or 92%% of the screen if that is smaller)")
@@ -227,7 +228,7 @@ def _run(args, state: dict) -> int:
     if not (args.grab or args.mock or args.size or args.ui or args.set or args.click or args.hover):
         from .single_instance import InstanceServer, send_to_running
 
-        if send_to_running({"folder": args.folder or "", "select": args.select or ""}):
+        if send_to_running({"folder": args.folder or "", "select": args.select or "", "edit": bool(args.edit)}):
             return 0
         instance = InstanceServer(parent=app)
         if not instance.listen():
@@ -292,6 +293,9 @@ def _run(args, state: dict) -> int:
     app.aboutToQuit.connect(lambda: stop_background(runner, (), stoppable))
     menu = MenuModel(photos, collections, cull, toasts, memory=bool(args.mock), parent=app, files=files)
     pocket_drop = PocketDropModel(photos, memory=bool(args.mock), parent=app, collections=collections)
+    from .quick_export_model import QuickExportModel
+
+    quick_export = QuickExportModel(photos, memory=bool(args.mock), parent=app, toasts=toasts, pocket_drop=pocket_drop)
     reference = ReferenceModel(photos, toasts, memory=bool(args.mock), parent=app)
     if not args.mock:
         from .decision_bridge import DecisionBridge
@@ -334,6 +338,7 @@ def _run(args, state: dict) -> int:
     context.setContextProperty("advFilters", adv_filters)
     context.setContextProperty("batch", batch)
     context.setContextProperty("pocketDrop", pocket_drop)
+    context.setContextProperty("quickExport", quick_export)
     context.setContextProperty("collections", collections)
     context.setContextProperty("people", people)
     context.setContextProperty("bestOf", best_of)
@@ -466,7 +471,7 @@ def _run(args, state: dict) -> int:
     if args.mock:
         photos.loadMock(args.mock)
     elif args.folder and args.select:
-        library_nav.open_file(args.select)                 # a photo opened from the file manager: its folder, with the grid on that photo
+        library_nav.open_file(args.select, edit=args.edit)  # a photo opened from the file manager: its folder, with the grid on that photo
     elif args.folder:
         library_nav.openFolder(args.folder)                # loads it, and puts the Library page's tree on its drive
     else:
@@ -478,7 +483,7 @@ def _run(args, state: dict) -> int:
             """A later launch handed over what it was asked to open: open it here and come to the front."""
             folder, select = str(message.get("folder") or ""), str(message.get("select") or "")
             if select:
-                library_nav.open_file(select)
+                library_nav.open_file(select, edit=bool(message.get("edit")))
             elif folder:
                 library_nav.openFolder(folder)
             if window.visibility() == _Window.Visibility.Minimized:

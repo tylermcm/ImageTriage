@@ -117,6 +117,8 @@ class FreezeAssetLayout:
             (str(ROOT / "image_triage" / "assets" / "skies"), "lib/image_triage/assets/skies"),
             # The QML shell loads its .qml files from beside its modules (qml_shell.app.QML_DIR).
             (str(ROOT / "image_triage" / "qml_shell" / "qml"), "lib/image_triage/qml_shell/qml"),
+            # The quick viewer (a photo opened from the file manager) loads its one .qml file from beside its modules (quick_view.QML_FILE).
+            (str(ROOT / "image_triage" / "quick_view" / "QuickView.qml"), "lib/image_triage/quick_view/QuickView.qml"),
             *_pocketdrop_include_files(),
             *_pip_include_files(),
             (str(CLI_CULLER_PACKAGE_ROOT), "aiculler"),
@@ -148,6 +150,10 @@ APP_FREEZE_INCLUDES = (
     # The QML shell is the application. Its modules are imported inside main(); its .qml files ship as data (`prepare_ai_build_assets`).
     "image_triage.qml_shell",
     "image_triage.qml_shell.app",
+    # The quick viewer main.py starts for a photo opened from the file manager (imported inside main()).
+    "image_triage.quick_view",
+    "image_triage.quick_view.decode",
+    "image_triage.quick_view.viewer",
     "PySide6.QtQml",
     "PySide6.QtQuick",
     # The vendored editor engine (formerly the separately-packaged cli_editor/photo_terminal). editor_render.py imports it lazily

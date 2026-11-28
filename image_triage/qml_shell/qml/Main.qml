@@ -350,6 +350,7 @@ Window {
     CollectionDialog { id: collectionDialog; sourceItem: appContent }
     CollectionPicker { id: collectionPicker; sourceItem: appContent }
     BestOfDialog { id: bestOfDialog; sourceItem: appContent }
+    QuickExportDialog { id: quickExportDialog; sourceItem: appContent }
     TagPeopleWindow { id: tagPeopleWindow; sourceItem: appContent }
     CullWindow { id: cullWindow; sourceItem: appContent }
     AiCenterWindow { id: aiCenterWindow; sourceItem: appContent }
@@ -380,7 +381,7 @@ Window {
             else if (what === "open") popout.open(arg)
             else if (what === "edit") win.openInEditor(Number(arg))
             else if (what === "batch" && arg === "rename") win.renameSelection(win.actionRows(grid.row))
-            else if (what === "exportOne") { UiState.batchOnly = arg; UiState.batchMode = "export" }
+            else if (what === "quickExport") win.openQuickExport(String(arg))
             else if (what === "batch") UiState.batchMode = arg
             else if (what === "newCollection") { UiState.collDlgId = ""; UiState.collDlg = "new" }
             else if (what === "review") cull.reviewFrame(arg)
@@ -456,7 +457,26 @@ Window {
     function savePositionNow() { if (photos.scopeKind !== "") return; var d = photos.get(grid.row); if (d && d.path) libraryNav.savePosition(d.path) }
     Timer { id: positionTimer; interval: 700; onTriggered: win.savePositionNow() }
     Connections { target: grid.view; function onCurrentIndexChanged() { positionTimer.restart() } }
-    Connections { target: libraryNav; function onPositionRestored(row) { grid.row = row; grid.showRow(row, GridView.Center) } }
+    Connections {
+        target: libraryNav
+        function onPositionRestored(row) { grid.row = row; grid.showRow(row, GridView.Center) }
+        function onEditRequested(row) { win.editPhoto(row) }
+    }
+    // The quick viewer's Edit: the photo in the viewer, then Edit opened on it as soon as the viewer shows it
+    property string pendingEdit: ""
+    function editPhoto(row) {
+        if (row < 0 || row >= photos.shown) return
+        if (!viewer.shown || popout.row !== row) popout.open(row)
+        pendingEdit = photos.get(row).path
+        editTry.tries = 0
+        editTry.restart()
+    }
+    Timer {
+        id: editTry
+        property int tries: 0
+        interval: 100; repeat: true
+        onTriggered: if (viewer.startEdit(win.pendingEdit) || ++tries > 100) { stop(); win.pendingEdit = "" }
+    }
     // Closing the window must not silently drop edits: RAW adjustments never saved with Done are kept only as drafts, and the hosted editor is shut
     // down without saving what is open in it. Ask once; "Quit anyway" closes for real.
     property bool quitConfirmed: false
@@ -489,6 +509,8 @@ Window {
         if (win.viewerInCharge) viewer.go(to); else { grid.row = to; grid.showRow(to, GridView.Contain) }
     }
     // Rename: one photo is renamed on its card in the grid; several open the batch rename window (and so does the viewer, which covers the grid).
+    // Quick Export for the photo at ``only`` ("" for the picked photos, else every photo shown)
+    function openQuickExport(only) { UiState.quickOnly = only; UiState.quickExportOpen = true }
     function renameSelection(rows) { if (win.viewerInCharge || rows.length !== 1 || !grid.beginRename(rows[0])) UiState.batchMode = "rename" }
     function runCommand(id) {
         // Photos of several folders are shown together: what works on one folder has no folder to work on.
@@ -502,6 +524,7 @@ Window {
         else if (id === "library.add_selected_to_collection") { if (win.viewerInCharge) viewer.collOpen = true; else grid.addToCollection() }
         else if (id === "ai.people") UiState.peopleOpen = true
         else if (id === "edit.rename_selection") win.renameSelection(win.commandRows())
+        else if (id === "file.quick_export") { if (win.viewerInCharge) viewer.exportThis(); else win.openQuickExport("") }
         else if (id === "tools.batch_rename") UiState.batchMode = "rename"
         else if (id === "tools.batch_resize") UiState.batchMode = "resize"
         else if (id === "tools.batch_convert") UiState.batchMode = "convert"

@@ -42,6 +42,7 @@ Item {
                 mr("Show in " + (Qt.platform.os === "windows" ? "File Explorer" : Qt.platform.os === "osx" ? "Finder" : "File Manager"), "file.reveal_folder", "", "library"),
                 ms(), mr("Browse Library…", "file.browse_library", "", "collections"),
                 mr("Safe Trash…", "file.safe_trash", "", "trash"),
+                mr("Quick Export…", "file.quick_export", "Ctrl E", "convert"),
                 mr("Batch Rename…", "tools.batch_rename", "Ctrl Shift R", "tag"), mr("Batch Export…", "tools.batch_resize", "Ctrl Shift E", "convert"),
                 ms(), mr("Deliver / Handoff Builder…", "workflow.handoff_builder", "Ctrl Alt H", "pocketdrop"), mr("Share to Phone", "workflow.share_to_phone", "", "pocketdrop"),
                 ms(), mr("Settings…", "file.workflow_settings", "Ctrl ,", "settings"),
