@@ -65,7 +65,7 @@ def full_app_command(photo: str, edit: bool = False) -> list[str]:
     with ``edit``, the photo opens in the library's viewer with Edit open."""
     folder = os.path.dirname(photo)
     head = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, "-m", "image_triage"]
-    return [*head, "--folder", folder, "--select", photo, *(["--edit"] if edit else [])]
+    return [*head, "--folder", folder, "--select", photo, *(["--edit"] if edit else []), "--from-viewer"]
 
 
 def application():
@@ -116,6 +116,7 @@ def run(photo: str) -> int | None:
     if not engine.rootObjects():
         return None                                       # the window could not be made: the library shows the photo instead
     window = engine.rootObjects()[0]
+    place_window(window)
     viewer.attach(window)
     # macOS: a photo opened in Finder while this window is up comes to it as an event, not as another launch
     from ..file_open_events import install
@@ -125,3 +126,22 @@ def run(photo: str) -> int | None:
     code = app.exec()
     viewer.shutdown()
     return code
+
+
+def window_rect(area: tuple[int, int, int, int], width_share: float = 0.78, height_share: float = 0.82) -> tuple[int, int, int, int]:
+    """The window's rectangle (x, y, width, height) on one monitor's usable ``area``: centred, this share of it."""
+    x, y, width, height = area
+    w, h = round(width * width_share), round(height * height_share)
+    return x + (width - w) // 2, y + (height - h) // 2, w, h
+
+
+def place_window(window) -> None:
+    """Size the window to the monitor the pointer is on (the one the person double-clicked on), centre it there and show it."""
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QCursor, QGuiApplication
+
+    screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+    if screen is not None:
+        window.setScreen(screen)
+        window.setGeometry(QRect(*window_rect(screen.availableGeometry().getRect())))
+    window.show()

@@ -163,10 +163,11 @@ def test_a_photo_launch_goes_to_the_viewer_and_anything_else_to_the_library(monk
 def test_library_starts_the_same_program_on_the_folder_and_photo(monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", "/opt/image-triage/ImageTriage")
-    assert quick_view.full_app_command("/shoot/a.jpg") == ["/opt/image-triage/ImageTriage", "--folder", "/shoot", "--select", "/shoot/a.jpg"]
+    assert quick_view.full_app_command("/shoot/a.jpg") == ["/opt/image-triage/ImageTriage", "--folder", "/shoot", "--select", "/shoot/a.jpg",
+                                                          "--from-viewer"]
     monkeypatch.setattr(sys, "frozen", False, raising=False)
     assert quick_view.full_app_command("/shoot/a.jpg")[1:3] == ["-m", "image_triage"]
-    assert quick_view.full_app_command("/shoot/a.NEF", edit=True)[-1] == "--edit"
+    assert quick_view.full_app_command("/shoot/a.NEF", edit=True)[-2:] == ["--edit", "--from-viewer"]
 
 
 def test_edit_is_offered_for_what_the_library_can_edit():
@@ -199,6 +200,7 @@ def window(qapp, tmp_path, monkeypatch):
     engine.load(quick_view.QML_FILE.as_uri())
     assert engine.rootObjects(), warnings
     win = engine.rootObjects()[0]
+    quick_view.place_window(win)
     viewer.attach(win)
     yield viewer, win, shoot, launched, warnings
     win.close()
@@ -238,18 +240,18 @@ def test_zooming_past_the_screen_size_reads_the_full_photo(qapp, window):
     assert wait_for(qapp, lambda: photo.property("sourceSize").width() == 3000)
 
 
-def test_library_starts_the_full_app_and_waits_for_it(qapp, window):
+def test_library_starts_the_full_app_and_waits_for_it(qapp, window, monkeypatch):
     viewer, win, shoot, launched, warnings = window
     assert wait_for(qapp, lambda: not viewer.loading)
     viewer.openLibrary()
-    assert viewer.library == "starting" and launched and launched[0][-2:] == ["--select", str(shoot / "IMG_2.jpg")]
-    from image_triage.qml_shell.single_instance import InstanceServer
+    assert viewer.library == "starting" and launched and launched[0][-3:] == ["--select", str(shoot / "IMG_2.jpg"), "--from-viewer"]
+    from image_triage.qml_shell import single_instance
 
-    server = InstanceServer()                      # the library coming up: it listens
-    assert server.listen()
+    answers = [False, False, True]                 # the library is starting, building, then its window is up with the photos
+    monkeypatch.setattr(single_instance, "library_ready", lambda **_: answers.pop(0) if answers else True)
     closed = []
     viewer._close = lambda: closed.append(True)
-    assert wait_for(qapp, lambda: closed, seconds=5)
+    assert wait_for(qapp, lambda: closed, seconds=5) and not answers, "the viewer stays until the library says it is ready"
 
 
 def test_a_running_library_takes_the_photo_at_once(qapp, window, monkeypatch):
@@ -291,7 +293,7 @@ def test_edit_starts_the_library_with_the_editor_open(qapp, window):
     assert viewer.editable
     viewer.openEditor()
     assert viewer.library == "starting" and viewer.goingTo == "edit"
-    assert launched[0][-3:] == ["--select", str(shoot / "IMG_2.jpg"), "--edit"]
+    assert launched[0][-4:] == ["--select", str(shoot / "IMG_2.jpg"), "--edit", "--from-viewer"]
     edit = win.findChild(QObject, "quickViewEdit")
     assert wait_for(qapp, lambda: edit.property("label") == "Opening the editor\u2026")
 
@@ -305,3 +307,39 @@ def test_a_running_library_is_asked_to_edit(qapp, window, monkeypatch):
     viewer._close = lambda: None
     viewer.openEditor()
     assert sent[0] == {"folder": str(shoot), "select": str(shoot / "IMG_2.jpg"), "edit": True} and launched == []
+
+
+def test_the_window_sits_on_one_monitor():
+    # a monitor 1920 wide to the right of another: the window is 78% of that one, centred on it, never spread over both
+    assert quick_view.window_rect((1920, 0, 1920, 1040)) == (1920 + 211, 93, 1498, 853)
+
+
+def test_the_library_answers_whether_it_is_ready(qapp, tmp_path, monkeypatch):
+    import subprocess
+    import textwrap
+
+    from image_triage.qml_shell import single_instance
+
+    name = "it-ready-test-" + tmp_path.name
+    script = textwrap.dedent(f"""
+        import sys
+        from PySide6.QtCore import QCoreApplication, QTimer
+        from image_triage.qml_shell.single_instance import InstanceServer
+        app = QCoreApplication([])
+        server = InstanceServer({name!r})
+        assert server.listen()
+        print("up", flush=True)
+        QTimer.singleShot(700, lambda: setattr(server, "ready", True))
+        QTimer.singleShot(4000, app.quit)
+        app.exec()
+    """)
+    process = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
+    try:
+        assert process.stdout.readline().strip() == "up"
+        assert single_instance.library_ready(name) is False, "listening, but its window is not up yet"
+        end = time.monotonic() + 3
+        while not single_instance.library_ready(name) and time.monotonic() < end:
+            time.sleep(0.1)
+        assert single_instance.library_ready(name) is True
+    finally:
+        process.kill()

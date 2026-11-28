@@ -9,12 +9,11 @@ import QtQuick.Window
 Window {
     id: win
     objectName: "quickViewWindow"
-    width: Math.round(Screen.desktopAvailableWidth * 0.78)
-    height: Math.round(Screen.desktopAvailableHeight * 0.82)
-    x: Math.round((Screen.desktopAvailableWidth - width) / 2)
-    y: Math.round((Screen.desktopAvailableHeight - height) / 2)
+    // placed and shown by quick_view.place_window: on the monitor under the pointer (QML's Screen.desktopAvailable* span every
+    // monitor, which made the window as wide as all of them)
+    width: 1200; height: 800
     minimumWidth: 420; minimumHeight: 300
-    visible: true
+    visible: false
     color: cBase
     title: viewer.name + (viewer.count > 1 ? "  (" + (viewer.index + 1) + " of " + viewer.count + ")" : "") + " – Image Triage"
 
