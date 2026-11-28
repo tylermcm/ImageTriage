@@ -81,6 +81,13 @@ class ClipService(QObject):
         self._revision += 1
         self.revisionChanged.emit()
 
+    @Slot(str, result=str)
+    def url(self, path: str) -> str:
+        """The clip as a file URL for the player (a Windows path, with its drive letter and backslashes, is no URL as it is)."""
+        from PySide6.QtCore import QUrl
+
+        return QUrl.fromLocalFile(path).toString() if path else ""
+
     @Slot()
     def flush(self) -> None:
         info_cache().save()

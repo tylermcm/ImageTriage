@@ -71,6 +71,9 @@ FocusScope {
     readonly property bool loading: slow || popout.loading
     readonly property bool barOff: popout.barHidden === true         // the action bar is put away (Tab, or the arrow at its end)
     readonly property real bh: barOff ? 0 : 64                       // what the bar and its gap take above the filmstrip
+    // a video clip (photos.py `video`): it plays on the stage (VideoStage.qml) and a transport row sits just above the filmstrip
+    readonly property bool isClip: cur.video === true
+    readonly property real tvh: isClip ? 40 : 0
     readonly property real dpr: Screen.devicePixelRatio
     readonly property int filmCenterRow: film.indexAt(film.contentX + film.width / 2, film.height / 2)     // which thumbnail is in the middle of the strip
 
@@ -146,6 +149,12 @@ FocusScope {
         popout.compare.close()
         rawEditor.open(curPath)
         return true
+    }
+    // 00:12.417: a clip's time, to the millisecond (video.format_timecode)
+    function timecode(ms) {
+        ms = Math.max(0, Math.round(ms || 0))
+        var m = Math.floor(ms / 60000), sec = Math.floor(ms % 60000 / 1000), milli = ms % 1000
+        return (m < 10 ? "0" : "") + m + ":" + (sec < 10 ? "0" : "") + sec + "." + ("00" + milli).slice(-3)
     }
     function keepBest() { popout.keepBest(row); refocus() }      // this photo wins its burst, the rest are rejected (one undo step)
     function openEditor() {
@@ -256,13 +265,19 @@ FocusScope {
             else close()
         }
         else if (k === Qt.Key_Tab) popout.setBarHidden(!barOff)
+        // a clip: P plays and pauses (K is Keep, Space closes the viewer); , . or Shift+arrows step a frame; J L a second
+        else if (isClip && k === Qt.Key_P) clipStage.toggle()
+        else if (isClip && (k === Qt.Key_Comma || (k === Qt.Key_Left && (e.modifiers & Qt.ShiftModifier)))) clipStage.step(-1)
+        else if (isClip && (k === Qt.Key_Period || (k === Qt.Key_Right && (e.modifiers & Qt.ShiftModifier)))) clipStage.step(1)
+        else if (isClip && k === Qt.Key_J) clipStage.skip(-1)
+        else if (isClip && k === Qt.Key_L) clipStage.skip(1)
         else if (k === Qt.Key_Left || k === Qt.Key_A || k === Qt.Key_Up || k === Qt.Key_PageUp) step(-1)
         else if (k === Qt.Key_Right || k === Qt.Key_D || k === Qt.Key_Down || k === Qt.Key_PageDown) step(1)
         else if (k === Qt.Key_Home) go(0)
         else if (k === Qt.Key_End) go(photos.rowCount() - 1)
         else if (k === Qt.Key_U) { if (curDec !== "") decide(curDec) }
         else if (k >= Qt.Key_1 && k <= Qt.Key_5) popout.rate(row, k - Qt.Key_0)
-        else if (k === Qt.Key_Z) toggleZoom()
+        else if (k === Qt.Key_Z) { if (!isClip) toggleZoom() }
         else if (k === Qt.Key_0) { zoomed = false }
         else if (k === Qt.Key_F) { if (e.modifiers & Qt.ShiftModifier) popout.cycleAssistColor(); else popout.toggleAssist() }
         else if (k === Qt.Key_H) zen = !zen
@@ -324,13 +339,23 @@ FocusScope {
         anchors.rightMargin: v.photoPadding + (rawPanel.visible ? rawPanel.width : 0)
         anchors.topMargin: (v.zen ? 0 : 52) + v.photoPadding
         // comparing in a narrow window, the zoom pill sits a row higher (bar.pillLifted): the panes' name rows stay clear of it
-        anchors.bottomMargin: v.zen ? v.photoPadding : v.fh + (v.barOff ? 30 : v.bh) + v.photoPadding + (v.comparing && bar.pillLifted ? 44 : 0)
+        anchors.bottomMargin: v.zen ? v.photoPadding : v.fh + (v.barOff ? 30 : v.bh) + v.tvh + v.photoPadding + (v.comparing && bar.pillLifted ? 44 : 0)
         Behavior on anchors.leftMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         Behavior on anchors.rightMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         Behavior on anchors.topMargin { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         Behavior on anchors.bottomMargin { enabled: !grip.dragging; NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
         clip: true
 
+        // a clip plays here, over the picture layer (which keeps the poster as a placeholder until the first frame is in)
+        VideoStage {
+            id: clipStage
+            anchors.fill: parent
+            z: 2
+            visible: v.isClip && !v.comparing
+            path: v.shown && v.isClip ? v.curPath : ""                       // a closed viewer, or a photo, lets the clip go (no sound left playing)
+            fps: { if (!v.isClip) return 0; void clips.revision; return clips.info(v.curPath).fps || 0 }
+            TapHandler { onTapped: clipStage.toggle() }
+        }
         Flickable {
             id: pan
             objectName: "viewerZoomPan"
@@ -366,7 +391,7 @@ FocusScope {
                     path: v.curPath; bucket: 800
                     fillMode: Image.PreserveAspectFit
                     fadeIn: false
-                    opacity: photoImg.status === Image.Ready && !v.loading ? 0 : 1
+                    opacity: (v.isClip ? clipStage.ready : photoImg.status === Image.Ready && !v.loading) ? 0 : 1
                     visible: opacity > 0.01
                     layer.enabled: v.loading
                     layer.effect: MultiEffect { blurEnabled: true; blur: 0.42; blurMax: 14; saturation: -0.2 }
@@ -389,7 +414,7 @@ FocusScope {
                     onStatusChanged: if (status === Image.Ready) readyPath = v.curPath
                     fillMode: Image.PreserveAspectFit
                     smooth: true; mipmap: pan.effectiveScale < 1
-                    opacity: !v.loading && (status === Image.Ready || (v.rawEditing && readyPath === v.curPath)) ? 1 : 0
+                    opacity: !v.isClip && !v.loading && (status === Image.Ready || (v.rawEditing && readyPath === v.curPath)) ? 1 : 0
                 }
                 Item {
                     // A levelling grid over the finished picture while the straighten slider is dragged.
@@ -789,7 +814,7 @@ FocusScope {
     Item {
         id: bottom
         width: parent.width - (rawPanel.visible ? rawPanel.width : 0)
-        height: v.fh + 12 + 52; anchors.bottom: parent.bottom; z: 4
+        height: v.fh + 12 + 52 + v.tvh; anchors.bottom: parent.bottom; z: 4
         opacity: v.zen ? 0 : 1; enabled: !v.zen
         Behavior on opacity { NumberAnimation { duration: 300 } }
         transform: Translate { y: v.controlsSlide }
@@ -915,6 +940,7 @@ FocusScope {
                 }
                 Item {   // Edit in PhotoCraft: the separate full editor
                     id: edit
+                    visible: !v.isClip                   // the editor edits pictures; a clip has its own tools
                     readonly property bool can: popout.canEdit && editor.available && UiState.vwScene !== "noedit"
                     width: eRow.implicitWidth + 26; height: 38; y: 1
                     scale: ep.pressed && can ? 0.98 : 1
@@ -965,6 +991,72 @@ FocusScope {
             Accessible.role: Accessible.Button; Accessible.name: "Show the action bar"
         }
 
+        // a clip's transport, just above the filmstrip: play, where it is, the whole clip to scrub, its length and the sound
+        Item {
+            id: transport
+            objectName: "viewerClipTransport"
+            visible: v.isClip
+            x: 24; y: 52 + 10; width: parent.width - 48; height: v.tvh - 4
+            Rectangle {
+                id: playBtn
+                objectName: "viewerClipPlay"
+                width: 30; height: 30; radius: 15; anchors.verticalCenter: parent.verticalCenter
+                color: clipStage.playing ? theme.accent : (ph.hovered ? v.cHover : v.cBtn)
+                Shape {   // a play triangle, or two pause bars
+                    anchors.centerIn: parent; width: 12; height: 12; preferredRendererType: Shape.CurveRenderer
+                    ShapePath { strokeWidth: 0; fillColor: clipStage.playing ? theme.onAccent : v.cFg
+                        PathSvg { path: clipStage.playing ? "M1 0h3.5v12H1zM7.5 0H11v12H7.5z" : "M2 0l10 6-10 6z" } }
+                }
+                HoverHandler { id: ph; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: clipStage.toggle() }
+                HoverTip { tip: clipStage.playing ? "Pause (P)" : "Play (P)"; hovered: ph.hovered }
+                Accessible.role: Accessible.Button; Accessible.name: clipStage.playing ? "Pause" : "Play"
+            }
+            Text {
+                id: timeText
+                objectName: "viewerClipTime"
+                x: playBtn.width + 12; anchors.verticalCenter: parent.verticalCenter; width: 84
+                text: v.timecode(clipStage.position); color: v.cFg; font.pixelSize: 13; font.family: "Consolas"
+            }
+            Item {
+                id: scrub
+                objectName: "viewerClipScrub"
+                x: timeText.x + timeText.width + 8; width: parent.width - x - endText.width - muteBtn.width - 24; height: parent.height
+                readonly property real frac: clipStage.duration > 0 ? clipStage.position / clipStage.duration : 0
+                Rectangle { id: track; anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 4; radius: 2; color: v.cLine }
+                Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width * scrub.frac; height: 4; radius: 2; color: theme.accent }
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter; x: parent.width * scrub.frac - width / 2
+                    width: sh.hovered || scrubDrag.pressed ? 14 : 12; height: width; radius: width / 2; color: v.cFg
+                }
+                HoverHandler { id: sh; cursorShape: Qt.PointingHandCursor }
+                MouseArea {
+                    id: scrubDrag
+                    anchors.fill: parent
+                    function seekTo(x) { clipStage.seek(Math.max(0, Math.min(1, x / width)) * clipStage.duration) }
+                    onPressed: (m) => { clipStage.beginScrub(); seekTo(m.x) }
+                    onPositionChanged: (m) => { if (pressed) seekTo(m.x) }
+                    onReleased: clipStage.endScrub()
+                }
+                Accessible.role: Accessible.Slider; Accessible.name: "Position in the clip"
+            }
+            Text {
+                id: endText
+                anchors.right: muteBtn.left; anchors.rightMargin: 12; anchors.verticalCenter: parent.verticalCenter
+                text: v.timecode(clipStage.duration); color: v.cFg3; font.pixelSize: 13; font.family: "Consolas"
+            }
+            Rectangle {
+                id: muteBtn
+                anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                width: 30; height: 30; radius: 8; color: mh2.hovered ? v.cHover : "transparent"
+                Icon { anchors.centerIn: parent; size: 16; color: clipStage.muted ? v.cFg3 : v.cFg2
+                       path: clipStage.muted ? "M4 9h4l5-4v14l-5-4H4zM17 9l5 6M22 9l-5 6" : "M4 9h4l5-4v14l-5-4H4zM16.5 8.5a5 5 0 010 7M19 6a8.5 8.5 0 010 12" }
+                HoverHandler { id: mh2; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: clipStage.muted = !clipStage.muted }
+                Accessible.role: Accessible.Button; Accessible.name: clipStage.muted ? "Unmute" : "Mute"
+            }
+        }
+
         // the filmstrip: full width, the photo you are on in the middle, the two beside it lifted a little
         Item {
             id: strip
@@ -989,7 +1081,7 @@ FocusScope {
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                 onWheel: (event) => strip.scrollWheel(event)
             }
-            y: 52 + 12; width: parent.width; height: v.fh
+            y: 52 + 12 + v.tvh; width: parent.width; height: v.fh
             Rectangle { anchors.fill: parent; color: v.cCard }
             Rectangle { width: parent.width; height: 1; color: v.cLineSoft }
             readonly property int th: Math.round((v.fh - 16) / 1.25)
@@ -1094,6 +1186,7 @@ FocusScope {
         readonly property real fullWidth: zoomButtons.implicitWidth + 56 + (rawPanel.visible ? beforeAfter.implicitWidth : 0) + (overlayButton.visible ? overlayButton.implicitWidth : 0)
         readonly property real compactWidth: zoomButtons.implicitWidth + (rawPanel.visible ? 34 : 0) + (overlayButton.visible ? overlayButton.implicitWidth : 0)
         opacity: v.zen ? 0 : 1; Behavior on opacity { NumberAnimation { duration: 300 } }
+        visible: !v.isClip                           // a clip is not zoomed: its transport row has the space
         Rectangle { anchors.fill: parent; radius: 9; color: v.cGlass; border.color: v.cLineSoft }
         Row { id: zr; height: parent.height
             Row { id: zoomButtons; height: parent.height
@@ -1159,7 +1252,7 @@ FocusScope {
         anchors.rightMargin: 20 + (rawPanel.visible ? rawPanel.width : 0)
         anchors.verticalCenter: zoomPill.verticalCenter
         z: 5; spacing: 10
-        visible: bar.hintsFit                                                    // a narrow window: the action bar has the room
+        visible: bar.hintsFit && !v.isClip                                       // a narrow window: the action bar has the room; a clip: its transport
         opacity: v.zen || v.comparing ? 0 : 1; Behavior on opacity { NumberAnimation { duration: 300 } }      // comparing, the panes' bar has the keys
         Row { spacing: 4; Kbd { text: "←" } Kbd { text: "→" } Text { text: "step"; color: v.cFg3; font.pointSize: UiState.pt(11.5); anchors.verticalCenter: parent.verticalCenter; leftPadding: 2 } }
         Row {

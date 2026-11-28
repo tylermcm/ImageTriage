@@ -68,7 +68,7 @@ def test_a_depth_map_made_in_the_background_shows_no_overlay(shell, qapp):
         working(tool, False)
 
 
-def test_the_viewer_export_button_opens_batch_export_for_this_photo_alone(shell, qapp):
+def test_the_viewer_export_button_opens_quick_export_for_this_photo_alone(shell, qapp):
     from PySide6.QtCore import QObject, QPointF
     engine, window, photos, popout, warnings = shell
     popout.open(1)
@@ -81,8 +81,8 @@ def test_the_viewer_export_button_opens_batch_export_for_this_photo_alone(shell,
     assert button is not None and button.isVisible()
     QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint())
     pump(qapp, .6)
-    card = window.findChild(QObject, "batchWindow")
-    batch = engine.rootContext().contextProperty("batch")
-    assert card.property("shown") and card.property("mode") == "export"
-    assert batch.only == photos.get(1)["path"] and len(card.property("rows")) == 1
+    card = window.findChild(QObject, "quickExportDialog")
+    quick = engine.rootContext().contextProperty("quickExport")
+    assert card.property("shown"), "Quick Export, as the grid's Export… and Ctrl+E"
+    assert quick.only == photos.get(1)["path"] and quick.count == 1
     assert not [w for w in warnings if "ReferenceError" in w or "TypeError" in w], warnings
