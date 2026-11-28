@@ -290,24 +290,20 @@ class QuickViewer(QObject):
         QTimer.singleShot(250, self._wait_for_library)
 
     def _wait_for_library(self) -> None:
-        """Closes once the library listens (it is up, its own launch window showing); gives up, and stays, if it never does."""
-        from PySide6.QtNetwork import QLocalSocket
+        """Closes once the library says its window is up with the photos in it (it was started behind this window, without its
+        splash, and comes forward then); gives up, and stays, if it never does."""
+        from ..qml_shell.single_instance import _allow_foreground, library_ready
 
-        from ..qml_shell.single_instance import server_name
-
-        socket = QLocalSocket()
-        socket.connectToServer(server_name())
-        up = socket.waitForConnected(100)
-        socket.abort()
-        if up:
-            QTimer.singleShot(700, self._close)            # its launch window is up by then: no moment with no window
+        if library_ready(timeout_ms=400):
+            _allow_foreground()                        # Windows: let the library keep the front once this window is gone
+            self._close()
             return
         ended = self._process is not None and self._process.poll() is not None
         if ended or time.monotonic() - self._waited > FULL_APP_WAIT_S:
             self._library = "failed"
             self.changed.emit()
             return
-        QTimer.singleShot(250, self._wait_for_library)
+        QTimer.singleShot(200, self._wait_for_library)
 
     def _close(self) -> None:
         if self._window is not None:

@@ -16,6 +16,8 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 _ACK = b"ok\n"
+_READY = b"ready\n"
+_WAIT = b"wait\n"
 _LIMIT = 64 * 1024                       # a message is a folder and a file path: anything longer is not one of ours
 
 
@@ -61,13 +63,36 @@ def send_to_running(message: dict, name: str | None = None, timeout_ms: int = 20
         socket.abort()
 
 
+def library_ready(name: str | None = None, timeout_ms: int = 500) -> bool:
+    """Whether the running app's window is up and showing its photos (``{"query": "ready"}``): the quick viewer, which started it,
+    stays until then, so the person never looks at an empty or half-built window."""
+    socket = QLocalSocket()
+    try:
+        socket.connectToServer(name or server_name())
+        if not socket.waitForConnected(min(200, timeout_ms)):
+            return False
+        socket.write(b'{"query": "ready"}\n')
+        if not socket.waitForBytesWritten(timeout_ms):
+            return False
+        answer = b""
+        while b"\n" not in answer:
+            if not socket.waitForReadyRead(timeout_ms):
+                return False
+            answer += bytes(socket.readAll().data())
+        return answer.startswith(_READY)
+    finally:
+        socket.abort()
+
+
 class InstanceServer(QObject):
-    """The running app's end: `received` carries each later launch's message."""
+    """The running app's end: `received` carries each later launch's message. A ``{"query": "ready"}`` is answered, not passed on:
+    ``ready`` once the window has been revealed (``ready = True``), ``wait`` until then."""
 
     received = Signal(dict)
 
     def __init__(self, name: str | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
+        self.ready = False
         self._name = name or server_name()
         self._server = QLocalServer(self)
         self._server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
@@ -112,6 +137,10 @@ class InstanceServer(QObject):
         link["data"] = b""
         if not isinstance(message, dict):
             socket.abort()
+            return
+        if message.get("query") == "ready":
+            socket.write(_READY if self.ready else _WAIT)
+            socket.flush()
             return
         socket.write(_ACK)
         socket.flush()

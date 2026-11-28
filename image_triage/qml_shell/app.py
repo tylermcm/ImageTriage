@@ -33,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--folder", help="photo folder to open")
     parser.add_argument("--select", default="", help="a photo of that folder to put the grid on once it has been read (a photo opened from the file manager)")
     parser.add_argument("--edit", action="store_true", help="with --select: open that photo in the viewer with Edit open (the quick viewer's Edit)")
+    parser.add_argument("--from-viewer", action="store_true", help="started by the quick viewer: no launch splash; the window builds behind the "
+                        "viewer and comes forward when its photos are up, and the viewer then closes (it asks: single_instance.library_ready)")
     parser.add_argument("--mock", metavar="DIR", help="open p01..p12.jpg from DIR with the HTML mockup's exact data (for pixel comparison)")
     parser.add_argument("--light", action="store_true", help="start in the light theme")
     parser.add_argument("--size", default="", help="window size in device-independent pixels (default: 1440x900, or 92%% of the screen if that is smaller)")
@@ -389,7 +391,8 @@ def _run(args, state: dict) -> int:
         area = app.primaryScreen().availableGeometry()
         width, height = min(1440, int(area.width() * 0.92)), min(900, int(area.height() * 0.92))
     # the launch splash (its own frameless window) is up while the main window is built; not for headless checks, which have their own scenes
-    splash = not (args.grab or args.mock)
+    splash = not (args.grab or args.mock or args.from_viewer)
+    staged = splash or bool(args.from_viewer)       # the window is built out of sight and revealed whole (behind the splash, or the viewer)
     qml_problems: list[str] = []
     engine.warnings.connect(lambda problems: qml_problems.extend(problem.toString() for problem in problems))
     if splash:
@@ -432,8 +435,8 @@ def _run(args, state: dict) -> int:
         from PySide6.QtCore import QRect
         from PySide6.QtGui import QWindow
 
-        if splash:
-            window.setOpacity(0.0)                        # it builds out of sight behind the splash and is shown whole (see `reveal`)
+        if staged:
+            window.setOpacity(0.0)                        # it builds out of sight behind the splash (or the viewer) and is shown whole (`reveal`)
         if place is not None:
             window.setScreen(next(s for s in app.screens() if s.name() == place[0]))
             window.setGeometry(QRect(*place[1]))
@@ -441,6 +444,8 @@ def _run(args, state: dict) -> int:
             window.showMaximized()                        # the real app opens maximised; headless checks keep their exact size
         else:
             window.show()
+        if args.from_viewer:
+            window.lower()                                # behind the quick viewer, which stays usable until this window is ready
         own_rect = [place[1] if place else None]          # the window's rectangle when it is not maximised
         was_maximized = [place[2] if place else True]
         settle = QTimer(window)
@@ -502,19 +507,36 @@ def _run(args, state: dict) -> int:
         threading.Thread(target=sweep_viewer_temp, name="qml-temp-sweep", daemon=True).start()
 
     def reveal() -> None:
+        if revealed:
+            return
+        revealed.append(True)
         window.setOpacity(1.0)
         reference.splashHide()
+        if args.from_viewer:                              # in front of the viewer, which closes once it hears this window is ready
+            window.raise_()
+            window.requestActivate()
+        if instance is not None:
+            instance.ready = True
 
-    if splash:
+    revealed: list[bool] = []
+    if not staged:
+        reveal()
+    if staged:
         # The splash stays until the first folder's photos are in the grid, so the window appears whole instead of an empty grid filling in later.
         if library_nav.openPath and not args.mock:
-            reference.splashShow("Reading your folder…", 70)
+            if splash:
+                reference.splashShow("Reading your folder…", 70)
 
             def folder_done() -> None:
                 if photos.loading:
                     return
                 photos.loadingChanged.disconnect(folder_done)
-                reference.splashShow("Ready", 100)
+                if args.from_viewer:
+                    # from the quick viewer: its photo was on screen all along, so the grid's pictures are not waited for
+                    QTimer.singleShot(150, reveal)
+                    return
+                if splash:
+                    reference.splashShow("Ready", 100)
                 # The photos are in the model, but the cards still have to be built and their pictures loaded: hold the splash until the first
                 # screenful of pictures is up (or a moment passes), so the grid is there when the splash goes.
                 need = [min(photos.shown, 8)]
@@ -540,7 +562,8 @@ def _run(args, state: dict) -> int:
             photos.loadingChanged.connect(folder_done)
             QTimer.singleShot(15000, reveal)         # never leave it up if the folder never answers
         else:
-            reference.splashShow("Ready", 100)
+            if splash:
+                reference.splashShow("Ready", 100)
             QTimer.singleShot(250, reveal)
 
     if args.grab:
