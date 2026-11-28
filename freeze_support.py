@@ -154,6 +154,10 @@ APP_FREEZE_INCLUDES = (
     "image_triage.quick_view",
     "image_triage.quick_view.decode",
     "image_triage.quick_view.viewer",
+    # macOS and Linux: files Finder opens (main.py), and File associations' backend there (imported when the window opens)
+    "image_triage.file_open_events",
+    "image_triage.desktop_associations",
+    "image_triage.document_types",
     "PySide6.QtQml",
     "PySide6.QtQuick",
     # The vendored editor engine (formerly the separately-packaged cli_editor/photo_terminal). editor_render.py imports it lazily

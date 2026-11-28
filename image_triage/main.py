@@ -56,8 +56,26 @@ def qml_argv_from_launch(argv: Sequence[str]) -> list[str]:
     return [*rest, "--folder", str(target)] if str(target) else rest
 
 
+def mac_finder_launch(argv: Sequence[str]) -> list[str]:
+    """macOS's Finder starts the app with no file arguments (older systems add a ``-psn_`` process number) and sends the file it opened
+    as an event once the app is up. Make the app, wait a moment for that event, and return the launch it amounts to:
+    ``[argv[0], <file or folder>]``, or ``argv`` as it was when nothing was opened (the app was started on its own)."""
+    if sys.platform != "darwin" or any(a and not str(a).startswith("-psn_") for a in argv[1:]):
+        return list(argv)
+    from image_triage.file_open_events import install, wait_for_opened_file
+    from image_triage.quick_view import application
+
+    app = application()
+    listener = install(app)
+    opened = wait_for_opened_file(app, listener)
+    app.removeEventFilter(listener)                     # the app that starts listens for later files itself
+    return [argv[0], opened] if opened else [argv[0]]
+
+
 def main() -> int:
     """Start the QML application, or the quick viewer for a photo opened from the file manager (``image_triage.quick_view``)."""
+    if sys.platform == "darwin":
+        sys.argv = mac_finder_launch(sys.argv)
     target = launch_target_from_argv(sys.argv)
     if len(sys.argv) == 2 and not target.startswith("-") and is_quick_view_launch_target(target):
         from image_triage.quick_view import run as quick_view

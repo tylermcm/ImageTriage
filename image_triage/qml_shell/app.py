@@ -217,7 +217,7 @@ def _run(args, state: dict) -> int:
     # fractional scales (125%, 150%, 175%) are used as they are, not rounded to whole numbers, so the layout is the same size in
     # device-independent pixels on every monitor; Qt 6 turns high-DPI scaling on by itself
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-    app = QGuiApplication(sys.argv[:1])
+    app = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])      # a Mac launch made it already, to hear what Finder opened
     if not args.grab:
         from . import diagnostics
 
@@ -493,6 +493,11 @@ def _run(args, state: dict) -> int:
 
         instance.received.connect(another_launch)
         app.aboutToQuit.connect(instance.close)
+        # macOS: a photo or folder opened in Finder while the app runs comes as an event to this app, not as another launch
+        from ..file_open_events import install as listen_for_opened_files
+
+        listen_for_opened_files(app).opened.connect(
+            lambda path: another_launch({"select": path} if os.path.isfile(path) else {"folder": path}))
         # Only the one running app clears what earlier runs left behind, off the interface thread.
         threading.Thread(target=sweep_viewer_temp, name="qml-temp-sweep", daemon=True).start()
 

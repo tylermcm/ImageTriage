@@ -124,15 +124,39 @@ class QuickViewer(QObject):
 
     def _after_first(self) -> None:
         """Once the first photo is up: the folder's other photos, the neighbours decoded ahead, then the library's files warmed."""
-        def listed(future: Future) -> None:
-            if not future.cancelled() and future.exception() is None:
-                self._list_arrived.emit(future.result())
-
-        self._pool.submit(decode.folder_photos, self._photos[0]).add_done_callback(listed)
+        self._list_folder()
         QTimer.singleShot(2500, lambda: threading.Thread(target=warm_library_files, name="quick-view-warm", daemon=True).start())
 
-    def _take_list(self, photos: list) -> None:
+    def _list_folder(self) -> None:
+        opened = self._photos[self._index]
+
+        def listed(future: Future) -> None:
+            if not future.cancelled() and future.exception() is None:
+                self._list_arrived.emit([opened, *future.result()])
+
+        self._pool.submit(decode.folder_photos, opened).add_done_callback(listed)
+
+    @Slot(str)
+    def openPhoto(self, path: str) -> None:
+        """Another photo opened while the window is up (macOS sends it as an event, not as a second launch): it and its folder."""
+        from ..formats import is_image_file_candidate
+
+        path = os.path.abspath(path)
+        if not os.path.isfile(path) or not is_image_file_candidate(path):
+            return
+        self._photos, self._index, self._listed, self._pending_step = [path], 0, False, 0
+        self._show(0)
+        self._list_folder()
+        if self._window is not None:
+            self._window.raise_()
+            self._window.requestActivate()
+
+    def _take_list(self, listed: list) -> None:
+        """The folder's photos, read for ``listed[0]``: taken while that photo's folder is still the one shown and not yet listed."""
+        opened, photos = listed[0], listed[1:]
         current = self._photos[self._index]
+        if self._listed or os.path.normcase(os.path.dirname(opened)) != os.path.normcase(os.path.dirname(current)):
+            return                                   # read for a photo opened before this one: not this folder's list
         key = os.path.normcase(current)
         self._photos = list(photos) or [current]
         self._index = next((i for i, p in enumerate(self._photos) if os.path.normcase(p) == key), 0)

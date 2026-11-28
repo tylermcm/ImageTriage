@@ -68,19 +68,30 @@ def full_app_command(photo: str, edit: bool = False) -> list[str]:
     return [*head, "--folder", folder, "--select", photo, *(["--edit"] if edit else [])]
 
 
+def application():
+    """The Qt application, made the way the library makes it (``qml_shell.app`` takes this one when it already exists): a Mac
+    launch makes it before it knows which of the two it starts, to hear which file Finder opened."""
+    from PySide6.QtCore import QCoreApplication, Qt
+    from PySide6.QtGui import QGuiApplication
+
+    existing = QGuiApplication.instance()
+    if existing is not None:
+        return existing
+    QCoreApplication.setOrganizationName("Image Triage")
+    QCoreApplication.setApplicationName("Image Triage")
+    QGuiApplication.setDesktopFileName("image-triage")
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    return QGuiApplication(sys.argv[:1])
+
+
 def run(photo: str) -> int | None:
     """Show ``photo`` in the quick viewer and return the exit code; None when the library should start instead (the viewer is off)."""
     if not enabled():
         return None
     mark("start")
-    from PySide6.QtCore import QCoreApplication, Qt
-    from PySide6.QtGui import QGuiApplication, QIcon
+    from PySide6.QtGui import QIcon
 
-    QCoreApplication.setOrganizationName("Image Triage")
-    QCoreApplication.setApplicationName("Image Triage")
-    QGuiApplication.setDesktopFileName("image-triage")
-    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-    app = QGuiApplication(sys.argv[:1])
+    app = application()
     mark("app")
     # the library already running takes the photo (it is up, so that is quick too), as a launch always did
     from ..qml_shell.single_instance import send_to_running
@@ -106,6 +117,10 @@ def run(photo: str) -> int | None:
         return None                                       # the window could not be made: the library shows the photo instead
     window = engine.rootObjects()[0]
     viewer.attach(window)
+    # macOS: a photo opened in Finder while this window is up comes to it as an event, not as another launch
+    from ..file_open_events import install
+
+    install(app).opened.connect(viewer.openPhoto)
     mark("window made")
     code = app.exec()
     viewer.shutdown()

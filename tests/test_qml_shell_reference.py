@@ -751,7 +751,7 @@ def test_make_default_asks_windows_for_a_real_type(qapp, photos, monkeypatch):
     monkeypatch.setattr(fa, "open_windows_file_association_chooser", lambda suffix, **_: asked.append(suffix) or "")
     monkeypatch.setattr(fa, "open_windows_default_apps_settings", lambda: asked.append("apps"))
     ref = ReferenceModel(photos, ToastModel(parent=qapp), memory=False, parent=qapp)
-    ref._fa_os = True
+    ref._fa_os, ref._fa_platform, ref._fa_desktop = True, "windows", None      # the Windows path, whatever system runs the test
     ref.faMakeDefault(".cr3")
     ref.faDefaultApps()
     assert asked == [".cr3", "apps"]
@@ -765,7 +765,7 @@ def test_real_states_are_classified(qapp, photos, monkeypatch):
     monkeypatch.setattr(fa, "query_windows_file_association_states", lambda: states)
     monkeypatch.setattr(fa, "describe_windows_default_handler", lambda s: "Photos")
     ref = ReferenceModel(photos, ToastModel(parent=qapp), memory=False, parent=qapp)
-    ref._fa_os = True
+    ref._fa_os, ref._fa_platform, ref._fa_desktop = True, "windows", None      # the Windows path, whatever system runs the test
     ref.open("fa")
     ref.toggleGroup("raw")
     rows = {r["ext"]: r["state"] for g in ref.view["fa"]["groups"] for r in g["rows"]}

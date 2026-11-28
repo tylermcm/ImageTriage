@@ -2,13 +2,16 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Shapes
 
-// File associations: which photo types open in Image Triage when double-clicked in File Explorer. The model is reference_model.py
-// (`reference`, backed by file_associations.py on Windows); this file draws its `view.fa` (mockup: scripts/qml_parity/help.dc.html).
+// File associations: which photo types open in Image Triage when double-clicked in File Explorer, Finder or a Linux file manager. The
+// model is reference_model.py (`reference`, backed by file_associations.py on Windows and desktop_associations.py on macOS and Linux);
+// this file draws its `view.fa` (mockup: scripts/qml_parity/help.dc.html). Windows asks once per type (its chooser); macOS and Linux
+// can make every type default at once.
 Backdrop {
     id: root
     objectName: "fileAssocWindow"
     readonly property var v: reference.view
-    readonly property var f: v.fa || ({ supported: true, groups: [], pct: 0, none: false, title: "", sub: "", canRemove: false })
+    readonly property var f: v.fa || ({ supported: true, groups: [], pct: 0, none: false, title: "", sub: "", canRemove: false, platform: "windows",
+                                         explorer: "File Explorer", note: "", registerText: "Make available for all types", canRegister: true, canAllDefault: false })
     shown: v.window === "fa"
     onDismissed: reference.close()
     z: 106
@@ -28,7 +31,7 @@ Backdrop {
             RHeader {
                 id: hd
                 width: parent.width
-                title: "File associations"; sub: "Choose which photo types open in Image Triage when you double-click them in File Explorer."
+                title: "File associations"; sub: "Choose which photo types open in Image Triage when you double-click them in " + (root.f.explorer || "File Explorer") + "."
                 iconPath: "M6 3h8l4 4v14H6zM14 3v4h4M9 13h6M9 17h6"
                 onCloseRequested: reference.close()
             }
@@ -52,7 +55,11 @@ Backdrop {
                         Column { id: sumText; x: 16 + 46 + 14; anchors.verticalCenter: parent.verticalCenter; width: parent.width - x - 14 - sumBtn.width - 14
                             Text { width: parent.width; text: root.f.title; color: theme.fg; font.pixelSize: 13; font.weight: Font.Medium; lineHeight: 20.15; lineHeightMode: Text.FixedHeight; wrapMode: Text.WordWrap }
                             Text { width: parent.width; topPadding: 2; text: root.f.sub; wrapMode: Text.WordWrap; color: theme.fg3; font.pointSize: UiState.pt(12.5); lineHeight: 18.1; lineHeightMode: Text.FixedHeight } }
-                        SButton { id: sumBtn; anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: "Make available for all types"; variant: "primary"; h: 34; hpad: 16; radius: 12; onClicked: reference.faRegister() }
+                        // Windows and an unregistered Linux desktop: make Image Triage available; macOS and Linux once it is: make it default for all
+                        SButton { id: sumBtn; objectName: "faSummaryButton"; anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter
+                                  visible: root.f.canRegister || root.f.canAllDefault; width: visible ? implicitWidth : 0
+                                  text: root.f.canRegister ? root.f.registerText : "Make default for all"; variant: "primary"; h: 34; hpad: 16; radius: 12
+                                  onClicked: root.f.canRegister ? reference.faRegister() : reference.faMakeAllDefault() }
                     }
                     Repeater {
                         model: root.f.groups
@@ -104,7 +111,7 @@ Backdrop {
                     Item { width: 1; height: 14 }
                     Rectangle { width: parent.width; height: noteT.implicitHeight + 24; radius: 12; color: theme.s1; border.color: theme.lineSoft
                         Text { id: noteT; x: 14; y: 12; width: parent.width - 28; wrapMode: Text.WordWrap; color: theme.fg3; font.pointSize: UiState.pt(12.5); lineHeight: 19.4; lineHeightMode: Text.FixedHeight
-                               text: "Windows decides the default app, so we can only ask: “Make default” opens the Windows chooser for that type; pick Image Triage, then Always. “Windows Default Apps…” opens Image Triage’s own page there, with every type on it. “Open with” always lists Image Triage once a type is available." } }
+                               text: root.f.note || "" } }
                 }
                 Column {
                     id: unsup
@@ -120,8 +127,9 @@ Backdrop {
                 y: parent.height - 60; width: parent.width; height: 60; color: theme.s1
                 Rectangle { width: parent.width; height: 1; color: theme.lineSoft }
                 Row { x: 26; anchors.verticalCenter: parent.verticalCenter; spacing: 8
-                    SButton { visible: root.f.supported; text: "Windows Default Apps…"; h: 34; hpad: 16; radius: 12; onClicked: reference.faDefaultApps() }
-                    SButton { visible: root.f.supported; text: "Remove all"; h: 34; hpad: 16; radius: 12; enabled: root.f.canRemove; onClicked: reference.faRemove() } }
+                    SButton { visible: root.f.supported && root.f.platform === "windows"; text: "Windows Default Apps…"; h: 34; hpad: 16; radius: 12; onClicked: reference.faDefaultApps() }
+                    SButton { visible: root.f.supported && (root.f.platform === "windows" || root.f.canRemove); text: root.f.platform === "linux" ? "Remove from the desktop" : "Remove all"
+                              h: 34; hpad: 16; radius: 12; enabled: root.f.canRemove; onClicked: reference.faRemove() } }
                 SButton { anchors.right: parent.right; anchors.rightMargin: 20; anchors.verticalCenter: parent.verticalCenter; text: "Done"; variant: "primary"; h: 34; hpad: 16; radius: 12; onClicked: reference.close() }
             }
         }

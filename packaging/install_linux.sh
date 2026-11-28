@@ -135,10 +135,15 @@ Exec=$LAUNCHER_PATH %F
 Icon=$icon_target
 Comment=Browse, cull, and score large image folders
 Categories=Graphics;Photography;
+MimeType=image/jpeg;image/png;image/tiff;image/webp;image/heic;image/heif;image/avif;image/gif;image/bmp;image/x-dcraw;image/x-hasselblad-3fr;image/x-sony-arw;image/x-canon-cr2;image/x-canon-cr3;image/x-canon-crw;image/x-kodak-dcr;image/x-adobe-dng;image/x-epson-erf;image/x-hasselblad-fff;image/x-phaseone-iiq;image/x-kodak-k25;image/x-kodak-kdc;image/x-mamiya-mef;image/x-leaf-mos;image/x-minolta-mrw;image/x-nikon-nef;image/x-nikon-nrw;image/x-olympus-orf;image/x-pentax-pef;image/x-fuji-raf;image/x-panasonic-raw;image/x-panasonic-rw2;image/x-panasonic-rwl;image/x-sony-sr2;image/x-sony-srf;image/x-samsung-srw;image/x-sigma-x3f;
 Terminal=false
 StartupNotify=true
 StartupWMClass=image-triage
 EOF
+    # the desktop's "Open With" and default-app lists read the MimeType line through this cache
+    if command -v update-desktop-database >/dev/null 2>&1; then
+      update-desktop-database "$APPLICATIONS_DIR" >/dev/null 2>&1 || true
+    fi
   fi
 
   printf '\nInstalled Image Triage:\n'

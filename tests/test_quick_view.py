@@ -280,7 +280,7 @@ def test_an_arrow_pressed_before_the_folder_is_read_waits_for_it(qapp, tmp_path,
     viewer.edge.connect(edges.append)
     viewer.go(1)                                   # before the list: no "end of folder", the step is kept
     assert viewer.index == 0 and edges == []
-    viewer._take_list(decode.folder_photos(str(tmp_path / "a.jpg")))
+    viewer._take_list([str(tmp_path / "a.jpg"), *decode.folder_photos(str(tmp_path / "a.jpg"))])
     assert viewer.name == "b.jpg"
     viewer.shutdown()
 

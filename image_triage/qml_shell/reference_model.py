@@ -136,6 +136,15 @@ class _IndexTask(QRunnable):
         self.signals.done.emit(summary, error)
 
 
+def _desktop_backend():
+    try:
+        from ..desktop_associations import backend
+
+        return backend()
+    except Exception:
+        return None
+
+
 class ReferenceModel(QObject):
     changed = Signal()
     closedWindow = Signal()                      # a window was closed
@@ -183,7 +192,10 @@ class ReferenceModel(QObject):
         self._lib_busy = ""
         self._lib_results: list[dict] = []
         # file associations
-        self._fa_os = True if memory else os.name == "nt"
+        # Windows: the registry and Windows' chooser (file_associations); macOS and Linux: desktop_associations. None: nothing to show.
+        self._fa_desktop = None if memory or os.name == "nt" else _desktop_backend()
+        self._fa_platform = "windows" if memory or os.name == "nt" else (self._fa_desktop.platform if self._fa_desktop else "")
+        self._fa_os = bool(self._fa_platform)
         self._fa_mode = "sample"                 # memory only: "sample" (a mix), "none" (nothing set up), "all" (everything default)
         self._fa_cache: dict[str, tuple[str, str]] | None = None
         self._fa_busy = False
@@ -815,6 +827,9 @@ class ReferenceModel(QObject):
                 raw = "none" if self._fa_mode == "none" else "default" if self._fa_mode == "all" else sample.get(suffix, "available")
                 state, _, app = raw.partition(":")
                 out[suffix] = (state, app)
+        elif self._fa_desktop is not None:
+            for suffix, state in self._fa_desktop.states(fa.supported_file_association_suffixes()).items():
+                out[suffix] = (state.state, state.app)
         else:
             for state in fa.query_windows_file_association_states():
                 if state.is_default:
@@ -830,7 +845,8 @@ class ReferenceModel(QObject):
 
     def _fa_view(self) -> dict:
         if not self._fa_os:
-            return {"supported": False, "groups": [], "pct": 0, "none": False, "title": "", "sub": "", "canRemove": False, "busy": False}
+            return {"supported": False, "groups": [], "pct": 0, "none": False, "title": "", "sub": "", "canRemove": False, "busy": False,
+                    "note": "", "platform": "", "explorer": "your file manager", "registerText": "", "canRegister": False, "canAllDefault": False}
         from .. import formats, file_associations as fa
 
         states = self._fa_states()
@@ -851,12 +867,35 @@ class ReferenceModel(QObject):
         total = len(states)
         defaults = sum(1 for s, _ in states.values() if s == "default")
         avail = sum(1 for s, _ in states.values() if s in ("default", "available"))
-        none = avail == 0
+        platform = self._fa_platform
+        desktop = self._fa_desktop
+        # macOS offers the app for every type its Info.plist declares: there is nothing to set up, only the defaults to choose
+        none = avail == 0 and platform != "mac"
+        if platform == "windows":
+            sub = ("Make it available and it will be listed in “Open with” for every type." if none
+                   else f"It is listed in “Open with” for {avail}. Types that open in another app can be switched one at a time.")
+            note = ("Windows decides the default app, so we can only ask: “Make default” opens the Windows chooser for that type; pick Image "
+                    "Triage, then Always. “Windows Default Apps…” opens Image Triage’s own page there, with every type on it. “Open with” "
+                    "always lists Image Triage once a type is available.")
+        elif platform == "mac":
+            sub = "Finder lists Image Triage in “Open With” for every photo type. Make it the default for one type, or for all of them."
+            note = ("“Make default” changes the app Finder opens that type with, the same as Get Info › Open with › Change All. Camera RAW "
+                    "files of every make can be switched together.")
+        else:
+            sub = ("Add Image Triage to your desktop and it will be listed in “Open With” for every type." if none
+                   else "Make it the default for one type, or for all of them at once.")
+            note = ("Your desktop keeps the default app for each type (xdg-mime). “Make default for all” switches every photo type "
+                    "to Image Triage at once; your file manager’s Properties › Open With switches them back.")
         return {
             "supported": True, "groups": [g for g in groups if g["rows"]], "pct": round(100 * defaults / total) if total else 0, "none": none,
             "title": "Image Triage is not set up for any photo type" if none else f"Image Triage opens {defaults} of {total} photo types by default",
-            "sub": "Make it available and it will be listed in “Open with” for every type." if none else f"It is listed in “Open with” for {avail}. Types that open in another app can be switched one at a time.",
-            "canRemove": not none, "busy": self._fa_busy,
+            "sub": sub, "note": note, "platform": platform,
+            "explorer": {"windows": "File Explorer", "mac": "Finder"}.get(platform, "your file manager"),
+            "registerText": "Make available for all types" if platform == "windows" else "Add to the desktop",
+            "canRegister": platform == "windows" or (desktop is not None and desktop.can_register and none),
+            "canAllDefault": platform in ("mac", "linux") and not none and defaults < total,
+            "canRemove": (not none) if platform == "windows" else bool(desktop is not None and desktop.can_remove()),
+            "busy": self._fa_busy,
         }
 
     @Slot()
@@ -864,6 +903,15 @@ class ReferenceModel(QObject):
         if self._memory:
             self._fa_mode = "all" if self._fa_mode != "none" else "sample"
             self._fa_cache = None
+        elif self._fa_desktop is not None:
+            problem = self._fa_desktop.register()
+            self._fa_cache = None
+            if problem:
+                self._toast("error", "Could not add Image Triage to the desktop", problem)
+            else:
+                self._toast("success", "Image Triage is listed for every photo type", "Make it the default below, for one type or all of them.")
+            self._emit()
+            return
         else:
             try:
                 from ..file_associations import register_windows_file_associations
@@ -880,6 +928,10 @@ class ReferenceModel(QObject):
     def faRemove(self) -> None:
         if self._memory:
             self._fa_mode = "none"
+        elif self._fa_desktop is not None:
+            problem = self._fa_desktop.remove()
+            if problem:
+                self._toast("error", "Could not remove Image Triage from the desktop", problem)
         else:
             try:
                 from ..file_associations import remove_windows_file_associations
@@ -896,6 +948,9 @@ class ReferenceModel(QObject):
         if self._memory:
             self._toast("info", f"Windows would ask which app should open {suffix}", "Sample data: nothing was changed.")
             return
+        if self._fa_desktop is not None:                 # macOS and Linux set it directly, no chooser
+            self._fa_set_defaults([suffix])
+            return
         try:
             from ..file_associations import open_windows_file_association_chooser
 
@@ -904,6 +959,26 @@ class ReferenceModel(QObject):
             self._toast("error", "Could not open the Windows chooser", str(exc))
             return
         QTimer.singleShot(4000, self._fa_recheck)       # the choice is made in Windows; look again afterwards, and when it closes
+
+    @Slot()
+    def faMakeAllDefault(self) -> None:
+        """macOS and Linux: Image Triage as the default for every photo type at once (Windows asks once per type)."""
+        if self._fa_desktop is None:
+            return
+        from .. import file_associations as fa
+
+        self._fa_set_defaults(list(fa.supported_file_association_suffixes()))
+
+    def _fa_set_defaults(self, suffixes: list[str]) -> None:
+        problem = self._fa_desktop.make_default(suffixes)
+        self._fa_cache = None
+        if problem:
+            self._toast("error", "Could not make Image Triage the default", problem)
+        elif len(suffixes) == 1:
+            self._toast("success", f"{suffixes[0]} files now open in Image Triage", "")
+        else:
+            self._toast("success", "Photos now open in Image Triage", "Every photo type opens in it when you double-click it.")
+        self._emit()
 
     def _fa_recheck(self) -> None:
         self._fa_cache = None
@@ -960,6 +1035,7 @@ class ReferenceModel(QObject):
         """Put the windows in one of the mockup's scenes (hlp-*, hm-open, sk-*, lib-*, fa-*, sp-*)."""
         self._window, self._menu, self._topic, self._hq, self._kq, self._lq, self._lscope = "", False, "start", "", "", "", "all"
         self._lib_empty, self._fopen, self._fa_os, self._fa_mode, self._upd, self._fa_cache = False, {"raw": True}, True, "sample", "ok", None
+        self._fa_platform, self._fa_desktop = "windows", None
         self._splash = {"on": False, "p": 8, "status": "Starting…", "preview": False}
         table = {
             "hlp-start": ("help", {}), "hlp-search": ("help", {"_hq": "collection", "_topic": "coll"}), "hlp-cull": ("help", {"_topic": "cull"}), "hlp-trouble": ("help", {"_topic": "trouble"}),

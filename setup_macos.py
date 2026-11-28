@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from cx_Freeze import Executable, setup
 
+from image_triage.document_types import mac_document_types
+
 from freeze_support import (
     AI_FREEZE_EXCLUDES,
     APP_FREEZE_EXCLUDES,
@@ -46,6 +48,8 @@ bdist_mac_options = {
         ("LSMinimumSystemVersion", MINIMUM_MACOS),
         ("LSApplicationCategoryType", "public.app-category.photography"),
         ("NSHighResolutionCapable", True),
+        # The photo types Finder offers Image Triage for ("Open With", and the default app it can be made); see document_types.py.
+        ("CFBundleDocumentTypes", mac_document_types()),
         # Dark mode follows the system (Qt draws its own window chrome in both).
         ("NSRequiresAquaSystemAppearance", False),
         # What macOS shows when it asks the person to let the app into a folder it guards (asked once per folder, and only when the
